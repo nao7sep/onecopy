@@ -1,0 +1,684 @@
+//! The indexing core: walk → stat → hash tiers → metadata/evidence → resolve,
+//! all checkpointed into the index DB so an interrupted run resumes where it
+//! stopped (unchanged size+mtime rows are skipped on the next pass). Symlinks
+//! are not followed; hard links are distinct paths by design.
+//!
+//! Hash tiering refinement over the plan's base rule: media files (images and
+//! videos) are always fully hashed — preview generation reads every byte
+//! anyway, and their cache/dedup identity is the hash — while other-files keep
+//! the full tier: a unique size is never content-read (no duplicate can
+//! exist), a size collision gets the prehash, and only prehash collisions get
+//! the full hash. Same size + same prehash + different full hash among
+//! supposed copies is recorded as a `copies-disagree` issue.
+//!
+//! This module is synchronous and testable against temp trees; the
+//! thread-spawning, progress-event-emitting wrapper arrives with the Phase 3
+//! UI.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
+
+use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::extensions;
+use crate::hashing;
+use crate::logging;
+use crate::metadata;
+use crate::resolution::{self, ResolutionConfig};
+use crate::timestamps;
+
+/// The extension lists the scanner classifies against (the config's editable
+/// copies).
+pub struct ScanLists {
+    pub images: Vec<String>,
+    pub videos: Vec<String>,
+    pub companions: Vec<String>,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct WalkStats {
+    pub seen: u64,
+    pub added: u64,
+    pub updated: u64,
+    pub unchanged: u64,
+    pub marked_missing: u64,
+}
+
+/// Walks one source root: upserts every regular file as a `paths` row, skips
+/// unchanged rows (same size + mtime — the checkpoint that makes rescans and
+/// resumes cheap), resets content facts when a file changed, and marks rows
+/// under the root that no longer exist as missing.
+pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
+    let mut stats = WalkStats::default();
+    let root_str = root.to_string_lossy().to_string();
+    let scanned_at = logging::now_iso_millis();
+
+    // Collect the currently-present set to diff against the DB afterwards.
+    let mut present: Vec<String> = Vec::new();
+
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                record_issue(
+                    conn,
+                    err.path().map(|p| p.to_string_lossy().to_string()),
+                    "walk-error",
+                    &err.to_string(),
+                )?;
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let abs = path.to_string_lossy().to_string();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        // The app's own trash is never indexed.
+        if abs.contains(".onecopy-trash") {
+            continue;
+        }
+
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(err) => {
+                record_issue(conn, Some(abs.clone()), "stat-error", &err.to_string())?;
+                continue;
+            }
+        };
+        let size = meta.len() as i64;
+        let mtime_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        let birthtime_ms = meta
+            .created()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+
+        let ext = extensions::lowercase_ext(&file_name);
+        let kind =
+            extensions::classify(&ext, &lists.images, &lists.videos, &lists.companions).as_str();
+
+        stats.seen += 1;
+        present.push(abs.clone());
+
+        let existing: Option<(i64, Option<i64>)> = conn
+            .query_row(
+                "SELECT size, mtime_ms FROM paths WHERE abs_path = ?1",
+                [&abs],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        match existing {
+            Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
+                // Unchanged: only clear a stale missing flag.
+                conn.execute(
+                    "UPDATE paths SET missing = 0 WHERE abs_path = ?1 AND missing = 1",
+                    [&abs],
+                )
+                .map_err(|e| e.to_string())?;
+                stats.unchanged += 1;
+            }
+            Some(_) => {
+                // Changed on disk: reset the content facts; the hash and
+                // resolve passes will redo them.
+                conn.execute(
+                    "UPDATE paths SET size = ?2, mtime_ms = ?3, birthtime_ms = ?4, ext = ?5, \
+                     kind = ?6, prehash = NULL, content_hash = NULL, indexed_at_utc = NULL, \
+                     resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0, missing = 0 \
+                     WHERE abs_path = ?1",
+                    params![abs, size, mtime_ms, birthtime_ms, ext, kind],
+                )
+                .map_err(|e| e.to_string())?;
+                stats.updated += 1;
+            }
+            None => {
+                let dir_path = path
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                conn.execute(
+                    "INSERT INTO paths (abs_path, dir_path, file_name, ext, kind, size, \
+                     mtime_ms, birthtime_ms, missing) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+                    params![abs, dir_path, file_name, ext, kind, size, mtime_ms, birthtime_ms],
+                )
+                .map_err(|e| e.to_string())?;
+                stats.added += 1;
+            }
+        }
+    }
+
+    // Anything under this root the walk did not see is missing. The rows stay
+    // (their trash/delete history may matter) but leave every view and count.
+    // LIKE wildcards in the root itself (`_` is common in real paths) are
+    // escaped with `!`, which appears in no sane path on either OS.
+    let escaped_root = root_str
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_");
+    let placeholders_root = format!("{}%", ensure_trailing_separator(&escaped_root));
+    let mut select = conn
+        .prepare("SELECT abs_path FROM paths WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0")
+        .map_err(|e| e.to_string())?;
+    let known: Vec<String> = select
+        .query_map([&placeholders_root], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    let present_set: std::collections::HashSet<&String> = present.iter().collect();
+    for path in known {
+        if !present_set.contains(&path) {
+            conn.execute("UPDATE paths SET missing = 1 WHERE abs_path = ?1", [&path])
+                .map_err(|e| e.to_string())?;
+            stats.marked_missing += 1;
+        }
+    }
+
+    conn.execute(
+        "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, ?2, 0) \
+         ON CONFLICT(root) DO UPDATE SET last_completed_at_utc = ?2, dirty = 0",
+        params![root_str, scanned_at],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(stats)
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct HashStats {
+    pub prehashed: u64,
+    pub full_hashed: u64,
+    pub skipped_unique: u64,
+    pub copies_disagree: u64,
+    pub errors: u64,
+}
+
+/// The tiered content pass over rows without a content hash. Media rows always
+/// get the full hash; other-file rows get it only when size and prehash both
+/// collide. Contents rows are created per distinct hash; copies-disagree
+/// anomalies are recorded as issues.
+pub fn hash_pending(conn: &Connection) -> Result<HashStats, String> {
+    let mut stats = HashStats::default();
+
+    // --- Media: full hash unconditionally. ---
+    let media: Vec<(i64, String, i64, String)> = collect_rows(
+        conn,
+        "SELECT id, abs_path, size, kind FROM paths \
+         WHERE missing = 0 AND content_hash IS NULL AND kind IN ('image', 'video')",
+    )?;
+    for (id, abs, size, kind) in media {
+        match hashing::full_hash(Path::new(&abs)) {
+            Ok(hash) => {
+                stats.full_hashed += 1;
+                store_content_hash(conn, id, &hash, size, &kind)?;
+            }
+            Err(err) => {
+                stats.errors += 1;
+                record_issue(conn, Some(abs), "read-error", &err.to_string())?;
+            }
+        }
+    }
+
+    // --- Other files (companions included): the full tier. ---
+    let others: Vec<(i64, String, i64, String)> = collect_rows(
+        conn,
+        "SELECT id, abs_path, size, kind FROM paths \
+         WHERE missing = 0 AND content_hash IS NULL AND kind NOT IN ('image', 'video')",
+    )?;
+
+    // Group by size; unique sizes are never content-read.
+    let mut by_size: HashMap<i64, Vec<(i64, String, String)>> = HashMap::new();
+    for (id, abs, size, kind) in others {
+        by_size.entry(size).or_default().push((id, abs, kind));
+    }
+    for (size, group) in by_size {
+        if group.len() == 1 {
+            stats.skipped_unique += 1;
+            continue;
+        }
+        // Size collision: prehash each, then full-hash only prehash collisions.
+        let mut by_prehash: HashMap<String, Vec<(i64, String, String)>> = HashMap::new();
+        for (id, abs, kind) in group {
+            match hashing::prehash(Path::new(&abs)) {
+                Ok(pre) => {
+                    stats.prehashed += 1;
+                    conn.execute(
+                        "UPDATE paths SET prehash = ?2 WHERE id = ?1",
+                        params![id, pre],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    by_prehash.entry(pre).or_default().push((id, abs, kind));
+                }
+                Err(err) => {
+                    stats.errors += 1;
+                    record_issue(conn, Some(abs), "read-error", &err.to_string())?;
+                }
+            }
+        }
+        for (_pre, collided) in by_prehash {
+            if collided.len() == 1 {
+                stats.skipped_unique += 1;
+                continue;
+            }
+            let group_len = collided.len();
+            let mut hashes_in_group: Vec<String> = Vec::new();
+            for (id, abs, kind) in collided {
+                match hashing::full_hash(Path::new(&abs)) {
+                    Ok(hash) => {
+                        stats.full_hashed += 1;
+                        if !hashes_in_group.contains(&hash) {
+                            hashes_in_group.push(hash.clone());
+                        }
+                        store_content_hash(conn, id, &hash, size, &kind)?;
+                    }
+                    Err(err) => {
+                        stats.errors += 1;
+                        record_issue(conn, Some(abs), "read-error", &err.to_string())?;
+                    }
+                }
+            }
+            // Same size + same prehash + diverging full hashes: bit rot or a
+            // divergent sync among supposed copies — surface it.
+            if hashes_in_group.len() > 1 {
+                stats.copies_disagree += 1;
+                record_issue(
+                    conn,
+                    None,
+                    "copies-disagree",
+                    &format!(
+                        "{group_len} same-size same-prehash files split into {} distinct contents (size {size})",
+                        hashes_in_group.len()
+                    ),
+                )?;
+            }
+        }
+    }
+
+    Ok(stats)
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct ResolveStats {
+    pub resolved: u64,
+    pub undated: u64,
+}
+
+/// Metadata + evidence + resolution over rows not yet resolved. Media rows
+/// read their in-file metadata here (and stash make/model/dimensions onto the
+/// contents row); every row runs the filename tokenizer and the resolver.
+pub fn resolve_pending(conn: &Connection, config: &ResolutionConfig) -> Result<ResolveStats, String> {
+    let mut stats = ResolveStats::default();
+
+    let rows: Vec<(i64, String, String, String)> = collect_rows_4(
+        conn,
+        "SELECT id, abs_path, file_name, kind FROM paths \
+         WHERE missing = 0 AND resolved_source IS NULL",
+    )?;
+
+    for (id, abs, file_name, kind) in rows {
+        let path = Path::new(&abs);
+        let meta = match kind.as_str() {
+            "image" => Some(metadata::read_image_metadata(path)),
+            "video" => Some(metadata::read_video_metadata(path)),
+            // Companion RAW files are TIFF containers with readable EXIF.
+            "companion" => Some(metadata::read_image_metadata(path)),
+            _ => None,
+        };
+
+        if let Some(meta) = &meta {
+            store_media_facts(conn, id, meta)?;
+        }
+
+        let filename_ts = timestamps::from_filename(&file_name);
+        let (mtime_ms, birthtime_ms): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT mtime_ms, birthtime_ms FROM paths WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+
+        match resolution::resolve(
+            meta.and_then(|m| m.taken),
+            filename_ts,
+            mtime_ms,
+            birthtime_ms,
+            config,
+        ) {
+            Some(resolved) => {
+                stats.resolved += 1;
+                conn.execute(
+                    "UPDATE paths SET resolved_utc_ms = ?2, resolved_source = ?3, \
+                     date_only = ?4, indexed_at_utc = ?5 WHERE id = ?1",
+                    params![
+                        id,
+                        resolved.unix_ms,
+                        resolved.source.as_str(),
+                        resolved.date_only as i64,
+                        logging::now_iso_millis()
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            None => {
+                stats.undated += 1;
+                conn.execute(
+                    "UPDATE paths SET resolved_source = 'undated', indexed_at_utc = ?2 \
+                     WHERE id = ?1",
+                    params![id, logging::now_iso_millis()],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(stats)
+}
+
+fn store_content_hash(
+    conn: &Connection,
+    path_id: i64,
+    hash: &str,
+    size: i64,
+    kind: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES (?1, ?2, ?3) \
+         ON CONFLICT(hash) DO NOTHING",
+        params![hash, size, kind],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE paths SET content_hash = ?2 WHERE id = ?1",
+        params![path_id, hash],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn store_media_facts(
+    conn: &Connection,
+    path_id: i64,
+    meta: &metadata::MediaMetadata,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE contents SET width = COALESCE(?2, width), height = COALESCE(?3, height), \
+         duration_ms = COALESCE(?4, duration_ms) \
+         WHERE hash = (SELECT content_hash FROM paths WHERE id = ?1)",
+        params![
+            path_id,
+            meta.width.map(i64::from),
+            meta.height.map(i64::from),
+            meta.duration_ms.map(|v| v as i64)
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn record_issue(
+    conn: &Connection,
+    path: Option<String>,
+    kind: &str,
+    message: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO issues (path, kind, message, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
+        params![path, kind, message, logging::now_iso_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn collect_rows(
+    conn: &Connection,
+    sql: &str,
+) -> Result<Vec<(i64, String, i64, String)>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+fn collect_rows_4(
+    conn: &Connection,
+    sql: &str,
+) -> Result<Vec<(i64, String, String, String)>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+fn ensure_trailing_separator(path: &str) -> String {
+    if path.ends_with(std::path::MAIN_SEPARATOR) {
+        path.to_string()
+    } else {
+        format!("{path}{}", std::path::MAIN_SEPARATOR)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index_store;
+
+    fn lists() -> ScanLists {
+        let owned = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
+        ScanLists {
+            images: owned(extensions::IMAGE_EXTENSIONS),
+            videos: owned(extensions::VIDEO_EXTENSIONS),
+            companions: owned(extensions::COMPANION_EXTENSIONS),
+        }
+    }
+
+    fn resolution_config() -> ResolutionConfig {
+        ResolutionConfig {
+            default_timezone: chrono_tz::Asia::Tokyo,
+            good_range_start_year: 1995,
+            now_ms: 1_786_492_800_000, // 2026-08-08T00:00:00Z
+        }
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        root: std::path::PathBuf,
+        conn: Connection,
+    }
+
+    fn fixture(label: &str) -> Fixture {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("onecopy-scan-{label}-"))
+            .tempdir()
+            .unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        Fixture {
+            _dir: dir,
+            root,
+            conn,
+        }
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn walk_adds_then_skips_unchanged_then_marks_missing() {
+        let f = fixture("walk");
+        std::fs::write(f.root.join("IMG_20160305_123456.jpg"), b"aaa").unwrap();
+        std::fs::write(f.root.join("notes.txt"), b"bbb").unwrap();
+
+        let s1 = walk_root(&f.conn, &f.root, &lists()).unwrap();
+        assert_eq!((s1.added, s1.unchanged, s1.marked_missing), (2, 0, 0));
+
+        // Second pass: everything unchanged.
+        let s2 = walk_root(&f.conn, &f.root, &lists()).unwrap();
+        assert_eq!((s2.added, s2.unchanged), (0, 2));
+
+        // Delete one file: the row is marked missing, never removed.
+        std::fs::remove_file(f.root.join("notes.txt")).unwrap();
+        let s3 = walk_root(&f.conn, &f.root, &lists()).unwrap();
+        assert_eq!(s3.marked_missing, 1);
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 1"),
+            1
+        );
+    }
+
+    #[test]
+    fn media_is_always_fully_hashed_and_copies_collapse() {
+        let f = fixture("media-hash");
+        // Three identical copies in different subdirs, one distinct file.
+        for sub in ["a", "b", "c"] {
+            std::fs::create_dir_all(f.root.join(sub)).unwrap();
+            std::fs::write(f.root.join(sub).join("x.jpg"), b"same-bytes").unwrap();
+        }
+        std::fs::write(f.root.join("unique.jpg"), b"different").unwrap();
+
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        let stats = hash_pending(&f.conn).unwrap();
+        assert_eq!(stats.full_hashed, 4);
+
+        // One contents row for the three copies, one for the unique file.
+        assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
+        let copies: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM paths WHERE content_hash = \
+                 (SELECT content_hash FROM paths WHERE file_name = 'x.jpg' LIMIT 1)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(copies, 3);
+    }
+
+    #[test]
+    fn other_files_with_unique_sizes_are_never_read() {
+        let f = fixture("other-tier");
+        std::fs::write(f.root.join("a.bin"), vec![1u8; 100]).unwrap();
+        std::fs::write(f.root.join("b.bin"), vec![2u8; 200]).unwrap();
+
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        let stats = hash_pending(&f.conn).unwrap();
+        assert_eq!(stats.skipped_unique, 2);
+        assert_eq!(stats.prehashed, 0);
+        assert_eq!(stats.full_hashed, 0);
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM paths WHERE content_hash IS NOT NULL"),
+            0
+        );
+    }
+
+    #[test]
+    fn size_collisions_among_other_files_get_hashed_and_deduped() {
+        let f = fixture("other-dup");
+        std::fs::write(f.root.join("copy1.bin"), b"identical-data").unwrap();
+        std::fs::write(f.root.join("copy2.bin"), b"identical-data").unwrap();
+
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        let stats = hash_pending(&f.conn).unwrap();
+        assert_eq!(stats.prehashed, 2);
+        assert_eq!(stats.full_hashed, 2);
+        assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 1);
+    }
+
+    #[test]
+    fn diverged_copies_surface_as_a_copies_disagree_issue() {
+        let f = fixture("disagree");
+        // Same size, same 64K edges, different middle — the bit-rot shape.
+        let mut a = vec![7u8; 200_000];
+        let mut b = vec![7u8; 200_000];
+        a[100_000] = 1;
+        b[100_000] = 2;
+        std::fs::write(f.root.join("rotted1.bin"), &a).unwrap();
+        std::fs::write(f.root.join("rotted2.bin"), &b).unwrap();
+
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        let stats = hash_pending(&f.conn).unwrap();
+        assert_eq!(stats.copies_disagree, 1);
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'copies-disagree'"),
+            1
+        );
+        // Both files keep their own distinct contents rows.
+        assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
+    }
+
+    #[test]
+    fn resolve_uses_filename_then_filesystem_and_flags_undated() {
+        let f = fixture("resolve");
+        // No EXIF in these bytes, so the filename is the winning source.
+        std::fs::write(f.root.join("IMG_20160305_123456.jpg"), b"not-a-real-jpeg").unwrap();
+        // No date anywhere in name or content: filesystem mtime wins.
+        std::fs::write(f.root.join("scan.pdf"), b"pdf-ish").unwrap();
+
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        hash_pending(&f.conn).unwrap();
+        let stats = resolve_pending(&f.conn, &resolution_config()).unwrap();
+        assert_eq!(stats.resolved, 2);
+        assert_eq!(stats.undated, 0);
+
+        let (source, ms): (String, i64) = f
+            .conn
+            .query_row(
+                "SELECT resolved_source, resolved_utc_ms FROM paths \
+                 WHERE file_name = 'IMG_20160305_123456.jpg'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "filename");
+        // 2016-03-05 12:34:56 JST == 03:34:56 UTC.
+        let expected = chrono::NaiveDate::from_ymd_opt(2016, 3, 5)
+            .unwrap()
+            .and_hms_opt(3, 34, 56)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis();
+        assert_eq!(ms, expected);
+
+        let source: String = f
+            .conn
+            .query_row(
+                "SELECT resolved_source FROM paths WHERE file_name = 'scan.pdf'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "filesystem");
+    }
+
+    #[test]
+    fn app_trash_directories_are_never_indexed() {
+        let f = fixture("trash-skip");
+        let trash = f.root.join(".onecopy-trash").join("2026-08-08");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("deleted.jpg"), b"gone").unwrap();
+        std::fs::write(f.root.join("kept.jpg"), b"here").unwrap();
+
+        let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+        assert_eq!(stats.seen, 1);
+        assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
+    }
+}

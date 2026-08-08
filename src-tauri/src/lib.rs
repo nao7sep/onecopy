@@ -10,6 +10,7 @@ pub mod metadata;
 mod nanoid;
 pub mod resolution;
 pub mod paths;
+pub mod scanner;
 pub mod storage;
 pub mod timestamps;
 
