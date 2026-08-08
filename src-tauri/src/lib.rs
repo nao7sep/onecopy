@@ -1,5 +1,7 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
 pub mod extensions;
@@ -10,6 +12,7 @@ pub mod metadata;
 mod nanoid;
 pub mod paths;
 pub mod preview;
+pub mod queries;
 pub mod resolution;
 pub mod scanner;
 pub mod storage;
@@ -104,6 +107,99 @@ fn save_state(app: AppHandle, state: Value) -> Result<(), String> {
     )
 }
 
+// One scan pipeline at a time; a second start is a no-op reported as `false`.
+static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+// Launches the full scan pipeline (walk → hash → extract → resolve → pair →
+// derive) on a worker thread. Progress arrives as `scan://progress` events,
+// completion as `scan://done` (with the summary) or `scan://error`. Returns
+// false when a scan is already running.
+#[tauri::command]
+fn start_scan(app: AppHandle) -> Result<bool, String> {
+    if SCAN_RUNNING.swap(true, Ordering::SeqCst) {
+        return Ok(false);
+    }
+    let prepared = (|| -> Result<(), String> {
+        let data_root = paths::data_root(&app)?;
+        let loaded = storage::load_app_data(&app)?;
+        let settings = scanner::settings_from_config(
+            loaded.config.as_ref(),
+            &data_root,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        let db_file = data_root.join(storage::INDEX_DB_FILE_NAME);
+        let handle = app.clone();
+
+        std::thread::spawn(move || {
+            // Sleep inhibition for the day-scale first index (config-gated).
+            // Display sleep stays allowed; only system sleep is held off.
+            let _awake = settings.keep_awake.then(|| {
+                keepawake::Builder::default()
+                    .idle(true)
+                    .sleep(true)
+                    .reason("Indexing media")
+                    .app_name("OneCopy")
+                    .create()
+                    .ok()
+            });
+
+            let emit_progress = |phase: &str, detail: String| {
+                let _ = handle.emit("scan://progress", json!({ "phase": phase, "detail": detail }));
+            };
+
+            let outcome = index_store::open(&db_file).and_then(|conn| {
+                scanner::run_full_scan(&conn, &settings, &emit_progress)
+            });
+            match outcome {
+                Ok(summary) => {
+                    logging::info("scan complete", json!({ "summary": summary }));
+                    let _ = handle.emit("scan://done", json!({ "summary": summary }));
+                }
+                Err(err) => {
+                    logging::error("scan failed", json!({ "error": { "message": err.clone() } }));
+                    let _ = handle.emit("scan://error", json!({ "message": err }));
+                }
+            }
+            SCAN_RUNNING.store(false, Ordering::SeqCst);
+        });
+        Ok(())
+    })();
+
+    match prepared {
+        Ok(()) => Ok(true),
+        Err(err) => {
+            SCAN_RUNNING.store(false, Ordering::SeqCst);
+            Err(err)
+        }
+    }
+}
+
+// Left-pane section counts (logical items per kind per month), bucketed in the
+// OS display timezone.
+#[tauri::command]
+fn get_section_counts(app: AppHandle) -> Result<queries::SectionCounts, String> {
+    logging::boundary(
+        "get_section_counts",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let tz: chrono_tz::Tz = iana_time_zone::get_timezone()
+                .ok()
+                .and_then(|name| name.parse().ok())
+                .unwrap_or(chrono_tz::UTC);
+            queries::section_counts(&conn, tz)
+        },
+        |counts| {
+            json!({
+                "imageMonths": counts.images.len(),
+                "videoMonths": counts.videos.len(),
+                "otherMonths": counts.others.len(),
+            })
+        },
+    )
+}
+
 // Receives a structured log object from the webview frontend and writes it to
 // the session file (the frontend has no filesystem access of its own).
 #[tauri::command]
@@ -181,6 +277,8 @@ pub fn run() {
             load_app_data,
             save_config,
             save_state,
+            start_scan,
+            get_section_counts,
             log_event,
             logging_debug_enabled
         ])

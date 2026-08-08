@@ -36,6 +36,173 @@ pub struct ScanLists {
     pub companions: Vec<String>,
 }
 
+/// Everything one scan run needs, projected out of the config JSON with the
+/// typed defaults filling gaps — the store never validates, each consumer
+/// projects what it needs (config-seeding conventions).
+pub struct ScanSettings {
+    pub source_dirs: Vec<String>,
+    pub lists: ScanLists,
+    pub resolution: ResolutionConfig,
+    pub thumb_edge: u32,
+    pub preview_long_edge: u32,
+    pub keep_awake: bool,
+    pub cache_root: std::path::PathBuf,
+}
+
+pub fn settings_from_config(
+    config: Option<&serde_json::Value>,
+    data_root: &Path,
+    now_ms: i64,
+) -> ScanSettings {
+    let defaults = crate::storage::DefaultConfig::default();
+    let get = |key: &str| config.and_then(|c| c.get(key));
+
+    let string_list = |key: &str, fallback: &[String]| -> Vec<String> {
+        get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str())
+                    .map(|s| s.to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_else(|| fallback.to_vec())
+    };
+    let u32_of = |key: &str, fallback: u32| -> u32 {
+        get(key)
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(fallback)
+    };
+
+    let tz: chrono_tz::Tz = get("defaultTimezone")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .or_else(|| defaults.default_timezone.parse().ok())
+        .unwrap_or(chrono_tz::UTC);
+
+    let cache_root = get("cacheDir")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| data_root.join(crate::storage::CACHE_DIR_NAME));
+
+    ScanSettings {
+        source_dirs: string_list_preserving_case(config, "sourceDirs"),
+        lists: ScanLists {
+            images: string_list("imageExtensions", &defaults.image_extensions),
+            videos: string_list("videoExtensions", &defaults.video_extensions),
+            companions: string_list("companionExtensions", &defaults.companion_extensions),
+        },
+        resolution: ResolutionConfig {
+            default_timezone: tz,
+            good_range_start_year: get("goodRangeStartYear")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok())
+                .unwrap_or(defaults.good_range_start_year),
+            now_ms,
+        },
+        thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
+        preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
+        keep_awake: get("keepAwakeDuringIndexing")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.keep_awake_during_indexing),
+        cache_root,
+    }
+}
+
+// Paths keep their case (unlike extensions, which normalize lowercase).
+fn string_list_preserving_case(config: Option<&serde_json::Value>, key: &str) -> Vec<String> {
+    config
+        .and_then(|c| c.get(key))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Default, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanSummary {
+    pub roots: u64,
+    pub seen: u64,
+    pub added: u64,
+    pub full_hashed: u64,
+    pub copies_disagree: u64,
+    pub resolved: u64,
+    pub undated: u64,
+    pub paired: u64,
+    pub derived: u64,
+    pub derive_failed: u64,
+}
+
+/// One full pipeline run over every configured root: walk → hash → extract →
+/// resolve → pair → derive, reporting a progress line after each stage.
+pub fn run_full_scan(
+    conn: &Connection,
+    settings: &ScanSettings,
+    progress: &dyn Fn(&str, String),
+) -> Result<ScanSummary, String> {
+    let mut summary = ScanSummary::default();
+
+    for root in &settings.source_dirs {
+        let stats = walk_root(conn, Path::new(root), &settings.lists)?;
+        summary.roots += 1;
+        summary.seen += stats.seen;
+        summary.added += stats.added;
+        progress(
+            "walk",
+            format!("{root}: {} files ({} new)", stats.seen, stats.added),
+        );
+    }
+
+    let hash_stats = hash_pending(conn)?;
+    summary.full_hashed = hash_stats.full_hashed;
+    summary.copies_disagree = hash_stats.copies_disagree;
+    progress(
+        "hash",
+        format!(
+            "{} hashed, {} unique skipped, {} disagreements",
+            hash_stats.full_hashed, hash_stats.skipped_unique, hash_stats.copies_disagree
+        ),
+    );
+
+    let extract_stats = extract_pending(conn)?;
+    progress("extract", format!("{} files", extract_stats.extracted));
+
+    let resolve_stats = resolve_from_evidence(conn, &settings.resolution, ResolveScope::PendingOnly)?;
+    summary.resolved = resolve_stats.resolved;
+    summary.undated = resolve_stats.undated;
+    progress(
+        "resolve",
+        format!("{} resolved, {} undated", resolve_stats.resolved, resolve_stats.undated),
+    );
+
+    let pair_stats = pair_companions(conn)?;
+    summary.paired = pair_stats.paired;
+    progress("pair", format!("{} companions", pair_stats.paired));
+
+    let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
+    let derive_stats = crate::preview::derive_images_pending(
+        conn,
+        &cache,
+        settings.thumb_edge,
+        settings.preview_long_edge,
+    )?;
+    summary.derived = derive_stats.derived;
+    summary.derive_failed = derive_stats.failed;
+    progress(
+        "derive",
+        format!("{} previews, {} failures", derive_stats.derived, derive_stats.failed),
+    );
+
+    Ok(summary)
+}
+
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct WalkStats {
     pub seen: u64,
