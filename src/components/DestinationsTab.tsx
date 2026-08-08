@@ -1,5 +1,40 @@
 import { useState } from "react";
-import { useDestinationsStore, type DirEntry } from "../state/destinations-store";
+import {
+  useDestinationsStore,
+  type DirEntry,
+  type MoveMode,
+} from "../state/destinations-store";
+
+// Drop-target behavior shared by roots and nodes: the OS-independent modifier
+// mapping is the design's — plain drop = move + trash the rest, Shift = move +
+// delete the rest permanently, Cmd/Ctrl = copy and touch nothing.
+function dropMode(event: React.DragEvent): MoveMode {
+  if (event.metaKey || event.ctrlKey) return "copy";
+  if (event.shiftKey) return "move-delete-rest";
+  return "move-trash-rest";
+}
+
+function useDropHandlers(path: string) {
+  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
+  const [dropReady, setDropReady] = useState(false);
+  return {
+    dropReady,
+    handlers: {
+      onDragOver: (event: React.DragEvent) => {
+        if (event.dataTransfer.types.includes("application/x-onecopy-drag")) {
+          event.preventDefault();
+          setDropReady(true);
+        }
+      },
+      onDragLeave: () => setDropReady(false),
+      onDrop: (event: React.DragEvent) => {
+        event.preventDefault();
+        setDropReady(false);
+        void moveSelectionTo(path, dropMode(event));
+      },
+    },
+  };
+}
 
 // The right pane's destination tree. Empty folders render dimmed-italic (they
 // are the only deletable ones); "Move here" trashes the remaining copies,
@@ -94,12 +129,16 @@ function DirNode({
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
   const isOpen = expanded.has(entry.path);
   const isEmpty = emptiness[entry.path] === true;
+  const { dropReady, handlers } = useDropHandlers(entry.path);
 
   return (
     <li>
       <div
-        className="group flex items-center rounded px-1 py-0.5 text-sm hover:bg-surface-muted"
+        className={`group flex items-center rounded px-1 py-0.5 text-sm ${
+          dropReady ? "bg-primary-surface ring-1 ring-primary-ring" : "hover:bg-surface-muted"
+        }`}
         style={{ paddingLeft: `${depth * 12}px` }}
+        {...handlers}
       >
         <button
           className="w-4 shrink-0 text-ink-muted"
@@ -131,13 +170,9 @@ function DirNode({
 
 export default function DestinationsTab() {
   const roots = useDestinationsStore((s) => s.roots);
-  const children = useDestinationsStore((s) => s.children);
   const expanded = useDestinationsStore((s) => s.expanded);
-  const emptiness = useDestinationsStore((s) => s.emptiness);
   const message = useDestinationsStore((s) => s.message);
   const addRoot = useDestinationsStore((s) => s.addRoot);
-  const removeRoot = useDestinationsStore((s) => s.removeRoot);
-  const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
 
   return (
     <div className="flex h-full flex-col p-3">
@@ -160,8 +195,32 @@ export default function DestinationsTab() {
           {roots.map((root) => {
             const isOpen = expanded.has(root);
             return (
-              <li key={root} className="mb-1">
-                <div className="group flex items-center rounded px-1 py-0.5 text-sm hover:bg-surface-muted">
+              <RootRow key={root} root={root} isOpen={isOpen} />
+            );
+          })}
+        </ul>
+      )}
+      {message !== "" ? (
+        <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">{message}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
+  const children = useDestinationsStore((s) => s.children);
+  const emptiness = useDestinationsStore((s) => s.emptiness);
+  const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
+  const removeRoot = useDestinationsStore((s) => s.removeRoot);
+  const { dropReady, handlers } = useDropHandlers(root);
+  return (
+    <li className="mb-1">
+      <div
+        className={`group flex items-center rounded px-1 py-0.5 text-sm ${
+          dropReady ? "bg-primary-surface ring-1 ring-primary-ring" : "hover:bg-surface-muted"
+        }`}
+        {...handlers}
+      >
                   <button
                     className="w-4 shrink-0 text-ink-muted"
                     onClick={() => void toggleExpand(root)}
@@ -187,21 +246,13 @@ export default function DestinationsTab() {
                     −
                   </button>
                 </div>
-                {isOpen ? (
-                  <ul>
-                    {(children[root] ?? []).map((child) => (
-                      <DirNode key={child.path} entry={child} parent={root} depth={1} />
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-            );
-          })}
+      {isOpen ? (
+        <ul>
+          {(children[root] ?? []).map((child) => (
+            <DirNode key={child.path} entry={child} parent={root} depth={1} />
+          ))}
         </ul>
-      )}
-      {message !== "" ? (
-        <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">{message}</p>
       ) : null}
-    </div>
+    </li>
   );
 }

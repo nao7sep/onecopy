@@ -23,7 +23,20 @@ function Tile({
   onSelect: (event: React.MouseEvent) => void;
 }) {
   return (
-    <figure className="relative w-40 cursor-default" onClick={onSelect}>
+    <figure
+      className="relative w-40 cursor-default"
+      onClick={onSelect}
+      draggable
+      onDragStart={(event) => {
+        // Dragging an unselected tile re-anchors the selection onto it, so
+        // the drag always carries exactly what looks selected.
+        const { selectedKeys, selectItem } = useItemsStore.getState();
+        const key = itemKey(item);
+        if (!selectedKeys.has(key)) selectItem(key);
+        event.dataTransfer.setData("application/x-onecopy-drag", "selection");
+        event.dataTransfer.effectAllowed = "copyMove";
+      }}
+    >
       <div
         className={`flex h-32 w-40 items-center justify-center overflow-hidden rounded border ${
           isSelected ? "border-primary-ring ring-2 ring-primary-ring" : "border-border"
