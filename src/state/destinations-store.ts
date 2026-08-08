@@ -166,7 +166,12 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       let skipped = 0;
       let handled = 0;
       const conflicts: string[] = [];
+      let done = 0;
       for (const item of targets) {
+        done += 1;
+        if (targets.length > 1) {
+          set({ message: `Working… ${done}/${targets.length}` });
+        }
         const outcome = await invoke<MoveOutOutcome>("move_item_out", {
           hash: item.hash,
           pathId: item.hash === null ? item.pathId : null,

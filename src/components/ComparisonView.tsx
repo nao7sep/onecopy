@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import ComparisonSlot from "./ComparisonSlot";
+import ZoomableImage from "./ZoomableImage";
 import {
   SLOT_KEYS,
   chunkSlots,
@@ -23,10 +24,20 @@ export default function ComparisonView() {
   const toggleKeep = useComparisonStore((s) => s.toggleKeep);
   const commitTurn = useComparisonStore((s) => s.commitTurn);
   const close = useComparisonStore((s) => s.close);
+  const [enlarged, setEnlarged] = useState<{ hash: string; name: string } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (enlarged !== null) {
+        // The enlarged overlay owns the keyboard: Escape returns to the
+        // slots; Z falls through to the zoom toggle.
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setEnlarged(null);
+        }
+        return;
+      }
       const key = event.key.toLowerCase();
       const slotIndex = (SLOT_KEYS as readonly string[]).indexOf(key);
       if (slotIndex >= 0) {
@@ -44,7 +55,11 @@ export default function ComparisonView() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, toggleKeep, commitTurn, close]);
+  }, [open, enlarged, toggleKeep, commitTurn, close]);
+
+  useEffect(() => {
+    if (!open) setEnlarged(null);
+  }, [open]);
 
   if (!open) return null;
 
@@ -79,6 +94,9 @@ export default function ComparisonView() {
             slotKey={slot.slotKey}
             kept={slot.kept}
             onToggle={() => toggleKeep(index)}
+            onEnlarge={() =>
+              setEnlarged({ hash: slot.member.hash, name: slot.member.fileName })
+            }
           />
         ))}
         {perChunk === 0 ? (
@@ -89,6 +107,16 @@ export default function ComparisonView() {
         <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
           Working…
         </footer>
+      ) : null}
+      {enlarged !== null ? (
+        <div className="absolute inset-0 z-10 flex flex-col bg-background">
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
+            <ZoomableImage hash={enlarged.hash} fileName={enlarged.name} />
+          </div>
+          <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
+            {enlarged.name} · Z: 100% · Escape: back to the slots
+          </footer>
+        </div>
       ) : null}
     </div>
   );

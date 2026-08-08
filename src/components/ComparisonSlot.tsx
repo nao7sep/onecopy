@@ -10,11 +10,13 @@ export default function ComparisonSlot({
   slotKey,
   kept,
   onToggle,
+  onEnlarge,
 }: {
   member: GroupMember;
   slotKey: string;
   kept: boolean;
   onToggle: () => void;
+  onEnlarge?: () => void;
 }) {
   return (
     <figure
@@ -22,6 +24,8 @@ export default function ComparisonSlot({
         kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
       }`}
       onClick={onToggle}
+      onDoubleClick={onEnlarge}
+      title="Click: keep · double-click: enlarge"
     >
       <div className="flex h-64 items-center justify-center overflow-hidden">
         <img
