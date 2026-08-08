@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
-import { loadAppData, saveState, log, toErrorFields } from "./repositories";
-import type { LoadedAppData } from "./repositories";
+import { saveState } from "./repositories";
+import { useAppStore } from "./state/app-store";
 import {
   ZOOM_DEFAULT,
   isZoomIn,
@@ -19,13 +19,14 @@ import { monthLabel, type MonthSection } from "./models/sections";
 import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
 import DestinationsTab from "./components/DestinationsTab";
-import { useDestinationsStore } from "./state/destinations-store";
 import Wizard from "./components/Wizard";
 import PresenceGate from "./components/PresenceGate";
 import ComparisonView from "./components/ComparisonView";
 import IssuesView from "./components/IssuesView";
 import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
+import SettingsModal from "./components/SettingsModal";
+import { useSettingsStore } from "./state/settings-store";
 import { isHelpShortcut } from "./utils/shortcuts";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
@@ -83,8 +84,8 @@ function SectionList({
 }
 
 export default function App() {
-  const [appData, setAppData] = useState<LoadedAppData | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const appData = useAppStore((s) => s.appData);
+  const loadError = useAppStore((s) => s.loadError);
   const counts = useSectionsStore((s) => s.counts);
   const scanning = useSectionsStore((s) => s.scanning);
   const progress = useSectionsStore((s) => s.progress);
@@ -239,21 +240,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    loadAppData()
-      .then((data) => {
-        setAppData(data);
-        log.info("app data loaded", {
-          dataRoot: data.dataRoot,
-          hasConfig: data.config !== null,
-          hasState: data.state !== null,
-        });
-        void useWizardStore.getState().init(data.config, data.dataRoot);
-        useDestinationsStore.getState().init(data.config);
-      })
-      .catch((error) => {
-        setLoadError(String(error));
-        log.error("app data load failed", toErrorFields(error));
-      });
+    void useAppStore.getState().reload();
     void loadCounts();
     void useIssuesStore.getState().load();
     void useBinariesStore.getState().load();
@@ -275,6 +262,7 @@ export default function App() {
       <ComparisonView />
       <BinariesModal />
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <SettingsModal baseConfig={appData?.config ?? null} />
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
           <SectionList
@@ -391,6 +379,12 @@ export default function App() {
                 : ffmpegState.status === "not-installed"
                   ? "ffmpeg: not installed"
                   : `ffmpeg ${ffmpegState.facts.installedVersion ?? ""}`}
+          </button>
+          <button
+            className="text-ink-muted hover:text-ink"
+            onClick={() => useSettingsStore.getState().openWith(appData?.config ?? null)}
+          >
+            Settings
           </button>
           <button
             className="text-primary hover:text-primary-hover disabled:text-ink-muted"
