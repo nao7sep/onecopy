@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use chrono::TimeZone;
 use chrono_tz::Tz;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
 #[derive(Serialize, Debug, PartialEq, Eq, Clone)]
@@ -103,7 +103,7 @@ pub fn section_counts(conn: &Connection, display_tz: Tz) -> Result<SectionCounts
 /// One grid row: a logical file within a section. `hash` is None for
 /// unhashed unique-size other-files (their identity is the representative
 /// path itself).
-#[derive(Serialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SectionItem {
     pub hash: Option<String>,
@@ -114,6 +114,8 @@ pub struct SectionItem {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub has_thumb: bool,
+    pub similar_group_id: Option<i64>,
+    pub sharpness: Option<f64>,
 }
 
 /// Items of one (kind, month) section, oldest first; `month` is the same key
@@ -133,14 +135,29 @@ pub fn section_items(
                 "SELECT c.hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), COUNT(*), \
                  c.width, c.height, \
                  (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed'), \
-                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END) \
+                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
+                 (SELECT m.group_id FROM similar_group_members m WHERE m.content_hash = c.hash), \
+                 c.sharpness \
                  FROM contents c JOIN paths p ON p.content_hash = c.hash \
                  WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
                  GROUP BY c.hash",
             )
             .map_err(|e| e.to_string())?;
-        let rows: Vec<(String, i64, String, Option<i64>, i64, Option<i64>, Option<i64>, bool, i64)> =
-            stmt.query_map([kind], |r| {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            String,
+            i64,
+            String,
+            Option<i64>,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            bool,
+            i64,
+            Option<i64>,
+            Option<f64>,
+        )> = stmt
+            .query_map([kind], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -151,6 +168,8 @@ pub fn section_items(
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -158,7 +177,9 @@ pub fn section_items(
             .collect();
         drop(stmt);
 
-        for (hash, path_id, file_name, min_ms, copies, w, h, has_thumb, resolved_count) in rows {
+        for (hash, path_id, file_name, min_ms, copies, w, h, has_thumb, resolved_count, group, sharpness) in
+            rows
+        {
             let item_month = match min_ms {
                 Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
                 _ => "undated".to_string(),
@@ -173,6 +194,8 @@ pub fn section_items(
                     width: w,
                     height: h,
                     has_thumb,
+                    similar_group_id: group,
+                    sharpness,
                 });
             }
         }
@@ -213,6 +236,8 @@ pub fn section_items(
                     width: None,
                     height: None,
                     has_thumb: false,
+                    similar_group_id: None,
+                    sharpness: None,
                 });
             }
         }
@@ -220,6 +245,66 @@ pub fn section_items(
 
     items.sort_by_key(|i| (i.resolved_utc_ms, i.path_id));
     Ok(items)
+}
+
+/// One comparison-view member: enough to render a preview tile and order the
+/// group best-first.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMember {
+    pub hash: String,
+    pub file_name: String,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub sharpness: Option<f64>,
+    pub copy_count: u64,
+    pub has_thumb: bool,
+}
+
+/// Every member of the similar group containing `hash`, best-first by
+/// sharpness (the machine's advisory guess); empty when the item is ungrouped.
+pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember>, String> {
+    let group_id: Option<i64> = conn
+        .query_row(
+            "SELECT group_id FROM similar_group_members WHERE content_hash = ?1",
+            [hash],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(group_id) = group_id else {
+        return Ok(Vec::new());
+    };
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.hash, \
+             (SELECT MIN(p.file_name) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
+             c.width, c.height, c.sharpness, \
+             (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
+             (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed') \
+             FROM similar_group_members m JOIN contents c ON c.hash = m.content_hash \
+             WHERE m.group_id = ?1 \
+             ORDER BY c.sharpness DESC NULLS LAST, c.hash",
+        )
+        .map_err(|e| e.to_string())?;
+    let members: Vec<GroupMember> = stmt
+        .query_map([group_id], |r| {
+            Ok(GroupMember {
+                hash: r.get(0)?,
+                file_name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                width: r.get(2)?,
+                height: r.get(3)?,
+                sharpness: r.get(4)?,
+                copy_count: r.get::<_, i64>(5)?.max(0) as u64,
+                has_thumb: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .filter(|m| m.copy_count > 0)
+        .collect();
+    Ok(members)
 }
 
 /// The metadata pane's view of one logical item: content facts plus every

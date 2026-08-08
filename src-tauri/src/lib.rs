@@ -416,6 +416,21 @@ fn check_source_dirs(app: AppHandle) -> Result<Vec<String>, String> {
     )
 }
 
+// The comparison view's group members for one item, best-first.
+#[tauri::command]
+fn get_similar_group(app: AppHandle, hash: String) -> Result<Vec<queries::GroupMember>, String> {
+    logging::boundary(
+        "get_similar_group",
+        json!({ "hash": hash }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            queries::similar_group_of(&conn, &hash)
+        },
+        |members| json!({ "members": members.len() }),
+    )
+}
+
 // The metadata pane's detail for one logical item.
 #[tauri::command]
 fn get_item_detail(
@@ -558,6 +573,7 @@ pub fn run() {
             get_section_counts,
             get_section_items,
             get_item_detail,
+            get_similar_group,
             delete_item,
             move_item_out,
             quick_count,

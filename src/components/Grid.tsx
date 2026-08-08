@@ -40,6 +40,14 @@ function Tile({
           ×{item.copyCount}
         </span>
       ) : null}
+      {item.similarGroupId !== null ? (
+        <span
+          className="absolute left-1 top-1 rounded bg-surface-muted px-1 text-xs text-ink"
+          title="Has similar photos — press Enter to compare"
+        >
+          ≈
+        </span>
+      ) : null}
       <figcaption
         className="mt-0.5 w-40 truncate text-xs text-ink-muted"
         title={item.fileName}

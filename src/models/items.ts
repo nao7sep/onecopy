@@ -11,6 +11,8 @@ export interface SectionItem {
   width: number | null;
   height: number | null;
   hasThumb: boolean;
+  similarGroupId: number | null;
+  sharpness: number | null;
 }
 
 // The mediacache protocol serves the hash-keyed cache; convertFileSrc builds

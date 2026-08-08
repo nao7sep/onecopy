@@ -9,7 +9,10 @@ import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
 import Wizard from "./components/Wizard";
 import PresenceGate from "./components/PresenceGate";
+import ComparisonView from "./components/ComparisonView";
 import { useWizardStore } from "./state/wizard-store";
+import { useComparisonStore } from "./state/comparison-store";
+import { itemKey } from "./state/items-store";
 
 // The main-window shell: live left-pane sections, the thumbnail grid for the
 // selected section, and the scan lifecycle in the status bar. The wizard,
@@ -75,11 +78,13 @@ export default function App() {
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
 
-  // Delete/Backspace trash-deletes the selected logical item (every copy);
-  // Shift makes it permanent. Ignored while typing in a form control.
+  // Grid keys: Delete/Backspace trash-deletes the selected logical item
+  // (every copy; Shift = permanent); Enter opens the comparison view when the
+  // selection has similar photos. Ignored while typing in a form control or
+  // while the comparison view owns the keyboard.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (useComparisonStore.getState().open) return;
       const target = event.target as HTMLElement | null;
       if (
         target instanceof HTMLInputElement ||
@@ -88,8 +93,17 @@ export default function App() {
       ) {
         return;
       }
-      event.preventDefault();
-      void useItemsStore.getState().deleteSelected(event.shiftKey);
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        void useItemsStore.getState().deleteSelected(event.shiftKey);
+      } else if (event.key === "Enter") {
+        const { items, selectedItem } = useItemsStore.getState();
+        const item = items.find((i) => itemKey(i) === selectedItem);
+        if (item?.hash && item.similarGroupId !== null) {
+          event.preventDefault();
+          void useComparisonStore.getState().openGroup(item.hash);
+        }
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -126,6 +140,7 @@ export default function App() {
       ) : missingDirs.length > 0 ? (
         <PresenceGate missing={missingDirs} />
       ) : null}
+      <ComparisonView />
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
           <SectionList
