@@ -322,16 +322,41 @@ export default function App() {
           )}
         </main>
         <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-l border-border bg-surface">
-          <div className="flex shrink-0 border-b border-border">
-            {(["details", "destinations"] as const).map((tab) => (
+          {/* One composite tablist: a single tab stop, arrows move and
+              activate (panel swaps are cheap), per the composite-control
+              conventions. */}
+          <div
+            role="tablist"
+            aria-label="Right pane"
+            className="flex shrink-0 border-b border-border"
+          >
+            {(["details", "destinations"] as const).map((tab, index, tabs) => (
               <button
                 key={tab}
+                role="tab"
+                aria-selected={rightTab === tab}
+                tabIndex={rightTab === tab ? 0 : -1}
                 className={`flex-1 px-2 py-1 text-xs ${
                   rightTab === tab
                     ? "border-b-2 border-primary font-semibold text-primary"
                     : "text-ink-muted hover:text-ink"
                 }`}
                 onClick={() => setRightTab(tab)}
+                onKeyDown={(event) => {
+                  const delta =
+                    event.key === "ArrowRight" || event.key === "End"
+                      ? 1
+                      : event.key === "ArrowLeft" || event.key === "Home"
+                        ? -1
+                        : 0;
+                  if (delta === 0) return;
+                  event.preventDefault();
+                  const next = tabs[(index + delta + tabs.length) % tabs.length];
+                  setRightTab(next);
+                  (event.currentTarget.parentElement?.children[
+                    (index + delta + tabs.length) % tabs.length
+                  ] as HTMLElement | undefined)?.focus();
+                }}
               >
                 {tab === "details" ? "Details" : "Destinations"}
               </button>

@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import {
   extLabel,
   formatDuration,
@@ -7,6 +8,10 @@ import {
   type SortOrder,
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
+
+// Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
+const TILE_WIDTH = 160;
+const TILE_GAP = 12;
 
 // The center-pane thumbnail grid. Native lazy loading keeps a large month
 // cheap; every pixel comes from the mediacache protocol, never original files.
@@ -106,11 +111,32 @@ export default function Grid({
   loading: boolean;
 }) {
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
+  const selectedItem = useItemsStore((s) => s.selectedItem);
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
   const sortOrder = useItemsStore((s) => s.sortOrder);
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
+
+  // The grid is ONE composite control: the scroll container is the single tab
+  // stop (active-descendant style — selection state lives in the store, never
+  // in DOM focus), arrows move the selection, Shift+arrows extend it. The
+  // command layer (Delete/Enter in App) reads the same source of truth.
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [columns, setColumns] = useState(1);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const measure = () =>
+      setColumns(
+        Math.max(1, Math.floor((container.clientWidth - TILE_GAP) / (TILE_WIDTH + TILE_GAP))),
+      );
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [loading, items.length]);
+
   if (loading) {
     return <p className="m-auto text-ink-muted">Loading…</p>;
   }
@@ -118,6 +144,45 @@ export default function Grid({
     return <p className="m-auto text-ink-muted">Nothing in this section</p>;
   }
   const sorted = sortItems(items, sortOrder);
+  const sortedKeys = sorted.map(itemKey);
+
+  const onGridKeyDown = (event: React.KeyboardEvent) => {
+    const step =
+      event.key === "ArrowRight"
+        ? 1
+        : event.key === "ArrowLeft"
+          ? -1
+          : event.key === "ArrowDown"
+            ? columns
+            : event.key === "ArrowUp"
+              ? -columns
+              : event.key === "Home"
+                ? Number.NEGATIVE_INFINITY
+                : event.key === "End"
+                  ? Number.POSITIVE_INFINITY
+                  : null;
+    if (step === null) return;
+    event.preventDefault();
+    const current = selectedItem !== null ? sortedKeys.indexOf(selectedItem) : -1;
+    const target = Number.isFinite(step)
+      ? Math.min(Math.max(current < 0 ? 0 : current + (step as number), 0), sortedKeys.length - 1)
+      : step === Number.NEGATIVE_INFINITY
+        ? 0
+        : sortedKeys.length - 1;
+    const key = sortedKeys[target];
+    if (key === undefined) return;
+    if (event.shiftKey) {
+      rangeSelect(sortedKeys, key);
+      useItemsStore.setState({ selectedItem: key });
+    } else {
+      selectItem(key);
+    }
+    // Minimal scroll-into-view for the active tile.
+    containerRef.current
+      ?.querySelector(`[data-item-key="${CSS.escape(key)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-end gap-1 border-b border-border px-3 py-1 text-xs text-ink-muted">
@@ -135,24 +200,34 @@ export default function Grid({
           ))}
         </select>
       </div>
-      <div className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3">
+      <div
+        ref={containerRef}
+        tabIndex={0}
+        role="listbox"
+        aria-label="Section items"
+        aria-multiselectable
+        className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+        onKeyDown={onGridKeyDown}
+      >
         {sorted.map((item) => {
           const key = itemKey(item);
           return (
-            <Tile
-              key={key}
-              item={item}
-              isSelected={selectedKeys.has(key)}
-              onSelect={(event) => {
-                if (event.metaKey || event.ctrlKey) {
-                  toggleItem(key);
-                } else if (event.shiftKey) {
-                  rangeSelect(sorted.map(itemKey), key);
-                } else {
-                  selectItem(key);
-                }
-              }}
-            />
+            <div key={key} data-item-key={key} role="option" aria-selected={selectedKeys.has(key)}>
+              <Tile
+                item={item}
+                isSelected={selectedKeys.has(key)}
+                onSelect={(event) => {
+                  containerRef.current?.focus();
+                  if (event.metaKey || event.ctrlKey) {
+                    toggleItem(key);
+                  } else if (event.shiftKey) {
+                    rangeSelect(sortedKeys, key);
+                  } else {
+                    selectItem(key);
+                  }
+                }}
+              />
+            </div>
           );
         })}
       </div>
