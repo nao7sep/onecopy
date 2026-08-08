@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunkSlots, type GroupMember } from "../../src/state/comparison-store";
+import { chunkSlots, turnSize, type GroupMember } from "../../src/state/comparison-store";
 
 function member(hash: string): GroupMember {
   return {
@@ -16,22 +16,24 @@ function member(hash: string): GroupMember {
 describe("chunkSlots", () => {
   const eight = ["a", "b", "c", "d", "e", "f", "g", "h"].map(member);
 
-  it("keeps one global key space across screens", () => {
-    const chunks = chunkSlots(eight, new Set(), 3);
+  it("keeps one global key space across capacity-weighted screens", () => {
+    // The developer's three-screen layout: a portrait-ish top screen (3) and
+    // two landscape screens (4 each) — but with 8 members the fill is 3/4/1.
+    const chunks = chunkSlots(eight, new Set(), [3, 4, 4]);
     expect(chunks).toHaveLength(3);
     expect(chunks[0].map((s) => s.slotKey)).toEqual(["1", "2", "3"]);
-    expect(chunks[1].map((s) => s.slotKey)).toEqual(["4", "5", "6"]);
-    expect(chunks[2].map((s) => s.slotKey)).toEqual(["7", "8"]);
+    expect(chunks[1].map((s) => s.slotKey)).toEqual(["4", "5", "6", "7"]);
+    expect(chunks[2].map((s) => s.slotKey)).toEqual(["8"]);
   });
 
   it("single screen holds everything", () => {
-    const chunks = chunkSlots(eight, new Set(), 1);
+    const chunks = chunkSlots(eight, new Set(), [16]);
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toHaveLength(8);
   });
 
   it("marks keepers inside the chunks", () => {
-    const chunks = chunkSlots(eight, new Set(["d"]), 2);
+    const chunks = chunkSlots(eight, new Set(["d"]), [4, 4]);
     const flat = chunks.flat();
     expect(flat.find((s) => s.member.hash === "d")?.kept).toBe(true);
     expect(flat.filter((s) => s.kept)).toHaveLength(1);
@@ -39,9 +41,16 @@ describe("chunkSlots", () => {
 
   it("letters appear past slot ten", () => {
     const many = Array.from({ length: 12 }, (_, i) => member(`m${i}`));
-    const chunks = chunkSlots(many, new Set(), 1);
+    const chunks = chunkSlots(many, new Set(), [16]);
     expect(chunks[0][9].slotKey).toBe("0");
     expect(chunks[0][10].slotKey).toBe("a");
     expect(chunks[0][11].slotKey).toBe("b");
+  });
+
+  it("turn size is the capacity sum capped by the sixteen keys", () => {
+    expect(turnSize([3, 4, 4])).toBe(11);
+    expect(turnSize([16])).toBe(16);
+    expect(turnSize([9, 9])).toBe(16);
+    expect(turnSize([])).toBe(1);
   });
 });

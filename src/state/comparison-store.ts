@@ -44,50 +44,65 @@ interface ComparisonState {
   busy: boolean;
   /** Secondary comparison windows currently open (monitors beyond the first). */
   spreadCount: number;
+  /** Per-screen slot capacities (screen 0 = the main window). The turn size is
+   * their sum, capped by the 16 slot keys. */
+  capacities: number[];
   openGroup: (hash: string) => Promise<void>;
   toggleKeep: (slotIndex: number) => void;
   commitTurn: (permanent: boolean) => Promise<void>;
   close: () => void;
 }
 
-/** Chunks the slots across 1 + spreadCount screens, contiguous and even. */
+/** Chunks the slots across screens by their capacities, contiguous, keeping
+ * ONE global key space (the design's 3-vertical / 4-horizontal per screen). */
 export function chunkSlots(
   slots: GroupMember[],
   kept: Set<string>,
-  screens: number,
+  capacities: number[],
 ): ComparisonBroadcast["chunks"] {
-  const total = Math.max(1, screens);
-  const per = Math.ceil(slots.length / total);
+  const caps = capacities.length > 0 ? capacities : [slots.length];
   const chunks: ComparisonBroadcast["chunks"] = [];
-  for (let s = 0; s < total; s += 1) {
+  let offset = 0;
+  for (const capacity of caps) {
     chunks.push(
-      slots.slice(s * per, (s + 1) * per).map((member, i) => ({
+      slots.slice(offset, offset + capacity).map((member, i) => ({
         member,
-        slotKey: SLOT_KEYS[s * per + i] ?? "?",
+        slotKey: SLOT_KEYS[offset + i] ?? "?",
         kept: kept.has(member.hash),
       })),
     );
+    offset += capacity;
   }
   return chunks;
 }
 
+export function turnSize(capacities: number[]): number {
+  const sum = capacities.reduce((a, b) => a + b, 0);
+  return Math.min(SLOT_KEYS.length, Math.max(1, sum));
+}
+
 function broadcast(): void {
-  const { slots, kept, queue, spreadCount } = useComparisonStore.getState();
+  const { slots, kept, queue, capacities } = useComparisonStore.getState();
   const payload: ComparisonBroadcast = {
-    chunks: chunkSlots(slots, kept, 1 + spreadCount),
+    chunks: chunkSlots(slots, kept, capacities),
     queueCount: queue.length,
   };
   void emit("comparison://state", payload);
 }
 
 // Spreads the comparison across every extra monitor: one fullscreen window
-// per monitor beyond the first. Best-effort — a machine with one monitor
-// simply keeps the single-window form.
+// per monitor beyond the first, capacities per the design's rule of thumb —
+// four slots on a landscape screen, three on a portrait one. Best-effort — a
+// machine with one monitor keeps the single-window form and all 16 keys.
 async function openSpread(): Promise<void> {
   try {
     const monitors = await availableMonitors();
     const extras = Math.max(0, monitors.length - 1);
-    useComparisonStore.setState({ spreadCount: extras });
+    const capacities =
+      extras === 0
+        ? [SLOT_KEYS.length]
+        : monitors.map((m) => (m.size.width >= m.size.height ? 4 : 3));
+    useComparisonStore.setState({ spreadCount: extras, capacities });
     for (let i = 0; i < extras; i += 1) {
       const label = `comparison-${i + 1}`;
       const existing = await WebviewWindow.getByLabel(label);
@@ -106,7 +121,7 @@ async function openSpread(): Promise<void> {
     }
   } catch (error) {
     log.warn("comparison spread failed; staying single-window", toErrorFields(error));
-    useComparisonStore.setState({ spreadCount: 0 });
+    useComparisonStore.setState({ spreadCount: 0, capacities: [SLOT_KEYS.length] });
   }
 }
 
@@ -133,18 +148,21 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   kept: new Set<string>(),
   busy: false,
   spreadCount: 0,
+  capacities: [SLOT_KEYS.length],
 
   openGroup: async (hash) => {
     try {
       const members = await invoke<GroupMember[]>("get_similar_group", { hash });
       if (members.length < 2) return; // ungrouped items open nothing
+      // Spread first: the screens' capacities decide the turn size.
+      await openSpread();
+      const size = turnSize(get().capacities);
       set({
         open: true,
-        slots: members.slice(0, SLOT_KEYS.length),
-        queue: members.slice(SLOT_KEYS.length),
+        slots: members.slice(0, size),
+        queue: members.slice(size),
         kept: new Set<string>(),
       });
-      await openSpread();
       broadcast();
     } catch (error) {
       log.error("similar group load failed", toErrorFields(error));
@@ -184,7 +202,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // Keepers stay pinned; freed slots refill from the queue. A no-keeper
       // commit skips the whole turn (those photos remain in the app).
       const survivors = kept.size > 0 ? keepers : [];
-      const room = SLOT_KEYS.length - survivors.length;
+      const room = turnSize(get().capacities) - survivors.length;
       const incoming = queue.slice(0, room);
       const nextQueue = queue.slice(room);
       const nextSlots = [...survivors, ...incoming];

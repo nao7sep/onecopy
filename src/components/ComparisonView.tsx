@@ -19,6 +19,7 @@ export default function ComparisonView() {
   const kept = useComparisonStore((s) => s.kept);
   const busy = useComparisonStore((s) => s.busy);
   const spreadCount = useComparisonStore((s) => s.spreadCount);
+  const capacities = useComparisonStore((s) => s.capacities);
   const toggleKeep = useComparisonStore((s) => s.toggleKeep);
   const commitTurn = useComparisonStore((s) => s.commitTurn);
   const close = useComparisonStore((s) => s.close);
@@ -47,7 +48,7 @@ export default function ComparisonView() {
 
   if (!open) return null;
 
-  const chunks = chunkSlots(slots, kept, 1 + spreadCount);
+  const chunks = chunkSlots(slots, kept, capacities);
   const localChunk = chunks[0] ?? [];
   const perChunk = localChunk.length;
 
