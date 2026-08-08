@@ -23,8 +23,12 @@ import { useDestinationsStore } from "./state/destinations-store";
 import Wizard from "./components/Wizard";
 import PresenceGate from "./components/PresenceGate";
 import ComparisonView from "./components/ComparisonView";
+import IssuesView from "./components/IssuesView";
+import BinariesModal from "./components/BinariesModal";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
+import { useIssuesStore } from "./state/issues-store";
+import { useBinariesStore } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
 
 // The main-window shell: live left-pane sections, the thumbnail grid for the
@@ -88,9 +92,21 @@ export default function App() {
   const items = useItemsStore((s) => s.items);
   const itemsLoading = useItemsStore((s) => s.loading);
   const detail = useItemsStore((s) => s.detail);
+  const selectedItemKey = useItemsStore((s) => s.selectedItem);
+  const selectedHash =
+    selectedItemKey !== null && !selectedItemKey.startsWith("path-")
+      ? selectedItemKey
+      : null;
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
   const [rightTab, setRightTab] = useState<"details" | "destinations">("details");
+  const issuesOpen = useIssuesStore((s) => s.open);
+  const issuesTotal = useIssuesStore((s) => s.total);
+  const setIssuesOpen = useIssuesStore((s) => s.setOpen);
+  const ffmpegState = useBinariesStore((s) => s.state);
+  const binariesInstalling = useBinariesStore((s) => s.installing);
+  const binariesProgress = useBinariesStore((s) => s.progress);
+  const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
 
   // App chrome: the derived window minimum, applied once at startup; zoom is
   // persisted app-level STATE (not a preference) on the discrete ladder, with
@@ -185,6 +201,8 @@ export default function App() {
         log.error("app data load failed", toErrorFields(error));
       });
     void loadCounts();
+    void useIssuesStore.getState().load();
+    void useBinariesStore.getState().load();
   }, [loadCounts]);
 
   const allEmpty =
@@ -201,6 +219,7 @@ export default function App() {
         <PresenceGate missing={missingDirs} />
       ) : null}
       <ComparisonView />
+      <BinariesModal />
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
           <SectionList
@@ -221,10 +240,24 @@ export default function App() {
             sections={counts?.others ?? []}
             emptyLabel="No other files"
           />
+          <button
+            className={`mt-2 w-full rounded px-1 py-0.5 text-left text-sm ${
+              issuesOpen
+                ? "bg-danger-surface text-danger"
+                : issuesTotal > 0
+                  ? "text-danger hover:bg-danger-surface"
+                  : "text-ink-muted hover:bg-surface-muted"
+            }`}
+            onClick={() => setIssuesOpen(!issuesOpen)}
+          >
+            Issues ({issuesTotal})
+          </button>
         </aside>
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {loadError !== null ? (
             <p className="m-auto text-danger">{loadError}</p>
+          ) : issuesOpen ? (
+            <IssuesView />
           ) : selected !== null ? (
             <Grid items={items} loading={itemsLoading} />
           ) : allEmpty ? (
@@ -251,7 +284,7 @@ export default function App() {
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {rightTab === "details" ? (
-              <MetadataPane detail={detail} />
+              <MetadataPane detail={detail} hash={selectedHash} />
             ) : (
               <DestinationsTab />
             )}
@@ -262,6 +295,23 @@ export default function App() {
         <span>OneCopy {__APP_VERSION__}</span>
         <span>{scanning ? progress : ""}</span>
         <span className="flex items-center gap-3">
+          <button
+            className={
+              ffmpegState?.status === "not-installed"
+                ? "text-danger hover:underline"
+                : "text-ink-muted hover:text-ink"
+            }
+            title="Managed tools"
+            onClick={() => setBinariesModalOpen(true)}
+          >
+            {binariesInstalling
+              ? binariesProgress
+              : ffmpegState === null
+                ? "ffmpeg: …"
+                : ffmpegState.status === "not-installed"
+                  ? "ffmpeg: not installed"
+                  : `ffmpeg ${ffmpegState.facts.installedVersion ?? ""}`}
+          </button>
           <button
             className="text-primary hover:text-primary-hover disabled:text-ink-muted"
             disabled={scanning}

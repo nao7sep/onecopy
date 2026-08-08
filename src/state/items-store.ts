@@ -23,6 +23,7 @@ export interface ItemDetail {
   dateOnly: boolean;
   copyPaths: string[];
   companionPaths: string[];
+  stripFrames: number | null;
 }
 
 /** The grid's stable identity for a logical item. */

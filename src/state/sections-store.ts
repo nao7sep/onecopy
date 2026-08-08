@@ -58,9 +58,13 @@ void (async () => {
     await listen("scan://done", () => {
       useSectionsStore.setState({ scanning: false, progress: "" });
       void useSectionsStore.getState().loadCounts();
-      // The open section may have gained or lost items.
+      // The open section may have gained or lost items; the issues count may
+      // have grown.
       void import("./items-store").then(({ useItemsStore }) =>
         useItemsStore.getState().refresh(),
+      );
+      void import("./issues-store").then(({ useIssuesStore }) =>
+        useIssuesStore.getState().load(),
       );
     });
     await listen<{ message: string }>("scan://error", (event) => {

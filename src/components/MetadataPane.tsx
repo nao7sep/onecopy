@@ -1,3 +1,4 @@
+import { stripUrl } from "../models/items";
 import type { ItemDetail } from "../state/items-store";
 
 // The right pane's metadata tab: content facts, the resolved capture time
@@ -35,7 +36,13 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-export default function MetadataPane({ detail }: { detail: ItemDetail | null }) {
+export default function MetadataPane({
+  detail,
+  hash,
+}: {
+  detail: ItemDetail | null;
+  hash: string | null;
+}) {
   if (detail === null) {
     return <p className="p-3 text-sm text-ink-muted">No selection</p>;
   }
@@ -44,6 +51,22 @@ export default function MetadataPane({ detail }: { detail: ItemDetail | null }) 
       <Row label="Name" value={detail.fileName} />
       <Row label="Taken" value={formatTaken(detail)} />
       <Row label="Size" value={formatBytes(detail.byteSize)} />
+      {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
+        <div className="mb-2">
+          <dt className="text-xs text-ink-muted">Snapshots</dt>
+          <dd className="mt-1 flex flex-col gap-1">
+            {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => (
+              <img
+                key={i}
+                src={stripUrl(hash, i)}
+                alt={`snapshot ${i + 1}`}
+                loading="lazy"
+                className="w-full rounded border border-border"
+              />
+            ))}
+          </dd>
+        </div>
+      ) : null}
       {detail.width !== null && detail.height !== null ? (
         <Row label="Dimensions" value={`${detail.width} × ${detail.height}`} />
       ) : null}

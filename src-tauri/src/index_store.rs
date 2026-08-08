@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS contents (
   height          INTEGER,
   duration_ms     INTEGER,
   sharpness       REAL,
+  strip_frames    INTEGER,
   derived_at_utc  TEXT
 );
 

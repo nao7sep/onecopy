@@ -15,6 +15,7 @@ function item(overrides: Partial<SectionItem>): SectionItem {
     sharpness: null,
     byteSize: null,
     hasCompanions: false,
+    durationMs: null,
     ...overrides,
   };
 }

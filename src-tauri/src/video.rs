@@ -170,8 +170,13 @@ pub fn derive_videos_pending(
                 stats.derived += 1;
                 conn.execute(
                     "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
-                     derived_at_utc = ?3 WHERE hash = ?1",
-                    params![hash, duration_ms as i64, logging::now_iso_millis()],
+                     strip_frames = ?3, derived_at_utc = ?4 WHERE hash = ?1",
+                    params![
+                        hash,
+                        duration_ms as i64,
+                        strip_frame_count(duration_ms, strip) as i64,
+                        logging::now_iso_millis()
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
             }

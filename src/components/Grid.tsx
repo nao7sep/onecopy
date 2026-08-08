@@ -1,5 +1,6 @@
 import {
   extLabel,
+  formatDuration,
   sortItems,
   thumbUrl,
   type SectionItem,
@@ -52,6 +53,11 @@ function Tile({
           title="Has similar photos — press Enter to compare"
         >
           ≈
+        </span>
+      ) : null}
+      {item.durationMs !== null ? (
+        <span className="absolute bottom-7 left-1 rounded bg-surface-muted px-1 text-xs text-ink">
+          {formatDuration(item.durationMs)}
         </span>
       ) : null}
       {item.hasCompanions ? (

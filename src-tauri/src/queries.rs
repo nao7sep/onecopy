@@ -118,6 +118,7 @@ pub struct SectionItem {
     pub sharpness: Option<f64>,
     pub byte_size: Option<i64>,
     pub has_companions: bool,
+    pub duration_ms: Option<i64>,
 }
 
 /// Items of one (kind, month) section, oldest first; `month` is the same key
@@ -141,7 +142,8 @@ pub fn section_items(
                  (SELECT m.group_id FROM similar_group_members m WHERE m.content_hash = c.hash), \
                  c.sharpness, c.byte_size, \
                  EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
-                         WHERE pri.content_hash = c.hash AND comp.missing = 0) \
+                         WHERE pri.content_hash = c.hash AND comp.missing = 0), \
+                 c.duration_ms \
                  FROM contents c JOIN paths p ON p.content_hash = c.hash \
                  WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
                  GROUP BY c.hash",
@@ -162,6 +164,7 @@ pub fn section_items(
             Option<f64>,
             Option<i64>,
             bool,
+            Option<i64>,
         )> = stmt
             .query_map([kind], |r| {
                 Ok((
@@ -178,6 +181,7 @@ pub fn section_items(
                     r.get(10)?,
                     r.get(11)?,
                     r.get(12)?,
+                    r.get(13)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -199,6 +203,7 @@ pub fn section_items(
             sharpness,
             byte_size,
             has_companions,
+            duration_ms,
         ) in rows
         {
             let item_month = match min_ms {
@@ -219,6 +224,7 @@ pub fn section_items(
                     sharpness,
                     byte_size,
                     has_companions,
+                    duration_ms,
                 });
             }
         }
@@ -272,6 +278,7 @@ pub fn section_items(
                     sharpness: None,
                     byte_size,
                     has_companions: false,
+                    duration_ms: None,
                 });
             }
         }
@@ -358,6 +365,7 @@ pub struct ItemDetail {
     pub date_only: bool,
     pub copy_paths: Vec<String>,
     pub companion_paths: Vec<String>,
+    pub strip_frames: Option<i64>,
 }
 
 pub fn item_detail(
@@ -405,15 +413,16 @@ pub fn item_detail(
         return Err("item not found".to_string());
     };
 
-    let (width, height, duration_ms, byte_size) = match hash {
+    let (width, height, duration_ms, byte_size, strip_frames) = match hash {
         Some(hash) => conn
             .query_row(
-                "SELECT width, height, duration_ms, byte_size FROM contents WHERE hash = ?1",
+                "SELECT width, height, duration_ms, byte_size, strip_frames \
+                 FROM contents WHERE hash = ?1",
                 [hash],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
-            .unwrap_or((None, None, None, first.4)),
-        None => (None, None, None, first.4),
+            .unwrap_or((None, None, None, first.4, None)),
+        None => (None, None, None, first.4, None),
     };
 
     let id_list = copies
@@ -446,7 +455,46 @@ pub fn item_detail(
         date_only: first.7 != 0,
         copy_paths: copies.iter().map(|c| c.1.clone()).collect(),
         companion_paths,
+        strip_frames,
     })
+}
+
+/// One issues row for the first-class issues surface.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueRow {
+    pub id: i64,
+    pub path: Option<String>,
+    pub kind: String,
+    pub message: Option<String>,
+    pub created_at_utc: String,
+}
+
+/// Newest first, capped; the count comes with it for the left-pane entry.
+pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), String> {
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, path, kind, message, created_at_utc FROM issues \
+             ORDER BY id DESC LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<IssueRow> = stmt
+        .query_map([limit], |r| {
+            Ok(IssueRow {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                kind: r.get(2)?,
+                message: r.get(3)?,
+                created_at_utc: r.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok((total.max(0) as u64, rows))
 }
 
 #[allow(clippy::type_complexity)]

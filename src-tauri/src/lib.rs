@@ -457,6 +457,23 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
     )
 }
 
+// The first-class issues surface: unreadable files, decode failures,
+// copies-disagree anomalies, delete/copy errors — a silent skip never happens.
+#[tauri::command]
+fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, String> {
+    logging::boundary(
+        "get_issues",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let (total, rows) = queries::issues(&conn, limit.unwrap_or(500))?;
+            Ok(json!({ "total": total, "rows": rows }))
+        },
+        |v| json!({ "total": v.get("total") }),
+    )
+}
+
 // Managed ffmpeg: presence + facts + derived status.
 #[tauri::command]
 fn binaries_state(app: AppHandle) -> Result<binaries_manager::FfmpegState, String> {
@@ -748,6 +765,7 @@ pub fn run() {
             delete_empty_dir,
             dir_is_empty,
             re_resolve_all,
+            get_issues,
             binaries_state,
             binaries_install,
             binaries_check,

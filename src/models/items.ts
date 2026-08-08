@@ -15,6 +15,7 @@ export interface SectionItem {
   sharpness: number | null;
   byteSize: number | null;
   hasCompanions: boolean;
+  durationMs: number | null;
 }
 
 export type SortOrder = "time" | "name" | "size" | "resolution";
@@ -55,6 +56,22 @@ export function thumbUrl(hash: string): string {
 
 export function previewUrl(hash: string): string {
   return convertFileSrc(`preview-${hash}`, "mediacache");
+}
+
+export function stripUrl(hash: string, index: number): string {
+  return convertFileSrc(`strip-${hash}-${index}`, "mediacache");
+}
+
+/** `m:ss` / `h:mm:ss` for duration badges. */
+export function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.round(durationMs / 1000);
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600);
+  const two = (n: number) => n.toString().padStart(2, "0");
+  return hours > 0
+    ? `${hours}:${two(minutes)}:${two(seconds)}`
+    : `${minutes}:${two(seconds)}`;
 }
 
 /** Uppercased extension for the no-thumbnail placeholder tile. */
