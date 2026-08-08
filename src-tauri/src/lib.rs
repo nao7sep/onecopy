@@ -17,6 +17,7 @@ pub mod resolution;
 pub mod scanner;
 pub mod storage;
 pub mod timestamps;
+pub mod trash;
 
 // Records the panic payload, location, and (when RUST_BACKTRACE is set) the
 // backtrace, flushes, then defers to the previous hook so the process still
