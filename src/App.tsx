@@ -1,7 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
-import { loadAppData, log, toErrorFields } from "./repositories";
+import { loadAppData, saveState, log, toErrorFields } from "./repositories";
 import type { LoadedAppData } from "./repositories";
+import {
+  ZOOM_DEFAULT,
+  isZoomIn,
+  isZoomOut,
+  isZoomReset,
+  stepZoomIn,
+  stepZoomOut,
+} from "./utils/zoom";
+import { computeMinWindowHeight, computeMinWindowWidth } from "./utils/windowSizing";
 import { useSectionsStore } from "./state/sections-store";
 import { useItemsStore, type SelectedSection } from "./state/items-store";
 import { monthLabel, type MonthSection } from "./models/sections";
@@ -80,6 +91,51 @@ export default function App() {
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
   const [rightTab, setRightTab] = useState<"details" | "destinations">("details");
+
+  // App chrome: the derived window minimum, applied once at startup; zoom is
+  // persisted app-level STATE (not a preference) on the discrete ladder, with
+  // cross-layout shortcut detection (JIS ";" included). Failures degrade
+  // silently in the browser-dev case where no Tauri window exists.
+  useEffect(() => {
+    void getCurrentWindow()
+      .setMinSize(new LogicalSize(computeMinWindowWidth(), computeMinWindowHeight()))
+      .catch(() => {});
+  }, []);
+
+  const zoomRef = useRef(ZOOM_DEFAULT);
+
+  useEffect(() => {
+    if (appData === null) return;
+    const stored = appData.state?.zoomLevel;
+    const level = typeof stored === "number" ? stored : ZOOM_DEFAULT;
+    zoomRef.current = level;
+    if (level !== ZOOM_DEFAULT) {
+      void getCurrentWebview().setZoom(level).catch(() => {});
+    }
+  }, [appData]);
+
+  useEffect(() => {
+    const onZoomKey = (event: KeyboardEvent) => {
+      const zoomIn = isZoomIn(event);
+      const zoomOut = isZoomOut(event);
+      const zoomReset = isZoomReset(event);
+      if (!zoomIn && !zoomOut && !zoomReset) return;
+      event.preventDefault();
+      const next = zoomReset
+        ? ZOOM_DEFAULT
+        : zoomIn
+          ? stepZoomIn(zoomRef.current)
+          : stepZoomOut(zoomRef.current);
+      zoomRef.current = next;
+      void (async () => {
+        await getCurrentWebview().setZoom(next).catch(() => {});
+        const state = { ...(appData?.state ?? {}), zoomLevel: next };
+        await saveState(state).catch(() => {});
+      })();
+    };
+    window.addEventListener("keydown", onZoomKey);
+    return () => window.removeEventListener("keydown", onZoomKey);
+  }, [appData]);
 
   // Grid keys: Delete/Backspace trash-deletes the selected logical item
   // (every copy; Shift = permanent); Enter opens the comparison view when the
