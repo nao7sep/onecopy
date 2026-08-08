@@ -44,10 +44,14 @@ pub struct ScanSettings {
     pub lists: ScanLists,
     pub resolution: ResolutionConfig,
     pub similarity: crate::similarity::SimilarityConfig,
+    pub strip: crate::video::StripConfig,
     pub thumb_edge: u32,
     pub preview_long_edge: u32,
     pub keep_awake: bool,
     pub cache_root: std::path::PathBuf,
+    /// The managed ffmpeg when present on disk; None leaves videos underived.
+    pub ffmpeg: Option<std::path::PathBuf>,
+    pub temp_dir: std::path::PathBuf,
 }
 
 pub fn settings_from_config(
@@ -110,6 +114,19 @@ pub fn settings_from_config(
                 defaults.similarity_phash_max_distance,
             ),
         },
+        strip: crate::video::StripConfig {
+            seconds_per_frame: u32_of(
+                "videoStripSecondsPerFrame",
+                defaults.video_strip_seconds_per_frame,
+            ),
+            min_frames: u32_of("videoStripMinFrames", defaults.video_strip_min_frames),
+            max_frames: u32_of("videoStripMaxFrames", defaults.video_strip_max_frames),
+        },
+        ffmpeg: {
+            let path = crate::binaries_manager::ffmpeg_path(data_root);
+            path.is_file().then_some(path)
+        },
+        temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
         preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
         keep_awake: get("keepAwakeDuringIndexing")
@@ -146,6 +163,7 @@ pub struct ScanSummary {
     pub paired: u64,
     pub derived: u64,
     pub derive_failed: u64,
+    pub videos_derived: u64,
     pub similar_groups: u64,
 }
 
@@ -207,6 +225,28 @@ pub fn run_full_scan(
     progress(
         "derive",
         format!("{} previews, {} failures", derive_stats.derived, derive_stats.failed),
+    );
+
+    let video_stats = crate::video::derive_videos_pending(
+        conn,
+        &cache,
+        settings.ffmpeg.as_deref(),
+        &settings.temp_dir,
+        settings.thumb_edge,
+        settings.preview_long_edge,
+        &settings.strip,
+    )?;
+    summary.videos_derived = video_stats.derived;
+    progress(
+        "video",
+        if video_stats.skipped_no_ffmpeg {
+            "ffmpeg not installed — videos left for a later scan".to_string()
+        } else {
+            format!(
+                "{} posters+strips, {} failures",
+                video_stats.derived, video_stats.failed
+            )
+        },
     );
 
     let group_stats = crate::similarity::rebuild_groups(conn, &settings.similarity)?;

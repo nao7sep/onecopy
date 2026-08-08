@@ -22,6 +22,7 @@ pub mod similarity;
 pub mod storage;
 pub mod timestamps;
 pub mod trash;
+pub mod video;
 
 // Records the panic payload, location, and (when RUST_BACKTRACE is set) the
 // backtrace, flushes, then defers to the previous hook so the process still
@@ -140,6 +141,15 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
         cache.thumb(hash)
     } else if let Some(hash) = path.strip_prefix("preview-") {
         cache.preview(hash)
+    } else if let Some(rest) = path.strip_prefix("strip-") {
+        // strip-<hash>-<index>
+        match rest.rsplit_once('-') {
+            Some((hash, index)) => match index.parse::<u32>() {
+                Ok(index) => video::strip_path(&cache, hash, index),
+                Err(_) => return not_found(),
+            },
+            None => return not_found(),
+        }
     } else {
         return not_found();
     };

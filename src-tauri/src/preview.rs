@@ -36,6 +36,10 @@ impl CachePaths {
         CachePaths { root }
     }
 
+    pub fn root_dir(&self) -> &Path {
+        &self.root
+    }
+
     fn shard(hash: &str) -> &str {
         hash.get(0..2).unwrap_or("00")
     }
@@ -294,7 +298,9 @@ fn laplacian_variance(luma: &image::GrayImage) -> f64 {
 
 /// Atomic cache write: temp sibling + rename. not recorded: cache derivative
 /// (binary, reconstructible), outside the managed-text backup path by design.
-fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(), String> {
+/// Public within the crate: the video pipeline funnels strip frames through
+/// this same single WebP encode path.
+pub fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(), String> {
     let parent = target
         .parent()
         .ok_or_else(|| "cache path has no parent".to_string())?;
