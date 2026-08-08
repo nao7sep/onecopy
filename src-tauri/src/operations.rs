@@ -169,6 +169,251 @@ pub fn delete_item(
     Ok(outcome)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MoveOutMode {
+    /// Plain drag: one copy moves out, the remaining copies go to trash.
+    MoveTrashRest,
+    /// Shift: one copy moves out, the remaining copies are deleted permanently.
+    MoveDeleteRest,
+    /// Cmd/Ctrl: a copy is exported; nothing else is touched.
+    CopyKeepAll,
+}
+
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveOutOutcome {
+    pub exported: u64,
+    pub skipped_identical: u64,
+    /// Destination names that exist with DIFFERENT content — surfaced, never
+    /// auto-suffixed; the post-action does not run when a conflict blocks the
+    /// primary.
+    pub conflicts: Vec<String>,
+    pub post_action: DeleteOutcome,
+}
+
+/// Moves or copies one logical item out to `dest_dir`: the primary plus one
+/// instance of each distinct companion, with the verified-copy pipeline —
+/// tee-hash against the indexed hash (a mismatch means the chosen copy rotted;
+/// the next copy is tried and the rotted one becomes an issue), then a
+/// read-back verify of the destination. Collisions: identical content →
+/// skip-as-delivered; different content → conflict, reported, post-action
+/// withheld.
+pub fn move_out(
+    conn: &Connection,
+    app_root: &Path,
+    cache: &CachePaths,
+    item: ItemRef,
+    dest_dir: &Path,
+    mode: MoveOutMode,
+) -> Result<MoveOutOutcome, String> {
+    if !dest_dir.is_dir() {
+        return Err(format!("destination is not a directory: {}", dest_dir.display()));
+    }
+
+    let (copies, expected_hash) = match &item {
+        ItemRef::Hash(hash) => (
+            collect(
+                conn,
+                "SELECT id, abs_path, content_hash FROM paths \
+                 WHERE content_hash = ?1 AND missing = 0 ORDER BY id",
+                params![*hash],
+            )?,
+            Some(hash.to_string()),
+        ),
+        ItemRef::PathId(id) => (
+            collect(
+                conn,
+                "SELECT id, abs_path, content_hash FROM paths WHERE id = ?1 AND missing = 0",
+                params![*id],
+            )?,
+            None,
+        ),
+    };
+    let Some(first) = copies.first() else {
+        return Ok(MoveOutOutcome::default());
+    };
+
+    let mut outcome = MoveOutOutcome::default();
+
+    // The primary lands under its file name; companions land beside it, one
+    // instance per distinct companion file name.
+    let primary_name = Path::new(&first.1)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "copy has no file name".to_string())?
+        .to_string();
+    let primary_delivered = deliver_one(
+        conn,
+        &copies,
+        expected_hash.as_deref(),
+        &dest_dir.join(&primary_name),
+        &mut outcome,
+    )?;
+    if !primary_delivered {
+        // Conflict (or every copy failed): report and leave the world alone.
+        return Ok(outcome);
+    }
+
+    // Companions, grouped by file name (each group's members are copies of
+    // one another in a synced collection; one instance is delivered).
+    let id_list = copies
+        .iter()
+        .map(|(id, _, _)| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let companions: Vec<(i64, String, Option<String>)> = collect(
+        conn,
+        &format!(
+            "SELECT id, abs_path, content_hash FROM paths \
+             WHERE companion_of IN ({id_list}) AND missing = 0 ORDER BY id"
+        ),
+        params![],
+    )?;
+    let mut by_name: std::collections::HashMap<String, Vec<(i64, String, Option<String>)>> =
+        std::collections::HashMap::new();
+    for companion in companions {
+        let name = Path::new(&companion.1)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("companion")
+            .to_lowercase();
+        by_name.entry(name).or_default().push(companion);
+    }
+    for (_name, group) in by_name {
+        let target_name = Path::new(&group[0].1)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("companion")
+            .to_string();
+        let expected = group[0].2.clone();
+        deliver_one(
+            conn,
+            &group,
+            expected.as_deref(),
+            &dest_dir.join(target_name),
+            &mut outcome,
+        )?;
+    }
+
+    // Post-action over the originals (the item + companions as one unit).
+    match mode {
+        MoveOutMode::CopyKeepAll => {}
+        MoveOutMode::MoveTrashRest | MoveOutMode::MoveDeleteRest => {
+            let delete_mode = if mode == MoveOutMode::MoveTrashRest {
+                DeleteMode::Trash
+            } else {
+                DeleteMode::Permanent
+            };
+            outcome.post_action = delete_item(conn, app_root, cache, item, delete_mode)?;
+        }
+    }
+
+    logging::info(
+        "move out",
+        json!({
+            "mode": match mode {
+                MoveOutMode::MoveTrashRest => "move+trash",
+                MoveOutMode::MoveDeleteRest => "move+delete",
+                MoveOutMode::CopyKeepAll => "copy",
+            },
+            "exported": outcome.exported,
+            "conflicts": outcome.conflicts.len(),
+        }),
+    );
+
+    Ok(outcome)
+}
+
+/// Delivers one file (trying each listed copy in order) to `target`. Returns
+/// true when the destination ends up holding the expected content — via a
+/// fresh verified copy or an identical file already there.
+fn deliver_one(
+    conn: &Connection,
+    copies: &[(i64, String, Option<String>)],
+    expected_hash: Option<&str>,
+    target: &Path,
+    outcome: &mut MoveOutOutcome,
+) -> Result<bool, String> {
+    if target.exists() {
+        let existing = crate::hashing::full_hash(target).map_err(|e| e.to_string())?;
+        let matches = match expected_hash {
+            Some(expected) => existing == expected,
+            // Unhashed item: compare against the first copy's actual bytes.
+            None => match copies.first() {
+                Some((_, path, _)) => {
+                    crate::hashing::full_hash(Path::new(path)).map_err(|e| e.to_string())?
+                        == existing
+                }
+                None => false,
+            },
+        };
+        if matches {
+            outcome.skipped_identical += 1;
+            return Ok(true); // already delivered
+        }
+        outcome
+            .conflicts
+            .push(target.to_string_lossy().to_string());
+        return Ok(false);
+    }
+
+    for (_, source_path, _) in copies {
+        let source = Path::new(source_path);
+        match crate::hashing::hash_while_copying(source, target) {
+            Ok((streamed_hash, _bytes)) => {
+                // Source verification is free: the tee hashed what was read.
+                if let Some(expected) = expected_hash {
+                    if streamed_hash != expected {
+                        let _ = std::fs::remove_file(target);
+                        record_rot_issue(conn, source_path, expected, &streamed_hash)?;
+                        continue; // the redundant copies pay off: try the next
+                    }
+                }
+                // Read-back verify of the destination.
+                let read_back = crate::hashing::full_hash(target).map_err(|e| e.to_string())?;
+                if read_back != streamed_hash {
+                    let _ = std::fs::remove_file(target);
+                    return Err(format!(
+                        "destination read-back mismatch at {} (failing storage?)",
+                        target.display()
+                    ));
+                }
+                outcome.exported += 1;
+                return Ok(true);
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(target);
+                conn.execute(
+                    "INSERT INTO issues (path, kind, message, created_at_utc) \
+                     VALUES (?1, 'copy-error', ?2, ?3)",
+                    params![source_path, err.to_string(), logging::now_iso_millis()],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn record_rot_issue(
+    conn: &Connection,
+    source_path: &str,
+    expected: &str,
+    actual: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO issues (path, kind, message, created_at_utc) \
+         VALUES (?1, 'copy-verify-mismatch', ?2, ?3)",
+        params![
+            source_path,
+            format!("indexed {expected} but read {actual} — bit rot or external change"),
+            logging::now_iso_millis()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn collect(
     conn: &Connection,
     sql: &str,
@@ -352,6 +597,184 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.deleted_files, 1);
         assert!(!f.root.join("unique.bin").exists());
+    }
+
+    #[test]
+    fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
+        let f = fixture("moveout");
+        for sub in ["a", "b"] {
+            std::fs::create_dir_all(f.root.join(sub)).unwrap();
+            std::fs::write(f.root.join(sub).join("x.jpg"), b"same-bytes").unwrap();
+            std::fs::write(f.root.join(sub).join("x.arw"), b"raw-bytes").unwrap();
+        }
+        scan(&f);
+        let dest = f._dir.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let hash: String = f
+            .conn
+            .query_row(
+                "SELECT content_hash FROM paths WHERE file_name = 'x.jpg' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        let outcome = move_out(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            ItemRef::Hash(&hash),
+            &dest,
+            MoveOutMode::MoveTrashRest,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.exported, 2, "primary + one companion instance");
+        assert!(outcome.conflicts.is_empty());
+        assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"same-bytes");
+        assert_eq!(std::fs::read(dest.join("x.arw")).unwrap(), b"raw-bytes");
+        // All four originals left their places (post-action trashed them).
+        assert_eq!(outcome.post_action.deleted_files, 4);
+        assert!(!f.root.join("a").join("x.jpg").exists());
+        assert!(!f.root.join("b").join("x.arw").exists());
+        let rows: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "inbox-zero: nothing remains in the index");
+    }
+
+    #[test]
+    fn copy_mode_exports_and_leaves_everything_untouched() {
+        let f = fixture("copy-mode");
+        std::fs::write(f.root.join("keep.jpg"), b"kept-bytes").unwrap();
+        scan(&f);
+        let dest = f._dir.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let hash: String = f
+            .conn
+            .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        let outcome = move_out(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            ItemRef::Hash(&hash),
+            &dest,
+            MoveOutMode::CopyKeepAll,
+        )
+        .unwrap();
+        assert_eq!(outcome.exported, 1);
+        assert_eq!(outcome.post_action.deleted_files, 0);
+        assert!(f.root.join("keep.jpg").exists(), "copy mode never deletes");
+        assert!(dest.join("keep.jpg").exists());
+    }
+
+    #[test]
+    fn identical_destination_skips_but_still_runs_the_post_action() {
+        let f = fixture("identical");
+        std::fs::write(f.root.join("dup.jpg"), b"dup-bytes").unwrap();
+        scan(&f);
+        let dest = f._dir.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("dup.jpg"), b"dup-bytes").unwrap(); // already delivered
+        let hash: String = f
+            .conn
+            .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        let outcome = move_out(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            ItemRef::Hash(&hash),
+            &dest,
+            MoveOutMode::MoveTrashRest,
+        )
+        .unwrap();
+        assert_eq!(outcome.skipped_identical, 1);
+        assert_eq!(outcome.exported, 0);
+        assert_eq!(outcome.post_action.deleted_files, 1, "post-action proceeds");
+        assert!(!f.root.join("dup.jpg").exists());
+    }
+
+    #[test]
+    fn conflicting_destination_blocks_and_withholds_the_post_action() {
+        let f = fixture("conflict");
+        std::fs::write(f.root.join("clash.jpg"), b"mine").unwrap();
+        scan(&f);
+        let dest = f._dir.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("clash.jpg"), b"theirs - different").unwrap();
+        let hash: String = f
+            .conn
+            .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        let outcome = move_out(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            ItemRef::Hash(&hash),
+            &dest,
+            MoveOutMode::MoveTrashRest,
+        )
+        .unwrap();
+        assert_eq!(outcome.conflicts.len(), 1);
+        assert_eq!(outcome.exported, 0);
+        assert_eq!(outcome.post_action.deleted_files, 0, "no destructive follow-up");
+        assert!(f.root.join("clash.jpg").exists(), "originals untouched");
+        assert_eq!(
+            std::fs::read(dest.join("clash.jpg")).unwrap(),
+            b"theirs - different".as_slice(),
+            "the conflicting file is never overwritten"
+        );
+    }
+
+    #[test]
+    fn a_rotted_copy_is_skipped_and_the_next_copy_delivers() {
+        let f = fixture("rot");
+        for sub in ["a", "b"] {
+            std::fs::create_dir_all(f.root.join(sub)).unwrap();
+            std::fs::write(f.root.join(sub).join("r.jpg"), b"healthy-bytes").unwrap();
+        }
+        scan(&f);
+        let hash: String = f
+            .conn
+            .query_row(
+                "SELECT content_hash FROM paths WHERE file_name = 'r.jpg' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Rot copy a AFTER indexing: same length, different bytes.
+        std::fs::write(f.root.join("a").join("r.jpg"), b"rotten!-bytes").unwrap();
+
+        let dest = f._dir.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let outcome = move_out(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            ItemRef::Hash(&hash),
+            &dest,
+            MoveOutMode::CopyKeepAll,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.exported, 1);
+        // The delivered bytes are the healthy ones, never the rotted ones.
+        assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
+        let issues: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM issues WHERE kind = 'copy-verify-mismatch'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(issues, 1, "the rotted copy is surfaced");
     }
 
     #[test]

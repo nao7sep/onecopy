@@ -279,6 +279,64 @@ fn display_timezone() -> chrono_tz::Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
+// Moves or copies one logical item out to a destination directory. Modes:
+// "move-trash-rest" (plain drag), "move-delete-rest" (Shift), "copy" (Cmd/Ctrl).
+// Destinations under a configured source root are rejected — moving files into
+// a scanned directory would only re-index them.
+#[tauri::command]
+fn move_item_out(
+    app: AppHandle,
+    hash: Option<String>,
+    path_id: Option<i64>,
+    dest_dir: String,
+    mode: String,
+) -> Result<operations::MoveOutOutcome, String> {
+    logging::boundary(
+        "move_item_out",
+        json!({ "hash": hash, "pathId": path_id, "destDir": dest_dir, "mode": mode }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let loaded = storage::load_app_data(&app)?;
+            let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+            let dest = std::path::Path::new(&dest_dir);
+            for source in &settings.source_dirs {
+                if dest.starts_with(source) {
+                    return Err(format!(
+                        "destination {dest_dir} lies inside the scanned directory {source}; \
+                         move-out targets must be outside every source directory"
+                    ));
+                }
+            }
+
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let cache_root = CACHE_ROOT
+                .get()
+                .cloned()
+                .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME));
+            let cache = preview::CachePaths::new(cache_root);
+            let item = match (&hash, path_id) {
+                (Some(hash), _) => operations::ItemRef::Hash(hash),
+                (None, Some(id)) => operations::ItemRef::PathId(id),
+                (None, None) => return Err("move_item_out needs a hash or a pathId".to_string()),
+            };
+            let mode = match mode.as_str() {
+                "move-trash-rest" => operations::MoveOutMode::MoveTrashRest,
+                "move-delete-rest" => operations::MoveOutMode::MoveDeleteRest,
+                "copy" => operations::MoveOutMode::CopyKeepAll,
+                other => return Err(format!("unknown move-out mode: {other}")),
+            };
+            operations::move_out(&conn, &data_root, &cache, item, dest, mode)
+        },
+        |outcome| {
+            json!({
+                "exported": outcome.exported,
+                "skipped": outcome.skipped_identical,
+                "conflicts": outcome.conflicts.len(),
+            })
+        },
+    )
+}
+
 // Wizard support: a fast extension-classified count of one directory tree —
 // no stat, no hashing, just names — so an added directory shows its
 // image/video/other numbers while the user is still in the wizard.
@@ -500,6 +558,7 @@ pub fn run() {
             get_section_items,
             get_item_detail,
             delete_item,
+            move_item_out,
             quick_count,
             validate_timezone,
             check_source_dirs,
