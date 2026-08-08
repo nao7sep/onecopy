@@ -1,64 +1,16 @@
 import { useEffect } from "react";
-import { previewUrl } from "../models/items";
+import ComparisonSlot from "./ComparisonSlot";
 import {
   SLOT_KEYS,
+  chunkSlots,
   useComparisonStore,
-  type GroupMember,
 } from "../state/comparison-store";
 
-// The similar-photos comparison surface: every group member at once, one slot
-// key each. Press keys to mark keepers, Enter to commit the turn (trash the
-// rest; Shift+Enter deletes permanently), Escape or Close to leave. This is
-// the single-window form; the multi-screen spread reuses the same store.
-
-function Slot({
-  member,
-  slotKey,
-  kept,
-  onToggle,
-}: {
-  member: GroupMember;
-  slotKey: string;
-  kept: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <figure
-      className={`relative w-[23%] min-w-56 cursor-default rounded border-2 p-1 ${
-        kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
-      }`}
-      onClick={onToggle}
-    >
-      <div className="flex h-64 items-center justify-center overflow-hidden">
-        <img
-          src={previewUrl(member.hash)}
-          alt={member.fileName}
-          className="max-h-full max-w-full object-contain"
-        />
-      </div>
-      <span
-        className={`absolute left-2 top-2 flex h-8 w-8 items-center justify-center rounded text-lg font-bold ${
-          kept ? "bg-primary text-ink-inverted" : "bg-surface-muted text-ink-strong"
-        }`}
-      >
-        {slotKey.toUpperCase()}
-      </span>
-      {member.copyCount > 1 ? (
-        <span className="absolute right-2 top-2 rounded bg-primary-surface px-1 text-xs text-primary">
-          ×{member.copyCount}
-        </span>
-      ) : null}
-      <figcaption className="mt-1 flex justify-between text-xs text-ink-muted">
-        <span className="truncate" title={member.fileName}>
-          {member.fileName}
-        </span>
-        {member.sharpness !== null ? (
-          <span title="Sharpness (advisory)">{Math.round(member.sharpness)}</span>
-        ) : null}
-      </figcaption>
-    </figure>
-  );
-}
+// The similar-photos comparison surface in the main window. With extra
+// monitors the slot list spreads: this surface shows chunk 0 and the
+// per-monitor windows show the rest, all sharing one global key space.
+// Keys mark keepers, Enter commits the turn (trash the rest; Shift+Enter
+// deletes permanently), Escape or Close leaves.
 
 export default function ComparisonView() {
   const open = useComparisonStore((s) => s.open);
@@ -66,6 +18,7 @@ export default function ComparisonView() {
   const queue = useComparisonStore((s) => s.queue);
   const kept = useComparisonStore((s) => s.kept);
   const busy = useComparisonStore((s) => s.busy);
+  const spreadCount = useComparisonStore((s) => s.spreadCount);
   const toggleKeep = useComparisonStore((s) => s.toggleKeep);
   const commitTurn = useComparisonStore((s) => s.commitTurn);
   const close = useComparisonStore((s) => s.close);
@@ -94,6 +47,10 @@ export default function ComparisonView() {
 
   if (!open) return null;
 
+  const chunks = chunkSlots(slots, kept, 1 + spreadCount);
+  const localChunk = chunks[0] ?? [];
+  const perChunk = localChunk.length;
+
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-background">
       <header className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-3 py-2">
@@ -101,6 +58,7 @@ export default function ComparisonView() {
         <div className="flex items-center gap-4 text-xs text-ink-muted">
           <span>
             {kept.size} kept · {slots.length} shown
+            {spreadCount > 0 ? ` across ${spreadCount + 1} screens` : ""}
             {queue.length > 0 ? ` · ${queue.length} waiting` : ""}
           </span>
           <span>Keys 1–9/0/A–F keep · Enter commits (Shift = permanent) · Escape leaves</span>
@@ -113,15 +71,18 @@ export default function ComparisonView() {
         </div>
       </header>
       <div className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3">
-        {slots.map((member, index) => (
-          <Slot
-            key={member.hash}
-            member={member}
-            slotKey={SLOT_KEYS[index] ?? "?"}
-            kept={kept.has(member.hash)}
+        {localChunk.map((slot, index) => (
+          <ComparisonSlot
+            key={slot.member.hash}
+            member={slot.member}
+            slotKey={slot.slotKey}
+            kept={slot.kept}
             onToggle={() => toggleKeep(index)}
           />
         ))}
+        {perChunk === 0 ? (
+          <p className="m-auto text-ink-muted">All slots are on the other screens</p>
+        ) : null}
       </div>
       {busy ? (
         <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">

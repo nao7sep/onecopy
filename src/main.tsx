@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import PreviewWindow from "./windows/PreviewWindow";
+import ComparisonWindow from "./windows/ComparisonWindow";
 import "./App.css";
 import { log, toErrorFields, initLogging } from "./repositories";
 
@@ -25,10 +26,18 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 // One bundle serves every window; the `view` query parameter routes.
-const view = new URLSearchParams(window.location.search).get("view");
+const params = new URLSearchParams(window.location.search);
+const view = params.get("view");
+const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {view === "preview" ? <PreviewWindow /> : <App />}
+    {view === "preview" ? (
+      <PreviewWindow />
+    ) : view === "comparison" ? (
+      <ComparisonWindow slice={slice} />
+    ) : (
+      <App />
+    )}
   </React.StrictMode>,
 );
