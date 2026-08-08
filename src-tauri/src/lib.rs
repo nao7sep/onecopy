@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
+pub mod binaries;
 pub mod extensions;
 pub mod hashing;
 pub mod index_store;

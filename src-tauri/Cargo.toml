@@ -48,6 +48,8 @@ chrono-tz = "0.10.4"
 image = "0.25.10"
 webp = "0.3.1"
 keepawake = "0.6.0"
+ureq = "3.3.0"
+zip = "8.6.0"
 
 [dev-dependencies]
 # Serializes the tests that share the process-global backup-store singleton
