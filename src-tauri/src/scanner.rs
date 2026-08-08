@@ -305,21 +305,22 @@ pub fn hash_pending(conn: &Connection) -> Result<HashStats, String> {
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
-pub struct ResolveStats {
-    pub resolved: u64,
-    pub undated: u64,
+pub struct ExtractStats {
+    pub extracted: u64,
 }
 
-/// Metadata + evidence + resolution over rows not yet resolved. Media rows
-/// read their in-file metadata here (and stash make/model/dimensions onto the
-/// contents row); every row runs the filename tokenizer and the resolver.
-pub fn resolve_pending(conn: &Connection, config: &ResolutionConfig) -> Result<ResolveStats, String> {
-    let mut stats = ResolveStats::default();
+/// The evidence pass: reads in-file metadata (per kind) and runs the filename
+/// tokenizer for rows not yet extracted, persisting each finding as a
+/// serialized evidence row. This is the ONLY place resolution inputs touch a
+/// file; after it, timezone/good-range/pattern changes re-resolve purely from
+/// the DB.
+pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
+    let mut stats = ExtractStats::default();
 
     let rows: Vec<(i64, String, String, String)> = collect_rows_4(
         conn,
         "SELECT id, abs_path, file_name, kind FROM paths \
-         WHERE missing = 0 AND resolved_source IS NULL",
+         WHERE missing = 0 AND indexed_at_utc IS NULL",
     )?;
 
     for (id, abs, file_name, kind) in rows {
@@ -332,37 +333,127 @@ pub fn resolve_pending(conn: &Connection, config: &ResolutionConfig) -> Result<R
             _ => None,
         };
 
-        if let Some(meta) = &meta {
-            store_media_facts(conn, id, meta)?;
-        }
-
-        let filename_ts = timestamps::from_filename(&file_name);
-        let (mtime_ms, birthtime_ms): (Option<i64>, Option<i64>) = conn
-            .query_row(
-                "SELECT mtime_ms, birthtime_ms FROM paths WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+        // Re-extraction replaces this path's evidence wholesale.
+        conn.execute("DELETE FROM evidence WHERE path_id = ?1", [id])
             .map_err(|e| e.to_string())?;
 
-        match resolution::resolve(
-            meta.and_then(|m| m.taken),
-            filename_ts,
-            mtime_ms,
-            birthtime_ms,
-            config,
-        ) {
+        if let Some(meta) = &meta {
+            store_media_facts(conn, id, meta)?;
+            if let Some(taken) = meta.taken {
+                let raw = serde_json::to_string(&taken).map_err(|e| e.to_string())?;
+                conn.execute(
+                    "INSERT INTO evidence (path_id, source, raw, offset_known) \
+                     VALUES (?1, 'metadata', ?2, ?3)",
+                    params![
+                        id,
+                        raw,
+                        matches!(taken, metadata::MetadataTimestamp::Absolute { .. }) as i64
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+
+        if let Some(token) = timestamps::from_filename(&file_name) {
+            let raw = serde_json::to_string(&token).map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO evidence (path_id, source, raw, offset_known) \
+                 VALUES (?1, 'filename', ?2, ?3)",
+                params![
+                    id,
+                    raw,
+                    matches!(token, timestamps::FilenameTimestamp::EpochMillis(_)) as i64
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        conn.execute(
+            "UPDATE paths SET indexed_at_utc = ?2 WHERE id = ?1",
+            params![id, logging::now_iso_millis()],
+        )
+        .map_err(|e| e.to_string())?;
+        stats.extracted += 1;
+    }
+
+    Ok(stats)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ResolveScope {
+    /// Rows never resolved (the normal pipeline tail).
+    PendingOnly,
+    /// Every non-missing extracted row — a settings change re-resolves the
+    /// whole index from stored evidence, no file reads.
+    All,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct ResolveStats {
+    pub resolved: u64,
+    pub undated: u64,
+}
+
+/// The pure resolution pass: stored evidence + stat columns → resolved
+/// timestamp columns. Never opens a file.
+pub fn resolve_from_evidence(
+    conn: &Connection,
+    config: &ResolutionConfig,
+    scope: ResolveScope,
+) -> Result<ResolveStats, String> {
+    let mut stats = ResolveStats::default();
+
+    let sql = match scope {
+        ResolveScope::PendingOnly => {
+            "SELECT id, mtime_ms, birthtime_ms FROM paths \
+             WHERE missing = 0 AND indexed_at_utc IS NOT NULL AND resolved_source IS NULL"
+        }
+        ResolveScope::All => {
+            "SELECT id, mtime_ms, birthtime_ms FROM paths \
+             WHERE missing = 0 AND indexed_at_utc IS NOT NULL"
+        }
+    };
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, Option<i64>, Option<i64>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    for (id, mtime_ms, birthtime_ms) in rows {
+        let mut meta_ts: Option<metadata::MetadataTimestamp> = None;
+        let mut file_ts: Option<timestamps::FilenameTimestamp> = None;
+        {
+            let mut ev = conn
+                .prepare("SELECT source, raw FROM evidence WHERE path_id = ?1")
+                .map_err(|e| e.to_string())?;
+            let found: Vec<(String, Option<String>)> = ev
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            for (source, raw) in found {
+                let Some(raw) = raw else { continue };
+                match source.as_str() {
+                    "metadata" => meta_ts = serde_json::from_str(&raw).ok(),
+                    "filename" => file_ts = serde_json::from_str(&raw).ok(),
+                    _ => {}
+                }
+            }
+        }
+
+        match resolution::resolve(meta_ts, file_ts, mtime_ms, birthtime_ms, config) {
             Some(resolved) => {
                 stats.resolved += 1;
                 conn.execute(
                     "UPDATE paths SET resolved_utc_ms = ?2, resolved_source = ?3, \
-                     date_only = ?4, indexed_at_utc = ?5 WHERE id = ?1",
+                     date_only = ?4 WHERE id = ?1",
                     params![
                         id,
                         resolved.unix_ms,
                         resolved.source.as_str(),
-                        resolved.date_only as i64,
-                        logging::now_iso_millis()
+                        resolved.date_only as i64
                     ],
                 )
                 .map_err(|e| e.to_string())?;
@@ -370,9 +461,9 @@ pub fn resolve_pending(conn: &Connection, config: &ResolutionConfig) -> Result<R
             None => {
                 stats.undated += 1;
                 conn.execute(
-                    "UPDATE paths SET resolved_source = 'undated', indexed_at_utc = ?2 \
-                     WHERE id = ?1",
-                    params![id, logging::now_iso_millis()],
+                    "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = 'undated', \
+                     date_only = 0 WHERE id = ?1",
+                    params![id],
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -635,7 +726,10 @@ mod tests {
 
         walk_root(&f.conn, &f.root, &lists()).unwrap();
         hash_pending(&f.conn).unwrap();
-        let stats = resolve_pending(&f.conn, &resolution_config()).unwrap();
+        extract_pending(&f.conn).unwrap();
+        let stats =
+            resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly)
+                .unwrap();
         assert_eq!(stats.resolved, 2);
         assert_eq!(stats.undated, 0);
 
@@ -667,6 +761,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(source, "filesystem");
+    }
+
+    #[test]
+    fn settings_changes_re_resolve_from_evidence_without_file_reads() {
+        let f = fixture("re-resolve");
+        std::fs::write(f.root.join("IMG_20160305_123456.jpg"), b"not-a-real-jpeg").unwrap();
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        hash_pending(&f.conn).unwrap();
+        extract_pending(&f.conn).unwrap();
+        resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+
+        // Delete the file from disk: a re-resolve that needed to re-read it
+        // would now fail or go undated. It must not — evidence is in the DB.
+        std::fs::remove_file(f.root.join("IMG_20160305_123456.jpg")).unwrap();
+
+        // Switch the default timezone JST → UTC and re-resolve everything.
+        let utc_config = ResolutionConfig {
+            default_timezone: chrono_tz::UTC,
+            ..resolution_config()
+        };
+        let stats = resolve_from_evidence(&f.conn, &utc_config, ResolveScope::All).unwrap();
+        assert_eq!(stats.resolved, 1);
+
+        let ms: i64 = f
+            .conn
+            .query_row(
+                "SELECT resolved_utc_ms FROM paths WHERE file_name = 'IMG_20160305_123456.jpg'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Under UTC the naive 12:34:56 now IS 12:34:56Z (was 03:34:56Z under JST).
+        let expected = chrono::NaiveDate::from_ymd_opt(2016, 3, 5)
+            .unwrap()
+            .and_hms_opt(12, 34, 56)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis();
+        assert_eq!(ms, expected);
     }
 
     #[test]

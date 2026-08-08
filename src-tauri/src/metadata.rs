@@ -13,8 +13,10 @@ use nom_exif::{EntryValue, ExifTag, TrackInfoTag};
 
 /// A capture timestamp as the file states it. `Naive` awaits the configured
 /// default timezone; `Absolute` carried its own offset (OffsetTimeOriginal, or
-/// a QuickTime date with offset) and is already a UTC instant.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// a QuickTime date with offset) and is already a UTC instant. Serialized into
+/// the evidence table so settings changes re-resolve without file reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
 pub enum MetadataTimestamp {
     Naive {
         year: i32,

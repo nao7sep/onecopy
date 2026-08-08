@@ -19,8 +19,10 @@
 
 /// A timestamp recovered from a file name. `Naive` carries local wall-clock
 /// fields awaiting the configured default timezone; `EpochMillis` is already an
-/// absolute UTC instant.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// absolute UTC instant. Serialized into the evidence table so settings changes
+/// re-resolve without file reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum FilenameTimestamp {
     Naive {
         year: i32,
