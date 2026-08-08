@@ -110,6 +110,45 @@ fn save_state(app: AppHandle, state: Value) -> Result<(), String> {
 // One scan pipeline at a time; a second start is a no-op reported as `false`.
 static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 
+// The cache root, resolved once at setup (config `cacheDir` or `<root>/cache`)
+// for the mediacache protocol handler. A cacheDir change takes effect on the
+// next launch — the protocol reads this, never the config, per request.
+static CACHE_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+// Serves `mediacache://localhost/thumb-<hash>` and `/preview-<hash>` straight
+// from the hash-keyed cache (http://mediacache.localhost/… on Windows). Cache
+// entries are content-addressed, so responses are immutable-cacheable; misses
+// are plain 404s (the grid falls back to a placeholder).
+fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .expect("static response")
+    };
+    let Some(root) = CACHE_ROOT.get() else {
+        return not_found();
+    };
+    let cache = preview::CachePaths::new(root.clone());
+    let path = request.uri().path().trim_start_matches('/');
+    let file = if let Some(hash) = path.strip_prefix("thumb-") {
+        cache.thumb(hash)
+    } else if let Some(hash) = path.strip_prefix("preview-") {
+        cache.preview(hash)
+    } else {
+        return not_found();
+    };
+    match std::fs::read(&file) {
+        Ok(bytes) => tauri::http::Response::builder()
+            .status(200)
+            .header("Content-Type", "image/webp")
+            .header("Cache-Control", "public, max-age=31536000, immutable")
+            .body(bytes)
+            .unwrap_or_else(|_| not_found()),
+        Err(_) => not_found(),
+    }
+}
+
 // Launches the full scan pipeline (walk → hash → extract → resolve → pair →
 // derive) on a worker thread. Progress arrives as `scan://progress` events,
 // completion as `scan://done` (with the summary) or `scan://error`. Returns
@@ -174,6 +213,33 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
     }
 }
 
+// One (kind, month) section's grid items, same month keys and timezone as the
+// counts so the two always agree.
+#[tauri::command]
+fn get_section_items(
+    app: AppHandle,
+    kind: String,
+    month: String,
+) -> Result<Vec<queries::SectionItem>, String> {
+    logging::boundary(
+        "get_section_items",
+        json!({ "kind": kind, "month": month }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            queries::section_items(&conn, &kind, &month, display_timezone())
+        },
+        |items| json!({ "items": items.len() }),
+    )
+}
+
+fn display_timezone() -> chrono_tz::Tz {
+    iana_time_zone::get_timezone()
+        .ok()
+        .and_then(|name| name.parse().ok())
+        .unwrap_or(chrono_tz::UTC)
+}
+
 // Left-pane section counts (logical items per kind per month), bucketed in the
 // OS display timezone.
 #[tauri::command]
@@ -184,11 +250,7 @@ fn get_section_counts(app: AppHandle) -> Result<queries::SectionCounts, String> 
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let tz: chrono_tz::Tz = iana_time_zone::get_timezone()
-                .ok()
-                .and_then(|name| name.parse().ok())
-                .unwrap_or(chrono_tz::UTC);
-            queries::section_counts(&conn, tz)
+            queries::section_counts(&conn, display_timezone())
         },
         |counts| {
             json!({
@@ -234,6 +296,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol("mediacache", |_ctx, request| serve_mediacache(&request))
         .setup(move |app| {
             // Open the per-session log file under the app's own data dir. The Rust
             // core has filesystem access even though the webview is sandboxed, and
@@ -259,6 +322,25 @@ pub fn run() {
             // one closes on drop.
             index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
 
+            // Resolve the cache root once for the mediacache protocol, then
+            // sweep crash leftovers (hash-orphaned entries, stranded temps).
+            let loaded = storage::load_app_data(app.handle())?;
+            let cache_root = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0)
+                .cache_root;
+            let _ = CACHE_ROOT.set(cache_root.clone());
+            if let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
+                let cache = preview::CachePaths::new(cache_root);
+                match preview::startup_sweep(&conn, &cache) {
+                    Ok(0) => {}
+                    Ok(removed) => {
+                        logging::info("cache sweep", json!({ "removed": removed }));
+                    }
+                    Err(err) => {
+                        logging::warn("cache sweep failed", json!({ "error": { "message": err } }));
+                    }
+                }
+            }
+
             logging::info(
                 "app startup",
                 json!({
@@ -279,6 +361,7 @@ pub fn run() {
             save_state,
             start_scan,
             get_section_counts,
+            get_section_items,
             log_event,
             logging_debug_enabled
         ])

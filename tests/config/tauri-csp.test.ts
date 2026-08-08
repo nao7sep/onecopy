@@ -20,7 +20,7 @@ const csp = config.app?.security?.csp;
 // Keep this in lock-step with src-tauri/tauri.conf.json → app.security.csp;
 // a deliberate policy change updates both, an accidental one trips this test.
 const EXPECTED_CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost mediacache: http://mediacache.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
 describe("Tauri production CSP (src-tauri/tauri.conf.json)", () => {
   it("is present and non-empty", () => {

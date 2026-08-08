@@ -3,21 +3,27 @@ import "./App.css";
 import { loadAppData, log, toErrorFields } from "./repositories";
 import type { LoadedAppData } from "./repositories";
 import { useSectionsStore } from "./state/sections-store";
+import { useItemsStore, type SelectedSection } from "./state/items-store";
 import { monthLabel, type MonthSection } from "./models/sections";
+import Grid from "./components/Grid";
 
-// The main-window shell: live left-pane sections over the index, the plan's
-// honest empty states, and the scan lifecycle in the status bar. The wizard,
-// grid, and metadata panes land in their own Phase 3 steps.
+// The main-window shell: live left-pane sections, the thumbnail grid for the
+// selected section, and the scan lifecycle in the status bar. The wizard,
+// metadata pane, and preview window land in their own Phase 3 steps.
 
 function SectionList({
   title,
+  kind,
   sections,
   emptyLabel,
 }: {
   title: string;
+  kind: SelectedSection["kind"];
   sections: MonthSection[];
   emptyLabel: string;
 }) {
+  const selected = useItemsStore((s) => s.selected);
+  const select = useItemsStore((s) => s.select);
   return (
     <section className="mb-4">
       <h2 className="mb-1 text-sm font-semibold text-ink-strong">{title}</h2>
@@ -25,15 +31,25 @@ function SectionList({
         <p className="text-sm text-ink-muted">{emptyLabel}</p>
       ) : (
         <ul>
-          {sections.map((section) => (
-            <li
-              key={section.month}
-              className="flex justify-between rounded px-1 py-0.5 text-sm text-ink hover:bg-surface-muted"
-            >
-              <span>{monthLabel(section.month)}</span>
-              <span className="text-ink-muted">{section.count}</span>
-            </li>
-          ))}
+          {sections.map((section) => {
+            const isSelected =
+              selected?.kind === kind && selected.month === section.month;
+            return (
+              <li key={section.month}>
+                <button
+                  className={`flex w-full justify-between rounded px-1 py-0.5 text-left text-sm ${
+                    isSelected
+                      ? "bg-primary-surface text-primary"
+                      : "text-ink hover:bg-surface-muted"
+                  }`}
+                  onClick={() => void select({ kind, month: section.month })}
+                >
+                  <span>{monthLabel(section.month)}</span>
+                  <span className="text-ink-muted">{section.count}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
@@ -48,6 +64,9 @@ export default function App() {
   const progress = useSectionsStore((s) => s.progress);
   const loadCounts = useSectionsStore((s) => s.loadCounts);
   const startScan = useSectionsStore((s) => s.startScan);
+  const selected = useItemsStore((s) => s.selected);
+  const items = useItemsStore((s) => s.items);
+  const itemsLoading = useItemsStore((s) => s.loading);
 
   useEffect(() => {
     loadAppData()
@@ -78,26 +97,33 @@ export default function App() {
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
           <SectionList
             title="Images"
+            kind="image"
             sections={counts?.images ?? []}
             emptyLabel="No images"
           />
           <SectionList
             title="Videos"
+            kind="video"
             sections={counts?.videos ?? []}
             emptyLabel="No videos"
           />
           <SectionList
             title="Other files"
+            kind="other"
             sections={counts?.others ?? []}
             emptyLabel="No other files"
           />
         </aside>
-        <main className="flex min-w-0 flex-1 items-center justify-center">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {loadError !== null ? (
-            <p className="text-danger">{loadError}</p>
+            <p className="m-auto text-danger">{loadError}</p>
+          ) : selected !== null ? (
+            <Grid items={items} loading={itemsLoading} />
           ) : allEmpty ? (
-            <p className="text-ink-muted">Nothing to handle</p>
-          ) : null}
+            <p className="m-auto text-ink-muted">Nothing to handle</p>
+          ) : (
+            <p className="m-auto text-ink-muted">Select a month</p>
+          )}
         </main>
       </div>
       <footer className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
