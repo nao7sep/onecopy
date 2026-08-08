@@ -44,10 +44,12 @@ function NodeActions({
   path,
   parent,
   isEmpty,
+  isActive,
 }: {
   path: string;
   parent: string | null;
   isEmpty: boolean;
+  isActive: boolean;
 }) {
   const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
   const deleteFolder = useDestinationsStore((s) => s.deleteFolder);
@@ -56,7 +58,11 @@ function NodeActions({
   const createFolder = useDestinationsStore((s) => s.createFolder);
 
   return (
-    <span className="ml-1 hidden shrink-0 gap-1 text-xs group-hover:inline-flex">
+    <span
+      className={`ml-1 shrink-0 gap-1 text-xs ${
+        isActive ? "inline-flex" : "hidden group-hover:inline-flex"
+      }`}
+    >
       <button
         className="rounded border border-border px-1 text-primary hover:bg-primary-surface"
         title="Move the selected item here; its other copies go to trash. Shift-click: delete them permanently."
@@ -129,15 +135,21 @@ function DirNode({
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
   const isOpen = expanded.has(entry.path);
   const isEmpty = emptiness[entry.path] === true;
+  const activePath = useDestinationsStore((s) => s.activePath);
+  const setActive = useDestinationsStore((s) => s.setActive);
+  const isActive = activePath === entry.path;
   const { dropReady, handlers } = useDropHandlers(entry.path);
 
   return (
-    <li>
+    <li role="treeitem" aria-expanded={entry.hasChildren ? isOpen : undefined}>
       <div
         className={`group flex items-center rounded px-1 py-0.5 text-sm ${
-          dropReady ? "bg-primary-surface ring-1 ring-primary-ring" : "hover:bg-surface-muted"
+          dropReady || isActive
+            ? "bg-primary-surface ring-1 ring-primary-ring"
+            : "hover:bg-surface-muted"
         }`}
         style={{ paddingLeft: `${depth * 12}px` }}
+        onClick={() => setActive(entry.path)}
         {...handlers}
       >
         <button
@@ -155,7 +167,7 @@ function DirNode({
         >
           {entry.name}
         </span>
-        <NodeActions path={entry.path} parent={parent} isEmpty={isEmpty} />
+        <NodeActions path={entry.path} parent={parent} isEmpty={isEmpty} isActive={isActive} />
       </div>
       {isOpen ? (
         <ul>
@@ -168,11 +180,90 @@ function DirNode({
   );
 }
 
+// The flattened render order of visible rows — what Up/Down move across.
+interface VisibleRow {
+  path: string;
+  parent: string | null;
+  hasChildren: boolean;
+  isExpanded: boolean;
+}
+
+function visibleRows(
+  roots: string[],
+  children: Record<string, DirEntry[]>,
+  expanded: Set<string>,
+): VisibleRow[] {
+  const rows: VisibleRow[] = [];
+  const walk = (path: string, parent: string | null, hasChildren: boolean) => {
+    const isExpanded = expanded.has(path);
+    rows.push({ path, parent, hasChildren, isExpanded });
+    if (isExpanded) {
+      for (const child of children[path] ?? []) {
+        walk(child.path, path, child.hasChildren);
+      }
+    }
+  };
+  for (const root of roots) walk(root, null, true);
+  return rows;
+}
+
 export default function DestinationsTab() {
   const roots = useDestinationsStore((s) => s.roots);
   const expanded = useDestinationsStore((s) => s.expanded);
+  const children = useDestinationsStore((s) => s.children);
   const message = useDestinationsStore((s) => s.message);
   const addRoot = useDestinationsStore((s) => s.addRoot);
+  const activePath = useDestinationsStore((s) => s.activePath);
+  const setActive = useDestinationsStore((s) => s.setActive);
+  const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
+  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
+
+  // One composite tree (the conventions' sibling pattern): the container is
+  // the single tab stop, Up/Down move across visible rows, Right expands or
+  // enters, Left collapses or exits to the parent, Enter moves the grid
+  // selection here (Shift = delete-rest, Cmd/Ctrl = copy).
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    const rows = visibleRows(roots, children, expanded);
+    if (rows.length === 0) return;
+    const index = activePath !== null ? rows.findIndex((r) => r.path === activePath) : -1;
+    const row = index >= 0 ? rows[index] : null;
+
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const target =
+        event.key === "ArrowDown"
+          ? Math.min(index + 1, rows.length - 1)
+          : event.key === "ArrowUp"
+            ? Math.max(index - 1, 0)
+            : event.key === "Home"
+              ? 0
+              : rows.length - 1;
+      setActive(rows[target]?.path ?? null);
+    } else if (event.key === "ArrowRight" && row) {
+      event.preventDefault();
+      if (!row.isExpanded && row.hasChildren) {
+        void toggleExpand(row.path);
+      } else if (row.isExpanded) {
+        const first = (children[row.path] ?? [])[0];
+        if (first) setActive(first.path);
+      }
+    } else if (event.key === "ArrowLeft" && row) {
+      event.preventDefault();
+      if (row.isExpanded) {
+        void toggleExpand(row.path);
+      } else if (row.parent !== null) {
+        setActive(row.parent);
+      }
+    } else if (event.key === "Enter" && row) {
+      event.preventDefault();
+      const mode = event.metaKey || event.ctrlKey
+        ? "copy"
+        : event.shiftKey
+          ? "move-delete-rest"
+          : "move-trash-rest";
+      void moveSelectionTo(row.path, mode);
+    }
+  };
 
   return (
     <div className="flex h-full flex-col p-3">
@@ -191,7 +282,13 @@ export default function DestinationsTab() {
           lie outside every scanned directory.
         </p>
       ) : (
-        <ul className="min-h-0 flex-1 overflow-y-auto">
+        <ul
+          role="tree"
+          aria-label="Destination folders"
+          tabIndex={0}
+          className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+          onKeyDown={onKeyDown}
+        >
           {roots.map((root) => {
             const isOpen = expanded.has(root);
             return (
@@ -212,13 +309,19 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
   const emptiness = useDestinationsStore((s) => s.emptiness);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
   const removeRoot = useDestinationsStore((s) => s.removeRoot);
+  const activePath = useDestinationsStore((s) => s.activePath);
+  const setActive = useDestinationsStore((s) => s.setActive);
+  const isActive = activePath === root;
   const { dropReady, handlers } = useDropHandlers(root);
   return (
-    <li className="mb-1">
+    <li className="mb-1" role="treeitem" aria-expanded={isOpen}>
       <div
         className={`group flex items-center rounded px-1 py-0.5 text-sm ${
-          dropReady ? "bg-primary-surface ring-1 ring-primary-ring" : "hover:bg-surface-muted"
+          dropReady || isActive
+            ? "bg-primary-surface ring-1 ring-primary-ring"
+            : "hover:bg-surface-muted"
         }`}
+        onClick={() => setActive(root)}
         {...handlers}
       >
                   <button
@@ -237,6 +340,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
                     path={root}
                     parent={null}
                     isEmpty={emptiness[root] === true}
+                    isActive={isActive}
                   />
                   <button
                     className="ml-1 hidden shrink-0 rounded border border-border px-1 text-xs text-ink-muted group-hover:inline hover:bg-surface-muted"

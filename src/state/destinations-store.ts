@@ -31,6 +31,9 @@ interface DestinationsState {
   expanded: Set<string>;
   emptiness: Record<string, boolean>;
   message: string;
+  /** The tree's keyboard cursor (the composite-control active item). */
+  activePath: string | null;
+  setActive: (path: string | null) => void;
   init: (config: Record<string, unknown> | null) => void;
   addRoot: () => Promise<void>;
   removeRoot: (root: string) => Promise<void>;
@@ -60,6 +63,9 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   expanded: new Set<string>(),
   emptiness: {},
   message: "",
+  activePath: null,
+
+  setActive: (path) => set({ activePath: path }),
 
   init: (config) => {
     const roots = Array.isArray(config?.destinationRoots)
