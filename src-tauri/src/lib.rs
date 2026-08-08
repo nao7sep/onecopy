@@ -10,6 +10,7 @@ pub mod index_store;
 pub mod logging;
 pub mod metadata;
 mod nanoid;
+pub mod operations;
 pub mod paths;
 pub mod preview;
 pub mod queries;
@@ -214,6 +215,43 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
     }
 }
 
+// Deletes one logical item — every copy plus companions — to trash, or
+// permanently when `permanent` is true. The item is addressed the way the grid
+// knows it: by hash, or by path id for unhashed other-files.
+#[tauri::command]
+fn delete_item(
+    app: AppHandle,
+    hash: Option<String>,
+    path_id: Option<i64>,
+    permanent: bool,
+) -> Result<operations::DeleteOutcome, String> {
+    logging::boundary(
+        "delete_item",
+        json!({ "hash": hash, "pathId": path_id, "permanent": permanent }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let cache_root = CACHE_ROOT
+                .get()
+                .cloned()
+                .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME));
+            let cache = preview::CachePaths::new(cache_root);
+            let item = match (&hash, path_id) {
+                (Some(hash), _) => operations::ItemRef::Hash(hash),
+                (None, Some(id)) => operations::ItemRef::PathId(id),
+                (None, None) => return Err("delete_item needs a hash or a pathId".to_string()),
+            };
+            let mode = if permanent {
+                operations::DeleteMode::Permanent
+            } else {
+                operations::DeleteMode::Trash
+            };
+            operations::delete_item(&conn, &data_root, &cache, item, mode)
+        },
+        |outcome| json!({ "deleted": outcome.deleted_files, "failed": outcome.failed_files }),
+    )
+}
+
 // One (kind, month) section's grid items, same month keys and timezone as the
 // counts so the two always agree.
 #[tauri::command]
@@ -363,6 +401,7 @@ pub fn run() {
             start_scan,
             get_section_counts,
             get_section_items,
+            delete_item,
             log_event,
             logging_debug_enabled
         ])
