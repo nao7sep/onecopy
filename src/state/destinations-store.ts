@@ -1,0 +1,176 @@
+// The destination tree: configured roots, lazily expanded subdirectories, and
+// the move/copy-out actions over the grid's current selection. Destinations
+// are configured outside the source directories (the core enforces it per
+// operation); the tree is a destination panel, never a file manager — expand,
+// create folder, delete EMPTY folder, move/copy here, nothing else.
+
+import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { log, toErrorFields, saveConfig } from "../repositories";
+
+export interface DirEntry {
+  name: string;
+  path: string;
+  hasChildren: boolean;
+}
+
+export interface MoveOutOutcome {
+  exported: number;
+  skippedIdentical: number;
+  conflicts: string[];
+  postAction: { deletedFiles: number; failedFiles: number; removedRows: number };
+}
+
+export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
+
+interface DestinationsState {
+  baseConfig: Record<string, unknown> | null;
+  roots: string[];
+  children: Record<string, DirEntry[]>;
+  expanded: Set<string>;
+  emptiness: Record<string, boolean>;
+  message: string;
+  init: (config: Record<string, unknown> | null) => void;
+  addRoot: () => Promise<void>;
+  removeRoot: (root: string) => Promise<void>;
+  toggleExpand: (path: string) => Promise<void>;
+  refreshNode: (path: string) => Promise<void>;
+  createFolder: (parent: string, name: string) => Promise<void>;
+  deleteFolder: (path: string, parent: string) => Promise<void>;
+  moveSelectionTo: (destDir: string, mode: MoveMode) => Promise<void>;
+}
+
+async function probeEmptiness(paths: string[]): Promise<Record<string, boolean>> {
+  const result: Record<string, boolean> = {};
+  for (const path of paths) {
+    try {
+      result[path] = await invoke<boolean>("dir_is_empty", { path });
+    } catch {
+      result[path] = false;
+    }
+  }
+  return result;
+}
+
+export const useDestinationsStore = create<DestinationsState>((set, get) => ({
+  baseConfig: null,
+  roots: [],
+  children: {},
+  expanded: new Set<string>(),
+  emptiness: {},
+  message: "",
+
+  init: (config) => {
+    const roots = Array.isArray(config?.destinationRoots)
+      ? (config.destinationRoots as string[])
+      : [];
+    set({ baseConfig: config, roots });
+  },
+
+  addRoot: async () => {
+    try {
+      const picked = await openDialog({ directory: true, multiple: false });
+      if (typeof picked !== "string") return;
+      const { roots, baseConfig } = get();
+      if (roots.includes(picked)) return;
+      const next = [...roots, picked];
+      const config = { ...(baseConfig ?? {}), destinationRoots: next };
+      await saveConfig(config);
+      set({ roots: next, baseConfig: config });
+    } catch (error) {
+      log.error("destination root add failed", toErrorFields(error));
+    }
+  },
+
+  removeRoot: async (root) => {
+    try {
+      const { roots, baseConfig } = get();
+      const next = roots.filter((r) => r !== root);
+      const config = { ...(baseConfig ?? {}), destinationRoots: next };
+      await saveConfig(config);
+      set({ roots: next, baseConfig: config });
+    } catch (error) {
+      log.error("destination root remove failed", toErrorFields(error));
+    }
+  },
+
+  toggleExpand: async (path) => {
+    const { expanded } = get();
+    const next = new Set(expanded);
+    if (next.has(path)) {
+      next.delete(path);
+      set({ expanded: next });
+      return;
+    }
+    next.add(path);
+    set({ expanded: next });
+    await get().refreshNode(path);
+  },
+
+  refreshNode: async (path) => {
+    try {
+      const entries = await invoke<DirEntry[]>("list_subdirs", { path });
+      const emptiness = await probeEmptiness(entries.map((e) => e.path));
+      set({
+        children: { ...get().children, [path]: entries },
+        emptiness: { ...get().emptiness, ...emptiness },
+      });
+    } catch (error) {
+      log.error("destination listing failed", toErrorFields(error));
+    }
+  },
+
+  createFolder: async (parent, name) => {
+    try {
+      await invoke<string>("create_subdir", { parent, name });
+      await get().refreshNode(parent);
+      set({ message: "" });
+    } catch (error) {
+      set({ message: String(error) });
+    }
+  },
+
+  deleteFolder: async (path, parent) => {
+    try {
+      await invoke("delete_empty_dir", { path });
+      await get().refreshNode(parent);
+      set({ message: "" });
+    } catch (error) {
+      set({ message: String(error) });
+    }
+  },
+
+  moveSelectionTo: async (destDir, mode) => {
+    const { useItemsStore, itemKey } = await import("./items-store");
+    const { items, selectedItem } = useItemsStore.getState();
+    const item = items.find((i) => itemKey(i) === selectedItem);
+    if (!item) {
+      set({ message: "Select an item in the grid first" });
+      return;
+    }
+    try {
+      const outcome = await invoke<MoveOutOutcome>("move_item_out", {
+        hash: item.hash,
+        pathId: item.hash === null ? item.pathId : null,
+        destDir,
+        mode,
+      });
+      const parts: string[] = [];
+      if (outcome.exported > 0) parts.push(`${outcome.exported} exported`);
+      if (outcome.skippedIdentical > 0)
+        parts.push(`${outcome.skippedIdentical} already there`);
+      if (outcome.postAction.deletedFiles > 0)
+        parts.push(`${outcome.postAction.deletedFiles} originals handled`);
+      if (outcome.conflicts.length > 0)
+        parts.push(`CONFLICT: ${outcome.conflicts.join(", ")} differs — nothing touched`);
+      set({ message: parts.join(" · ") || "Nothing to do" });
+      await useItemsStore.getState().refresh();
+      const { useSectionsStore } = await import("./sections-store");
+      await useSectionsStore.getState().loadCounts();
+    } catch (error) {
+      set({ message: String(error) });
+      log.error("move out failed", toErrorFields(error));
+    }
+  },
+}));

@@ -338,6 +338,113 @@ fn move_item_out(
     )
 }
 
+// Destination-tree support: immediate subdirectories of one directory (the
+// tree expands lazily; files are never listed — it is a destination panel, not
+// a file manager).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirEntry {
+    name: String,
+    path: String,
+    has_children: bool,
+}
+
+#[tauri::command]
+fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
+    let mut entries: Vec<DirEntry> = Vec::new();
+    let read = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
+    for entry in read.flatten() {
+        let Ok(file_type) = entry.file_type() else { continue };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue; // dotfolders (incl. .onecopy-trash) stay out of the tree
+        }
+        let child_path = entry.path();
+        let has_children = std::fs::read_dir(&child_path)
+            .map(|mut children| {
+                children.any(|c| c.as_ref().is_ok_and(|e| e.file_type().is_ok_and(|t| t.is_dir())))
+            })
+            .unwrap_or(false);
+        entries.push(DirEntry {
+            name,
+            path: child_path.to_string_lossy().to_string(),
+            has_children,
+        });
+    }
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(entries)
+}
+
+// Creates a subfolder under a tree node. The name must be case-insensitively
+// unique within its directory (storage-path conventions' hard invariant).
+#[tauri::command]
+fn create_subdir(parent: String, name: String) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.contains(['/', '\\']) {
+        return Err("folder names must be non-empty and slash-free".to_string());
+    }
+    let parent_path = std::path::Path::new(&parent);
+    let lower = trimmed.to_lowercase();
+    if let Ok(read) = std::fs::read_dir(parent_path) {
+        for entry in read.flatten() {
+            if entry.file_name().to_string_lossy().to_lowercase() == lower {
+                return Err(format!(
+                    "\"{trimmed}\" already exists here (names are case-insensitively unique)"
+                ));
+            }
+        }
+    }
+    let target = parent_path.join(trimmed);
+    std::fs::create_dir(&target).map_err(|e| e.to_string())?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+// Deletes a tree folder ONLY when empty — remove_dir refuses otherwise, which
+// is the entire safety model (empty folders render distinctly in the tree).
+#[tauri::command]
+fn delete_empty_dir(path: String) -> Result<(), String> {
+    std::fs::remove_dir(&path).map_err(|e| e.to_string())
+}
+
+// Is this directory empty? Drives the tree's distinct empty-folder rendering.
+#[tauri::command]
+fn dir_is_empty(path: String) -> Result<bool, String> {
+    let mut read = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
+    Ok(read.next().is_none())
+}
+
+// Re-resolves every indexed item from stored evidence and rebuilds similar
+// groups — the settings-change path (timezone, good range, thresholds); no
+// file is read.
+#[tauri::command]
+fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
+    logging::boundary(
+        "re_resolve_all",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let loaded = storage::load_app_data(&app)?;
+            let settings = scanner::settings_from_config(
+                loaded.config.as_ref(),
+                &data_root,
+                chrono::Utc::now().timestamp_millis(),
+            );
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let stats = scanner::resolve_from_evidence(
+                &conn,
+                &settings.resolution,
+                scanner::ResolveScope::All,
+            )?;
+            similarity::rebuild_groups(&conn, &settings.similarity)?;
+            Ok(stats.resolved)
+        },
+        |resolved| json!({ "resolved": resolved }),
+    )
+}
+
 // Wizard support: a fast extension-classified count of one directory tree —
 // no stat, no hashing, just names — so an added directory shows its
 // image/video/other numbers while the user is still in the wizard.
@@ -576,6 +683,11 @@ pub fn run() {
             get_similar_group,
             delete_item,
             move_item_out,
+            list_subdirs,
+            create_subdir,
+            delete_empty_dir,
+            dir_is_empty,
+            re_resolve_all,
             quick_count,
             validate_timezone,
             check_source_dirs,

@@ -7,6 +7,8 @@ import { useItemsStore, type SelectedSection } from "./state/items-store";
 import { monthLabel, type MonthSection } from "./models/sections";
 import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
+import DestinationsTab from "./components/DestinationsTab";
+import { useDestinationsStore } from "./state/destinations-store";
 import Wizard from "./components/Wizard";
 import PresenceGate from "./components/PresenceGate";
 import ComparisonView from "./components/ComparisonView";
@@ -77,6 +79,7 @@ export default function App() {
   const detail = useItemsStore((s) => s.detail);
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
+  const [rightTab, setRightTab] = useState<"details" | "destinations">("details");
 
   // Grid keys: Delete/Backspace trash-deletes the selected logical item
   // (every copy; Shift = permanent); Enter opens the comparison view when the
@@ -119,6 +122,7 @@ export default function App() {
           hasState: data.state !== null,
         });
         void useWizardStore.getState().init(data.config, data.dataRoot);
+        useDestinationsStore.getState().init(data.config);
       })
       .catch((error) => {
         setLoadError(String(error));
@@ -173,8 +177,29 @@ export default function App() {
             <p className="m-auto text-ink-muted">Select a month</p>
           )}
         </main>
-        <aside className="w-72 shrink-0 overflow-y-auto border-l border-border bg-surface">
-          <MetadataPane detail={detail} />
+        <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-l border-border bg-surface">
+          <div className="flex shrink-0 border-b border-border">
+            {(["details", "destinations"] as const).map((tab) => (
+              <button
+                key={tab}
+                className={`flex-1 px-2 py-1 text-xs ${
+                  rightTab === tab
+                    ? "border-b-2 border-primary font-semibold text-primary"
+                    : "text-ink-muted hover:text-ink"
+                }`}
+                onClick={() => setRightTab(tab)}
+              >
+                {tab === "details" ? "Details" : "Destinations"}
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {rightTab === "details" ? (
+              <MetadataPane detail={detail} />
+            ) : (
+              <DestinationsTab />
+            )}
+          </div>
         </aside>
       </div>
       <footer className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
