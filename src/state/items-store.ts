@@ -36,11 +36,15 @@ interface ItemsState {
   items: SectionItem[];
   loading: boolean;
   selectedItem: string | null;
+  /** The full multi-selection (always contains the anchor when non-empty). */
+  selectedKeys: Set<string>;
   detail: ItemDetail | null;
   sortOrder: SortOrder;
   setSortOrder: (order: SortOrder) => void;
   select: (section: SelectedSection) => Promise<void>;
   selectItem: (key: string | null) => void;
+  toggleItem: (key: string) => void;
+  rangeSelect: (sortedKeys: string[], key: string) => void;
   deleteSelected: (permanent: boolean) => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -50,13 +54,20 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   items: [],
   loading: false,
   selectedItem: null,
+  selectedKeys: new Set<string>(),
   detail: null,
   sortOrder: "time",
 
   setSortOrder: (order) => set({ sortOrder: order }),
 
   select: async (section) => {
-    set({ selected: section, loading: true, selectedItem: null, detail: null });
+    set({
+      selected: section,
+      loading: true,
+      selectedItem: null,
+      selectedKeys: new Set(),
+      detail: null,
+    });
     try {
       const items = await invoke<SectionItem[]>("get_section_items", {
         kind: section.kind,
@@ -73,7 +84,11 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   selectItem: (key) => {
-    set({ selectedItem: key, detail: null });
+    set({
+      selectedItem: key,
+      selectedKeys: key === null ? new Set() : new Set([key]),
+      detail: null,
+    });
     if (key === null) return;
     const item = get().items.find((i) => itemKey(i) === key);
     if (!item) return;
@@ -97,22 +112,59 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       });
   },
 
-  // Deletes the selected logical item — every copy plus companions — to trash
-  // (or permanently with Shift). Selection recovers onto the next item so a
-  // cull run keeps its keyboard rhythm.
+  toggleItem: (key) => {
+    const next = new Set(get().selectedKeys);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    // The anchor moves to the toggled key (or clears with the selection).
+    set({ selectedKeys: next, selectedItem: next.has(key) ? key : null });
+  },
+
+  rangeSelect: (sortedKeys, key) => {
+    const { selectedItem, selectedKeys } = get();
+    const from = selectedItem !== null ? sortedKeys.indexOf(selectedItem) : -1;
+    const to = sortedKeys.indexOf(key);
+    if (from < 0 || to < 0) return;
+    const [start, end] = from <= to ? [from, to] : [to, from];
+    const next = new Set(selectedKeys);
+    for (const k of sortedKeys.slice(start, end + 1)) next.add(k);
+    set({ selectedKeys: next });
+  },
+
+  // Deletes every selected logical item — copies plus companions each — to
+  // trash (or permanently with Shift). Selection recovers onto the next
+  // unselected item so a cull run keeps its keyboard rhythm.
   deleteSelected: async (permanent) => {
-    const { items, selectedItem, refresh } = get();
-    const index = items.findIndex((i) => itemKey(i) === selectedItem);
-    if (index < 0) return;
-    const item = items[index];
+    const { items, selectedItem, selectedKeys, refresh } = get();
+    const keys = selectedKeys.size > 0
+      ? selectedKeys
+      : selectedItem !== null
+        ? new Set([selectedItem])
+        : new Set<string>();
+    if (keys.size === 0) return;
+    const anchorIndex = items.findIndex((i) => itemKey(i) === selectedItem);
     try {
-      await invoke("delete_item", {
-        hash: item.hash,
-        pathId: item.hash === null ? item.pathId : null,
-        permanent,
+      for (const item of items.filter((i) => keys.has(itemKey(i)))) {
+        await invoke("delete_item", {
+          hash: item.hash,
+          pathId: item.hash === null ? item.pathId : null,
+          permanent,
+        });
+      }
+      const survivor =
+        items.slice(anchorIndex + 1).find((i) => !keys.has(itemKey(i))) ??
+        [...items.slice(0, Math.max(anchorIndex, 0))]
+          .reverse()
+          .find((i) => !keys.has(itemKey(i))) ??
+        null;
+      const survivorKey = survivor ? itemKey(survivor) : null;
+      set({
+        selectedItem: survivorKey,
+        selectedKeys: survivorKey ? new Set([survivorKey]) : new Set(),
       });
-      const next = items[index + 1] ?? items[index - 1] ?? null;
-      set({ selectedItem: next ? itemKey(next) : null });
       await refresh();
       const { useSectionsStore } = await import("./sections-store");
       await useSectionsStore.getState().loadCounts();
@@ -124,9 +176,14 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   refresh: async () => {
     const { selected, select } = get();
     if (selected) {
-      const kept = get().selectedItem;
+      const keptAnchor = get().selectedItem;
+      const keptKeys = get().selectedKeys;
       await select(selected);
-      set({ selectedItem: kept });
+      // Restore what survived the refresh.
+      const alive = new Set(get().items.map(itemKey));
+      const keys = new Set([...keptKeys].filter((k) => alive.has(k)));
+      const anchor = keptAnchor !== null && alive.has(keptAnchor) ? keptAnchor : null;
+      set({ selectedItem: anchor, selectedKeys: keys });
     }
   },
 }));

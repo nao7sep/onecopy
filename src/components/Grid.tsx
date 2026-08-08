@@ -20,7 +20,7 @@ function Tile({
 }: {
   item: SectionItem;
   isSelected: boolean;
-  onSelect: () => void;
+  onSelect: (event: React.MouseEvent) => void;
 }) {
   return (
     <figure className="relative w-40 cursor-default" onClick={onSelect}>
@@ -92,8 +92,10 @@ export default function Grid({
   items: SectionItem[];
   loading: boolean;
 }) {
-  const selectedItem = useItemsStore((s) => s.selectedItem);
+  const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectItem = useItemsStore((s) => s.selectItem);
+  const toggleItem = useItemsStore((s) => s.toggleItem);
+  const rangeSelect = useItemsStore((s) => s.rangeSelect);
   const sortOrder = useItemsStore((s) => s.sortOrder);
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
   if (loading) {
@@ -127,8 +129,16 @@ export default function Grid({
             <Tile
               key={key}
               item={item}
-              isSelected={selectedItem === key}
-              onSelect={() => selectItem(key)}
+              isSelected={selectedKeys.has(key)}
+              onSelect={(event) => {
+                if (event.metaKey || event.ctrlKey) {
+                  toggleItem(key);
+                } else if (event.shiftKey) {
+                  rangeSelect(sorted.map(itemKey), key);
+                } else {
+                  selectItem(key);
+                }
+              }}
             />
           );
         })}
