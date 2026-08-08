@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS paths (
   abs_path         TEXT NOT NULL UNIQUE,
   dir_path         TEXT NOT NULL,
   file_name        TEXT NOT NULL,
+  stem             TEXT NOT NULL DEFAULT '',
   ext              TEXT NOT NULL DEFAULT '',
   kind             TEXT NOT NULL,
   size             INTEGER,
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS paths (
 );
 CREATE INDEX IF NOT EXISTS idx_paths_content_hash ON paths (content_hash);
 CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
+CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
 CREATE INDEX IF NOT EXISTS idx_paths_resolved ON paths (kind, resolved_utc_ms);
 
 CREATE TABLE IF NOT EXISTS evidence (

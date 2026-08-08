@@ -103,6 +103,13 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
         let ext = extensions::lowercase_ext(&file_name);
         let kind =
             extensions::classify(&ext, &lists.images, &lists.videos, &lists.companions).as_str();
+        // Lowercased stem for the same-dir pairing rule (path comparison is
+        // case-insensitive by fleet rule — macOS and Windows both are).
+        let stem = Path::new(&file_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&file_name)
+            .to_lowercase();
 
         stats.seen += 1;
         present.push(abs.clone());
@@ -131,10 +138,10 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
                 // resolve passes will redo them.
                 conn.execute(
                     "UPDATE paths SET size = ?2, mtime_ms = ?3, birthtime_ms = ?4, ext = ?5, \
-                     kind = ?6, prehash = NULL, content_hash = NULL, indexed_at_utc = NULL, \
-                     resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0, missing = 0 \
-                     WHERE abs_path = ?1",
-                    params![abs, size, mtime_ms, birthtime_ms, ext, kind],
+                     kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
+                     indexed_at_utc = NULL, resolved_utc_ms = NULL, resolved_source = NULL, \
+                     date_only = 0, missing = 0 WHERE abs_path = ?1",
+                    params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem],
                 )
                 .map_err(|e| e.to_string())?;
                 stats.updated += 1;
@@ -145,9 +152,9 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
                 conn.execute(
-                    "INSERT INTO paths (abs_path, dir_path, file_name, ext, kind, size, \
-                     mtime_ms, birthtime_ms, missing) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
-                    params![abs, dir_path, file_name, ext, kind, size, mtime_ms, birthtime_ms],
+                    "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, \
+                     mtime_ms, birthtime_ms, missing) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+                    params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms],
                 )
                 .map_err(|e| e.to_string())?;
                 stats.added += 1;
@@ -473,6 +480,38 @@ pub fn resolve_from_evidence(
     Ok(stats)
 }
 
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct PairStats {
+    pub paired: u64,
+}
+
+/// Same-directory pairing: a companion attaches to the primary (image or
+/// video) sharing its lowercased stem in the same directory — never across
+/// directories, which is what makes rotating-name false links (GoPro)
+/// structurally impossible. Deterministic: the lowest-id primary wins if
+/// several share a stem. A companion with no primary stays unattached and
+/// behaves as an other-file.
+pub fn pair_companions(conn: &Connection) -> Result<PairStats, String> {
+    let updated = conn
+        .execute(
+            "UPDATE paths SET companion_of = (
+                SELECT p.id FROM paths p
+                WHERE p.dir_path = paths.dir_path AND p.stem = paths.stem
+                  AND p.kind IN ('image', 'video') AND p.missing = 0
+                ORDER BY p.id LIMIT 1)
+             WHERE kind = 'companion' AND missing = 0 AND companion_of IS NULL
+               AND EXISTS (
+                SELECT 1 FROM paths p
+                WHERE p.dir_path = paths.dir_path AND p.stem = paths.stem
+                  AND p.kind IN ('image', 'video') AND p.missing = 0)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(PairStats {
+        paired: updated as u64,
+    })
+}
+
 fn store_content_hash(
     conn: &Connection,
     path_id: i64,
@@ -761,6 +800,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(source, "filesystem");
+    }
+
+    #[test]
+    fn companions_pair_same_directory_same_stem_only() {
+        let f = fixture("pairing");
+        let sub = f.root.join("gopro");
+        std::fs::create_dir_all(&sub).unwrap();
+        // RAW beside its JPEG (case differs — pairing is case-insensitive).
+        std::fs::write(f.root.join("IMG_1234.JPG"), b"jpeg").unwrap();
+        std::fs::write(f.root.join("img_1234.arw"), b"raw").unwrap();
+        // THM beside its MP4.
+        std::fs::write(sub.join("GOPR0001.MP4"), b"video").unwrap();
+        std::fs::write(sub.join("GOPR0001.THM"), b"thumb").unwrap();
+        // Same stem as the JPG but in another directory: must NOT pair.
+        std::fs::write(sub.join("IMG_1234.arw"), b"stray raw").unwrap();
+
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        let stats = pair_companions(&f.conn).unwrap();
+        assert_eq!(stats.paired, 2);
+
+        let paired_to_jpg: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM paths c JOIN paths p ON c.companion_of = p.id \
+                 WHERE c.file_name = 'img_1234.arw' AND p.file_name = 'IMG_1234.JPG'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(paired_to_jpg, 1);
+
+        let stray_unpaired: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM paths WHERE file_name = 'IMG_1234.arw' \
+                 AND dir_path LIKE '%gopro' AND companion_of IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stray_unpaired, 1);
+
+        // Idempotent: a second pass pairs nothing new.
+        assert_eq!(pair_companions(&f.conn).unwrap().paired, 0);
     }
 
     #[test]

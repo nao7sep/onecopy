@@ -162,6 +162,50 @@ pub fn derive_images_pending(
     Ok(stats)
 }
 
+/// Best-effort removal of one hash's cache entries — the synchronous half of
+/// cache GC, called when the last path bearing the hash leaves the index.
+pub fn remove_entries(cache: &CachePaths, hash: &str) {
+    let _ = std::fs::remove_file(cache.thumb(hash));
+    let _ = std::fs::remove_file(cache.preview(hash));
+}
+
+/// Startup sweep — the crash-leftover half of cache GC: deletes cache entries
+/// whose hash is no longer in `contents`, plus stranded `.tmp` staging files
+/// (safe: the single-instance app has no writer running at startup, and the
+/// whole tree is reconstructible). Touches only the cache tree and the DB.
+pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, String> {
+    let mut removed = 0u64;
+    let mut exists = conn
+        .prepare("SELECT 1 FROM contents WHERE hash = ?1")
+        .map_err(|e| e.to_string())?;
+
+    for sub in ["thumbs", "previews"] {
+        let tree = cache.root.join(sub);
+        if !tree.exists() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
+            let Ok(entry) = entry else { continue };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let orphan = if let Some(hash) = name.strip_suffix(".webp") {
+                !exists
+                    .exists([hash])
+                    .map_err(|e| e.to_string())?
+            } else {
+                // Stranded temps (or anything foreign) in a reconstructible tree.
+                name.ends_with(".tmp")
+            };
+            if orphan && std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
 /// Resizes to fit within `long_edge` on the longer side, never upscaling.
 fn fit_long_edge(img: &DynamicImage, long_edge: u32, filter: image::imageops::FilterType) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
@@ -340,6 +384,42 @@ mod tests {
             s_sharp > s_blur * 2.0,
             "sharp {s_sharp} should clearly exceed blurred {s_blur}"
         );
+    }
+
+    #[test]
+    fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-sweep-")
+            .tempdir()
+            .unwrap();
+        let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        conn.execute(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('live01', 1, 'image')",
+            [],
+        )
+        .unwrap();
+
+        for hash in ["live01", "orphan"] {
+            for path in [cache.thumb(hash), cache.preview(hash)] {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"webp-bytes").unwrap();
+            }
+        }
+        let stray_tmp = cache.thumb("live01").with_file_name("live01-xyz.tmp");
+        std::fs::write(&stray_tmp, b"partial").unwrap();
+
+        let removed = startup_sweep(&conn, &cache).unwrap();
+        assert_eq!(removed, 3); // orphan thumb + orphan preview + stray tmp
+        assert!(cache.thumb("live01").exists());
+        assert!(cache.preview("live01").exists());
+        assert!(!cache.thumb("orphan").exists());
+        assert!(!stray_tmp.exists());
+
+        // remove_entries drops a live pair on demand (the synchronous half).
+        remove_entries(&cache, "live01");
+        assert!(!cache.thumb("live01").exists());
+        assert!(!cache.preview("live01").exists());
     }
 
     #[test]
