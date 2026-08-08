@@ -25,6 +25,8 @@ import PresenceGate from "./components/PresenceGate";
 import ComparisonView from "./components/ComparisonView";
 import IssuesView from "./components/IssuesView";
 import BinariesModal from "./components/BinariesModal";
+import ShortcutsModal from "./components/ShortcutsModal";
+import { isHelpShortcut } from "./utils/shortcuts";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
@@ -107,6 +109,48 @@ export default function App() {
   const binariesInstalling = useBinariesStore((s) => s.installing);
   const binariesProgress = useBinariesStore((s) => s.progress);
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      if (isHelpShortcut(event)) {
+        event.preventDefault();
+        setHelpOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // A newly opened preview window asks for the current selection.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const fn = await listen("preview://ready", () => {
+        const { items, selectedItem } = useItemsStore.getState();
+        const item = items.find((i) => itemKey(i) === selectedItem);
+        if (item) {
+          void import("./state/preview-store").then(({ updatePreviewIfOpen }) =>
+            updatePreviewIfOpen({
+              hash: item.hash,
+              pathId: item.hash === null ? item.pathId : null,
+            }),
+          );
+        }
+      });
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   // App chrome: the derived window minimum, applied once at startup; zoom is
   // persisted app-level STATE (not a preference) on the discrete ladder, with
@@ -174,9 +218,19 @@ export default function App() {
       } else if (event.key === "Enter") {
         const { items, selectedItem } = useItemsStore.getState();
         const item = items.find((i) => itemKey(i) === selectedItem);
-        if (item?.hash && item.similarGroupId !== null) {
-          event.preventDefault();
+        if (!item) return;
+        event.preventDefault();
+        if (item.hash && item.similarGroupId !== null) {
+          // Similar photos exist: Enter means "show them all at once".
           void useComparisonStore.getState().openGroup(item.hash);
+        } else {
+          // No similars: Enter opens the item in the preview window.
+          void import("./state/preview-store").then(({ showPreview }) =>
+            showPreview({
+              hash: item.hash,
+              pathId: item.hash === null ? item.pathId : null,
+            }),
+          );
         }
       }
     };
@@ -220,6 +274,7 @@ export default function App() {
       ) : null}
       <ComparisonView />
       <BinariesModal />
+      <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
           <SectionList

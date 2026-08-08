@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import PreviewWindow from "./windows/PreviewWindow";
+import "./App.css";
 import { log, toErrorFields, initLogging } from "./repositories";
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
@@ -22,8 +24,11 @@ window.addEventListener("unhandledrejection", (event) => {
   log.error("unhandled promise rejection", toErrorFields(event.reason));
 });
 
+// One bundle serves every window; the `view` query parameter routes.
+const view = new URLSearchParams(window.location.search).get("view");
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    {view === "preview" ? <PreviewWindow /> : <App />}
   </React.StrictMode>,
 );

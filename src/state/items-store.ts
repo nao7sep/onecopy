@@ -77,6 +77,13 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     if (key === null) return;
     const item = get().items.find((i) => itemKey(i) === key);
     if (!item) return;
+    // An open preview window follows the selection live.
+    void import("./preview-store").then(({ updatePreviewIfOpen }) =>
+      updatePreviewIfOpen({
+        hash: item.hash,
+        pathId: item.hash === null ? item.pathId : null,
+      }),
+    );
     void invoke<ItemDetail>("get_item_detail", {
       hash: item.hash,
       pathId: item.hash === null ? item.pathId : null,

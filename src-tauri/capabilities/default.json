@@ -1,18 +1,25 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the app windows (main, preview, comparison)",
+  "windows": ["main", "preview", "comparison-*"],
   "permissions": [
     "core:default",
     "opener:default",
+    "opener:allow-open-path",
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
     "core:window:allow-destroy",
+    "core:window:allow-close",
     "core:window:allow-set-title",
     "core:window:allow-set-theme",
     "core:window:allow-set-min-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-focus",
+    "core:window:allow-available-monitors",
+    "core:window:allow-current-monitor",
+    "core:webview:allow-create-webview-window",
     "core:webview:allow-set-webview-zoom"
   ]
 }
