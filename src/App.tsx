@@ -7,6 +7,9 @@ import { useItemsStore, type SelectedSection } from "./state/items-store";
 import { monthLabel, type MonthSection } from "./models/sections";
 import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
+import Wizard from "./components/Wizard";
+import PresenceGate from "./components/PresenceGate";
+import { useWizardStore } from "./state/wizard-store";
 
 // The main-window shell: live left-pane sections, the thumbnail grid for the
 // selected section, and the scan lifecycle in the status bar. The wizard,
@@ -69,6 +72,8 @@ export default function App() {
   const items = useItemsStore((s) => s.items);
   const itemsLoading = useItemsStore((s) => s.loading);
   const detail = useItemsStore((s) => s.detail);
+  const wizardOpen = useWizardStore((s) => s.open);
+  const missingDirs = useWizardStore((s) => s.missingDirs);
 
   // Delete/Backspace trash-deletes the selected logical item (every copy);
   // Shift makes it permanent. Ignored while typing in a form control.
@@ -99,6 +104,7 @@ export default function App() {
           hasConfig: data.config !== null,
           hasState: data.state !== null,
         });
+        void useWizardStore.getState().init(data.config, data.dataRoot);
       })
       .catch((error) => {
         setLoadError(String(error));
@@ -115,6 +121,11 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-ink">
+      {wizardOpen && appData !== null ? (
+        <Wizard baseConfig={appData.config} dataRoot={appData.dataRoot} />
+      ) : missingDirs.length > 0 ? (
+        <PresenceGate missing={missingDirs} />
+      ) : null}
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
           <SectionList

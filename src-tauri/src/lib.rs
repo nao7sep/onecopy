@@ -279,6 +279,84 @@ fn display_timezone() -> chrono_tz::Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
+// Wizard support: a fast extension-classified count of one directory tree —
+// no stat, no hashing, just names — so an added directory shows its
+// image/video/other numbers while the user is still in the wizard.
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct QuickCount {
+    images: u64,
+    videos: u64,
+    others: u64,
+}
+
+#[tauri::command]
+fn quick_count(app: AppHandle, root: String) -> Result<QuickCount, String> {
+    logging::boundary(
+        "quick_count",
+        json!({ "root": root }),
+        || {
+            let loaded = storage::load_app_data(&app)?;
+            let data_root = paths::data_root(&app)?;
+            let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+            let mut count = QuickCount::default();
+            for entry in walkdir::WalkDir::new(&root).follow_links(false) {
+                let Ok(entry) = entry else { continue };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy();
+                if entry.path().to_string_lossy().contains(trash::TRASH_DIR_NAME) {
+                    continue;
+                }
+                let ext = extensions::lowercase_ext(&name);
+                match extensions::classify(
+                    &ext,
+                    &settings.lists.images,
+                    &settings.lists.videos,
+                    &settings.lists.companions,
+                ) {
+                    extensions::Kind::Image => count.images += 1,
+                    extensions::Kind::Video => count.videos += 1,
+                    // Companions ride with primaries; the wizard counts them
+                    // as other-files, matching how unattached ones display.
+                    extensions::Kind::Companion | extensions::Kind::Other => count.others += 1,
+                }
+            }
+            Ok(count)
+        },
+        |c| json!({ "images": c.images, "videos": c.videos, "others": c.others }),
+    )
+}
+
+// Wizard support: is this a real IANA timezone name?
+#[tauri::command]
+fn validate_timezone(name: String) -> bool {
+    name.parse::<chrono_tz::Tz>().is_ok()
+}
+
+// The session gate's check: configured source directories that are not
+// currently present (an unmounted volume manifests as a missing directory).
+#[tauri::command]
+fn check_source_dirs(app: AppHandle) -> Result<Vec<String>, String> {
+    logging::boundary(
+        "check_source_dirs",
+        json!({}),
+        || {
+            let loaded = storage::load_app_data(&app)?;
+            let data_root = paths::data_root(&app)?;
+            let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+            Ok(settings
+                .source_dirs
+                .iter()
+                .filter(|dir| !std::path::Path::new(dir).is_dir())
+                .cloned()
+                .collect())
+        },
+        |missing: &Vec<String>| json!({ "missing": missing.len() }),
+    )
+}
+
 // The metadata pane's detail for one logical item.
 #[tauri::command]
 fn get_item_detail(
@@ -422,6 +500,9 @@ pub fn run() {
             get_section_items,
             get_item_detail,
             delete_item,
+            quick_count,
+            validate_timezone,
+            check_source_dirs,
             log_event,
             logging_debug_enabled
         ])
