@@ -13,6 +13,37 @@ export interface SectionItem {
   hasThumb: boolean;
   similarGroupId: number | null;
   sharpness: number | null;
+  byteSize: number | null;
+  hasCompanions: boolean;
+}
+
+export type SortOrder = "time" | "name" | "size" | "resolution";
+
+export function sortItems(items: SectionItem[], order: SortOrder): SectionItem[] {
+  const sorted = [...items];
+  switch (order) {
+    case "time":
+      sorted.sort(
+        (a, b) =>
+          (a.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER) -
+            (b.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER) || a.pathId - b.pathId,
+      );
+      break;
+    case "name":
+      sorted.sort((a, b) =>
+        a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase()),
+      );
+      break;
+    case "size":
+      sorted.sort((a, b) => (b.byteSize ?? -1) - (a.byteSize ?? -1));
+      break;
+    case "resolution":
+      sorted.sort(
+        (a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0),
+      );
+      break;
+  }
+  return sorted;
 }
 
 // The mediacache protocol serves the hash-keyed cache; convertFileSrc builds

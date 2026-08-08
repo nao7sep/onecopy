@@ -116,6 +116,8 @@ pub struct SectionItem {
     pub has_thumb: bool,
     pub similar_group_id: Option<i64>,
     pub sharpness: Option<f64>,
+    pub byte_size: Option<i64>,
+    pub has_companions: bool,
 }
 
 /// Items of one (kind, month) section, oldest first; `month` is the same key
@@ -137,7 +139,9 @@ pub fn section_items(
                  (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed'), \
                  SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
                  (SELECT m.group_id FROM similar_group_members m WHERE m.content_hash = c.hash), \
-                 c.sharpness \
+                 c.sharpness, c.byte_size, \
+                 EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
+                         WHERE pri.content_hash = c.hash AND comp.missing = 0) \
                  FROM contents c JOIN paths p ON p.content_hash = c.hash \
                  WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
                  GROUP BY c.hash",
@@ -156,6 +160,8 @@ pub fn section_items(
             i64,
             Option<i64>,
             Option<f64>,
+            Option<i64>,
+            bool,
         )> = stmt
             .query_map([kind], |r| {
                 Ok((
@@ -170,6 +176,8 @@ pub fn section_items(
                     r.get(8)?,
                     r.get(9)?,
                     r.get(10)?,
+                    r.get(11)?,
+                    r.get(12)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -177,8 +185,21 @@ pub fn section_items(
             .collect();
         drop(stmt);
 
-        for (hash, path_id, file_name, min_ms, copies, w, h, has_thumb, resolved_count, group, sharpness) in
-            rows
+        for (
+            hash,
+            path_id,
+            file_name,
+            min_ms,
+            copies,
+            w,
+            h,
+            has_thumb,
+            resolved_count,
+            group,
+            sharpness,
+            byte_size,
+            has_companions,
+        ) in rows
         {
             let item_month = match min_ms {
                 Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
@@ -196,6 +217,8 @@ pub fn section_items(
                     has_thumb,
                     similar_group_id: group,
                     sharpness,
+                    byte_size,
+                    has_companions,
                 });
             }
         }
@@ -205,23 +228,32 @@ pub fn section_items(
             .prepare(
                 "SELECT p.content_hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), \
                  COUNT(*), \
-                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END) \
+                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
+                 MIN(p.size) \
                  FROM paths p \
                  WHERE p.missing = 0 AND p.companion_of IS NULL \
                    AND p.kind NOT IN ('image', 'video') \
                  GROUP BY COALESCE(p.content_hash, 'path:' || p.id)",
             )
             .map_err(|e| e.to_string())?;
-        let rows: Vec<(Option<String>, i64, String, Option<i64>, i64, i64)> = stmt
+        let rows: Vec<(Option<String>, i64, String, Option<i64>, i64, i64, Option<i64>)> = stmt
             .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
             })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
         drop(stmt);
 
-        for (hash, path_id, file_name, min_ms, copies, resolved_count) in rows {
+        for (hash, path_id, file_name, min_ms, copies, resolved_count, byte_size) in rows {
             let item_month = match min_ms {
                 Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
                 _ => "undated".to_string(),
@@ -238,6 +270,8 @@ pub fn section_items(
                     has_thumb: false,
                     similar_group_id: None,
                     sharpness: None,
+                    byte_size,
+                    has_companions: false,
                 });
             }
         }

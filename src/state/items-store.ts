@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
-import type { SectionItem } from "../models/items";
+import type { SectionItem, SortOrder } from "../models/items";
 
 export interface SelectedSection {
   kind: "image" | "video" | "other";
@@ -36,6 +36,8 @@ interface ItemsState {
   loading: boolean;
   selectedItem: string | null;
   detail: ItemDetail | null;
+  sortOrder: SortOrder;
+  setSortOrder: (order: SortOrder) => void;
   select: (section: SelectedSection) => Promise<void>;
   selectItem: (key: string | null) => void;
   deleteSelected: (permanent: boolean) => Promise<void>;
@@ -48,6 +50,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   loading: false,
   selectedItem: null,
   detail: null,
+  sortOrder: "time",
+
+  setSortOrder: (order) => set({ sortOrder: order }),
 
   select: async (section) => {
     set({ selected: section, loading: true, selectedItem: null, detail: null });
