@@ -23,6 +23,13 @@ pub mod storage;
 pub mod timestamps;
 pub mod trash;
 pub mod video;
+pub mod watcher;
+
+/// Whether the full scan pipeline is currently running (the watcher defers to
+/// it — the scan's own walk covers whatever changed).
+pub fn scan_running() -> bool {
+    SCAN_RUNNING.load(Ordering::SeqCst)
+}
 
 // Records the panic payload, location, and (when RUST_BACKTRACE is set) the
 // backtrace, flushes, then defers to the previous hook so the process still
@@ -354,6 +361,33 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
     }
 }
 
+// The volume-loss guard (the session gate's runtime counterpart): destructive
+// operations refuse to run while any configured source directory is absent —
+// a vanished volume must block deletes, not let them half-apply.
+fn ensure_sources_present(app: &AppHandle) -> Result<(), String> {
+    let loaded = storage::load_app_data(app)?;
+    let data_root = paths::data_root(app)?;
+    let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+    let missing: Vec<&String> = settings
+        .source_dirs
+        .iter()
+        .filter(|dir| !std::path::Path::new(dir.as_str()).is_dir())
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "destructive operations are blocked: {} configured source directorie(s) are missing ({})",
+            missing.len(),
+            missing
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
 // Deletes one logical item — every copy plus companions — to trash, or
 // permanently when `permanent` is true. The item is addressed the way the grid
 // knows it: by hash, or by path id for unhashed other-files.
@@ -368,6 +402,7 @@ fn delete_item(
         "delete_item",
         json!({ "hash": hash, "pathId": path_id, "permanent": permanent }),
         || {
+            ensure_sources_present(&app)?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let cache_root = CACHE_ROOT
@@ -434,6 +469,7 @@ fn move_item_out(
         "move_item_out",
         json!({ "hash": hash, "pathId": path_id, "destDir": dest_dir, "mode": mode }),
         || {
+            ensure_sources_present(&app)?;
             let data_root = paths::data_root(&app)?;
             let loaded = storage::load_app_data(&app)?;
             let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
@@ -580,6 +616,52 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
             Ok(stats.resolved)
         },
         |resolved| json!({ "resolved": resolved }),
+    )
+}
+
+// Scoped rescan: re-stats exactly the directories that contributed files to
+// one section (never the whole roots), then runs the pending pipeline tail.
+// The full per-root walk remains the Scan button's escape hatch.
+#[tauri::command]
+fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, String> {
+    logging::boundary(
+        "rescan_section",
+        json!({ "kind": kind, "month": month }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let loaded = storage::load_app_data(&app)?;
+            let settings = scanner::settings_from_config(
+                loaded.config.as_ref(),
+                &data_root,
+                chrono::Utc::now().timestamp_millis(),
+            );
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
+            let mut changed = 0u64;
+            for dir in &dirs {
+                changed += watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists)?;
+            }
+            if changed > 0 {
+                scanner::hash_pending(&conn)?;
+                scanner::extract_pending(&conn)?;
+                scanner::resolve_from_evidence(
+                    &conn,
+                    &settings.resolution,
+                    scanner::ResolveScope::PendingOnly,
+                )?;
+                scanner::pair_companions(&conn)?;
+                let cache = preview::CachePaths::new(settings.cache_root.clone());
+                preview::derive_images_pending(
+                    &conn,
+                    &cache,
+                    settings.thumb_edge,
+                    settings.preview_long_edge,
+                )?;
+                similarity::rebuild_groups(&conn, &settings.similarity)?;
+            }
+            Ok(changed)
+        },
+        |changed| json!({ "changed": changed }),
     )
 }
 
@@ -890,6 +972,12 @@ pub fn run() {
                 }
             }
 
+            // The watcher: ON by default, best-effort, over the configured
+            // source roots (the Camera Roll inflow case). Restart picks up
+            // source-dir changes; correctness never depends on it.
+            let watch_settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+            watcher::start(app.handle().clone(), watch_settings.source_dirs);
+
             logging::info(
                 "app startup",
                 json!({
@@ -920,6 +1008,7 @@ pub fn run() {
             delete_empty_dir,
             dir_is_empty,
             re_resolve_all,
+            rescan_section,
             get_issues,
             binaries_state,
             binaries_install,

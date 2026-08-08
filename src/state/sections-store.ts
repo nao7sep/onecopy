@@ -13,6 +13,8 @@ interface SectionsState {
   counts: SectionCounts | null;
   scanning: boolean;
   progress: string;
+  /** The watcher lost events (overflow); a manual Scan repairs the index. */
+  rescanNeeded: boolean;
   loadCounts: () => Promise<void>;
   startScan: () => Promise<void>;
 }
@@ -21,6 +23,7 @@ export const useSectionsStore = create<SectionsState>((set) => ({
   counts: null,
   scanning: false,
   progress: "",
+  rescanNeeded: false,
 
   loadCounts: async () => {
     try {
@@ -35,7 +38,7 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     try {
       const started = await invoke<boolean>("start_scan");
       if (started) {
-        set({ scanning: true, progress: "Scanning…" });
+        set({ scanning: true, progress: "Scanning…", rescanNeeded: false });
         log.info("scan started");
       }
     } catch (error) {
@@ -70,6 +73,20 @@ void (async () => {
     await listen<{ message: string }>("scan://error", (event) => {
       useSectionsStore.setState({ scanning: false, progress: "" });
       log.error("scan failed", { error: { message: event.payload.message } });
+    });
+    // The watcher's live updates: new/changed files flowed through the
+    // pipeline in the background — refresh the views.
+    await listen("watch://updated", () => {
+      void useSectionsStore.getState().loadCounts();
+      void import("./items-store").then(({ useItemsStore }) =>
+        useItemsStore.getState().refresh(),
+      );
+      void import("./issues-store").then(({ useIssuesStore }) =>
+        useIssuesStore.getState().load(),
+      );
+    });
+    await listen("watch://rescan-needed", () => {
+      useSectionsStore.setState({ rescanNeeded: true });
     });
   } catch (error) {
     log.warn("scan event wiring failed", toErrorFields(error));

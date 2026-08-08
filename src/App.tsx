@@ -44,6 +44,7 @@ export default function App() {
   const counts = useSectionsStore((s) => s.counts);
   const scanning = useSectionsStore((s) => s.scanning);
   const progress = useSectionsStore((s) => s.progress);
+  const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
   const loadCounts = useSectionsStore((s) => s.loadCounts);
   const startScan = useSectionsStore((s) => s.startScan);
   const selected = useItemsStore((s) => s.selected);
@@ -325,11 +326,20 @@ export default function App() {
             Settings
           </button>
           <button
-            className="text-primary hover:text-primary-hover disabled:text-ink-muted"
+            className={
+              rescanNeeded
+                ? "text-danger hover:underline"
+                : "text-primary hover:text-primary-hover disabled:text-ink-muted"
+            }
             disabled={scanning}
+            title={
+              rescanNeeded
+                ? "The watcher lost events — a scan repairs the index"
+                : undefined
+            }
             onClick={() => void startScan()}
           >
-            {scanning ? "Scanning…" : "Scan"}
+            {scanning ? "Scanning…" : rescanNeeded ? "Rescan needed" : "Scan"}
           </button>
           <span>{appData?.dataRoot ?? ""}</span>
         </span>

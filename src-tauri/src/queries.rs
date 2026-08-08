@@ -459,6 +459,69 @@ pub fn item_detail(
     })
 }
 
+/// The directories that contributed files to one (kind, month) section — the
+/// scoped-rescan unit: re-stat exactly these, never the whole roots.
+pub fn section_dirs(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+) -> Result<Vec<String>, String> {
+    let kind_filter = if kind == "other" {
+        "p.kind NOT IN ('image', 'video')".to_string()
+    } else {
+        format!("p.kind = '{kind}'")
+    };
+    let (sql, range): (String, Option<(i64, i64)>) = if month == "undated" {
+        (
+            format!(
+                "SELECT DISTINCT p.dir_path FROM paths p \
+                 WHERE p.missing = 0 AND {kind_filter} AND p.resolved_source = 'undated'"
+            ),
+            None,
+        )
+    } else {
+        let (year, mon) = month
+            .split_once('-')
+            .and_then(|(y, m)| Some((y.parse::<i32>().ok()?, m.parse::<u32>().ok()?)))
+            .ok_or_else(|| format!("bad month key: {month}"))?;
+        let start = display_tz
+            .with_ymd_and_hms(year, mon, 1, 0, 0, 0)
+            .earliest()
+            .ok_or_else(|| format!("bad month start: {month}"))?
+            .timestamp_millis();
+        let (next_year, next_mon) = if mon == 12 { (year + 1, 1) } else { (year, mon + 1) };
+        let end = display_tz
+            .with_ymd_and_hms(next_year, next_mon, 1, 0, 0, 0)
+            .earliest()
+            .ok_or_else(|| format!("bad month end: {month}"))?
+            .timestamp_millis();
+        (
+            format!(
+                "SELECT DISTINCT p.dir_path FROM paths p \
+                 WHERE p.missing = 0 AND {kind_filter} \
+                   AND p.resolved_utc_ms >= ?1 AND p.resolved_utc_ms < ?2"
+            ),
+            Some((start, end)),
+        )
+    };
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows: Vec<String> = match range {
+        Some((start, end)) => stmt
+            .query_map(rusqlite::params![start, end], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect(),
+        None => stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect(),
+    };
+    Ok(rows)
+}
+
 /// One issues row for the first-class issues surface.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]

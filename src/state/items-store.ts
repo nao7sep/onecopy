@@ -46,6 +46,7 @@ interface ItemsState {
   toggleItem: (key: string) => void;
   rangeSelect: (sortedKeys: string[], key: string) => void;
   deleteSelected: (permanent: boolean) => Promise<void>;
+  rescanSection: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -170,6 +171,24 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       await useSectionsStore.getState().loadCounts();
     } catch (error) {
       log.error("delete failed", toErrorFields(error));
+    }
+  },
+
+  // Scoped rescan: re-stats only the directories that contributed to the open
+  // section (the full per-root walk stays behind the Scan button).
+  rescanSection: async () => {
+    const { selected, refresh } = get();
+    if (!selected) return;
+    try {
+      await invoke<number>("rescan_section", {
+        kind: selected.kind,
+        month: selected.month,
+      });
+      await refresh();
+      const { useSectionsStore } = await import("./sections-store");
+      await useSectionsStore.getState().loadCounts();
+    } catch (error) {
+      log.error("section rescan failed", toErrorFields(error));
     }
   },
 

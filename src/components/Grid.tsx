@@ -185,7 +185,14 @@ export default function Grid({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-end gap-1 border-b border-border px-3 py-1 text-xs text-ink-muted">
+      <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-3 py-1 text-xs text-ink-muted">
+        <button
+          className="rounded border border-border px-1 py-0.5 text-ink hover:bg-surface-muted"
+          title="Re-check only the directories this section's files came from"
+          onClick={() => void useItemsStore.getState().rescanSection()}
+        >
+          Rescan section
+        </button>
         <label htmlFor="grid-sort">Sort</label>
         <select
           id="grid-sort"

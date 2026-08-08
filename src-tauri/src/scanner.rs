@@ -271,6 +271,93 @@ pub struct WalkStats {
     pub marked_missing: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Upsert {
+    Added,
+    Updated,
+    Unchanged,
+}
+
+/// The one per-file upsert: stat + classify + insert/update/skip-unchanged.
+/// Shared by the full walk and the watcher's single-directory re-stat, so the
+/// two can never drift on the checkpoint semantics (size+mtime unchanged =
+/// skip, changed = reset content facts).
+pub fn upsert_file(
+    conn: &Connection,
+    path: &Path,
+    lists: &ScanLists,
+) -> Result<Upsert, String> {
+    let abs = path.to_string_lossy().to_string();
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let size = meta.len() as i64;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64);
+    let birthtime_ms = meta
+        .created()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64);
+
+    let ext = extensions::lowercase_ext(&file_name);
+    let kind = extensions::classify(&ext, &lists.images, &lists.videos, &lists.companions).as_str();
+    let stem = Path::new(&file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&file_name)
+        .to_lowercase();
+
+    let existing: Option<(i64, Option<i64>)> = conn
+        .query_row(
+            "SELECT size, mtime_ms FROM paths WHERE abs_path = ?1",
+            [&abs],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    match existing {
+        Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
+            conn.execute(
+                "UPDATE paths SET missing = 0 WHERE abs_path = ?1 AND missing = 1",
+                [&abs],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Upsert::Unchanged)
+        }
+        Some(_) => {
+            conn.execute(
+                "UPDATE paths SET size = ?2, mtime_ms = ?3, birthtime_ms = ?4, ext = ?5, \
+                 kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
+                 indexed_at_utc = NULL, resolved_utc_ms = NULL, resolved_source = NULL, \
+                 date_only = 0, missing = 0 WHERE abs_path = ?1",
+                params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Upsert::Updated)
+        }
+        None => {
+            let dir_path = path
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            conn.execute(
+                "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, \
+                 mtime_ms, birthtime_ms, missing) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+                params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Upsert::Added)
+        }
+    }
+}
+
 /// Walks one source root: upserts every regular file as a `paths` row, skips
 /// unchanged rows (same size + mtime — the checkpoint that makes rescans and
 /// resumes cheap), resets content facts when a file changed, and marks rows
@@ -301,89 +388,22 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
         }
         let path = entry.path();
         let abs = path.to_string_lossy().to_string();
-        let file_name = entry.file_name().to_string_lossy().to_string();
         // The app's own trash is never indexed.
         if abs.contains(".onecopy-trash") {
             continue;
         }
 
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(err) => {
-                record_issue(conn, Some(abs.clone()), "stat-error", &err.to_string())?;
-                continue;
-            }
-        };
-        let size = meta.len() as i64;
-        let mtime_ms = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64);
-        let birthtime_ms = meta
-            .created()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64);
-
-        let ext = extensions::lowercase_ext(&file_name);
-        let kind =
-            extensions::classify(&ext, &lists.images, &lists.videos, &lists.companions).as_str();
-        // Lowercased stem for the same-dir pairing rule (path comparison is
-        // case-insensitive by fleet rule — macOS and Windows both are).
-        let stem = Path::new(&file_name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&file_name)
-            .to_lowercase();
-
         stats.seen += 1;
         present.push(abs.clone());
 
-        let existing: Option<(i64, Option<i64>)> = conn
-            .query_row(
-                "SELECT size, mtime_ms FROM paths WHERE abs_path = ?1",
-                [&abs],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-
-        match existing {
-            Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
-                // Unchanged: only clear a stale missing flag.
-                conn.execute(
-                    "UPDATE paths SET missing = 0 WHERE abs_path = ?1 AND missing = 1",
-                    [&abs],
-                )
-                .map_err(|e| e.to_string())?;
-                stats.unchanged += 1;
-            }
-            Some(_) => {
-                // Changed on disk: reset the content facts; the hash and
-                // resolve passes will redo them.
-                conn.execute(
-                    "UPDATE paths SET size = ?2, mtime_ms = ?3, birthtime_ms = ?4, ext = ?5, \
-                     kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
-                     indexed_at_utc = NULL, resolved_utc_ms = NULL, resolved_source = NULL, \
-                     date_only = 0, missing = 0 WHERE abs_path = ?1",
-                    params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem],
-                )
-                .map_err(|e| e.to_string())?;
-                stats.updated += 1;
-            }
-            None => {
-                let dir_path = path
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                conn.execute(
-                    "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, \
-                     mtime_ms, birthtime_ms, missing) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
-                    params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms],
-                )
-                .map_err(|e| e.to_string())?;
-                stats.added += 1;
+        match upsert_file(conn, path, lists) {
+            Ok(Upsert::Added) => stats.added += 1,
+            Ok(Upsert::Updated) => stats.updated += 1,
+            Ok(Upsert::Unchanged) => stats.unchanged += 1,
+            Err(err) => {
+                stats.seen -= 1;
+                present.pop();
+                record_issue(conn, Some(abs), "stat-error", &err)?;
             }
         }
     }
