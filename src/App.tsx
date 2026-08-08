@@ -14,8 +14,8 @@ import {
 } from "./utils/zoom";
 import { computeMinWindowHeight, computeMinWindowWidth } from "./utils/windowSizing";
 import { useSectionsStore } from "./state/sections-store";
-import { useItemsStore, type SelectedSection } from "./state/items-store";
-import { monthLabel, type MonthSection } from "./models/sections";
+import { useItemsStore } from "./state/items-store";
+import Sidebar from "./components/Sidebar";
 import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
 import DestinationsTab from "./components/DestinationsTab";
@@ -34,54 +34,9 @@ import { useIssuesStore } from "./state/issues-store";
 import { useBinariesStore } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
 
-// The main-window shell: live left-pane sections, the thumbnail grid for the
-// selected section, and the scan lifecycle in the status bar. The wizard,
-// metadata pane, and preview window land in their own Phase 3 steps.
-
-function SectionList({
-  title,
-  kind,
-  sections,
-  emptyLabel,
-}: {
-  title: string;
-  kind: SelectedSection["kind"];
-  sections: MonthSection[];
-  emptyLabel: string;
-}) {
-  const selected = useItemsStore((s) => s.selected);
-  const select = useItemsStore((s) => s.select);
-  return (
-    <section className="mb-4">
-      <h2 className="mb-1 text-sm font-semibold text-ink-strong">{title}</h2>
-      {sections.length === 0 ? (
-        <p className="text-sm text-ink-muted">{emptyLabel}</p>
-      ) : (
-        <ul>
-          {sections.map((section) => {
-            const isSelected =
-              selected?.kind === kind && selected.month === section.month;
-            return (
-              <li key={section.month}>
-                <button
-                  className={`flex w-full justify-between rounded px-1 py-0.5 text-left text-sm ${
-                    isSelected
-                      ? "bg-primary-surface text-primary"
-                      : "text-ink hover:bg-surface-muted"
-                  }`}
-                  onClick={() => void select({ kind, month: section.month })}
-                >
-                  <span>{monthLabel(section.month)}</span>
-                  <span className="text-ink-muted">{section.count}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </section>
-  );
-}
+// The main-window shell: the sidebar listbox, the thumbnail grid for the
+// selected section, the tabbed right pane, and the scan lifecycle in the
+// status bar.
 
 export default function App() {
   const appData = useAppStore((s) => s.appData);
@@ -265,24 +220,7 @@ export default function App() {
       <SettingsModal baseConfig={appData?.config ?? null} />
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
-          <SectionList
-            title="Images"
-            kind="image"
-            sections={counts?.images ?? []}
-            emptyLabel="No images"
-          />
-          <SectionList
-            title="Videos"
-            kind="video"
-            sections={counts?.videos ?? []}
-            emptyLabel="No videos"
-          />
-          <SectionList
-            title="Other files"
-            kind="other"
-            sections={counts?.others ?? []}
-            emptyLabel="No other files"
-          />
+          <Sidebar counts={counts} />
           <button
             className={`mt-2 w-full rounded px-1 py-0.5 text-left text-sm ${
               issuesOpen
