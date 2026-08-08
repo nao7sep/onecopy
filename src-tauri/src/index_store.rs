@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS contents (
   width           INTEGER,
   height          INTEGER,
   duration_ms     INTEGER,
-  sharpness       REAL
+  sharpness       REAL,
+  derived_at_utc  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS paths (
