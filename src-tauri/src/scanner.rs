@@ -43,6 +43,7 @@ pub struct ScanSettings {
     pub source_dirs: Vec<String>,
     pub lists: ScanLists,
     pub resolution: ResolutionConfig,
+    pub similarity: crate::similarity::SimilarityConfig,
     pub thumb_edge: u32,
     pub preview_long_edge: u32,
     pub keep_awake: bool,
@@ -102,6 +103,13 @@ pub fn settings_from_config(
                 .unwrap_or(defaults.good_range_start_year),
             now_ms,
         },
+        similarity: crate::similarity::SimilarityConfig {
+            max_gap_seconds: u32_of("similarityMaxGapSeconds", defaults.similarity_max_gap_seconds),
+            phash_max_distance: u32_of(
+                "similarityPhashMaxDistance",
+                defaults.similarity_phash_max_distance,
+            ),
+        },
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
         preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
         keep_awake: get("keepAwakeDuringIndexing")
@@ -138,6 +146,7 @@ pub struct ScanSummary {
     pub paired: u64,
     pub derived: u64,
     pub derive_failed: u64,
+    pub similar_groups: u64,
 }
 
 /// One full pipeline run over every configured root: walk → hash → extract →
@@ -198,6 +207,16 @@ pub fn run_full_scan(
     progress(
         "derive",
         format!("{} previews, {} failures", derive_stats.derived, derive_stats.failed),
+    );
+
+    let group_stats = crate::similarity::rebuild_groups(conn, &settings.similarity)?;
+    summary.similar_groups = group_stats.groups;
+    progress(
+        "group",
+        format!(
+            "{} similar groups over {} photos",
+            group_stats.groups, group_stats.grouped_items
+        ),
     );
 
     Ok(summary)
@@ -707,13 +726,16 @@ fn store_media_facts(
 ) -> Result<(), String> {
     conn.execute(
         "UPDATE contents SET width = COALESCE(?2, width), height = COALESCE(?3, height), \
-         duration_ms = COALESCE(?4, duration_ms) \
+         duration_ms = COALESCE(?4, duration_ms), \
+         camera_make = COALESCE(?5, camera_make), camera_model = COALESCE(?6, camera_model) \
          WHERE hash = (SELECT content_hash FROM paths WHERE id = ?1)",
         params![
             path_id,
             meta.width.map(i64::from),
             meta.height.map(i64::from),
-            meta.duration_ms.map(|v| v as i64)
+            meta.duration_ms.map(|v| v as i64),
+            meta.make,
+            meta.model
         ],
     )
     .map_err(|e| e.to_string())?;

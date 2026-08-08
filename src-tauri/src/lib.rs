@@ -16,6 +16,7 @@ pub mod preview;
 pub mod queries;
 pub mod resolution;
 pub mod scanner;
+pub mod similarity;
 pub mod storage;
 pub mod timestamps;
 pub mod trash;

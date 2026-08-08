@@ -59,6 +59,7 @@ pub struct DerivedFacts {
     pub width: u32,
     pub height: u32,
     pub sharpness: f64,
+    pub phash: u64,
 }
 
 /// Decodes one image, applies its EXIF orientation, writes the thumbnail and
@@ -78,6 +79,7 @@ pub fn generate_for_image(
     // original is traversed once and the thumb resize input is already small.
     let preview = fit_long_edge(&oriented, preview_long_edge, image::imageops::FilterType::CatmullRom);
     let sharpness = laplacian_variance(&preview.to_luma8());
+    let phash = dhash(&preview);
     write_webp(&preview, &cache.preview(hash), 80.0)?;
 
     let thumb = fit_long_edge(&preview, thumb_edge, image::imageops::FilterType::Triangle);
@@ -87,7 +89,29 @@ pub fn generate_for_image(
         width,
         height,
         sharpness,
+        phash,
     })
+}
+
+/// A 64-bit difference hash: grayscale 9×8, one bit per horizontal neighbor
+/// comparison. Hand-rolled (the img_hash crate pins an older image version);
+/// Hamming distance over these bits is the similarity comparator the config's
+/// `similarityPhashMaxDistance` names.
+pub fn dhash(img: &DynamicImage) -> u64 {
+    let small = img
+        .resize_exact(9, 8, image::imageops::FilterType::Triangle)
+        .to_luma8();
+    let mut bits: u64 = 0;
+    let mut bit = 0u32;
+    for y in 0..8 {
+        for x in 0..8 {
+            if small.get_pixel(x, y).0[0] < small.get_pixel(x + 1, y).0[0] {
+                bits |= 1 << bit;
+            }
+            bit += 1;
+        }
+    }
+    bits
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -130,13 +154,14 @@ pub fn derive_images_pending(
                 stats.derived += 1;
                 conn.execute(
                     "UPDATE contents SET width = COALESCE(width, ?2), \
-                     height = COALESCE(height, ?3), sharpness = ?4, derived_at_utc = ?5 \
-                     WHERE hash = ?1",
+                     height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
+                     derived_at_utc = ?6 WHERE hash = ?1",
                     params![
                         hash,
                         facts.width,
                         facts.height,
                         facts.sharpness,
+                        facts.phash as i64,
                         logging::now_iso_millis()
                     ],
                 )

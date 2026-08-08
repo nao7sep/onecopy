@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS contents (
   byte_size       INTEGER NOT NULL,
   kind            TEXT NOT NULL,
   phash           INTEGER,
+  camera_make     TEXT,
+  camera_model    TEXT,
   width           INTEGER,
   height          INTEGER,
   duration_ms     INTEGER,
