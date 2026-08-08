@@ -143,27 +143,41 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
 
   moveSelectionTo: async (destDir, mode) => {
     const { useItemsStore, itemKey } = await import("./items-store");
-    const { items, selectedItem } = useItemsStore.getState();
-    const item = items.find((i) => itemKey(i) === selectedItem);
-    if (!item) {
+    const { items, selectedItem, selectedKeys } = useItemsStore.getState();
+    const keys =
+      selectedKeys.size > 0
+        ? selectedKeys
+        : selectedItem !== null
+          ? new Set([selectedItem])
+          : new Set<string>();
+    const targets = items.filter((i) => keys.has(itemKey(i)));
+    if (targets.length === 0) {
       set({ message: "Select an item in the grid first" });
       return;
     }
     try {
-      const outcome = await invoke<MoveOutOutcome>("move_item_out", {
-        hash: item.hash,
-        pathId: item.hash === null ? item.pathId : null,
-        destDir,
-        mode,
-      });
+      let exported = 0;
+      let skipped = 0;
+      let handled = 0;
+      const conflicts: string[] = [];
+      for (const item of targets) {
+        const outcome = await invoke<MoveOutOutcome>("move_item_out", {
+          hash: item.hash,
+          pathId: item.hash === null ? item.pathId : null,
+          destDir,
+          mode,
+        });
+        exported += outcome.exported;
+        skipped += outcome.skippedIdentical;
+        handled += outcome.postAction.deletedFiles;
+        conflicts.push(...outcome.conflicts);
+      }
       const parts: string[] = [];
-      if (outcome.exported > 0) parts.push(`${outcome.exported} exported`);
-      if (outcome.skippedIdentical > 0)
-        parts.push(`${outcome.skippedIdentical} already there`);
-      if (outcome.postAction.deletedFiles > 0)
-        parts.push(`${outcome.postAction.deletedFiles} originals handled`);
-      if (outcome.conflicts.length > 0)
-        parts.push(`CONFLICT: ${outcome.conflicts.join(", ")} differs — nothing touched`);
+      if (exported > 0) parts.push(`${exported} exported`);
+      if (skipped > 0) parts.push(`${skipped} already there`);
+      if (handled > 0) parts.push(`${handled} originals handled`);
+      if (conflicts.length > 0)
+        parts.push(`CONFLICT: ${conflicts.join(", ")} differs — those items untouched`);
       set({ message: parts.join(" · ") || "Nothing to do" });
       await useItemsStore.getState().refresh();
       const { useSectionsStore } = await import("./sections-store");
