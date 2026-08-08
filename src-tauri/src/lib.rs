@@ -9,6 +9,7 @@ pub mod binaries_manager;
 pub mod extensions;
 pub mod hashing;
 pub mod index_store;
+pub mod live_photo;
 pub mod logging;
 pub mod metadata;
 mod nanoid;
