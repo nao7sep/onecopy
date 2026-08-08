@@ -1,0 +1,15 @@
+{
+  // Typechecks the test files (their subjects are pulled in via imports). Also
+  // includes src's ambient .d.ts (e.g. vite-env.d.ts) so globals like
+  // import.meta.env resolve the same way they do for the app.
+  "extends": "./tsconfig.json",
+  // Tests run in modern Node, so they may use ES2022 APIs (Array.at, the Error
+  // `cause` option) even though the browser app deliberately targets ES2020,
+  // and Node built-ins (node:fs, node:url) for specs that read shipped assets
+  // off disk — hence the explicit `node` types, which the app build omits.
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*.d.ts", "tests/**/*.ts"]
+}

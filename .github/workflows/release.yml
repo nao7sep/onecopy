@@ -1,0 +1,93 @@
+name: Release
+
+# Per the app-release-conventions: test gate -> per-OS package -> attach to a
+# DRAFT release. CI stays minimal — the .dmg / setup.exe / portable-zip packaging
+# lives in scripts/package.sh (macOS) and scripts/package.ps1 (Windows), which run
+# `tauri build`. Nothing is published automatically; a draft is created for the
+# pushed tag, verified, then published by hand (gh release edit --draft=false).
+#
+# Windows can't be cross-compiled from a Mac, so both platforms build in CI.
+#
+#   - push a tag `v*` -> build both platforms, attach installers + portables to a
+#     single draft release for that tag.
+#   - manual dispatch -> build only (no release), for a smoke check.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Gate: `npm run typecheck`, the frontend test suite (vitest — includes the
+  # version-consistency check across the four manifests, tests/version.test.ts),
+  # and `cargo test` for the Rust core. Platform-independent, so it runs once and
+  # both build jobs depend on it — a failure blocks the release before anything
+  # is built.
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false # a Windows failure never cancels the macOS build
+      matrix:
+        include:
+          - os: macos-latest
+            package: bash scripts/package.sh
+          - os: windows-latest
+            package: pwsh scripts/package.ps1
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+
+      # One command per OS — runs `tauri build` and emits the installer + portable
+      # into artifacts/.
+      - name: Package (host OS)
+        run: ${{ matrix.package }}
+
+      - name: Attach to draft release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          draft: true
+          prerelease: true # 0.x is pre-release
+          # Body renders from the pushed tag (${{ github.ref_name }}), so the note
+          # never goes stale on a version bump — no release-specific text baked in.
+          body: |
+            **OneCopy ${{ github.ref_name }}**
+
+            These builds are unsigned, so the OS warns on first launch:
+            - **macOS**: right-click the app → **Open** (or `xattr -dr com.apple.quarantine OneCopy.app`)
+            - **Windows**: SmartScreen → **More info** → **Run anyway**
+          files: |
+            artifacts/*.dmg
+            artifacts/*-setup.exe
+            artifacts/*-mac.zip
+            artifacts/*-win.zip

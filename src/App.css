@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+/* A disabled button shows the plain arrow, never the hand — a dead button must
+   not invite a click. Tailwind's Preflight gives every <button> the pointer, so
+   reset it here in one place for the whole app (unlayered, to beat utilities). */
+button:disabled {
+  cursor: default;
+}
+
+/* ── Semantic color tokens ────────────────────────────────────────────────
+   Single source of truth for every color in the app. Light values alias
+   Tailwind's default palette; the `.dark` block overrides the same variables,
+   so components never reference raw palette shades. Utilities are generated
+   via `@theme inline` (bg-surface, text-ink-muted, …) and reference var(--…)
+   directly, so the `.dark` overrides take effect at runtime. */
+:root {
+  color-scheme: light;
+
+  /* Neutral chrome — surfaces & borders */
+  --background: var(--color-gray-50);
+  --surface: var(--color-white);
+  --surface-muted: var(--color-gray-100);
+  --border: var(--color-gray-200);
+  --border-strong: var(--color-gray-300);
+
+  /* Neutral chrome — text ("ink") scale, strongest → faintest */
+  --ink-strong: var(--color-gray-800);
+  --ink: var(--color-gray-700);
+  --ink-muted: var(--color-gray-500);
+  --ink-inverted: var(--color-white);
+
+  /* Primary — actions, focus, selection */
+  --primary: var(--color-sky-700);
+  --primary-hover: var(--color-sky-800);
+  --primary-ring: var(--color-sky-400);
+  --primary-surface: var(--color-sky-50);
+
+  /* Danger — this is a destructive app; the delete surfaces lean on these */
+  --danger: var(--color-red-700);
+  --danger-solid: var(--color-red-700);
+  --danger-solid-hover: var(--color-red-800);
+  --danger-surface: var(--color-red-50);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: var(--color-gray-950);
+  --surface: var(--color-gray-900);
+  --surface-muted: var(--color-gray-800);
+  --border: var(--color-gray-800);
+  --border-strong: var(--color-gray-700);
+
+  --ink-strong: var(--color-gray-100);
+  --ink: var(--color-gray-200);
+  --ink-muted: var(--color-gray-400);
+  --ink-inverted: var(--color-gray-950);
+
+  --primary: var(--color-sky-400);
+  --primary-hover: var(--color-sky-300);
+  --primary-ring: var(--color-sky-500);
+  --primary-surface: var(--color-sky-950);
+
+  --danger: var(--color-red-400);
+  --danger-solid: var(--color-red-600);
+  --danger-solid-hover: var(--color-red-500);
+  --danger-surface: var(--color-red-950);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-ink-strong: var(--ink-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-inverted: var(--ink-inverted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-ring: var(--primary-ring);
+  --color-primary-surface: var(--primary-surface);
+  --color-danger: var(--danger);
+  --color-danger-solid: var(--danger-solid);
+  --color-danger-solid-hover: var(--danger-solid-hover);
+  --color-danger-surface: var(--danger-surface);
+}
+
+/* App-chrome conventions: thin scrollbars, rounded thumbs. */
+* {
+  scrollbar-width: thin;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

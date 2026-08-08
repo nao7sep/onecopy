@@ -1,0 +1,46 @@
+[package]
+name = "onecopy"
+version = "0.1.0"
+description = "An inbox-zero dedup handler for photos, videos, and other files"
+authors = ["Yoshinao Inoguchi <nao7sep@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/nao7sep/onecopy"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "onecopy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+tauri-plugin-opener = "2.5"
+tauri-plugin-dialog = "2.7"
+tauri-plugin-single-instance = "2.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# System IANA timezone name, used once to seed config.json's defaultTimezone on
+# first run (the wizard then owns the value).
+iana-time-zone = "0.1"
+sha2 = "0.11"
+hex = "0.4"
+getrandom = "0.4"
+# The index database and the write-through data-backup store. `bundled` compiles
+# SQLite from source into the binary, so no system libsqlite3 is needed and
+# packaging stays churn-free (the lowest-friction SQLite binding for the Rust
+# core, per the data-backup conventions' "built-in or lowest-friction binding"
+# rule).
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[dev-dependencies]
+# Serializes the tests that share the process-global backup-store singleton
+# (`static STORE` in backup_store.rs); unrelated tests still parallelize.
+serial_test = { version = "3.5", default-features = false }
+tempfile = "3.24"
