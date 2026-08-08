@@ -90,18 +90,26 @@ function broadcast(): void {
   void emit("comparison://state", payload);
 }
 
+/// The design's per-screen rule: three slots when the photos run portrait,
+/// four when they run landscape — decided by the GROUP's dominant image
+/// orientation (unknown dimensions count as landscape).
+export function perScreenCapacity(members: GroupMember[]): number {
+  const portrait = members.filter(
+    (m) => m.width !== null && m.height !== null && m.height > m.width,
+  ).length;
+  return portrait * 2 > members.length ? 3 : 4;
+}
+
 // Spreads the comparison across every extra monitor: one fullscreen window
-// per monitor beyond the first, capacities per the design's rule of thumb —
-// four slots on a landscape screen, three on a portrait one. Best-effort — a
-// machine with one monitor keeps the single-window form and all 16 keys.
-async function openSpread(): Promise<void> {
+// per monitor beyond the first, per-screen capacity from the group's dominant
+// image orientation. Best-effort — a machine with one monitor keeps the
+// single-window form and all 16 keys.
+async function openSpread(perScreen: number): Promise<void> {
   try {
     const monitors = await availableMonitors();
     const extras = Math.max(0, monitors.length - 1);
     const capacities =
-      extras === 0
-        ? [SLOT_KEYS.length]
-        : monitors.map((m) => (m.size.width >= m.size.height ? 4 : 3));
+      extras === 0 ? [SLOT_KEYS.length] : monitors.map(() => perScreen);
     useComparisonStore.setState({ spreadCount: extras, capacities });
     for (let i = 0; i < extras; i += 1) {
       const label = `comparison-${i + 1}`;
@@ -155,7 +163,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       const members = await invoke<GroupMember[]>("get_similar_group", { hash });
       if (members.length < 2) return; // ungrouped items open nothing
       // Spread first: the screens' capacities decide the turn size.
-      await openSpread();
+      await openSpread(perScreenCapacity(members));
       const size = turnSize(get().capacities);
       set({
         open: true,

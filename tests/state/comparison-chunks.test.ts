@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { chunkSlots, turnSize, type GroupMember } from "../../src/state/comparison-store";
+import {
+  chunkSlots,
+  perScreenCapacity,
+  turnSize,
+  type GroupMember,
+} from "../../src/state/comparison-store";
 
 function member(hash: string): GroupMember {
   return {
@@ -52,5 +57,14 @@ describe("chunkSlots", () => {
     expect(turnSize([16])).toBe(16);
     expect(turnSize([9, 9])).toBe(16);
     expect(turnSize([])).toBe(1);
+  });
+
+  it("per-screen capacity follows the group's dominant image orientation", () => {
+    const portrait = (h: string) => ({ ...member(h), width: 3000, height: 4000 });
+    const landscape = (h: string) => ({ ...member(h), width: 4000, height: 3000 });
+    expect(perScreenCapacity([portrait("a"), portrait("b"), landscape("c")])).toBe(3);
+    expect(perScreenCapacity([portrait("a"), landscape("b"), landscape("c")])).toBe(4);
+    // Unknown dimensions count as landscape (the roomier default).
+    expect(perScreenCapacity([member("a"), member("b")])).toBe(4);
   });
 });
