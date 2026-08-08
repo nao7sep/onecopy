@@ -656,17 +656,44 @@ struct QuickCount {
     others: u64,
 }
 
+// Roots whose in-flight quick count the wizard cancelled (directory removed
+// mid-count): the walk checks membership and stops, so removing a huge
+// directory stops its disk churn, not just discards the result.
+static QUICK_COUNT_CANCELLED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+#[tauri::command]
+fn cancel_quick_count(root: String) {
+    if let Ok(mut cancelled) = QUICK_COUNT_CANCELLED.lock() {
+        cancelled.insert(root);
+    }
+}
+
 #[tauri::command]
 fn quick_count(app: AppHandle, root: String) -> Result<QuickCount, String> {
     logging::boundary(
         "quick_count",
         json!({ "root": root }),
         || {
+            if let Ok(mut cancelled) = QUICK_COUNT_CANCELLED.lock() {
+                cancelled.remove(&root);
+            }
             let loaded = storage::load_app_data(&app)?;
             let data_root = paths::data_root(&app)?;
             let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
             let mut count = QuickCount::default();
+            let mut checked = 0u32;
             for entry in walkdir::WalkDir::new(&root).follow_links(false) {
+                checked += 1;
+                if checked % 256 == 0 {
+                    let is_cancelled = QUICK_COUNT_CANCELLED
+                        .lock()
+                        .map(|mut c| c.remove(&root))
+                        .unwrap_or(false);
+                    if is_cancelled {
+                        return Err("cancelled".to_string());
+                    }
+                }
                 let Ok(entry) = entry else { continue };
                 if !entry.file_type().is_file() {
                     continue;
@@ -898,6 +925,7 @@ pub fn run() {
             binaries_install,
             binaries_check,
             quick_count,
+            cancel_quick_count,
             validate_timezone,
             check_source_dirs,
             log_event,

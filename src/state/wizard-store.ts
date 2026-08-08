@@ -104,7 +104,11 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     }
   },
 
-  removeDir: (path) => set({ dirs: get().dirs.filter((d) => d.path !== path) }),
+  removeDir: (path) => {
+    // Stop an in-flight count's disk churn, not just its result.
+    void invoke("cancel_quick_count", { root: path }).catch(() => {});
+    set({ dirs: get().dirs.filter((d) => d.path !== path) });
+  },
 
   setStep: (step) => set({ step }),
 
