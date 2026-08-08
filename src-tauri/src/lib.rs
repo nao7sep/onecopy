@@ -5,6 +5,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
 pub mod binaries;
+pub mod binaries_manager;
 pub mod extensions;
 pub mod hashing;
 pub mod index_store;
@@ -446,6 +447,51 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
     )
 }
 
+// Managed ffmpeg: presence + facts + derived status.
+#[tauri::command]
+fn binaries_state(app: AppHandle) -> Result<binaries_manager::FfmpegState, String> {
+    let data_root = paths::data_root(&app)?;
+    Ok(binaries_manager::state(&data_root))
+}
+
+// Installs or updates ffmpeg on a worker thread; progress arrives as
+// `binaries://progress`, completion as `binaries://done` / `binaries://error`.
+#[tauri::command]
+fn binaries_install(app: AppHandle) -> Result<(), String> {
+    let data_root = paths::data_root(&app)?;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let emit = |phase: &str, detail: String| {
+            let _ = handle.emit("binaries://progress", json!({ "phase": phase, "detail": detail }));
+        };
+        match binaries_manager::install_or_update(&data_root, emit) {
+            Ok(facts) => {
+                let _ = handle.emit("binaries://done", json!({ "facts": facts }));
+            }
+            Err(err) => {
+                logging::warn("ffmpeg install failed", json!({ "error": { "message": err.clone() } }));
+                let _ = handle.emit("binaries://error", json!({ "message": err }));
+            }
+        }
+    });
+    Ok(())
+}
+
+// Version check only — never installs; a failure writes nothing.
+#[tauri::command]
+fn binaries_check(app: AppHandle) -> Result<binaries_manager::FfmpegState, String> {
+    logging::boundary(
+        "binaries_check",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            binaries_manager::check_for_updates(&data_root)?;
+            Ok(binaries_manager::state(&data_root))
+        },
+        |state| json!({ "status": format!("{:?}", state.status) }),
+    )
+}
+
 // Wizard support: a fast extension-classified count of one directory tree —
 // no stat, no hashing, just names — so an added directory shows its
 // image/video/other numbers while the user is still in the wizard.
@@ -640,6 +686,9 @@ pub fn run() {
             // one closes on drop.
             index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
 
+            // Download staging is crash debris by definition: wipe at launch.
+            binaries_manager::reset_temp_dir(&data_root);
+
             // Resolve the cache root once for the mediacache protocol, then
             // sweep crash leftovers (hash-orphaned entries, stranded temps).
             let loaded = storage::load_app_data(app.handle())?;
@@ -689,6 +738,9 @@ pub fn run() {
             delete_empty_dir,
             dir_is_empty,
             re_resolve_all,
+            binaries_state,
+            binaries_install,
+            binaries_check,
             quick_count,
             validate_timezone,
             check_source_dirs,
