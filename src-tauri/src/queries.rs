@@ -222,6 +222,130 @@ pub fn section_items(
     Ok(items)
 }
 
+/// The metadata pane's view of one logical item: content facts plus every
+/// copy path (the copy list doubles as the user's backup health check) and any
+/// companions riding along.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemDetail {
+    pub file_name: String,
+    pub kind: String,
+    pub byte_size: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub resolved_utc_ms: Option<i64>,
+    pub resolved_source: Option<String>,
+    pub date_only: bool,
+    pub copy_paths: Vec<String>,
+    pub companion_paths: Vec<String>,
+}
+
+pub fn item_detail(
+    conn: &Connection,
+    hash: Option<&str>,
+    path_id: Option<i64>,
+) -> Result<ItemDetail, String> {
+    let copies: Vec<(i64, String, String, String, Option<i64>, Option<i64>, Option<String>, i64)> =
+        match (hash, path_id) {
+            (Some(hash), _) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
+                         p.resolved_utc_ms, p.resolved_source, p.date_only \
+                         FROM paths p WHERE p.content_hash = ?1 AND p.missing = 0 \
+                         ORDER BY p.resolved_utc_ms, p.id",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([hash], row_to_copy)
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, Some(id)) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
+                         p.resolved_utc_ms, p.resolved_source, p.date_only \
+                         FROM paths p WHERE p.id = ?1 AND p.missing = 0",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([id], row_to_copy)
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, None) => return Err("item_detail needs a hash or a pathId".to_string()),
+        };
+
+    let Some(first) = copies.first() else {
+        return Err("item not found".to_string());
+    };
+
+    let (width, height, duration_ms, byte_size) = match hash {
+        Some(hash) => conn
+            .query_row(
+                "SELECT width, height, duration_ms, byte_size FROM contents WHERE hash = ?1",
+                [hash],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap_or((None, None, None, first.4)),
+        None => (None, None, None, first.4),
+    };
+
+    let id_list = copies
+        .iter()
+        .map(|c| c.0.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT abs_path FROM paths WHERE companion_of IN ({id_list}) AND missing = 0 \
+             ORDER BY abs_path"
+        ))
+        .map_err(|e| e.to_string())?;
+    let companion_paths: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    Ok(ItemDetail {
+        file_name: first.2.clone(),
+        kind: first.3.clone(),
+        byte_size,
+        width,
+        height,
+        duration_ms,
+        resolved_utc_ms: first.5,
+        resolved_source: first.6.clone(),
+        date_only: first.7 != 0,
+        copy_paths: copies.iter().map(|c| c.1.clone()).collect(),
+        companion_paths,
+    })
+}
+
+#[allow(clippy::type_complexity)]
+fn row_to_copy(
+    r: &rusqlite::Row,
+) -> rusqlite::Result<(i64, String, String, String, Option<i64>, Option<i64>, Option<String>, i64)> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+    ))
+}
+
 fn month_key(unix_ms: i64, tz: Tz) -> String {
     use chrono::Datelike;
     match tz.timestamp_millis_opt(unix_ms) {
@@ -374,6 +498,30 @@ mod tests {
         assert!(section_items(&conn, "image", "2016-05", chrono_tz::UTC)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn item_detail_lists_copies_and_companions() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(&format!(
+            "INSERT INTO contents (hash, byte_size, kind, width, height) VALUES ('h1', 42, 'image', 4000, 3000);
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/a/x.jpg', '/a', 'x.jpg', 'image', 'h1', {t}, 'metadata');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/b/x.jpg', '/b', 'x.jpg', 'image', 'h1', {t}, 'metadata');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, companion_of, resolved_utc_ms, resolved_source)
+               VALUES ('/a/x.arw', '/a', 'x.arw', 'companion', 1, {t}, 'filesystem');",
+            t = utc_ms(2016, 3, 5, 3),
+        ))
+        .unwrap();
+
+        let detail = item_detail(&conn, Some("h1"), None).unwrap();
+        assert_eq!(detail.file_name, "x.jpg");
+        assert_eq!(detail.byte_size, Some(42));
+        assert_eq!(detail.width, Some(4000));
+        assert_eq!(detail.copy_paths, vec!["/a/x.jpg", "/b/x.jpg"]);
+        assert_eq!(detail.companion_paths, vec!["/a/x.arw"]);
+        assert_eq!(detail.resolved_source.as_deref(), Some("metadata"));
     }
 
     #[test]

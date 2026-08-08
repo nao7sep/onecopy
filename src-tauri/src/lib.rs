@@ -279,6 +279,25 @@ fn display_timezone() -> chrono_tz::Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
+// The metadata pane's detail for one logical item.
+#[tauri::command]
+fn get_item_detail(
+    app: AppHandle,
+    hash: Option<String>,
+    path_id: Option<i64>,
+) -> Result<queries::ItemDetail, String> {
+    logging::boundary(
+        "get_item_detail",
+        json!({ "hash": hash, "pathId": path_id }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            queries::item_detail(&conn, hash.as_deref(), path_id)
+        },
+        |detail| json!({ "copies": detail.copy_paths.len() }),
+    )
+}
+
 // Left-pane section counts (logical items per kind per month), bucketed in the
 // OS display timezone.
 #[tauri::command]
@@ -401,6 +420,7 @@ pub fn run() {
             start_scan,
             get_section_counts,
             get_section_items,
+            get_item_detail,
             delete_item,
             log_event,
             logging_debug_enabled

@@ -6,6 +6,7 @@ import { useSectionsStore } from "./state/sections-store";
 import { useItemsStore, type SelectedSection } from "./state/items-store";
 import { monthLabel, type MonthSection } from "./models/sections";
 import Grid from "./components/Grid";
+import MetadataPane from "./components/MetadataPane";
 
 // The main-window shell: live left-pane sections, the thumbnail grid for the
 // selected section, and the scan lifecycle in the status bar. The wizard,
@@ -67,6 +68,7 @@ export default function App() {
   const selected = useItemsStore((s) => s.selected);
   const items = useItemsStore((s) => s.items);
   const itemsLoading = useItemsStore((s) => s.loading);
+  const detail = useItemsStore((s) => s.detail);
 
   // Delete/Backspace trash-deletes the selected logical item (every copy);
   // Shift makes it permanent. Ignored while typing in a form control.
@@ -145,6 +147,9 @@ export default function App() {
             <p className="m-auto text-ink-muted">Select a month</p>
           )}
         </main>
+        <aside className="w-72 shrink-0 overflow-y-auto border-l border-border bg-surface">
+          <MetadataPane detail={detail} />
+        </aside>
       </div>
       <footer className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span>OneCopy {__APP_VERSION__}</span>
