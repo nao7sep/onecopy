@@ -121,6 +121,132 @@ static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 // next launch — the protocol reads this, never the config, per request.
 static CACHE_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
+// The storage root, for the mediafile protocol's hash→path lookups.
+static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+// Serves ORIGINAL files by content hash (`mediafile://localhost/<hash>`) with
+// single-range support — what makes <video> seeking and the 100% zoom view
+// work. Only hashes present in the index resolve; the path comes from the DB,
+// so the webview never handles filesystem paths. Large files without a Range
+// get a 206 head-chunk to push players into ranged loading instead of a
+// whole-file read.
+fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .expect("static response")
+    };
+    let Some(data_root) = DATA_ROOT.get() else {
+        return not_found();
+    };
+    let hash = request.uri().path().trim_start_matches('/');
+    if hash.is_empty() || !hash.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return not_found();
+    }
+
+    let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) else {
+        return not_found();
+    };
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+            [hash],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(path) = path else { return not_found() };
+
+    let Ok(mut file) = std::fs::File::open(&path) else {
+        return not_found();
+    };
+    let Ok(total) = file.metadata().map(|m| m.len()) else {
+        return not_found();
+    };
+
+    let content_type = content_type_for(&path);
+    let range = request
+        .headers()
+        .get("Range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| parse_byte_range(v, total));
+
+    // Large file, no Range: serve a head chunk as 206 so the player switches
+    // to ranged loading rather than the handler materializing gigabytes.
+    const HEAD_CHUNK: u64 = 1024 * 1024;
+    const WHOLE_FILE_LIMIT: u64 = 32 * 1024 * 1024;
+    let (start, end, status) = match range {
+        Some((start, end)) => (start, end, 206),
+        None if total > WHOLE_FILE_LIMIT => (0, HEAD_CHUNK.min(total) - 1, 206),
+        None => (0, total.saturating_sub(1), 200),
+    };
+
+    let length = end - start + 1;
+    let mut bytes = vec![0u8; length as usize];
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut bytes).is_err() {
+        return not_found();
+    }
+
+    let mut builder = tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .header("Accept-Ranges", "bytes")
+        .header("Content-Length", length.to_string());
+    if status == 206 {
+        builder = builder.header("Content-Range", format!("bytes {start}-{end}/{total}"));
+    }
+    builder.body(bytes).unwrap_or_else(|_| not_found())
+}
+
+// `bytes=start-end` / `bytes=start-` / `bytes=-suffix`, single range only.
+fn parse_byte_range(header: &str, total: u64) -> Option<(u64, u64)> {
+    let spec = header.strip_prefix("bytes=")?.split(',').next()?.trim();
+    let (start_text, end_text) = spec.split_once('-')?;
+    if start_text.is_empty() {
+        // Suffix form: the last N bytes.
+        let suffix: u64 = end_text.parse().ok()?;
+        if suffix == 0 || total == 0 {
+            return None;
+        }
+        return Some((total.saturating_sub(suffix), total - 1));
+    }
+    let start: u64 = start_text.parse().ok()?;
+    if start >= total {
+        return None;
+    }
+    let end = if end_text.is_empty() {
+        total - 1
+    } else {
+        end_text.parse::<u64>().ok()?.min(total - 1)
+    };
+    (start <= end).then_some((start, end))
+}
+
+fn content_type_for(path: &str) -> &'static str {
+    match extensions::lowercase_ext(path).as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" | "heif" | "hif" => "image/heif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "avif" => "image/avif",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mpg" | "mpeg" => "video/mpeg",
+        "wmv" => "video/x-ms-wmv",
+        "3gp" => "video/3gpp",
+        "mts" | "m2ts" => "video/mp2t",
+        _ => "application/octet-stream",
+    }
+}
+
 // Serves `mediacache://localhost/thumb-<hash>` and `/preview-<hash>` straight
 // from the hash-keyed cache (http://mediacache.localhost/… on Windows). Cache
 // entries are content-addressed, so responses are immutable-cacheable; misses
@@ -688,6 +814,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .register_uri_scheme_protocol("mediacache", |_ctx, request| serve_mediacache(&request))
+        .register_uri_scheme_protocol("mediafile", |_ctx, request| serve_mediafile(&request))
         .setup(move |app| {
             // Open the per-session log file under the app's own data dir. The Rust
             // core has filesystem access even though the webview is sandboxed, and
@@ -722,6 +849,7 @@ pub fn run() {
             let cache_root = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0)
                 .cache_root;
             let _ = CACHE_ROOT.set(cache_root.clone());
+            let _ = DATA_ROOT.set(data_root.clone());
             if let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
                 let cache = preview::CachePaths::new(cache_root);
                 match preview::startup_sweep(&conn, &cache) {

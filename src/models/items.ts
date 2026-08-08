@@ -62,6 +62,11 @@ export function stripUrl(hash: string, index: number): string {
   return convertFileSrc(`strip-${hash}-${index}`, "mediacache");
 }
 
+// The range-capable original-file protocol: video playback and the 100% view.
+export function originalUrl(hash: string): string {
+  return convertFileSrc(hash, "mediafile");
+}
+
 /** `m:ss` / `h:mm:ss` for duration badges. */
 export function formatDuration(durationMs: number): string {
   const totalSeconds = Math.round(durationMs / 1000);

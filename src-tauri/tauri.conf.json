@@ -18,8 +18,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost mediacache: http://mediacache.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1721; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost mediacache: http://mediacache.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1721 http://localhost:1721; object-src 'none'; base-uri 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost mediacache: http://mediacache.localhost mediafile: http://mediafile.localhost data: blob:; media-src 'self' mediafile: http://mediafile.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1721; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost mediacache: http://mediacache.localhost mediafile: http://mediafile.localhost data: blob:; media-src 'self' mediafile: http://mediafile.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1721 http://localhost:1721; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {
