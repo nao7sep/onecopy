@@ -3,9 +3,12 @@ use tauri::{AppHandle, Manager};
 
 pub mod backup_store;
 pub mod extensions;
+pub mod hashing;
 pub mod index_store;
 pub mod logging;
+pub mod metadata;
 mod nanoid;
+pub mod resolution;
 pub mod paths;
 pub mod storage;
 pub mod timestamps;
