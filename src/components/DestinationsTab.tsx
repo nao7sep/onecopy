@@ -66,6 +66,7 @@ function NodeActions({
       }`}
     >
       <button
+        tabIndex={-1}
         className="rounded border border-border px-1 text-primary hover:bg-primary-surface"
         title="Move the selected item here; its other copies go to trash. Shift-click: delete them permanently."
         onClick={(e) =>
@@ -75,6 +76,7 @@ function NodeActions({
         Move here
       </button>
       <button
+        tabIndex={-1}
         className="rounded border border-border px-1 text-ink hover:bg-surface-muted"
         title="Copy the selected item here; nothing else is touched."
         onClick={() => void moveSelectionTo(path, "copy")}
@@ -97,19 +99,23 @@ function NodeActions({
               e.stopPropagation();
               return;
             }
+            const tree = e.currentTarget.closest('[role="tree"]') as HTMLElement | null;
             if (e.key === "Enter" && name.trim() !== "") {
               void createFolder(path, name.trim());
               setCreating(false);
               setName("");
+              requestAnimationFrame(() => tree?.focus());
             } else if (e.key === "Escape") {
               setCreating(false);
               setName("");
+              requestAnimationFrame(() => tree?.focus());
             }
             e.stopPropagation();
           }}
         />
       ) : (
         <button
+          tabIndex={-1}
           className="rounded border border-border px-1 text-ink hover:bg-surface-muted"
           title="New subfolder"
           onClick={() => setCreating(true)}
@@ -119,6 +125,7 @@ function NodeActions({
       )}
       {isEmpty && parent !== null ? (
         <button
+          tabIndex={-1}
           className="rounded border border-border px-1 text-danger hover:bg-danger-surface"
           title="Delete this empty folder"
           onClick={() => void deleteFolder(path, parent)}
@@ -151,8 +158,9 @@ function DirNode({
   const { dropReady, handlers } = useDropHandlers(entry.path);
 
   return (
-    <li role="treeitem" aria-expanded={entry.hasChildren ? isOpen : undefined}>
+    <li role="treeitem" aria-selected={isActive} aria-expanded={entry.hasChildren ? isOpen : undefined}>
       <div
+        data-tree-path={entry.path}
         className={`group flex items-center rounded px-1 py-0.5 text-sm ${
           dropReady || isActive
             ? "bg-primary-surface ring-1 ring-primary-ring"
@@ -163,6 +171,7 @@ function DirNode({
         {...handlers}
       >
         <button
+          tabIndex={-1}
           className="w-4 shrink-0 text-ink-muted"
           onClick={() => void toggleExpand(entry.path)}
           title={entry.hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
@@ -180,7 +189,7 @@ function DirNode({
         <NodeActions path={entry.path} parent={parent} isEmpty={isEmpty} isActive={isActive} />
       </div>
       {isOpen ? (
-        <ul>
+        <ul role="group">
           {(children[entry.path] ?? []).map((child) => (
             <DirNode key={child.path} entry={child} parent={entry.path} depth={depth + 1} />
           ))}
@@ -237,6 +246,17 @@ export default function DestinationsTab() {
     if (rows.length === 0) return;
     const index = activePath !== null ? rows.findIndex((r) => r.path === activePath) : -1;
     const row = index >= 0 ? rows[index] : null;
+    // Keeping the active item in view (composite-control conventions) — the
+    // rows are rendered, so the marker is queryable immediately.
+    const container = event.currentTarget as HTMLElement;
+    const activate = (path: string | null) => {
+      setActive(path);
+      if (path !== null) {
+        container
+          .querySelector(`[data-tree-path="${CSS.escape(path)}"]`)
+          ?.scrollIntoView({ block: "nearest" });
+      }
+    };
 
     if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
       event.preventDefault();
@@ -248,21 +268,21 @@ export default function DestinationsTab() {
             : event.key === "Home"
               ? 0
               : rows.length - 1;
-      setActive(rows[target]?.path ?? null);
+      activate(rows[target]?.path ?? null);
     } else if (event.key === "ArrowRight" && row) {
       event.preventDefault();
       if (!row.isExpanded && row.hasChildren) {
         void toggleExpand(row.path);
       } else if (row.isExpanded) {
         const first = (children[row.path] ?? [])[0];
-        if (first) setActive(first.path);
+        if (first) activate(first.path);
       }
     } else if (event.key === "ArrowLeft" && row) {
       event.preventDefault();
       if (row.isExpanded) {
         void toggleExpand(row.path);
       } else if (row.parent !== null) {
-        setActive(row.parent);
+        activate(row.parent);
       }
     } else if (event.key === "Enter" && row) {
       event.preventDefault();
@@ -286,27 +306,27 @@ export default function DestinationsTab() {
           Add root…
         </button>
       </div>
-      {roots.length === 0 ? (
-        <p className="text-sm text-ink-muted">
-          Add a destination root — the place cleaned-up files move to. It must
-          lie outside every scanned directory.
-        </p>
-      ) : (
-        <ul
-          role="tree"
-          aria-label="Destination folders"
-          tabIndex={0}
-          className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
-          onKeyDown={onKeyDown}
-        >
-          {roots.map((root) => {
+      {/* The container renders (and stays Tab-reachable) even with no
+          roots — an empty composite is still a landing place. */}
+      <ul
+        role="tree"
+        aria-label="Destination folders"
+        tabIndex={0}
+        className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+        onKeyDown={onKeyDown}
+      >
+        {roots.length === 0 ? (
+          <li role="none" className="text-sm text-ink-muted">
+            Add a destination root — the place cleaned-up files move to. It
+            must lie outside every scanned directory.
+          </li>
+        ) : (
+          roots.map((root) => {
             const isOpen = expanded.has(root);
-            return (
-              <RootRow key={root} root={root} isOpen={isOpen} />
-            );
-          })}
-        </ul>
-      )}
+            return <RootRow key={root} root={root} isOpen={isOpen} />;
+          })
+        )}
+      </ul>
       {message !== "" ? (
         <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">{message}</p>
       ) : null}
@@ -324,8 +344,9 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
   const isActive = activePath === root;
   const { dropReady, handlers } = useDropHandlers(root);
   return (
-    <li className="mb-1" role="treeitem" aria-expanded={isOpen}>
+    <li className="mb-1" role="treeitem" aria-selected={isActive} aria-expanded={isOpen}>
       <div
+        data-tree-path={root}
         className={`group flex items-center rounded px-1 py-0.5 text-sm ${
           dropReady || isActive
             ? "bg-primary-surface ring-1 ring-primary-ring"
@@ -335,6 +356,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
         {...handlers}
       >
                   <button
+                    tabIndex={-1}
                     className="w-4 shrink-0 text-ink-muted"
                     onClick={() => void toggleExpand(root)}
                   >
@@ -353,6 +375,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
                     isActive={isActive}
                   />
                   <button
+                    tabIndex={-1}
                     className="ml-1 hidden shrink-0 rounded border border-border px-1 text-xs text-ink-muted group-hover:inline hover:bg-surface-muted"
                     title="Remove this root from the list (the folder itself is untouched)"
                     onClick={() => void removeRoot(root)}

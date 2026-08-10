@@ -542,8 +542,10 @@ export default function App() {
             {(["details", "destinations"] as const).map((tab, index, tabs) => (
               <button
                 key={tab}
+                id={`right-tab-${tab}`}
                 role="tab"
                 aria-selected={rightTab === tab}
+                aria-controls="right-tabpanel"
                 tabIndex={rightTab === tab ? 0 : -1}
                 className={`flex-1 px-2 py-1 text-xs ${
                   rightTab === tab
@@ -552,19 +554,24 @@ export default function App() {
                 }`}
                 onClick={() => setRightTab(tab)}
                 onKeyDown={(event) => {
-                  const delta =
-                    event.key === "ArrowRight" || event.key === "End"
-                      ? 1
-                      : event.key === "ArrowLeft" || event.key === "Home"
-                        ? -1
-                        : 0;
-                  if (delta === 0) return;
+                  // Home/End jump to the ends; arrows STOP at them (the
+                  // app-wide end-of-axis choice — the grid and sidebar clamp).
+                  const target =
+                    event.key === "ArrowRight"
+                      ? Math.min(index + 1, tabs.length - 1)
+                      : event.key === "ArrowLeft"
+                        ? Math.max(index - 1, 0)
+                        : event.key === "Home"
+                          ? 0
+                          : event.key === "End"
+                            ? tabs.length - 1
+                            : null;
+                  if (target === null || target === index) return;
                   event.preventDefault();
-                  const next = tabs[(index + delta + tabs.length) % tabs.length];
-                  setRightTab(next);
-                  (event.currentTarget.parentElement?.children[
-                    (index + delta + tabs.length) % tabs.length
-                  ] as HTMLElement | undefined)?.focus();
+                  setRightTab(tabs[target]);
+                  (event.currentTarget.parentElement?.children[target] as
+                    | HTMLElement
+                    | undefined)?.focus();
                 }}
               >
                 {tab === "details" ? "Details" : "Destinations"}
@@ -575,6 +582,9 @@ export default function App() {
               — the pane holds nothing else focusable, and the tab buttons are
               siblings whose keydowns never reach this scroller. */}
           <div
+            id="right-tabpanel"
+            role="tabpanel"
+            aria-labelledby={`right-tab-${rightTab}`}
             tabIndex={0}
             className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
           >

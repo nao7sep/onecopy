@@ -153,15 +153,11 @@ export default function Grid({
 
   // During a same-section refresh the stale items keep rendering (the store
   // keeps them), so the scroll container never unmounts and its position
-  // survives the reload; only a genuinely empty grid shows the text states.
-  if (items.length === 0) {
-    return (
-      <p className="m-auto text-ink-muted">
-        {loading ? "Loading…" : "Nothing in this section"}
-      </p>
-    );
-  }
-  const sorted = sortItems(items, sortOrder);
+  // survives the reload. An empty grid keeps its focusable container too —
+  // an empty composite is still reachable by Tab (composite-control rules).
+  const emptyState =
+    items.length === 0 ? (loading ? "Loading…" : "Nothing in this section") : null;
+  const sorted = emptyState === null ? sortItems(items, sortOrder) : [];
   const sortedKeys = sorted.map(itemKey);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
@@ -236,6 +232,9 @@ export default function Grid({
         className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
         onKeyDown={onGridKeyDown}
       >
+        {emptyState !== null ? (
+          <p className="m-auto text-ink-muted">{emptyState}</p>
+        ) : null}
         {sorted.map((item) => {
           const key = itemKey(item);
           return (
