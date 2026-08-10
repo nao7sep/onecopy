@@ -6,8 +6,8 @@
 //! Layout on each volume:
 //!
 //! ```text
-//! <trash root>/2026-08-08/manifest.jsonl
-//! <trash root>/2026-08-08/<original path relative to the volume root>
+//! <trash root>/20260808-utc/manifest.jsonl
+//! <trash root>/20260808-utc/<original path relative to the volume root>
 //! ```
 //!
 //! The trash root is `<volume root>/.onecopy-trash` — a trash move is a
@@ -54,7 +54,11 @@ pub fn trash_file(
 
     let volume_root = volume_root_of(file)?;
     let trash_root = trash_root_for(&volume_root, app_root)?;
-    let day = logging::now_iso_millis()[..10].to_string(); // yyyy-mm-dd (UTC)
+    // Day folders use the FILENAME timestamp form (`yyyymmdd-utc`), never a
+    // slice of the serialized ISO form — the timestamp conventions' date-only
+    // grammar, with `-utc` carried because the files inside are the user's
+    // own originals and cannot carry it themselves.
+    let day = format!("{}-utc", &logging::filename_stamp_now()[..8]);
     let day_dir = trash_root.join(&day);
 
     // Original path relative to its volume root, preserved under the day

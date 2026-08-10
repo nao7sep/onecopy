@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useIssuesStore } from "../state/issues-store";
+import { formatLocalMinute } from "../utils/displayTime";
 
 // The issues list: newest first, plain rows. Read-only by design — issues are
 // the pipeline's testimony, not a work queue.
@@ -27,7 +28,9 @@ export default function IssuesView() {
           <li key={row.id} className="mb-1 rounded border border-border bg-surface p-2 text-xs">
             <div className="flex justify-between gap-2">
               <span className="font-semibold text-danger">{row.kind}</span>
-              <span className="shrink-0 text-ink-muted">{row.createdAtUtc}</span>
+              <span className="shrink-0 text-ink-muted">
+                {formatLocalMinute(row.createdAtUtc)}
+              </span>
             </div>
             {row.path ? (
               <div className="break-all text-ink" title={row.path}>

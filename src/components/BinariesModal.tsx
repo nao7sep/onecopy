@@ -1,5 +1,6 @@
 import { useBinariesStore } from "../state/binaries-store";
 import ModalShell from "./ModalShell";
+import { formatLocalMinute } from "../utils/displayTime";
 
 // The "Managed tools" modal: one row per tool (ffmpeg today), the one
 // context-aware action, an explicit check button, a labelled Close. It never
@@ -45,7 +46,7 @@ export default function BinariesModal() {
           Installed: {state?.facts.installedVersion ?? "—"} · Latest known:{" "}
           {state?.facts.latestKnownVersion ?? "—"}
           {state?.facts.lastCheckedAtUtc
-            ? ` · Checked ${state.facts.lastCheckedAtUtc}`
+            ? ` · Checked ${formatLocalMinute(state.facts.lastCheckedAtUtc)}`
             : " · Never checked"}
         </div>
         {installing ? (

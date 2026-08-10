@@ -1,5 +1,6 @@
 import { stripUrl } from "../models/items";
 import type { ItemDetail } from "../state/items-store";
+import { formatLocalMinute } from "../utils/displayTime";
 
 // The right pane's metadata tab: content facts, the resolved capture time
 // with its source, and the full copy-path list — the live health check (1 copy
@@ -21,7 +22,7 @@ function formatBytes(bytes: number | null): string {
 
 function formatTaken(detail: ItemDetail): string {
   if (detail.resolvedUtcMs === null) return "Undated";
-  const stamp = new Date(detail.resolvedUtcMs).toLocaleString();
+  const stamp = formatLocalMinute(detail.resolvedUtcMs);
   const suffix = detail.dateOnly ? " (date only)" : "";
   const source = detail.resolvedSource ? ` · ${detail.resolvedSource}` : "";
   return `${stamp}${suffix}${source}`;

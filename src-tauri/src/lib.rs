@@ -610,31 +610,50 @@ fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
 // unique within its directory (storage-path conventions' hard invariant).
 #[tauri::command]
 fn create_subdir(parent: String, name: String) -> Result<String, String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() || trimmed.contains(['/', '\\']) {
-        return Err("folder names must be non-empty and slash-free".to_string());
-    }
-    let parent_path = std::path::Path::new(&parent);
-    let lower = trimmed.to_lowercase();
-    if let Ok(read) = std::fs::read_dir(parent_path) {
-        for entry in read.flatten() {
-            if entry.file_name().to_string_lossy().to_lowercase() == lower {
-                return Err(format!(
-                    "\"{trimmed}\" already exists here (names are case-insensitively unique)"
-                ));
+    logging::boundary(
+        "create_subdir",
+        json!({ "parent": parent, "name": name }),
+        || {
+            let trimmed = name.trim();
+            // Control characters (a pasted newline is the real case) would
+            // create a directory whose name cannot be typed or read sanely.
+            if trimmed.is_empty()
+                || trimmed.contains(['/', '\\'])
+                || trimmed.chars().any(char::is_control)
+            {
+                return Err(
+                    "folder names must be non-empty, slash-free, and single-line".to_string(),
+                );
             }
-        }
-    }
-    let target = parent_path.join(trimmed);
-    std::fs::create_dir(&target).map_err(|e| e.to_string())?;
-    Ok(target.to_string_lossy().to_string())
+            let parent_path = std::path::Path::new(&parent);
+            let lower = trimmed.to_lowercase();
+            if let Ok(read) = std::fs::read_dir(parent_path) {
+                for entry in read.flatten() {
+                    if entry.file_name().to_string_lossy().to_lowercase() == lower {
+                        return Err(format!(
+                            "\"{trimmed}\" already exists here (names are case-insensitively unique)"
+                        ));
+                    }
+                }
+            }
+            let target = parent_path.join(trimmed);
+            std::fs::create_dir(&target).map_err(|e| e.to_string())?;
+            Ok(target.to_string_lossy().to_string())
+        },
+        |path| json!({ "created": path }),
+    )
 }
 
 // Deletes a tree folder ONLY when empty — remove_dir refuses otherwise, which
 // is the entire safety model (empty folders render distinctly in the tree).
 #[tauri::command]
 fn delete_empty_dir(path: String) -> Result<(), String> {
-    std::fs::remove_dir(&path).map_err(|e| e.to_string())
+    logging::boundary(
+        "delete_empty_dir",
+        json!({ "path": path }),
+        || std::fs::remove_dir(&path).map_err(|e| e.to_string()),
+        |_| json!({}),
+    )
 }
 
 // Is this directory empty? Drives the tree's distinct empty-folder rendering.
