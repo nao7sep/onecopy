@@ -121,6 +121,8 @@ pub fn derive_videos_pending(
         stats.skipped_no_ffmpeg = true;
         return Ok(stats);
     };
+    // not recorded: ffmpeg frame staging (temp/, wiped at launch); the WebP
+    // results land through preview.rs's own unrecorded cache writes.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
 
     let mut stmt = conn

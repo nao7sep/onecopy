@@ -59,7 +59,12 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   detail: null,
   sortOrder: "time",
 
-  setSortOrder: (order) => set({ sortOrder: order }),
+  setSortOrder: (order) => {
+    set({ sortOrder: order });
+    void import("./app-store").then(({ useAppStore }) =>
+      useAppStore.getState().patchState({ sortOrder: order }),
+    );
+  },
 
   select: async (section) => {
     // A same-section reload (refresh after delete/rescan) keeps the stale
@@ -78,6 +83,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       detail: null,
       ...(sameSection ? {} : { items: [] }),
     });
+    void import("./app-store").then(({ useAppStore }) =>
+      useAppStore.getState().patchState({ lastSection: section }),
+    );
     try {
       const items = await invoke<SectionItem[]>("get_section_items", {
         kind: section.kind,
@@ -99,6 +107,11 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       selectedKeys: key === null ? new Set() : new Set([key]),
       detail: null,
     });
+    // The anchor persists (debounced by the state owner, so arrow scrubbing
+    // costs one write per pause), letting a relaunch land where culling left.
+    void import("./app-store").then(({ useAppStore }) =>
+      useAppStore.getState().patchState({ lastItem: key }),
+    );
     if (key === null) return;
     const item = get().items.find((i) => itemKey(i) === key);
     if (!item) return;

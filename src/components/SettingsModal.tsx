@@ -63,11 +63,7 @@ function CheckField({
   );
 }
 
-export default function SettingsModal({
-  baseConfig,
-}: {
-  baseConfig: Record<string, unknown> | null;
-}) {
+export default function SettingsModal() {
   const open = useSettingsStore((s) => s.open);
   const draft = useSettingsStore((s) => s.draft);
   const opened = useSettingsStore((s) => s.opened);
@@ -102,7 +98,7 @@ export default function SettingsModal({
         <button
           className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
           disabled={saving || !dirty || !timezoneValid}
-          onClick={() => void save(baseConfig)}
+          onClick={() => void save()}
         >
           {saving ? "Saving…" : "Save"}
         </button>

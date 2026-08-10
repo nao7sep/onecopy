@@ -4,12 +4,15 @@
 //! The data directory's managed files, each named in exactly one place (pinned
 //! by the storage_file_names integration test):
 //!
-//! - `config.json`     — durable user settings.               RECORDED (managed text)
-//! - `state.json`      — volatile UI/session state.           RECORDED (managed text)
-//! - `index.sqlite3`   — the scan index (facts/cache).        not recorded (binary, reconstructible)
-//! - `backups.sqlite3` — the write-through backup store.      not recorded (the store itself)
-//! - `logs/`           — per-session logs.                    not recorded (append-mode, by construction)
-//! - `cache/`          — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
+//! - `config.json`       — durable user settings.               RECORDED (managed text)
+//! - `state.json`        — volatile UI/session state.           RECORDED (managed text)
+//! - `index.sqlite3`     — the scan index (facts/cache).        not recorded (binary, reconstructible)
+//! - `backups.sqlite3`   — the write-through backup store.      not recorded (the store itself)
+//! - `logs/`             — per-session logs.                    not recorded (append-mode, by construction)
+//! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
+//! - `dependencies.json` — managed-binaries facts.              recorded via write_atomic (self-healing text; harmless in the store)
+//! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch)
+//! - `trash/`            — the home-volume trash tree.          not recorded (the user's own moved files, never app text)
 //!
 //! Corrupt-config policy (storage-path conventions): a present-but-unreadable
 //! JSON store is quarantined aside to `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`
@@ -24,7 +27,6 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tauri::AppHandle;
 
-use crate::extensions;
 use crate::{backup_store, logging, nanoid, paths};
 
 pub const CONFIG_FILE_NAME: &str = "config.json";
@@ -45,8 +47,6 @@ pub struct DefaultConfig {
     pub default_timezone: String,
     /// Timestamps resolving before this year are rejected as implausible.
     pub good_range_start_year: i32,
-    /// User-supplied filename patterns, tried after the built-in tokenizer.
-    pub filename_patterns: Vec<String>,
     /// Same-device gap (seconds) that chains photos into a similar-shot group.
     pub similarity_max_gap_seconds: u32,
     /// Max perceptual-hash Hamming distance for two photos to stay grouped.
@@ -60,17 +60,11 @@ pub struct DefaultConfig {
     pub video_strip_max_frames: u32,
     /// The one global companion-pairing toggle (all kinds together).
     pub pairing_enabled: bool,
-    /// Screen use priority order (screen identifiers; 1st = main, 2nd = preview,
-    /// rest join comparison). Empty until the user arranges it.
-    pub screen_priority: Vec<String>,
     /// Cache directory override; null means `<root>/cache`.
     pub cache_dir: Option<String>,
     pub keep_awake_during_indexing: bool,
     /// Read-back verification of every copy/move-out against the indexed hash.
     pub verify_after_copy: bool,
-    pub image_extensions: Vec<String>,
-    pub video_extensions: Vec<String>,
-    pub companion_extensions: Vec<String>,
     /// Source directories to scan (wizard-configured; absolute paths).
     pub source_dirs: Vec<String>,
     /// Destination roots for the move/copy-out tree (absolute paths).
@@ -79,11 +73,9 @@ pub struct DefaultConfig {
 
 impl Default for DefaultConfig {
     fn default() -> Self {
-        let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
         DefaultConfig {
             default_timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string()),
             good_range_start_year: 1995,
-            filename_patterns: Vec::new(),
             similarity_max_gap_seconds: 90,
             similarity_phash_max_distance: 12,
             preview_long_edge_px: 1600,
@@ -92,13 +84,9 @@ impl Default for DefaultConfig {
             video_strip_min_frames: 5,
             video_strip_max_frames: 20,
             pairing_enabled: true,
-            screen_priority: Vec::new(),
             cache_dir: None,
             keep_awake_during_indexing: true,
             verify_after_copy: true,
-            image_extensions: owned(extensions::IMAGE_EXTENSIONS),
-            video_extensions: owned(extensions::VIDEO_EXTENSIONS),
-            companion_extensions: owned(extensions::COMPANION_EXTENSIONS),
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),
         }
@@ -128,18 +116,43 @@ pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
     })
 }
 
-pub fn save_config(app: &AppHandle, config: &JsonValue) -> Result<(), String> {
+/// Patch-merges into `config.json` and returns the merged document. The core
+/// holds the file, so it is the one owner of the read-modify-write — the
+/// frontend sends only the keys it changes, and a stale cached copy in one
+/// store can never blind-overwrite another store's save (the lost-update the
+/// persisted-store-separation conventions' one-owner rule exists to prevent).
+pub fn patch_config(app: &AppHandle, patch: &JsonValue) -> Result<JsonValue, String> {
     // records: config.json is durable user settings — managed text, recorded on
     // every save (data-backup conventions).
     let root = paths::data_root(app)?;
-    atomic_write_json(&root.join(CONFIG_FILE_NAME), config)
+    patch_json_store(&root.join(CONFIG_FILE_NAME), patch)
 }
 
-pub fn save_state(app: &AppHandle, state: &JsonValue) -> Result<(), String> {
+/// Patch-merges into `state.json` (same one-owner contract as `patch_config`).
+pub fn patch_state(app: &AppHandle, patch: &JsonValue) -> Result<JsonValue, String> {
     // records: state.json is volatile UI state, still managed text — recorded on
     // every save; the store's per-path content dedup absorbs the churn.
     let root = paths::data_root(app)?;
-    atomic_write_json(&root.join(STATE_FILE_NAME), state)
+    patch_json_store(&root.join(STATE_FILE_NAME), patch)
+}
+
+/// Shallow merge: each top-level key in `patch` replaces the stored value
+/// wholesale (arrays and objects included — `sourceDirs` is a list you set,
+/// not a list you splice). Keys are never deleted; `null` stores as null,
+/// which is a meaningful value here (`cacheDir: null` = the default).
+fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<JsonValue, String> {
+    let mut current = read_json_optional(target)?.unwrap_or_else(|| serde_json::json!({}));
+    if !current.is_object() {
+        current = serde_json::json!({});
+    }
+    let (Some(doc), Some(fields)) = (current.as_object_mut(), patch.as_object()) else {
+        return Err("patch must be a JSON object".to_string());
+    };
+    for (key, value) in fields {
+        doc.insert(key.clone(), value.clone());
+    }
+    atomic_write_json(target, &current)?;
+    Ok(current)
 }
 
 /// First-run materialization (storage-path conventions): write `config.json`
@@ -282,10 +295,38 @@ mod tests {
         assert_eq!(value["pairingEnabled"], serde_json::json!(true));
         assert_eq!(value["verifyAfterCopy"], serde_json::json!(true));
         assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));
-        assert!(value["imageExtensions"]
-            .as_array()
-            .is_some_and(|a| a.iter().any(|e| e == "heic")));
         assert!(value["cacheDir"].is_null());
+        // Spec, not configuration: extension lists (and the other dead keys)
+        // are never materialized into the user-editable file.
+        for absent in ["imageExtensions", "videoExtensions", "companionExtensions", "filenamePatterns", "screenPriority"] {
+            assert!(value.get(absent).is_none(), "{absent} must not be seeded");
+        }
+    }
+
+    #[test]
+    #[serial(backup_store)]
+    fn patch_merges_shallow_and_survives_interleaved_writers() {
+        let dir = temp_dir("patch");
+        let target = dir.join("config.json");
+        write_atomic(&target, b"{\"a\": 1, \"list\": [\"x\"]}").unwrap();
+
+        // Writer 1 patches one key; writer 2 patches another with a stale
+        // mental model — neither loses the other's write.
+        let after1 = patch_json_store(&target, &serde_json::json!({ "list": ["x", "y"] })).unwrap();
+        assert_eq!(after1["a"], 1);
+        let after2 = patch_json_store(&target, &serde_json::json!({ "b": true })).unwrap();
+        assert_eq!(after2["list"], serde_json::json!(["x", "y"]));
+        assert_eq!(after2["a"], 1);
+        assert_eq!(after2["b"], true);
+
+        // Null is a stored value, not a deletion.
+        let after3 = patch_json_store(&target, &serde_json::json!({ "a": null })).unwrap();
+        assert!(after3["a"].is_null());
+        assert!(after3.get("a").is_some());
+
+        // A missing file starts from an empty document.
+        let fresh = patch_json_store(&dir.join("state.json"), &serde_json::json!({ "zoomLevel": 1.2 })).unwrap();
+        assert_eq!(fresh, serde_json::json!({ "zoomLevel": 1.2 }));
     }
 
     #[test]

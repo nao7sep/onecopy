@@ -6,7 +6,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { log, toErrorFields, saveConfig } from "../repositories";
+import { log, toErrorFields } from "../repositories";
 
 export interface QuickCount {
   images: number;
@@ -34,7 +34,7 @@ interface WizardState {
   setStep: (step: 1 | 2 | 3) => void;
   setTimezone: (name: string) => Promise<void>;
   pickCacheDir: () => Promise<void>;
-  finish: (baseConfig: Record<string, unknown> | null) => Promise<void>;
+  finish: () => Promise<void>;
   recheckPresence: () => Promise<void>;
 }
 
@@ -131,16 +131,17 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     }
   },
 
-  finish: async (baseConfig) => {
+  finish: async () => {
     const { dirs, timezone, cacheDir } = get();
-    const config: Record<string, unknown> = {
-      ...(baseConfig ?? {}),
-      sourceDirs: dirs.map((d) => d.path),
-      defaultTimezone: timezone,
-      cacheDir,
-    };
     try {
-      await saveConfig(config);
+      // A patch of exactly the wizard's three keys through the one config
+      // owner; everything else in config.json stays untouched.
+      const { useAppStore } = await import("./app-store");
+      await useAppStore.getState().patchConfig({
+        sourceDirs: dirs.map((d) => d.path),
+        defaultTimezone: timezone,
+        cacheDir,
+      });
       set({ open: false });
       log.info("wizard finished", { sourceDirs: dirs.length });
       const { useSectionsStore } = await import("./sections-store");

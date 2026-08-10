@@ -17,10 +17,19 @@ export function loadAppData(): Promise<LoadedAppData> {
   return invoke<LoadedAppData>("load_app_data");
 }
 
-export function saveConfig(config: Record<string, unknown>): Promise<void> {
-  return invoke<void>("save_config", { config });
+// Saves are PATCHES merged core-side (the core holds the file and owns the
+// read-modify-write); the merged document comes back so callers can publish
+// it without a second read. Route through app-store's patchConfig/patchState
+// so the one config/state owner stays current — never call these around it.
+
+export function patchConfigFile(
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("patch_config", { patch });
 }
 
-export function saveState(state: Record<string, unknown>): Promise<void> {
-  return invoke<void>("save_state", { state });
+export function patchStateFile(
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("patch_state", { patch });
 }

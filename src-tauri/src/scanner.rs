@@ -85,17 +85,6 @@ pub fn settings_from_config(
     let defaults = crate::storage::DefaultConfig::default();
     let get = |key: &str| config.and_then(|c| c.get(key));
 
-    let string_list = |key: &str, fallback: &[String]| -> Vec<String> {
-        get(key)
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|e| e.as_str())
-                    .map(|s| s.to_lowercase())
-                    .collect()
-            })
-            .unwrap_or_else(|| fallback.to_vec())
-    };
     let u32_of = |key: &str, fallback: u32| -> u32 {
         get(key)
             .and_then(|v| v.as_u64())
@@ -115,12 +104,15 @@ pub fn settings_from_config(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| data_root.join(crate::storage::CACHE_DIR_NAME));
 
+    let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
     ScanSettings {
         source_dirs: string_list_preserving_case(config, "sourceDirs"),
+        // Supported file types are specs, not user choices: the lists live in
+        // extensions.rs only, and a stray legacy key in config.json is ignored.
         lists: ScanLists {
-            images: string_list("imageExtensions", &defaults.image_extensions),
-            videos: string_list("videoExtensions", &defaults.video_extensions),
-            companions: string_list("companionExtensions", &defaults.companion_extensions),
+            images: owned(extensions::IMAGE_EXTENSIONS),
+            videos: owned(extensions::VIDEO_EXTENSIONS),
+            companions: owned(extensions::COMPANION_EXTENSIONS),
         },
         resolution: ResolutionConfig {
             default_timezone: tz,

@@ -19,6 +19,16 @@ use tauri::{AppHandle, Manager};
 const DATA_DIR_NAME: &str = ".onecopy";
 const HOME_ENV_VAR: &str = "ONECOPY_HOME";
 
+// The standard subdirectory/file names under the root, owned here so one
+// module names every standard subpath (storage-path conventions; storage.rs
+// names the JSON stores and the backup store defines its own DB name, all
+// pinned together by the storage_file_names integration test).
+pub const LOGS_DIR_NAME: &str = "logs";
+pub const BIN_DIR_NAME: &str = "bin";
+pub const TEMP_DIR_NAME: &str = "temp";
+pub const TRASH_DIR_NAME: &str = "trash";
+pub const DEPENDENCIES_FILE_NAME: &str = "dependencies.json";
+
 // Resolves the absolute storage root and ensures it exists. Returns a clear
 // error (and the caller stops) if the home directory is unknown or the root
 // cannot be created — never a silent fallback to a different location.

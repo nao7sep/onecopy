@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
-import { saveState } from "./repositories";
 import { useAppStore } from "./state/app-store";
 import {
   ZOOM_DEFAULT,
@@ -59,7 +58,11 @@ export default function App() {
       : null;
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
-  const [rightTab, setRightTab] = useState<"details" | "destinations">("details");
+  const [rightTab, setRightTabRaw] = useState<"details" | "destinations">("details");
+  const setRightTab = (tab: "details" | "destinations") => {
+    setRightTabRaw(tab);
+    void useAppStore.getState().patchState({ rightPaneTab: tab });
+  };
   const issuesOpen = useIssuesStore((s) => s.open);
   const issuesTotal = useIssuesStore((s) => s.total);
   const setIssuesOpen = useIssuesStore((s) => s.setOpen);
@@ -148,15 +151,14 @@ export default function App() {
           ? stepZoomIn(zoomRef.current)
           : stepZoomOut(zoomRef.current);
       zoomRef.current = next;
-      void (async () => {
-        await getCurrentWebview().setZoom(next).catch(() => {});
-        const state = { ...(appData?.state ?? {}), zoomLevel: next };
-        await saveState(state).catch(() => {});
-      })();
+      void getCurrentWebview().setZoom(next).catch(() => {});
+      // Through the one state owner (patch of only this key, debounced) —
+      // a failed write is logged there, never silently swallowed.
+      void useAppStore.getState().patchState({ zoomLevel: next });
     };
     window.addEventListener("keydown", onZoomKey);
     return () => window.removeEventListener("keydown", onZoomKey);
-  }, [appData]);
+  }, []);
 
   // Grid keys: Delete/Backspace trash-deletes the selected logical item
   // (every copy; Shift = permanent); Enter opens the comparison view when the
@@ -209,6 +211,44 @@ export default function App() {
     void useBinariesStore.getState().load();
   }, [loadCounts]);
 
+  // One-shot state restore once the persisted document is in: sort order,
+  // right-pane tab, Issues-open, and the last-open section + anchor (the
+  // section restore waits for counts so it never selects a vanished month).
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || appData === null || counts === null) return;
+    restoredRef.current = true;
+    const state = appData.state ?? {};
+    const sort = state.sortOrder;
+    if (sort === "time" || sort === "name" || sort === "size" || sort === "resolution") {
+      useItemsStore.setState({ sortOrder: sort });
+    }
+    if (state.rightPaneTab === "destinations") setRightTabRaw("destinations");
+    if (state.issuesOpen === true) useIssuesStore.getState().setOpen(true);
+    const last = state.lastSection as { kind?: string; month?: string } | undefined;
+    if (
+      last &&
+      (last.kind === "image" || last.kind === "video" || last.kind === "other") &&
+      typeof last.month === "string"
+    ) {
+      const lists =
+        last.kind === "image" ? counts.images : last.kind === "video" ? counts.videos : counts.others;
+      if (lists.some((s) => s.month === last.month)) {
+        void useItemsStore
+          .getState()
+          .select({ kind: last.kind, month: last.month })
+          .then(() => {
+            const anchor = state.lastItem;
+            if (typeof anchor !== "string") return;
+            const { items } = useItemsStore.getState();
+            if (items.some((i) => itemKey(i) === anchor)) {
+              useItemsStore.getState().selectItem(anchor);
+            }
+          });
+      }
+    }
+  }, [appData, counts]);
+
   const allEmpty =
     counts !== null &&
     counts.images.length === 0 &&
@@ -218,14 +258,14 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col bg-background text-ink">
       {wizardOpen && appData !== null ? (
-        <Wizard baseConfig={appData.config} dataRoot={appData.dataRoot} />
+        <Wizard dataRoot={appData.dataRoot} />
       ) : missingDirs.length > 0 ? (
         <PresenceGate missing={missingDirs} />
       ) : null}
       <ComparisonView />
       <BinariesModal />
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
-      <SettingsModal baseConfig={appData?.config ?? null} />
+      <SettingsModal />
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
           <Sidebar counts={counts} />

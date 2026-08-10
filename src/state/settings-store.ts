@@ -6,7 +6,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { log, toErrorFields, saveConfig } from "../repositories";
+import { log, toErrorFields } from "../repositories";
 
 export interface SettingsDraft {
   defaultTimezone: string;
@@ -68,7 +68,7 @@ interface SettingsState {
   removeSourceDir: (path: string) => void;
   pickCacheDir: () => Promise<void>;
   clearCacheDir: () => void;
-  save: (baseConfig: Record<string, unknown> | null) => Promise<void>;
+  save: () => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -137,12 +137,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   clearCacheDir: () => get().update({ cacheDir: null }),
 
-  save: async (baseConfig) => {
+  save: async () => {
     const { draft, timezoneValid } = get();
     if (!draft || !timezoneValid) return;
     set({ saving: true, message: "" });
     try {
-      await saveConfig({ ...(baseConfig ?? {}), ...draft });
+      // A patch of exactly the draft's keys through the one config owner —
+      // keys other surfaces manage (destinationRoots) are never touched.
+      const { useAppStore } = await import("./app-store");
+      await useAppStore.getState().patchConfig({ ...draft });
       // Settings changes re-resolve everything from stored evidence and
       // rebuild groups — pure DB work, no file reads.
       const resolved = await invoke<number>("re_resolve_all");
@@ -152,9 +155,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await useItemsStore.getState().refresh();
       const { useWizardStore } = await import("./wizard-store");
       await useWizardStore.getState().recheckPresence();
-      // Refresh the one config source of truth everywhere.
-      const { useAppStore } = await import("./app-store");
-      await useAppStore.getState().reload();
       set({ open: false, draft: null, opened: null, saving: false });
       log.info("settings saved", { resolved });
     } catch (error) {

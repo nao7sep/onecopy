@@ -7,7 +7,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { log, toErrorFields, saveConfig } from "../repositories";
+import { log, toErrorFields } from "../repositories";
 
 export interface DirEntry {
   name: string;
@@ -25,7 +25,6 @@ export interface MoveOutOutcome {
 export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
 
 interface DestinationsState {
-  baseConfig: Record<string, unknown> | null;
   roots: string[];
   children: Record<string, DirEntry[]>;
   expanded: Set<string>;
@@ -57,7 +56,6 @@ async function probeEmptiness(paths: string[]): Promise<Record<string, boolean>>
 }
 
 export const useDestinationsStore = create<DestinationsState>((set, get) => ({
-  baseConfig: null,
   roots: [],
   children: {},
   expanded: new Set<string>(),
@@ -71,19 +69,21 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     const roots = Array.isArray(config?.destinationRoots)
       ? (config.destinationRoots as string[])
       : [];
-    set({ baseConfig: config, roots });
+    set({ roots });
   },
 
   addRoot: async () => {
     try {
       const picked = await openDialog({ directory: true, multiple: false });
       if (typeof picked !== "string") return;
-      const { roots, baseConfig } = get();
+      const { roots } = get();
       if (roots.includes(picked)) return;
       const next = [...roots, picked];
-      const config = { ...(baseConfig ?? {}), destinationRoots: next };
-      await saveConfig(config);
-      set({ roots: next, baseConfig: config });
+      // A patch of ONLY this key through the one config owner — a stale
+      // cached copy elsewhere can no longer revert the added root.
+      const { useAppStore } = await import("./app-store");
+      await useAppStore.getState().patchConfig({ destinationRoots: next });
+      set({ roots: next });
     } catch (error) {
       log.error("destination root add failed", toErrorFields(error));
     }
@@ -91,11 +91,10 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
 
   removeRoot: async (root) => {
     try {
-      const { roots, baseConfig } = get();
-      const next = roots.filter((r) => r !== root);
-      const config = { ...(baseConfig ?? {}), destinationRoots: next };
-      await saveConfig(config);
-      set({ roots: next, baseConfig: config });
+      const next = get().roots.filter((r) => r !== root);
+      const { useAppStore } = await import("./app-store");
+      await useAppStore.getState().patchConfig({ destinationRoots: next });
+      set({ roots: next });
     } catch (error) {
       log.error("destination root remove failed", toErrorFields(error));
     }

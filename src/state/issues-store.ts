@@ -37,5 +37,10 @@ export const useIssuesStore = create<IssuesState>((set) => ({
     }
   },
 
-  setOpen: (open) => set({ open }),
+  setOpen: (open) => {
+    set({ open });
+    void import("./app-store").then(({ useAppStore }) =>
+      useAppStore.getState().patchState({ issuesOpen: open }),
+    );
+  },
 }));

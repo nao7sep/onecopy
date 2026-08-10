@@ -16,13 +16,7 @@ function totalEstimateGb(
   return Math.round((megabytes / 1024) * 10) / 10;
 }
 
-export default function Wizard({
-  baseConfig,
-  dataRoot,
-}: {
-  baseConfig: Record<string, unknown> | null;
-  dataRoot: string;
-}) {
+export default function Wizard({ dataRoot }: { dataRoot: string }) {
   const step = useWizardStore((s) => s.step);
   const dirs = useWizardStore((s) => s.dirs);
   const timezone = useWizardStore((s) => s.timezone);
@@ -156,7 +150,7 @@ export default function Wizard({
                 className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
                 disabled={counting}
                 title={counting ? "Waiting for directory counts" : undefined}
-                onClick={() => void finish(baseConfig)}
+                onClick={() => void finish()}
               >
                 Finish and scan
               </button>

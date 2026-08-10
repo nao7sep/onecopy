@@ -23,9 +23,9 @@ use ureq::ResponseExt;
 use crate::binaries::{self, BinaryFacts, BinaryStatus};
 use crate::{logging, nanoid, storage};
 
-pub const BIN_DIR_NAME: &str = "bin";
-pub const TEMP_DIR_NAME: &str = "temp";
-pub const DEPENDENCIES_FILE_NAME: &str = "dependencies.json";
+// Subpath names are owned by the one resolver module (storage-path
+// conventions); re-exported here so existing call sites keep their imports.
+pub use crate::paths::{BIN_DIR_NAME, DEPENDENCIES_FILE_NAME, TEMP_DIR_NAME};
 
 const MARTIN_REDIRECT_URL: &str =
     "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip";
@@ -67,6 +67,10 @@ pub fn load_facts(root: &Path) -> BinaryFacts {
 }
 
 pub fn save_facts(root: &Path, facts: &BinaryFacts) -> Result<(), String> {
+    // records: dependencies.json rides write_atomic's backup hook. The facts
+    // are re-derivable, so recording is not REQUIRED — but tiny self-healing
+    // text in the store is harmless, and a separate unrecorded write path
+    // would cost more than it saves (accounted in storage.rs's table).
     let value = serde_json::json!({ "ffmpeg": facts });
     let mut text = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
     text.push('\n');
@@ -156,6 +160,8 @@ pub fn resolve_latest() -> Result<Resolved, String> {
 
 // --- Download / verify / extract / publish ---
 
+// not recorded: download staging — binary bytes into temp/, verified then
+// published by rename; outside the managed-text backup path by design.
 fn download_to(url: &str, dest: &Path, mut on_progress: impl FnMut(u64)) -> Result<u64, String> {
     assert_https(url)?;
     let mut response = agent(900).get(url).call().map_err(|e| e.to_string())?;
@@ -222,6 +228,7 @@ fn extract_ffmpeg(archive_path: &Path, staged: &Path) -> Result<(), String> {
         many => return Err(format!("archive holds {} candidates for {wanted}", many.len())),
     };
     let mut entry = archive.by_name(&inner).map_err(|e| e.to_string())?;
+    // not recorded: staged binary extraction (temp/), published by rename below.
     let mut out = std::fs::File::create(staged).map_err(|e| e.to_string())?;
     std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
     out.sync_all().map_err(|e| e.to_string())?;
@@ -301,6 +308,7 @@ pub fn install_or_update(
         let target = ffmpeg_path(root);
         std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
         // Replace-in-place: rename over any previous install (same volume).
+        // not recorded: the installed executable is a re-downloadable binary.
         std::fs::rename(&staged, &target).map_err(|e| e.to_string())?;
 
         let facts = BinaryFacts {

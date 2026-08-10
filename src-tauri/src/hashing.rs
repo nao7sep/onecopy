@@ -77,6 +77,8 @@ pub fn full_hash_cancellable(
 
 /// Copies `src` to `dst` while hashing the bytes read — the tee that gives
 /// move/copy-out its free source verification. Returns (hash, bytes copied).
+/// not recorded: this writes the user's own media into a destination root —
+/// OUTPUT, not app-managed text (data-backup conventions).
 /// The destination is created fresh (never clobbering an existing file: the
 /// collision policy upstream decides skips/conflicts before this runs) and
 /// fsynced before return; renaming/staging discipline belongs to the caller.

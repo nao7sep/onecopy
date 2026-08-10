@@ -101,22 +101,26 @@ fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
     )
 }
 
+// Config and state saves are PATCHES merged core-side: the core holds the
+// file, so it is the one owner of the read-modify-write, and no frontend
+// store's stale cached copy can blind-overwrite another's save. Returns the
+// merged document so the caller can publish it without a second read.
 #[tauri::command]
-fn save_config(app: AppHandle, config: Value) -> Result<(), String> {
+fn patch_config(app: AppHandle, patch: Value) -> Result<Value, String> {
     logging::boundary(
-        "save_config",
+        "patch_config",
         json!({}),
-        || storage::save_config(&app, &config),
+        || storage::patch_config(&app, &patch),
         |_| json!({}),
     )
 }
 
 #[tauri::command]
-fn save_state(app: AppHandle, state: Value) -> Result<(), String> {
+fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
     logging::boundary(
-        "save_state",
+        "patch_state",
         json!({}),
-        || storage::save_state(&app, &state),
+        || storage::patch_state(&app, &patch),
         |_| json!({}),
     )
 }
@@ -971,7 +975,9 @@ pub fn run() {
             // so the log directory and the data directory share one source of
             // truth and both honor ONECOPY_HOME.
             let data_root = paths::data_root(app.handle())?;
-            let log_path = data_root.join("logs").join(logging::session_filename());
+            let log_path = data_root
+                .join(paths::LOGS_DIR_NAME)
+                .join(logging::session_filename());
             logging::init(&log_path, debug_enabled);
             install_panic_hook();
 
@@ -1055,8 +1061,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_data_root,
             load_app_data,
-            save_config,
-            save_state,
+            patch_config,
+            patch_state,
             start_scan,
             get_section_counts,
             get_section_items,
