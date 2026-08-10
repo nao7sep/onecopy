@@ -43,6 +43,8 @@ interface ItemsState {
   setSortOrder: (order: SortOrder) => void;
   select: (section: SelectedSection) => Promise<void>;
   selectItem: (key: string | null) => void;
+  /** Moves the anchor WITHOUT collapsing the multi-selection (Shift+arrow). */
+  setAnchor: (key: string | null) => void;
   toggleItem: (key: string) => void;
   rangeSelect: (sortedKeys: string[], key: string) => void;
   deleteSelected: (permanent: boolean) => Promise<void>;
@@ -107,32 +109,12 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       selectedKeys: key === null ? new Set() : new Set([key]),
       detail: null,
     });
-    // The anchor persists (debounced by the state owner, so arrow scrubbing
-    // costs one write per pause), letting a relaunch land where culling left.
-    void import("./app-store").then(({ useAppStore }) =>
-      useAppStore.getState().patchState({ lastItem: key }),
-    );
-    if (key === null) return;
-    const item = get().items.find((i) => itemKey(i) === key);
-    if (!item) return;
-    // An open preview window follows the selection live.
-    void import("./preview-store").then(({ updatePreviewIfOpen }) =>
-      updatePreviewIfOpen({
-        hash: item.hash,
-        pathId: item.hash === null ? item.pathId : null,
-      }),
-    );
-    void invoke<ItemDetail>("get_item_detail", {
-      hash: item.hash,
-      pathId: item.hash === null ? item.pathId : null,
-    })
-      .then((detail) => {
-        // Ignore a stale response if the selection moved on meanwhile.
-        if (get().selectedItem === key) set({ detail });
-      })
-      .catch((error) => {
-        log.error("item detail load failed", toErrorFields(error));
-      });
+    notifyAnchor(key);
+  },
+
+  setAnchor: (key) => {
+    set({ selectedItem: key });
+    notifyAnchor(key);
   },
 
   toggleItem: (key) => {
@@ -143,7 +125,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       next.add(key);
     }
     // The anchor moves to the toggled key (or clears with the selection).
-    set({ selectedKeys: next, selectedItem: next.has(key) ? key : null });
+    const anchor = next.has(key) ? key : null;
+    set({ selectedKeys: next, selectedItem: anchor });
+    notifyAnchor(anchor);
   },
 
   rangeSelect: (sortedKeys, key) => {
@@ -188,6 +172,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         selectedItem: survivorKey,
         selectedKeys: survivorKey ? new Set([survivorKey]) : new Set(),
       });
+      // The recovery selection is an anchor move: the preview must stop
+      // showing the file that was just trashed.
+      notifyAnchor(survivorKey);
       await refresh();
       const { useSectionsStore } = await import("./sections-store");
       await useSectionsStore.getState().loadCounts();
@@ -225,6 +212,37 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       const keys = new Set([...keptKeys].filter((k) => alive.has(k)));
       const anchor = keptAnchor !== null && alive.has(keptAnchor) ? keptAnchor : null;
       set({ selectedItem: anchor, selectedKeys: keys });
+      notifyAnchor(anchor);
     }
   },
 }));
+
+/** Every path that moves the anchor funnels here: the persisted `lastItem`,
+ * the preview follow (throttled in the preview store), and the ONE detail
+ * fetch — whose result both fills the metadata pane and completes the
+ * preview's message, so nothing queries twice and nothing races. */
+function notifyAnchor(key: string | null): void {
+  void import("./app-store").then(({ useAppStore }) =>
+    useAppStore.getState().patchState({ lastItem: key }),
+  );
+  if (key === null) return;
+  const item = useItemsStore.getState().items.find((i) => itemKey(i) === key);
+  if (!item) return;
+  const payload = { hash: item.hash, pathId: item.hash === null ? item.pathId : null };
+  void import("./preview-store").then(({ usePreviewStore }) =>
+    usePreviewStore.getState().anchorChanged(payload, null),
+  );
+  void invoke<ItemDetail>("get_item_detail", payload)
+    .then((detail) => {
+      // Ignore a stale response if the selection moved on meanwhile.
+      if (useItemsStore.getState().selectedItem === key) {
+        useItemsStore.setState({ detail });
+        void import("./preview-store").then(({ usePreviewStore }) =>
+          usePreviewStore.getState().detailLoaded(payload, detail),
+        );
+      }
+    })
+    .catch((error) => {
+      log.error("item detail load failed", toErrorFields(error));
+    });
+}

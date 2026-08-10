@@ -41,6 +41,7 @@ export default function ShortcutsModal({
           action="Trash the item and every copy (Shift: delete permanently)"
         />
         <Row chord="Enter" action="Compare similar photos, or open the preview" />
+        <Row chord="P" action="Toggle preview-follows-selection" />
       </Group>
       <Group title="Destinations tree">
         <Row chord="Enter" action="Move the selection here, trash the other copies" />

@@ -191,7 +191,9 @@ export default function Grid({
     if (key === undefined) return;
     if (event.shiftKey) {
       rangeSelect(sortedKeys, key);
-      useItemsStore.setState({ selectedItem: key });
+      // Through the anchor path (not a raw setState) so persistence and the
+      // preview follow see Shift+arrow moves too.
+      useItemsStore.getState().setAnchor(key);
     } else {
       selectItem(key);
     }

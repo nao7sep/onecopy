@@ -24,6 +24,9 @@ body.dragging * {
 body.col-resizing * {
   cursor: col-resize !important;
 }
+body.row-resizing * {
+  cursor: row-resize !important;
+}
 
 /* ── Semantic color tokens ────────────────────────────────────────────────
    Single source of truth for every color in the app. Light values alias

@@ -47,6 +47,8 @@ import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
 import { ffmpegRole, useBinariesStore } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
+import { usePreviewStore } from "./state/preview-store";
+import PreviewSurface from "./components/PreviewSurface";
 
 // The main-window shell: the sidebar listbox, the thumbnail grid for the
 // selected section, the tabbed right pane, and the scan lifecycle in the
@@ -86,6 +88,33 @@ export default function App() {
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
   const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const previewFollow = usePreviewStore((s) => s.follow);
+  const previewPlacement = usePreviewStore((s) => s.placement);
+  const previewCurrent = usePreviewStore((s) => s.current);
+  const splitRatio = usePreviewStore((s) => s.splitRatio);
+  const splitOpen = previewFollow && previewPlacement === "split";
+  const mainColRef = useRef<HTMLElement | null>(null);
+
+  const beginSplitDrag = (event: React.MouseEvent) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startRatio = usePreviewStore.getState().splitRatio;
+    const height = mainColRef.current?.clientHeight ?? 1;
+    document.body.classList.add("row-resizing");
+    const onMove = (e: MouseEvent) => {
+      usePreviewStore.getState().setSplitRatio(startRatio + (e.clientY - startY) / height);
+    };
+    const onUp = () => {
+      document.body.classList.remove("row-resizing");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      void useAppStore
+        .getState()
+        .patchState({ previewSplitRatio: usePreviewStore.getState().splitRatio });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
 
   // The one open-Settings path — the menu item and the Cmd+, chord both use
   // it, so the two can never drift.
@@ -112,21 +141,22 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // A newly opened preview window asks for the current selection.
+  // A newly opened preview window asks for the current selection; answer
+  // with the payload AND the already-fetched detail (the window queries
+  // nothing itself).
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+    void import("@tauri-apps/api/event").then(async ({ listen, emit }) => {
       const fn = await listen("preview://ready", () => {
-        const { items, selectedItem } = useItemsStore.getState();
+        const { items, selectedItem, detail } = useItemsStore.getState();
         const item = items.find((i) => itemKey(i) === selectedItem);
         if (item) {
-          void import("./state/preview-store").then(({ updatePreviewIfOpen }) =>
-            updatePreviewIfOpen({
-              hash: item.hash,
-              pathId: item.hash === null ? item.pathId : null,
-            }),
-          );
+          void emit("preview://show", {
+            hash: item.hash,
+            pathId: item.hash === null ? item.pathId : null,
+            detail,
+          });
         }
       });
       if (disposed) fn();
@@ -273,6 +303,28 @@ export default function App() {
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
         void useItemsStore.getState().deleteSelected(event.shiftKey);
+      } else if (event.key.toLowerCase() === "p" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        // Preview follow toggle (FastStone's model): on opens the surface for
+        // the current anchor; off closes it by any placement.
+        event.preventDefault();
+        void import("./state/preview-store").then(({ usePreviewStore, showPreview }) => {
+          const preview = usePreviewStore.getState();
+          if (preview.follow) {
+            preview.close();
+            return;
+          }
+          const { items, selectedItem } = useItemsStore.getState();
+          const item = items.find((i) => itemKey(i) === selectedItem);
+          if (item) {
+            void showPreview({
+              hash: item.hash,
+              pathId: item.hash === null ? item.pathId : null,
+            });
+          } else {
+            // No anchor yet: arm follow; the first selection opens it.
+            usePreviewStore.setState({ follow: true });
+          }
+        });
       } else if (event.key === "Enter") {
         const { items, selectedItem } = useItemsStore.getState();
         const item = items.find((i) => itemKey(i) === selectedItem);
@@ -333,6 +385,14 @@ export default function App() {
       left: typeof left === "number" && Number.isFinite(left) ? left : current.left,
       right: typeof right === "number" && Number.isFinite(right) ? right : current.right,
     }));
+    void import("./state/preview-store").then(({ usePreviewStore }) =>
+      usePreviewStore
+        .getState()
+        .restoreFollow(
+          state.previewFollow === true,
+          typeof state.previewSplitRatio === "number" ? state.previewSplitRatio : null,
+        ),
+    );
     const last = state.lastSection as { kind?: string; month?: string } | undefined;
     if (
       last &&
@@ -403,9 +463,40 @@ export default function App() {
           onMouseDown={beginPaneDrag("left")}
         />
         <main
+          ref={mainColRef}
           style={{ minWidth: GRID_MIN_WIDTH }}
           className="flex min-w-0 flex-1 flex-col overflow-hidden"
         >
+          {splitOpen ? (
+            <>
+              {/* Single-monitor placement: the preview rides ABOVE the grid —
+                  a separate window would cover it and steal the keyboard. */}
+              <div
+                style={{ height: `${splitRatio * 100}%` }}
+                className="relative min-h-24 shrink-0 overflow-hidden"
+              >
+                <PreviewSurface
+                  hash={previewCurrent?.hash ?? null}
+                  detail={previewCurrent?.detail ?? null}
+                />
+                <button
+                  aria-label="Close preview"
+                  title="Close preview (P)"
+                  className="absolute right-2 top-2 rounded bg-surface/80 px-1.5 text-sm text-ink-muted hover:bg-surface hover:text-ink"
+                  onClick={() => usePreviewStore.getState().close()}
+                >
+                  ✕
+                </button>
+              </div>
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize preview"
+                className="h-1 shrink-0 cursor-row-resize bg-border hover:bg-border-strong"
+                onMouseDown={beginSplitDrag}
+              />
+            </>
+          ) : null}
           {loadError !== null ? (
             <p className="m-auto text-danger">{loadError}</p>
           ) : issuesOpen ? (

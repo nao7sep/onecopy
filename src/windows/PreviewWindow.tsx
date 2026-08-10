@@ -1,76 +1,23 @@
 import { useEffect, useState } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { originalUrl, previewUrl, stripUrl } from "../models/items";
-import ZoomableImage from "../components/ZoomableImage";
-import type { ItemDetail } from "../state/items-store";
-import type { PreviewPayload } from "../state/preview-store";
+import PreviewSurface from "../components/PreviewSurface";
+import type { PreviewShowMessage } from "../state/preview-store";
 
-// The preview window: images at fit (cached preview) with a click/Z toggle
-// into the true 100% view (original bytes via the range-capable mediafile
-// protocol, drag to pan); videos play in-webview through the same protocol
-// (poster from the cache, system-player fallback for codecs the webview
-// refuses); F toggles fullscreen; Escape leaves fullscreen, then closes.
-// Follows the main window's selection via `preview://show`.
-
-function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
-  const [playbackFailed, setPlaybackFailed] = useState(false);
-  return (
-    <div className="flex h-full w-full flex-col items-center gap-2 overflow-y-auto">
-      {playbackFailed ? (
-        <img
-          src={previewUrl(hash)}
-          alt={detail.fileName}
-          className="max-h-[60%] max-w-full object-contain"
-        />
-      ) : (
-        <video
-          controls
-          preload="metadata"
-          poster={previewUrl(hash)}
-          src={originalUrl(hash)}
-          className="max-h-[70%] max-w-full"
-          onError={() => setPlaybackFailed(true)}
-        />
-      )}
-      <div className="flex flex-wrap justify-center gap-1">
-        {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => (
-          <img
-            key={i}
-            src={stripUrl(hash, i)}
-            alt={`snapshot ${i + 1}`}
-            loading="lazy"
-            className="h-24 rounded border border-border"
-          />
-        ))}
-      </div>
-      {playbackFailed ? (
-        <p className="text-xs text-ink-muted">
-          This codec does not play in the app's webview.
-        </p>
-      ) : null}
-      <button
-        className="rounded border border-border px-3 py-1 text-sm text-primary hover:bg-primary-surface"
-        onClick={() => {
-          const path = detail.copyPaths[0];
-          if (path) void openPath(path);
-        }}
-      >
-        Open in player
-      </button>
-    </div>
-  );
-}
+// The preview window placement (screen 2): renders the shared PreviewSurface
+// from `preview://show` messages — payload AND detail arrive together from
+// the anchor owner, so this window queries nothing and can never race a
+// stale response. The previous message keeps rendering until the next one
+// arrives (no blank flash between keystrokes). F toggles fullscreen; Escape
+// leaves fullscreen, then closes (the main window observes the destroy and
+// clears the follow flag).
 
 export default function PreviewWindow() {
-  const [payload, setPayload] = useState<PreviewPayload | null>(null);
-  const [detail, setDetail] = useState<ItemDetail | null>(null);
+  const [message, setMessage] = useState<PreviewShowMessage | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<PreviewPayload>("preview://show", (event) => {
-      setPayload(event.payload);
+    const unlisten = listen<PreviewShowMessage>("preview://show", (event) => {
+      setMessage(event.payload);
     });
     // Ask the main window for the current selection on load.
     void emit("preview://ready", {});
@@ -99,18 +46,7 @@ export default function PreviewWindow() {
     };
   }, []);
 
-  useEffect(() => {
-    setDetail(null);
-    if (payload === null || (payload.hash === null && payload.pathId === null)) return;
-    void invoke<ItemDetail>("get_item_detail", {
-      hash: payload.hash,
-      pathId: payload.hash === null ? payload.pathId : null,
-    })
-      .then(setDetail)
-      .catch(() => setDetail(null));
-  }, [payload]);
-
-  if (payload === null || detail === null) {
+  if (message === null) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
         <p className="text-ink-muted">Select an item in the main window</p>
@@ -118,21 +54,14 @@ export default function PreviewWindow() {
     );
   }
 
-  const hash = payload.hash;
   return (
     <div className="flex h-screen flex-col bg-background">
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
-        {detail.kind === "video" && hash !== null ? (
-          <VideoSurface hash={hash} detail={detail} />
-        ) : hash !== null ? (
-          <ZoomableImage hash={hash} fileName={detail.fileName} />
-        ) : (
-          <p className="text-ink-muted">{detail.fileName} (no preview)</p>
-        )}
+      <div className="min-h-0 flex-1">
+        <PreviewSurface hash={message.hash} detail={message.detail} />
       </div>
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        <span className="truncate" title={detail.fileName}>
-          {detail.fileName}
+        <span className="truncate" title={message.detail?.fileName ?? ""}>
+          {message.detail?.fileName ?? "…"}
         </span>
         <span>Z: 100% · F: fullscreen · Escape: close</span>
       </footer>

@@ -9,9 +9,13 @@ import { originalUrl, previewUrl } from "../models/items";
 export default function ZoomableImage({
   hash,
   fileName,
+  onError,
 }: {
   hash: string;
   fileName: string;
+  /** Fires when the fit-view preview fails to load (missing/undecodable) so
+   * the host can show words instead of the webview's broken-image icon. */
+  onError?: () => void;
 }) {
   const [zoomed, setZoomed] = useState(false);
   const panRef = useRef<HTMLDivElement | null>(null);
@@ -36,6 +40,7 @@ export default function ZoomableImage({
         title="Click or press Z for 100%"
         className="max-h-full max-w-full cursor-zoom-in object-contain"
         onClick={() => setZoomed(true)}
+        onError={onError}
       />
     );
   }
