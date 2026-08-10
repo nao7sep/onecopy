@@ -3,13 +3,15 @@
 //! stopped (unchanged size+mtime rows are skipped on the next pass). Symlinks
 //! are not followed; hard links are distinct paths by design.
 //!
-//! Hash tiering refinement over the plan's base rule: media files (images and
-//! videos) are always fully hashed — preview generation reads every byte
-//! anyway, and their cache/dedup identity is the hash — while other-files keep
-//! the full tier: a unique size is never content-read (no duplicate can
-//! exist), a size collision gets the prehash, and only prehash collisions get
-//! the full hash. Same size + same prehash + different full hash among
-//! supposed copies is recorded as a `copies-disagree` issue.
+//! Hashing is ONE ladder for every kind (no media exception): a unique size
+//! reads nothing, a size collision gets the 64 KB prehash, and only prehash
+//! collisions get the full hash — the single-copy user's library is hardly
+//! read at all. Media with nothing to compare against get a PROVISIONAL
+//! identity (`p<path_id>`) so the cache and UI have a key; it promotes to the
+//! real hash wherever a full read happens anyway (image derive tees the
+//! decode, move-out tees the copy) or the ladder later demands one. Same size
+//! + same prehash + different full hash among supposed copies is recorded as
+//! a `copies-disagree` issue.
 //!
 //! This module is synchronous and testable against temp trees; the
 //! thread-spawning, progress-event-emitting wrapper arrives with the Phase 3
@@ -252,14 +254,18 @@ pub fn run_pipeline_tail(
     progress: &dyn Fn(&str, String),
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
-    let hash_stats = hash_pending(conn)?;
+    let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
+    let hash_stats = hash_pending(conn, &cache)?;
     summary.full_hashed = hash_stats.full_hashed;
     summary.copies_disagree = hash_stats.copies_disagree;
     progress(
         "hash",
         format!(
-            "{} hashed, {} unique skipped, {} disagreements",
-            hash_stats.full_hashed, hash_stats.skipped_unique, hash_stats.copies_disagree
+            "{} hashed, {} unique ({} media identified without a read), {} disagreements",
+            hash_stats.full_hashed,
+            hash_stats.skipped_unique + hash_stats.provisional_created,
+            hash_stats.provisional_created,
+            hash_stats.copies_disagree
         ),
     );
 
@@ -517,100 +523,272 @@ pub struct HashStats {
     pub prehashed: u64,
     pub full_hashed: u64,
     pub skipped_unique: u64,
+    pub provisional_created: u64,
     pub copies_disagree: u64,
     pub errors: u64,
 }
 
-/// The tiered content pass over rows without a content hash. Media rows always
-/// get the full hash; other-file rows get it only when size and prehash both
-/// collide. Contents rows are created per distinct hash; copies-disagree
-/// anomalies are recorded as issues.
-pub fn hash_pending(conn: &Connection) -> Result<HashStats, String> {
+/// Provisional content identity for a media file whose bytes were never read:
+/// `p<path_id>` — unique per path by construction (so its copy count is 1),
+/// and impossible to mistake for a real 64-hex blake3 hash. It exists so the
+/// cache and the UI have a key before any full read happens, and it promotes
+/// in place the first time a real hash appears (a size collision forcing the
+/// ladder up, an image-derive tee, or a move-out tee).
+pub fn provisional_key(path_id: i64) -> String {
+    format!("p{path_id}")
+}
+
+pub fn is_provisional(hash: &str) -> bool {
+    hash.starts_with('p')
+}
+
+/// Promotes a provisional identity to its real full hash: contents row,
+/// paths pointers, similar-group membership, and the hash-keyed cache
+/// entries all move to the real key. When the real hash already exists —
+/// the provisional file turned out to be a copy of known content — the rows
+/// merge instead (the established row's facts win; the provisional cache
+/// entries are dropped and the startup sweep collects any strays).
+pub fn promote_identity(
+    conn: &Connection,
+    cache: &crate::preview::CachePaths,
+    provisional: &str,
+    real_hash: &str,
+) -> Result<(), String> {
+    if !is_provisional(provisional) || provisional == real_hash {
+        return Ok(());
+    }
+    let already_known: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1)",
+            [real_hash],
+            |r| r.get::<_, i64>(0).map(|n| n != 0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if already_known {
+        conn.execute(
+            "UPDATE paths SET content_hash = ?2 WHERE content_hash = ?1",
+            params![provisional, real_hash],
+        )
+        .map_err(|e| e.to_string())?;
+        // Groups rebuild wholesale each scan; dropping the provisional
+        // membership is enough (never duplicating the real row's).
+        conn.execute(
+            "DELETE FROM similar_group_members WHERE content_hash = ?1",
+            [provisional],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM contents WHERE hash = ?1", [provisional])
+            .map_err(|e| e.to_string())?;
+        crate::preview::remove_entries(cache, provisional);
+    } else {
+        // The FK from paths forbids renaming the parent in place: copy the
+        // row under the real key, repoint the children, drop the old row.
+        conn.execute(
+            "INSERT INTO contents (hash, byte_size, kind, phash, camera_make, camera_model, \
+             width, height, duration_ms, sharpness, strip_frames, derived_at_utc) \
+             SELECT ?2, byte_size, kind, phash, camera_make, camera_model, \
+             width, height, duration_ms, sharpness, strip_frames, derived_at_utc \
+             FROM contents WHERE hash = ?1",
+            params![provisional, real_hash],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE paths SET content_hash = ?2 WHERE content_hash = ?1",
+            params![provisional, real_hash],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE similar_group_members SET content_hash = ?2 WHERE content_hash = ?1",
+            params![provisional, real_hash],
+        )
+        .map_err(|e| e.to_string())?;
+        let strip_frames: Option<i64> = conn
+            .query_row(
+                "SELECT strip_frames FROM contents WHERE hash = ?1",
+                [real_hash],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM contents WHERE hash = ?1", [provisional])
+            .map_err(|e| e.to_string())?;
+        crate::preview::rename_entries(cache, provisional, real_hash, strip_frames.unwrap_or(0));
+    }
+    Ok(())
+}
+
+/// The unified content ladder over rows without a REAL hash — one rule for
+/// every kind, no media exception: a unique size reads nothing, a size
+/// collision reads the 64 KB head+tail prehash, and only a prehash collision
+/// reads the full blake3. Collapsing copies still requires full-hash
+/// equality, always. Media with nothing to compare against get a PROVISIONAL
+/// identity (the cache and UI need a key before any read; images promote to
+/// a real hash for free at derive, where the decode reads every byte
+/// anyway); other-files stay hash-less as before. A size matching an
+/// ALREADY-HASHED content forces the full read directly — a late-arriving
+/// copy of known content must collapse into it, or the copy-count health
+/// check lies.
+pub fn hash_pending(
+    conn: &Connection,
+    cache: &crate::preview::CachePaths,
+) -> Result<HashStats, String> {
     let mut stats = HashStats::default();
 
-    // --- Media: full hash unconditionally. ---
-    let media: Vec<(i64, String, i64, String)> = collect_rows(
-        conn,
-        "SELECT id, abs_path, size, kind FROM paths \
-         WHERE missing = 0 AND content_hash IS NULL AND kind IN ('image', 'video')",
-    )?;
-    for (id, abs, size, kind) in media {
-        check_cancel()?;
-        match hashing::full_hash_cancellable(Path::new(&abs), &SCAN_CANCEL) {
+    struct Row {
+        id: i64,
+        abs: String,
+        size: i64,
+        kind: String,
+        provisional: Option<String>,
+        prehash: Option<String>,
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, abs_path, size, kind, content_hash, prehash FROM paths \
+             WHERE missing = 0 AND (content_hash IS NULL OR content_hash GLOB 'p*')",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<Row> = stmt
+        .query_map([], |r| {
+            Ok(Row {
+                id: r.get(0)?,
+                abs: r.get(1)?,
+                size: r.get(2)?,
+                kind: r.get(3)?,
+                provisional: r.get(4)?,
+                prehash: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    // Sizes of established (real-hashed) contents: a pending row matching one
+    // goes straight to the full read.
+    let mut known_stmt = conn
+        .prepare("SELECT DISTINCT byte_size FROM contents WHERE NOT hash GLOB 'p*'")
+        .map_err(|e| e.to_string())?;
+    let known_sizes: std::collections::HashSet<i64> = known_stmt
+        .query_map([], |r| r.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(known_stmt);
+
+    let is_media = |kind: &str| kind == "image" || kind == "video";
+
+    // Assigns the resting identity of a row that nothing collides with.
+    let settle_unique = |row: &Row, stats: &mut HashStats| -> Result<(), String> {
+        if row.provisional.is_some() {
+            return Ok(()); // already identified, still unique
+        }
+        if is_media(&row.kind) {
+            let key = provisional_key(row.id);
+            conn.execute(
+                "INSERT INTO contents (hash, byte_size, kind) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(hash) DO NOTHING",
+                params![key, row.size, row.kind],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE paths SET content_hash = ?2 WHERE id = ?1",
+                params![row.id, key],
+            )
+            .map_err(|e| e.to_string())?;
+            stats.provisional_created += 1;
+        } else {
+            stats.skipped_unique += 1;
+        }
+        Ok(())
+    };
+
+    // Full-hashes one row and lands its identity (promotion for provisional
+    // rows, creation/collapse otherwise). Returns the hash for disagreement
+    // accounting.
+    let land_full_hash = |row: &Row, stats: &mut HashStats| -> Result<Option<String>, String> {
+        match hashing::full_hash_cancellable(Path::new(&row.abs), &SCAN_CANCEL) {
             Ok(hash) => {
                 stats.full_hashed += 1;
-                store_content_hash(conn, id, &hash, size, &kind)?;
+                if let Some(provisional) = &row.provisional {
+                    promote_identity(conn, cache, provisional, &hash)?;
+                } else {
+                    store_content_hash(conn, row.id, &hash, row.size, &row.kind)?;
+                }
+                Ok(Some(hash))
             }
             Err(err) => {
                 // A cancel that interrupted the read is a shutdown, never a
                 // file problem — no issue row for it.
                 check_cancel()?;
                 stats.errors += 1;
-                record_issue(conn, Some(abs), "read-error", &err.to_string())?;
+                record_issue(conn, Some(row.abs.clone()), "read-error", &err.to_string())?;
+                Ok(None)
             }
         }
+    };
+
+    let mut by_size: HashMap<i64, Vec<Row>> = HashMap::new();
+    for row in rows {
+        by_size.entry(row.size).or_default().push(row);
     }
 
-    // --- Other files (companions included): the full tier. ---
-    let others: Vec<(i64, String, i64, String)> = collect_rows(
-        conn,
-        "SELECT id, abs_path, size, kind FROM paths \
-         WHERE missing = 0 AND content_hash IS NULL AND kind NOT IN ('image', 'video')",
-    )?;
-
-    // Group by size; unique sizes are never content-read.
-    let mut by_size: HashMap<i64, Vec<(i64, String, String)>> = HashMap::new();
-    for (id, abs, size, kind) in others {
-        by_size.entry(size).or_default().push((id, abs, kind));
-    }
     for (size, group) in by_size {
-        if group.len() == 1 {
-            stats.skipped_unique += 1;
+        check_cancel()?;
+        if group.len() == 1 && !known_sizes.contains(&size) {
+            settle_unique(&group[0], &mut stats)?;
             continue;
         }
-        // Size collision: prehash each, then full-hash only prehash collisions.
-        let mut by_prehash: HashMap<String, Vec<(i64, String, String)>> = HashMap::new();
-        for (id, abs, kind) in group {
+        if known_sizes.contains(&size) {
+            // Collides with established content: the prehash tier cannot
+            // decide (established media were never prehashed) — read fully.
+            for row in &group {
+                check_cancel()?;
+                let _ = land_full_hash(row, &mut stats)?;
+            }
+            continue;
+        }
+        // Size collision within the pending set: prehash each, then
+        // full-hash only prehash collisions.
+        let mut by_prehash: HashMap<String, Vec<Row>> = HashMap::new();
+        for mut row in group {
             check_cancel()?;
-            match hashing::prehash(Path::new(&abs)) {
-                Ok(pre) => {
-                    stats.prehashed += 1;
-                    conn.execute(
-                        "UPDATE paths SET prehash = ?2 WHERE id = ?1",
-                        params![id, pre],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    by_prehash.entry(pre).or_default().push((id, abs, kind));
-                }
-                Err(err) => {
-                    stats.errors += 1;
-                    record_issue(conn, Some(abs), "read-error", &err.to_string())?;
-                }
+            let pre = match &row.prehash {
+                Some(pre) => Some(pre.clone()),
+                None => match hashing::prehash(Path::new(&row.abs)) {
+                    Ok(pre) => {
+                        stats.prehashed += 1;
+                        conn.execute(
+                            "UPDATE paths SET prehash = ?2 WHERE id = ?1",
+                            params![row.id, pre],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        Some(pre)
+                    }
+                    Err(err) => {
+                        stats.errors += 1;
+                        record_issue(conn, Some(row.abs.clone()), "read-error", &err.to_string())?;
+                        None
+                    }
+                },
+            };
+            if let Some(pre) = pre {
+                row.prehash = Some(pre.clone());
+                by_prehash.entry(pre).or_default().push(row);
             }
         }
         for (_pre, collided) in by_prehash {
             if collided.len() == 1 {
-                stats.skipped_unique += 1;
+                settle_unique(&collided[0], &mut stats)?;
                 continue;
             }
             let group_len = collided.len();
             let mut hashes_in_group: Vec<String> = Vec::new();
-            for (id, abs, kind) in collided {
+            for row in &collided {
                 check_cancel()?;
-                match hashing::full_hash_cancellable(Path::new(&abs), &SCAN_CANCEL) {
-                    Ok(hash) => {
-                        stats.full_hashed += 1;
-                        if !hashes_in_group.contains(&hash) {
-                            hashes_in_group.push(hash.clone());
-                        }
-                        store_content_hash(conn, id, &hash, size, &kind)?;
-                    }
-                    Err(err) => {
-                        // A cancel that interrupted the read is a shutdown,
-                        // never a file problem — no issue row for it.
-                        check_cancel()?;
-                        stats.errors += 1;
-                        record_issue(conn, Some(abs), "read-error", &err.to_string())?;
+                if let Some(hash) = land_full_hash(row, &mut stats)? {
+                    if !hashes_in_group.contains(&hash) {
+                        hashes_in_group.push(hash);
                     }
                 }
             }
@@ -1020,6 +1198,10 @@ mod tests {
         assert!(pending_work_exists(&fx.conn, true).unwrap());
     }
 
+    fn test_cache(f: &Fixture) -> crate::preview::CachePaths {
+        crate::preview::CachePaths::new(f._dir.path().join("cache"))
+    }
+
     fn count(conn: &Connection, sql: &str) -> i64 {
         conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
@@ -1048,7 +1230,7 @@ mod tests {
     }
 
     #[test]
-    fn media_is_always_fully_hashed_and_copies_collapse() {
+    fn the_ladder_collapses_copies_and_identifies_unique_media_without_reading() {
         let f = fixture("media-hash");
         // Three identical copies in different subdirs, one distinct file.
         for sub in ["a", "b", "c"] {
@@ -1058,11 +1240,19 @@ mod tests {
         std::fs::write(f.root.join("unique.jpg"), b"different").unwrap();
 
         walk_root(&f.conn, &f.root, &lists()).unwrap();
-        let stats = hash_pending(&f.conn).unwrap();
-        assert_eq!(stats.full_hashed, 4);
+        let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
+        // The colliding three read fully; the unique-size image reads NOTHING
+        // and gets a provisional identity (the cache/UI key).
+        assert_eq!(stats.full_hashed, 3);
+        assert_eq!(stats.provisional_created, 1);
 
-        // One contents row for the three copies, one for the unique file.
+        // One contents row for the three copies, one provisional for the
+        // unique file; copy count over a provisional identity is 1.
         assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM contents WHERE hash GLOB 'p*'"),
+            1
+        );
         let copies: i64 = f
             .conn
             .query_row(
@@ -1076,13 +1266,43 @@ mod tests {
     }
 
     #[test]
+    fn a_late_copy_of_known_content_collapses_and_promotes() {
+        let f = fixture("late-copy");
+        std::fs::write(f.root.join("first.jpg"), b"same-bytes").unwrap();
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        hash_pending(&f.conn, &test_cache(&f)).unwrap();
+        // Unique at first sight: provisional.
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM contents WHERE hash GLOB 'p*'"),
+            1
+        );
+
+        // A second identical file arrives: the size collision forces BOTH up
+        // the ladder — the provisional promotes and the copies collapse.
+        std::fs::write(f.root.join("second.jpg"), b"same-bytes").unwrap();
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
+        assert_eq!(stats.full_hashed, 2);
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM contents WHERE hash GLOB 'p*'"),
+            0,
+            "the provisional identity must promote"
+        );
+        assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 1);
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM paths WHERE content_hash NOT NULL"),
+            2
+        );
+    }
+
+    #[test]
     fn other_files_with_unique_sizes_are_never_read() {
         let f = fixture("other-tier");
         std::fs::write(f.root.join("a.bin"), vec![1u8; 100]).unwrap();
         std::fs::write(f.root.join("b.bin"), vec![2u8; 200]).unwrap();
 
         walk_root(&f.conn, &f.root, &lists()).unwrap();
-        let stats = hash_pending(&f.conn).unwrap();
+        let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
         assert_eq!(stats.skipped_unique, 2);
         assert_eq!(stats.prehashed, 0);
         assert_eq!(stats.full_hashed, 0);
@@ -1099,7 +1319,7 @@ mod tests {
         std::fs::write(f.root.join("copy2.bin"), b"identical-data").unwrap();
 
         walk_root(&f.conn, &f.root, &lists()).unwrap();
-        let stats = hash_pending(&f.conn).unwrap();
+        let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
         assert_eq!(stats.prehashed, 2);
         assert_eq!(stats.full_hashed, 2);
         assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 1);
@@ -1117,7 +1337,7 @@ mod tests {
         std::fs::write(f.root.join("rotted2.bin"), &b).unwrap();
 
         walk_root(&f.conn, &f.root, &lists()).unwrap();
-        let stats = hash_pending(&f.conn).unwrap();
+        let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
         assert_eq!(stats.copies_disagree, 1);
         assert_eq!(
             count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'copies-disagree'"),
@@ -1136,7 +1356,7 @@ mod tests {
         std::fs::write(f.root.join("scan.pdf"), b"pdf-ish").unwrap();
 
         walk_root(&f.conn, &f.root, &lists()).unwrap();
-        hash_pending(&f.conn).unwrap();
+        hash_pending(&f.conn, &test_cache(&f)).unwrap();
         extract_pending(&f.conn).unwrap();
         let stats =
             resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly)
@@ -1223,7 +1443,7 @@ mod tests {
         let f = fixture("re-resolve");
         std::fs::write(f.root.join("IMG_20160305_123456.jpg"), b"not-a-real-jpeg").unwrap();
         walk_root(&f.conn, &f.root, &lists()).unwrap();
-        hash_pending(&f.conn).unwrap();
+        hash_pending(&f.conn, &test_cache(&f)).unwrap();
         extract_pending(&f.conn).unwrap();
         resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
 

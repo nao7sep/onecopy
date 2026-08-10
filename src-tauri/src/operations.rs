@@ -242,14 +242,30 @@ pub fn move_out(
         .and_then(|n| n.to_str())
         .ok_or_else(|| "copy has no file name".to_string())?
         .to_string();
-    let primary_delivered = deliver_one(
+    // A provisional identity has never been fully read: there is no source
+    // claim to verify against, so delivery degrades honestly to
+    // "verified against the source read" (tee + read-back), and the tee's
+    // hash — the file's FIRST full hash — promotes the identity afterwards.
+    let provisional = expected_hash
+        .as_deref()
+        .map(crate::scanner::is_provisional)
+        .unwrap_or(false);
+    let verify_hash = if provisional { None } else { expected_hash.as_deref() };
+    let delivery = deliver_one(
         conn,
         &copies,
-        expected_hash.as_deref(),
+        verify_hash,
         &dest_dir.join(&primary_name),
         &mut outcome,
     )?;
-    if !primary_delivered {
+    let mut promoted_to: Option<String> = None;
+    if provisional && delivery.ok {
+        if let (Some(stored), Some(real)) = (expected_hash.as_deref(), &delivery.real_hash) {
+            crate::scanner::promote_identity(conn, cache, stored, real)?;
+            promoted_to = Some(real.clone());
+        }
+    }
+    if !delivery.ok {
         // Conflict (or every copy failed): report and leave the world alone.
         return Ok(outcome);
     }
@@ -286,7 +302,8 @@ pub fn move_out(
             .unwrap_or("companion")
             .to_string();
         let expected = group[0].2.clone();
-        deliver_one(
+        // Companions are other-file tier — never provisional.
+        let _ = deliver_one(
             conn,
             &group,
             expected.as_deref(),
@@ -304,7 +321,14 @@ pub fn move_out(
             } else {
                 DeleteMode::Permanent
             };
-            outcome.post_action = delete_item(conn, app_root, cache, item, delete_mode)?;
+            // A promotion during delivery repointed the rows: the post-action
+            // must act on the REAL identity, not the retired provisional key.
+            let post_item = match (&promoted_to, &item) {
+                (Some(real), _) => ItemRef::Hash(real),
+                (None, ItemRef::Hash(hash)) => ItemRef::Hash(hash),
+                (None, ItemRef::PathId(id)) => ItemRef::PathId(*id),
+            };
+            outcome.post_action = delete_item(conn, app_root, cache, post_item, delete_mode)?;
         }
     }
 
@@ -324,16 +348,22 @@ pub fn move_out(
     Ok(outcome)
 }
 
-/// Delivers one file (trying each listed copy in order) to `target`. Returns
-/// true when the destination ends up holding the expected content — via a
-/// fresh verified copy or an identical file already there.
+/// What one delivery attempt produced: whether the destination ends up
+/// holding the expected content, and — when a full read happened along the
+/// way — the content's REAL hash (what promotes a provisional identity).
+struct Delivery {
+    ok: bool,
+    real_hash: Option<String>,
+}
+
+/// Delivers one file (trying each listed copy in order) to `target`.
 fn deliver_one(
     conn: &Connection,
     copies: &[(i64, String, Option<String>)],
     expected_hash: Option<&str>,
     target: &Path,
     outcome: &mut MoveOutOutcome,
-) -> Result<bool, String> {
+) -> Result<Delivery, String> {
     if target.exists() {
         let existing = crate::hashing::full_hash(target).map_err(|e| e.to_string())?;
         let matches = match expected_hash {
@@ -349,12 +379,12 @@ fn deliver_one(
         };
         if matches {
             outcome.skipped_identical += 1;
-            return Ok(true); // already delivered
+            return Ok(Delivery { ok: true, real_hash: Some(existing) }); // already delivered
         }
         outcome
             .conflicts
             .push(target.to_string_lossy().to_string());
-        return Ok(false);
+        return Ok(Delivery { ok: false, real_hash: None });
     }
 
     for (_, source_path, _) in copies {
@@ -379,7 +409,7 @@ fn deliver_one(
                     ));
                 }
                 outcome.exported += 1;
-                return Ok(true);
+                return Ok(Delivery { ok: true, real_hash: Some(streamed_hash) });
             }
             Err(err) => {
                 let _ = std::fs::remove_file(target);
@@ -392,7 +422,7 @@ fn deliver_one(
             }
         }
     }
-    Ok(false)
+    Ok(Delivery { ok: false, real_hash: None })
 }
 
 fn record_rot_issue(
@@ -474,7 +504,7 @@ mod tests {
 
     fn scan(f: &Fixture) {
         scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
-        scanner::hash_pending(&f.conn).unwrap();
+        scanner::hash_pending(&f.conn, &f.cache).unwrap();
         scanner::pair_companions(&f.conn).unwrap();
     }
 

@@ -77,6 +77,44 @@ pub fn generate_for_image(
 ) -> Result<DerivedFacts, String> {
     let orientation = read_orientation(src);
     let decoded = image::open(src).map_err(|e| e.to_string())?;
+    derive_from_decoded(decoded, orientation, src, hash, cache, thumb_edge, preview_long_edge)
+}
+
+/// The tee variant for a provisionally-identified image: the derive was going
+/// to read every byte anyway, so the REAL full hash comes free — read once,
+/// hash the bytes, decode from memory, and write the cache under the real
+/// key. Returns (real_hash, facts); the caller promotes the identity.
+pub fn generate_for_image_teeing(
+    src: &Path,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+) -> Result<(String, DerivedFacts), String> {
+    let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
+    let real_hash = blake3::hash(&bytes).to_hex().to_string();
+    let orientation = read_orientation(src);
+    let decoded = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let facts = derive_from_decoded(
+        decoded,
+        orientation,
+        src,
+        &real_hash,
+        cache,
+        thumb_edge,
+        preview_long_edge,
+    )?;
+    Ok((real_hash, facts))
+}
+
+fn derive_from_decoded(
+    decoded: DynamicImage,
+    orientation: u16,
+    src: &Path,
+    hash: &str,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+) -> Result<DerivedFacts, String> {
     let oriented = apply_orientation(decoded, orientation);
     let (width, height) = (oriented.width(), oriented.height());
 
@@ -215,11 +253,27 @@ pub fn derive_images_pending(
             return Err(crate::scanner::CANCELLED.to_string());
         }
 
-        let results: Vec<(&String, &String, Result<DerivedFacts, String>)> = chunk
+        type DeriveOutcome = Result<(Option<String>, DerivedFacts), String>;
+        let results: Vec<(&String, &String, DeriveOutcome)> = chunk
             .par_iter()
             .map(|(hash, path)| {
                 if crate::scanner::cancelled() {
                     (hash, path, Err(crate::scanner::CANCELLED.to_string()))
+                } else if crate::scanner::is_provisional(hash) {
+                    // The decode reads every byte anyway — tee the REAL hash
+                    // out of the same read and derive under it; the writer
+                    // below promotes the identity.
+                    (
+                        hash,
+                        path,
+                        generate_for_image_teeing(
+                            Path::new(path),
+                            cache,
+                            thumb_edge,
+                            preview_long_edge,
+                        )
+                        .map(|(real, facts)| (Some(real), facts)),
+                    )
                 } else {
                     (
                         hash,
@@ -230,7 +284,8 @@ pub fn derive_images_pending(
                             cache,
                             thumb_edge,
                             preview_long_edge,
-                        ),
+                        )
+                        .map(|facts| (None, facts)),
                     )
                 }
             })
@@ -238,14 +293,21 @@ pub fn derive_images_pending(
 
         for (hash, path, outcome) in results {
             match outcome {
-                Ok(facts) => {
+                Ok((promoted, facts)) => {
+                    let key = match promoted {
+                        Some(real) => {
+                            crate::scanner::promote_identity(conn, cache, hash, &real)?;
+                            real
+                        }
+                        None => hash.clone(),
+                    };
                     stats.derived += 1;
                     conn.execute(
                         "UPDATE contents SET width = COALESCE(width, ?2), \
                          height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
                          derived_at_utc = ?6 WHERE hash = ?1",
                         params![
-                            hash,
+                            key,
                             facts.width,
                             facts.height,
                             facts.sharpness,
@@ -360,6 +422,30 @@ pub fn remove_cache_subtrees(root: &Path) {
 pub fn remove_entries(cache: &CachePaths, hash: &str) {
     let _ = std::fs::remove_file(cache.thumb(hash));
     let _ = std::fs::remove_file(cache.preview(hash));
+}
+
+/// Moves one identity's cache entries to a new key (provisional→real
+/// promotion): thumb, preview, and any strip frames. Best-effort — a missing
+/// source has nothing to move, and the startup sweep collects strays.
+pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i64) {
+    let mut moves = vec![
+        (cache.thumb(old), cache.thumb(new)),
+        (cache.preview(old), cache.preview(new)),
+    ];
+    for i in 0..strip_frames.max(0) as u32 {
+        moves.push((
+            crate::video::strip_path(cache, old, i),
+            crate::video::strip_path(cache, new, i),
+        ));
+    }
+    for (from, to) in moves {
+        if from.exists() {
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
 }
 
 /// Startup sweep — the crash-leftover half of cache GC: deletes cache entries
@@ -719,6 +805,44 @@ mod tests {
             old_root.join("bystander.txt").exists(),
             "a user-picked folder's own content must survive"
         );
+    }
+
+    #[test]
+    fn derive_tees_the_real_hash_out_of_a_provisional_image() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-derive-tee-")
+            .tempdir()
+            .unwrap();
+        let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        let src = gradient_jpeg(dir.path(), "solo.jpg", 400, 300);
+
+        // A provisionally-identified image (unique size, never read).
+        conn.execute_batch(&format!(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('p1', 1, 'image');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+               VALUES ('{}', '{}', 'solo.jpg', 'image', 'p1');",
+            src.display(),
+            dir.path().display(),
+        ))
+        .unwrap();
+
+        let stats = derive_images_pending(&conn, &cache, 320, 1600, None).unwrap();
+        assert_eq!((stats.derived, stats.failed), (1, 0));
+
+        // The decode's read teed the REAL hash: identity promoted, cache
+        // written under the real key, provisional gone everywhere.
+        let real = blake3::hash(&std::fs::read(&src).unwrap()).to_hex().to_string();
+        let stored: String = conn
+            .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, real);
+        let provisional_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contents WHERE hash GLOB 'p*'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(provisional_left, 0);
+        assert!(cache.thumb(&real).exists());
+        assert!(!cache.thumb("p1").exists());
     }
 
     #[test]
