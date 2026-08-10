@@ -156,16 +156,27 @@ fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
             .body(Vec::new())
             .expect("static response")
     };
+    // None of these branches is expected control flow (unlike a cache miss in
+    // serve_mediacache), so each failure leaves a log line — an unmounted
+    // drive otherwise reads as blank views with a silent session log.
+    let warn_404 = |reason: &str, detail: String| {
+        logging::warn(
+            "mediafile request failed",
+            json!({ "reason": reason, "detail": detail }),
+        );
+        not_found()
+    };
     let Some(data_root) = DATA_ROOT.get() else {
-        return not_found();
+        return warn_404("data root unset", String::new());
     };
     let hash = request.uri().path().trim_start_matches('/');
     if hash.is_empty() || !hash.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return not_found();
+        return not_found(); // malformed request, not a filesystem failure
     }
 
-    let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) else {
-        return not_found();
+    let conn = match index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
+        Ok(conn) => conn,
+        Err(err) => return warn_404("index open failed", err),
     };
     let path: Option<String> = conn
         .query_row(
@@ -174,13 +185,17 @@ fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
             |r| r.get(0),
         )
         .ok();
-    let Some(path) = path else { return not_found() };
-
-    let Ok(mut file) = std::fs::File::open(&path) else {
-        return not_found();
+    let Some(path) = path else {
+        return warn_404("no live path for hash", hash.to_string());
     };
-    let Ok(total) = file.metadata().map(|m| m.len()) else {
-        return not_found();
+
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(err) => return warn_404("original unreadable", format!("{path}: {err}")),
+    };
+    let total = match file.metadata().map(|m| m.len()) {
+        Ok(total) => total,
+        Err(err) => return warn_404("metadata failed", format!("{path}: {err}")),
     };
 
     let content_type = content_type_for(&path);
@@ -202,8 +217,11 @@ fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
 
     let length = end - start + 1;
     let mut bytes = vec![0u8; length as usize];
-    if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut bytes).is_err() {
-        return not_found();
+    if let Err(err) = file
+        .seek(SeekFrom::Start(start))
+        .and_then(|_| file.read_exact(&mut bytes))
+    {
+        return warn_404("read failed", format!("{path}: {err}"));
     }
 
     let mut builder = tauri::http::Response::builder()
