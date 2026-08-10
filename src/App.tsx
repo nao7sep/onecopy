@@ -31,7 +31,7 @@ import { hasOpenModal } from "./utils/modalStack";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
-import { useBinariesStore } from "./state/binaries-store";
+import { ffmpegRole, useBinariesStore } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
 
 // The main-window shell: the sidebar listbox, the thumbnail grid for the
@@ -351,8 +351,8 @@ export default function App() {
         <span className="flex items-center gap-3">
           <button
             className={
-              ffmpegState?.status === "not-installed"
-                ? "text-danger hover:underline"
+              ffmpegRole(ffmpegState?.status ?? null) === "warning"
+                ? "text-warning hover:underline"
                 : "text-ink-muted hover:text-ink"
             }
             title="Managed tools"

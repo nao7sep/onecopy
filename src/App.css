@@ -52,6 +52,14 @@ body.dragging * {
   --danger-solid: var(--color-red-700);
   --danger-solid-hover: var(--color-red-800);
   --danger-surface: var(--color-red-50);
+
+  /* Warning — attention without alarm (an available update, a stale check) */
+  --warning: var(--color-amber-600);
+  --warning-surface: var(--color-amber-50);
+
+  /* Scrollbar thumb, themed per mode and brightened on hover */
+  --scrollbar-thumb: var(--color-gray-300);
+  --scrollbar-thumb-hover: var(--color-gray-400);
 }
 
 .dark {
@@ -77,6 +85,12 @@ body.dragging * {
   --danger-solid: var(--color-red-600);
   --danger-solid-hover: var(--color-red-500);
   --danger-surface: var(--color-red-950);
+
+  --warning: var(--color-amber-400);
+  --warning-surface: var(--color-amber-950);
+
+  --scrollbar-thumb: var(--color-gray-600);
+  --scrollbar-thumb-hover: var(--color-gray-500);
 }
 
 @theme inline {
@@ -97,20 +111,38 @@ body.dragging * {
   --color-danger-solid: var(--danger-solid);
   --color-danger-solid-hover: var(--danger-solid-hover);
   --color-danger-surface: var(--danger-surface);
+  --color-warning: var(--warning);
+  --color-warning-surface: var(--warning-surface);
 }
 
-/* App-chrome conventions: thin scrollbars, rounded thumbs. */
+/* App-chrome conventions: thin gutter, inset pill thumb that brightens on
+   hover, transparent track and corner. `scrollbar-color` must accompany
+   `scrollbar-width` — a Chromium webview with only the width set IGNORES the
+   ::-webkit-scrollbar rules and falls back to the UA default bar. */
 * {
   scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 5px;
+  background: var(--scrollbar-thumb);
+  border-radius: 6px;
+  /* Inset pill: a transparent border clipped out of the fill keeps the thumb
+     off the gutter edges. */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
   background: transparent;
 }

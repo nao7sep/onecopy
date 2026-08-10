@@ -18,6 +18,15 @@ export interface FfmpegState {
   path: string;
 }
 
+/** The attention role a status carries in the UI (managed-runtime-dependencies
+ * conventions): ffmpeg is OPTIONAL here, so absent is informational — a
+ * feature simply not set up — while an available update IS the warning. The
+ * call site names the role; the theme maps roles to colors. */
+export type FfmpegRole = "neutral" | "warning";
+export function ffmpegRole(status: FfmpegState["status"] | null): FfmpegRole {
+  return status === "update-available" ? "warning" : "neutral";
+}
+
 interface BinariesState {
   state: FfmpegState | null;
   installing: boolean;
