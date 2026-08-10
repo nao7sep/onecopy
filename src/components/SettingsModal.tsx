@@ -258,6 +258,24 @@ export default function SettingsModal() {
           />
 
           <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
+            Appearance
+          </h2>
+          <label className="flex items-center justify-between gap-2 py-0.5 text-sm text-ink">
+            <span>Theme</span>
+            <select
+              className="rounded border border-border bg-background px-2 py-0.5 text-sm"
+              value={draft.theme}
+              onChange={(e) =>
+                update({ theme: e.target.value as "system" | "light" | "dark" })
+              }
+            >
+              <option value="system">Follow the system</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+
+          <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
             Behavior
           </h2>
           <CheckField

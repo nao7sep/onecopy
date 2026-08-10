@@ -16,6 +16,7 @@ import {
   toErrorFields,
   type LoadedAppData,
 } from "../repositories";
+import { applyTheme } from "../utils/theme";
 
 interface AppState {
   appData: LoadedAppData | null;
@@ -42,6 +43,8 @@ export const useAppStore = create<AppState>((set) => ({
       set((s) =>
         s.appData === null ? s : { appData: { ...s.appData, config: merged } },
       );
+      // The main window re-themes live; other windows apply at their load.
+      applyTheme(merged.theme);
     } catch (error) {
       log.error("config patch failed", toErrorFields(error));
       throw error;

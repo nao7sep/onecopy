@@ -62,6 +62,8 @@ pub struct DefaultConfig {
     pub video_strip_max_frames: u32,
     /// The one global companion-pairing toggle (all kinds together).
     pub pairing_enabled: bool,
+    /// UI theme: "system" (follow the OS), "light", or "dark".
+    pub theme: String,
     /// Cache directory override; null means `<root>/cache`.
     pub cache_dir: Option<String>,
     pub keep_awake_during_indexing: bool,
@@ -89,6 +91,7 @@ impl Default for DefaultConfig {
             video_strip_min_frames: 5,
             video_strip_max_frames: 20,
             pairing_enabled: true,
+            theme: "system".to_string(),
             cache_dir: None,
             keep_awake_during_indexing: true,
             verify_after_copy: true,

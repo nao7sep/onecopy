@@ -1,0 +1,28 @@
+// Theme application: config's `theme` preference ("system" | "light" |
+// "dark", default system) resolves against the OS preference and lands as
+// the `.dark` class on the root element — the switch every semantic token in
+// App.css keys off. Every webview window runs this through main.tsx, so the
+// preview and comparison windows follow the same preference (they pick up an
+// in-session change on their next load; the main window re-applies live).
+
+const prefersDark = () =>
+  typeof window !== "undefined" &&
+  window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+let currentPref: unknown = "system";
+
+export function resolveDark(pref: unknown, systemDark: boolean): boolean {
+  return pref === "dark" || (pref !== "light" && systemDark);
+}
+
+export function applyTheme(pref: unknown): void {
+  currentPref = pref;
+  document.documentElement.classList.toggle("dark", resolveDark(pref, prefersDark()));
+}
+
+/** Re-applies on OS theme changes while the preference is "system". */
+export function watchSystemTheme(): void {
+  window
+    .matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", () => applyTheme(currentPref));
+}

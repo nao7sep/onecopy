@@ -4,11 +4,19 @@ import App from "./App";
 import PreviewWindow from "./windows/PreviewWindow";
 import ComparisonWindow from "./windows/ComparisonWindow";
 import "./App.css";
-import { log, toErrorFields, initLogging } from "./repositories";
+import { log, toErrorFields, initLogging, loadAppData } from "./repositories";
+import { applyTheme, watchSystemTheme } from "./utils/theme";
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
 // already works before this resolves (defaulting to the dev-build gate).
 void initLogging();
+
+// Theme before first meaningful paint, in EVERY window (one bundle serves
+// all); the OS-preference listener keeps "system" live.
+watchSystemTheme();
+void loadAppData()
+  .then((data) => applyTheme((data.config as { theme?: unknown } | null)?.theme))
+  .catch(() => applyTheme("system"));
 
 // Global last-resort handlers — catch anything that slips past React's error
 // handling and record it before the page can tear down.

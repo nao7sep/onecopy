@@ -20,6 +20,7 @@ export interface SettingsDraft {
   videoStripMinFrames: number;
   videoStripMaxFrames: number;
   pairingEnabled: boolean;
+  theme: "system" | "light" | "dark";
   keepAwakeDuringIndexing: boolean;
   verifyAfterCopy: boolean;
   cacheDir: string | null;
@@ -44,6 +45,8 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     videoStripMinFrames: numberOr(config?.videoStripMinFrames, 5),
     videoStripMaxFrames: numberOr(config?.videoStripMaxFrames, 20),
     pairingEnabled: config?.pairingEnabled !== false,
+    theme:
+      config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
     verifyAfterCopy: config?.verifyAfterCopy !== false,
     cacheDir:
