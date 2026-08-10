@@ -47,10 +47,12 @@ pub struct DefaultConfig {
     pub default_timezone: String,
     /// Timestamps resolving before this year are rejected as implausible.
     pub good_range_start_year: i32,
-    /// Same-device gap (seconds) that chains photos into a similar-shot group.
+    /// Burst-split gap (seconds) inside a visual cluster with camera data.
     pub similarity_max_gap_seconds: u32,
-    /// Max perceptual-hash Hamming distance for two photos to stay grouped.
+    /// Max perceptual-hash Hamming distance for two photos to cluster.
     pub similarity_phash_max_distance: u32,
+    /// A visual cluster larger than this is flagged, never offered as a group.
+    pub similarity_max_group_size: u32,
     /// Long edge of the screen-fit preview cache entries.
     pub preview_long_edge_px: u32,
     /// Edge of the grid thumbnail cache entries.
@@ -77,7 +79,10 @@ impl Default for DefaultConfig {
             default_timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string()),
             good_range_start_year: 1995,
             similarity_max_gap_seconds: 90,
-            similarity_phash_max_distance: 12,
+            // Deliberately tight: on a measured 548-image corpus, 12 collapsed
+            // everything into one 484-member hairball; 2-4 recovered families.
+            similarity_phash_max_distance: 4,
+            similarity_max_group_size: 32,
             preview_long_edge_px: 1600,
             thumbnail_edge_px: 320,
             video_strip_seconds_per_frame: 20,

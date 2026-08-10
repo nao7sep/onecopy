@@ -506,6 +506,55 @@ mod tests {
     }
 
     #[test]
+    fn dhash_known_answers_pin_the_bit_layout() {
+        // Strictly increasing brightness left-to-right: every neighbor
+        // comparison is "left < right", so every bit is set. Decreasing:
+        // none. These are hand-derivable reference vectors, not
+        // implementation echoes.
+        let rising = DynamicImage::ImageRgb8(image::RgbImage::from_fn(90, 80, |x, _| {
+            let v = (x * 2) as u8;
+            image::Rgb([v, v, v])
+        }));
+        assert_eq!(dhash(&rising), u64::MAX);
+
+        let falling = DynamicImage::ImageRgb8(image::RgbImage::from_fn(90, 80, |x, _| {
+            let v = 200 - (x * 2) as u8;
+            image::Rgb([v, v, v])
+        }));
+        assert_eq!(dhash(&falling), 0);
+
+        // A flat image is degenerate by design: zero hash, distance 0 to
+        // every other flat image — which is why the group-size cap exists.
+        let flat = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([128; 3])));
+        assert_eq!(dhash(&flat), 0);
+    }
+
+    #[test]
+    fn dhash_survives_scaling_but_not_rotation() {
+        let scene = |w: u32, h: u32| {
+            DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+                // An asymmetric gradient-plus-blob scene, scale-independent.
+                let fx = f64::from(x) / f64::from(w);
+                let fy = f64::from(y) / f64::from(h);
+                let blob = if (fx - 0.3).powi(2) + (fy - 0.6).powi(2) < 0.04 { 100.0 } else { 0.0 };
+                let v = (fx * 155.0 + blob).min(255.0) as u8;
+                image::Rgb([v, v, v])
+            }))
+        };
+        let big = scene(800, 600);
+        let small = scene(200, 150);
+        let dist_scaled = (dhash(&big) ^ dhash(&small)).count_ones();
+        assert!(dist_scaled <= 4, "same scene at two scales must match: {dist_scaled}");
+
+        let rotated = big.rotate90();
+        let dist_rotated = (dhash(&big) ^ dhash(&rotated)).count_ones();
+        assert!(
+            dist_rotated > 4,
+            "a 90-degree rotation must not silently match: {dist_rotated}"
+        );
+    }
+
+    #[test]
     fn sharp_images_score_higher_than_their_blurred_versions() {
         let sharp = image::RgbImage::from_fn(200, 200, |x, _| {
             if (x / 10) % 2 == 0 {

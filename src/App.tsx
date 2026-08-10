@@ -187,8 +187,18 @@ export default function App() {
         if (!item) return;
         event.preventDefault();
         if (item.hash && item.similarGroupId !== null) {
-          // Similar photos exist: Enter means "show them all at once".
-          void useComparisonStore.getState().openGroup(item.hash);
+          // Similar photos exist: Enter means "show them all at once" — and
+          // when the group turns out to have no other live members, Enter
+          // falls back to the preview instead of doing nothing.
+          void useComparisonStore
+            .getState()
+            .openGroup(item.hash)
+            .then((opened) => {
+              if (opened) return;
+              return import("./state/preview-store").then(({ showPreview }) =>
+                showPreview({ hash: item.hash, pathId: null }),
+              );
+            });
         } else {
           // No similars: Enter opens the item in the preview window.
           void import("./state/preview-store").then(({ showPreview }) =>

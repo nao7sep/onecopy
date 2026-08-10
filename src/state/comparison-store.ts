@@ -48,7 +48,9 @@ interface ComparisonState {
   /** Per-screen slot capacities (screen 0 = the main window). The turn size is
    * their sum, capped by the 16 slot keys. */
   capacities: number[];
-  openGroup: (hash: string) => Promise<void>;
+  /** Resolves false when no live group opened (fewer than 2 members) so the
+   * caller can fall back honestly instead of doing nothing on Enter. */
+  openGroup: (hash: string) => Promise<boolean>;
   toggleKeep: (slotIndex: number) => void;
   commitTurn: (permanent: boolean) => Promise<void>;
   close: () => void;
@@ -162,7 +164,12 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   openGroup: async (hash) => {
     try {
       const members = await invoke<GroupMember[]>("get_similar_group", { hash });
-      if (members.length < 2) return; // ungrouped items open nothing
+      if (members.length < 2) {
+        // A ≈ badge whose group lost its other members (deleted, drive
+        // absent) must not swallow Enter silently.
+        log.warn("similar group has fewer than 2 live members", { hash });
+        return false;
+      }
       // Spread first: the screens' capacities decide the turn size.
       await openSpread(perScreenCapacity(members));
       const size = turnSize(get().capacities);
@@ -173,8 +180,10 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         kept: new Set<string>(),
       });
       broadcast();
+      return true;
     } catch (error) {
       log.error("similar group load failed", toErrorFields(error));
+      return false;
     }
   },
 

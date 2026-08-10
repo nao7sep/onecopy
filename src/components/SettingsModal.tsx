@@ -187,6 +187,12 @@ export default function SettingsModal() {
             min={0}
             onChange={(v) => update({ similarityPhashMaxDistance: v })}
           />
+          <NumberField
+            label="Max photos per group"
+            value={draft.similarityMaxGroupSize}
+            min={2}
+            onChange={(v) => update({ similarityMaxGroupSize: v })}
+          />
 
           <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
             Previews

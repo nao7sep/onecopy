@@ -128,6 +128,10 @@ pub fn settings_from_config(
                 "similarityPhashMaxDistance",
                 defaults.similarity_phash_max_distance,
             ),
+            max_group_size: u32_of(
+                "similarityMaxGroupSize",
+                defaults.similarity_max_group_size,
+            ),
         },
         strip: crate::video::StripConfig {
             seconds_per_frame: u32_of(
