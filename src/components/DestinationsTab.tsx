@@ -158,7 +158,12 @@ function DirNode({
   const { dropReady, handlers } = useDropHandlers(entry.path);
 
   return (
-    <li role="treeitem" aria-selected={isActive} aria-expanded={entry.hasChildren ? isOpen : undefined}>
+    <li
+      id={`tree-${encodeURIComponent(entry.path)}`}
+      role="treeitem"
+      aria-selected={isActive}
+      aria-expanded={entry.hasChildren ? isOpen : undefined}
+    >
       <div
         data-tree-path={entry.path}
         className={`group flex items-center rounded px-1 py-0.5 text-sm ${
@@ -258,16 +263,21 @@ export default function DestinationsTab() {
       }
     };
 
-    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+    const vertical = ["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"];
+    if (vertical.includes(event.key)) {
       event.preventDefault();
       const target =
         event.key === "ArrowDown"
           ? Math.min(index + 1, rows.length - 1)
           : event.key === "ArrowUp"
             ? Math.max(index - 1, 0)
-            : event.key === "Home"
-              ? 0
-              : rows.length - 1;
+            : event.key === "PageDown"
+              ? Math.min(index + 10, rows.length - 1)
+              : event.key === "PageUp"
+                ? Math.max(index - 10, 0)
+                : event.key === "Home"
+                  ? 0
+                  : rows.length - 1;
       activate(rows[target]?.path ?? null);
     } else if (event.key === "ArrowRight" && row) {
       event.preventDefault();
@@ -311,6 +321,9 @@ export default function DestinationsTab() {
       <ul
         role="tree"
         aria-label="Destination folders"
+        aria-activedescendant={
+          activePath !== null ? `tree-${encodeURIComponent(activePath)}` : undefined
+        }
         tabIndex={0}
         className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
         onKeyDown={onKeyDown}
@@ -344,7 +357,13 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
   const isActive = activePath === root;
   const { dropReady, handlers } = useDropHandlers(root);
   return (
-    <li className="mb-1" role="treeitem" aria-selected={isActive} aria-expanded={isOpen}>
+    <li
+      id={`tree-${encodeURIComponent(root)}`}
+      className="mb-1"
+      role="treeitem"
+      aria-selected={isActive}
+      aria-expanded={isOpen}
+    >
       <div
         data-tree-path={root}
         className={`group flex items-center rounded px-1 py-0.5 text-sm ${

@@ -60,11 +60,15 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
         ? Math.min(activeIndex + 1, entries.length - 1)
         : event.key === "ArrowUp"
           ? Math.max(activeIndex - 1, 0)
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? entries.length - 1
-              : null;
+          : event.key === "PageDown"
+            ? Math.min(activeIndex + 10, entries.length - 1)
+            : event.key === "PageUp"
+              ? Math.max(activeIndex - 10, 0)
+              : event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? entries.length - 1
+                  : null;
     if (target === null) return;
     event.preventDefault();
     activate(target);
@@ -77,6 +81,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       tabIndex={0}
       role="listbox"
       aria-label="Sections"
+      aria-activedescendant={activeIndex >= 0 ? `section-opt-${activeIndex}` : undefined}
       className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
       onKeyDown={onKeyDown}
     >
@@ -86,15 +91,16 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
           {group.sections.length === 0 ? (
             <p className="text-sm text-ink-muted">{group.emptyLabel}</p>
           ) : (
-            <ul>
+            <ul role="presentation">
               {group.sections.map((section) => {
                 const index = flatIndex;
                 flatIndex += 1;
                 const isSelected =
                   selected?.kind === group.kind && selected.month === section.month;
                 return (
-                  <li key={section.month}>
+                  <li role="presentation" key={section.month}>
                     <div
+                      id={`section-opt-${index}`}
                       role="option"
                       aria-selected={isSelected}
                       data-entry-index={index}

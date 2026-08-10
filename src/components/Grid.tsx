@@ -244,6 +244,7 @@ export default function Grid({
         tabIndex={0}
         role="listbox"
         aria-label="Section items"
+        aria-activedescendant={selectedItem !== null ? `grid-opt-${selectedItem}` : undefined}
         aria-multiselectable
         className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
         onKeyDown={onGridKeyDown}
@@ -254,7 +255,13 @@ export default function Grid({
         {sorted.map((item) => {
           const key = itemKey(item);
           return (
-            <div key={key} data-item-key={key} role="option" aria-selected={selectedKeys.has(key)}>
+            <div
+              key={key}
+              id={`grid-opt-${key}`}
+              data-item-key={key}
+              role="option"
+              aria-selected={selectedKeys.has(key)}
+            >
               <Tile
                 item={item}
                 isSelected={selectedKeys.has(key)}
