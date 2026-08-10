@@ -161,6 +161,18 @@ export default function Grid({
   const sortedKeys = sorted.map(itemKey);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
+    // Space toggles the active item in the multi-selection (the container is
+    // aria-multiselectable; the command layer never claims Space).
+    if (event.key === " " && selectedItem !== null) {
+      event.preventDefault();
+      toggleItem(selectedItem);
+      return;
+    }
+    // PageUp/PageDown jump by roughly a viewport of rows.
+    const pageRows = Math.max(
+      2,
+      Math.floor((containerRef.current?.clientHeight ?? 600) / 190),
+    );
     const step =
       event.key === "ArrowRight"
         ? 1
@@ -170,11 +182,15 @@ export default function Grid({
             ? columns
             : event.key === "ArrowUp"
               ? -columns
-              : event.key === "Home"
-                ? Number.NEGATIVE_INFINITY
-                : event.key === "End"
-                  ? Number.POSITIVE_INFINITY
-                  : null;
+              : event.key === "PageDown"
+                ? columns * pageRows
+                : event.key === "PageUp"
+                  ? -columns * pageRows
+                  : event.key === "Home"
+                    ? Number.NEGATIVE_INFINITY
+                    : event.key === "End"
+                      ? Number.POSITIVE_INFINITY
+                      : null;
     if (step === null) return;
     event.preventDefault();
     const current = selectedItem !== null ? sortedKeys.indexOf(selectedItem) : -1;

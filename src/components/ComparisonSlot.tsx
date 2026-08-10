@@ -20,6 +20,12 @@ export default function ComparisonSlot({
 }) {
   return (
     <figure
+      // Assistive tech learns the keep state; the slot stays out of the Tab
+      // order by design — the direct-address keys (1–9/0/A–F) span windows
+      // where a roving tabindex cannot exist.
+      role="button"
+      aria-pressed={kept}
+      aria-label={`Slot ${slotKey}: ${member.fileName}`}
       className={`relative w-[23%] min-w-56 cursor-pointer rounded border-2 p-1 ${
         kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
       }`}
