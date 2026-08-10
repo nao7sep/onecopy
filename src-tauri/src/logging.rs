@@ -436,6 +436,10 @@ pub fn filename_stamp_now() -> String {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to the tests-live-in-tests/ rule (tests-folder
+    // conventions, Rust form): these tests exercise genuinely private
+    // internals that cannot reasonably be promoted — promoting them
+    // would widen the module's surface just to test through it.
     use super::*;
     use serde_json::json;
 
