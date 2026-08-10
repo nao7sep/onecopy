@@ -134,10 +134,25 @@ static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 static SCAN_THREAD: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
     std::sync::Mutex::new(None);
 
-// The cache root, resolved once at setup (config `cacheDir` or `<root>/cache`)
-// for the mediacache protocol handler. A cacheDir change takes effect on the
-// next launch — the protocol reads this, never the config, per request.
-static CACHE_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+// The cache root, resolved at setup (config `cacheDir` or `<root>/cache`) and
+// read by the mediacache protocol handler. RwLock, not OnceLock: a cache move
+// swaps the root mid-session (the storage-path conventions' honest-relocation
+// contract — no restart, no redirect-only trap).
+static CACHE_ROOT: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
+
+fn cache_root_or(data_root: &std::path::Path) -> std::path::PathBuf {
+    CACHE_ROOT
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME))
+}
+
+fn set_cache_root(path: std::path::PathBuf) {
+    if let Ok(mut guard) = CACHE_ROOT.write() {
+        *guard = Some(path);
+    }
+}
 
 // The storage root, for the mediafile protocol's hash→path lookups.
 static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -251,10 +266,10 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
             .body(Vec::new())
             .expect("static response")
     };
-    let Some(root) = CACHE_ROOT.get() else {
+    let Some(root) = CACHE_ROOT.read().ok().and_then(|guard| guard.clone()) else {
         return not_found();
     };
-    let cache = preview::CachePaths::new(root.clone());
+    let cache = preview::CachePaths::new(root);
     let path = request.uri().path().trim_start_matches('/');
     let file = if let Some(hash) = path.strip_prefix("thumb-") {
         cache.thumb(hash)
@@ -377,6 +392,63 @@ fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
     }
 }
 
+// Moves the cache tree to a new root (None = the default `<root>/cache`):
+// copy → verify → swap the live root and config → delete the old subtrees.
+// The developer's decided contract: a REAL move behind a blocking progress
+// modal, no restart, never a redirect that orphans tens of GB. Refused while
+// a scan runs (derive writes into the cache mid-move). On failure the copied
+// partial is removed and the old location stays live.
+#[tauri::command]
+fn move_cache(app: AppHandle, new_dir: Option<String>) -> Result<Value, String> {
+    logging::boundary(
+        "move_cache",
+        json!({ "newDir": new_dir }),
+        || {
+            if scan_running() {
+                return Err("a scan is running — move the cache after it finishes".to_string());
+            }
+            let data_root = paths::data_root(&app)?;
+            let old_root = cache_root_or(&data_root);
+            let new_root = new_dir
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME));
+            if new_root == old_root {
+                return Ok(json!({ "movedBytes": 0, "unchanged": true }));
+            }
+            if new_root.starts_with(&old_root) || old_root.starts_with(&new_root) {
+                return Err("the new cache location cannot nest with the old one".to_string());
+            }
+            std::fs::create_dir_all(&new_root).map_err(|e| e.to_string())?;
+
+            let handle = app.clone();
+            let emit_progress = |copied: u64, total: u64| {
+                let _ = handle.emit(
+                    "cache-move://progress",
+                    json!({ "copiedBytes": copied, "totalBytes": total }),
+                );
+            };
+            match preview::move_cache_tree(&old_root, &new_root, &emit_progress) {
+                Ok(moved) => {
+                    storage::patch_config(&app, &json!({ "cacheDir": new_dir }))?;
+                    set_cache_root(new_root);
+                    // Only the cache's own subtrees — either root may be a
+                    // user-picked folder holding unrelated content.
+                    preview::remove_cache_subtrees(&old_root);
+                    Ok(json!({ "movedBytes": moved }))
+                }
+                Err(err) => {
+                    preview::remove_cache_subtrees(&new_root);
+                    Err(err)
+                }
+            }
+        },
+        |result| result.clone(),
+    )
+}
+
 // The volume-loss guard (the session gate's runtime counterpart): destructive
 // operations refuse to run while any configured source directory is absent —
 // a vanished volume must block deletes, not let them half-apply.
@@ -421,10 +493,7 @@ fn delete_item(
             ensure_sources_present(&app)?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache_root = CACHE_ROOT
-                .get()
-                .cloned()
-                .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME));
+            let cache_root = cache_root_or(&data_root);
             let cache = preview::CachePaths::new(cache_root);
             let item = match (&hash, path_id) {
                 (Some(hash), _) => operations::ItemRef::Hash(hash),
@@ -500,10 +569,7 @@ fn move_item_out(
             }
 
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache_root = CACHE_ROOT
-                .get()
-                .cloned()
-                .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME));
+            let cache_root = cache_root_or(&data_root);
             let cache = preview::CachePaths::new(cache_root);
             let item = match (&hash, path_id) {
                 (Some(hash), _) => operations::ItemRef::Hash(hash),
@@ -984,7 +1050,7 @@ pub fn run() {
             let loaded = storage::load_app_data(app.handle())?;
             let cache_root = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0)
                 .cache_root;
-            let _ = CACHE_ROOT.set(cache_root.clone());
+            set_cache_root(cache_root.clone());
             let _ = DATA_ROOT.set(data_root.clone());
             if let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
                 let cache = preview::CachePaths::new(cache_root);
@@ -1098,6 +1164,7 @@ pub fn run() {
             dir_is_empty,
             re_resolve_all,
             rescan_section,
+            move_cache,
             get_issues,
             binaries_state,
             binaries_install,

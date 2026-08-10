@@ -285,6 +285,76 @@ pub fn derive_images_pending(
     Ok(stats)
 }
 
+/// The cache's own subtrees under a root — the ONLY directories a cache move
+/// copies or deletes. The root itself may be a user-picked folder holding
+/// unrelated content, so tree-wide operations never touch anything else.
+pub const CACHE_SUBTREES: [&str; 3] = ["thumbs", "previews", "strips"];
+
+/// Copies every cache entry from `old_root` to `new_root` (same layout),
+/// reporting (copied_bytes, total_bytes) as it goes, and size-verifying each
+/// copy. Verification is size-equality: the tree is reconstructible (a
+/// corrupt entry re-derives on its next miss), so a byte-hash read-back
+/// would double the IO to protect data that self-heals anyway. Stranded
+/// `.tmp` staging files are not carried over.
+pub fn move_cache_tree(
+    old_root: &Path,
+    new_root: &Path,
+    progress: &dyn Fn(u64, u64),
+) -> Result<u64, String> {
+    let mut files: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
+    let mut total = 0u64;
+    for sub in CACHE_SUBTREES {
+        let tree = old_root.join(sub);
+        if !tree.exists() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            if entry.file_name().to_string_lossy().ends_with(".tmp") {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(old_root)
+                .map_err(|e| e.to_string())?
+                .to_path_buf();
+            let size = entry.metadata().map_err(|e| e.to_string())?.len();
+            total += size;
+            files.push((entry.path().to_path_buf(), new_root.join(rel), size));
+        }
+    }
+
+    let mut copied = 0u64;
+    progress(0, total);
+    for (src, dst, size) in files {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let written = std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
+        if written != size {
+            return Err(format!(
+                "size mismatch copying {} ({written} of {size} bytes)",
+                src.display()
+            ));
+        }
+        copied += size;
+        progress(copied, total);
+    }
+    Ok(copied)
+}
+
+/// Removes the cache subtrees under `root` (and the root itself when that
+/// leaves it empty) — never anything else that may live beside them.
+pub fn remove_cache_subtrees(root: &Path) {
+    for sub in CACHE_SUBTREES {
+        let _ = std::fs::remove_dir_all(root.join(sub));
+    }
+    let _ = std::fs::remove_dir(root);
+}
+
 /// Best-effort removal of one hash's cache entries — the synchronous half of
 /// cache GC, called when the last path bearing the hash leaves the index.
 pub fn remove_entries(cache: &CachePaths, hash: &str) {
@@ -607,6 +677,48 @@ mod tests {
         remove_entries(&cache, "live01");
         assert!(!cache.thumb("live01").exists());
         assert!(!cache.preview("live01").exists());
+    }
+
+    #[test]
+    fn cache_move_copies_subtrees_verifies_sizes_and_spares_bystanders() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-cachemove-")
+            .tempdir()
+            .unwrap();
+        let old_root = dir.path().join("old");
+        let new_root = dir.path().join("new");
+        let cache = CachePaths::new(old_root.clone());
+        for (path, bytes) in [
+            (cache.thumb("aa11"), b"thumb-bytes".as_slice()),
+            (cache.preview("aa11"), b"preview-bytes-longer"),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        // A stranded temp is not carried; a bystander file outside the cache
+        // subtrees is neither copied nor deleted.
+        std::fs::write(cache.thumb("aa11").with_file_name("aa11-x.tmp"), b"partial").unwrap();
+        std::fs::write(old_root.join("bystander.txt"), b"not ours").unwrap();
+
+        let reports: std::cell::RefCell<Vec<(u64, u64)>> = std::cell::RefCell::new(Vec::new());
+        let moved =
+            move_cache_tree(&old_root, &new_root, &|c, t| reports.borrow_mut().push((c, t)))
+                .unwrap();
+        assert_eq!(moved, 11 + 20);
+        let reports = reports.into_inner();
+        assert_eq!(reports.first(), Some(&(0, 31)));
+        assert_eq!(reports.last(), Some(&(31, 31)));
+
+        let new_cache = CachePaths::new(new_root.clone());
+        assert_eq!(std::fs::read(new_cache.thumb("aa11")).unwrap(), b"thumb-bytes");
+        assert!(!new_cache.thumb("aa11").with_file_name("aa11-x.tmp").exists());
+
+        remove_cache_subtrees(&old_root);
+        assert!(!old_root.join("thumbs").exists());
+        assert!(
+            old_root.join("bystander.txt").exists(),
+            "a user-picked folder's own content must survive"
+        );
     }
 
     #[test]

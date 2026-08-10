@@ -68,6 +68,8 @@ interface SettingsState {
   opened: SettingsDraft | null;
   timezoneValid: boolean;
   saving: boolean;
+  /** Non-null while a cache move runs — drives the blocking progress surface. */
+  movingCache: { copiedBytes: number; totalBytes: number } | null;
   message: string;
   openWith: (config: Record<string, unknown> | null) => void;
   close: () => void;
@@ -86,6 +88,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   opened: null,
   timezoneValid: true,
   saving: false,
+  movingCache: null,
   message: "",
 
   openWith: (config) =>
@@ -147,14 +150,35 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   clearCacheDir: () => get().update({ cacheDir: null }),
 
   save: async () => {
-    const { draft, timezoneValid } = get();
+    const { draft, opened, timezoneValid } = get();
     if (!draft || !timezoneValid) return;
     set({ saving: true, message: "" });
     try {
+      // A changed cache location is a REAL move (the developer's contract):
+      // blocking progress surface, copy → verify → swap → delete old, the
+      // core patches cacheDir itself only after the copy verified. A failed
+      // move keeps the old location live and aborts the whole save.
+      if (draft.cacheDir !== (opened?.cacheDir ?? null)) {
+        const { listen } = await import("@tauri-apps/api/event");
+        set({ movingCache: { copiedBytes: 0, totalBytes: 0 } });
+        const unlisten = await listen<{ copiedBytes: number; totalBytes: number }>(
+          "cache-move://progress",
+          (event) => set({ movingCache: event.payload }),
+        );
+        try {
+          await invoke("move_cache", { newDir: draft.cacheDir });
+        } finally {
+          unlisten();
+          set({ movingCache: null });
+        }
+      }
       // A patch of exactly the draft's keys through the one config owner —
       // keys other surfaces manage (destinationRoots) are never touched.
+      // cacheDir stays out: the move above already committed it, and a
+      // failed move must not be resurrected by the patch.
+      const { cacheDir: _committedByMove, ...rest } = draft;
       const { useAppStore } = await import("./app-store");
-      await useAppStore.getState().patchConfig({ ...draft });
+      await useAppStore.getState().patchConfig({ ...rest });
       // Settings changes re-resolve everything from stored evidence and
       // rebuild groups — pure DB work, no file reads.
       const resolved = await invoke<number>("re_resolve_all");

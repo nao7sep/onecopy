@@ -78,6 +78,7 @@ export default function SettingsModal() {
   const pickCacheDir = useSettingsStore((s) => s.pickCacheDir);
   const clearCacheDir = useSettingsStore((s) => s.clearCacheDir);
   const save = useSettingsStore((s) => s.save);
+  const movingCache = useSettingsStore((s) => s.movingCache);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   if (!open || draft === null) return null;
@@ -104,6 +105,38 @@ export default function SettingsModal() {
         </button>
       }
     >
+      {movingCache !== null ? (
+        // "Moving cache" — a BLOCKING progress surface by design (the one
+        // deliberate no-dismiss case: interrupting a tree move mid-copy is
+        // what the modal exists to prevent); completable only.
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Moving cache"
+          className="fixed inset-0 z-40 flex items-center justify-center bg-background/80"
+        >
+          <div className="w-[380px] rounded border border-border bg-surface p-4">
+            <p className="mb-2 text-sm font-semibold text-ink-strong">Moving cache…</p>
+            <div className="h-2 w-full overflow-hidden rounded bg-surface-muted">
+              <div
+                className="h-full bg-primary transition-[width]"
+                style={{
+                  width: `${
+                    movingCache.totalBytes > 0
+                      ? Math.round((movingCache.copiedBytes / movingCache.totalBytes) * 100)
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-ink-muted">
+              {(movingCache.copiedBytes / 1_048_576).toFixed(0)} MB of{" "}
+              {(movingCache.totalBytes / 1_048_576).toFixed(0)} MB — the old location is
+              kept until every file is verified.
+            </p>
+          </div>
+        </div>
+      ) : null}
       {confirmDiscard ? (
         <ModalShell
           title="Discard changes?"
