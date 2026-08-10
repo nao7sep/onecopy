@@ -1006,6 +1006,47 @@ pub fn run() {
             let ffmpeg_present = watch_settings.ffmpeg.is_some();
             watcher::start(app.handle().clone(), watch_settings.source_dirs);
 
+            // The one update switch (managed-runtime-dependencies): when ON,
+            // an INSTALLED tool is checked at launch, throttled to ~daily so
+            // launches never hammer the endpoints. Default off; a failed
+            // check writes nothing (check_for_updates' own contract).
+            let check_at_launch = loaded
+                .config
+                .as_ref()
+                .and_then(|c| c.get("checkUpdatesAtLaunch"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if check_at_launch && ffmpeg_present {
+                let facts = binaries_manager::load_facts(&data_root);
+                let stale = facts
+                    .last_checked_at_utc
+                    .as_deref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|t| chrono::Utc::now().signed_duration_since(t) > chrono::Duration::hours(24))
+                    .unwrap_or(true);
+                if stale {
+                    let root = data_root.clone();
+                    let handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        match binaries_manager::check_for_updates(&root) {
+                            Ok(facts) => {
+                                logging::info(
+                                    "launch update check",
+                                    json!({ "latestKnown": facts.latest_known_version }),
+                                );
+                                let _ = handle.emit("binaries://changed", json!({}));
+                            }
+                            Err(err) => {
+                                logging::warn(
+                                    "launch update check failed",
+                                    json!({ "error": { "message": err } }),
+                                );
+                            }
+                        }
+                    });
+                }
+            }
+
             // Auto-resume: an interrupted scan leaves checkpointed pending
             // rows (unhashed media, underived images/videos); pick the work
             // back up without waiting for the user to press Scan. Runs only

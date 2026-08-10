@@ -91,6 +91,11 @@ void (async () => {
         progress: `failed: ${event.payload.message}`,
       });
     });
+    // The launch-time update check (config-gated, core-side) finished after
+    // this store's initial load — refresh so the chip reflects it.
+    await listen("binaries://changed", () => {
+      void useBinariesStore.getState().load();
+    });
   } catch (error) {
     log.warn("binaries event wiring failed", toErrorFields(error));
   }

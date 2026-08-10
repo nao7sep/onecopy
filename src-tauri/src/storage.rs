@@ -64,6 +64,9 @@ pub struct DefaultConfig {
     pub pairing_enabled: bool,
     /// UI theme: "system" (follow the OS), "light", or "dark".
     pub theme: String,
+    /// The managed-runtime-dependencies conventions' one update switch:
+    /// check installed tools for updates at launch (throttled to ~daily).
+    pub check_updates_at_launch: bool,
     /// Cache directory override; null means `<root>/cache`.
     pub cache_dir: Option<String>,
     pub keep_awake_during_indexing: bool,
@@ -92,6 +95,7 @@ impl Default for DefaultConfig {
             video_strip_max_frames: 20,
             pairing_enabled: true,
             theme: "system".to_string(),
+            check_updates_at_launch: false,
             cache_dir: None,
             keep_awake_during_indexing: true,
             verify_after_copy: true,

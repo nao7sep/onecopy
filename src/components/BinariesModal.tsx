@@ -1,4 +1,5 @@
 import { useBinariesStore } from "../state/binaries-store";
+import { useAppStore } from "../state/app-store";
 import ModalShell from "./ModalShell";
 import { formatLocalMinute } from "../utils/displayTime";
 
@@ -21,6 +22,8 @@ export default function BinariesModal() {
   const install = useBinariesStore((s) => s.install);
   const check = useBinariesStore((s) => s.check);
   const setModalOpen = useBinariesStore((s) => s.setModalOpen);
+  const checkAtLaunch =
+    useAppStore((s) => s.appData?.config?.checkUpdatesAtLaunch) === true;
 
   if (!open) return null;
 
@@ -70,6 +73,19 @@ export default function BinariesModal() {
           </div>
         )}
       </div>
+      {/* The conventions' ONE update switch, living in the management
+          surface: launch-time checks for installed tools, ~daily at most.
+          Default off — nothing automatic unless asked for. */}
+      <label className="mt-3 flex items-center justify-between gap-2 text-sm text-ink">
+        <span>Check for updates at launch (about once a day)</span>
+        <input
+          type="checkbox"
+          checked={checkAtLaunch}
+          onChange={(e) =>
+            void useAppStore.getState().patchConfig({ checkUpdatesAtLaunch: e.target.checked })
+          }
+        />
+      </label>
       <p className="mt-2 text-xs text-ink-muted">
         Video posters and snapshot strips need ffmpeg; photos work without it.
       </p>
