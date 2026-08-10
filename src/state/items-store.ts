@@ -62,12 +62,21 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   setSortOrder: (order) => set({ sortOrder: order }),
 
   select: async (section) => {
+    // A same-section reload (refresh after delete/rescan) keeps the stale
+    // items rendered so the grid's scroll container never unmounts — the
+    // scroll position survives. A real section switch clears them.
+    const previous = get().selected;
+    const sameSection =
+      previous !== null &&
+      previous.kind === section.kind &&
+      previous.month === section.month;
     set({
       selected: section,
       loading: true,
       selectedItem: null,
       selectedKeys: new Set(),
       detail: null,
+      ...(sameSection ? {} : { items: [] }),
     });
     try {
       const items = await invoke<SectionItem[]>("get_section_items", {

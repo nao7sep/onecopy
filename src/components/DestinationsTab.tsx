@@ -4,6 +4,7 @@ import {
   type DirEntry,
   type MoveMode,
 } from "../state/destinations-store";
+import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
 
 // Drop-target behavior shared by roots and nodes: the OS-independent modifier
 // mapping is the design's — plain drop = move + trash the rest, Shift = move +
@@ -56,6 +57,7 @@ function NodeActions({
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const createFolder = useDestinationsStore((s) => s.createFolder);
+  const { composingRef, handlers: composingHandlers } = useComposing();
 
   return (
     <span
@@ -86,7 +88,15 @@ function NodeActions({
           value={name}
           placeholder="folder name"
           onChange={(e) => setName(e.target.value)}
+          {...composingHandlers}
           onKeyDown={(e) => {
+            // Enter/Escape during IME composition belong to the IME: Enter
+            // confirms the candidate (never commits a half-resolved name to
+            // disk), Escape cancels it (never destroys the edit).
+            if (isComposingKeyboardEvent(composingRef, e)) {
+              e.stopPropagation();
+              return;
+            }
             if (e.key === "Enter" && name.trim() !== "") {
               void createFolder(path, name.trim());
               setCreating(false);

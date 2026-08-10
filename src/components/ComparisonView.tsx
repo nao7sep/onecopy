@@ -6,6 +6,7 @@ import {
   chunkSlots,
   useComparisonStore,
 } from "../state/comparison-store";
+import { hasOpenModal } from "../utils/modalStack";
 
 // The similar-photos comparison surface in the main window. With extra
 // monitors the slot list spreads: this surface shows chunk 0 and the
@@ -29,6 +30,9 @@ export default function ComparisonView() {
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      // A modal above the comparison (help, settings) owns the keyboard:
+      // its Escape must close only itself, never tear down the session.
+      if (hasOpenModal()) return;
       if (enlarged !== null) {
         // The enlarged overlay owns the keyboard: Escape returns to the
         // slots; Z falls through to the zoom toggle.

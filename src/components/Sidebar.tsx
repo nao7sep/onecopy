@@ -98,7 +98,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
                       role="option"
                       aria-selected={isSelected}
                       data-entry-index={index}
-                      className={`flex w-full cursor-default justify-between rounded px-1 py-0.5 text-sm ${
+                      className={`flex w-full cursor-pointer justify-between rounded px-1 py-0.5 text-sm ${
                         isSelected
                           ? "bg-primary-surface text-primary"
                           : "text-ink hover:bg-surface-muted"

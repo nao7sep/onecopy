@@ -1,10 +1,22 @@
 @import "tailwindcss";
 
-/* A disabled button shows the plain arrow, never the hand — a dead button must
-   not invite a click. Tailwind's Preflight gives every <button> the pointer, so
-   reset it here in one place for the whole app (unlayered, to beat utilities). */
+/* The webview hand on every live clickable (cursor conventions). Tailwind v4's
+   Preflight no longer sets the button pointer, so the app owns it here — and a
+   disabled button shows the plain arrow, never the hand or not-allowed: a dead
+   button must not invite a click. Unlayered, to beat utilities. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
 button:disabled {
   cursor: default;
+}
+
+/* While an HTML5 drag is in flight the pointer roams over other elements, each
+   with its own cursor — force the closed hand window-wide for the duration
+   (Grid toggles the class in dragstart/dragend). */
+body.dragging * {
+  cursor: grabbing !important;
 }
 
 /* ── Semantic color tokens ────────────────────────────────────────────────

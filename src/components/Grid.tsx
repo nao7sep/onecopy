@@ -29,7 +29,7 @@ function Tile({
 }) {
   return (
     <figure
-      className="relative w-40 cursor-default"
+      className="relative w-40 cursor-grab"
       onClick={onSelect}
       draggable
       onDragStart={(event) => {
@@ -40,7 +40,11 @@ function Tile({
         if (!selectedKeys.has(key)) selectItem(key);
         event.dataTransfer.setData("application/x-onecopy-drag", "selection");
         event.dataTransfer.effectAllowed = "copyMove";
+        // Window-wide closed hand for the drag's duration (App.css rule) —
+        // the pointer roams over elements with their own cursors otherwise.
+        document.body.classList.add("dragging");
       }}
+      onDragEnd={() => document.body.classList.remove("dragging")}
     >
       <div
         className={`flex h-32 w-40 items-center justify-center overflow-hidden rounded border ${
@@ -137,11 +141,25 @@ export default function Grid({
     return () => observer.disconnect();
   }, [loading, items.length]);
 
-  if (loading) {
-    return <p className="m-auto text-ink-muted">Loading…</p>;
-  }
+  // The anchor stays in view across deletes and refreshes — the recovery
+  // selection lands off-screen otherwise ("nearest" makes it a no-op when
+  // already visible, so arrow navigation double-scrolls harmlessly).
+  useEffect(() => {
+    if (selectedItem === null) return;
+    containerRef.current
+      ?.querySelector(`[data-item-key="${CSS.escape(selectedItem)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedItem]);
+
+  // During a same-section refresh the stale items keep rendering (the store
+  // keeps them), so the scroll container never unmounts and its position
+  // survives the reload; only a genuinely empty grid shows the text states.
   if (items.length === 0) {
-    return <p className="m-auto text-ink-muted">Nothing in this section</p>;
+    return (
+      <p className="m-auto text-ink-muted">
+        {loading ? "Loading…" : "Nothing in this section"}
+      </p>
+    );
   }
   const sorted = sortItems(items, sortOrder);
   const sortedKeys = sorted.map(itemKey);

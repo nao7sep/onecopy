@@ -55,6 +55,8 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
 interface SettingsState {
   open: boolean;
   draft: SettingsDraft | null;
+  /** The draft as it was when the modal opened — the dirty-check baseline. */
+  opened: SettingsDraft | null;
   timezoneValid: boolean;
   saving: boolean;
   message: string;
@@ -72,14 +74,21 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   open: false,
   draft: null,
+  opened: null,
   timezoneValid: true,
   saving: false,
   message: "",
 
   openWith: (config) =>
-    set({ open: true, draft: draftFrom(config), timezoneValid: true, message: "" }),
+    set({
+      open: true,
+      draft: draftFrom(config),
+      opened: draftFrom(config),
+      timezoneValid: true,
+      message: "",
+    }),
 
-  close: () => set({ open: false, draft: null }),
+  close: () => set({ open: false, draft: null, opened: null }),
 
   update: (patch) => {
     const draft = get().draft;
@@ -146,7 +155,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // Refresh the one config source of truth everywhere.
       const { useAppStore } = await import("./app-store");
       await useAppStore.getState().reload();
-      set({ open: false, draft: null, saving: false });
+      set({ open: false, draft: null, opened: null, saving: false });
       log.info("settings saved", { resolved });
     } catch (error) {
       set({ saving: false, message: String(error) });

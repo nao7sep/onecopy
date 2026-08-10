@@ -28,6 +28,7 @@ import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
 import { useSettingsStore } from "./state/settings-store";
 import { isHelpShortcut } from "./utils/shortcuts";
+import { hasOpenModal } from "./utils/modalStack";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
@@ -76,7 +77,9 @@ export default function App() {
       }
       if (isHelpShortcut(event)) {
         event.preventDefault();
-        setHelpOpen((open) => !open);
+        // Over another modal the chord only closes an already-open help —
+        // never stacks help on top of Settings or Managed tools.
+        setHelpOpen((open) => (open ? false : hasOpenModal() ? open : true));
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -133,6 +136,7 @@ export default function App() {
 
   useEffect(() => {
     const onZoomKey = (event: KeyboardEvent) => {
+      if (hasOpenModal()) return;
       const zoomIn = isZoomIn(event);
       const zoomOut = isZoomOut(event);
       const zoomReset = isZoomReset(event);
@@ -160,6 +164,9 @@ export default function App() {
   // while the comparison view owns the keyboard.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // The command layer goes quiet while ANY modal is open: Backspace over
+      // an open dialog must never trash files behind the backdrop.
+      if (hasOpenModal()) return;
       if (useComparisonStore.getState().open) return;
       const target = event.target as HTMLElement | null;
       if (

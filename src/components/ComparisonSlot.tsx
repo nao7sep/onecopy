@@ -20,7 +20,7 @@ export default function ComparisonSlot({
 }) {
   return (
     <figure
-      className={`relative w-[23%] min-w-56 cursor-default rounded border-2 p-1 ${
+      className={`relative w-[23%] min-w-56 cursor-pointer rounded border-2 p-1 ${
         kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
       }`}
       onClick={onToggle}

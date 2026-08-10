@@ -1,10 +1,15 @@
-import { useEffect } from "react";
+import { useState } from "react";
 import { useSettingsStore } from "../state/settings-store";
+import ModalShell from "./ModalShell";
 
 // The named Settings modal over the config tunables. Field-level checks only —
 // the store never validates semantics (config-seeding conventions); Save
 // persists, re-resolves the index from evidence, and refreshes the views.
+// Save requires a dirty AND valid draft; closing with unsaved edits stacks a
+// discard confirmation instead of silently dropping them.
 
+// The field never reformats mid-edit (select-all + retype must not snap to
+// the minimum under the caret); parsing and clamping happen on blur only.
 function NumberField({
   label,
   value,
@@ -16,15 +21,22 @@ function NumberField({
   min: number;
   onChange: (value: number) => void;
 }) {
+  const [text, setText] = useState<string | null>(null);
   return (
     <label className="flex items-center justify-between gap-2 py-0.5 text-sm text-ink">
       <span>{label}</span>
       <input
         type="number"
         className="w-24 rounded border border-border bg-background px-2 py-0.5 text-right text-sm"
-        value={value}
+        value={text ?? String(value)}
         min={min}
-        onChange={(e) => onChange(Number.parseInt(e.target.value, 10) || min)}
+        onFocus={() => setText(String(value))}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          const parsed = Number.parseInt(text ?? "", 10);
+          onChange(Number.isFinite(parsed) ? Math.max(min, parsed) : value);
+          setText(null);
+        }}
       />
     </label>
   );
@@ -58,6 +70,7 @@ export default function SettingsModal({
 }) {
   const open = useSettingsStore((s) => s.open);
   const draft = useSettingsStore((s) => s.draft);
+  const opened = useSettingsStore((s) => s.opened);
   const timezoneValid = useSettingsStore((s) => s.timezoneValid);
   const saving = useSettingsStore((s) => s.saving);
   const message = useSettingsStore((s) => s.message);
@@ -69,35 +82,55 @@ export default function SettingsModal({
   const pickCacheDir = useSettingsStore((s) => s.pickCacheDir);
   const clearCacheDir = useSettingsStore((s) => s.clearCacheDir);
   const save = useSettingsStore((s) => s.save);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, close]);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   if (!open || draft === null) return null;
 
-  return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-background/80">
-      <div className="flex max-h-[90vh] w-[520px] max-w-[90vw] flex-col rounded border border-border bg-surface p-4">
-        <div className="mb-2 flex shrink-0 items-center justify-between">
-          <h1 className="text-sm font-semibold text-ink-strong">Settings</h1>
-          <button
-            className="rounded border border-border px-2 py-0.5 text-xs text-ink hover:bg-surface-muted"
-            onClick={close}
-          >
-            Close
-          </button>
-        </div>
+  const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
+  const requestClose = () => {
+    if (dirty) setConfirmDiscard(true);
+    else close();
+  };
 
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+  return (
+    <ModalShell
+      title="Settings"
+      onClose={requestClose}
+      widthClass="w-[520px]"
+      footerStart={message}
+      primaryAction={
+        <button
+          className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
+          disabled={saving || !dirty || !timezoneValid}
+          onClick={() => void save(baseConfig)}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      }
+    >
+      {confirmDiscard ? (
+        <ModalShell
+          title="Discard changes?"
+          onClose={() => setConfirmDiscard(false)}
+          widthClass="w-[360px]"
+          closeLabel="Keep editing"
+          primaryAction={
+            <button
+              className="rounded bg-danger px-3 py-1 text-sm text-ink-inverted"
+              onClick={() => {
+                setConfirmDiscard(false);
+                close();
+              }}
+            >
+              Discard
+            </button>
+          }
+        >
+          <p className="text-sm text-ink">
+            Settings has unsaved edits. Discard them?
+          </p>
+        </ModalShell>
+      ) : null}
           <h2 className="mb-1 mt-2 text-xs font-semibold uppercase text-ink-muted">
             Directories
           </h2>
@@ -240,19 +273,6 @@ export default function SettingsModal({
             checked={draft.verifyAfterCopy}
             onChange={(v) => update({ verifyAfterCopy: v })}
           />
-        </div>
-
-        <div className="mt-3 flex shrink-0 items-center justify-between">
-          <span className="text-xs text-danger">{message}</span>
-          <button
-            className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
-            disabled={saving || !timezoneValid}
-            onClick={() => void save(baseConfig)}
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

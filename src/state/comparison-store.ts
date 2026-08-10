@@ -13,6 +13,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, availableMonitors } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { log, toErrorFields } from "../repositories";
+import { hasOpenModal } from "../utils/modalStack";
 
 export interface GroupMember {
   hash: string;
@@ -251,6 +252,10 @@ void (async () => {
     await listen<{ key: string; shiftKey: boolean }>("comparison://key", (event) => {
       const store = useComparisonStore.getState();
       if (!store.open) return;
+      // A modal open in the main window owns the keyboard for forwarded
+      // keys too — a secondary screen's Escape must not tear the session
+      // down from under an open dialog.
+      if (hasOpenModal()) return;
       const key = event.payload.key.toLowerCase();
       const slotIndex = (SLOT_KEYS as readonly string[]).indexOf(key);
       if (slotIndex >= 0) {

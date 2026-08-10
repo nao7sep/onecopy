@@ -1,3 +1,8 @@
+// The one shared command-modifier detector (both Cmd and Ctrl on every
+// platform). Local duplication here is exactly where the both-modifiers fix
+// was forgotten once, so zoom imports it instead.
+import { hasMod } from "./shortcuts";
+
 // Zoom utilities: discrete zoom level list and keyboard shortcut detection.
 //
 // --- Zoom levels ---
@@ -15,8 +20,9 @@
 // --- Keyboard shortcuts ---
 //
 // isZoomIn / isZoomOut / isZoomReset accept a KeyboardEvent and return true
-// when the event matches the corresponding zoom shortcut. All three require the
-// platform primary modifier (Cmd on macOS, Ctrl on Windows/Linux).
+// when the event matches the corresponding zoom shortcut. All three require
+// the command modifier — both Cmd and Ctrl fire on every platform; only the
+// displayed word is platform-bound.
 //
 // --- Keyboard layout notes ---
 //
@@ -75,16 +81,6 @@ export function stepZoomOut(current: number): number {
   return ZOOM_LEVELS[Math.max(idx - 1, 0)];
 }
 
-// Primary modifier: Cmd on macOS/iOS, Ctrl on Windows/Linux.
-// navigator.platform is deprecated but still reliable in all current engines
-// including Tauri's webview. @tauri-apps/plugin-os is not used in this project.
-const isApplePlatform = /Mac|iPhone|iPad|iPod/.test(
-  typeof navigator === "undefined" ? "" : navigator.platform || navigator.userAgent,
-);
-
-function hasMod(event: KeyboardEvent): boolean {
-  return isApplePlatform ? event.metaKey : event.ctrlKey;
-}
 
 // Returns true when the event is a zoom-in shortcut (primary modifier + zoom key).
 // Recognized zoom-in keys: "=", "+", ";"
