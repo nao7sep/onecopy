@@ -29,6 +29,9 @@ interface WizardState {
   cacheDir: string | null;
   missingDirs: string[];
   init: (config: Record<string, unknown> | null, dataRoot: string) => Promise<void>;
+  /** Re-runs the wizard as RECONFIGURE: seeded from the current config, never
+   * from empty — the only trigger a first-run wizard has after first run. */
+  reopen: (config: Record<string, unknown> | null) => void;
   addDirs: () => Promise<void>;
   removeDir: (path: string) => void;
   setStep: (step: 1 | 2 | 3) => void;
@@ -63,6 +66,27 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       set({ open: false, timezone, cacheDir });
       await get().recheckPresence();
     }
+  },
+
+  reopen: (config) => {
+    const sourceDirs = Array.isArray(config?.sourceDirs)
+      ? (config.sourceDirs as string[])
+      : [];
+    const timezone =
+      typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
+    const cacheDir =
+      typeof config?.cacheDir === "string" && config.cacheDir.trim() !== ""
+        ? config.cacheDir
+        : null;
+    set({
+      open: true,
+      step: 1,
+      timezone,
+      cacheDir,
+      // Existing directories seed the list; counts refresh lazily so the
+      // reopen itself costs nothing.
+      dirs: sourceDirs.map((path) => ({ path, counts: null, counting: false })),
+    });
   },
 
   addDirs: async () => {

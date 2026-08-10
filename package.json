@@ -16,12 +16,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@radix-ui/react-dialog": "^1.1.18",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "lucide-react": "^1.23.0",
-    "nanoid": "^5.1.16",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "zustand": "^5.0.14"

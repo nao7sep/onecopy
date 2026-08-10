@@ -26,8 +26,12 @@ import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
 import { useSettingsStore } from "./state/settings-store";
-import { isHelpShortcut } from "./utils/shortcuts";
+import { isHelpShortcut, isSettingsShortcut, primaryModWord } from "./utils/shortcuts";
 import { hasOpenModal } from "./utils/modalStack";
+import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
+import AboutModal from "./components/AboutModal";
+import { Menu as MenuIcon } from "lucide-react";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
@@ -71,6 +75,12 @@ export default function App() {
   const binariesProgress = useBinariesStore((s) => s.progress);
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+
+  // The one open-Settings path — the menu item and the Cmd+, chord both use
+  // it, so the two can never drift.
+  const openSettings = () =>
+    useSettingsStore.getState().openWith(useAppStore.getState().appData?.config ?? null);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -83,6 +93,9 @@ export default function App() {
         // Over another modal the chord only closes an already-open help —
         // never stacks help on top of Settings or Managed tools.
         setHelpOpen((open) => (open ? false : hasOpenModal() ? open : true));
+      } else if (isSettingsShortcut(event)) {
+        event.preventDefault();
+        if (!hasOpenModal()) openSettings();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -126,12 +139,25 @@ export default function App() {
   }, []);
 
   const zoomRef = useRef(ZOOM_DEFAULT);
+  // Reactive mirror of zoomRef so the menu's zoom stepper can display it.
+  const [zoomLevel, setZoomLevel] = useState(ZOOM_DEFAULT);
+
+  // The one zoom application path: keys and the menu stepper both use it.
+  const applyZoom = (next: number) => {
+    zoomRef.current = next;
+    setZoomLevel(next);
+    void getCurrentWebview().setZoom(next).catch(() => {});
+    // Through the one state owner (patch of only this key, debounced) —
+    // a failed write is logged there, never silently swallowed.
+    void useAppStore.getState().patchState({ zoomLevel: next });
+  };
 
   useEffect(() => {
     if (appData === null) return;
     const stored = appData.state?.zoomLevel;
     const level = typeof stored === "number" ? stored : ZOOM_DEFAULT;
     zoomRef.current = level;
+    setZoomLevel(level);
     if (level !== ZOOM_DEFAULT) {
       void getCurrentWebview().setZoom(level).catch(() => {});
     }
@@ -145,19 +171,18 @@ export default function App() {
       const zoomReset = isZoomReset(event);
       if (!zoomIn && !zoomOut && !zoomReset) return;
       event.preventDefault();
-      const next = zoomReset
-        ? ZOOM_DEFAULT
-        : zoomIn
-          ? stepZoomIn(zoomRef.current)
-          : stepZoomOut(zoomRef.current);
-      zoomRef.current = next;
-      void getCurrentWebview().setZoom(next).catch(() => {});
-      // Through the one state owner (patch of only this key, debounced) —
-      // a failed write is logged there, never silently swallowed.
-      void useAppStore.getState().patchState({ zoomLevel: next });
+      applyZoom(
+        zoomReset
+          ? ZOOM_DEFAULT
+          : zoomIn
+            ? stepZoomIn(zoomRef.current)
+            : stepZoomOut(zoomRef.current),
+      );
     };
     window.addEventListener("keydown", onZoomKey);
     return () => window.removeEventListener("keydown", onZoomKey);
+    // applyZoom is stable in behavior; the ref carries the current level.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Grid keys: Delete/Backspace trash-deletes the selected logical item
@@ -275,6 +300,7 @@ export default function App() {
       <ComparisonView />
       <BinariesModal />
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       <SettingsModal />
       <div className="flex min-h-0 flex-1">
         <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
@@ -357,7 +383,22 @@ export default function App() {
       </div>
       <footer className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span>OneCopy {__APP_VERSION__}</span>
-        <span>{scanning ? progress : ""}</span>
+        {/* Standing STATE stays glanceable in the status bar; the actions
+            live in the menu (app-chrome: a curated summary surface). */}
+        <span>
+          {scanning ? (
+            progress
+          ) : rescanNeeded ? (
+            <span
+              className="text-warning"
+              title="The watcher lost events — run Scan all sources to repair the index"
+            >
+              Rescan needed
+            </span>
+          ) : (
+            ""
+          )}
+        </span>
         <span className="flex items-center gap-3">
           <button
             className={
@@ -376,29 +417,85 @@ export default function App() {
                   ? "ffmpeg: not installed"
                   : `ffmpeg ${ffmpegState.facts.installedVersion ?? ""}`}
           </button>
-          <button
-            className="text-ink-muted hover:text-ink"
-            onClick={() => useSettingsStore.getState().openWith(appData?.config ?? null)}
+          <Menu
+            ariaLabel="Application menu"
+            panelClassName="bottom-full right-0 mb-1"
+            trigger={(props) => (
+              <button
+                {...props}
+                aria-label="Open menu"
+                className="flex h-6 w-6 items-center justify-center rounded text-ink-muted hover:bg-surface-muted hover:text-ink"
+              >
+                <MenuIcon size={16} />
+              </button>
+            )}
           >
-            Settings
-          </button>
-          <button
-            className={
-              rescanNeeded
-                ? "text-danger hover:underline"
-                : "text-primary hover:text-primary-hover disabled:text-ink-muted"
-            }
-            disabled={scanning}
-            title={
-              rescanNeeded
-                ? "The watcher lost events — a scan repairs the index"
-                : undefined
-            }
-            onClick={() => void startScan()}
-          >
-            {scanning ? "Scanning…" : rescanNeeded ? "Rescan needed" : "Scan"}
-          </button>
-          <span>{appData?.dataRoot ?? ""}</span>
+            <MenuItem disabled={scanning} onSelect={() => void startScan()}>
+              {scanning ? "Scanning…" : "Scan all sources"}
+            </MenuItem>
+            <MenuItem
+              onSelect={() =>
+                useWizardStore.getState().reopen(useAppStore.getState().appData?.config ?? null)
+              }
+            >
+              Re-run setup wizard…
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem onSelect={openSettings} shortcut={`${primaryModWord()}+Comma`}>
+              Settings…
+            </MenuItem>
+            <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
+            <MenuSeparator />
+            {/* A contained widget, not menu items — arrow navigation skips it
+                because only [role="menuitem"] participates. */}
+            <div className="flex items-center justify-between gap-2 px-3 py-1 text-sm text-ink">
+              <span>Zoom</span>
+              <span className="flex items-center gap-1">
+                <button
+                  className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
+                  aria-label="Zoom out"
+                  onClick={() => applyZoom(stepZoomOut(zoomRef.current))}
+                >
+                  −
+                </button>
+                <span className="w-10 text-center font-mono text-xs text-ink-muted">
+                  {Math.round(zoomLevel * 100)}%
+                </span>
+                <button
+                  className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
+                  aria-label="Zoom in"
+                  onClick={() => applyZoom(stepZoomIn(zoomRef.current))}
+                >
+                  +
+                </button>
+              </span>
+            </div>
+            <MenuSeparator />
+            <MenuItem
+              onSelect={() => {
+                const root = useAppStore.getState().appData?.dataRoot;
+                if (root) void openPath(`${root}/logs`);
+              }}
+            >
+              Reveal logs folder
+            </MenuItem>
+            <MenuItem
+              onSelect={() => {
+                const root = useAppStore.getState().appData?.dataRoot;
+                if (root) void openPath(root);
+              }}
+            >
+              Reveal app home
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem
+              onSelect={() => setHelpOpen(true)}
+              shortcut={`${primaryModWord()}+Slash`}
+            >
+              Keyboard shortcuts…
+            </MenuItem>
+            <MenuItem onSelect={() => setAboutOpen(true)}>About OneCopy…</MenuItem>
+          </Menu>
         </span>
       </footer>
     </div>

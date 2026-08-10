@@ -27,3 +27,8 @@ export function isHelpShortcut(event: KeyboardEvent): boolean {
   if (hasMod(event) && event.key === "/") return true;
   return event.key === "?" && !hasMod(event) && !event.altKey;
 }
+
+/** Cmd+Comma — the fleet's Settings chord (modal-dialog conventions). */
+export function isSettingsShortcut(event: KeyboardEvent): boolean {
+  return hasMod(event) && event.key === ",";
+}
