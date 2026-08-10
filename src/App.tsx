@@ -11,7 +11,17 @@ import {
   stepZoomIn,
   stepZoomOut,
 } from "./utils/zoom";
-import { computeMinWindowHeight, computeMinWindowWidth } from "./utils/windowSizing";
+import {
+  GRID_MIN_WIDTH,
+  RIGHT_PANE_DEFAULT_WIDTH,
+  RIGHT_PANE_MIN_WIDTH,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  SPLITTER_WIDTH,
+  clampPaneWidths,
+  computeMinWindowHeight,
+  computeMinWindowWidth,
+} from "./utils/windowSizing";
 import { useSectionsStore } from "./state/sections-store";
 import { useItemsStore } from "./state/items-store";
 import Sidebar from "./components/Sidebar";
@@ -138,6 +148,63 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Pane widths: persisted INTENT in pixels (written only on drag-end); the
+  // displayed width is the intent clamped against the live container width,
+  // so a narrow window never rewrites what the user chose.
+  const [paneIntents, setPaneIntents] = useState({
+    left: SIDEBAR_DEFAULT_WIDTH,
+    right: RIGHT_PANE_DEFAULT_WIDTH,
+  });
+  const paneIntentsRef = useRef(paneIntents);
+  paneIntentsRef.current = paneIntents;
+  const [containerWidth, setContainerWidth] = useState<number | null>(null);
+  const contentRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const row = contentRowRef.current;
+    if (!row) return;
+    const measure = () => setContainerWidth(row.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
+  const paneWidths = clampPaneWidths(
+    paneIntents.left,
+    paneIntents.right,
+    containerWidth ?? computeMinWindowWidth() * 4,
+  );
+
+  const beginPaneDrag = (side: "left" | "right") => (event: React.MouseEvent) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const start = { ...paneIntentsRef.current };
+    // Window-wide resize cursor for the drag's duration — the pointer roams
+    // over elements carrying their own cursors otherwise (cursor conventions).
+    document.body.classList.add("col-resizing");
+    const onMove = (e: MouseEvent) => {
+      const delta = e.clientX - startX;
+      const next =
+        side === "left"
+          ? { ...paneIntentsRef.current, left: Math.max(SIDEBAR_MIN_WIDTH, start.left + delta) }
+          : {
+              ...paneIntentsRef.current,
+              right: Math.max(RIGHT_PANE_MIN_WIDTH, start.right - delta),
+            };
+      setPaneIntents(next);
+    };
+    const onUp = () => {
+      document.body.classList.remove("col-resizing");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      void useAppStore.getState().patchState({
+        sidebarWidth: paneIntentsRef.current.left,
+        rightPaneWidth: paneIntentsRef.current.right,
+      });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
   const zoomRef = useRef(ZOOM_DEFAULT);
   // Reactive mirror of zoomRef so the menu's zoom stepper can display it.
   const [zoomLevel, setZoomLevel] = useState(ZOOM_DEFAULT);
@@ -260,6 +327,12 @@ export default function App() {
     }
     if (state.rightPaneTab === "destinations") setRightTabRaw("destinations");
     if (state.issuesOpen === true) useIssuesStore.getState().setOpen(true);
+    const left = state.sidebarWidth;
+    const right = state.rightPaneWidth;
+    setPaneIntents((current) => ({
+      left: typeof left === "number" && Number.isFinite(left) ? left : current.left,
+      right: typeof right === "number" && Number.isFinite(right) ? right : current.right,
+    }));
     const last = state.lastSection as { kind?: string; month?: string } | undefined;
     if (
       last &&
@@ -302,8 +375,11 @@ export default function App() {
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       <SettingsModal />
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-64 shrink-0 overflow-y-auto border-r border-border bg-surface p-3">
+      <div ref={contentRowRef} className="flex min-h-0 flex-1">
+        <aside
+          style={{ width: paneWidths.left }}
+          className="shrink-0 overflow-y-auto bg-surface p-3"
+        >
           <Sidebar counts={counts} />
           <button
             className={`mt-2 w-full rounded px-1 py-0.5 text-left text-sm ${
@@ -318,7 +394,18 @@ export default function App() {
             Issues ({issuesTotal})
           </button>
         </aside>
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          style={{ width: SPLITTER_WIDTH }}
+          className="shrink-0 cursor-col-resize bg-border hover:bg-border-strong"
+          onMouseDown={beginPaneDrag("left")}
+        />
+        <main
+          style={{ minWidth: GRID_MIN_WIDTH }}
+          className="flex min-w-0 flex-1 flex-col overflow-hidden"
+        >
           {loadError !== null ? (
             <p className="m-auto text-danger">{loadError}</p>
           ) : issuesOpen ? (
@@ -331,7 +418,18 @@ export default function App() {
             <p className="m-auto text-ink-muted">Select a month</p>
           )}
         </main>
-        <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-l border-border bg-surface">
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize details pane"
+          style={{ width: SPLITTER_WIDTH }}
+          className="shrink-0 cursor-col-resize bg-border hover:bg-border-strong"
+          onMouseDown={beginPaneDrag("right")}
+        />
+        <aside
+          style={{ width: paneWidths.right }}
+          className="flex shrink-0 flex-col overflow-hidden bg-surface"
+        >
           {/* One composite tablist: a single tab stop, arrows move and
               activate (panel swaps are cheap), per the composite-control
               conventions. */}
@@ -372,7 +470,13 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          {/* Focusable so PageUp/PageDown/arrows scroll a long copy-path list
+              — the pane holds nothing else focusable, and the tab buttons are
+              siblings whose keydowns never reach this scroller. */}
+          <div
+            tabIndex={0}
+            className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+          >
             {rightTab === "details" ? (
               <MetadataPane detail={detail} hash={selectedHash} />
             ) : (

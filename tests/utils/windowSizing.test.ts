@@ -3,16 +3,18 @@ import {
   CONTENT_MIN_HEIGHT,
   FOOTER_HEIGHT,
   GRID_MIN_WIDTH,
-  RIGHT_PANE_WIDTH,
-  SIDEBAR_WIDTH,
+  RIGHT_PANE_MIN_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  SPLITTER_WIDTH,
+  clampPaneWidths,
   computeMinWindowHeight,
   computeMinWindowWidth,
 } from "../../src/utils/windowSizing";
 
 describe("window minimums are derived, never hand-typed", () => {
-  it("width is the sum of the content row", () => {
+  it("width is the sum of the content row at its minimums", () => {
     expect(computeMinWindowWidth()).toBe(
-      SIDEBAR_WIDTH + GRID_MIN_WIDTH + RIGHT_PANE_WIDTH,
+      SIDEBAR_MIN_WIDTH + SPLITTER_WIDTH + GRID_MIN_WIDTH + SPLITTER_WIDTH + RIGHT_PANE_MIN_WIDTH,
     );
   });
 
@@ -28,5 +30,41 @@ describe("window minimums are derived, never hand-typed", () => {
     const [main] = conf.app.windows;
     expect(main.width).toBeGreaterThanOrEqual(computeMinWindowWidth());
     expect(main.height).toBeGreaterThanOrEqual(computeMinWindowHeight());
+  });
+});
+
+describe("pane clamping derives display from intent", () => {
+  it("passes both intents through when they fit", () => {
+    // Wide container: intents display as dragged.
+    expect(clampPaneWidths(300, 350, 2000)).toEqual({ left: 300, right: 350 });
+  });
+
+  it("shrinks proportionally to headroom when they do not fit", () => {
+    const { left, right } = clampPaneWidths(400, 400, 1000);
+    // The grid keeps its minimum; both panes give ground, the one with more
+    // headroom giving more.
+    expect(left + right).toBeLessThanOrEqual(1000 - GRID_MIN_WIDTH - 2 * SPLITTER_WIDTH);
+    expect(left).toBeGreaterThanOrEqual(SIDEBAR_MIN_WIDTH);
+    expect(right).toBeGreaterThanOrEqual(RIGHT_PANE_MIN_WIDTH);
+    expect(left).toBeLessThan(400);
+    expect(right).toBeLessThan(400);
+  });
+
+  it("bottoms out at both minimums and never below", () => {
+    const { left, right } = clampPaneWidths(9999, 9999, computeMinWindowWidth());
+    expect(left).toBe(SIDEBAR_MIN_WIDTH);
+    expect(right).toBe(RIGHT_PANE_MIN_WIDTH);
+    // Even in an impossibly narrow container the minimums hold (the window
+    // minimum prevents the container from actually going this small).
+    const floor = clampPaneWidths(500, 500, 100);
+    expect(floor.left).toBe(SIDEBAR_MIN_WIDTH);
+    expect(floor.right).toBe(RIGHT_PANE_MIN_WIDTH);
+  });
+
+  it("sub-minimum intents display at the minimum", () => {
+    expect(clampPaneWidths(10, 10, 2000)).toEqual({
+      left: SIDEBAR_MIN_WIDTH,
+      right: RIGHT_PANE_MIN_WIDTH,
+    });
   });
 });

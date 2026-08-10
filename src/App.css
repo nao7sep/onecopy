@@ -19,6 +19,12 @@ body.dragging * {
   cursor: grabbing !important;
 }
 
+/* Same principle for a pane-divider drag: the resize cursor holds window-wide
+   until mouseup (App toggles the class). */
+body.col-resizing * {
+  cursor: col-resize !important;
+}
+
 /* ── Semantic color tokens ────────────────────────────────────────────────
    Single source of truth for every color in the app. Light values alias
    Tailwind's default palette; the `.dark` block overrides the same variables,
