@@ -18,6 +18,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields } from "../repositories";
+import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "./items-store";
 
 export interface PreviewPayload {
@@ -89,7 +90,13 @@ async function ensurePreviewWindow(): Promise<void> {
   try {
     const monitors = await availableMonitors();
     if (monitors.length >= 2) {
-      await window.setPosition(monitors[1].position);
+      // Screen priority: slot 2 of the ordered list is the preview screen.
+      const { useAppStore } = await import("./app-store");
+      const ordered = orderMonitors(
+        monitors,
+        priorityFromState(useAppStore.getState().appData?.state ?? null),
+      );
+      await window.setPosition(ordered[1].position);
     }
     // Keep the keyboard where the culling happens.
     await getCurrentWindow().setFocus().catch(() => {});

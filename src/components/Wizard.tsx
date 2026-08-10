@@ -1,4 +1,5 @@
 import { useWizardStore } from "../state/wizard-store";
+import { useBinariesStore } from "../state/binaries-store";
 
 // The first-run Setup surface: three steps, blocking by design (there is
 // nothing behind it until source directories exist), completable only —
@@ -147,6 +148,35 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
                 Back
               </button>
               <button
+                className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted"
+                onClick={() => setStep(4)}
+              >
+                Next
+              </button>
+            </div>
+          </section>
+        ) : null}
+        {step === 4 ? (
+          <section>
+            {/* The one OFFER (not a step): skippable, and skipping degrades
+                honestly — placeholder tiles plus the Managed tools path. */}
+            <h2 className="mb-2 text-sm font-semibold text-ink-strong">ffmpeg</h2>
+            <p className="mb-2 text-sm text-ink-muted">
+              iPhone photos (HEIC) and video posters decode through ffmpeg,
+              which OneCopy downloads and manages itself (free, one click).
+              For an iPhone-heavy library it is effectively required. Skipping
+              is fine: those files show placeholders until you install it from
+              the menu&apos;s Managed tools.
+            </p>
+            <FfmpegOfferRow />
+            <div className="mt-4 flex justify-between">
+              <button
+                className="rounded border border-border px-3 py-1 text-sm text-ink"
+                onClick={() => setStep(3)}
+              >
+                Back
+              </button>
+              <button
                 className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
                 disabled={counting}
                 title={counting ? "Waiting for directory counts" : undefined}
@@ -158,6 +188,36 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
           </section>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/** The ffmpeg status + install control inside the wizard offer. An install
+ * started here keeps running after Finish — the footer chip carries its
+ * progress, so the offer never blocks the scan. */
+function FfmpegOfferRow() {
+  const state = useBinariesStore((s) => s.state);
+  const installing = useBinariesStore((s) => s.installing);
+  const progress = useBinariesStore((s) => s.progress);
+  const install = useBinariesStore((s) => s.install);
+  const installed = state !== null && state.status !== "not-installed";
+  return (
+    <div className="flex items-center justify-between rounded border border-border px-2 py-1 text-sm">
+      <span className="text-ink">
+        {installing
+          ? progress
+          : installed
+            ? `ffmpeg ${state?.facts.installedVersion ?? ""} is installed`
+            : "ffmpeg is not installed"}
+      </span>
+      {!installed && !installing ? (
+        <button
+          className="rounded bg-primary px-2 py-0.5 text-xs text-ink-inverted"
+          onClick={() => void install()}
+        >
+          Install ffmpeg
+        </button>
+      ) : null}
     </div>
   );
 }

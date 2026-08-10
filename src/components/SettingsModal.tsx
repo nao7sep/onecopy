@@ -1,6 +1,75 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettingsStore } from "../state/settings-store";
+import { useAppStore } from "../state/app-store";
+import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
 import ModalShell from "./ModalShell";
+
+/** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
+ * comparison). Persisted as app STATE, not part of the config draft — screen
+ * identifiers are machine-specific and reordering applies immediately, like
+ * a pane width. Meaningful only with two or more monitors. */
+function ScreensSection() {
+  const [monitors, setMonitors] = useState<
+    { name: string | null; position: { x: number; y: number }; size: { width: number; height: number } }[]
+  >([]);
+  const priority = priorityFromState(useAppStore((s) => s.appData?.state) ?? null);
+  useEffect(() => {
+    void import("@tauri-apps/api/window").then(async ({ availableMonitors }) => {
+      setMonitors(await availableMonitors().catch(() => []));
+    });
+  }, []);
+  if (monitors.length < 2) return null;
+
+  const ordered = orderMonitors(monitors, priority);
+  const move = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= ordered.length) return;
+    const keys = ordered.map(monitorKey);
+    [keys[index], keys[target]] = [keys[target], keys[index]];
+    void useAppStore.getState().patchState({ screenPriority: keys });
+  };
+  const role = (index: number) =>
+    index === 0 ? "main" : index === 1 ? "preview" : "comparison";
+
+  return (
+    <>
+      <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">Screens</h2>
+      <p className="mb-1 text-xs text-ink-muted">
+        Order decides the role: 1 = main window, 2 = preview, the rest join
+        the comparison spread. Applies immediately.
+      </p>
+      {ordered.map((monitor, index) => (
+        <div
+          key={monitorKey(monitor)}
+          className="mb-0.5 flex items-center justify-between gap-2 rounded border border-border px-2 py-0.5 text-sm"
+        >
+          <span className="min-w-0 flex-1 truncate text-ink">
+            {index + 1}. {monitor.name ?? "Display"} ({monitor.size.width}×
+            {monitor.size.height}) · {role(index)}
+          </span>
+          <span className="flex gap-1">
+            <button
+              className="rounded border border-border px-1 text-xs disabled:text-ink-muted"
+              aria-label="Move up"
+              disabled={index === 0}
+              onClick={() => move(index, -1)}
+            >
+              ↑
+            </button>
+            <button
+              className="rounded border border-border px-1 text-xs disabled:text-ink-muted"
+              aria-label="Move down"
+              disabled={index === ordered.length - 1}
+              onClick={() => move(index, 1)}
+            >
+              ↓
+            </button>
+          </span>
+        </div>
+      ))}
+    </>
+  );
+}
 
 // The named Settings modal over the config tunables. Field-level checks only —
 // the store never validates semantics (config-seeding conventions); Save
@@ -319,6 +388,8 @@ export default function SettingsModal() {
               <option value="dark">Dark</option>
             </select>
           </label>
+
+          <ScreensSection />
 
           <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
             Behavior

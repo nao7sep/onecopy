@@ -14,6 +14,7 @@ import { getCurrentWindow, availableMonitors } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { log, toErrorFields } from "../repositories";
 import { hasOpenModal } from "../utils/modalStack";
+import { orderMonitors, priorityFromState } from "../utils/screens";
 
 export interface GroupMember {
   hash: string;
@@ -116,7 +117,13 @@ export function perScreenCapacity(members: GroupMember[]): number {
 // single-window form and all 16 keys.
 async function openSpread(perScreen: number): Promise<void> {
   try {
-    const monitors = await availableMonitors();
+    // Screen priority orders which monitors take which role (1 = main,
+    // 2 = preview, 3+ = comparison; the spread walks the ordered tail).
+    const { useAppStore } = await import("./app-store");
+    const monitors = orderMonitors(
+      await availableMonitors(),
+      priorityFromState(useAppStore.getState().appData?.state ?? null),
+    );
     const extras = Math.max(0, monitors.length - 1);
     const capacities =
       extras === 0 ? [SLOT_KEYS.length] : monitors.map(() => perScreen);
