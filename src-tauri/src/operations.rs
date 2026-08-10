@@ -125,6 +125,13 @@ pub fn delete_item(
             }
             Err(err) => {
                 outcome.failed_files += 1;
+                // The issues table is the user surface; the session log is
+                // the debugging record — mirror the failure where it is
+                // raised, with its context intact.
+                logging::warn(
+                    "delete failed for one copy",
+                    json!({ "path": abs_path, "error": { "message": err } }),
+                );
                 conn.execute(
                     "INSERT INTO issues (path, kind, message, created_at_utc) \
                      VALUES (?1, 'delete-error', ?2, ?3)",
@@ -413,6 +420,10 @@ fn deliver_one(
             }
             Err(err) => {
                 let _ = std::fs::remove_file(target);
+                logging::warn(
+                    "copy-out failed for one source",
+                    json!({ "path": source_path, "error": { "message": err.to_string() } }),
+                );
                 conn.execute(
                     "INSERT INTO issues (path, kind, message, created_at_utc) \
                      VALUES (?1, 'copy-error', ?2, ?3)",
@@ -431,6 +442,10 @@ fn record_rot_issue(
     expected: &str,
     actual: &str,
 ) -> Result<(), String> {
+    logging::warn(
+        "source copy failed tee verification (rot or divergence)",
+        json!({ "path": source_path, "expected": expected, "actual": actual }),
+    );
     conn.execute(
         "INSERT INTO issues (path, kind, message, created_at_utc) \
          VALUES (?1, 'copy-verify-mismatch', ?2, ?3)",
