@@ -200,18 +200,10 @@ fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String
         changed += restat_dir(&conn, dir, &settings.lists)?;
     }
     if changed > 0 {
-        scanner::hash_pending(&conn)?;
-        scanner::extract_pending(&conn)?;
-        scanner::resolve_from_evidence(&conn, &settings.resolution, scanner::ResolveScope::PendingOnly)?;
-        scanner::pair_companions(&conn)?;
-        let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
-        crate::preview::derive_images_pending(
-            &conn,
-            &cache,
-            settings.thumb_edge,
-            settings.preview_long_edge,
-        )?;
-        crate::similarity::rebuild_groups(&conn, &settings.similarity)?;
+        // The shared pipeline tail (hash → … → group), so the watcher can
+        // never drift from the scan and rescan paths on what a pass covers.
+        let mut summary = scanner::ScanSummary::default();
+        scanner::run_pipeline_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
         logging::info("watcher pass", json!({ "dirs": dirs.len(), "changed": changed }));
     }
     Ok(changed)

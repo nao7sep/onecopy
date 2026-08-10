@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -27,6 +28,28 @@ use crate::logging;
 use crate::metadata;
 use crate::resolution::{self, ResolutionConfig};
 use crate::timestamps;
+
+/// Cooperative scan cancellation: set on app exit (and cleared at scan start),
+/// checked inside every per-item pipeline loop so a quit interrupts the scan
+/// in bounded time instead of killing it mid-write. A cancelled stage returns
+/// the `CANCELLED` sentinel, which the scan wrapper reports as a cancellation,
+/// never a failure — the checkpointed rows resume on the next launch.
+pub static SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// The sentinel a cancelled stage propagates in place of a real error.
+pub const CANCELLED: &str = "scan cancelled";
+
+pub fn cancelled() -> bool {
+    SCAN_CANCEL.load(Ordering::Relaxed)
+}
+
+fn check_cancel() -> Result<(), String> {
+    if cancelled() {
+        Err(CANCELLED.to_string())
+    } else {
+        Ok(())
+    }
+}
 
 /// The extension lists the scanner classifies against (the config's editable
 /// copies).
@@ -187,6 +210,52 @@ pub fn run_full_scan(
         );
     }
 
+    run_pipeline_tail(conn, settings, progress, &mut summary)?;
+    Ok(summary)
+}
+
+/// True when checkpointed work from an interrupted run is still waiting: media
+/// rows never hashed, or image/video contents never derived. Videos count only
+/// while ffmpeg is present — without it the video stage would skip them again,
+/// and a resume that can do nothing must not fire on every launch. Cheap
+/// (three indexed EXISTS probes), so callers may use it as a gate.
+pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bool, String> {
+    let probe = |sql: &str| -> Result<bool, String> {
+        conn.query_row(sql, [], |r| r.get::<_, i64>(0))
+            .map(|n| n != 0)
+            .map_err(|e| e.to_string())
+    };
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 AND content_hash IS NULL \
+         AND kind IN ('image', 'video'))",
+    )? {
+        return Ok(true);
+    }
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' AND derived_at_utc IS NULL)",
+    )? {
+        return Ok(true);
+    }
+    if ffmpeg_present
+        && probe(
+            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'video' AND derived_at_utc IS NULL)",
+        )?
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// The pipeline minus the walk: hash → extract → resolve → pair → derive →
+/// video → group, over whatever the checkpoints left pending. Shared by the
+/// full scan, the startup resume, and the scoped section rescan, so every
+/// recovery path runs the same (and the whole) tail.
+pub fn run_pipeline_tail(
+    conn: &Connection,
+    settings: &ScanSettings,
+    progress: &dyn Fn(&str, String),
+    summary: &mut ScanSummary,
+) -> Result<(), String> {
     let hash_stats = hash_pending(conn)?;
     summary.full_hashed = hash_stats.full_hashed;
     summary.copies_disagree = hash_stats.copies_disagree;
@@ -214,11 +283,13 @@ pub fn run_full_scan(
     progress("pair", format!("{} companions", pair_stats.paired));
 
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
+    let per_item = |done: u64, total: u64| progress("derive", format!("{done}/{total} previews"));
     let derive_stats = crate::preview::derive_images_pending(
         conn,
         &cache,
         settings.thumb_edge,
         settings.preview_long_edge,
+        Some(&per_item),
     )?;
     summary.derived = derive_stats.derived;
     summary.derive_failed = derive_stats.failed;
@@ -259,7 +330,7 @@ pub fn run_full_scan(
         ),
     );
 
-    Ok(summary)
+    Ok(())
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -371,6 +442,7 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
     let mut present: Vec<String> = Vec::new();
 
     for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        check_cancel()?;
         let entry = match entry {
             Ok(e) => e,
             Err(err) => {
@@ -467,12 +539,16 @@ pub fn hash_pending(conn: &Connection) -> Result<HashStats, String> {
          WHERE missing = 0 AND content_hash IS NULL AND kind IN ('image', 'video')",
     )?;
     for (id, abs, size, kind) in media {
-        match hashing::full_hash(Path::new(&abs)) {
+        check_cancel()?;
+        match hashing::full_hash_cancellable(Path::new(&abs), &SCAN_CANCEL) {
             Ok(hash) => {
                 stats.full_hashed += 1;
                 store_content_hash(conn, id, &hash, size, &kind)?;
             }
             Err(err) => {
+                // A cancel that interrupted the read is a shutdown, never a
+                // file problem — no issue row for it.
+                check_cancel()?;
                 stats.errors += 1;
                 record_issue(conn, Some(abs), "read-error", &err.to_string())?;
             }
@@ -499,6 +575,7 @@ pub fn hash_pending(conn: &Connection) -> Result<HashStats, String> {
         // Size collision: prehash each, then full-hash only prehash collisions.
         let mut by_prehash: HashMap<String, Vec<(i64, String, String)>> = HashMap::new();
         for (id, abs, kind) in group {
+            check_cancel()?;
             match hashing::prehash(Path::new(&abs)) {
                 Ok(pre) => {
                     stats.prehashed += 1;
@@ -523,7 +600,8 @@ pub fn hash_pending(conn: &Connection) -> Result<HashStats, String> {
             let group_len = collided.len();
             let mut hashes_in_group: Vec<String> = Vec::new();
             for (id, abs, kind) in collided {
-                match hashing::full_hash(Path::new(&abs)) {
+                check_cancel()?;
+                match hashing::full_hash_cancellable(Path::new(&abs), &SCAN_CANCEL) {
                     Ok(hash) => {
                         stats.full_hashed += 1;
                         if !hashes_in_group.contains(&hash) {
@@ -532,6 +610,9 @@ pub fn hash_pending(conn: &Connection) -> Result<HashStats, String> {
                         store_content_hash(conn, id, &hash, size, &kind)?;
                     }
                     Err(err) => {
+                        // A cancel that interrupted the read is a shutdown,
+                        // never a file problem — no issue row for it.
+                        check_cancel()?;
                         stats.errors += 1;
                         record_issue(conn, Some(abs), "read-error", &err.to_string())?;
                     }
@@ -577,6 +658,7 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
     )?;
 
     for (id, abs, file_name, kind) in rows {
+        check_cancel()?;
         let path = Path::new(&abs);
         let meta = match kind.as_str() {
             "image" => Some(metadata::read_image_metadata(path)),
@@ -895,6 +977,44 @@ mod tests {
             root,
             conn,
         }
+    }
+
+    #[test]
+    fn pending_work_probe_tracks_unhashed_media_and_underived_contents() {
+        let fx = fixture("pending-probe");
+
+        // Empty index: nothing pending.
+        assert!(!pending_work_exists(&fx.conn, true).unwrap());
+
+        // A media path without a content hash is pending work.
+        fx.conn
+            .execute(
+                "INSERT INTO paths (abs_path, dir_path, file_name, kind, missing) \
+                 VALUES ('/a/x.jpg', '/a', 'x.jpg', 'image', 0)",
+                [],
+            )
+            .unwrap();
+        assert!(pending_work_exists(&fx.conn, false).unwrap());
+
+        // Hashed but underived image content: still pending.
+        fx.conn
+            .execute_batch(
+                "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 1, 'image');
+                 UPDATE paths SET content_hash = 'h1';",
+            )
+            .unwrap();
+        assert!(pending_work_exists(&fx.conn, false).unwrap());
+
+        // Derived image: clean. An underived video counts only when ffmpeg
+        // is present — a resume that could do nothing must not fire.
+        fx.conn
+            .execute_batch(
+                "UPDATE contents SET derived_at_utc = 'done';
+                 INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 1, 'video');",
+            )
+            .unwrap();
+        assert!(!pending_work_exists(&fx.conn, false).unwrap());
+        assert!(pending_work_exists(&fx.conn, true).unwrap());
     }
 
     fn count(conn: &Connection, sql: &str) -> i64 {

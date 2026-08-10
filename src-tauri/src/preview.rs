@@ -75,8 +75,9 @@ pub fn generate_for_image(
     thumb_edge: u32,
     preview_long_edge: u32,
 ) -> Result<DerivedFacts, String> {
+    let orientation = read_orientation(src);
     let decoded = image::open(src).map_err(|e| e.to_string())?;
-    let oriented = apply_orientation(decoded, read_orientation(src));
+    let oriented = apply_orientation(decoded, orientation);
     let (width, height) = (oriented.width(), oriented.height());
 
     // Preview first (higher quality resize), thumbnail from the preview so the
@@ -84,7 +85,17 @@ pub fn generate_for_image(
     let preview = fit_long_edge(&oriented, preview_long_edge, image::imageops::FilterType::CatmullRom);
     let sharpness = laplacian_variance(&preview.to_luma8());
     let phash = dhash(&preview);
-    write_webp(&preview, &cache.preview(hash), 80.0)?;
+
+    // An image that already fits the preview edge needs no resize — and when
+    // its own format is one the webview displays as-is and no orientation
+    // transform applied, a full-size re-encode adds nothing: the preview
+    // entry becomes a byte-copy of the original (the .webp cache name is
+    // load-bearing, so the serving protocol sniffs the real content type).
+    if width.max(height) <= preview_long_edge && orientation == 1 && displayable_as_is(src) {
+        copy_file_atomic(src, &cache.preview(hash))?;
+    } else {
+        write_webp(&preview, &cache.preview(hash), 80.0)?;
+    }
 
     let thumb = fit_long_edge(&preview, thumb_edge, image::imageops::FilterType::Triangle);
     write_webp(&thumb, &cache.thumb(hash), 78.0)?;
@@ -95,6 +106,41 @@ pub fn generate_for_image(
         sharpness,
         phash,
     })
+}
+
+/// Formats the webview renders directly, making the preview byte-copy safe.
+/// HEIC/TIFF/AVIF and friends stay on the WebP encode path.
+fn displayable_as_is(src: &Path) -> bool {
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif")
+}
+
+/// Atomic byte-copy into the cache (temp sibling + rename), the no-re-encode
+/// counterpart of `write_webp`. not recorded: cache derivative (binary,
+/// reconstructible), outside the managed-text backup path by design.
+fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| "cache path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let stem = target
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("cache");
+    let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()));
+    std::fs::copy(src, &tmp).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    std::fs::rename(&tmp, target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    Ok(())
 }
 
 /// A 64-bit difference hash: grayscale 9×8, one bit per horizontal neighbor
@@ -129,12 +175,21 @@ pub struct DeriveStats {
 /// failure records an issue and marks the row failed so it is not retried
 /// every run (a rescan that changes the file resets the marker via the
 /// changed-row reset in the walk).
+///
+/// The decode/encode work runs on rayon across chunks (SQLite writes stay on
+/// this thread), `progress` — when given — reports (done, total) after each
+/// chunk so a long pass is visibly alive, and the scan cancel flag is honored
+/// between chunks: derived rows keep their checkpoint, undone rows resume on
+/// the next pass.
 pub fn derive_images_pending(
     conn: &Connection,
     cache: &CachePaths,
     thumb_edge: u32,
     preview_long_edge: u32,
+    progress: Option<&dyn Fn(u64, u64)>,
 ) -> Result<DeriveStats, String> {
+    use rayon::prelude::*;
+
     let mut stats = DeriveStats::default();
 
     let mut stmt = conn
@@ -144,47 +199,86 @@ pub fn derive_images_pending(
              FROM contents c WHERE c.kind = 'image' AND c.derived_at_utc IS NULL",
         )
         .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
+        .filter_map(|(hash, path)| path.map(|p| (hash, p)))
         .collect();
     drop(stmt);
 
-    for (hash, path) in rows {
-        let Some(path) = path else { continue };
-        match generate_for_image(Path::new(&path), &hash, cache, thumb_edge, preview_long_edge) {
-            Ok(facts) => {
-                stats.derived += 1;
-                conn.execute(
-                    "UPDATE contents SET width = COALESCE(width, ?2), \
-                     height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
-                     derived_at_utc = ?6 WHERE hash = ?1",
-                    params![
+    let total = rows.len() as u64;
+    let mut done = 0u64;
+
+    for chunk in rows.chunks(32) {
+        if crate::scanner::cancelled() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+
+        let results: Vec<(&String, &String, Result<DerivedFacts, String>)> = chunk
+            .par_iter()
+            .map(|(hash, path)| {
+                if crate::scanner::cancelled() {
+                    (hash, path, Err(crate::scanner::CANCELLED.to_string()))
+                } else {
+                    (
                         hash,
-                        facts.width,
-                        facts.height,
-                        facts.sharpness,
-                        facts.phash as i64,
-                        logging::now_iso_millis()
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
+                        path,
+                        generate_for_image(
+                            Path::new(path),
+                            hash,
+                            cache,
+                            thumb_edge,
+                            preview_long_edge,
+                        ),
+                    )
+                }
+            })
+            .collect();
+
+        for (hash, path, outcome) in results {
+            match outcome {
+                Ok(facts) => {
+                    stats.derived += 1;
+                    conn.execute(
+                        "UPDATE contents SET width = COALESCE(width, ?2), \
+                         height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
+                         derived_at_utc = ?6 WHERE hash = ?1",
+                        params![
+                            hash,
+                            facts.width,
+                            facts.height,
+                            facts.sharpness,
+                            facts.phash as i64,
+                            logging::now_iso_millis()
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                Err(err) if err == crate::scanner::CANCELLED => {
+                    // Skipped by the cancel — no checkpoint, no issue; the
+                    // row stays pending for the next pass.
+                }
+                Err(err) => {
+                    stats.failed += 1;
+                    conn.execute(
+                        "INSERT INTO issues (path, kind, message, created_at_utc) \
+                         VALUES (?1, 'decode-error', ?2, ?3)",
+                        params![path, err, logging::now_iso_millis()],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    conn.execute(
+                        "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
+                        [hash],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
             }
-            Err(err) => {
-                stats.failed += 1;
-                conn.execute(
-                    "INSERT INTO issues (path, kind, message, created_at_utc) \
-                     VALUES (?1, 'decode-error', ?2, ?3)",
-                    params![path, err, logging::now_iso_millis()],
-                )
-                .map_err(|e| e.to_string())?;
-                conn.execute(
-                    "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
-                    [&hash],
-                )
-                .map_err(|e| e.to_string())?;
-            }
+        }
+
+        done += chunk.len() as u64;
+        if let Some(report) = progress {
+            report(done.min(total), total);
         }
     }
 
@@ -366,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn small_images_are_never_upscaled() {
+    fn small_images_are_never_upscaled_and_skip_the_reencode() {
         let dir = tempfile::Builder::new()
             .prefix("onecopy-preview-small-")
             .tempdir()
@@ -375,7 +469,20 @@ mod tests {
         let cache = CachePaths::new(dir.path().join("cache"));
 
         generate_for_image(&src, "ffff0000", &cache, 320, 1600).unwrap();
-        let preview = image::open(cache.preview("ffff0000")).unwrap();
+
+        // Fits the preview edge + displayable format + no orientation: the
+        // preview entry is a byte-copy of the original, not a WebP re-encode
+        // (the .webp cache name is load-bearing; the protocol sniffs bytes).
+        assert_eq!(
+            std::fs::read(cache.preview("ffff0000")).unwrap(),
+            std::fs::read(&src).unwrap()
+        );
+        let preview = image::ImageReader::open(cache.preview("ffff0000"))
+            .unwrap()
+            .with_guessed_format()
+            .unwrap()
+            .decode()
+            .unwrap();
         assert_eq!((preview.width(), preview.height()), (200, 100));
     }
 
@@ -480,7 +587,7 @@ mod tests {
         ))
         .unwrap();
 
-        let stats = derive_images_pending(&conn, &cache, 320, 1600).unwrap();
+        let stats = derive_images_pending(&conn, &cache, 320, 1600, None).unwrap();
         assert_eq!((stats.derived, stats.failed), (1, 1));
         assert!(cache.preview("good01").exists());
 
@@ -494,7 +601,7 @@ mod tests {
         assert_eq!(issue_count, 1);
 
         // A second pass has nothing left to do — failures are not retried.
-        let again = derive_images_pending(&conn, &cache, 320, 1600).unwrap();
+        let again = derive_images_pending(&conn, &cache, 320, 1600, None).unwrap();
         assert_eq!((again.derived, again.failed), (0, 0));
 
         // The good row carries dimensions + sharpness.

@@ -52,6 +52,13 @@ ureq = "3.3.0"
 zip = "8.6.0"
 notify = "8.2.0"
 
+# Dependencies must not run at opt-level 0 in dev builds: libwebp's C (built by
+# cc, which inherits OPT_LEVEL) and the image crate become ~18x slower there,
+# turning the derive stage into quarter-hour hangs on ordinary asset sets.
+# Optimizing only dependencies keeps the app crate itself fast to recompile.
+[profile.dev.package."*"]
+opt-level = 2
+
 [dev-dependencies]
 # Serializes the tests that share the process-global backup-store singleton
 # (`static STORE` in backup_store.rs); unrelated tests still parallelize.

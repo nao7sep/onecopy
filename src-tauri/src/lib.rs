@@ -124,6 +124,11 @@ fn save_state(app: AppHandle, state: Value) -> Result<(), String> {
 // One scan pipeline at a time; a second start is a no-op reported as `false`.
 static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 
+// The live scan worker, joined at exit so a quit interrupts the scan through
+// the cooperative cancel flag instead of killing it mid-write.
+static SCAN_THREAD: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
+
 // The cache root, resolved once at setup (config `cacheDir` or `<root>/cache`)
 // for the mediacache protocol handler. A cacheDir change takes effect on the
 // next launch — the protocol reads this, never the config, per request.
@@ -288,13 +293,34 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
         return not_found();
     };
     match std::fs::read(&file) {
-        Ok(bytes) => tauri::http::Response::builder()
-            .status(200)
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "public, max-age=31536000, immutable")
-            .body(bytes)
-            .unwrap_or_else(|_| not_found()),
+        Ok(bytes) => {
+            // Preview entries can be byte-copies of originals (the derive
+            // fast path when an image already fits the preview edge), so the
+            // .webp cache name may hold JPEG/PNG/GIF bytes — sniff the magic
+            // instead of trusting the extension.
+            let content_type = sniff_image_content_type(&bytes);
+            tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", content_type)
+                .header("Cache-Control", "public, max-age=31536000, immutable")
+                .body(bytes)
+                .unwrap_or_else(|_| not_found())
+        }
         Err(_) => not_found(),
+    }
+}
+
+/// Magic-byte sniff over the formats the cache can hold; WebP (and anything
+/// unrecognized) reports as WebP, the tree's native encode format.
+fn sniff_image_content_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else {
+        "image/webp"
     }
 }
 
@@ -304,9 +330,19 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
 // false when a scan is already running.
 #[tauri::command]
 fn start_scan(app: AppHandle) -> Result<bool, String> {
+    spawn_scan(app, true)
+}
+
+// The one scan spawner: `include_walk` distinguishes the full scan (walk +
+// tail) from the startup resume, which runs only the pipeline tail over the
+// checkpointed pending rows. A cancelled run (app exit) reports as
+// `scan://done { cancelled: true }`, never as an error — the pending rows are
+// the resume point, and the next launch picks them up.
+fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
     if SCAN_RUNNING.swap(true, Ordering::SeqCst) {
         return Ok(false);
     }
+    scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
     let prepared = (|| -> Result<(), String> {
         let data_root = paths::data_root(&app)?;
         let loaded = storage::load_app_data(&app)?;
@@ -318,7 +354,7 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
         let db_file = data_root.join(storage::INDEX_DB_FILE_NAME);
         let handle = app.clone();
 
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             // Sleep inhibition for the day-scale first index (config-gated).
             // Display sleep stays allowed; only system sleep is held off.
             let _awake = settings.keep_awake.then(|| {
@@ -336,12 +372,22 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
             };
 
             let outcome = index_store::open(&db_file).and_then(|conn| {
-                scanner::run_full_scan(&conn, &settings, &emit_progress)
+                if include_walk {
+                    scanner::run_full_scan(&conn, &settings, &emit_progress)
+                } else {
+                    let mut summary = scanner::ScanSummary::default();
+                    scanner::run_pipeline_tail(&conn, &settings, &emit_progress, &mut summary)
+                        .map(|()| summary)
+                }
             });
             match outcome {
                 Ok(summary) => {
                     logging::info("scan complete", json!({ "summary": summary }));
                     let _ = handle.emit("scan://done", json!({ "summary": summary }));
+                }
+                Err(err) if err == scanner::CANCELLED => {
+                    logging::info("scan cancelled", json!({ "resumesAtNextLaunch": true }));
+                    let _ = handle.emit("scan://done", json!({ "cancelled": true }));
                 }
                 Err(err) => {
                     logging::error("scan failed", json!({ "error": { "message": err.clone() } }));
@@ -350,6 +396,9 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
             }
             SCAN_RUNNING.store(false, Ordering::SeqCst);
         });
+        if let Ok(mut slot) = SCAN_THREAD.lock() {
+            *slot = Some(worker);
+        }
         Ok(())
     })();
 
@@ -642,23 +691,13 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
             for dir in &dirs {
                 changed += watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists)?;
             }
-            if changed > 0 {
-                scanner::hash_pending(&conn)?;
-                scanner::extract_pending(&conn)?;
-                scanner::resolve_from_evidence(
-                    &conn,
-                    &settings.resolution,
-                    scanner::ResolveScope::PendingOnly,
-                )?;
-                scanner::pair_companions(&conn)?;
-                let cache = preview::CachePaths::new(settings.cache_root.clone());
-                preview::derive_images_pending(
-                    &conn,
-                    &cache,
-                    settings.thumb_edge,
-                    settings.preview_long_edge,
-                )?;
-                similarity::rebuild_groups(&conn, &settings.similarity)?;
+            // The tail also runs when nothing changed on disk but checkpointed
+            // work is still pending — a section rescan is the recovery the
+            // user reaches for after an interrupted scan, and gating the whole
+            // tail on `changed` made it a no-op exactly then.
+            if changed > 0 || scanner::pending_work_exists(&conn, settings.ffmpeg.is_some())? {
+                let mut summary = scanner::ScanSummary::default();
+                scanner::run_pipeline_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
             }
             Ok(changed)
         },
@@ -977,7 +1016,28 @@ pub fn run() {
             // source roots (the Camera Roll inflow case). Restart picks up
             // source-dir changes; correctness never depends on it.
             let watch_settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+            let ffmpeg_present = watch_settings.ffmpeg.is_some();
             watcher::start(app.handle().clone(), watch_settings.source_dirs);
+
+            // Auto-resume: an interrupted scan leaves checkpointed pending
+            // rows (unhashed media, underived images/videos); pick the work
+            // back up without waiting for the user to press Scan. Runs only
+            // the pipeline tail — no walk — and no-ops on a clean index.
+            if let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
+                match scanner::pending_work_exists(&conn, ffmpeg_present) {
+                    Ok(true) => {
+                        logging::info("scan resumed at startup", json!({}));
+                        let _ = spawn_scan(app.handle().clone(), false);
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        logging::warn(
+                            "pending-work probe failed",
+                            json!({ "error": { "message": err } }),
+                        );
+                    }
+                }
+            }
 
             logging::info(
                 "app startup",
@@ -1024,9 +1084,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
+    app.run(|_app_handle, event| match event {
+        // Cooperative scan interruption: flag as soon as exit is requested so
+        // the worker starts winding down, then join it at Exit — bounded by
+        // the per-item cancel checks — so no SQLite write is killed halfway.
+        tauri::RunEvent::ExitRequested { .. } => {
+            scanner::SCAN_CANCEL.store(true, Ordering::Relaxed);
+        }
+        tauri::RunEvent::Exit => {
+            scanner::SCAN_CANCEL.store(true, Ordering::Relaxed);
+            if let Some(worker) = SCAN_THREAD.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = worker.join();
+            }
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
+        _ => {}
     });
 }

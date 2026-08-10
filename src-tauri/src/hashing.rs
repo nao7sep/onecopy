@@ -48,6 +48,33 @@ pub fn full_hash(path: &Path) -> std::io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// `full_hash` with a cooperative cancel checked between read chunks, so app
+/// exit interrupts a multi-gigabyte hash in bounded time. Scan-only — the
+/// move-out tee (`hash_while_copying`) deliberately has no cancel: a delivery
+/// verify must never be abandoned halfway.
+pub fn full_hash_cancellable(
+    path: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; BUF_SIZE];
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 /// Copies `src` to `dst` while hashing the bytes read — the tee that gives
 /// move/copy-out its free source verification. Returns (hash, bytes copied).
 /// The destination is created fresh (never clobbering an existing file: the
@@ -186,6 +213,24 @@ mod tests {
         assert_eq!(total, bytes.len() as u64);
         assert_eq!(hash, blake3::hash(&bytes).to_hex().to_string());
         assert_eq!(std::fs::read(&dst).unwrap(), bytes);
+    }
+
+    #[test]
+    fn cancellable_hash_matches_plain_and_stops_on_cancel() {
+        use std::sync::atomic::AtomicBool;
+
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 239) as u8).collect();
+        let (_dir, path) = temp_file("cancellable", &bytes);
+
+        let calm = AtomicBool::new(false);
+        assert_eq!(
+            full_hash_cancellable(&path, &calm).unwrap(),
+            full_hash(&path).unwrap()
+        );
+
+        let cancelled = AtomicBool::new(true);
+        let err = full_hash_cancellable(&path, &cancelled).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
     }
 
     #[test]
