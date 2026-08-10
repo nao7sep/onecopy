@@ -4,7 +4,8 @@
 //! surfaces need no video-specific rendering — plus an evenly spaced snapshot
 //! strip, duration-scaled (one frame per `videoStripSecondsPerFrame`, clamped
 //! to the configured min/max). Duration comes from `ffmpeg -i` stderr parsing
-//! (tapebox's pattern — no separate ffprobe binary).
+//! (one managed executable, no separate ffprobe, per the
+//! managed-runtime-dependencies conventions' one-binary rule).
 //!
 //! Frames are staged as JPEG (mjpeg is in every build; webp encoders are not)
 //! and re-encoded through `preview.rs`'s own WebP writer, keeping one encode

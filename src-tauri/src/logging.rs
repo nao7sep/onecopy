@@ -1,7 +1,7 @@
 // Per-session JSON Lines logger. The privileged Rust core owns the log file;
 // the sandboxed webview frontend forwards structured log objects to it (see
-// `emit_forwarded` and the `log_event` command in lib.rs). Ported from the
-// fleet's reference logger (dropkick) — keep it self-contained and dependency-free.
+// `emit_forwarded` and the `log_event` command in lib.rs). Self-contained and
+// dependency-free by design, per the logging conventions.
 //
 // Design (mirrors ~/code/company/conventions/...-logging-conventions.md):
 //   - One file per process launch: ~/.onecopy/logs/<yyyymmdd-hhmmss-fff-utc.log>.
@@ -373,7 +373,7 @@ pub fn emit_forwarded(value: Value) {
     }
 }
 
-// --- Boundary instrumentation (quickdeck's pattern) ---
+// --- Boundary instrumentation (logging conventions) ---
 
 // Wraps an external-boundary operation (file / database / IPC command) with the
 // standard logging: a `debug` line at the start, then exactly one `info` line on

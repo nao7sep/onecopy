@@ -203,7 +203,8 @@ fn file_sha256(path: &Path) -> Result<String, String> {
 }
 
 /// Pulls the ffmpeg entry out of the archive: an exact-basename match, unique
-/// across the archive (ambiguity is an error, mirroring tapebox).
+/// across the archive (ambiguity is an error — a multi-match archive means the
+/// upstream layout changed, and guessing which binary to install is not safe).
 fn extract_ffmpeg(archive_path: &Path, staged: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;

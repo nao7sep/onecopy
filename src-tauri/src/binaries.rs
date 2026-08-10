@@ -1,12 +1,12 @@
-//! Managed external binaries (ffmpeg now; whisper later) — the Rust port of
-//! tapebox's mechanism, per the managed-runtime-dependencies conventions.
+//! Managed external binaries (ffmpeg now; whisper later), per the
+//! managed-runtime-dependencies conventions.
 //!
 //! This module holds the PURE half: release-version parsing, checksum-file
 //! parsing, and the four-state status derivation over persisted facts. The
 //! network/orchestration half (download with idle watchdog, staged install
 //! with integrity verify, per-binary locking) builds on these.
 //!
-//! On-disk layout (mirrors tapebox):
+//! On-disk layout (the conventions' standard tree):
 //!   `<root>/bin/ffmpeg[.exe]`        the installed executable
 //!   `<root>/temp/…`                  download staging, wiped at launch
 //!   `<root>/dependencies.json`       recorded facts, its own store
@@ -50,9 +50,9 @@ pub fn derive_status(present: bool, facts: &BinaryFacts) -> BinaryStatus {
 }
 
 /// Parses a martin-riedl.de macOS build URL's version. The download redirects
-/// into a path whose final segments look like `.../<epoch>_<version>/ffmpeg.zip`
-/// (tapebox's `parseMartinBuildVersion`): the version is everything after the
-/// first underscore of that folder segment.
+/// into a path whose final segments look like `.../<epoch>_<version>/ffmpeg.zip`;
+/// the version is everything after the first underscore of that folder segment
+/// (probed live against the real endpoint before this was encoded).
 pub fn parse_martin_build_version(url_path: &str) -> Option<String> {
     for segment in url_path.split('/').rev() {
         if let Some((epoch, version)) = segment.split_once('_') {
