@@ -28,6 +28,7 @@ interface WizardState {
   timezoneValid: boolean;
   cacheDir: string | null;
   missingDirs: string[];
+  substitutedDirs: string[];
   init: (config: Record<string, unknown> | null, dataRoot: string) => Promise<void>;
   /** Re-runs the wizard as RECONFIGURE: seeded from the current config, never
    * from empty — the only trigger a first-run wizard has after first run. */
@@ -49,6 +50,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   timezoneValid: true,
   cacheDir: null,
   missingDirs: [],
+  substitutedDirs: [],
 
   init: async (config, _dataRoot) => {
     const sourceDirs = Array.isArray(config?.sourceDirs)
@@ -177,8 +179,10 @@ export const useWizardStore = create<WizardState>((set, get) => ({
 
   recheckPresence: async () => {
     try {
-      const missing = await invoke<string[]>("check_source_dirs");
-      set({ missingDirs: missing });
+      const status = await invoke<{ missing: string[]; substituted: string[] }>(
+        "check_source_dirs",
+      );
+      set({ missingDirs: status.missing, substitutedDirs: status.substituted });
     } catch (error) {
       log.error("presence check failed", toErrorFields(error));
     }

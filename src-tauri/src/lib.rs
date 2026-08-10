@@ -25,6 +25,7 @@ pub mod storage;
 pub mod timestamps;
 pub mod trash;
 pub mod video;
+pub mod volume;
 pub mod watcher;
 
 /// Whether the full scan pipeline is currently running (the watcher defers to
@@ -453,27 +454,111 @@ fn move_cache(app: AppHandle, new_dir: Option<String>) -> Result<Value, String> 
 // operations refuse to run while any configured source directory is absent —
 // a vanished volume must block deletes, not let them half-apply.
 fn ensure_sources_present(app: &AppHandle) -> Result<(), String> {
+    let status = verify_source_dirs(app)?;
+    if !status.missing.is_empty() {
+        return Err(format!(
+            "destructive operations are blocked: {} configured source directorie(s) are missing ({})",
+            status.missing.len(),
+            status.missing.join(", ")
+        ));
+    }
+    if !status.substituted.is_empty() {
+        return Err(format!(
+            "destructive operations are blocked: {} source directorie(s) sit on a DIFFERENT volume \
+             than the one recorded — a substituted drive with the same folder layout ({})",
+            status.substituted.len(),
+            status.substituted.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SourceDirsStatus {
+    missing: Vec<String>,
+    substituted: Vec<String>,
+}
+
+// Presence AND identity verification over the configured source dirs: a dir
+// that is not there is missing; a dir whose volume identity differs from the
+// recorded one is substituted (the developer's backup drives share identical
+// trees, so presence alone proves nothing). First sight records the identity
+// — the "when the directory was added" moment as the core observes it. Rows
+// for since-removed dirs are pruned; a volume without a readable identity
+// degrades to presence-only, logged at debug.
+fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
+    use rusqlite::OptionalExtension;
+
     let loaded = storage::load_app_data(app)?;
     let data_root = paths::data_root(app)?;
     let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
-    let missing: Vec<&String> = settings
-        .source_dirs
-        .iter()
-        .filter(|dir| !std::path::Path::new(dir.as_str()).is_dir())
-        .collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "destructive operations are blocked: {} configured source directorie(s) are missing ({})",
-            missing.len(),
-            missing
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+
+    let mut status = SourceDirsStatus::default();
+    for dir in &settings.source_dirs {
+        let path = std::path::Path::new(dir);
+        if !path.is_dir() {
+            status.missing.push(dir.clone());
+            continue;
+        }
+        let Some(current) = volume::volume_identity(path) else {
+            logging::debug(
+                "no volume identity readable; presence-only verification",
+                json!({ "dir": dir }),
+            );
+            continue;
+        };
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT identity FROM source_volumes WHERE dir = ?1",
+                [dir],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match stored {
+            None => {
+                conn.execute(
+                    "INSERT INTO source_volumes (dir, identity, recorded_at_utc) \
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![dir, current, logging::now_iso_millis()],
+                )
+                .map_err(|e| e.to_string())?;
+                logging::info(
+                    "source volume identity recorded",
+                    json!({ "dir": dir, "identity": current }),
+                );
+            }
+            Some(stored) if stored != current => {
+                logging::warn(
+                    "source volume SUBSTITUTED",
+                    json!({ "dir": dir, "recorded": stored, "current": current }),
+                );
+                status.substituted.push(dir.clone());
+            }
+            Some(_) => {}
+        }
     }
+
+    // Identities for directories no longer configured are stale — prune.
+    let mut stmt = conn
+        .prepare("SELECT dir FROM source_volumes")
+        .map_err(|e| e.to_string())?;
+    let recorded: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+    for dir in recorded {
+        if !settings.source_dirs.contains(&dir) {
+            conn.execute("DELETE FROM source_volumes WHERE dir = ?1", [&dir])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(status)
 }
 
 // Deletes one logical item — every copy plus companions — to trash, or
@@ -904,22 +989,12 @@ fn validate_timezone(name: String) -> bool {
 // The session gate's check: configured source directories that are not
 // currently present (an unmounted volume manifests as a missing directory).
 #[tauri::command]
-fn check_source_dirs(app: AppHandle) -> Result<Vec<String>, String> {
+fn check_source_dirs(app: AppHandle) -> Result<SourceDirsStatus, String> {
     logging::boundary(
         "check_source_dirs",
         json!({}),
-        || {
-            let loaded = storage::load_app_data(&app)?;
-            let data_root = paths::data_root(&app)?;
-            let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
-            Ok(settings
-                .source_dirs
-                .iter()
-                .filter(|dir| !std::path::Path::new(dir).is_dir())
-                .cloned()
-                .collect())
-        },
-        |missing: &Vec<String>| json!({ "missing": missing.len() }),
+        || verify_source_dirs(&app),
+        |status| json!({ "missing": status.missing.len(), "substituted": status.substituted.len() }),
     )
 }
 

@@ -5,7 +5,13 @@ import { useWizardStore } from "../state/wizard-store";
 // Blocking surface, named, completable only by making the volumes available
 // (or fixing config by hand) and re-checking.
 
-export default function PresenceGate({ missing }: { missing: string[] }) {
+export default function PresenceGate({
+  missing,
+  substituted,
+}: {
+  missing: string[];
+  substituted: string[];
+}) {
   const recheck = useWizardStore((s) => s.recheckPresence);
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background">
@@ -25,6 +31,20 @@ export default function PresenceGate({ missing }: { missing: string[] }) {
               className="mb-1 break-all rounded border border-danger-surface bg-danger-surface px-2 py-1 text-sm text-danger"
             >
               {path}
+            </li>
+          ))}
+          {substituted.map((path) => (
+            <li
+              key={path}
+              className="mb-1 break-all rounded border border-danger-surface bg-danger-surface px-2 py-1 text-sm text-danger"
+            >
+              {path}
+              <span className="mt-0.5 block text-xs">
+                Present, but on a DIFFERENT volume than recorded — a swapped
+                drive with the same folder layout. Mount the original drive,
+                or remove and re-add this directory if the change is
+                intentional.
+              </span>
             </li>
           ))}
         </ul>

@@ -76,6 +76,7 @@ export default function App() {
       : null;
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
+  const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
   const [rightTab, setRightTabRaw] = useState<"details" | "destinations">("details");
   const setRightTab = (tab: "details" | "destinations") => {
     setRightTabRaw(tab);
@@ -445,8 +446,8 @@ export default function App() {
     <div className="flex h-screen flex-col bg-background text-ink">
       {wizardOpen && appData !== null ? (
         <Wizard dataRoot={appData.dataRoot} />
-      ) : missingDirs.length > 0 ? (
-        <PresenceGate missing={missingDirs} />
+      ) : missingDirs.length > 0 || substitutedDirs.length > 0 ? (
+        <PresenceGate missing={missingDirs} substituted={substitutedDirs} />
       ) : null}
       <ComparisonView />
       <BinariesModal />

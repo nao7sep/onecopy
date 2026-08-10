@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS volumes (
   last_seen_at_utc TEXT
 );
 
+-- Per-source-directory volume identity, recorded at first sight and verified
+-- at the session gate and before destructive operations: a substituted drive
+-- with an identical directory tree must be caught, not just an absent one.
+CREATE TABLE IF NOT EXISTS source_volumes (
+  dir              TEXT PRIMARY KEY,
+  identity         TEXT NOT NULL,
+  recorded_at_utc  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS contents (
   hash            TEXT PRIMARY KEY,
   byte_size       INTEGER NOT NULL,
