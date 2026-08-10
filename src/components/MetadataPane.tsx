@@ -47,9 +47,9 @@ export default function MetadataPane({
   if (detail === null) {
     return <p className="p-3 text-sm text-ink-muted">No selection</p>;
   }
+  // The parent pane is the sole scroller; a second overflow here would
+  // produce a double scrollbar the moment a height constraint lands.
   return (
-    {/* The parent pane is the sole scroller; a second overflow here would
-        produce a double scrollbar the moment a height constraint lands. */}
     <dl className="p-3">
       <Row label="Name" value={detail.fileName} />
       <Row label="Taken" value={formatTaken(detail)} />
