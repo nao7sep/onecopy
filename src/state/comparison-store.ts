@@ -43,6 +43,13 @@ interface ComparisonState {
   queue: GroupMember[];
   kept: Set<string>;
   busy: boolean;
+  /** Permanent commits confirm ONCE per comparison session (a per-turn
+   * prompt would destroy the keystroke rhythm the view exists for). */
+  permanentArmed: boolean;
+  /** A Shift+Enter awaiting that one confirmation. */
+  pendingPermanentCommit: boolean;
+  confirmPermanentCommit: () => Promise<void>;
+  cancelPermanentCommit: () => void;
   /** Secondary comparison windows currently open (monitors beyond the first). */
   spreadCount: number;
   /** Per-screen slot capacities (screen 0 = the main window). The turn size is
@@ -158,8 +165,17 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   queue: [],
   kept: new Set<string>(),
   busy: false,
+  permanentArmed: false,
+  pendingPermanentCommit: false,
   spreadCount: 0,
   capacities: [SLOT_KEYS.length],
+
+  confirmPermanentCommit: async () => {
+    set({ permanentArmed: true, pendingPermanentCommit: false });
+    await get().commitTurn(true);
+  },
+
+  cancelPermanentCommit: () => set({ pendingPermanentCommit: false }),
 
   openGroup: async (hash) => {
     try {
@@ -178,6 +194,9 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         slots: members.slice(0, size),
         queue: members.slice(size),
         kept: new Set<string>(),
+        // A new comparison session re-arms the one permanent confirmation.
+        permanentArmed: false,
+        pendingPermanentCommit: false,
       });
       broadcast();
       return true;
@@ -202,8 +221,12 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   },
 
   commitTurn: async (permanent) => {
-    const { slots, queue, kept, busy } = get();
+    const { slots, queue, kept, busy, permanentArmed } = get();
     if (busy) return;
+    if (permanent && !permanentArmed) {
+      set({ pendingPermanentCommit: true });
+      return;
+    }
     set({ busy: true });
     try {
       const keepers = slots.filter((s) => kept.has(s.hash));
@@ -247,7 +270,14 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   },
 
   close: () => {
-    set({ open: false, slots: [], queue: [], kept: new Set() });
+    set({
+      open: false,
+      slots: [],
+      queue: [],
+      kept: new Set(),
+      permanentArmed: false,
+      pendingPermanentCommit: false,
+    });
     void closeSpread();
     void refreshAfterChange();
   },

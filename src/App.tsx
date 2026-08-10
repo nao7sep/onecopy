@@ -41,6 +41,7 @@ import { hasOpenModal } from "./utils/modalStack";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
 import ScenesModal from "./components/ScenesModal";
+import ConfirmDialog from "./components/ConfirmDialog";
 import { Menu as MenuIcon } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useWizardStore } from "./state/wizard-store";
@@ -91,6 +92,8 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   /** Enter on an anchor video opens the scenes modal for this hash. */
   const [scenesFor, setScenesFor] = useState<string | null>(null);
+  /** Pending permanent deletion awaiting confirmation (item count shown). */
+  const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
   const previewFollow = usePreviewStore((s) => s.follow);
   const previewPlacement = usePreviewStore((s) => s.placement);
   const previewCurrent = usePreviewStore((s) => s.current);
@@ -305,7 +308,15 @@ export default function App() {
       }
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
-        void useItemsStore.getState().deleteSelected(event.shiftKey);
+        if (event.shiftKey) {
+          // Permanent deletion always confirms with the count (the design's
+          // rule); trash deletion stays instant — the trash is the net.
+          const { selectedKeys, selectedItem } = useItemsStore.getState();
+          const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;
+          if (count > 0) setConfirmPermanent(count);
+        } else {
+          void useItemsStore.getState().deleteSelected(false);
+        }
       } else if (event.key.toLowerCase() === "p" && !event.metaKey && !event.ctrlKey && !event.altKey) {
         // Preview follow toggle (FastStone's model): on opens the surface for
         // the current anchor; off closes it by any placement.
@@ -443,6 +454,20 @@ export default function App() {
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       {scenesFor !== null ? (
         <ScenesModal hash={scenesFor} onClose={() => setScenesFor(null)} />
+      ) : null}
+      {confirmPermanent !== null ? (
+        <ConfirmDialog
+          title="Delete permanently?"
+          message={`Permanently delete ${confirmPermanent} item${
+            confirmPermanent === 1 ? "" : "s"
+          } and every copy? This bypasses the trash and cannot be undone.`}
+          confirmLabel="Delete permanently"
+          onConfirm={() => {
+            setConfirmPermanent(null);
+            void useItemsStore.getState().deleteSelected(true);
+          }}
+          onCancel={() => setConfirmPermanent(null)}
+        />
       ) : null}
       <SettingsModal />
       <div ref={contentRowRef} className="flex min-h-0 flex-1">

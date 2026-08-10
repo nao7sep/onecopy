@@ -5,6 +5,7 @@ import {
   type MoveMode,
 } from "../state/destinations-store";
 import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
+import ConfirmDialog from "./ConfirmDialog";
 
 // Drop-target behavior shared by roots and nodes: the OS-independent modifier
 // mapping is the design's — plain drop = move + trash the rest, Shift = move +
@@ -305,8 +306,21 @@ export default function DestinationsTab() {
     }
   };
 
+  const pendingDeleteRest = useDestinationsStore((s) => s.pendingDeleteRest);
+
   return (
     <div className="flex h-full flex-col p-3">
+      {pendingDeleteRest !== null && !pendingDeleteRest.confirmed ? (
+        <ConfirmDialog
+          title="Move and delete the rest?"
+          message={`Move ${pendingDeleteRest.count} item${
+            pendingDeleteRest.count === 1 ? "" : "s"
+          } here and PERMANENTLY delete the remaining copies? The deleted copies bypass the trash and cannot be recovered.`}
+          confirmLabel="Move and delete permanently"
+          onConfirm={() => void useDestinationsStore.getState().confirmPendingDeleteRest()}
+          onCancel={() => useDestinationsStore.getState().cancelPendingDeleteRest()}
+        />
+      ) : null}
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-ink-strong">Destinations</h2>
         <button

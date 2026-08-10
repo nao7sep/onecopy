@@ -7,6 +7,7 @@ import {
   useComparisonStore,
 } from "../state/comparison-store";
 import { hasOpenModal } from "../utils/modalStack";
+import ConfirmDialog from "./ConfirmDialog";
 
 // The similar-photos comparison surface in the main window. With extra
 // monitors the slot list spreads: this surface shows chunk 0 and the
@@ -26,6 +27,7 @@ export default function ComparisonView() {
   const commitTurn = useComparisonStore((s) => s.commitTurn);
   const close = useComparisonStore((s) => s.close);
   const [enlarged, setEnlarged] = useState<{ hash: string; name: string } | null>(null);
+  const pendingPermanentCommit = useComparisonStore((s) => s.pendingPermanentCommit);
 
   useEffect(() => {
     if (!open) return;
@@ -73,6 +75,15 @@ export default function ComparisonView() {
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-background">
+      {pendingPermanentCommit ? (
+        <ConfirmDialog
+          title="Delete permanently this session?"
+          message="Shift+Enter commits will PERMANENTLY delete the non-kept photos, bypassing the trash. Confirm once for this comparison session — every later Shift+Enter here acts without asking again."
+          confirmLabel="Delete permanently"
+          onConfirm={() => void useComparisonStore.getState().confirmPermanentCommit()}
+          onCancel={() => useComparisonStore.getState().cancelPermanentCommit()}
+        />
+      ) : null}
       <header className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-3 py-2">
         <h1 className="text-sm font-semibold text-ink-strong">Similar photos</h1>
         <div className="flex items-center gap-4 text-xs text-ink-muted">

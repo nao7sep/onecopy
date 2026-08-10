@@ -30,6 +30,11 @@ interface DestinationsState {
   expanded: Set<string>;
   emptiness: Record<string, boolean>;
   message: string;
+  /** A move-delete-rest awaiting its permanent-deletion confirmation
+   * (`confirmed` marks the re-entry pass so it is not re-staged). */
+  pendingDeleteRest: { destDir: string; count: number; confirmed: boolean } | null;
+  confirmPendingDeleteRest: () => Promise<void>;
+  cancelPendingDeleteRest: () => void;
   /** The tree's keyboard cursor (the composite-control active item). */
   activePath: string | null;
   setActive: (path: string | null) => void;
@@ -64,6 +69,22 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   activePath: null,
 
   setActive: (path) => set({ activePath: path }),
+
+  pendingDeleteRest: null,
+
+  confirmPendingDeleteRest: async () => {
+    const pending = get().pendingDeleteRest;
+    if (pending === null || pending.confirmed) return;
+    // Mark confirmed so the re-entry bypasses staging; clear when done.
+    set({ pendingDeleteRest: { ...pending, confirmed: true } });
+    try {
+      await get().moveSelectionTo(pending.destDir, "move-delete-rest");
+    } finally {
+      set({ pendingDeleteRest: null });
+    }
+  },
+
+  cancelPendingDeleteRest: () => set({ pendingDeleteRest: null }),
 
   init: (config) => {
     const roots = Array.isArray(config?.destinationRoots)
@@ -155,6 +176,14 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
         : selectedItem !== null
           ? new Set([selectedItem])
           : new Set<string>();
+    // The delete-rest mode permanently destroys the remaining copies:
+    // stage it behind the confirmation instead of running (the design's
+    // permanent-always-confirms rule). The confirm action re-enters here
+    // with the pending marker cleared.
+    if (mode === "move-delete-rest" && !get().pendingDeleteRest?.confirmed && keys.size > 0) {
+      set({ pendingDeleteRest: { destDir, count: keys.size, confirmed: false } });
+      return;
+    }
     const targets = items.filter((i) => keys.has(itemKey(i)));
     if (targets.length === 0) {
       set({ message: "Select an item in the grid first" });
