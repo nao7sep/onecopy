@@ -72,6 +72,15 @@ jobs:
       - name: Package (host OS)
         run: ${{ matrix.package }}
 
+      # The managed-runtime-dependencies conventions' arch gate as a GATE, not
+      # a pre-publish habit: an x86_64-only macOS artifact fails the job.
+      - name: Verify native arm64 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          BIN="src-tauri/target/release/bundle/macos/OneCopy.app/Contents/MacOS/onecopy"
+          if [ ! -f "$BIN" ]; then BIN="src-tauri/target/release/bundle/macos/OneCopy.app/Contents/MacOS/OneCopy"; fi
+          lipo -archs "$BIN" | grep -q arm64
+
       - name: Attach to draft release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1

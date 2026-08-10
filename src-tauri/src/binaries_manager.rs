@@ -236,8 +236,24 @@ fn extract_ffmpeg(archive_path: &Path, staged: &Path) -> Result<(), String> {
 }
 
 /// Everything that must be true of the binary BEFORE it reaches `bin/`:
-/// executable bit, quarantine attribute stripped (macOS best-effort).
+/// native architecture (macOS), executable bit, quarantine attribute
+/// stripped (macOS best-effort).
 fn make_runnable(staged: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // The conventions' arch gate applied to bytes the app didn't build:
+        // an x86_64-only download must fail HERE, not as Rosetta jank later.
+        let header = {
+            use std::io::Read;
+            let mut file = std::fs::File::open(staged).map_err(|e| e.to_string())?;
+            let mut buf = [0u8; 4096];
+            let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+            buf[..n].to_vec()
+        };
+        if !macho_has_arm64(&header) {
+            return Err("downloaded binary carries no native arm64 slice".to_string());
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -252,6 +268,39 @@ fn make_runnable(staged: &Path) -> Result<(), String> {
             .status();
     }
     Ok(())
+}
+
+/// True when the Mach-O header carries an arm64 slice: a thin 64-bit binary
+/// with CPU_TYPE_ARM64, or a fat binary listing one. A header parse instead
+/// of shelling to `lipo`, so the gate needs no developer tooling installed.
+fn macho_has_arm64(header: &[u8]) -> bool {
+    const CPU_ARM64: u32 = 0x0100_000C;
+    if header.len() < 8 {
+        return false;
+    }
+    let magic_be = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+    // Thin 64-bit Mach-O, stored little-endian on disk: MH_MAGIC_64.
+    if u32::from_le_bytes([header[0], header[1], header[2], header[3]]) == 0xFEED_FACF {
+        return u32::from_le_bytes([header[4], header[5], header[6], header[7]]) == CPU_ARM64;
+    }
+    // Fat/universal binary: big-endian header listing per-arch entries
+    // (FAT_MAGIC; FAT_MAGIC_64 entries are 32 bytes instead of 20).
+    if magic_be == 0xCAFE_BABE || magic_be == 0xCAFE_BABF {
+        let entry_size = if magic_be == 0xCAFE_BABF { 32 } else { 20 };
+        let count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        for i in 0..count.min(64) {
+            let at = 8 + i * entry_size;
+            if at + 4 > header.len() {
+                return false;
+            }
+            let cputype =
+                u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]);
+            if cputype == CPU_ARM64 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -361,6 +410,39 @@ pub fn state(root: &Path) -> FfmpegState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macho_arm64_detection_covers_thin_fat_and_foreign() {
+        // Thin arm64: MH_MAGIC_64 little-endian + CPU_TYPE_ARM64.
+        let mut thin_arm = vec![0xCF, 0xFA, 0xED, 0xFE];
+        thin_arm.extend_from_slice(&0x0100_000Cu32.to_le_bytes());
+        assert!(macho_has_arm64(&thin_arm));
+
+        // Thin x86_64: same magic, CPU_TYPE_X86_64 — rejected.
+        let mut thin_x86 = vec![0xCF, 0xFA, 0xED, 0xFE];
+        thin_x86.extend_from_slice(&0x0100_0007u32.to_le_bytes());
+        assert!(!macho_has_arm64(&thin_x86));
+
+        // Fat binary with x86_64 then arm64 slices — accepted.
+        let mut fat = Vec::new();
+        fat.extend_from_slice(&0xCAFE_BABEu32.to_be_bytes());
+        fat.extend_from_slice(&2u32.to_be_bytes());
+        fat.extend_from_slice(&0x0100_0007u32.to_be_bytes()); // x86_64 entry
+        fat.extend_from_slice(&[0u8; 16]); // rest of the 20-byte fat_arch
+        fat.extend_from_slice(&0x0100_000Cu32.to_be_bytes()); // arm64 entry
+        fat.extend_from_slice(&[0u8; 16]);
+        assert!(macho_has_arm64(&fat));
+
+        // Fat with only x86_64 — rejected; garbage — rejected.
+        let mut fat_x86 = Vec::new();
+        fat_x86.extend_from_slice(&0xCAFE_BABEu32.to_be_bytes());
+        fat_x86.extend_from_slice(&1u32.to_be_bytes());
+        fat_x86.extend_from_slice(&0x0100_0007u32.to_be_bytes());
+        fat_x86.extend_from_slice(&[0u8; 16]);
+        assert!(!macho_has_arm64(&fat_x86));
+        assert!(!macho_has_arm64(b"#!/bin/sh\n"));
+        assert!(!macho_has_arm64(&[]));
+    }
 
     #[test]
     fn facts_store_self_heals_on_missing_and_corrupt() {

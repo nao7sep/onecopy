@@ -64,7 +64,18 @@ pub fn strip_timestamps_ms(duration_ms: u64, count: u32) -> Vec<u64> {
         .collect()
 }
 
+// The subprocess boundary is logged (logging conventions): one debug line
+// per invocation, and the caller's error path carries the result — a probe
+// or extraction failure becomes an issue row, which record-time mirrors warn.
+fn log_invocation(op: &str, src: &Path) {
+    crate::logging::debug(
+        "ffmpeg invocation",
+        serde_json::json!({ "op": op, "src": src.to_string_lossy() }),
+    );
+}
+
 fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
+    log_invocation("probe-duration", src);
     // `ffmpeg -i` with no output exits non-zero by design; stderr still
     // carries the stream banner we parse.
     let output = std::process::Command::new(ffmpeg)
@@ -81,6 +92,7 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
 /// ffmpeg infers the muxer from it; the storage-path conventions' documented
 /// staging exception).
 fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Result<(), String> {
+    log_invocation("extract-frame", src);
     let seconds = format!("{}.{:03}", at_ms / 1000, at_ms % 1000);
     let status = std::process::Command::new(ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-ss", &seconds, "-i"])
