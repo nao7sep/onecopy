@@ -256,6 +256,18 @@ export default function SettingsModal() {
             min={1}
             onChange={(v) => update({ videoStripMaxFrames: v })}
           />
+          <NumberField
+            label="Scenes grid columns"
+            value={draft.scenesGridColumns}
+            min={1}
+            onChange={(v) => update({ scenesGridColumns: v })}
+          />
+          <NumberField
+            label="Scenes grid rows"
+            value={draft.scenesGridRows}
+            min={1}
+            onChange={(v) => update({ scenesGridRows: v })}
+          />
 
           <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
             Appearance

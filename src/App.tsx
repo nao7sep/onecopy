@@ -40,6 +40,7 @@ import { isHelpShortcut, isSettingsShortcut, primaryModWord } from "./utils/shor
 import { hasOpenModal } from "./utils/modalStack";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
+import ScenesModal from "./components/ScenesModal";
 import { Menu as MenuIcon } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useWizardStore } from "./state/wizard-store";
@@ -88,6 +89,8 @@ export default function App() {
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
   const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  /** Enter on an anchor video opens the scenes modal for this hash. */
+  const [scenesFor, setScenesFor] = useState<string | null>(null);
   const previewFollow = usePreviewStore((s) => s.follow);
   const previewPlacement = usePreviewStore((s) => s.placement);
   const previewCurrent = usePreviewStore((s) => s.current);
@@ -330,7 +333,11 @@ export default function App() {
         const item = items.find((i) => itemKey(i) === selectedItem);
         if (!item) return;
         event.preventDefault();
-        if (item.hash && item.similarGroupId !== null) {
+        if (item.hash && item.durationMs !== null) {
+          // Enter goes deeper on the anchor: a video opens the scenes modal
+          // (selection-based culling — videos never group).
+          setScenesFor(item.hash);
+        } else if (item.hash && item.similarGroupId !== null) {
           // Similar photos exist: Enter means "show them all at once" — and
           // when the group turns out to have no other live members, Enter
           // falls back to the preview instead of doing nothing.
@@ -434,6 +441,9 @@ export default function App() {
       <BinariesModal />
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      {scenesFor !== null ? (
+        <ScenesModal hash={scenesFor} onClose={() => setScenesFor(null)} />
+      ) : null}
       <SettingsModal />
       <div ref={contentRowRef} className="flex min-h-0 flex-1">
         <aside

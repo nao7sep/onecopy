@@ -19,6 +19,8 @@ export interface SettingsDraft {
   videoStripSecondsPerFrame: number;
   videoStripMinFrames: number;
   videoStripMaxFrames: number;
+  scenesGridColumns: number;
+  scenesGridRows: number;
   pairingEnabled: boolean;
   theme: "system" | "light" | "dark";
   keepAwakeDuringIndexing: boolean;
@@ -43,7 +45,9 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     thumbnailEdgePx: numberOr(config?.thumbnailEdgePx, 320),
     videoStripSecondsPerFrame: numberOr(config?.videoStripSecondsPerFrame, 20),
     videoStripMinFrames: numberOr(config?.videoStripMinFrames, 5),
-    videoStripMaxFrames: numberOr(config?.videoStripMaxFrames, 20),
+    videoStripMaxFrames: numberOr(config?.videoStripMaxFrames, 40),
+    scenesGridColumns: numberOr(config?.scenesGridColumns, 6),
+    scenesGridRows: numberOr(config?.scenesGridRows, 4),
     pairingEnabled: config?.pairingEnabled !== false,
     theme:
       config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",
