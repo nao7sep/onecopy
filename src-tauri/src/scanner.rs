@@ -882,6 +882,13 @@ fn record_issue(
     kind: &str,
     message: &str,
 ) -> Result<(), String> {
+    // The issues table is the user-facing surface; the session log is the
+    // debugging record — every recorded failure leaves a warn line too
+    // (logging conventions' one-warn-per-failure rule for loops).
+    logging::warn(
+        "scan issue",
+        serde_json::json!({ "kind": kind, "path": path, "detail": message }),
+    );
     conn.execute(
         "INSERT INTO issues (path, kind, message, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
         params![path, kind, message, logging::now_iso_millis()],
