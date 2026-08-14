@@ -34,8 +34,14 @@ interface DestinationsState {
   emptiness: Record<string, boolean>;
   message: string;
   /** A move-delete-rest awaiting its permanent-deletion confirmation
-   * (`confirmed` marks the re-entry pass so it is not re-staged). */
-  pendingDeleteRest: { destDir: string; count: number; confirmed: boolean } | null;
+   * (`confirmed` marks the re-entry pass so it is not re-staged).   * `keys` freezes the exact items the dialog counted, so a selection change
+   * while it is open cannot redirect it. */
+  pendingDeleteRest: {
+    destDir: string;
+    count: number;
+    confirmed: boolean;
+    keys: string[];
+  } | null;
   confirmPendingDeleteRest: () => Promise<void>;
   cancelPendingDeleteRest: () => void;
   /** The tree's keyboard cursor (the composite-control active item). */
@@ -48,7 +54,13 @@ interface DestinationsState {
   refreshNode: (path: string) => Promise<void>;
   createFolder: (parent: string, name: string) => Promise<void>;
   deleteFolder: (path: string, parent: string) => Promise<void>;
-  moveSelectionTo: (destDir: string, mode: MoveMode) => Promise<void>;
+  moveSelectionTo: (
+    destDir: string,
+    mode: MoveMode,
+    /** Explicit targets, for a confirmed action that must act on the set it
+     * quoted rather than whatever is selected now. */
+    explicitKeys?: string[],
+  ) => Promise<void>;
 }
 
 async function probeEmptiness(paths: string[]): Promise<Record<string, boolean>> {
@@ -81,7 +93,11 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     // Mark confirmed so the re-entry bypasses staging; clear when done.
     set({ pendingDeleteRest: { ...pending, confirmed: true } });
     try {
-      await get().moveSelectionTo(pending.destDir, "move-delete-rest");
+      await get().moveSelectionTo(
+        pending.destDir,
+        "move-delete-rest",
+        pending.keys,
+      );
     } finally {
       set({ pendingDeleteRest: null });
     }
@@ -170,21 +186,33 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     }
   },
 
-  moveSelectionTo: async (destDir, mode) => {
+  moveSelectionTo: async (destDir, mode, explicitKeys) => {
     const { useItemsStore, itemKey } = await import("./items-store");
     const { items, selectedItem, selectedKeys } = useItemsStore.getState();
+    // A confirmed permanent move acts on the set the dialog counted. Re-reading
+    // the live selection here would let a click behind the dialog redirect it
+    // — permanently destroying copies the user was never shown a count for.
     const keys =
-      selectedKeys.size > 0
-        ? selectedKeys
-        : selectedItem !== null
-          ? new Set([selectedItem])
-          : new Set<string>();
+      explicitKeys !== undefined
+        ? new Set(explicitKeys)
+        : selectedKeys.size > 0
+          ? selectedKeys
+          : selectedItem !== null
+            ? new Set([selectedItem])
+            : new Set<string>();
     // The delete-rest mode permanently destroys the remaining copies:
     // stage it behind the confirmation instead of running (the design's
     // permanent-always-confirms rule). The confirm action re-enters here
     // with the pending marker cleared.
     if (mode === "move-delete-rest" && !get().pendingDeleteRest?.confirmed && keys.size > 0) {
-      set({ pendingDeleteRest: { destDir, count: keys.size, confirmed: false } });
+      set({
+        pendingDeleteRest: {
+          destDir,
+          count: keys.size,
+          confirmed: false,
+          keys: [...keys],
+        },
+      });
       return;
     }
     const targets = items.filter((i) => keys.has(itemKey(i)));
