@@ -162,7 +162,12 @@ fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String>
 
 /// The trash root for a volume: `<volume root>/.onecopy-trash`, except the
 /// home volume, which uses `<app root>/trash` (macOS forbids writing at `/`).
-fn trash_root_for(volume_root: &Path, app_root: &Path) -> Result<PathBuf, String> {
+///
+/// `pub` for the tests: the volume root is already a parameter, so passing an
+/// arbitrary one is the whole seam — every test runs on the home volume, so
+/// the external-volume branch would otherwise never execute, though culling on
+/// an SD card or a backup drive takes it on every single delete.
+pub fn trash_root_for(volume_root: &Path, app_root: &Path) -> Result<PathBuf, String> {
     let home_volume = dirs_home()
         .and_then(|home| volume_root_of(&home).ok())
         .map(|root| root == volume_root)

@@ -187,3 +187,50 @@ fn volume_root_of_temp_paths_resolves_to_a_real_ancestor() {
         None => assert_eq!(root, std::path::Path::new("/")),
     }
 }
+
+#[test]
+fn external_volume_files_trash_into_a_dot_onecopy_trash_at_their_volume_root() {
+    // The whole point of the per-volume trash: the move must stay a rename on
+    // the SAME volume. Routing an external drive's files to the app root would
+    // make every delete a cross-device copy — slow, space-consuming, and
+    // EXDEV-failing on some filesystems. Every other test in this file runs on
+    // the home volume, so this branch never executed.
+    let dir = tempfile::tempdir().unwrap();
+    let app_root = dir.path().join("apphome");
+    let external = dir.path().join("Volumes").join("SD_CARD");
+    std::fs::create_dir_all(&app_root).unwrap();
+    std::fs::create_dir_all(&external).unwrap();
+
+    let root = trash_root_for(&external, &app_root).unwrap();
+
+    assert_eq!(
+        root,
+        external.join(onecopy_lib::trash::TRASH_DIR_NAME),
+        "an external volume trashes at its OWN root"
+    );
+    assert!(
+        root.starts_with(&external),
+        "the trash must stay on the same volume as the file"
+    );
+    assert!(
+        !root.starts_with(&app_root),
+        "an external volume must never route through the app root"
+    );
+}
+
+#[test]
+fn home_volume_files_trash_into_the_app_root() {
+    // The complement, and the reason the branch exists: macOS forbids creating
+    // /.onecopy-trash, so the home volume's files go under the app root.
+    let dir = tempfile::tempdir().unwrap();
+    let app_root = dir.path().join("apphome");
+    std::fs::create_dir_all(&app_root).unwrap();
+    let home_volume = volume_root_of(&std::path::PathBuf::from(
+        std::env::var("HOME").expect("HOME is set"),
+    ))
+    .unwrap();
+
+    let root = trash_root_for(&home_volume, &app_root).unwrap();
+
+    assert_eq!(root, app_root.join("trash"));
+}
