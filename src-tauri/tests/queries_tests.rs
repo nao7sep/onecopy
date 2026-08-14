@@ -132,3 +132,30 @@ fn a_missing_copy_does_not_count_toward_the_badge() {
     let item = items.iter().find(|i| i.hash.as_deref() == Some("hgone")).unwrap();
     assert_eq!(item.copy_count, 1, "a vanished copy is not a copy");
 }
+
+#[test]
+fn issues_returns_the_full_total_and_the_newest_rows_within_the_limit() {
+    // Several tests assert issue rows were INSERTED; nothing asserted they can
+    // be read back, though the Issues view is the app's promise that a silent
+    // skip never happens.
+    let conn = db();
+    for i in 1..=5 {
+        conn.execute(
+            "INSERT INTO issues (path, kind, message, created_at_utc) \
+             VALUES (?1, 'decode-error', ?2, ?3)",
+            params![
+                format!("/root/{i}.jpg"),
+                format!("failure {i}"),
+                format!("2026-01-0{i}T00:00:00.000Z")
+            ],
+        )
+        .unwrap();
+    }
+
+    let (total, rows) = queries::issues(&conn, 2).unwrap();
+    assert_eq!(total, 5, "the total counts every row, not the page");
+    assert_eq!(rows.len(), 2, "the limit bounds the page");
+    // Newest first: the badge and the list both depend on this order.
+    assert_eq!(rows[0].message.as_deref(), Some("failure 5"));
+    assert_eq!(rows[1].message.as_deref(), Some("failure 4"));
+}

@@ -627,3 +627,64 @@ fn companion_copy_failure_withholds_the_post_action() {
         assert!(f.root.join("x.arw").exists(), "the RAW must survive");
     }
 }
+
+#[test]
+fn shift_move_out_permanently_deletes_the_remaining_copies() {
+    // MoveDeleteRest is the only mode that destroys files with NO recovery —
+    // no trash, no undo — and it had zero tests.
+    let f = fixture("move-delete-rest");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("x.jpg"), b"same-bytes").unwrap();
+    }
+    std::fs::write(f.root.join("a").join("x.arw"), b"raw-bytes").unwrap();
+    scan(&f);
+
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let outcome = move_out(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        &dest,
+        MoveOutMode::MoveDeleteRest,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.exported, 2, "primary + one companion instance");
+    assert!(outcome.conflicts.is_empty());
+    assert!(outcome.undelivered.is_empty());
+    assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"same-bytes");
+    assert_eq!(std::fs::read(dest.join("x.arw")).unwrap(), b"raw-bytes");
+
+    // Every original is gone from disk...
+    for original in [
+        f.root.join("a").join("x.jpg"),
+        f.root.join("b").join("x.jpg"),
+        f.root.join("a").join("x.arw"),
+    ] {
+        assert!(!original.exists(), "{} must be gone", original.display());
+    }
+    // ...the index forgot them...
+    let rows: i64 = f
+        .conn
+        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    // ...and NOTHING was trashed. That is the whole difference between this
+    // mode and MoveTrashRest, and the reason it needs a confirmation.
+    assert!(
+        !f.app_root.join("trash").exists(),
+        "MoveDeleteRest must not write a trash — it is the no-recovery mode"
+    );
+}
