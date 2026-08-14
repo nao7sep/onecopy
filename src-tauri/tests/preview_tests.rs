@@ -65,6 +65,18 @@ fn small_images_are_never_upscaled_and_skip_the_reencode() {
         .decode()
         .unwrap();
     assert_eq!((preview.width(), preview.height()), (200, 100));
+
+    // The THUMBNAIL is the half the grid actually renders, and nothing here
+    // opened it: fit_long_edge's no-upscale early return was untested, so a
+    // 200x100 source could have been blown up to the 320 thumb edge without
+    // this failing.
+    let thumb_bytes = std::fs::read(cache.thumb("ffff0000")).expect("a thumb was written");
+    let thumb = image::load_from_memory(&thumb_bytes).expect("the thumb decodes");
+    assert_eq!(
+        (thumb.width(), thumb.height()),
+        (200, 100),
+        "a source smaller than the thumb edge is never upscaled"
+    );
 }
 
 
@@ -279,15 +291,38 @@ fn derive_pending_processes_images_once_and_flags_decode_failures() {
     let again = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
     assert_eq!((again.derived, again.failed), (0, 0));
 
-    // The good row carries dimensions + sharpness.
-    let (w, h): (i64, i64) = conn
+    // The good row carries dimensions AND the two measurements the comparison
+    // surface depends on. Nothing anywhere read phash or sharpness back after
+    // a real derive: dhash is tested directly and the similarity tests
+    // hand-insert phash values, so a wrong binding here would collapse every
+    // image into one cluster and silently kill the whole feature.
+    let (w, h, phash, sharpness): (i64, i64, Option<i64>, Option<f64>) = conn
         .query_row(
-            "SELECT width, height FROM contents WHERE hash = 'good01'",
+            "SELECT width, height, phash, sharpness FROM contents WHERE hash = 'good01'",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
     assert_eq!((w, h), (800, 600));
+    assert!(phash.is_some(), "a derived image must carry a phash");
+    let sharpness = sharpness.expect("a derived image must carry a sharpness");
+    assert!(
+        sharpness > 0.0,
+        "sharpness orders a group best-first; zero would flatten it"
+    );
+    // The stored phash must be the dhash OF THE DERIVED PREVIEW — the link
+    // between the two, not merely that some number landed in the column.
+    // load_from_memory, not open(): the cache entry is named .webp but may
+    // hold JPEG/PNG bytes (a displayable original is byte-copied rather than
+    // re-encoded), so the extension is not the format. The protocol handler
+    // sniffs for the same reason.
+    let bytes = std::fs::read(cache.preview("good01")).expect("the preview exists");
+    let preview = image::load_from_memory(&bytes).expect("the preview decodes");
+    assert_eq!(
+        phash.unwrap() as u64,
+        dhash(&preview),
+        "the stored phash is the derived preview's dhash"
+    );
 }
 
 #[test]
