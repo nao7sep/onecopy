@@ -1098,21 +1098,6 @@ fn record_issue(
     Ok(())
 }
 
-fn collect_rows(
-    conn: &Connection,
-    sql: &str,
-) -> Result<Vec<(i64, String, i64, String)>, String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(rows)
-}
-
 fn collect_rows_4(
     conn: &Connection,
     sql: &str,

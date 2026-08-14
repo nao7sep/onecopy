@@ -62,5 +62,5 @@ opt-level = 2
 [dev-dependencies]
 # Serializes the tests that share the process-global backup-store singleton
 # (`static STORE` in backup_store.rs); unrelated tests still parallelize.
-serial_test = { version = "3.5", default-features = false }
+serial_test = { version = "4", default-features = false }
 tempfile = "3.24"

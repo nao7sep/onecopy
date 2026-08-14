@@ -1,7 +1,6 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
-use std::path::Path;
 use onecopy_lib::scanner::ScanLists;
 use onecopy_lib::watcher::*;
 use onecopy_lib::extensions;

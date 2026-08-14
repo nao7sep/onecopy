@@ -2,7 +2,6 @@
 // (tests-folder conventions, Rust form).
 
 use onecopy_lib::preview::CachePaths;
-use std::path::Path;
 use onecopy_lib::video::*;
 
 fn config() -> StripConfig {

@@ -1,7 +1,6 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
-use std::path::Path;
 use rusqlite::Connection;
 use onecopy_lib::extensions;
 use onecopy_lib::resolution::ResolutionConfig;

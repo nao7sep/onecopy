@@ -1,7 +1,6 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
-use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::operations::*;
