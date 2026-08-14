@@ -790,3 +790,66 @@ fn a_shared_hash_split_across_paired_and_unpaired_rows_still_agrees() {
          shares the hash"
     );
 }
+
+#[test]
+fn unhashed_other_files_move_out_and_conflict_correctly_by_path_id() {
+    // Every other move_out test uses ItemRef::Hash. The PathId path skips tee
+    // verification entirely — there is no indexed hash to verify against — and
+    // instead compares the destination against the first copy's bytes re-read
+    // from disk, so it is a genuinely different code path.
+    let cases: [(&str, &[u8], u64, u64, usize); 3] = [
+        // (label, pre-existing destination bytes, exported, skipped, conflicts)
+        ("empty", b"", 1, 0, 0),
+        ("identical", b"unique-payload", 0, 1, 0),
+        ("different", b"something-else", 0, 0, 1),
+    ];
+    for (label, existing, exported, skipped, conflicts) in cases {
+        let f = fixture(&format!("moveout-pathid-{label}"));
+        std::fs::write(f.root.join("unique.bin"), b"unique-payload").unwrap();
+        scan(&f);
+        let path_id: i64 = f
+            .conn
+            .query_row("SELECT id FROM paths LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        let dest = f._dir.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        if !existing.is_empty() {
+            std::fs::write(dest.join("unique.bin"), existing).unwrap();
+        }
+
+        let outcome = move_out(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            ItemRef::PathId(path_id),
+            &dest,
+            MoveOutMode::MoveTrashRest,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.exported, exported, "{label}: exported");
+        assert_eq!(outcome.skipped_identical, skipped, "{label}: skipped");
+        assert_eq!(outcome.conflicts.len(), conflicts, "{label}: conflicts");
+        assert_eq!(
+            std::fs::read(dest.join("unique.bin")).unwrap(),
+            if existing.is_empty() { b"unique-payload".to_vec() } else { existing.to_vec() },
+            "{label}: the destination holds what it should"
+        );
+
+        if conflicts == 0 {
+            // Delivered (or already there): the post-action ran.
+            assert!(
+                !f.root.join("unique.bin").exists(),
+                "{label}: the original was handled"
+            );
+        } else {
+            // A conflict withholds the post-action — the original is intact.
+            assert_eq!(outcome.post_action.deleted_files, 0, "{label}: no delete");
+            assert!(
+                f.root.join("unique.bin").exists(),
+                "{label}: a conflicting move must leave the original alone"
+            );
+        }
+    }
+}

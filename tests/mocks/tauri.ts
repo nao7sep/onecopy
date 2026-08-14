@@ -144,10 +144,16 @@ export function setMonitors(next: Array<Record<string, unknown>>): void {
   monitors = next;
 }
 
-/** Full reset. Call from beforeEach so no spec inherits another's stubs. */
-export function resetTauriMocks(): void {
+/** Full reset. Call from beforeEach so no spec inherits another's stubs.
+ *
+ * `keepListeners` matters for stores that register their event wiring ONCE at
+ * module load: clearing the registry after that leaves them permanently deaf,
+ * so a spec driving events must keep it. */
+export function resetTauriMocks(
+  options: { keepListeners?: boolean } = {},
+): void {
   handlers.clear();
-  listeners.clear();
+  if (!options.keepListeners) listeners.clear();
   invokeCalls.length = 0;
   emitCalls.length = 0;
   createdWindows.length = 0;
