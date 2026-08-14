@@ -581,3 +581,56 @@ fn live_avif_decode_through_ffmpeg() {
         .unwrap();
     assert_eq!((w, h), (240, 160));
 }
+
+#[test]
+fn a_stale_derive_version_makes_a_row_pending_again() {
+    // Both derive passes checkpoint on derived_at_utc alone, and only a
+    // changed source file ever cleared it — so a derive that completed with
+    // wrong output stayed wrong for the life of the index and no rescan could
+    // fix it. DERIVE_VERSION is the escape hatch: bumping it re-derives
+    // everything without touching a user file.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-derive-version-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let src = gradient_jpeg(dir.path(), "a.jpg", 80, 60);
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('good01', 10, 'image')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) \
+         VALUES (?1, ?2, 'a.jpg', 'image', 'good01', 0)",
+        rusqlite::params![src.to_string_lossy(), dir.path().to_string_lossy()],
+    )
+    .unwrap();
+
+    let first = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
+    assert_eq!(first.derived, 1);
+    // Current version: nothing left to do.
+    let again = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
+    assert_eq!(again.derived, 0, "a current row is not re-derived");
+
+    // Stamp it as produced by an older pipeline.
+    conn.execute(
+        "UPDATE contents SET derived_version = derived_version - 1 WHERE hash = 'good01'",
+        [],
+    )
+    .unwrap();
+    let after_bump = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
+    assert_eq!(after_bump.derived, 1, "a stale row derives again");
+
+    // A permanent decode failure is NOT retried by a version bump: the file is
+    // broken, not the pipeline, and retrying it every scan is the churn the
+    // failed sentinel exists to prevent.
+    conn.execute(
+        "UPDATE contents SET derived_at_utc = 'failed', derived_version = 0 WHERE hash = 'good01'",
+        [],
+    )
+    .unwrap();
+    let failed = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
+    assert_eq!(failed.derived, 0, "a failed row stays failed");
+}

@@ -137,12 +137,17 @@ pub fn derive_videos_pending(
     // results land through preview.rs's own unrecorded cache writes.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
 
+    // A row stamped with an older DERIVE_VERSION is pending again, so bumping
+    // the constant re-derives posters and strips without touching a user file.
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT c.hash, (SELECT p.abs_path FROM paths p \
              WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-             FROM contents c WHERE c.kind = 'video' AND c.derived_at_utc IS NULL",
-        )
+             FROM contents c WHERE c.kind = 'video' \
+             AND (c.derived_at_utc IS NULL \
+                  OR (c.derived_version < {} AND c.derived_at_utc != 'failed'))",
+            crate::preview::DERIVE_VERSION
+        ))
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, Option<String>)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -192,8 +197,12 @@ pub fn derive_videos_pending(
             Ok(duration_ms) => {
                 stats.derived += 1;
                 conn.execute(
-                    "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
-                     strip_frames = ?3, derived_at_utc = ?4 WHERE hash = ?1",
+                    &format!(
+                        "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
+                         strip_frames = ?3, derived_at_utc = ?4, \
+                         derived_version = {} WHERE hash = ?1",
+                        crate::preview::DERIVE_VERSION
+                    ),
                     params![
                         hash,
                         duration_ms as i64,

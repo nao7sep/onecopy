@@ -47,7 +47,13 @@ CREATE TABLE IF NOT EXISTS contents (
   duration_ms     INTEGER,
   sharpness       REAL,
   strip_frames    INTEGER,
-  derived_at_utc  TEXT
+  derived_at_utc  TEXT,
+  -- The DERIVE_VERSION that produced this row's cache entries. Both derive
+  -- passes treat a row stamped with an older version as pending, so bumping
+  -- the constant re-derives the library without touching a user file. Without
+  -- it, a derive that completed with wrong or missing output stayed
+  -- checkpointed for the life of the index and no rescan could fix it.
+  derived_version INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS paths (

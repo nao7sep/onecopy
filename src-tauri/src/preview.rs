@@ -73,6 +73,13 @@ pub struct DerivedFacts {
 /// to change — installing ffmpeg is enough for the next pass to derive it.
 pub const NEEDS_FFMPEG: &str = "needs-ffmpeg";
 
+/// The derive pipeline's output version. Bump it when a change makes existing
+/// cache entries wrong (a different thumbnail geometry, a corrected
+/// orientation rule, a new phash) — every row stamped with an older version
+/// becomes pending again on the next pass. Nothing on disk is touched: the
+/// cache is reconstructible by definition.
+pub const DERIVE_VERSION: i64 = 1;
+
 /// Extensions the `image` crate cannot decode, which route through the
 /// managed ffmpeg instead. Measured against image 0.25 and ffmpeg 9.0
 /// (2026-08-14): the crate rejects heic/heif/hif as an unrecognized format
@@ -330,10 +337,19 @@ pub fn derive_images_pending(
 
     // With ffmpeg present the rows it previously blocked come back into the
     // pass; without it they are left alone rather than re-marked every scan.
+    // Stale means "produced by an older pipeline", which is a different thing
+    // from failed (the FILE is broken — retrying it every scan is the churn the
+    // sentinel exists to stop) and from needs-ffmpeg (blocked, and owned by the
+    // ffmpeg branch below; without ffmpeg it must stay blocked, not be retried
+    // into a failure).
+    let stale = format!(
+        "c.derived_version < {DERIVE_VERSION} \
+         AND c.derived_at_utc NOT IN ('failed', '{NEEDS_FFMPEG}')"
+    );
     let pending_clause = if ffmpeg.is_some() {
-        format!("(c.derived_at_utc IS NULL OR c.derived_at_utc = '{NEEDS_FFMPEG}')")
+        format!("(c.derived_at_utc IS NULL OR c.derived_at_utc = '{NEEDS_FFMPEG}' OR ({stale}))")
     } else {
-        "c.derived_at_utc IS NULL".to_string()
+        format!("(c.derived_at_utc IS NULL OR ({stale}))")
     };
     let mut stmt = conn
         .prepare(&format!(
@@ -412,9 +428,12 @@ pub fn derive_images_pending(
                     };
                     stats.derived += 1;
                     conn.execute(
-                        "UPDATE contents SET width = COALESCE(width, ?2), \
-                         height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
-                         derived_at_utc = ?6 WHERE hash = ?1",
+                        &format!(
+                            "UPDATE contents SET width = COALESCE(width, ?2), \
+                             height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
+                             derived_at_utc = ?6, derived_version = {DERIVE_VERSION} \
+                             WHERE hash = ?1"
+                        ),
                         params![
                             key,
                             facts.width,
