@@ -272,10 +272,18 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // Keepers stay pinned; freed slots refill from the queue. A no-keeper
       // commit skips the whole turn (those photos remain in the app).
       const survivors = kept.size > 0 ? keepers : [];
-      const room = turnSize(get().capacities) - survivors.length;
-      const incoming = queue.slice(0, room);
-      const nextQueue = queue.slice(room);
-      const nextSlots = [...survivors, ...incoming];
+      const size = turnSize(get().capacities);
+      const room = size - survivors.length;
+      // Keeping every slot leaves no room to refill — but the queue's members
+      // have not been seen yet, and dropping them would hide part of the group
+      // permanently (reopening refills with the same keepers). Advance to a
+      // fresh turn from the queue instead, exactly as a no-keeper commit does.
+      // The keepers are already decided: kept means not deleted.
+      const pinned = room > 0 ? survivors : [];
+      const intake = room > 0 ? room : size;
+      const incoming = queue.slice(0, intake);
+      const nextQueue = queue.slice(intake);
+      const nextSlots = [...pinned, ...incoming];
 
       if (incoming.length === 0) {
         // Nothing new to decide: the group is finished.
@@ -287,7 +295,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       set({
         slots: nextSlots,
         queue: nextQueue,
-        kept: new Set(survivors.map((s) => s.hash)),
+        kept: new Set(pinned.map((s) => s.hash)),
         busy: false,
       });
       broadcast();
