@@ -250,6 +250,17 @@ fn resolve_uses_filename_then_filesystem_and_flags_undated() {
     // No date anywhere in name or content: filesystem mtime wins.
     std::fs::write(f.root.join("scan.pdf"), b"pdf-ish").unwrap();
 
+    // Nothing resolvable anywhere: no date in the name, and a filesystem
+    // timestamp deliberately pushed outside the good range so the last tier
+    // rejects it too. Without this file the test asserted `undated == 0` while
+    // its name promised the Undated branch — nothing here ever reached it.
+    std::fs::write(f.root.join("mystery.bin"), b"who-knows").unwrap();
+    let out_of_range = std::process::Command::new("touch")
+        .args(["-t", "198001010000", &f.root.join("mystery.bin").to_string_lossy()])
+        .status()
+        .expect("touch is available on unix CI and dev machines");
+    assert!(out_of_range.success());
+
     walk_root(&f.conn, &f.root, &lists()).unwrap();
     hash_pending(&f.conn, &test_cache(&f)).unwrap();
     extract_pending(&f.conn).unwrap();
@@ -257,7 +268,19 @@ fn resolve_uses_filename_then_filesystem_and_flags_undated() {
         resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly)
             .unwrap();
     assert_eq!(stats.resolved, 2);
-    assert_eq!(stats.undated, 0);
+    assert_eq!(stats.undated, 1, "the pre-1995 file must land in Undated");
+
+    let (source, ms): (String, Option<i64>) = f
+        .conn
+        .query_row(
+            "SELECT resolved_source, resolved_utc_ms FROM paths \
+             WHERE file_name = 'mystery.bin'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(source, "undated");
+    assert_eq!(ms, None, "an undated row carries no time");
 
     let (source, ms): (String, i64) = f
         .conn

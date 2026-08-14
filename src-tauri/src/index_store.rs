@@ -133,6 +133,11 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
+// EXCEPTION (tests-folder conventions): the schema-shape test stays in-file
+// because it asserts the private SCHEMA constant's effect on a fresh file,
+// which has no public seam. The copy-count semantics it used to sit beside
+// moved to tests/queries_tests.rs, where they are asserted through the real
+// query instead of a SELECT the test wrote itself.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,7 +160,11 @@ mod tests {
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
-        for expected in [
+        // Set EQUALITY, not a subset: the previous list silently omitted
+        // source_volumes, so that table could have been dropped while this
+        // test still passed and verify_source_dirs only failed at runtime.
+        // Equality also forces a NEW table to be declared here deliberately.
+        let mut expected = vec![
             "contents",
             "evidence",
             "issues",
@@ -163,10 +172,16 @@ mod tests {
             "scan_dirs",
             "similar_group_members",
             "similar_groups",
+            "source_volumes",
             "volumes",
-        ] {
-            assert!(tables.iter().any(|t| t == expected), "missing table {expected}");
-        }
+        ];
+        expected.sort_unstable();
+        let actual: Vec<&str> = tables
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !t.starts_with("sqlite_"))
+            .collect();
+        assert_eq!(actual, expected, "the schema's table set changed");
         drop(stmt);
         drop(conn);
 
@@ -179,30 +194,4 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn copy_count_is_a_join_over_paths() {
-        let dir = tempfile::Builder::new()
-            .prefix("onecopy-index-count-")
-            .tempdir()
-            .unwrap();
-        let conn = open(&dir.path().join("index.sqlite3")).unwrap();
-        conn.execute_batch(
-            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image');
-             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
-               VALUES ('/a/x.jpg', '/a', 'x.jpg', 'image', 'h1');
-             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
-               VALUES ('/b/x.jpg', '/b', 'x.jpg', 'image', 'h1');
-             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
-               VALUES ('/c/x.jpg', '/c', 'x.jpg', 'image', 'h1');",
-        )
-        .unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM paths WHERE content_hash = 'h1' AND missing = 0",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 3);
-    }
 }

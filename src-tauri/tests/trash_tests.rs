@@ -93,6 +93,7 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
     let file = f.source.join("img.jpg");
 
     let mut stored_names = Vec::new();
+    let mut last_record = None;
     for content in [b"first" as &[u8], b"second", b"third"] {
         std::fs::write(&file, content).unwrap();
         let record = trash_file(&file, &f.app_root, None).unwrap();
@@ -103,10 +104,55 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
                 .to_string_lossy()
                 .to_string(),
         );
+        last_record = Some(record);
     }
+    let last_record = last_record.expect("three files were trashed");
     assert_eq!(stored_names[0], "img.jpg");
     assert_eq!(stored_names[1], "img.2.jpg");
     assert_eq!(stored_names[2], "img.3.jpg");
+
+    // "exact manifest lines" is the name's promise, and until now nothing read
+    // the manifest at all — every assertion above reads the RETURN value. The
+    // manifest is the only record mapping a stored name back to its original,
+    // so a suffix loop that drifted from what it writes would be undetectable.
+    // The day folder is <app_root>/trash/<yyyymmdd-utc>/; the stored path's own
+    // parent is the deepest PRESERVED source directory, not the day folder,
+    // because the original relative path is kept underneath it.
+    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+        .expect("the trash root exists")
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .expect("one day folder");
+    let _ = &last_record;
+    let manifest = read_manifest(&day_dir);
+    assert_eq!(manifest.len(), 3, "one line per trashed file");
+    let logged: Vec<String> = manifest
+        .iter()
+        .map(|line| {
+            PathBuf::from(line["storedPath"].as_str().expect("storedPath"))
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(logged, stored_names, "the manifest records what was stored");
+    for line in &manifest {
+        assert_eq!(
+            line["originalPath"].as_str().expect("originalPath"),
+            file.to_string_lossy(),
+            "all three came from the same original path"
+        );
+    }
+    // Each stored file keeps its OWN bytes — a suffix collision must never
+    // overwrite the file it was avoiding.
+    for (line, content) in manifest
+        .iter()
+        .zip([b"first" as &[u8], b"second", b"third"])
+    {
+        let stored = line["storedPath"].as_str().expect("storedPath");
+        assert_eq!(std::fs::read(stored).unwrap(), content);
+    }
 }
 
 #[test]
@@ -121,6 +167,23 @@ fn volume_root_of_temp_paths_resolves_to_a_real_ancestor() {
     let dir = tempfile::tempdir().unwrap();
     let root = volume_root_of(dir.path()).unwrap();
     assert!(dir.path().starts_with(&root));
-    // The root's parent (if any) is on a different device, or it is `/`.
-    assert!(root.parent().is_none() || root.is_absolute());
+    // The REAL invariant, and the one that matters: the root is a mount point,
+    // so it sits on a different device from its parent (or it is `/`). The
+    // previous assertion — parent-is-none OR is-absolute — could not fail,
+    // since volume_root_of starts absolute and only walks upward. Getting this
+    // wrong is what makes a trash move cross devices and fail with EXDEV on an
+    // SD card, which is exactly what the same-volume rename exists to avoid.
+    use std::os::unix::fs::MetadataExt;
+    let root_dev = std::fs::metadata(&root).unwrap().dev();
+    match root.parent() {
+        Some(parent) => {
+            let parent_dev = std::fs::metadata(parent).unwrap().dev();
+            assert_ne!(
+                root_dev, parent_dev,
+                "{} is not a mount point — its parent is on the same device",
+                root.display()
+            );
+        }
+        None => assert_eq!(root, std::path::Path::new("/")),
+    }
 }
