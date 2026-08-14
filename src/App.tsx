@@ -300,6 +300,11 @@ export default function App() {
       // an open dialog must never trash files behind the backdrop.
       if (hasOpenModal()) return;
       if (useComparisonStore.getState().open) return;
+      // A composite that already acted on this key has claimed it. React 19
+      // dispatches from #root, so the native event keeps bubbling to this
+      // window listener afterwards — without this, Enter on a destination row
+      // moves the file AND opens the comparison view for the item being moved.
+      if (event.defaultPrevented) return;
       const target = event.target as HTMLElement | null;
       if (
         target instanceof HTMLInputElement ||

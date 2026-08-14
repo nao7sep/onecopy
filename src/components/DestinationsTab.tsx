@@ -297,6 +297,7 @@ export default function DestinationsTab() {
       }
     } else if (event.key === "Enter" && row) {
       event.preventDefault();
+      event.stopPropagation();
       const mode = event.metaKey || event.ctrlKey
         ? "copy"
         : event.shiftKey

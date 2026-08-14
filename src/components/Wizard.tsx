@@ -1,5 +1,6 @@
 import { useWizardStore } from "../state/wizard-store";
 import { useBinariesStore } from "../state/binaries-store";
+import { useBlockingSurface } from "../hooks/useBlockingSurface";
 
 // The first-run Setup surface: three steps, blocking by design (there is
 // nothing behind it until source directories exist), completable only —
@@ -31,6 +32,8 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
   const finish = useWizardStore((s) => s.finish);
 
   const counting = dirs.some((d) => d.counting);
+
+  useBlockingSurface();
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background">

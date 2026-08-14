@@ -1,4 +1,5 @@
 import { useWizardStore } from "../state/wizard-store";
+import { useBlockingSurface } from "../hooks/useBlockingSurface";
 
 // The session gate: configured source directories that are not currently
 // present block work mode — this app never reasons about partial presence.
@@ -13,6 +14,7 @@ export default function PresenceGate({
   substituted: string[];
 }) {
   const recheck = useWizardStore((s) => s.recheckPresence);
+  useBlockingSurface();
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background">
       <div className="w-[560px] max-w-[90vw] rounded border border-border bg-surface p-6">

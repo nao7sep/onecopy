@@ -69,6 +69,13 @@ export function Menu({
 
   const onPanelKeyDown = (event: React.KeyboardEvent) => {
     if (isComposingEvent(event)) return;
+    // An open menu owns the keyboard. It is a composite, not a modal (its
+    // Escape deliberately stays out of the modal stack), so the main window's
+    // command layer is still live behind it — and a key this handler does not
+    // claim would reach it. "Backspace" is the reachable case: it is 9
+    // characters, so the single-char type-ahead below skips it and the global
+    // Backspace trashes the selection while the user is only dismissing a menu.
+    event.stopPropagation();
     const list = items();
     const current = list.indexOf(document.activeElement as HTMLElement);
     const focusAt = (index: number) => {
@@ -95,6 +102,7 @@ export function Menu({
       setOpen(false);
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
+      event.stopPropagation();
       (document.activeElement as HTMLElement | null)?.click();
     } else if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
       // Single-char type-ahead with wraparound from the current item.
