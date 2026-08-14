@@ -45,6 +45,17 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+      # The #[ignore]d tests are the ONLY execution of HEIC decode, AVIF
+      # decode, video derive and the ffmpeg install — they download a real
+      # ffmpeg (~50-80 MB) and take minutes, which is why they must not run in
+      # the default suite. Without this step that coverage exists only on a
+      # developer's machine, so the paths the app depends on most could rot
+      # unnoticed between releases. Run on the release path only, where the
+      # cost is paid once and a failure should block shipping.
+      - name: cargo test (live, ignored lane)
+        working-directory: src-tauri
+        run: cargo test -- --ignored --test-threads=1
+
   build:
     needs: test
     strategy:

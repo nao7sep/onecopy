@@ -63,3 +63,40 @@ not-a-digest  whatever.zip";
     assert_eq!(parse_sums(sums, "missing.zip"), None);
     assert_eq!(parse_sums(sums, "whatever.zip"), None);
 }
+
+#[test]
+fn a_present_but_unusable_binary_is_not_installed() {
+    // The status drives the UI's "up to date" claim and the derive passes'
+    // ffmpeg gate, so presence has to mean USABLE. A zero-byte placeholder or
+    // a file that lost its executable bit (an unzip without permissions, a
+    // copy across a filesystem that drops the mode) would otherwise report
+    // installed and fail at the first invocation.
+    let dir = tempfile::tempdir().unwrap();
+
+    let missing = dir.path().join("absent");
+    assert!(!is_usable_binary(&missing), "an absent file is not usable");
+
+    let empty = dir.path().join("empty");
+    std::fs::write(&empty, b"").unwrap();
+    assert!(!is_usable_binary(&empty), "a zero-byte file is not a binary");
+
+    let real = dir.path().join("ffmpeg");
+    std::fs::write(&real, b"#!/bin/sh\nexit 0\n").unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            !is_usable_binary(&real),
+            "a non-executable file must not report installed"
+        );
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert!(is_usable_binary(&real), "an executable file is usable");
+
+    // A directory at the binary's path is not a binary either.
+    let dir_at_path = dir.path().join("as-dir");
+    std::fs::create_dir_all(&dir_at_path).unwrap();
+    assert!(!is_usable_binary(&dir_at_path));
+}

@@ -37,7 +37,31 @@ pub enum BinaryStatus {
     InstalledUnchecked,
 }
 
-/// Derives the display status from presence-on-disk plus the persisted facts.
+/// Whether a managed binary at `path` is actually usable.
+///
+/// `is_file()` alone is not enough: a zero-byte placeholder, or a file whose
+/// executable bit was lost (an unzip without permissions, a copy across a
+/// filesystem that drops the mode), reports installed and then fails at the
+/// first invocation — with the UI insisting the tool is up to date.
+pub fn is_usable_binary(path: &std::path::Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return meta.permissions().mode() & 0o111 != 0;
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// Derives the display status from usable-presence plus the persisted facts.
 pub fn derive_status(present: bool, facts: &BinaryFacts) -> BinaryStatus {
     if !present {
         return BinaryStatus::NotInstalled;

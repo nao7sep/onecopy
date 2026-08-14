@@ -401,7 +401,7 @@ pub fn state(root: &Path) -> FfmpegState {
     let path = ffmpeg_path(root);
     let facts = load_facts(root);
     FfmpegState {
-        status: binaries::derive_status(path.is_file(), &facts),
+        status: binaries::derive_status(binaries::is_usable_binary(&path), &facts),
         path: path.to_string_lossy().to_string(),
         facts,
     }
