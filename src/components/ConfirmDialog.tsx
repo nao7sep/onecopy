@@ -27,6 +27,9 @@ export default function ConfirmDialog({
       closeLabel="Cancel"
       primaryAction={
         <button
+          // Marks this surface as one whose primary action destroys data, so
+          // the focus trap opens on Cancel instead of on this button.
+          data-destructive
           className="rounded bg-danger-solid px-3 py-1 text-sm text-ink-inverted hover:bg-danger-solid-hover"
           onClick={onConfirm}
         >

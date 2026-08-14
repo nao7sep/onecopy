@@ -18,11 +18,36 @@ export function getFocusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
 }
 
-// Where focus should land when the modal opens: the first useful control,
-// skipping the header close button so forms and search boxes get focus first.
+const FIELD_TAGS = new Set(["INPUT", "SELECT", "TEXTAREA"]);
+
+// Where focus should land when the modal opens.
+//
+// Order matters for safety, not just convenience:
+//  1. The first form field — what the user opened the surface to edit. Without
+//     this, Settings opens on the first source directory's "Remove" button,
+//     one reflexive Enter away from dropping a scanned directory.
+//  2. The dismiss control, when the surface carries a destructive primary
+//     ([data-destructive]). A confirmation focused on "Delete permanently" is
+//     not a speed bump — it is one more press of the key already being held,
+//     which is exactly the rhythm a cull run is in.
+//  3. Otherwise the first useful control, skipping the header close button.
 // Falls back to the surface itself when there is nothing else to focus.
 export function resolveInitialFocus(surface: HTMLElement): HTMLElement {
   const focusables = getFocusableElements(surface);
+  const field = focusables.find(
+    (el) => FIELD_TAGS.has(el.tagName) && !el.hasAttribute("data-modal-close"),
+  );
+  if (field) return field;
+  if (surface.querySelector("[data-destructive]")) {
+    // The LAST dismiss control, not the first: the header ✕ comes first in
+    // DOM order but is supplementary, while the labelled footer dismiss sits
+    // beside the primary action and is the one a user reads as the way out.
+    const dismissals = focusables.filter((el) =>
+      el.hasAttribute("data-modal-close"),
+    );
+    const dismiss = dismissals[dismissals.length - 1];
+    if (dismiss) return dismiss;
+  }
   return focusables.find((el) => !el.hasAttribute("data-modal-close")) ?? surface;
 }
 
