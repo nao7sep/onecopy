@@ -548,7 +548,7 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
         let path = entry.path();
         let abs = path.to_string_lossy().to_string();
         // The app's own trash is never indexed.
-        if abs.contains(".onecopy-trash") {
+        if abs.contains(crate::trash::TRASH_DIR_NAME) {
             continue;
         }
 

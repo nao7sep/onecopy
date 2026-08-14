@@ -29,7 +29,9 @@ use serde::Serialize;
 use crate::logging;
 
 pub const TRASH_DIR_NAME: &str = ".onecopy-trash";
-const HOME_TRASH_SUBDIR: &str = "trash";
+/// The home-volume trash lives under the app root (macOS forbids creating
+/// `/.onecopy-trash`). Named once in paths.rs, like every other subpath.
+use crate::paths::TRASH_DIR_NAME as HOME_TRASH_SUBDIR;
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]

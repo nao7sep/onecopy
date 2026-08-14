@@ -42,6 +42,16 @@ fn standard_subpaths_stay_pinned() {
     assert_eq!(BIN_DIR_NAME, "bin");
     assert_eq!(TEMP_DIR_NAME, "temp");
     assert_eq!(TRASH_DIR_NAME, "trash");
+    // The per-volume trash directory — the name that actually reaches disk on
+    // every non-home volume, and the one the scanner and watcher skip guards
+    // match against. Unpinned before, so a rename would have silently stopped
+    // the skip and made the app index its own trash.
+    assert_eq!(onecopy_lib::trash::TRASH_DIR_NAME, ".onecopy-trash");
+    assert_ne!(
+        onecopy_lib::trash::TRASH_DIR_NAME,
+        TRASH_DIR_NAME,
+        "the per-volume and home-volume trash names are distinct"
+    );
     assert_eq!(DEPENDENCIES_FILE_NAME, "dependencies.json");
 }
 
