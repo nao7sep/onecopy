@@ -88,6 +88,78 @@ fn platform_identity(_root: &Path) -> Option<String> {
     None
 }
 
+/// What comparing a directory's CURRENT volume identity against the recorded
+/// one means. Kept apart from the command shell because it is the gate that
+/// catches a different drive mounted at a configured path — the case
+/// `volume_identity` exists for, since backup drives share directory
+/// structures — and it runs before every destructive operation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum IdentityCheck {
+    /// Nothing was recorded for this directory; the identity is now stored.
+    FirstSight,
+    Unchanged,
+    /// A DIFFERENT volume is mounted here. The record is deliberately left
+    /// alone: overwriting it would launder the substitution into the new
+    /// normal, and the developer must resolve it.
+    Substituted { recorded: String },
+}
+
+pub fn check_identity(
+    conn: &rusqlite::Connection,
+    dir: &str,
+    current: &str,
+) -> Result<IdentityCheck, String> {
+    use rusqlite::OptionalExtension;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT identity FROM source_volumes WHERE dir = ?1",
+            [dir],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match stored {
+        None => {
+            conn.execute(
+                "INSERT INTO source_volumes (dir, identity, recorded_at_utc) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![dir, current, crate::logging::now_iso_millis()],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(IdentityCheck::FirstSight)
+        }
+        Some(recorded) if recorded != current => Ok(IdentityCheck::Substituted { recorded }),
+        Some(_) => Ok(IdentityCheck::Unchanged),
+    }
+}
+
+/// Drops recorded identities for directories that are no longer configured,
+/// so removing a source root does not leave a record that would later flag a
+/// re-added path as substituted.
+pub fn prune_identities(
+    conn: &rusqlite::Connection,
+    configured: &[String],
+) -> Result<u64, String> {
+    let mut stmt = conn
+        .prepare("SELECT dir FROM source_volumes")
+        .map_err(|e| e.to_string())?;
+    let recorded: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+    let mut pruned = 0;
+    for dir in recorded {
+        if !configured.contains(&dir) {
+            conn.execute("DELETE FROM source_volumes WHERE dir = ?1", [&dir])
+                .map_err(|e| e.to_string())?;
+            pruned += 1;
+        }
+    }
+    Ok(pruned)
+}
+
 #[cfg(test)]
 mod tests {
     // EXCEPTION to the tests-live-in-tests/ rule (tests-folder conventions,

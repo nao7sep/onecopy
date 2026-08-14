@@ -527,8 +527,6 @@ struct SourceDirsStatus {
 // for since-removed dirs are pruned; a volume without a readable identity
 // degrades to presence-only, logged at debug.
 fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
-    use rusqlite::OptionalExtension;
-
     let loaded = storage::load_app_data(app)?;
     let data_root = paths::data_root(app)?;
     let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
@@ -548,54 +546,24 @@ fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
             );
             continue;
         };
-        let stored: Option<String> = conn
-            .query_row(
-                "SELECT identity FROM source_volumes WHERE dir = ?1",
-                [dir],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        match stored {
-            None => {
-                conn.execute(
-                    "INSERT INTO source_volumes (dir, identity, recorded_at_utc) \
-                     VALUES (?1, ?2, ?3)",
-                    rusqlite::params![dir, current, logging::now_iso_millis()],
-                )
-                .map_err(|e| e.to_string())?;
-                logging::info(
-                    "source volume identity recorded",
-                    json!({ "dir": dir, "identity": current }),
-                );
-            }
-            Some(stored) if stored != current => {
+        match volume::check_identity(&conn, dir, &current)? {
+            volume::IdentityCheck::FirstSight => logging::info(
+                "source volume identity recorded",
+                json!({ "dir": dir, "identity": current }),
+            ),
+            volume::IdentityCheck::Substituted { recorded } => {
                 logging::warn(
                     "source volume SUBSTITUTED",
-                    json!({ "dir": dir, "recorded": stored, "current": current }),
+                    json!({ "dir": dir, "recorded": recorded, "current": current }),
                 );
                 status.substituted.push(dir.clone());
             }
-            Some(_) => {}
+            volume::IdentityCheck::Unchanged => {}
         }
     }
 
     // Identities for directories no longer configured are stale — prune.
-    let mut stmt = conn
-        .prepare("SELECT dir FROM source_volumes")
-        .map_err(|e| e.to_string())?;
-    let recorded: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-    for dir in recorded {
-        if !settings.source_dirs.contains(&dir) {
-            conn.execute("DELETE FROM source_volumes WHERE dir = ?1", [&dir])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    volume::prune_identities(&conn, &settings.source_dirs)?;
 
     Ok(status)
 }
