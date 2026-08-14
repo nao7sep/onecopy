@@ -688,3 +688,105 @@ fn shift_move_out_permanently_deletes_the_remaining_copies() {
         "MoveDeleteRest must not write a trash — it is the no-recovery mode"
     );
 }
+
+#[test]
+fn copy_count_matches_the_rows_a_delete_targets() {
+    // The badge doubles as a backup health check, so it must describe the same
+    // set the delete destroys. section_items counts only rows with
+    // companion_of IS NULL; delete_item takes every row sharing the hash.
+    let f = fixture("count-vs-delete");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("x.jpg"), b"same-bytes").unwrap();
+    }
+    scan(&f);
+
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let items =
+        onecopy_lib::queries::section_items(&f.conn, "image", "undated", chrono_tz::Tz::UTC)
+            .unwrap();
+    let shown = items
+        .iter()
+        .find(|i| i.hash.as_deref() == Some(hash.as_str()))
+        .expect("the logical item is in its section");
+    let badge = shown.copy_count;
+
+    let outcome = delete_item(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        DeleteMode::Trash,
+    )
+    .unwrap();
+
+    assert_eq!(
+        outcome.removed_rows, badge,
+        "the badge must describe exactly the rows a delete destroys"
+    );
+}
+
+#[test]
+fn a_shared_hash_split_across_paired_and_unpaired_rows_still_agrees() {
+    // The divergence the plain case cannot reach: one content hash held by BOTH
+    // a companion row (excluded from the badge, which filters companion_of IS
+    // NULL) and a standalone row (counted). dir a has a JPEG so its ARW pairs;
+    // dir b has the identical ARW with no JPEG beside it, so it stands alone as
+    // an other-file. A delete takes every row sharing the hash.
+    let f = fixture("count-split");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("x.arw"), b"raw-bytes").unwrap();
+    }
+    std::fs::write(f.root.join("a").join("x.jpg"), b"jpeg-bytes").unwrap();
+    scan(&f);
+
+    let raw_hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.arw' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let paired: i64 = f
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND companion_of IS NOT NULL",
+            rusqlite::params![raw_hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(paired, 1, "exactly one of the two ARWs pairs");
+
+    let items =
+        onecopy_lib::queries::section_items(&f.conn, "other", "undated", chrono_tz::Tz::UTC)
+            .unwrap();
+    let badge = items
+        .iter()
+        .find(|i| i.hash.as_deref() == Some(raw_hash.as_str()))
+        .expect("the unpaired ARW is an other-file")
+        .copy_count;
+
+    let outcome = delete_item(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&raw_hash),
+        DeleteMode::Trash,
+    )
+    .unwrap();
+
+    assert_eq!(
+        outcome.removed_rows, badge,
+        "the badge under-reports what the delete destroys when a companion \
+         shares the hash"
+    );
+}

@@ -135,7 +135,9 @@ pub fn section_items(
     if kind == "image" || kind == "video" {
         let mut stmt = conn
             .prepare(
-                "SELECT c.hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), COUNT(*), \
+                "SELECT c.hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), \
+                 (SELECT COUNT(*) FROM paths cp \
+                  WHERE cp.content_hash = c.hash AND cp.missing = 0), \
                  c.width, c.height, \
                  (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
                   AND c.derived_at_utc != 'needs-ffmpeg'), \
@@ -235,7 +237,9 @@ pub fn section_items(
         let mut stmt = conn
             .prepare(
                 "SELECT p.content_hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), \
-                 COUNT(*), \
+                 CASE WHEN p.content_hash IS NULL THEN 1 ELSE \
+                   (SELECT COUNT(*) FROM paths cp \
+                    WHERE cp.content_hash = p.content_hash AND cp.missing = 0) END, \
                  SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
                  MIN(p.size) \
                  FROM paths p \
