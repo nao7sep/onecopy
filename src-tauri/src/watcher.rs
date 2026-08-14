@@ -150,7 +150,12 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) {
     });
 }
 
-fn collect(
+/// Folds one watcher event into the dirty-directory set.
+///
+/// `pub` for the tests: a file event must map to its PARENT directory, since
+/// the drain calls `read_dir` on whatever lands here — inserting the file path
+/// instead makes that call fail silently and new photos never appear.
+pub fn collect(
     event: notify::Result<notify::Event>,
     dirty: &mut HashSet<PathBuf>,
     overflowed: &mut bool,

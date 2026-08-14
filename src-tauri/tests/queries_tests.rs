@@ -159,3 +159,105 @@ fn issues_returns_the_full_total_and_the_newest_rows_within_the_limit() {
     assert_eq!(rows[0].message.as_deref(), Some("failure 5"));
     assert_eq!(rows[1].message.as_deref(), Some("failure 4"));
 }
+
+/// Seeds an image in a specific directory at a specific instant.
+fn seed_at(conn: &Connection, hash: &str, dir: &str, name: &str, utc_ms: i64) {
+    conn.execute(
+        "INSERT INTO contents (hash, kind, byte_size, width, height, derived_at_utc, sharpness) \
+         VALUES (?1, 'image', 100, 640, 480, '2026-01-02T03:04:05.000Z', ?2)",
+        params![hash, (hash.len() as f64)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, mtime_ms, \
+         content_hash, resolved_utc_ms, resolved_source, date_only, missing, companion_of) \
+         VALUES (?1, ?2, ?3, ?4, 'jpg', 'image', 100, 0, ?5, ?6, 'metadata', 0, 0, NULL)",
+        params![
+            format!("{dir}/{name}"),
+            dir,
+            name,
+            name.trim_end_matches(".jpg"),
+            hash,
+            utc_ms
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn section_dirs_matches_the_directories_of_section_items() {
+    // section_dirs converts a month key BACK into a range through the display
+    // timezone — a different implementation from the forward bucketing that
+    // produced the key. rescan_section is its only consumer, so a disagreement
+    // means a rescan quietly walks the wrong directories. Under Asia/Tokyo
+    // (UTC+9) these two instants straddle a month boundary that UTC does not
+    // see, which is exactly where the two implementations can diverge.
+    let conn = db();
+    let tz: Tz = "Asia/Tokyo".parse().unwrap();
+    // 2026-01-31T20:00:00Z == 2026-02-01T05:00 JST → February in Tokyo.
+    seed_at(&conn, "hfeb", "/root/feb", "a.jpg", 1_769_889_600_000);
+    // 2026-01-31T10:00:00Z == 2026-01-31T19:00 JST → January in Tokyo.
+    seed_at(&conn, "hjan", "/root/jan", "b.jpg", 1_769_853_600_000);
+
+    for month in ["2026-01", "2026-02"] {
+        let items = queries::section_items(&conn, "image", month, tz).unwrap();
+        let mut expected: Vec<String> = items
+            .iter()
+            .map(|i| {
+                conn.query_row(
+                    "SELECT dir_path FROM paths WHERE content_hash = ?1",
+                    params![i.hash.as_deref().unwrap()],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap()
+            })
+            .collect();
+        expected.sort();
+        expected.dedup();
+
+        let mut dirs = queries::section_dirs(&conn, "image", month, tz).unwrap();
+        dirs.sort();
+        dirs.dedup();
+        assert_eq!(dirs, expected, "{month}: the rescan must walk what the section shows");
+    }
+    // The boundary really did split them, or the test proves nothing.
+    assert_eq!(
+        queries::section_items(&conn, "image", "2026-02", tz).unwrap().len(),
+        1,
+        "the Tokyo boundary puts exactly one item in February"
+    );
+}
+
+#[test]
+fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
+    // What the entire keep-one-delete-the-rest surface renders. Zero tests.
+    let conn = db();
+    seed_image(&conn, "sharp", Some("2026-01-02T03:04:05.000Z"), "sharp.jpg");
+    seed_image(&conn, "soft", Some("2026-01-02T03:04:05.000Z"), "soft.jpg");
+    seed_image(&conn, "gone", Some("2026-01-02T03:04:05.000Z"), "gone.jpg");
+    conn.execute("UPDATE contents SET sharpness = 9.0 WHERE hash = 'sharp'", [])
+        .unwrap();
+    conn.execute("UPDATE contents SET sharpness = 1.0 WHERE hash = 'soft'", [])
+        .unwrap();
+    // Every path of this member vanished from disk.
+    conn.execute("UPDATE paths SET missing = 1 WHERE content_hash = 'gone'", [])
+        .unwrap();
+    conn.execute("INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x')", [])
+        .unwrap();
+    for hash in ["sharp", "soft", "gone"] {
+        conn.execute(
+            "INSERT INTO similar_group_members (group_id, content_hash) VALUES (1, ?1)",
+            params![hash],
+        )
+        .unwrap();
+    }
+
+    let members = queries::similar_group_of(&conn, "sharp").unwrap();
+    assert_eq!(
+        members.iter().map(|m| m.hash.as_str()).collect::<Vec<_>>(),
+        vec!["sharp", "soft"],
+        "live members only, sharpest first"
+    );
+    assert!(members.iter().all(|m| m.copy_count == 1));
+    assert!(members.iter().all(|m| m.has_thumb));
+}
