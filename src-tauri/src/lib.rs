@@ -216,21 +216,18 @@ fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
     };
 
     let content_type = content_type_for(&path);
-    let range = request
+    let range_header = request
         .headers()
         .get("Range")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| parse_byte_range(v, total));
+        .and_then(|v| v.to_str().ok());
 
-    // Large file, no Range: serve a head chunk as 206 so the player switches
-    // to ranged loading rather than the handler materializing gigabytes.
-    const HEAD_CHUNK: u64 = 1024 * 1024;
-    const WHOLE_FILE_LIMIT: u64 = 32 * 1024 * 1024;
-    let (start, end, status) = match range {
-        Some((start, end)) => (start, end, 206),
-        None if total > WHOLE_FILE_LIMIT => (0, HEAD_CHUNK.min(total) - 1, 206),
-        None => (0, total.saturating_sub(1), 200),
-    };
+    // The span decision is pure and unit-tested in media_protocol: it caps
+    // every span (a webview's `bytes=0-` otherwise resolves to the whole file,
+    // and this handler is synchronous, so wry runs it on the main thread), and
+    // it applies the head-chunk shortcut only to streamable content — a
+    // truncated image is a broken tile, not a partial one.
+    let (start, end, status) =
+        resolve_range(range_header, total, is_streamable(content_type));
 
     let length = end - start + 1;
     let mut bytes = vec![0u8; length as usize];
@@ -254,7 +251,9 @@ fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
 
 // Range parsing, content types, and byte sniffing live in media_protocol.rs
 // (pure and unit-tested there; lib.rs is the bootstrap and has no tests).
-use media_protocol::{content_type_for, parse_byte_range, sniff_image_content_type};
+use media_protocol::{
+    content_type_for, is_streamable, resolve_range, sniff_image_content_type,
+};
 
 // Serves `mediacache://localhost/thumb-<hash>` and `/preview-<hash>` straight
 // from the hash-keyed cache (http://mediacache.localhost/… on Windows). Cache

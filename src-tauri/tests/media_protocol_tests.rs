@@ -42,3 +42,64 @@ fn sniffing_reads_magic_bytes_not_names() {
     assert_eq!(sniff_image_content_type(b"RIFF....WEBP"), "image/webp");
     assert_eq!(sniff_image_content_type(b""), "image/webp");
 }
+
+// The span decision: what the handler actually reads into memory.
+
+const GB: u64 = 1024 * 1024 * 1024;
+
+#[test]
+fn an_open_ended_range_is_capped_to_a_bounded_span() {
+    // Chromium sends exactly this for media. Uncapped it resolves to the whole
+    // file, which the synchronous handler would read on the main thread.
+    let (start, end, status) = resolve_range(Some("bytes=0-"), 4 * GB, true);
+    assert_eq!(start, 0);
+    assert_eq!(status, 206);
+    assert_eq!(end - start + 1, MAX_SPAN, "must serve one bounded span");
+}
+
+#[test]
+fn an_explicit_small_range_is_honored_exactly() {
+    let (start, end, status) = resolve_range(Some("bytes=1000-2000"), 4 * GB, true);
+    assert_eq!((start, end, status), (1000, 2000, 206));
+}
+
+#[test]
+fn a_large_explicit_range_is_capped_from_its_own_start() {
+    let (start, end, _) = resolve_range(Some("bytes=1048576-"), 4 * GB, true);
+    assert_eq!(start, 1048576);
+    assert_eq!(end - start + 1, MAX_SPAN);
+}
+
+#[test]
+fn a_rangeless_video_gets_the_head_chunk() {
+    let (start, end, status) = resolve_range(None, 40 * 1024 * 1024, true);
+    assert_eq!((start, status), (0, 206));
+    assert_eq!(end + 1, HEAD_CHUNK);
+}
+
+#[test]
+fn a_rangeless_image_is_served_whole_however_big() {
+    // The 100% view loads the ORIGINAL through this protocol and sends no
+    // Range. A truncated 206 renders as a broken image, not a partial one.
+    let total = 40 * 1024 * 1024;
+    let (start, end, status) = resolve_range(None, total, false);
+    assert_eq!((start, end, status), (0, total - 1, 200));
+}
+
+#[test]
+fn a_small_rangeless_file_is_served_whole() {
+    let (start, end, status) = resolve_range(None, 1234, true);
+    assert_eq!((start, end, status), (0, 1233, 200));
+}
+
+#[test]
+fn an_empty_file_does_not_underflow() {
+    assert_eq!(resolve_range(None, 0, true), (0, 0, 200));
+}
+
+#[test]
+fn images_are_not_streamable_and_video_is() {
+    assert!(is_streamable("video/mp4"));
+    assert!(!is_streamable("image/jpeg"));
+    assert!(!is_streamable("application/octet-stream"));
+}

@@ -68,3 +68,55 @@ pub fn sniff_image_content_type(bytes: &[u8]) -> &'static str {
         "image/webp"
     }
 }
+
+/// The largest span one response will carry. A Chromium webview opens every
+/// media resource with a literal `Range: bytes=0-`, which resolves — correctly
+/// per spec — to the entire file, so without a cap the handler allocates and
+/// reads the whole thing. That matters more here than it looks: the mediafile
+/// protocol is registered SYNCHRONOUSLY, so wry runs it inline on the main
+/// thread and a multi-gigabyte video freezes the whole app rather than just
+/// the player. Returning fewer bytes than asked for is legal for a 206 as long
+/// as Content-Range describes what was actually sent; the player simply asks
+/// for the next span.
+pub const MAX_SPAN: u64 = 8 * 1024 * 1024;
+
+/// Served to a streamable resource that asked for no range at all, so the
+/// player switches to ranged loading instead of pulling the file whole.
+pub const HEAD_CHUNK: u64 = 1024 * 1024;
+
+/// Above this, a rangeless streamable request gets `HEAD_CHUNK` rather than
+/// the whole file.
+pub const WHOLE_FILE_LIMIT: u64 = 32 * 1024 * 1024;
+
+/// True when a resource can be delivered progressively. Images cannot: a
+/// truncated JPEG is a broken tile, not a partial one, so the head-chunk
+/// shortcut must never apply to them.
+pub fn is_streamable(content_type: &str) -> bool {
+    content_type.starts_with("video/") || content_type.starts_with("audio/")
+}
+
+/// The byte span to serve and the status to serve it with.
+///
+/// Returns `(start, end_inclusive, status)`. `total == 0` yields an empty
+/// 200 rather than an underflowed span.
+pub fn resolve_range(
+    range_header: Option<&str>,
+    total: u64,
+    streamable: bool,
+) -> (u64, u64, u16) {
+    if total == 0 {
+        return (0, 0, 200);
+    }
+    match range_header.and_then(|header| parse_byte_range(header, total)) {
+        Some((start, end)) => {
+            let capped = end.min(start.saturating_add(MAX_SPAN - 1)).min(total - 1);
+            (start, capped, 206)
+        }
+        // Only streamable resources get the head-chunk treatment; an image
+        // asked for without a Range must arrive whole or it cannot render.
+        None if streamable && total > WHOLE_FILE_LIMIT => {
+            (0, HEAD_CHUNK.min(total) - 1, 206)
+        }
+        None => (0, total - 1, 200),
+    }
+}
