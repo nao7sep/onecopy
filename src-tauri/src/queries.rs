@@ -137,7 +137,8 @@ pub fn section_items(
             .prepare(
                 "SELECT c.hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), COUNT(*), \
                  c.width, c.height, \
-                 (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed'), \
+                 (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
+                  AND c.derived_at_utc != 'needs-ffmpeg'), \
                  SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
                  (SELECT m.group_id FROM similar_group_members m WHERE m.content_hash = c.hash), \
                  c.sharpness, c.byte_size, \
@@ -323,7 +324,8 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
              (SELECT MIN(p.file_name) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
              c.width, c.height, c.sharpness, \
              (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
-             (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed') \
+             (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
+              AND c.derived_at_utc != 'needs-ffmpeg') \
              FROM similar_group_members m JOIN contents c ON c.hash = m.content_hash \
              WHERE m.group_id = ?1 \
              ORDER BY c.sharpness DESC NULLS LAST, c.hash",

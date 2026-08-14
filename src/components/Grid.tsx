@@ -27,6 +27,7 @@ function Tile({
   isSelected: boolean;
   onSelect: (event: React.MouseEvent) => void;
 }) {
+  const [thumbFailed, setThumbFailed] = useState(false);
   return (
     <figure
       className="relative w-40 cursor-grab"
@@ -51,12 +52,17 @@ function Tile({
           isSelected ? "border-primary-ring ring-2 ring-primary-ring" : "border-border"
         } bg-surface`}
       >
-        {item.hash !== null && item.hasThumb ? (
+        {item.hash !== null && item.hasThumb && !thumbFailed ? (
           <img
             src={thumbUrl(item.hash)}
             alt={item.fileName}
             loading="lazy"
             className="max-h-full max-w-full object-contain"
+            // A cache entry can be absent even when the row claims one (a
+            // hand-deleted cache file, a move interrupted mid-flight). Falling
+            // back to the extension label keeps the grid readable instead of
+            // showing the webview's broken-image glyph.
+            onError={() => setThumbFailed(true)}
           />
         ) : (
           <span className="text-lg font-semibold text-ink-muted">
