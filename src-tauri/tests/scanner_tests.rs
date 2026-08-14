@@ -606,3 +606,125 @@ fn contents_without_a_live_path_are_not_pending_work() {
         "an underivable row must not keep the resume firing forever"
     );
 }
+
+/// Builds a real JPEG carrying an EXIF APP1 segment.
+///
+/// Committed binary fixtures are avoided here deliberately: no tool on the
+/// build path can WRITE Exif (the image crate encodes pixels only), so a
+/// fixture would be opaque and unregenerable. Assembling the block makes every
+/// offset visible and the expectations hand-derivable.
+fn jpeg_with_exif(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    const MAKE: &[u8] = b"TestCam\0";
+    const MODEL: &[u8] = b"Model1\0";
+    const TAKEN: &[u8] = b"2016:03:05 12:34:56\0"; // 20 bytes
+    const OFFSET: &[u8] = b"+09:00\0"; // 7 bytes
+
+    // Offsets are relative to the start of the TIFF header.
+    const IFD0: u32 = 8;
+    const EXIF_IFD: u32 = 50; // 8 + (2 + 3*12 + 4)
+    const DATA: u32 = 80; // 50 + (2 + 2*12 + 4)
+    let make_at = DATA;
+    let model_at = make_at + MAKE.len() as u32;
+    let taken_at = model_at + MODEL.len() as u32;
+    let offset_at = taken_at + TAKEN.len() as u32;
+
+    // tag, type (2 = ASCII, 4 = LONG), count, value-or-offset.
+    let entry = |tag: u16, kind: u16, count: u32, value: u32| {
+        let mut e = Vec::new();
+        e.extend_from_slice(&tag.to_le_bytes());
+        e.extend_from_slice(&kind.to_le_bytes());
+        e.extend_from_slice(&count.to_le_bytes());
+        e.extend_from_slice(&value.to_le_bytes());
+        e
+    };
+
+    let mut tiff = Vec::new();
+    tiff.extend_from_slice(b"II\x2a\x00");
+    tiff.extend_from_slice(&IFD0.to_le_bytes());
+    // IFD0 — entries must be tag-ascending.
+    tiff.extend_from_slice(&3u16.to_le_bytes());
+    tiff.extend(entry(0x010F, 2, MAKE.len() as u32, make_at));
+    tiff.extend(entry(0x0110, 2, MODEL.len() as u32, model_at));
+    tiff.extend(entry(0x8769, 4, 1, EXIF_IFD));
+    tiff.extend_from_slice(&0u32.to_le_bytes()); // no IFD1
+    // Exif sub-IFD.
+    tiff.extend_from_slice(&2u16.to_le_bytes());
+    tiff.extend(entry(0x9003, 2, TAKEN.len() as u32, taken_at));
+    tiff.extend(entry(0x9011, 2, OFFSET.len() as u32, offset_at));
+    tiff.extend_from_slice(&0u32.to_le_bytes());
+    assert_eq!(tiff.len() as u32, DATA, "the data area starts where declared");
+    tiff.extend_from_slice(MAKE);
+    tiff.extend_from_slice(MODEL);
+    tiff.extend_from_slice(TAKEN);
+    tiff.extend_from_slice(OFFSET);
+
+    let mut payload = b"Exif\0\0".to_vec();
+    payload.extend_from_slice(&tiff);
+    let mut app1 = vec![0xFF, 0xE1];
+    app1.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+    app1.extend_from_slice(&payload);
+
+    // A real (tiny) JPEG, with the segment spliced in directly after SOI.
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(8, 8)
+        .write_to(&mut encoded, image::ImageFormat::Jpeg)
+        .unwrap();
+    let encoded = encoded.into_inner();
+    let mut jpeg = encoded[..2].to_vec(); // SOI
+    jpeg.extend_from_slice(&app1);
+    jpeg.extend_from_slice(&encoded[2..]);
+
+    let path = dir.join(name);
+    std::fs::write(&path, &jpeg).unwrap();
+    path
+}
+
+#[test]
+fn exif_datetime_and_camera_are_extracted_and_win_resolution() {
+    // ResolvedSource::Metadata was never produced from a REAL file anywhere in
+    // the suite: resolution_tests hand-builds MetadataTimestamp values and the
+    // other scanner tests use EXIF-free bytes deliberately. If extraction
+    // silently returned None, every photo would re-date to its filesystem
+    // timestamp — the whole library landing in the month it was imported.
+    let f = fixture("exif");
+    // A filename date that would WIN if metadata were missing, so the test
+    // distinguishes "metadata was read" from "something resolved".
+    jpeg_with_exif(&f.root, "IMG_20200101_010101.jpg");
+
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    hash_pending(&f.conn, &test_cache(&f)).unwrap();
+    extract_pending(&f.conn).unwrap();
+    resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+
+    let (source, ms): (String, i64) = f
+        .conn
+        .query_row(
+            "SELECT resolved_source, resolved_utc_ms FROM paths LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(source, "metadata", "in-file metadata outranks the filename");
+
+    // 2016-03-05 12:34:56 +09:00 == 03:34:56 UTC. The OffsetTimeOriginal is a
+    // FACT and must win over the configured default timezone.
+    let expected = chrono::NaiveDate::from_ymd_opt(2016, 3, 5)
+        .unwrap()
+        .and_hms_opt(3, 34, 56)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
+    assert_eq!(ms, expected);
+
+    let (make, model): (Option<String>, Option<String>) = f
+        .conn
+        .query_row(
+            "SELECT camera_make, camera_model FROM contents LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    // Camera identity is what partitions a similarity cluster into bursts.
+    assert_eq!(make.as_deref(), Some("TestCam"));
+    assert_eq!(model.as_deref(), Some("Model1"));
+}
