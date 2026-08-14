@@ -39,6 +39,37 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
     let target = dir.join("config.json");
     write_atomic(&target, b"{\"a\": 1, \"list\": [\"x\"]}").unwrap();
 
+    // GENUINELY interleaved: two threads, each reading before either writes.
+    // The sequential calls below cannot reach the lost update the name claims —
+    // it needs overlapping read windows, and both patch_config and patch_state
+    // are Tauri commands dispatched on a thread pool, so that overlap is real.
+    {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = [("threadA", 1), ("threadB", 2)]
+            .into_iter()
+            .map(|(key, value)| {
+                let target = target.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    // Line both threads up so neither can finish before the
+                    // other starts.
+                    barrier.wait();
+                    patch_json_store(&target, &serde_json::json!({ key: value })).unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        // Read the FILE, not a return value: a lost update is a fact about
+        // what landed on disk.
+        let merged: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(merged["threadA"], 1, "thread A's key survived");
+        assert_eq!(merged["threadB"], 2, "thread B's key survived");
+        assert_eq!(merged["a"], 1, "the pre-existing document survived both");
+    }
+
     // Writer 1 patches one key; writer 2 patches another with a stale
     // mental model — neither loses the other's write.
     let after1 = patch_json_store(&target, &serde_json::json!({ "list": ["x", "y"] })).unwrap();

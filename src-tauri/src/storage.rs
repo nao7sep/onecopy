@@ -177,6 +177,18 @@ pub fn patch_state(app: &AppHandle, patch: &JsonValue) -> Result<JsonValue, Stri
 /// not a list you splice). Keys are never deleted; `null` stores as null,
 /// which is a meaningful value here (`cacheDir: null` = the default).
 pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<JsonValue, String> {
+    // Serialized: this is a read-modify-write, and both `patch_config` and
+    // `patch_state` are Tauri commands dispatched on a thread pool, so two
+    // surfaces saving at once could otherwise interleave their reads and the
+    // second write would drop the first's keys — the exact lost update the
+    // one-owner rule exists to prevent. One global lock is enough: patches are
+    // small and rare, and holding it across the atomic write is what makes the
+    // whole read-merge-write atomic with respect to other patchers.
+    static PATCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = PATCH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let mut current = read_json_optional(target)?.unwrap_or_else(|| serde_json::json!({}));
     if !current.is_object() {
         current = serde_json::json!({});
