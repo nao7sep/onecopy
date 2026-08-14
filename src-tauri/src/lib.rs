@@ -74,20 +74,6 @@ fn install_panic_hook() {
 // duration. Expected outcomes are modeled as serde-tagged enums where they
 // arise, not as errors.
 
-// Returns the absolute storage root (`~/.onecopy`, or `ONECOPY_HOME`), creating
-// it if missing. The Rust core is the only path resolver: the webview calls
-// this once at startup and derives every subpath from the returned absolute
-// root, never reconstructing the root itself.
-#[tauri::command]
-fn app_data_root(app: AppHandle) -> Result<String, String> {
-    logging::boundary(
-        "app_data_root",
-        json!({}),
-        || paths::data_root(&app).map(|root| root.to_string_lossy().to_string()),
-        |root| json!({ "root": root }),
-    )
-}
-
 // Config + state + data root in one startup round-trip.
 #[tauri::command]
 fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
@@ -1294,7 +1280,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            app_data_root,
             load_app_data,
             patch_config,
             patch_state,
