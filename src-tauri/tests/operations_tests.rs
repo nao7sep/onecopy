@@ -82,10 +82,39 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
     assert_eq!(outcome.deleted_files, 3, "two copies + one companion");
     assert_eq!(outcome.failed_files, 0);
 
-    // Disk: originals gone, all three in the app-root trash.
+    // Disk: originals gone, all three RECOVERABLE in the app-root trash. The
+    // comment claimed this and nothing asserted it — the trash being the only
+    // safety net, "deleted 3" agreeing with itself is not evidence.
     assert!(!f.root.join("a").join("x.jpg").exists());
     assert!(!f.root.join("b").join("x.jpg").exists());
     assert!(!f.root.join("a").join("x.arw").exists());
+
+    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+        .expect("the trash root exists")
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .expect("one day folder");
+    let manifest: Vec<serde_json::Value> =
+        std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+            .expect("a manifest was written")
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+    assert_eq!(manifest.len(), 3, "one manifest line per trashed file");
+    for line in &manifest {
+        let stored = line["storedPath"].as_str().expect("storedPath");
+        let original = line["originalPath"].as_str().expect("originalPath");
+        assert!(
+            std::path::Path::new(stored).exists(),
+            "{stored} must be recoverable"
+        );
+        let expected = if original.ends_with("x.arw") {
+            b"raw-bytes".to_vec()
+        } else {
+            b"same-bytes".to_vec()
+        };
+        assert_eq!(std::fs::read(stored).unwrap(), expected, "bytes preserved");
+    }
 
     // Index: no rows, no contents, no evidence remain.
     let rows: i64 = f
@@ -123,6 +152,56 @@ fn cache_entries_go_when_the_last_copy_goes() {
         DeleteMode::Trash,
     )
     .unwrap();
+    assert!(!f.cache.thumb(&hash).exists());
+    assert!(!f.cache.preview(&hash).exists());
+}
+
+#[test]
+fn cache_entries_survive_while_another_copy_remains() {
+    // The complementary branch of "when the LAST copy goes". The original test
+    // had a single copy, so `remaining` was always 0 and the false branch —
+    // the one that decides whether a shared cache entry survives — never ran.
+    let f = fixture("cache-gc-shared");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("x.jpg"), b"same-bytes").unwrap();
+    }
+    scan(&f);
+    let hash: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    for path in [f.cache.thumb(&hash), f.cache.preview(&hash)] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"webp").unwrap();
+    }
+
+    // One copy is deleted OUTSIDE the app (the supported out-of-app change),
+    // leaving a live sibling: the shared cache entry must stay.
+    std::fs::remove_file(f.root.join("b").join("x.jpg")).unwrap();
+    scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert!(f.cache.thumb(&hash).exists(), "a live copy still needs it");
+
+    // Now the last LIVE copy goes. The missing sibling must not pin the
+    // identity: contents and cache both go, or they leak for the life of the
+    // index (startup_sweep only reclaims cache whose hash left contents).
+    delete_item(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        DeleteMode::Trash,
+    )
+    .unwrap();
+    let contents: i64 = f
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM contents WHERE hash = ?1",
+            rusqlite::params![hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(contents, 0, "a missing sibling must not pin the identity");
     assert!(!f.cache.thumb(&hash).exists());
     assert!(!f.cache.preview(&hash).exists());
 }

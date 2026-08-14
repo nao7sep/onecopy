@@ -144,14 +144,23 @@ pub fn delete_item(
 
     // Orphaned contents rows lose their cache entries synchronously.
     for hash in removed_hashes.into_iter().flatten() {
-        let remaining: i64 = conn
+        // Only LIVE copies keep an identity alive. Counting missing rows too
+        // meant one copy on an absent drive pinned the contents row and every
+        // cache entry for that hash forever — a leak that accumulates across a
+        // cull session and that no sweep reclaims, since startup_sweep only
+        // drops cache whose hash is absent from contents.
+        let live: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM paths WHERE content_hash = ?1",
+                "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0",
                 [&hash],
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
-        if remaining == 0 {
+        if live == 0 {
+            // Missing rows are files that are not on disk; they may not hold a
+            // foreign key into a contents row that is about to go.
+            conn.execute("DELETE FROM paths WHERE content_hash = ?1", [&hash])
+                .map_err(|e| e.to_string())?;
             conn.execute(
                 "DELETE FROM similar_group_members WHERE content_hash = ?1",
                 [&hash],
