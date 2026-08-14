@@ -30,3 +30,10 @@ export function isTopmostModal(token: object): boolean {
 export function hasOpenModal(): boolean {
   return stack.length > 0;
 }
+
+/** Empties the stack. Test-only: the stack is module-global, so a spec that
+ * pushed without popping would otherwise leak into every later spec and make
+ * `hasOpenModal()` lie about the next one. */
+export function resetModalStack(): void {
+  stack.length = 0;
+}

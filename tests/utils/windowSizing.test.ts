@@ -40,14 +40,16 @@ describe("pane clamping derives display from intent", () => {
   });
 
   it("shrinks proportionally to headroom when they do not fit", () => {
-    const { left, right } = clampPaneWidths(400, 400, 1000);
-    // The grid keeps its minimum; both panes give ground, the one with more
-    // headroom giving more.
+    // Deliberately ASYMMETRIC. The previous input was clampPaneWidths(400,
+    // 400, 1000), where a proportional split and an equal split produce
+    // identical numbers — so the word "proportionally" was unverifiable and
+    // every assertion was a one-sided inequality that an equal split passes.
+    const { left, right } = clampPaneWidths(600, 250, 1000);
     expect(left + right).toBeLessThanOrEqual(1000 - GRID_MIN_WIDTH - 2 * SPLITTER_WIDTH);
     expect(left).toBeGreaterThanOrEqual(SIDEBAR_MIN_WIDTH);
     expect(right).toBeGreaterThanOrEqual(RIGHT_PANE_MIN_WIDTH);
-    expect(left).toBeLessThan(400);
-    expect(right).toBeLessThan(400);
+    // The pane with more headroom above its minimum gives up strictly more.
+    expect(600 - left).toBeGreaterThan(250 - right);
   });
 
   it("bottoms out at both minimums and never below", () => {

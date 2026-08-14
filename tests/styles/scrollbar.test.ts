@@ -25,8 +25,25 @@ describe("scrollbar styling", () => {
     expect(css).toMatch(/::-webkit-scrollbar-corner\s*{[^}]*transparent/);
   });
 
-  it("themes the thumb in both modes", () => {
-    const thumbDefs = css.match(/--scrollbar-thumb:/g) ?? [];
-    expect(thumbDefs.length).toBeGreaterThanOrEqual(2);
+  it("themes the thumb differently in each mode", () => {
+    // Counting occurrences proved nothing: two definitions in the same block
+    // with the same value passed. What matters is that the dark-mode value
+    // lives in a DIFFERENT block and actually differs.
+    // Anchored to the start of a line: ".dark" also occurs in prose comments,
+    // and a bare indexOf found one of those and then walked forward into the
+    // :root block, comparing it against itself.
+    const blockAfter = (selector: string): string => {
+      const at = css.search(new RegExp(`^${selector.replace(".", "\\.")}\\s*\\{`, "m"));
+      expect(at, `${selector} must open a block in App.css`).toBeGreaterThanOrEqual(0);
+      const open = css.indexOf("{", at);
+      const close = css.indexOf("\n}", open);
+      return css.slice(open, close);
+    };
+    const valueIn = (block: string): string => {
+      const match = block.match(/--scrollbar-thumb:\s*([^;]+);/);
+      expect(match, "the block must define --scrollbar-thumb").toBeTruthy();
+      return match![1]!.trim();
+    };
+    expect(valueIn(blockAfter(":root"))).not.toBe(valueIn(blockAfter(".dark")));
   });
 });

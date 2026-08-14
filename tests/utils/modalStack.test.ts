@@ -4,16 +4,16 @@ import {
   isTopmostModal,
   popModal,
   pushModal,
+  resetModalStack,
 } from "../../src/utils/modalStack";
 
-// The stack is module-global; drain it between tests.
-function drain() {
-  // popModal is a no-op for unknown tokens, so popping until empty is safe
-  // only by tracking — instead, push/pop symmetrically inside each test.
-}
+// The stack is module-global. The previous `drain()` was a body of pure
+// comments registered as beforeEach, so the isolation it implied did not
+// exist — the specs passed only because they happened to pop symmetrically.
+// File-level, so EVERY describe in this file starts from an empty stack.
+beforeEach(resetModalStack);
 
 describe("modalStack", () => {
-  beforeEach(drain);
 
   it("topmost is the most recently pushed still-open token", () => {
     const settings = {};
@@ -43,6 +43,18 @@ describe("modalStack", () => {
     expect(hasOpenModal()).toBe(true);
     expect(isTopmostModal(b)).toBe(true);
     popModal(b);
+    expect(hasOpenModal()).toBe(false);
+  });
+});
+
+describe("isolation", () => {
+  it("does not leak an unpopped token into the next spec", () => {
+    pushModal({});
+    expect(hasOpenModal()).toBe(true);
+  });
+
+  it("starts clean even though the previous spec never popped", () => {
+    // This is the assertion the comment-only drain() could not make good on.
     expect(hasOpenModal()).toBe(false);
   });
 });

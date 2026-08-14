@@ -59,6 +59,19 @@ describe("chunkSlots", () => {
     expect(turnSize([])).toBe(1);
   });
 
+  it("chunking and turn size agree for the same capacities", () => {
+    // These were asserted in isolation, so the fact that they DISAGREE for []
+    // — turnSize returns 1 while chunkSlots falls back to [slots.length] —
+    // could not be seen. Unreachable today (capacities initialises to [16]),
+    // so this pins a latent trap rather than a live bug.
+    const slots = Array.from({ length: 20 }, (_, i) => member(`h${i}`));
+    for (const capacities of [[], [4], [4, 4], [16], [3, 4, 4]]) {
+      const size = turnSize(capacities);
+      const chunked = chunkSlots(slots.slice(0, size), new Set(), capacities);
+      expect(chunked.flat()).toHaveLength(size);
+    }
+  });
+
   it("per-screen capacity follows the group's dominant image orientation", () => {
     const portrait = (h: string) => ({ ...member(h), width: 3000, height: 4000 });
     const landscape = (h: string) => ({ ...member(h), width: 4000, height: 3000 });
