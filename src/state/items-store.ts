@@ -67,6 +67,8 @@ interface ItemsState {
   toggleItem: (key: string) => void;
   rangeSelect: (sortedKeys: string[], key: string) => void;
   deleteSelected: (permanent: boolean) => Promise<void>;
+  /** Deletes an explicit set, for surfaces scoped to one item. */
+  deleteKeys: (keys: Set<string>, permanent: boolean) => Promise<void>;
   rescanSection: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -197,12 +199,21 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   // trash (or permanently with Shift). Selection recovers onto the next
   // unselected item so a cull run keeps its keyboard rhythm.
   deleteSelected: async (permanent) => {
-    const { items, selectedItem, selectedKeys, sortOrder, refresh } = get();
+    const { selectedItem, selectedKeys, deleteKeys } = get();
     const keys = selectedKeys.size > 0
       ? selectedKeys
       : selectedItem !== null
         ? new Set([selectedItem])
         : new Set<string>();
+    await deleteKeys(keys, permanent);
+  },
+
+  // Deletes an explicit set. Surfaces that act on ONE item — the scenes modal
+  // opens on the anchor and its footer promises it acts on that video — call
+  // this rather than deleteSelected, whose target is whatever is selected in
+  // the grid behind them.
+  deleteKeys: async (keys, permanent) => {
+    const { items, selectedItem, sortOrder, refresh } = get();
     if (keys.size === 0) return;
     // Recovery walks the order the GRID renders, not the backend's — under
     // any sort but "time" the two diverge, and recovering through the backend

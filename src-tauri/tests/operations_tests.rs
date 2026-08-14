@@ -392,3 +392,109 @@ fn a_failed_copy_keeps_its_row_and_records_an_issue() {
         .unwrap();
     assert_eq!(issues, 1);
 }
+
+// A companion that does not reach the destination must withhold the
+// post-action. Companions are RAW files and sidecars, never their own grid
+// row, so deleting the source of one that was never delivered destroys it
+// with nothing in the UI to reveal the loss.
+
+#[test]
+fn companion_conflict_withholds_the_post_action() {
+    let f = fixture("companion-conflict");
+    std::fs::write(f.root.join("x.jpg"), b"primary-bytes").unwrap();
+    std::fs::write(f.root.join("x.arw"), b"raw-bytes").unwrap();
+    scan(&f);
+
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    // The RAW is already there with DIFFERENT content — a conflict.
+    std::fs::write(dest.join("x.arw"), b"a-different-raw").unwrap();
+
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let outcome = move_out(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        &dest,
+        MoveOutMode::MoveTrashRest,
+    )
+    .unwrap();
+
+    assert!(
+        outcome.conflicts.iter().any(|c| c.ends_with("x.arw")),
+        "the companion conflict must be reported, got {:?}",
+        outcome.conflicts
+    );
+    assert_eq!(
+        outcome.post_action.deleted_files, 0,
+        "nothing may be deleted while a companion is undelivered"
+    );
+    assert!(f.root.join("x.jpg").exists(), "primary must survive");
+    assert!(f.root.join("x.arw").exists(), "the RAW must survive");
+}
+
+#[test]
+fn companion_copy_failure_withholds_the_post_action() {
+    let f = fixture("companion-copy-fail");
+    std::fs::write(f.root.join("x.jpg"), b"primary-bytes").unwrap();
+    std::fs::write(f.root.join("x.arw"), b"raw-bytes").unwrap();
+    scan(&f);
+
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    // Make the source RAW unreadable so every copy attempt fails. This is the
+    // ENOSPC shape: deliver_one returns not-ok having pushed NO conflict, so
+    // it is the failure the outcome could not previously express at all.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            f.root.join("x.arw"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+    }
+
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let outcome = move_out(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        &dest,
+        MoveOutMode::MoveTrashRest,
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            outcome.post_action.deleted_files, 0,
+            "nothing may be deleted while a companion could not be copied"
+        );
+        assert!(
+            !outcome.undelivered.is_empty(),
+            "an undeliverable companion must be reported, not silently dropped"
+        );
+        assert!(f.root.join("x.jpg").exists(), "primary must survive");
+        assert!(f.root.join("x.arw").exists(), "the RAW must survive");
+    }
+}

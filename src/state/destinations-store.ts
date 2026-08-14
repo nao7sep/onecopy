@@ -19,6 +19,9 @@ export interface MoveOutOutcome {
   exported: number;
   skippedIdentical: number;
   conflicts: string[];
+  /** Targets nothing was written to at all — a full disk or unreadable
+   * sources. Distinct from a conflict, and it withholds the post-action too. */
+  undelivered: string[];
   postAction: { deletedFiles: number; failedFiles: number; removedRows: number };
 }
 
@@ -194,6 +197,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       let skipped = 0;
       let handled = 0;
       const conflicts: string[] = [];
+      const undelivered: string[] = [];
       let done = 0;
       for (const item of targets) {
         done += 1;
@@ -210,6 +214,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
         skipped += outcome.skippedIdentical;
         handled += outcome.postAction.deletedFiles;
         conflicts.push(...outcome.conflicts);
+        undelivered.push(...outcome.undelivered);
       }
       const parts: string[] = [];
       if (exported > 0) parts.push(`${exported} exported`);
@@ -217,6 +222,10 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       if (handled > 0) parts.push(`${handled} originals handled`);
       if (conflicts.length > 0)
         parts.push(`CONFLICT: ${conflicts.join(", ")} differs — those items untouched`);
+      if (undelivered.length > 0)
+        parts.push(
+          `FAILED: could not write ${undelivered.join(", ")} — those items untouched`,
+        );
       set({ message: parts.join(" · ") || "Nothing to do" });
       await useItemsStore.getState().refresh();
       const { useSectionsStore } = await import("./sections-store");

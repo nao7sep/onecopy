@@ -195,6 +195,12 @@ pub struct MoveOutOutcome {
     /// auto-suffixed; the post-action does not run when a conflict blocks the
     /// primary.
     pub conflicts: Vec<String>,
+    /// Files that could not be written at all — every source copy failed to
+    /// read or the destination refused the write (a full disk is the common
+    /// case). Distinct from `conflicts`, which means the destination already
+    /// holds different content; this failure leaves NOTHING at the target and
+    /// previously had no way to be expressed at all.
+    pub undelivered: Vec<String>,
     pub post_action: DeleteOutcome,
 }
 
@@ -310,13 +316,29 @@ pub fn move_out(
             .to_string();
         let expected = group[0].2.clone();
         // Companions are other-file tier — never provisional.
-        let _ = deliver_one(
-            conn,
-            &group,
-            expected.as_deref(),
-            &dest_dir.join(target_name),
-            &mut outcome,
-        )?;
+        let target = dest_dir.join(&target_name);
+        let companion = deliver_one(conn, &group, expected.as_deref(), &target, &mut outcome)?;
+        if !companion.ok {
+            // A conflict already recorded itself; a total copy failure did not,
+            // so record it here — otherwise this branch reports nothing at all.
+            if !outcome
+                .conflicts
+                .iter()
+                .any(|c| c == &target.to_string_lossy())
+            {
+                outcome.undelivered.push(target.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    // The item and its companions move as ONE unit, so an undelivered
+    // companion withholds the post-action exactly as an undelivered primary
+    // does. Deleting the source of a file that never reached the destination
+    // destroys it, and companions (RAW, sidecars) are never their own grid
+    // row — the loss would be invisible in the UI and unrecoverable under
+    // MoveDeleteRest.
+    if !outcome.conflicts.is_empty() || !outcome.undelivered.is_empty() {
+        return Ok(outcome);
     }
 
     // Post-action over the originals (the item + companions as one unit).
