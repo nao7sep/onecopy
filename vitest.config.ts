@@ -19,7 +19,9 @@ export default defineConfig({
   test: {
     environment: "node",
     setupFiles: ["./tests/setup.ts"],
-    include: ["tests/**/*.test.ts"],
+    // .tsx is included because component specs render real React; without it
+    // every *.test.tsx is silently skipped rather than reported as failing.
+    include: ["tests/**/*.test.{ts,tsx}"],
     coverage: {
       // V8's native coverage for the frontend (the Rust backend has its own
       // cargo-llvm-cov pass). `include` spans src so the report flags logic no

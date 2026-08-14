@@ -9,3 +9,48 @@ import { vi } from "vitest";
 if (typeof globalThis.navigator === "undefined") {
   vi.stubGlobal("navigator", { platform: "", userAgent: "" });
 }
+
+// Tauri is faked for the whole suite from here, because this is the only place
+// a `vi.mock` reaches every spec file — registering them per-spec would drift.
+// The doubles and their controls live in tests/mocks/tauri.ts; each factory
+// pulls from that one module so a spec and its mock share the same state.
+// Specs opt in by importing the controls, not by re-registering the mock.
+
+vi.mock("@tauri-apps/api/core", async () => {
+  const m = await import("./mocks/tauri");
+  return { invoke: m.invoke, convertFileSrc: m.convertFileSrc };
+});
+
+vi.mock("@tauri-apps/api/event", async () => {
+  const m = await import("./mocks/tauri");
+  return { listen: m.listen, emit: m.emit };
+});
+
+vi.mock("@tauri-apps/api/window", async () => {
+  const m = await import("./mocks/tauri");
+  return {
+    getCurrentWindow: m.getCurrentWindow,
+    availableMonitors: m.availableMonitors,
+    LogicalSize: m.LogicalSize,
+  };
+});
+
+vi.mock("@tauri-apps/api/webview", async () => {
+  const m = await import("./mocks/tauri");
+  return { getCurrentWebview: m.getCurrentWebview };
+});
+
+vi.mock("@tauri-apps/api/webviewWindow", async () => {
+  const m = await import("./mocks/tauri");
+  return { WebviewWindow: m.WebviewWindow };
+});
+
+vi.mock("@tauri-apps/plugin-dialog", async () => {
+  const m = await import("./mocks/tauri");
+  return { open: m.openDialog };
+});
+
+vi.mock("@tauri-apps/plugin-opener", async () => {
+  const m = await import("./mocks/tauri");
+  return { openPath: m.openPath, openUrl: m.openUrl };
+});

@@ -63,6 +63,7 @@ export default function App() {
   const scanning = useSectionsStore((s) => s.scanning);
   const progress = useSectionsStore((s) => s.progress);
   const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
+  const itemsMessage = useItemsStore((s) => s.message);
   const loadCounts = useSectionsStore((s) => s.loadCounts);
   const startScan = useSectionsStore((s) => s.startScan);
   const selected = useItemsStore((s) => s.selected);
@@ -627,7 +628,14 @@ export default function App() {
         {/* Standing STATE stays glanceable in the status bar; the actions
             live in the menu (app-chrome: a curated summary surface). */}
         <span>
-          {scanning ? (
+          {/* A failed delete outranks standing state: it is the one thing the
+              user just did that did not happen, and silence there reads as
+              "Delete does nothing". */}
+          {itemsMessage ? (
+            <span className="text-danger" title={itemsMessage}>
+              {itemsMessage}
+            </span>
+          ) : scanning ? (
             progress
           ) : rescanNeeded ? (
             <span
