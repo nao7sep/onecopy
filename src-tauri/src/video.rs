@@ -160,8 +160,16 @@ pub fn derive_videos_pending(
             // Poster at 15% through the shared image pipeline.
             let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()));
             extract_frame(ffmpeg, src, duration_ms * 15 / 100, &staged)?;
-            let poster_result =
-                preview::generate_for_image(&staged, &hash, cache, thumb_edge, preview_long_edge);
+            // The staged poster is a plain JPEG, so the image crate opens it
+            // directly — no ffmpeg needed for the decode half.
+            let poster_result = preview::generate_for_image(
+                &staged,
+                &hash,
+                cache,
+                thumb_edge,
+                preview_long_edge,
+                None,
+            );
             let _ = std::fs::remove_file(&staged);
             poster_result?;
 

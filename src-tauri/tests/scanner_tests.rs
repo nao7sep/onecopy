@@ -21,7 +21,17 @@ fn resolution_config() -> ResolutionConfig {
     ResolutionConfig {
         default_timezone: chrono_tz::Asia::Tokyo,
         good_range_start_year: 1995,
-        now_ms: 1_786_492_800_000, // 2026-08-08T00:00:00Z
+        // The real clock, deliberately: these tests resolve files THIS test
+        // just wrote, so their filesystem timestamps are always "now". A
+        // frozen now_ms puts the good range's now+1day ceiling in the past
+        // the day after it is written, and every filesystem-timestamp
+        // resolution silently becomes Undated. (The pure engine's own tests
+        // in resolution_tests.rs do freeze it — their evidence is synthetic,
+        // so freezing is what makes them deterministic there.)
+        now_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after 1970")
+            .as_millis() as i64,
     }
 }
 

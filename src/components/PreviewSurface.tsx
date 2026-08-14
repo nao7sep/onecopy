@@ -73,8 +73,8 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
 }
 
 /** An image whose missing/undecodable preview reads as words, never as the
- * webview's broken-image icon (HEIC before its decoder lands; a not-yet-
- * derived file the scan hasn't reached). */
+ * webview's broken-image icon (a file the scan hasn't reached yet; a HEIC or
+ * AVIF still waiting on the ffmpeg install that decodes it). */
 function ImageSurface({ hash, fileName }: { hash: string; fileName: string }) {
   const [failed, setFailed] = useState(false);
   if (failed) {

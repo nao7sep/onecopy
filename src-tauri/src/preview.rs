@@ -16,8 +16,10 @@
 //! here because the decoded pixels are already in hand — it orders a similar
 //! group best-first later, advisory only.
 //!
-//! HEIC/HEIF decoding is a separate task (libheif); until it lands those files
-//! fail to decode here and surface as issues, never silent skips.
+//! The formats the `image` crate cannot open — the HEIF family and AVIF —
+//! decode through the managed ffmpeg instead (no system dependency on the
+//! default path). Without ffmpeg those files are left BLOCKED rather than
+//! failed, so installing it later derives them instead of stranding them.
 
 use std::path::{Path, PathBuf};
 
@@ -66,6 +68,72 @@ pub struct DerivedFacts {
     pub phash: u64,
 }
 
+/// Marks an image row whose format needs the managed ffmpeg while ffmpeg is
+/// absent. Distinct from `failed`: the file is fine and nothing about it has
+/// to change — installing ffmpeg is enough for the next pass to derive it.
+pub const NEEDS_FFMPEG: &str = "needs-ffmpeg";
+
+/// Extensions the `image` crate cannot decode, which route through the
+/// managed ffmpeg instead. Measured against image 0.25 and ffmpeg 9.0
+/// (2026-08-14): the crate rejects heic/heif/hif as an unrecognized format
+/// and reports AVIF unsupported, while ffmpeg decodes all four. Every one of
+/// them is a declared supported extension, so without this route they are
+/// permanent decode failures.
+pub fn needs_ffmpeg_decode(src: &Path) -> bool {
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    matches!(ext.as_str(), "heic" | "heif" | "hif" | "avif")
+}
+
+/// Decodes one still through the managed ffmpeg, for the formats above.
+///
+/// The frame comes back over a pipe as BMP and nothing is staged on disk.
+/// BMP is bit-identical to ffmpeg's PNG output (verified by PSNR) and 3.8×
+/// faster to produce on photographic content — 379 ms against 1437 ms for a
+/// 12 MP still — because neither side pays a compression pass.
+///
+/// ffmpeg applies the file's display orientation ITSELF, from HEIF `irot`
+/// and from EXIF alike, and `-noautorotate` does not suppress it. The frame
+/// therefore arrives upright and its EXIF orientation must NOT be applied a
+/// second time: an Apple HEIC carries both the `irot` property and a
+/// matching EXIF `Orientation` describing the SAME rotation, so re-applying
+/// it would turn every rotated photo a further 90°.
+fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> {
+    logging::debug(
+        "ffmpeg invocation",
+        serde_json::json!({ "op": "decode-still", "src": src.to_string_lossy() }),
+    );
+    let output = std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(src)
+        .args(["-frames:v", "1", "-f", "image2pipe", "-c:v", "bmp", "-"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() || output.stdout.is_empty() {
+        // The recent-output tail, bounded — the whole point is diagnosing
+        // this one file, not carrying an ffmpeg essay into a DB column.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr.trim();
+        let tail = &tail[tail.len().saturating_sub(200)..];
+        return Err(format!("ffmpeg could not decode this format: {tail}"));
+    }
+    image::load_from_memory(&output.stdout).map_err(|e| e.to_string())
+}
+
+/// Decodes `src`, returning the image alongside the EXIF orientation still
+/// to apply — always 1 for an ffmpeg decode, which arrives upright already.
+fn decode_image(src: &Path, ffmpeg: Option<&Path>) -> Result<(DynamicImage, u16), String> {
+    if needs_ffmpeg_decode(src) {
+        let ffmpeg = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
+        return Ok((decode_via_ffmpeg(ffmpeg, src)?, 1));
+    }
+    let decoded = image::open(src).map_err(|e| e.to_string())?;
+    Ok((decoded, read_orientation(src)))
+}
+
 /// Decodes one image, applies its EXIF orientation, writes the thumbnail and
 /// preview cache entries, and returns the oriented dimensions + sharpness.
 pub fn generate_for_image(
@@ -74,9 +142,9 @@ pub fn generate_for_image(
     cache: &CachePaths,
     thumb_edge: u32,
     preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
 ) -> Result<DerivedFacts, String> {
-    let orientation = read_orientation(src);
-    let decoded = image::open(src).map_err(|e| e.to_string())?;
+    let (decoded, orientation) = decode_image(src, ffmpeg)?;
     derive_from_decoded(decoded, orientation, src, hash, cache, thumb_edge, preview_long_edge)
 }
 
@@ -89,7 +157,26 @@ pub fn generate_for_image_teeing(
     cache: &CachePaths,
     thumb_edge: u32,
     preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
 ) -> Result<(String, DerivedFacts), String> {
+    if needs_ffmpeg_decode(src) {
+        // ffmpeg opens the file itself, so there is no read of ours to tee:
+        // hash it streaming (never a whole-file buffer, which for a 12 MP
+        // still is the larger cost) and let the decode read separately.
+        let real_hash = crate::hashing::full_hash(src).map_err(|e| e.to_string())?;
+        let (decoded, orientation) = decode_image(src, ffmpeg)?;
+        let facts = derive_from_decoded(
+            decoded,
+            orientation,
+            src,
+            &real_hash,
+            cache,
+            thumb_edge,
+            preview_long_edge,
+        )?;
+        return Ok((real_hash, facts));
+    }
+
     let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
     let real_hash = blake3::hash(&bytes).to_hex().to_string();
     let orientation = read_orientation(src);
@@ -147,7 +234,9 @@ fn derive_from_decoded(
 }
 
 /// Formats the webview renders directly, making the preview byte-copy safe.
-/// HEIC/TIFF/AVIF and friends stay on the WebP encode path.
+/// HEIC/TIFF/AVIF and friends stay on the WebP encode path — load-bearing for
+/// the ffmpeg-decoded formats, since byte-copying a HEIC into the cache would
+/// hand the webview the one thing it cannot display.
 fn displayable_as_is(src: &Path) -> bool {
     let ext = src
         .extension()
@@ -206,6 +295,9 @@ pub fn dhash(img: &DynamicImage) -> u64 {
 pub struct DeriveStats {
     pub derived: u64,
     pub failed: u64,
+    /// Rows left for a later pass because their format needs the managed
+    /// ffmpeg and it is not installed — waiting, not broken.
+    pub blocked_no_ffmpeg: u64,
 }
 
 /// The pending pass: derive cache entries for image contents not yet derived.
@@ -213,6 +305,11 @@ pub struct DeriveStats {
 /// failure records an issue and marks the row failed so it is not retried
 /// every run (a rescan that changes the file resets the marker via the
 /// changed-row reset in the walk).
+///
+/// A format needing the managed ffmpeg while ffmpeg is absent is marked
+/// `needs-ffmpeg` instead of failed — no issue row, because nothing is wrong
+/// with the file — and this pass picks those rows back up as soon as ffmpeg
+/// is present, which is what makes the wizard's skippable offer honest.
 ///
 /// The decode/encode work runs on rayon across chunks (SQLite writes stay on
 /// this thread), `progress` — when given — reports (done, total) after each
@@ -224,18 +321,26 @@ pub fn derive_images_pending(
     cache: &CachePaths,
     thumb_edge: u32,
     preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
     progress: Option<&dyn Fn(u64, u64)>,
 ) -> Result<DeriveStats, String> {
     use rayon::prelude::*;
 
     let mut stats = DeriveStats::default();
 
+    // With ffmpeg present the rows it previously blocked come back into the
+    // pass; without it they are left alone rather than re-marked every scan.
+    let pending_clause = if ffmpeg.is_some() {
+        format!("(c.derived_at_utc IS NULL OR c.derived_at_utc = '{NEEDS_FFMPEG}')")
+    } else {
+        "c.derived_at_utc IS NULL".to_string()
+    };
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT c.hash, (SELECT p.abs_path FROM paths p \
              WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-             FROM contents c WHERE c.kind = 'image' AND c.derived_at_utc IS NULL",
-        )
+             FROM contents c WHERE c.kind = 'image' AND {pending_clause}"
+        ))
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?)))
@@ -259,6 +364,8 @@ pub fn derive_images_pending(
             .map(|(hash, path)| {
                 if crate::scanner::cancelled() {
                     (hash, path, Err(crate::scanner::CANCELLED.to_string()))
+                } else if ffmpeg.is_none() && needs_ffmpeg_decode(Path::new(path)) {
+                    (hash, path, Err(NEEDS_FFMPEG.to_string()))
                 } else if crate::scanner::is_provisional(hash) {
                     // The decode reads every byte anyway — tee the REAL hash
                     // out of the same read and derive under it; the writer
@@ -271,6 +378,7 @@ pub fn derive_images_pending(
                             cache,
                             thumb_edge,
                             preview_long_edge,
+                            ffmpeg,
                         )
                         .map(|(real, facts)| (Some(real), facts)),
                     )
@@ -284,6 +392,7 @@ pub fn derive_images_pending(
                             cache,
                             thumb_edge,
                             preview_long_edge,
+                            ffmpeg,
                         )
                         .map(|facts| (None, facts)),
                     )
@@ -320,6 +429,18 @@ pub fn derive_images_pending(
                 Err(err) if err == crate::scanner::CANCELLED => {
                     // Skipped by the cancel — no checkpoint, no issue; the
                     // row stays pending for the next pass.
+                }
+                Err(err) if err == NEEDS_FFMPEG => {
+                    // Waiting on a tool, not a bad file: no issue row, and
+                    // the marker keeps it out of every pass until ffmpeg
+                    // arrives (without it the startup resume would fire on
+                    // work it cannot do, every launch).
+                    stats.blocked_no_ffmpeg += 1;
+                    conn.execute(
+                        "UPDATE contents SET derived_at_utc = ?2 WHERE hash = ?1",
+                        params![hash, NEEDS_FFMPEG],
+                    )
+                    .map_err(|e| e.to_string())?;
                 }
                 Err(err) => {
                     stats.failed += 1;

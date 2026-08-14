@@ -320,6 +320,27 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
 // checkpointed pending rows. A cancelled run (app exit) reports as
 // `scan://done { cancelled: true }`, never as an error — the pending rows are
 // the resume point, and the next launch picks them up.
+/// Whether checkpointed work is waiting and worth resuming — the one probe
+/// behind both resume triggers, the startup one and the ffmpeg install that
+/// unblocks formats it alone can decode. A failed probe is logged and read as
+/// "no": a resume is a convenience, never a gate on anything.
+fn scan_resume_wanted(data_root: &std::path::Path) -> bool {
+    let ffmpeg_present = binaries_manager::ffmpeg_path(data_root).is_file();
+    let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) else {
+        return false;
+    };
+    match scanner::pending_work_exists(&conn, ffmpeg_present) {
+        Ok(pending) => pending,
+        Err(err) => {
+            logging::warn(
+                "pending-work probe failed",
+                json!({ "error": { "message": err } }),
+            );
+            false
+        }
+    }
+}
+
 fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
     if SCAN_RUNNING.swap(true, Ordering::SeqCst) {
         return Ok(false);
@@ -878,6 +899,15 @@ fn binaries_install(app: AppHandle) -> Result<(), String> {
         match binaries_manager::install_or_update(&data_root, emit) {
             Ok(facts) => {
                 let _ = handle.emit("binaries://done", json!({ "facts": facts }));
+                // Installing ffmpeg IS the remedy for everything it blocked —
+                // HEIC/AVIF stills and every video — so pick that work up now
+                // rather than leaving the library on placeholder tiles until
+                // the next launch. The same tail-only resume the startup path
+                // runs, and its single-run guard makes it a no-op mid-scan.
+                if scan_resume_wanted(&data_root) {
+                    logging::info("scan resumed after ffmpeg install", json!({}));
+                    let _ = spawn_scan(handle.clone(), false);
+                }
             }
             Err(err) => {
                 logging::warn("ffmpeg install failed", json!({ "error": { "message": err.clone() } }));
@@ -1192,20 +1222,9 @@ pub fn run() {
             // rows (unhashed media, underived images/videos); pick the work
             // back up without waiting for the user to press Scan. Runs only
             // the pipeline tail — no walk — and no-ops on a clean index.
-            if let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
-                match scanner::pending_work_exists(&conn, ffmpeg_present) {
-                    Ok(true) => {
-                        logging::info("scan resumed at startup", json!({}));
-                        let _ = spawn_scan(app.handle().clone(), false);
-                    }
-                    Ok(false) => {}
-                    Err(err) => {
-                        logging::warn(
-                            "pending-work probe failed",
-                            json!({ "error": { "message": err } }),
-                        );
-                    }
-                }
+            if scan_resume_wanted(&data_root) {
+                logging::info("scan resumed at startup", json!({}));
+                let _ = spawn_scan(app.handle().clone(), false);
             }
 
             logging::info(

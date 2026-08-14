@@ -234,6 +234,17 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     )? {
         return Ok(true);
     }
+    // Stills blocked on ffmpeg become derivable the moment it lands, so they
+    // are pending work then and inert before — the same gate the videos use.
+    if ffmpeg_present
+        && probe(&format!(
+            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
+             AND derived_at_utc = '{}')",
+            crate::preview::NEEDS_FFMPEG
+        ))?
+    {
+        return Ok(true);
+    }
     if ffmpeg_present
         && probe(
             "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'video' AND derived_at_utc IS NULL)",
@@ -291,13 +302,21 @@ pub fn run_pipeline_tail(
         &cache,
         settings.thumb_edge,
         settings.preview_long_edge,
+        settings.ffmpeg.as_deref(),
         Some(&per_item),
     )?;
     summary.derived = derive_stats.derived;
     summary.derive_failed = derive_stats.failed;
     progress(
         "derive",
-        format!("{} previews, {} failures", derive_stats.derived, derive_stats.failed),
+        if derive_stats.blocked_no_ffmpeg > 0 {
+            format!(
+                "{} previews, {} failures, {} waiting for ffmpeg",
+                derive_stats.derived, derive_stats.failed, derive_stats.blocked_no_ffmpeg
+            )
+        } else {
+            format!("{} previews, {} failures", derive_stats.derived, derive_stats.failed)
+        },
     );
 
     let video_stats = crate::video::derive_videos_pending(

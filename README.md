@@ -11,7 +11,7 @@ Similarity grouping and the best-shot ordering are deliberately best-effort — 
 ## Requirements
 
 - To run: macOS (Apple silicon) or Windows 10/11. Extra monitors are optional but make the similar-photos comparison view considerably better.
-- Video posters, snapshot strips, and playback use ffmpeg, which the app downloads and manages itself (free; one click in *Managed tools*). Photos work without it.
+- Video posters, snapshot strips, and playback use ffmpeg, which the app downloads and manages itself (free; one click in *Managed tools*). So do iPhone photos (HEIC) and AVIF, which makes it effectively required for a phone library; JPEG, PNG and the other everyday formats need nothing. Files waiting on ffmpeg show placeholders and start working the moment you install it — you are never asked to rescan.
 - To build from source: Node.js (LTS) and stable Rust.
 
 ## Download
