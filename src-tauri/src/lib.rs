@@ -324,18 +324,51 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
 /// unblocks formats it alone can decode. A failed probe is logged and read as
 /// "no": a resume is a convenience, never a gate on anything.
 fn scan_resume_wanted(data_root: &std::path::Path) -> bool {
+    resume_plan(data_root).0
+}
+
+/// `(resume_wanted, needs_walk)`. A root whose walk was interrupted must be
+/// RE-WALKED, not just tailed: `pending_work_exists` probes rows, and a
+/// cancelled walk leaves whole directories with no rows at all, so once the
+/// tail drains what the partial walk created it reports clean forever while
+/// months stay silently empty.
+fn resume_plan(data_root: &std::path::Path) -> (bool, bool) {
     let ffmpeg_present = binaries_manager::ffmpeg_path(data_root).is_file();
     let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) else {
-        return false;
+        return (false, false);
     };
+    let roots = match storage::load_config_source_dirs(data_root) {
+        Ok(roots) => roots,
+        Err(err) => {
+            logging::warn(
+                "source dirs unreadable for resume",
+                json!({ "error": { "message": err } }),
+            );
+            Vec::new()
+        }
+    };
+    let needs_walk = !roots.is_empty()
+        && match scanner::walk_owed(&conn, &roots) {
+            Ok(owed) => owed,
+            Err(err) => {
+                logging::warn(
+                    "walk-owed probe failed",
+                    json!({ "error": { "message": err } }),
+                );
+                false
+            }
+        };
+    if needs_walk {
+        return (true, true);
+    }
     match scanner::pending_work_exists(&conn, ffmpeg_present) {
-        Ok(pending) => pending,
+        Ok(pending) => (pending, false),
         Err(err) => {
             logging::warn(
                 "pending-work probe failed",
                 json!({ "error": { "message": err } }),
             );
-            false
+            (false, false)
         }
     }
 }
@@ -1237,11 +1270,14 @@ pub fn run() {
 
             // Auto-resume: an interrupted scan leaves checkpointed pending
             // rows (unhashed media, underived images/videos); pick the work
-            // back up without waiting for the user to press Scan. Runs only
-            // the pipeline tail — no walk — and no-ops on a clean index.
-            if scan_resume_wanted(&data_root) {
-                logging::info("scan resumed at startup", json!({}));
-                let _ = spawn_scan(app.handle().clone(), false);
+            // back up without waiting for the user to press Scan. Includes the
+            // WALK when a root was never walked to completion — the tail alone
+            // cannot recover directories that have no rows at all, and would
+            // otherwise report clean forever over a half-indexed library.
+            let (resume, needs_walk) = resume_plan(&data_root);
+            if resume {
+                logging::info("scan resumed at startup", json!({ "walk": needs_walk }));
+                let _ = spawn_scan(app.handle().clone(), needs_walk);
             }
 
             logging::info(

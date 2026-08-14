@@ -58,8 +58,18 @@ void (async () => {
         progress: `${event.payload.phase}: ${event.payload.detail}`,
       });
     });
-    await listen("scan://done", () => {
-      useSectionsStore.setState({ scanning: false, progress: "" });
+    await listen<{ cancelled?: boolean }>("scan://done", (event) => {
+      // A cancelled scan is NOT a clean finish: the walk stopped partway, so
+      // whole directories may still be unread and the counts below understate
+      // the library. The next launch re-walks (the root stays walk-owed), but
+      // saying nothing here is what made "months look emptier than I know they
+      // are" impossible to attribute.
+      const cancelled = event.payload?.cancelled === true;
+      useSectionsStore.setState({
+        scanning: false,
+        progress: "",
+        rescanNeeded: cancelled || useSectionsStore.getState().rescanNeeded,
+      });
       void useSectionsStore.getState().loadCounts();
       // The open section may have gained or lost items; the issues count may
       // have grown.

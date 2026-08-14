@@ -217,6 +217,29 @@ pub fn run_full_scan(
 /// while ffmpeg is present — without it the video stage would skip them again,
 /// and a resume that can do nothing must not fire on every launch. Cheap
 /// (three indexed EXISTS probes), so callers may use it as a gate.
+/// Whether any configured root still owes a full walk — it has never been
+/// walked to completion, or a walk over it was interrupted. This is the one
+/// thing `pending_work_exists` cannot see: its probes are all row-level, so
+/// once the tail drains the rows a partial walk created, it reports clean
+/// forever while whole directories remain unread.
+pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
+    for root in roots {
+        let complete: Option<bool> = conn
+            .query_row(
+                "SELECT last_completed_at_utc IS NOT NULL AND dirty = 0 \
+                 FROM scan_dirs WHERE root = ?1",
+                params![root],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if complete != Some(true) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bool, String> {
     let probe = |sql: &str| -> Result<bool, String> {
         conn.query_row(sql, [], |r| r.get::<_, i64>(0))
@@ -488,6 +511,19 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
     let mut stats = WalkStats::default();
     let root_str = root.to_string_lossy().to_string();
     let scanned_at = logging::now_iso_millis();
+
+    // Claim the root as walk-in-flight. `upsert_file` writes in autocommit, so
+    // a cancelled walk leaves its prefix committed and the rest of the root
+    // simply absent from `paths` — and nothing about a row can express "this
+    // directory was never read". Only the completion write below clears this,
+    // so an interrupted walk stays owed and the next launch re-walks instead
+    // of running the tail over a permanently half-indexed library.
+    conn.execute(
+        "INSERT INTO scan_dirs (root, dirty) VALUES (?1, 1) \
+         ON CONFLICT(root) DO UPDATE SET dirty = 1",
+        params![root_str],
+    )
+    .map_err(|e| e.to_string())?;
 
     // Collect the currently-present set to diff against the DB afterwards.
     let mut present: Vec<String> = Vec::new();

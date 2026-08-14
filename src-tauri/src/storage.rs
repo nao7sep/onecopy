@@ -134,6 +134,24 @@ pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
     })
 }
 
+/// The configured source roots, read straight from `config.json` under a data
+/// root. Used by the startup resume, which decides before any AppHandle-bound
+/// load and needs only this one key.
+pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> {
+    let config = read_json_optional(&data_root.join(CONFIG_FILE_NAME))?;
+    Ok(config
+        .as_ref()
+        .and_then(|c| c.get("sourceDirs"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// Patch-merges into `config.json` and returns the merged document. The core
 /// holds the file, so it is the one owner of the read-modify-write — the
 /// frontend sends only the keys it changes, and a stale cached copy in one

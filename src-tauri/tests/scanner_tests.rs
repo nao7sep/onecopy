@@ -471,3 +471,53 @@ fn replacing_a_provisionally_identified_file_resets_its_content_facts() {
     assert_eq!(strip, None, "the old strip must not be inherited");
     assert_eq!(phash, None, "the old appearance must not be inherited");
 }
+
+#[test]
+fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
+    let f = fixture("walk-owed");
+    let root_str = f.root.to_string_lossy().to_string();
+    let roots = vec![root_str.clone()];
+
+    // Never walked: owed.
+    assert!(walk_owed(&f.conn, &roots).unwrap(), "an unwalked root is owed");
+
+    for name in ["a.jpg", "b.jpg", "c.jpg"] {
+        std::fs::write(f.root.join(name), name.as_bytes()).unwrap();
+    }
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert!(
+        !walk_owed(&f.conn, &roots).unwrap(),
+        "a completed walk settles the debt"
+    );
+
+    // Exactly the state a cancelled walk leaves behind: walk_root claims the
+    // root with dirty = 1 at its start, and only the completion write clears
+    // it, so an abort between the two leaves this row. (The global cancel flag
+    // is deliberately not used here — it is process-wide, and setting it would
+    // abort every other test running in parallel.)
+    f.conn
+        .execute(
+            "UPDATE scan_dirs SET dirty = 1 WHERE root = ?1",
+            rusqlite::params![root_str],
+        )
+        .unwrap();
+    assert!(
+        walk_owed(&f.conn, &roots).unwrap(),
+        "an interrupted walk stays owed — the tail cannot recover unread directories"
+    );
+
+    // Draining the tail must NOT clear the debt: pending_work_exists is
+    // row-level and sees nothing wrong with rows that were never created.
+    hash_pending(&f.conn, &test_cache(&f)).unwrap();
+    assert!(
+        walk_owed(&f.conn, &roots).unwrap(),
+        "the tail draining rows does not mean the root was walked"
+    );
+
+    // Only a completed walk clears it.
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert!(
+        !walk_owed(&f.conn, &roots).unwrap(),
+        "re-walking settles it again"
+    );
+}
