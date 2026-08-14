@@ -160,13 +160,22 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   finish: async () => {
     const { dirs, timezone, cacheDir } = get();
     try {
-      // A patch of exactly the wizard's three keys through the one config
+      // The cache root is a live process-wide value, not just a config key:
+      // `patch_config` never touches it, so writing cacheDir straight into
+      // config leaves derives going to the NEW directory while every
+      // mediacache:// request still reads the OLD one — the whole grid stays
+      // on placeholders until the next launch. `move_cache` is the only call
+      // that commits both, so it owns the key here exactly as it does in
+      // Settings, and cacheDir is kept out of the patch below.
+      if (cacheDir !== null) {
+        await invoke("move_cache", { newDir: cacheDir });
+      }
+      // A patch of exactly the wizard's remaining keys through the one config
       // owner; everything else in config.json stays untouched.
       const { useAppStore } = await import("./app-store");
       await useAppStore.getState().patchConfig({
         sourceDirs: dirs.map((d) => d.path),
         defaultTimezone: timezone,
-        cacheDir,
       });
       set({ open: false });
       log.info("wizard finished", { sourceDirs: dirs.length });
