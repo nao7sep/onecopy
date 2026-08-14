@@ -424,6 +424,26 @@ pub fn upsert_file(
             Ok(Upsert::Unchanged)
         }
         Some(_) => {
+            // A provisional key is `p<path_id>` — derived from the path, not
+            // the bytes — so an in-place replacement regenerates the SAME key.
+            // Left alone, the old contents row hands the new file the previous
+            // file's facts: byte_size, phash, sharpness, strip_frames and,
+            // fatally, derived_at_utc, which makes both derive passes skip it
+            // for the life of the index. That is why re-saving a trimmed clip
+            // kept showing the old poster and strip, and why a rescan did not
+            // fix it. Captured here, dropped after the row detaches below —
+            // paths.content_hash is a foreign key into contents, so deleting
+            // first is a constraint violation.
+            let stale_provisional: Option<String> = conn
+                .query_row(
+                    "SELECT content_hash FROM paths WHERE abs_path = ?1",
+                    [&abs],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .flatten()
+                .filter(|hash| is_provisional(hash));
             conn.execute(
                 "UPDATE paths SET size = ?2, mtime_ms = ?3, birthtime_ms = ?4, ext = ?5, \
                  kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
@@ -432,6 +452,16 @@ pub fn upsert_file(
                 params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem],
             )
             .map_err(|e| e.to_string())?;
+            // Only a row nothing else references: a provisional key that was
+            // promoted and is now shared by real copies must survive.
+            if let Some(hash) = stale_provisional {
+                conn.execute(
+                    "DELETE FROM contents WHERE hash = ?1 \
+                       AND NOT EXISTS (SELECT 1 FROM paths WHERE content_hash = ?1)",
+                    [&hash],
+                )
+                .map_err(|e| e.to_string())?;
+            }
             Ok(Upsert::Updated)
         }
         None => {

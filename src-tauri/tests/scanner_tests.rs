@@ -420,3 +420,54 @@ fn a_companion_unpairs_when_its_primary_disappears() {
         "an orphaned companion must unpair"
     );
 }
+
+#[test]
+fn replacing_a_provisionally_identified_file_resets_its_content_facts() {
+    let f = fixture("provisional-replace");
+    // A unique-size video: the ladder never reads it, so it rests on a
+    // provisional `p<path_id>` identity — the normal state for videos, since
+    // derive_videos_pending never promotes.
+    std::fs::write(f.root.join("clip.mov"), vec![7u8; 500]).unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    hash_pending(&f.conn, &test_cache(&f)).unwrap();
+
+    let key: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'clip.mov'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(key.starts_with('p'), "unique-size video is provisional");
+
+    // Stand in for a completed derive: poster, strip and measurements.
+    f.conn
+        .execute(
+            "UPDATE contents SET derived_at_utc = 'done', strip_frames = 5, phash = 1, \
+             sharpness = 2.0, duration_ms = 1000 WHERE hash = ?1",
+            rusqlite::params![key],
+        )
+        .unwrap();
+
+    // The user trims the clip in QuickTime and saves over it: same path, new
+    // bytes, new length.
+    std::fs::write(f.root.join("clip.mov"), vec![9u8; 900]).unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    hash_pending(&f.conn, &test_cache(&f)).unwrap();
+
+    let (size, derived, strip, phash): (i64, Option<String>, Option<i64>, Option<i64>) = f
+        .conn
+        .query_row(
+            "SELECT byte_size, derived_at_utc, strip_frames, phash FROM contents \
+             WHERE hash = (SELECT content_hash FROM paths WHERE file_name = 'clip.mov')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+
+    assert_eq!(size, 900, "the new file's size, not the old one's");
+    assert_eq!(derived, None, "the derive must run again");
+    assert_eq!(strip, None, "the old strip must not be inherited");
+    assert_eq!(phash, None, "the old appearance must not be inherited");
+}
