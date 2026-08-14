@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import ComparisonSlot from "./ComparisonSlot";
 import ZoomableImage from "./ZoomableImage";
 import {
-  SLOT_KEYS,
+  slotIndexForKey,
   chunkSlots,
   useComparisonStore,
 } from "../state/comparison-store";
@@ -44,8 +44,7 @@ export default function ComparisonView() {
         }
         return;
       }
-      const key = event.key.toLowerCase();
-      const slotIndex = (SLOT_KEYS as readonly string[]).indexOf(key);
+      const slotIndex = slotIndexForKey(event);
       if (slotIndex >= 0) {
         event.preventDefault();
         toggleKeep(slotIndex);

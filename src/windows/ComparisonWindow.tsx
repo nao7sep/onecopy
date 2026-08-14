@@ -32,7 +32,15 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         return;
       }
       event.preventDefault();
-      void emit("comparison://key", { key: event.key, shiftKey: event.shiftKey });
+      // Modifiers ride along: without them the receiver cannot tell Cmd+0
+      // from a bare slot-0 press, and forwarding strips the distinction.
+      void emit("comparison://key", {
+        key: event.key,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+      });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {

@@ -31,6 +31,28 @@ export const SLOT_KEYS = [
   "a", "b", "c", "d", "e", "f",
 ] as const;
 
+/** The slot a keydown selects, or -1 for "not a slot key".
+ *
+ * Slot keys are bare single characters, so several collide with app commands:
+ * SLOT_KEYS[9] is "0" (Cmd/Ctrl+0 resets zoom) and "a" is a slot (Ctrl+A). A
+ * modified key always belongs to the other command — flipping a keeper flag
+ * there is silent, because the zoom relayout in the same frame hides the badge
+ * change, and the next Enter deletes the photo the user meant to keep.
+ *
+ * Both key paths route through this one function: the local handler in the
+ * comparison view, and keys forwarded from a secondary comparison window. */
+export function slotIndexForKey(event: {
+  key: string;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+}): number {
+  if (event.metaKey === true || event.ctrlKey === true || event.altKey === true) {
+    return -1;
+  }
+  return (SLOT_KEYS as readonly string[]).indexOf(event.key.toLowerCase());
+}
+
 /** What the secondary windows render: contiguous chunks of the slot list,
  * each entry carrying its GLOBAL slot key so 1–9/0/A–F stay one key space. */
 export interface ComparisonBroadcast {
@@ -295,15 +317,20 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
 void (async () => {
   try {
     if (getCurrentWindow().label !== "main") return;
-    await listen<{ key: string; shiftKey: boolean }>("comparison://key", (event) => {
+    await listen<{
+      key: string;
+      shiftKey: boolean;
+      metaKey?: boolean;
+      ctrlKey?: boolean;
+      altKey?: boolean;
+    }>("comparison://key", (event) => {
       const store = useComparisonStore.getState();
       if (!store.open) return;
       // A modal open in the main window owns the keyboard for forwarded
       // keys too — a secondary screen's Escape must not tear the session
       // down from under an open dialog.
       if (hasOpenModal()) return;
-      const key = event.payload.key.toLowerCase();
-      const slotIndex = (SLOT_KEYS as readonly string[]).indexOf(key);
+      const slotIndex = slotIndexForKey(event.payload);
       if (slotIndex >= 0) {
         store.toggleKeep(slotIndex);
       } else if (event.payload.key === "Enter") {
