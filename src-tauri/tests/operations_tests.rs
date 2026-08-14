@@ -234,10 +234,15 @@ fn unhashed_other_files_delete_by_path_id() {
     let f = fixture("by-path");
     std::fs::write(f.root.join("unique.bin"), vec![9u8; 77]).unwrap();
     scan(&f);
-    let path_id: i64 = f
+    let (path_id, hash): (i64, Option<String>) = f
         .conn
-        .query_row("SELECT id FROM paths LIMIT 1", [], |r| r.get(0))
+        .query_row("SELECT id, content_hash FROM paths LIMIT 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .unwrap();
+    // The premise the name rests on: an other-file with a unique size is never
+    // read, so it carries no hash and can only be addressed by path id.
+    assert_eq!(hash, None, "a unique-size other-file stays unhashed");
 
     let outcome = delete_item(
         &f.conn,
@@ -249,6 +254,22 @@ fn unhashed_other_files_delete_by_path_id() {
     .unwrap();
     assert_eq!(outcome.deleted_files, 1);
     assert!(!f.root.join("unique.bin").exists());
+
+    // The index must forget it, and the file must be recoverable.
+    let rows: i64 = f
+        .conn
+        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "the path row is removed, not left behind");
+    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+        .expect("the trash root exists")
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .expect("one day folder");
+    let manifest = std::fs::read_to_string(day_dir.join("manifest.jsonl")).unwrap();
+    let line: serde_json::Value = serde_json::from_str(manifest.lines().next().unwrap()).unwrap();
+    let stored = line["storedPath"].as_str().unwrap();
+    assert_eq!(std::fs::read(stored).unwrap(), vec![9u8; 77]);
 }
 
 #[test]
@@ -285,8 +306,37 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
     assert!(outcome.conflicts.is_empty());
     assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"same-bytes");
     assert_eq!(std::fs::read(dest.join("x.arw")).unwrap(), b"raw-bytes");
-    // All four originals left their places (post-action trashed them).
+    // All four originals left their places (post-action trashed them). The
+    // counter alone is a value the code under test produced; what matters is
+    // that the files are actually gone AND actually recoverable.
     assert_eq!(outcome.post_action.deleted_files, 4);
+    for original in [
+        f.root.join("a").join("x.jpg"),
+        f.root.join("b").join("x.jpg"),
+        f.root.join("a").join("x.arw"),
+        f.root.join("b").join("x.arw"),
+    ] {
+        assert!(!original.exists(), "{} must be gone", original.display());
+    }
+    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+        .expect("the trash root exists")
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .expect("one day folder");
+    let manifest: Vec<serde_json::Value> =
+        std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+            .expect("a manifest was written")
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+    assert_eq!(manifest.len(), 4, "every trashed original has a manifest line");
+    for line in &manifest {
+        let stored = line["storedPath"].as_str().expect("storedPath");
+        assert!(
+            std::path::Path::new(stored).exists(),
+            "{stored} must be recoverable"
+        );
+    }
     assert!(!f.root.join("a").join("x.jpg").exists());
     assert!(!f.root.join("b").join("x.arw").exists());
     let rows: i64 = f
