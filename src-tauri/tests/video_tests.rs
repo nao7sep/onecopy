@@ -101,3 +101,65 @@ fn live_video_derive() {
         .unwrap();
     assert!((29_000..31_500).contains(&duration), "duration {duration}");
 }
+
+#[test]
+fn videos_wait_when_ffmpeg_is_absent_and_never_get_checkpointed() {
+    // The ffmpeg-skippable contract the wizard's offer rests on: a video the
+    // app cannot derive must be BLOCKED, never failed and never checkpointed,
+    // so installing ffmpeg later still picks it up. Needs no ffmpeg, so unlike
+    // the four #[ignore]d live tests this runs on every `cargo test`.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-video-noffmpeg-")
+        .tempdir()
+        .unwrap();
+    let conn = onecopy_lib::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 100, 'video')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) \
+         VALUES ('/root/clip.mov', '/root', 'clip.mov', 'video', 'v1', 0)",
+        [],
+    )
+    .unwrap();
+
+    let run = || {
+        derive_videos_pending(
+            &conn,
+            &cache,
+            None,
+            &dir.path().join("temp"),
+            320,
+            1600,
+            &config(),
+        )
+        .unwrap()
+    };
+
+    let stats = run();
+    assert!(stats.skipped_no_ffmpeg, "the skip must be reported honestly");
+    assert_eq!((stats.derived, stats.failed), (0, 0), "nothing failed");
+
+    let derived_at: Option<String> = conn
+        .query_row("SELECT derived_at_utc FROM contents WHERE hash = 'v1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        derived_at, None,
+        "a blocked video must stay pending, not be checkpointed"
+    );
+    let issues: i64 = conn
+        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(issues, 0, "nothing is wrong with the file — no issue row");
+
+    // Idempotent: a second pass behaves identically.
+    let again = run();
+    assert!(again.skipped_no_ffmpeg);
+    assert_eq!((again.derived, again.failed), (0, 0));
+    assert_eq!(issues, 0);
+}

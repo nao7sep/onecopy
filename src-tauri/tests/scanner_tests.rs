@@ -83,10 +83,15 @@ fn pending_work_probe_tracks_unhashed_media_and_underived_contents() {
 
     // Derived image: clean. An underived video counts only when ffmpeg
     // is present — a resume that could do nothing must not fire.
+    // The video needs a LIVE path of its own: a contents row nothing on disk
+    // points at can never be derived, and reporting it pending would fire a
+    // no-op resume on every launch.
     fx.conn
         .execute_batch(
             "UPDATE contents SET derived_at_utc = 'done';
-             INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 1, 'video');",
+             INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 1, 'video');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing)
+               VALUES ('/a/v.mov', '/a', 'v.mov', 'video', 'v1', 0);",
         )
         .unwrap();
     assert!(!pending_work_exists(&fx.conn, false).unwrap());
@@ -542,5 +547,62 @@ fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
     assert!(
         !walk_owed(&f.conn, &roots).unwrap(),
         "re-walking settles it again"
+    );
+}
+
+#[test]
+fn blocked_stills_become_pending_only_once_ffmpeg_is_present() {
+    // The gate binaries_install relies on: a HEIC blocked on ffmpeg is inert
+    // while ffmpeg is absent (so the startup resume cannot fire on work it
+    // could never do) and pending the moment it lands.
+    let f = fixture("blocked-stills");
+    f.conn
+        .execute(
+            "INSERT INTO contents (hash, byte_size, kind, derived_at_utc) \
+             VALUES ('h1', 1, 'image', ?1)",
+            rusqlite::params![onecopy_lib::preview::NEEDS_FFMPEG],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) \
+             VALUES ('/root/a.heic', '/root', 'a.heic', 'image', 'h1', 0)",
+            [],
+        )
+        .unwrap();
+
+    assert!(
+        !pending_work_exists(&f.conn, false).unwrap(),
+        "inert while ffmpeg is absent"
+    );
+    assert!(
+        pending_work_exists(&f.conn, true).unwrap(),
+        "pending the moment ffmpeg lands"
+    );
+}
+
+#[test]
+fn contents_without_a_live_path_are_not_pending_work() {
+    // A contents row whose only path is missing can never be derived, so
+    // reporting it as pending drives a no-op resume scan on EVERY launch —
+    // which rebuilds all similarity groups each time for nothing.
+    let f = fixture("dead-contents");
+    f.conn
+        .execute(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 1, 'image')",
+            [],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) \
+             VALUES ('/gone/a.jpg', '/gone', 'a.jpg', 'image', 'h1', 1)",
+            [],
+        )
+        .unwrap();
+
+    assert!(
+        !pending_work_exists(&f.conn, true).unwrap(),
+        "an underivable row must not keep the resume firing forever"
     );
 }

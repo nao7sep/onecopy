@@ -252,9 +252,16 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     )? {
         return Ok(true);
     }
-    if probe(
-        "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' AND derived_at_utc IS NULL)",
-    )? {
+    // Every contents probe requires a LIVE path. A row whose only copies are
+    // missing can never be derived, so reporting it as pending fires a no-op
+    // resume scan on every launch — and that scan rebuilds all similarity
+    // groups each time, for work it cannot do.
+    const LIVE: &str = "EXISTS (SELECT 1 FROM paths p \
+                        WHERE p.content_hash = contents.hash AND p.missing = 0)";
+    if probe(&format!(
+        "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
+         AND derived_at_utc IS NULL AND {LIVE})"
+    ))? {
         return Ok(true);
     }
     // Stills blocked on ffmpeg become derivable the moment it lands, so they
@@ -262,16 +269,17 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     if ffmpeg_present
         && probe(&format!(
             "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
-             AND derived_at_utc = '{}')",
+             AND derived_at_utc = '{}' AND {LIVE})",
             crate::preview::NEEDS_FFMPEG
         ))?
     {
         return Ok(true);
     }
     if ffmpeg_present
-        && probe(
-            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'video' AND derived_at_utc IS NULL)",
-        )?
+        && probe(&format!(
+            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'video' \
+             AND derived_at_utc IS NULL AND {LIVE})"
+        ))?
     {
         return Ok(true);
     }
