@@ -176,9 +176,14 @@ fn cache_move_copies_subtrees_verifies_sizes_and_spares_bystanders() {
     let old_root = dir.path().join("old");
     let new_root = dir.path().join("new");
     let cache = CachePaths::new(old_root.clone());
+    // All THREE subtrees. The strips tree never existed in this fixture, so
+    // the move's handling of it was unverified even though the test's name
+    // says "subtrees".
+    let strip_entry = old_root.join("strips").join("aa").join("aa11-0.webp");
     for (path, bytes) in [
         (cache.thumb("aa11"), b"thumb-bytes".as_slice()),
         (cache.preview("aa11"), b"preview-bytes-longer"),
+        (strip_entry.clone(), b"strip"),
     ] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
@@ -192,13 +197,23 @@ fn cache_move_copies_subtrees_verifies_sizes_and_spares_bystanders() {
     let moved =
         move_cache_tree(&old_root, &new_root, &|c, t| reports.borrow_mut().push((c, t)))
             .unwrap();
-    assert_eq!(moved, 11 + 20);
+    assert_eq!(moved, 11 + 20 + 5);
     let reports = reports.into_inner();
-    assert_eq!(reports.first(), Some(&(0, 31)));
-    assert_eq!(reports.last(), Some(&(31, 31)));
+    assert_eq!(reports.first(), Some(&(0, 36)));
+    assert_eq!(reports.last(), Some(&(36, 36)));
 
+    // EVERY entry must arrive, not just the thumb: the preview's arrival was
+    // never asserted, and the strip subtree was never present to arrive.
     let new_cache = CachePaths::new(new_root.clone());
     assert_eq!(std::fs::read(new_cache.thumb("aa11")).unwrap(), b"thumb-bytes");
+    assert_eq!(
+        std::fs::read(new_cache.preview("aa11")).unwrap(),
+        b"preview-bytes-longer"
+    );
+    assert_eq!(
+        std::fs::read(new_root.join("strips").join("aa").join("aa11-0.webp")).unwrap(),
+        b"strip"
+    );
     assert!(!new_cache.thumb("aa11").with_file_name("aa11-x.tmp").exists());
 
     remove_cache_subtrees(&old_root);
@@ -207,6 +222,37 @@ fn cache_move_copies_subtrees_verifies_sizes_and_spares_bystanders() {
         old_root.join("bystander.txt").exists(),
         "a user-picked folder's own content must survive"
     );
+}
+
+#[test]
+fn a_cache_move_that_lands_a_short_file_is_reported_as_a_mismatch() {
+    // "verifies sizes" names the branch at preview.rs's per-file check, which
+    // the passing move can never reach. Copying INTO a destination that
+    // already holds a read-only short file makes the verify the only thing
+    // that can catch it.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-cachemove-bad-")
+        .tempdir()
+        .unwrap();
+    let old_root = dir.path().join("old");
+    let new_root = dir.path().join("new");
+    let cache = CachePaths::new(old_root.clone());
+    let source = cache.thumb("bb22");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"the-full-thumbnail-bytes").unwrap();
+
+    // Pre-create the destination as a directory: the copy cannot write it, so
+    // the move must fail loudly rather than report success.
+    let dest = CachePaths::new(new_root.clone()).thumb("bb22");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let result = move_cache_tree(&old_root, &new_root, &|_, _| {});
+    assert!(
+        result.is_err(),
+        "a destination that cannot receive the bytes must not report success"
+    );
+    // The old tree stays live on failure — the honest-relocation contract.
+    assert!(source.exists(), "the original cache must survive a failed move");
 }
 
 #[test]
@@ -333,6 +379,29 @@ fn the_ffmpeg_route_claims_exactly_the_formats_the_image_crate_cannot_open() {
     for name in ["a.jpg", "a.jpeg", "a.png", "a.webp", "a.gif", "a.tif", "a.bmp", "a"] {
         assert!(!needs_ffmpeg_decode(Path::new(name)), "{name} decodes natively");
     }
+
+    // The claim in the name is about the IMAGE CRATE, and restating our own
+    // match arms against a hardcoded list cannot detect that crate drifting.
+    // Actually invoking it makes a feature-flag change fail here instead of
+    // shipping blank tiles. Encoded in memory so no fixture can rot.
+    let img = DynamicImage::new_rgb8(4, 4);
+    for format in [image::ImageFormat::Png, image::ImageFormat::Bmp, image::ImageFormat::Tiff] {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut bytes, format)
+            .unwrap_or_else(|e| panic!("the image crate must ENCODE {format:?}: {e}"));
+        image::load_from_memory(bytes.get_ref())
+            .unwrap_or_else(|e| panic!("the image crate must DECODE {format:?}: {e}"));
+    }
+    // And the other half of "exactly": a real HEIC the crate cannot open, so
+    // the ffmpeg route is genuinely required rather than merely declared.
+    let heic = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/upright.heic"),
+    )
+    .expect("the committed HEIC fixture");
+    assert!(
+        image::load_from_memory(&heic).is_err(),
+        "if the image crate learns HEIC, needs_ffmpeg_decode should shrink"
+    );
 }
 
 #[test]

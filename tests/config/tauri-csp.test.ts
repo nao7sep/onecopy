@@ -23,25 +23,25 @@ const EXPECTED_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost mediacache: http://mediacache.localhost mediafile: http://mediafile.localhost data: blob:; media-src 'self' mediafile: http://mediafile.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
 describe("Tauri production CSP (src-tauri/tauri.conf.json)", () => {
-  it("is present and non-empty", () => {
-    expect(typeof csp).toBe("string");
-    expect((csp as string).trim().length).toBeGreaterThan(0);
-  });
-
-  it("never allows 'unsafe-eval' anywhere in the policy", () => {
-    expect(csp as string).not.toContain("'unsafe-eval'");
-  });
-
-  it("keeps script-src strict: no 'unsafe-inline' and no 'unsafe-eval'", () => {
-    // Isolate the script-src directive (up to the next `;` or end of string).
-    const scriptSrc = /script-src\b[^;]*/.exec(csp as string)?.[0] ?? "";
-    expect(scriptSrc).not.toBe("");
-    expect(scriptSrc).not.toContain("'unsafe-inline'");
-    expect(scriptSrc).not.toContain("'unsafe-eval'");
-    expect(scriptSrc).toContain("'self'");
-  });
-
+  // The exact-match case below subsumes present/non-empty, no-unsafe-eval and
+  // strict-script-src: any of those regressions changes the string. What it
+  // could NOT see is devCsp, which legitimately carries 'unsafe-eval' and
+  // 'unsafe-inline' for the Vite dev server — so the one thing worth asserting
+  // separately is that the two never get confused.
   it("matches the snapshotted production policy exactly", () => {
     expect(csp).toBe(EXPECTED_CSP);
+  });
+
+  it("keeps the permissive dev policy out of the production one", () => {
+    const devCsp = (config.app?.security as { devCsp?: unknown } | undefined)?.devCsp;
+    expect(typeof devCsp, "devCsp should still exist for the dev server").toBe(
+      "string",
+    );
+    // The dev policy is permissive by necessity; production must not be.
+    expect(devCsp as string).toContain("'unsafe-eval'");
+    expect(csp as string).not.toContain("'unsafe-eval'");
+    expect(csp).not.toBe(devCsp);
+    // A production build must not be reachable from the dev origin either.
+    expect(csp as string).not.toContain("localhost:1721");
   });
 });
