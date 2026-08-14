@@ -384,3 +384,39 @@ fn app_trash_directories_are_never_indexed() {
     assert_eq!(stats.seen, 1);
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
 }
+
+#[test]
+fn a_companion_unpairs_when_its_primary_disappears() {
+    let f = fixture("unpair");
+    std::fs::write(f.root.join("IMG.JPG"), b"jpeg-bytes").unwrap();
+    std::fs::write(f.root.join("IMG.ARW"), b"raw-bytes").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    pair_companions(&f.conn).unwrap();
+
+    let companion_of = |name: &str| -> Option<i64> {
+        f.conn
+            .query_row(
+                "SELECT companion_of FROM paths WHERE file_name = ?1 AND missing = 0",
+                rusqlite::params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert!(companion_of("IMG.ARW").is_some(), "paired to start with");
+
+    // The supported out-of-app change: the JPEG is dragged into a subfolder
+    // in Finder. Its old row goes missing and a new row appears elsewhere.
+    std::fs::create_dir_all(f.root.join("keepers")).unwrap();
+    std::fs::rename(f.root.join("IMG.JPG"), f.root.join("keepers").join("IMG.JPG")).unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    pair_companions(&f.conn).unwrap();
+
+    // The RAW must return to the other-files section rather than pointing at a
+    // vanished primary: every read model filters companion_of IS NULL, so a
+    // stale link makes it invisible in every section, count and issue list.
+    assert_eq!(
+        companion_of("IMG.ARW"),
+        None,
+        "an orphaned companion must unpair"
+    );
+}

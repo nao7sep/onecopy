@@ -904,8 +904,26 @@ fn binaries_install(app: AppHandle) -> Result<(), String> {
                 // the next launch. The same tail-only resume the startup path
                 // runs, and its single-run guard makes it a no-op mid-scan.
                 if scan_resume_wanted(&data_root) {
-                    logging::info("scan resumed after ffmpeg install", json!({}));
-                    let _ = spawn_scan(handle.clone(), false);
+                    // Report what actually happened. A scan already running
+                    // makes spawn_scan a no-op AND cannot pick this work up
+                    // itself — its ScanSettings captured `ffmpeg: None` at
+                    // spawn — so the blocked rows wait for the next scan,
+                    // rescan, or watcher pass. The wizard leads straight into
+                    // this case by design: "Finish and scan" stays enabled
+                    // while the install runs.
+                    match spawn_scan(handle.clone(), false) {
+                        Ok(true) => {
+                            logging::info("scan resumed after ffmpeg install", json!({}))
+                        }
+                        Ok(false) => logging::info(
+                            "ffmpeg installed mid-scan; blocked items wait for the next pass",
+                            json!({}),
+                        ),
+                        Err(err) => logging::warn(
+                            "resume after ffmpeg install failed",
+                            json!({ "error": { "message": err } }),
+                        ),
+                    }
                 }
             }
             Err(err) => {

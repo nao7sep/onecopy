@@ -1013,6 +1013,21 @@ pub struct PairStats {
 /// several share a stem. A companion with no primary stays unattached and
 /// behaves as an other-file.
 pub fn pair_companions(conn: &Connection) -> Result<PairStats, String> {
+    // Unpair first. `companion_of` was previously assigned once and never
+    // reconsidered, so moving a JPEG out of the folder in Finder — the app's
+    // own supported out-of-app-changes path — left the RAW pointing at a row
+    // marked missing. Every read model filters `companion_of IS NULL`, so that
+    // RAW then appeared in NO section, no count and no issue row, and neither
+    // a delete nor a move-out of the new JPEG picked it up. A full rescan did
+    // not fix it, because nothing ever cleared the column.
+    conn.execute(
+        "UPDATE paths SET companion_of = NULL \
+         WHERE companion_of IS NOT NULL \
+           AND NOT EXISTS (SELECT 1 FROM paths pri \
+                           WHERE pri.id = paths.companion_of AND pri.missing = 0)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
     let updated = conn
         .execute(
             "UPDATE paths SET companion_of = (

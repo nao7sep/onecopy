@@ -143,7 +143,8 @@ pub fn section_items(
                  (SELECT m.group_id FROM similar_group_members m WHERE m.content_hash = c.hash), \
                  c.sharpness, c.byte_size, \
                  EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
-                         WHERE pri.content_hash = c.hash AND comp.missing = 0), \
+                         WHERE pri.content_hash = c.hash AND comp.missing = 0 \
+                           AND pri.missing = 0), \
                  c.duration_ms \
                  FROM contents c JOIN paths p ON p.content_hash = c.hash \
                  WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
