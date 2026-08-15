@@ -59,7 +59,7 @@ describe("the setup wizard", () => {
     const view = render(<Wizard dataRoot="/tmp/onecopy" />);
     expect(view.container.textContent).toContain("Step 1 of 3");
 
-    for (const step of [2, 3]) {
+    for (const step of [2, 3] as const) {
       act(() => useWizardStore.setState({ step }));
       expect(view.container.textContent).toContain(`Step ${step} of 3`);
     }

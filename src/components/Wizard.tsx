@@ -61,24 +61,29 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
               {dirs.map((dir) => (
                 <li
                   key={dir.path}
-                  className="mb-1 flex items-center justify-between gap-2 rounded border border-border px-2 py-1"
+                  className="mb-1 rounded border border-border px-2 py-1"
                 >
-                  <span className="min-w-0 flex-1 truncate text-sm text-ink" title={dir.path}>
-                    {dir.path}
-                  </span>
-                  <span className="shrink-0 text-xs text-ink-muted">
-                    {dir.counting
-                      ? "scanning…"
-                      : dir.counts
-                        ? `${dir.counts.images} images · ${dir.counts.videos} videos · ${dir.counts.others} other`
-                        : "—"}
-                  </span>
-                  <button
-                    className="shrink-0 text-xs text-danger"
-                    onClick={() => removeDir(dir.path)}
-                  >
-                    Remove
-                  </button>
+                  {/* The path owns its own line and WRAPS rather than
+                      truncating — same treatment as the cache location below.
+                      Source roots are long and what distinguishes two of them
+                      is often deep in the middle, so an ellipsis hides exactly
+                      the part that identifies which folder this is. */}
+                  <p className="break-all text-sm text-ink">{dir.path}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-ink-muted">
+                      {dir.counting
+                        ? "scanning…"
+                        : dir.counts
+                          ? `${dir.counts.images} images · ${dir.counts.videos} videos · ${dir.counts.others} other`
+                          : "—"}
+                    </span>
+                    <button
+                      className="shrink-0 text-xs text-danger"
+                      onClick={() => removeDir(dir.path)}
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
