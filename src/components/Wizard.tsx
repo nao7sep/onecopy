@@ -180,12 +180,18 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
             {/* The one OFFER (not a step): skippable, and skipping degrades
                 honestly — placeholder tiles plus the Managed tools path. */}
             <h2 className="mb-2 text-sm font-semibold text-ink-strong">ffmpeg</h2>
+            {/* Leads with VIDEO deliberately. Framing this as an iPhone
+                feature told anyone with a camera full of clips that it did not
+                apply to them — and every one of those videos would then have
+                had no thumbnail, no length and no scene frames. */}
             <p className="mb-2 text-sm text-ink-muted">
-              iPhone photos (HEIC) and video posters decode through ffmpeg,
-              which OneCopy downloads and manages itself (free, one click).
-              For an iPhone-heavy library it is effectively required. Skipping
-              is fine: those files show placeholders until you install it from
-              the menu&apos;s Managed tools.
+              Every video needs ffmpeg — for its thumbnail, its length, and the
+              frames the scenes view shows. So do photos in HEIC, HEIF or AVIF,
+              the formats phones shoot; JPEG, PNG and the rest need nothing.
+              OneCopy downloads and manages it itself (free, one click).
+              Skipping is fine and reversible: those files show plain
+              placeholder tiles, and installing it later from the menu&apos;s
+              Managed tools fills them in straight away.
             </p>
             <FfmpegOfferRow />
             <div className="mt-4 flex justify-between">
