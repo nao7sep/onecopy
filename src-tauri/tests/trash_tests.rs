@@ -68,8 +68,13 @@ fn trashing_moves_the_file_and_writes_a_manifest_line() {
 }
 
 #[test]
-fn original_relative_path_is_preserved_inside_the_day_folder() {
-    let f = fixture("relpath");
+fn files_are_stored_flat_with_provenance_in_the_manifest() {
+    // The day folder is a plain "everything deleted this day" view, like an OS
+    // trash: names only, no mirrored directory structure. Provenance lives in
+    // the manifest instead, which is also what keeps a trashed path from ever
+    // growing longer than <trash>/<day>/<name> — the amplification that made
+    // the platform path-length limit a deletion problem specifically.
+    let f = fixture("flat");
     let nested = f.source.join("2016").join("spain");
     std::fs::create_dir_all(&nested).unwrap();
     let file = nested.join("beach.jpg");
@@ -77,13 +82,31 @@ fn original_relative_path_is_preserved_inside_the_day_folder() {
 
     let record = trash_file(&file, &f.app_root, None).unwrap();
     let stored = PathBuf::from(&record.stored_path);
-    // The tail of the stored path mirrors the original's volume-relative
-    // path — restorable by hand with a file manager alone.
+
+    assert_eq!(
+        stored.file_name().unwrap(),
+        std::ffi::OsStr::new("beach.jpg"),
+        "the stored name is the original file name"
+    );
+    let day_dir = stored.parent().expect("stored inside a day folder");
     assert!(
-        stored.ends_with(Path::new("2016/spain/beach.jpg"))
-            || stored.ends_with(Path::new("2016\\spain\\beach.jpg")),
-        "stored path {} must preserve the original structure",
-        stored.display()
+        day_dir.file_name().unwrap().to_string_lossy().ends_with("-utc"),
+        "the file sits DIRECTLY in the day folder, not under a rebuilt tree"
+    );
+    // Nothing from the source structure was recreated.
+    for part in ["2016", "spain"] {
+        assert!(
+            !day_dir.join(part).exists(),
+            "no source directory may be reproduced in the trash"
+        );
+    }
+    // The full original path survives where it belongs.
+    let manifest = read_manifest(day_dir);
+    assert_eq!(manifest.len(), 1);
+    assert_eq!(
+        manifest[0]["originalPath"],
+        file.to_string_lossy().to_string(),
+        "the manifest is the provenance record"
     );
 }
 
@@ -108,8 +131,10 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
     }
     let last_record = last_record.expect("three files were trashed");
     assert_eq!(stored_names[0], "img.jpg");
-    assert_eq!(stored_names[1], "img.2.jpg");
-    assert_eq!(stored_names[2], "img.3.jpg");
+    // Hyphen and a number: a period would read as a second extension, and a
+    // repeated separator would grow the name without bound.
+    assert_eq!(stored_names[1], "img-2.jpg");
+    assert_eq!(stored_names[2], "img-3.jpg");
 
     // "exact manifest lines" is the name's promise, and until now nothing read
     // the manifest at all — every assertion above reads the RETURN value. The

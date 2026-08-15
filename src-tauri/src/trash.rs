@@ -17,7 +17,7 @@
 //! `/` — still a same-volume rename, just rooted where the app may write.
 //!
 //! A stored-name collision (same file re-created and re-trashed the same day)
-//! is resolved by an exclusive-create suffix loop (`image1.2.jpg`, …); the
+//! is resolved by an exclusive-create suffix loop (`image1-2.jpg`, …); the
 //! manifest line records both the original path and the actual stored name, so
 //! restore mapping stays exact even in the suffixed case.
 
@@ -63,23 +63,26 @@ pub fn trash_file(
     let day = format!("{}-utc", &logging::filename_stamp_now()[..8]);
     let day_dir = trash_root.join(&day);
 
-    // Original path relative to its volume root, preserved under the day
-    // folder so the structure alone is restorable by hand.
-    let relative = file
-        .strip_prefix(&volume_root)
-        .map_err(|_| {
-            format!(
-                "{} is not under its own volume root {}",
-                file.display(),
-                volume_root.display()
-            )
-        })?
-        .to_path_buf();
-    let target = day_dir.join(&relative);
-    let parent = target
-        .parent()
-        .ok_or_else(|| "trash target has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    // FLAT: the day folder holds file names only, no preserved directory
+    // structure. The manifest carries provenance, so the folder can be the
+    // plain "everything deleted this day" view an OS trash shows — and a
+    // trashed path never grows longer than <trash>/<day>/<name>, which is what
+    // stopped the trash amplifying the platform's path-length limit.
+    //
+    // Still verified as being under its own volume root: the whole point of a
+    // per-volume trash is that the move stays a same-volume rename.
+    if !file.starts_with(&volume_root) {
+        return Err(format!(
+            "{} is not under its own volume root {}",
+            file.display(),
+            volume_root.display()
+        ));
+    }
+    let name = file
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", file.display()))?;
+    let target = day_dir.join(name);
+    std::fs::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
 
     let stored = rename_with_suffix_loop(file, &target)?;
 
@@ -118,7 +121,10 @@ fn rename_with_suffix_loop(src: &Path, target: &Path) -> Result<PathBuf, String>
                 return Ok(candidate);
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                if counter > 9999 {
+                // A runaway guard, not a design limit: a hyphen and a number
+                // stay short even at a million, and real collisions are rare
+                // (phone filenames carry their own timestamp).
+                if counter > 1_000_000 {
                     return Err(format!(
                         "could not find a free trash name for {}",
                         src.display()
@@ -132,15 +138,17 @@ fn rename_with_suffix_loop(src: &Path, target: &Path) -> Result<PathBuf, String>
     }
 }
 
-/// `image1.jpg` + 2 → `image1.2.jpg`; extensionless names get `name.2`.
+/// `image1.jpg` + 2 → `image1-2.jpg`; extensionless names get `name-2`.
 fn suffixed_name(target: &Path, counter: u32) -> PathBuf {
     let stem = target
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("file");
+    // Hyphen, never a period: a period reads as a second extension, and a
+    // repeated separator would grow the name without bound.
     let name = match target.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{stem}.{counter}.{ext}"),
-        None => format!("{stem}.{counter}"),
+        Some(ext) => format!("{stem}-{counter}.{ext}"),
+        None => format!("{stem}-{counter}"),
     };
     target.with_file_name(name)
 }
