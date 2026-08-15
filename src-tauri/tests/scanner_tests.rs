@@ -781,3 +781,94 @@ fn a_genuinely_different_root_is_not_confused_with_a_known_one() {
     let beta = settled_root(&f.conn, &f.root.join("Beta")).unwrap();
     assert_ne!(beta, alpha, "different roots stay different");
 }
+
+#[test]
+fn removing_a_root_forgets_its_files_and_their_cache() {
+    let f = fixture("forget-root");
+    let kept = f.root.join("Kept");
+    let dropped = f.root.join("Dropped");
+    for dir in [&kept, &dropped] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(kept.join("a.jpg"), b"kept-bytes").unwrap();
+    std::fs::write(dropped.join("b.jpg"), b"dropped-bytes").unwrap();
+    let cache = test_cache(&f);
+    for dir in [&kept, &dropped] {
+        walk_root(&f.conn, dir, &lists()).unwrap();
+    }
+    hash_pending(&f.conn, &cache).unwrap();
+
+    let dropped_hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'b.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for path in [cache.thumb(&dropped_hash), cache.preview(&dropped_hash)] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"webp").unwrap();
+    }
+
+    let configured = vec![kept.to_string_lossy().to_string()];
+    let forgotten = forget_unconfigured_roots(&f.conn, &configured, &cache).unwrap();
+
+    assert_eq!(forgotten, 1);
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'b.jpg'"),
+        0,
+        "the removed root's files leave the index"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'a.jpg'"),
+        1,
+        "the kept root is untouched"
+    );
+    assert!(!cache.thumb(&dropped_hash).exists(), "its cache goes too");
+    // The file itself is NOT deleted — the app just stopped being its keeper.
+    assert!(dropped.join("b.jpg").exists(), "the file stays on disk");
+}
+
+#[test]
+fn a_root_that_cannot_be_resolved_is_never_forgotten() {
+    // The destructive direction. An unplugged drive cannot be canonicalized,
+    // and treating that as "the user removed it" would drop the index for
+    // every file on that drive. Stale rows are recoverable; that is not.
+    let f = fixture("forget-absent");
+    let root = f.root.join("Removable");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.jpg"), b"bytes").unwrap();
+    let cache = test_cache(&f);
+    walk_root(&f.conn, &root, &lists()).unwrap();
+    hash_pending(&f.conn, &cache).unwrap();
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
+
+    std::fs::remove_dir_all(&root).unwrap();
+    let configured = vec![root.to_string_lossy().to_string()];
+    let forgotten = forget_unconfigured_roots(&f.conn, &configured, &cache).unwrap();
+
+    assert_eq!(forgotten, 0, "an absent-but-configured root is not forgotten");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths"),
+        1,
+        "its index survives until the drive returns"
+    );
+}
+
+#[test]
+fn a_differently_spelled_configured_root_is_not_forgotten() {
+    let f = fixture("forget-spelling");
+    let photos = f.root.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    std::fs::write(photos.join("a.jpg"), b"bytes").unwrap();
+    let cache = test_cache(&f);
+    let settled = settled_root(&f.conn, &photos).unwrap();
+    walk_root(&f.conn, &settled, &lists()).unwrap();
+
+    let shouted = vec![f.root.join("PHOTOS").to_string_lossy().to_string()];
+    let forgotten = forget_unconfigured_roots(&f.conn, &shouted, &cache).unwrap();
+
+    assert_eq!(forgotten, 0, "a capitalisation difference is not a removal");
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
+}

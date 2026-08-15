@@ -22,6 +22,7 @@ pub mod resolution;
 pub mod scanner;
 pub mod similarity;
 pub mod storage;
+pub mod subprocess;
 pub mod timestamps;
 pub mod trash;
 pub mod video;
@@ -1229,10 +1230,29 @@ pub fn run() {
             // WALK when a root was never walked to completion — the tail alone
             // cannot recover directories that have no rows at all, and would
             // otherwise report clean forever over a half-indexed library.
-            let (resume, needs_walk) = resume_plan(&data_root);
-            if resume {
-                logging::info("scan resumed at startup", json!({ "walk": needs_walk }));
-                let _ = spawn_scan(app.handle().clone(), needs_walk);
+            // ALWAYS walk at startup when roots are configured. The watcher
+            // only runs while the app runs, so anything added while it was
+            // closed has no row at all — and every row-level probe is blind to
+            // a file it has never seen. Without this the app opens on a
+            // silently incomplete library and nothing on screen says so, which
+            // is precisely the daily case in the Goal: an inflow directory
+            // fills up while the app is not running.
+            //
+            // The cost is bounded by what already exists: the walk is
+            // stat-only (unchanged size+mtime skips all content work), runs on
+            // a worker thread, reports progress in the footer, and is
+            // cancellable — quitting stops it and the next launch resumes.
+            let configured = storage::load_config_source_dirs(&data_root).unwrap_or_default();
+            if !configured.is_empty() {
+                logging::info("scan started at launch", json!({ "roots": configured.len() }));
+                let _ = spawn_scan(app.handle().clone(), true);
+            } else {
+                // No roots yet (first run): only finish work already begun.
+                let (resume, needs_walk) = resume_plan(&data_root);
+                if resume {
+                    logging::info("scan resumed at startup", json!({ "walk": needs_walk }));
+                    let _ = spawn_scan(app.handle().clone(), needs_walk);
+                }
             }
 
             logging::info(

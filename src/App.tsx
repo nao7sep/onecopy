@@ -47,7 +47,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
-import { ffmpegRole, useBinariesStore } from "./state/binaries-store";
+import { ffmpegChipText, ffmpegRole, useBinariesStore } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
 import { usePreviewStore } from "./state/preview-store";
 import PreviewSurface from "./components/PreviewSurface";
@@ -654,23 +654,35 @@ export default function App() {
           )}
         </span>
         <span className="flex items-center gap-3">
-          <button
-            className={
-              ffmpegRole(ffmpegState?.status ?? null) === "warning"
-                ? "text-warning hover:underline"
-                : "text-ink-muted hover:text-ink"
-            }
-            title="Managed tools"
-            onClick={() => setBinariesModalOpen(true)}
-          >
-            {binariesInstalling
-              ? binariesProgress
-              : ffmpegState === null
-                ? "ffmpeg: …"
-                : ffmpegState.status === "not-installed"
-                  ? "ffmpeg: not installed"
-                  : `ffmpeg ${ffmpegState.facts.installedVersion ?? ""}`}
-          </button>
+          {/* Managed-tool state per the managed-runtime-dependencies
+              conventions' Show rules: warning and error always show, and a
+              benign FYI is silent rather than permanent. So "up to date" and
+              "installed (not checked)" render NOTHING — the version belongs in
+              the tools modal, which lists it. Not-installed is the deliberate
+              exception the convention names: staying silent there "risks a
+              dead feature", and for OneCopy that is every video and every HEIC
+              reduced to a placeholder tile. */}
+          {ffmpegChipText(
+            binariesInstalling,
+            binariesProgress,
+            ffmpegState?.status ?? null,
+          ) !== null ? (
+            <button
+              className={
+                ffmpegRole(ffmpegState?.status ?? null) === "warning"
+                  ? "text-warning hover:underline"
+                  : "text-ink-muted hover:text-ink"
+              }
+              title="Managed tools"
+              onClick={() => setBinariesModalOpen(true)}
+            >
+              {ffmpegChipText(
+                binariesInstalling,
+                binariesProgress,
+                ffmpegState?.status ?? null,
+              )}
+            </button>
+          ) : null}
           <Menu
             ariaLabel="Application menu"
             panelClassName="bottom-full right-0 mb-1"

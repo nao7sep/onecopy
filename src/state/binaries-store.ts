@@ -100,3 +100,30 @@ void (async () => {
     log.warn("binaries event wiring failed", toErrorFields(error));
   }
 })();
+
+/** What the footer says about ffmpeg, or null to say nothing at all.
+ *
+ * The managed-runtime-dependencies conventions make **Up to date** a silent
+ * default and warn against permanent benign FYIs, so a working install shows
+ * nothing. **Installed (not checked)** is silent for the same reason — with
+ * update checks off by default it would otherwise be a permanent fixture.
+ * **Not installed** deliberately stays visible: the convention notes that
+ * silence for an optional-absent dependency "risks a dead feature", and here
+ * that dead feature is every video and every HEIC photo.
+ */
+export function ffmpegChipText(
+  installing: boolean,
+  progress: string,
+  status: string | null,
+): string | null {
+  if (installing) return progress;
+  switch (status) {
+    case "not-installed":
+      return "ffmpeg not installed";
+    case "update-available":
+      return "ffmpeg update available";
+    default:
+      // up-to-date, installed-unchecked, and the pre-load null.
+      return null;
+  }
+}

@@ -236,14 +236,19 @@ export default function SettingsModal() {
             {draft.sourceDirs.map((dir) => (
               <li
                 key={dir}
-                className="mb-0.5 flex items-center justify-between gap-2 rounded border border-border px-2 py-0.5 text-xs"
+                className="mb-0.5 rounded border border-border px-2 py-0.5 text-xs"
               >
-                <span className="min-w-0 flex-1 truncate text-ink" title={dir}>
-                  {dir}
-                </span>
-                <button className="shrink-0 text-danger" onClick={() => removeSourceDir(dir)}>
-                  Remove
-                </button>
+                {/* Same treatment as the wizard's list: the modal is a fixed
+                    width, so sharing a row with Remove truncated the path
+                    almost immediately. It wraps instead — what tells two
+                    source roots apart is often deep in the middle, which an
+                    ellipsis is exactly what hides. */}
+                <p className="break-all text-ink">{dir}</p>
+                <div className="flex justify-end">
+                  <button className="text-danger" onClick={() => removeSourceDir(dir)}>
+                    Remove
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

@@ -113,21 +113,20 @@ fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> 
         "ffmpeg invocation",
         serde_json::json!({ "op": "decode-still", "src": src.to_string_lossy() }),
     );
-    let output = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-i"])
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(src)
-        .args(["-frames:v", "1", "-f", "image2pipe", "-c:v", "bmp", "-"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() || output.stdout.is_empty() {
+        .args(["-frames:v", "1", "-f", "image2pipe", "-c:v", "bmp", "-"]);
+    let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
+    if !run.status_ok || run.stdout.is_empty() {
         // The recent-output tail, bounded — the whole point is diagnosing
         // this one file, not carrying an ffmpeg essay into a DB column.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr.trim();
-        let tail = &tail[tail.len().saturating_sub(200)..];
-        return Err(format!("ffmpeg could not decode this format: {tail}"));
+        return Err(format!(
+            "ffmpeg could not decode this format: {}",
+            run.stderr_tail()
+        ));
     }
-    image::load_from_memory(&output.stdout).map_err(|e| e.to_string())
+    image::load_from_memory(&run.stdout).map_err(|e| e.to_string())
 }
 
 /// Decodes `src`, returning the image alongside the EXIF orientation still

@@ -78,13 +78,10 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
     log_invocation("probe-duration", src);
     // `ffmpeg -i` with no output exits non-zero by design; stderr still
     // carries the stream banner we parse.
-    let output = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-i"])
-        .arg(src)
-        .output()
-        .map_err(|e| e.to_string())?;
-    let stderr_text = String::from_utf8_lossy(&output.stderr);
-    parse_duration_ms(&stderr_text)
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-i"]).arg(src);
+    let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
+    parse_duration_ms(&run.stderr)
         .ok_or_else(|| format!("no Duration in ffmpeg output for {}", src.display()))
 }
 
@@ -94,14 +91,13 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
 fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Result<(), String> {
     log_invocation("extract-frame", src);
     let seconds = format!("{}.{:03}", at_ms / 1000, at_ms % 1000);
-    let status = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-ss", &seconds, "-i"])
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-ss", &seconds, "-i"])
         .arg(src)
         .args(["-frames:v", "1", "-q:v", "3", "-update", "1", "-y"])
-        .arg(staged_jpg)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
+        .arg(staged_jpg);
+    let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
+    if !run.status_ok {
         return Err(format!("frame extraction failed at {seconds}s for {}", src.display()));
     }
     if !staged_jpg.is_file() {

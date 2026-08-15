@@ -188,6 +188,138 @@ pub struct ScanSummary {
     pub similar_groups: u64,
 }
 
+/// Escapes LIKE wildcards in a path prefix. `_` is common in real paths and
+/// `!` appears in no sane one on either OS, so it is the escape character.
+fn like_prefix(root: &str) -> String {
+    let escaped = root
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_");
+    format!("{}%", ensure_trailing_separator(&escaped))
+}
+
+/// Forgets every file under a root the user has stopped configuring.
+///
+/// Removing a source directory means "stop handling this folder". Without
+/// this the rows simply stayed: an unconfigured root is never walked, so its
+/// files were never marked missing either — they kept appearing in sections,
+/// kept counting toward totals, and stayed deletable from a folder the app had
+/// been told to leave alone. They are NOT marked missing, which would be a
+/// false statement (the files are still on disk); they are dropped, because
+/// the app is simply no longer their bookkeeper.
+///
+/// Content and cache follow the rule that already governs deletion: they go
+/// only when no live path anywhere still points at them, so a photo that also
+/// lives under a root the user KEPT is untouched — the duplicate case this
+/// whole app is built around.
+pub fn forget_unconfigured_roots(
+    conn: &Connection,
+    configured: &[String],
+    cache: &crate::preview::CachePaths,
+) -> Result<u64, String> {
+    let mut stmt = conn
+        .prepare("SELECT root FROM scan_dirs")
+        .map_err(|e| e.to_string())?;
+    let recorded: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    // Settle each configured root to the spelling the INDEX would use before
+    // comparing. `scan_dirs` holds settled spellings, so comparing against the
+    // raw config strings would read a mere canonicalization difference as "the
+    // user removed this folder" and drop a whole drive's index.
+    //
+    // A root that cannot be resolved right now — an unplugged drive — counts as
+    // STILL CONFIGURED. Being wrong in that direction leaves stale rows until
+    // the drive returns; being wrong in the other direction destroys the index
+    // for every file on it. Only one of those is recoverable.
+    let mut keep: Vec<String> = Vec::new();
+    for dir in configured {
+        keep.push(dir.clone());
+        if let Ok(settled) = settled_root(conn, Path::new(dir)) {
+            keep.push(settled.to_string_lossy().to_string());
+        }
+    }
+    let still_configured = |root: &str| {
+        keep.iter()
+            .any(|k| k == root || k.to_lowercase() == root.to_lowercase())
+    };
+
+    let mut forgotten = 0u64;
+    for root in recorded {
+        if still_configured(&root) {
+            continue;
+        }
+        // Hashes that had a row here, so orphans can be collected after.
+        let mut hashes_stmt = conn
+            .prepare(
+                "SELECT DISTINCT content_hash FROM paths \
+                 WHERE abs_path LIKE ?1 ESCAPE '!' AND content_hash IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let touched: Vec<String> = hashes_stmt
+            .query_map([like_prefix(&root)], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(hashes_stmt);
+
+        // Companions first: their rows hold a foreign key to the primary.
+        conn.execute(
+            "DELETE FROM evidence WHERE path_id IN \
+             (SELECT id FROM paths WHERE abs_path LIKE ?1 ESCAPE '!')",
+            [like_prefix(&root)],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE paths SET companion_of = NULL WHERE abs_path LIKE ?1 ESCAPE '!'",
+            [like_prefix(&root)],
+        )
+        .map_err(|e| e.to_string())?;
+        let removed = conn
+            .execute(
+                "DELETE FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'",
+                [like_prefix(&root)],
+            )
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM scan_dirs WHERE root = ?1", [&root])
+            .map_err(|e| e.to_string())?;
+        forgotten += removed as u64;
+
+        for hash in touched {
+            let live: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0",
+                    [&hash],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if live == 0 {
+                conn.execute("DELETE FROM paths WHERE content_hash = ?1", [&hash])
+                    .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "DELETE FROM similar_group_members WHERE content_hash = ?1",
+                    [&hash],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM contents WHERE hash = ?1", [&hash])
+                    .map_err(|e| e.to_string())?;
+                crate::preview::remove_entries(cache, &hash);
+            }
+        }
+        if removed > 0 {
+            logging::info(
+                "forgot an unconfigured source root",
+                serde_json::json!({ "root": root, "rows": removed }),
+            );
+        }
+    }
+    Ok(forgotten)
+}
+
 /// Settles ONE spelling for a configured root, once per scan.
 ///
 /// `paths.abs_path` is unique, so the same physical file reached under two
@@ -238,6 +370,12 @@ pub fn run_full_scan(
     progress: &dyn Fn(&str, String),
 ) -> Result<ScanSummary, String> {
     let mut summary = ScanSummary::default();
+
+    // Reconcile configuration BEFORE walking: a root the user removed should
+    // stop appearing the moment the next scan runs, not linger until someone
+    // notices its files in a section.
+    let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
+    forget_unconfigured_roots(conn, &settings.source_dirs, &cache)?;
 
     for root in &settings.source_dirs {
         // One settled spelling per root, so a re-typed capitalisation cannot
