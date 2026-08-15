@@ -2,6 +2,10 @@ import { useWizardStore } from "../state/wizard-store";
 import { useBinariesStore } from "../state/binaries-store";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 
+/** The wizard's numbered steps. The ffmpeg screen follows as an OFFER, not a
+ * fourth step, so it is deliberately not counted here. */
+const WIZARD_STEPS = 3;
+
 // The first-run Setup surface: three steps, blocking by design (there is
 // nothing behind it until source directories exist), completable only —
 // not dismissable, so no Close affordance is owed.
@@ -39,7 +43,14 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background">
       <div className="w-[560px] max-w-[90vw] rounded border border-border bg-surface p-6">
         <h1 className="mb-1 text-lg font-semibold text-ink-strong">Setup</h1>
-        <p className="mb-4 text-sm text-ink-muted">Step {step} of 3</p>
+        {/* Three STEPS and one OFFER (Design: First-run wizard). The offer is
+            step 4 in the flow's own counter but is not a fourth step, so it
+            must not read "Step 4 of 3" — it announces itself as optional
+            instead, which is also the honest signal that Finish is reachable
+            from here without doing anything. */}
+        <p className="mb-4 text-sm text-ink-muted">
+          {step <= WIZARD_STEPS ? `Step ${step} of ${WIZARD_STEPS}` : "Optional"}
+        </p>
 
         {step === 1 ? (
           <section>

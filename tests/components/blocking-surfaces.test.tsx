@@ -12,7 +12,7 @@
 // asserting it is asserting the fix.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, cleanup } from "@testing-library/react";
+import { render, cleanup, act } from "@testing-library/react";
 import PresenceGate from "../../src/components/PresenceGate";
 import Wizard from "../../src/components/Wizard";
 import { hasOpenModal } from "../../src/utils/modalStack";
@@ -50,6 +50,23 @@ describe("the presence gate", () => {
 describe("the setup wizard", () => {
   beforeEach(() => {
     useWizardStore.setState({ step: 1, dirs: [], timezone: "UTC" });
+  });
+
+  it("counts only the numbered steps, never the ffmpeg offer", () => {
+    // The design is "three steps and one offer". The offer is step 4 in the
+    // flow's own counter, so a hardcoded "of 3" rendered "Step 4 of 3" — a
+    // number that cannot be true and reads as a bug the moment it is seen.
+    const view = render(<Wizard dataRoot="/tmp/onecopy" />);
+    expect(view.container.textContent).toContain("Step 1 of 3");
+
+    for (const step of [2, 3]) {
+      act(() => useWizardStore.setState({ step }));
+      expect(view.container.textContent).toContain(`Step ${step} of 3`);
+    }
+
+    act(() => useWizardStore.setState({ step: 4 }));
+    expect(view.container.textContent).not.toContain("of 3");
+    expect(view.container.textContent).toContain("Optional");
   });
 
   it("silences the command layer while it is open", () => {
