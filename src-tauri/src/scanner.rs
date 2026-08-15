@@ -18,7 +18,7 @@
 //! UI.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
@@ -188,6 +188,48 @@ pub struct ScanSummary {
     pub similar_groups: u64,
 }
 
+/// Settles ONE spelling for a configured root, once per scan.
+///
+/// `paths.abs_path` is unique, so the same physical file reached under two
+/// spellings becomes two rows — and the copy-count badge, which doubles as the
+/// backup health check, then reports 2 for a file that exists once. Within a
+/// single walk the spelling is consistent (every entry is joined onto the
+/// root), so pinning the ROOT is enough to pin everything beneath it.
+///
+/// Two steps, because neither alone is sufficient:
+///
+/// 1. Canonicalize — resolves symlinks and makes the path absolute. On Windows
+///    it also returns the disk's true casing and the long-path form. On macOS
+///    it does NOT correct casing (verified: `realpath` echoes the spelling it
+///    was given on a case-insensitive volume), which is why step 2 exists.
+/// 2. Prefer a spelling already recorded in `scan_dirs` that differs only by
+///    case. First-seen wins, so re-typing a configured path with different
+///    capitalisation cannot fork the index. Matching case-insensitively is safe
+///    HERE specifically: this compares roots, never individual files, and two
+///    roots differing only by case cannot coexist on either target platform.
+pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, String> {
+    let canonical = std::fs::canonicalize(configured)
+        .map_err(|e| format!("{}: {e}", configured.display()))?;
+    let canonical_str = canonical.to_string_lossy().to_string();
+
+    let mut stmt = conn
+        .prepare("SELECT root FROM scan_dirs")
+        .map_err(|e| e.to_string())?;
+    let known: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    for root in known {
+        if root != canonical_str && root.to_lowercase() == canonical_str.to_lowercase() {
+            return Ok(PathBuf::from(root));
+        }
+    }
+    Ok(canonical)
+}
+
 /// One full pipeline run over every configured root: walk → hash → extract →
 /// resolve → pair → derive, reporting a progress line after each stage.
 pub fn run_full_scan(
@@ -198,6 +240,11 @@ pub fn run_full_scan(
     let mut summary = ScanSummary::default();
 
     for root in &settings.source_dirs {
+        // One settled spelling per root, so a re-typed capitalisation cannot
+        // index the same files a second time.
+        let root = settled_root(conn, Path::new(root))?;
+        let root = root.to_string_lossy().to_string();
+        let root = root.as_str();
         let stats = walk_root(conn, Path::new(root), &settings.lists)?;
         summary.roots += 1;
         summary.seen += stats.seen;

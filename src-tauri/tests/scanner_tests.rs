@@ -728,3 +728,56 @@ fn exif_datetime_and_camera_are_extracted_and_win_resolution() {
     assert_eq!(make.as_deref(), Some("TestCam"));
     assert_eq!(model.as_deref(), Some("Model1"));
 }
+
+#[test]
+fn a_retyped_root_capitalisation_does_not_fork_the_index() {
+    // paths.abs_path is unique, so the same file reached under two spellings
+    // becomes two rows — and the copy-count badge, which doubles as the backup
+    // health check, then reports 2 for a file that exists once. Resolving a
+    // path does NOT fix its casing on macOS (realpath echoes what it is given
+    // on a case-insensitive volume), so the first-seen spelling has to win.
+    let f = fixture("root-case");
+    let photos = f.root.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    std::fs::write(photos.join("a.jpg"), b"bytes").unwrap();
+
+    let first = settled_root(&f.conn, &photos).unwrap();
+    walk_root(&f.conn, &first, &lists()).unwrap();
+    let rows_after_first: i64 = f
+        .conn
+        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows_after_first, 1);
+
+    // The same folder, spelled differently — as a hand-edited settings file or
+    // a re-typed path would give it. The volume opens it happily.
+    let shouted = f.root.join("PHOTOS");
+    let settled = settled_root(&f.conn, &shouted).unwrap();
+    assert_eq!(
+        settled, first,
+        "the spelling already on record must win over a new capitalisation"
+    );
+
+    walk_root(&f.conn, &settled, &lists()).unwrap();
+    let rows_after_second: i64 = f
+        .conn
+        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        rows_after_second, 1,
+        "one physical file must never become two rows"
+    );
+}
+
+#[test]
+fn a_genuinely_different_root_is_not_confused_with_a_known_one() {
+    let f = fixture("root-distinct");
+    for name in ["Alpha", "Beta"] {
+        std::fs::create_dir_all(f.root.join(name)).unwrap();
+    }
+    let alpha = settled_root(&f.conn, &f.root.join("Alpha")).unwrap();
+    walk_root(&f.conn, &alpha, &lists()).unwrap();
+
+    let beta = settled_root(&f.conn, &f.root.join("Beta")).unwrap();
+    assert_ne!(beta, alpha, "different roots stay different");
+}
