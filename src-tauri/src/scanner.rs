@@ -415,7 +415,7 @@ pub fn upsert_file(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(crate::winpath::for_fs(path).as_ref()).map_err(|e| e.to_string())?;
     let size = meta.len() as i64;
     let mtime_ms = meta
         .modified()
@@ -536,7 +536,9 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
     // Collect the currently-present set to diff against the DB afterwards.
     let mut present: Vec<String> = Vec::new();
 
-    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+    // The walk root carries the long-path form so every entry beneath it
+    // inherits it; without this a deep tree is simply invisible on Windows.
+    for entry in walkdir::WalkDir::new(crate::winpath::for_fs(root).as_ref()).follow_links(false) {
         check_cancel()?;
         let entry = match entry {
             Ok(e) => e,

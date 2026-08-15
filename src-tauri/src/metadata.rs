@@ -133,7 +133,7 @@ fn from_nom_exif(exif: &nom_exif::Exif) -> MediaMetadata {
 
 /// kamadak-exif fallback for TIFF-family containers, metadata-only.
 fn read_kamadak(path: &Path) -> Option<MediaMetadata> {
-    let file = std::fs::File::open(path).ok()?;
+    let file = std::fs::File::open(crate::winpath::for_fs(path).as_ref()).ok()?;
     let exif = exif::Reader::new()
         .read_from_container(&mut BufReader::new(file))
         .ok()?;

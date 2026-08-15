@@ -27,6 +27,7 @@ pub mod trash;
 pub mod video;
 pub mod volume;
 pub mod watcher;
+pub mod winpath;
 
 /// Whether the full scan pipeline is currently running (the watcher defers to
 /// it — the scan's own walk covers whatever changed).

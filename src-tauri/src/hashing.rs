@@ -23,7 +23,7 @@ const BUF_SIZE: usize = 1024 * 1024;
 /// blake3 over the first and last 64 KB (whole file when ≤128 KB). Cheap
 /// same-size disambiguation only — never a collapse criterion.
 pub fn prehash(path: &Path) -> std::io::Result<String> {
-    let mut file = File::open(path)?;
+    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
     let size = file.metadata()?.len();
     let mut hasher = blake3::Hasher::new();
 
@@ -43,7 +43,7 @@ pub fn prehash(path: &Path) -> std::io::Result<String> {
 
 /// Full streaming blake3 of the file's bytes.
 pub fn full_hash(path: &Path) -> std::io::Result<String> {
-    let file = File::open(path)?;
+    let file = File::open(crate::winpath::for_fs(path).as_ref())?;
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(file)?;
     Ok(hasher.finalize().to_hex().to_string())
@@ -57,7 +57,7 @@ pub fn full_hash_cancellable(
     path: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::io::Result<String> {
-    let mut file = File::open(path)?;
+    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
     loop {
@@ -84,7 +84,7 @@ pub fn full_hash_cancellable(
 /// collision policy upstream decides skips/conflicts before this runs) and
 /// fsynced before return; renaming/staging discipline belongs to the caller.
 pub fn hash_while_copying(src: &Path, dst: &Path) -> std::io::Result<(String, u64)> {
-    let mut reader = File::open(src)?;
+    let mut reader = File::open(crate::winpath::for_fs(src).as_ref())?;
     let mut writer = File::create_new(dst)?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];

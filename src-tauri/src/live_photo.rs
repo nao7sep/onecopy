@@ -23,7 +23,7 @@ const MOOV_CAP: u64 = 32 * 1024 * 1024;
 
 /// Reads the content identifier from a video file, if present.
 pub fn quicktime_content_identifier(path: &Path) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
+    let mut file = std::fs::File::open(crate::winpath::for_fs(path).as_ref()).ok()?;
     let file_len = file.metadata().ok()?.len();
     let mut position = 0u64;
 

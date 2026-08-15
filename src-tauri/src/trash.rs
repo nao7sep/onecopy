@@ -114,7 +114,7 @@ fn rename_with_suffix_loop(src: &Path, target: &Path) -> Result<PathBuf, String>
             .open(&candidate)
         {
             Ok(_) => {
-                std::fs::rename(src, &candidate).map_err(|e| {
+                std::fs::rename(crate::winpath::for_fs(src).as_ref(), crate::winpath::for_fs(&candidate).as_ref()).map_err(|e| {
                     let _ = std::fs::remove_file(&candidate);
                     format!("trash rename failed for {}: {e}", src.display())
                 })?;

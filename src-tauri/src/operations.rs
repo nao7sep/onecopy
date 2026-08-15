@@ -104,7 +104,7 @@ pub fn delete_item(
             DeleteMode::Trash => {
                 trash::trash_file(file, app_root, content_hash.as_deref()).map(|_| ())
             }
-            DeleteMode::Permanent => match std::fs::remove_file(file) {
+            DeleteMode::Permanent => match std::fs::remove_file(crate::winpath::for_fs(file).as_ref()) {
                 Ok(()) => Ok(()),
                 // Already gone from disk: the index intent (drop the row)
                 // still applies; the walk would have marked it missing anyway.
