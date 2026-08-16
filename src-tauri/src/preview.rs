@@ -101,7 +101,9 @@ pub const NEEDS_FFMPEG: &str = "needs-ffmpeg";
 /// 2: the analysis luminance composites alpha over mid-gray (dhash and
 /// sharpness previously read the RGB hidden under transparent pixels), so
 /// every stored phash for an alpha-bearing image is wrong until re-derived.
-pub const DERIVE_VERSION: i64 = 2;
+/// 3: rows gained the CLIP embedding; re-deriving lets the embed pass find
+/// every image pending once the similarity model is installed.
+pub const DERIVE_VERSION: i64 = 3;
 
 /// Extensions the `image` crate cannot decode, which route through the
 /// managed ffmpeg instead. Measured against image 0.25 and ffmpeg 9.0

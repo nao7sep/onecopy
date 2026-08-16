@@ -18,6 +18,7 @@ fn config() -> SimilarityConfig {
     SimilarityConfig {
         max_gap_seconds: 90,
         phash_max_distance: 4,
+        embedding_min_cosine: None,
     }
 }
 

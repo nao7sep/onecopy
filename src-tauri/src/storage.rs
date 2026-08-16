@@ -51,6 +51,10 @@ pub struct DefaultConfig {
     pub similarity_max_gap_seconds: u32,
     /// Max perceptual-hash Hamming distance for two photos to cluster.
     pub similarity_phash_max_distance: u32,
+    /// Embedding (cross-device) pairing: the one toggle and its cosine
+    /// threshold as a percent (90 = 0.90).
+    pub similarity_embedding_enabled: bool,
+    pub similarity_embedding_threshold_percent: u32,
     /// Long edge of the screen-fit preview cache entries.
     pub preview_long_edge_px: u32,
     /// Edge of the grid thumbnail cache entries.
@@ -92,6 +96,8 @@ impl Default for DefaultConfig {
             // Deliberately tight: on a measured 548-image corpus, 12 collapsed
             // everything into one 484-member hairball; 2-4 recovered families.
             similarity_phash_max_distance: 4,
+            similarity_embedding_enabled: true,
+            similarity_embedding_threshold_percent: 90,
             preview_long_edge_px: 1600,
             thumbnail_edge_px: 320,
             video_strip_seconds_per_frame: 20,

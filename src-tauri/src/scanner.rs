@@ -76,6 +76,9 @@ pub struct ScanSettings {
     pub cache_root: std::path::PathBuf,
     /// The managed ffmpeg when present on disk; None leaves videos underived.
     pub ffmpeg: Option<std::path::PathBuf>,
+    /// The managed CLIP model when present AND embedding pairing is enabled;
+    /// None degrades similarity to dHash-only, silently — today's behaviour.
+    pub embedding_model: Option<std::path::PathBuf>,
     pub temp_dir: std::path::PathBuf,
 }
 
@@ -130,6 +133,19 @@ pub fn settings_from_config(
                 "similarityPhashMaxDistance",
                 defaults.similarity_phash_max_distance,
             ),
+            // 0..=100 percent in config; the engine wants cosine 0..=1. The
+            // toggle folds in here: disabled → None → dHash-only.
+            embedding_min_cosine: get("similarityEmbeddingEnabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.similarity_embedding_enabled)
+                .then(|| {
+                    u32_of(
+                        "similarityEmbeddingThresholdPercent",
+                        defaults.similarity_embedding_threshold_percent,
+                    )
+                    .min(100) as f32
+                        / 100.0
+                }),
         },
         strip: crate::video::StripConfig {
             seconds_per_frame: u32_of(
@@ -143,6 +159,11 @@ pub fn settings_from_config(
             let path = crate::binaries_manager::ffmpeg_path(data_root);
             path.is_file().then_some(path)
         },
+        embedding_model: crate::binaries_manager::spec_of("clip-vit-b32").and_then(|spec| {
+            let state = crate::binaries_manager::state_of(data_root, spec);
+            (state.status != crate::binaries::BinaryStatus::NotInstalled)
+                .then(|| crate::binaries_manager::installed_path(data_root, spec))
+        }),
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
         preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
@@ -467,6 +488,26 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     Ok(false)
 }
 
+/// Whether the embed pass has owed work — split from `pending_work_exists`
+/// because it also depends on the MODEL being present, which the resume
+/// paths check at their own call sites exactly as they do for ffmpeg.
+pub fn embedding_work_exists(conn: &Connection) -> Result<bool, String> {
+    conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
+             AND embedding IS NULL AND derived_at_utc IS NOT NULL \
+             AND derived_at_utc NOT IN ('failed', '{}') \
+             AND EXISTS (SELECT 1 FROM paths p \
+                         WHERE p.content_hash = contents.hash AND p.missing = 0))",
+            crate::preview::NEEDS_FFMPEG
+        ),
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n != 0)
+    .map_err(|e| e.to_string())
+}
+
 /// The pipeline minus the walk: hash → extract → resolve → pair → derive →
 /// video → group, over whatever the checkpoints left pending. Shared by the
 /// full scan, the startup resume, and the scoped section rescan, so every
@@ -552,6 +593,19 @@ pub fn run_pipeline_tail(
             )
         },
     );
+
+    let embed_stats = crate::embedding::embed_images_pending(
+        conn,
+        &cache,
+        settings.embedding_model.as_deref(),
+        |done, total| progress("embed", format!("{done}/{total} embeddings")),
+    )?;
+    if embed_stats.embedded > 0 || embed_stats.failed > 0 {
+        progress(
+            "embed",
+            format!("{} embeddings, {} failures", embed_stats.embedded, embed_stats.failed),
+        );
+    }
 
     let group_stats = crate::similarity::rebuild_groups(conn, &settings.similarity)?;
     summary.similar_groups = group_stats.groups;

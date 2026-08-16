@@ -34,6 +34,9 @@ use rusqlite::{params, Connection};
 pub struct SimilarityConfig {
     pub max_gap_seconds: u32,
     pub phash_max_distance: u32,
+    /// Cosine threshold for embedding pairing; None = disabled or no model —
+    /// dHash-only, exactly the pre-embedding behaviour.
+    pub embedding_min_cosine: Option<f32>,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -149,6 +152,7 @@ struct Candidate {
     camera: String,
     time_ms: Option<i64>,
     phash: i64,
+    embedding: Option<Vec<f32>>,
 }
 
 /// Rebuilds every similar group from the current index. Only images with a
@@ -159,11 +163,12 @@ pub fn rebuild_groups(
     conn: &Connection,
     config: &SimilarityConfig,
 ) -> Result<GroupStats, String> {
+    let read_embeddings = config.embedding_min_cosine.is_some();
     let mut stmt = conn
         .prepare(
             "SELECT c.hash, \
              COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''), \
-             MIN(p.resolved_utc_ms), c.phash \
+             MIN(p.resolved_utc_ms), c.phash, c.embedding \
              FROM contents c JOIN paths p ON p.content_hash = c.hash \
              WHERE c.kind = 'image' AND c.phash IS NOT NULL \
                AND p.missing = 0 AND p.companion_of IS NULL \
@@ -177,6 +182,12 @@ pub fn rebuild_groups(
                 camera: r.get(1)?,
                 time_ms: r.get(2)?,
                 phash: r.get(3)?,
+                embedding: if read_embeddings {
+                    r.get::<_, Option<Vec<u8>>>(4)?
+                        .and_then(|blob| crate::embedding::from_blob(&blob))
+                } else {
+                    None
+                },
             })
         })
         .map_err(|e| e.to_string())?
@@ -197,6 +208,7 @@ pub fn rebuild_groups(
         // Quadratic within the bucket — integer work over in-memory rows, no
         // file reads. Chained components split around leaders (see
         // cluster_by_appearance).
+        let mut bucket_groups: Vec<Vec<usize>> = Vec::new();
         let phashes: Vec<i64> = indices.iter().map(|&i| candidates[i].phash).collect();
         for cluster in cluster_by_appearance(&phashes, config.phash_max_distance) {
             let cluster: Vec<usize> = cluster.into_iter().map(|local| indices[local]).collect();
@@ -218,9 +230,7 @@ pub fn rebuild_groups(
                 let camera_less = camera == "|";
                 if camera_less {
                     if members.len() >= 2 {
-                        groups.push(
-                            members.iter().map(|&i| candidates[i].hash.clone()).collect(),
-                        );
+                        bucket_groups.push(members.clone());
                     }
                     continue;
                 }
@@ -236,9 +246,7 @@ pub fn rebuild_groups(
                         _ => false,
                     };
                     if splits && burst.len() >= 2 {
-                        groups.push(
-                            burst.iter().map(|&i| candidates[i].hash.clone()).collect(),
-                        );
+                        bucket_groups.push(burst.clone());
                         burst.clear();
                     } else if splits {
                         burst.clear();
@@ -247,10 +255,34 @@ pub fn rebuild_groups(
                     last_time = time.or(last_time);
                 }
                 if burst.len() >= 2 {
-                    groups.push(
-                        burst.iter().map(|&i| candidates[i].hash.clone()).collect(),
-                    );
+                    bucket_groups.push(burst.clone());
                 }
+            }
+        }
+
+        // Stage B — cross-device pairing (Design: Similar-shot grouping).
+        // Embedding clusters are LEADER-bounded in cosine space, so they can
+        // never chain; each cluster merges the visual groups its members
+        // belong to into ONE group, deliberately crossing camera partitions
+        // and skipping the burst split — different devices' clocks disagree,
+        // which is exactly why appearance is the signal here.
+        let merged = if let Some(min_cosine) = config.embedding_min_cosine {
+            let embeddings: Vec<Option<Vec<f32>>> = indices
+                .iter()
+                .map(|&i| candidates[i].embedding.clone())
+                .collect();
+            let clusters: Vec<Vec<usize>> =
+                crate::embedding::embedding_clusters(&embeddings, min_cosine)
+                    .into_iter()
+                    .map(|cluster| cluster.into_iter().map(|local| indices[local]).collect())
+                    .collect();
+            merge_clusters(&bucket_groups, &clusters)
+        } else {
+            bucket_groups
+        };
+        for group in merged {
+            if group.len() >= 2 {
+                groups.push(group.iter().map(|&i| candidates[i].hash.clone()).collect());
             }
         }
     }
@@ -281,6 +313,61 @@ pub fn rebuild_groups(
     }
 
     Ok(stats)
+}
+
+/// Merges visual groups through cross-group clusters (the embedding stage):
+/// each cluster unions the groups its members belong to — members in no
+/// group join as singletons — and groups no cluster touches pass through.
+/// Pure over index sets, so the semantics are testable without a model.
+pub fn merge_clusters(groups: &[Vec<usize>], clusters: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    use std::collections::HashMap;
+    // Slot space: one slot per group, plus one lazily per clustered loner.
+    let mut slot_of: HashMap<usize, usize> = HashMap::new();
+    let mut slots: Vec<Vec<usize>> = Vec::new();
+    for group in groups {
+        let slot = slots.len();
+        slots.push(group.clone());
+        for &member in group {
+            slot_of.insert(member, slot);
+        }
+    }
+    let mut uf = UnionFind::new(slots.len() + clusters.iter().map(Vec::len).sum::<usize>());
+    let mut next_free = slots.len();
+    let mut loner_slot: HashMap<usize, usize> = HashMap::new();
+    for cluster in clusters {
+        let mut first: Option<usize> = None;
+        for &member in cluster {
+            let slot = *slot_of.get(&member).unwrap_or_else(|| {
+                loner_slot.entry(member).or_insert_with(|| {
+                    let slot = next_free;
+                    next_free += 1;
+                    slot
+                })
+            });
+            match first {
+                Some(anchor) => uf.union(anchor, slot),
+                None => first = Some(slot),
+            }
+        }
+    }
+    // Collect components back into member sets.
+    let mut merged: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (slot, members) in slots.iter().enumerate() {
+        merged.entry(uf.find(slot)).or_default().extend(members.iter().copied());
+    }
+    for (&member, &slot) in &loner_slot {
+        merged.entry(uf.find(slot)).or_default().push(member);
+    }
+    let mut out: Vec<Vec<usize>> = merged
+        .into_values()
+        .map(|mut members| {
+            members.sort_unstable();
+            members.dedup();
+            members
+        })
+        .collect();
+    out.sort_by_key(|group| group[0]);
+    out
 }
 
 /// One group's members, best-first: sharpness descending (the advisory

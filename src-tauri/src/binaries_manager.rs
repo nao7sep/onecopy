@@ -73,6 +73,19 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         pinned: None,
     },
     DependencySpec {
+        id: "clip-vit-b32",
+        label: "Similarity model (CLIP ViT-B/32)",
+        kind: DependencyKind::Model,
+        file_name: "clip-vit-b32-vision.onnx",
+        pinned: Some(PinnedModel {
+            // Qdrant's MIT-licensed ONNX export of openai/clip-vit-base-patch32;
+            // sha256 from the repository's LFS pointer (probed 2026-08-16).
+            url: "https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/main/model.onnx",
+            sha256: "c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63",
+            bytes: 351_686_194,
+        }),
+    },
+    DependencySpec {
         id: "whisper-large-v3-turbo",
         label: "Transcription model (Whisper large-v3-turbo)",
         kind: DependencyKind::Model,

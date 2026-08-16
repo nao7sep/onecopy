@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS contents (
   height          INTEGER,
   duration_ms     INTEGER,
   sharpness       REAL,
+  -- CLIP image embedding (f32 LE blob), present once the similarity model
+  -- has seen this content; the cross-device pairing signal.
+  embedding       BLOB,
   strip_frames    INTEGER,
   derived_at_utc  TEXT,
   -- The DERIVE_VERSION that produced this row's cache entries. Both derive

@@ -23,7 +23,12 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     // registration, so this doubles as the "declare it deliberately" pin the
     // schema test uses for tables.
     let ids: Vec<&str> = DEPENDENCIES.iter().map(|d| d.id).collect();
-    assert_eq!(ids, ["ffmpeg", "whisper-large-v3-turbo"]);
+    assert_eq!(ids, ["ffmpeg", "clip-vit-b32", "whisper-large-v3-turbo"]);
+
+    let clip = spec_of("clip-vit-b32").unwrap();
+    let clip_pin = clip.pinned.as_ref().unwrap();
+    assert!(clip_pin.url.starts_with("https://"));
+    assert_eq!(clip_pin.sha256.len(), 64);
 
     let whisper = spec_of("whisper-large-v3-turbo").unwrap();
     let pinned = whisper.pinned.as_ref().expect("models carry a pin");

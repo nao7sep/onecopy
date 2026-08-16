@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, Manager};
 pub mod backup_store;
 pub mod binaries;
 pub mod binaries_manager;
+pub mod embedding;
 pub mod extensions;
 pub mod hashing;
 pub mod index_store;

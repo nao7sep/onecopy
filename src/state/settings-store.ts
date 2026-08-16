@@ -13,6 +13,8 @@ export interface SettingsDraft {
   goodRangeStartYear: number;
   similarityMaxGapSeconds: number;
   similarityPhashMaxDistance: number;
+  similarityEmbeddingEnabled: boolean;
+  similarityEmbeddingThresholdPercent: number;
   previewLongEdgePx: number;
   thumbnailEdgePx: number;
   videoStripSecondsPerFrame: number;
@@ -40,6 +42,11 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     goodRangeStartYear: numberOr(config?.goodRangeStartYear, 1995),
     similarityMaxGapSeconds: numberOr(config?.similarityMaxGapSeconds, 90),
     similarityPhashMaxDistance: numberOr(config?.similarityPhashMaxDistance, 4),
+    similarityEmbeddingEnabled: config?.similarityEmbeddingEnabled !== false,
+    similarityEmbeddingThresholdPercent: numberOr(
+      config?.similarityEmbeddingThresholdPercent,
+      90,
+    ),
     previewLongEdgePx: numberOr(config?.previewLongEdgePx, 1600),
     thumbnailEdgePx: numberOr(config?.thumbnailEdgePx, 320),
     videoStripSecondsPerFrame: numberOr(config?.videoStripSecondsPerFrame, 20),
