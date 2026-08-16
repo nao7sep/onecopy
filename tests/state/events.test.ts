@@ -91,9 +91,21 @@ describe("watcher events", () => {
 
 describe("binaries events", () => {
   it("clears the install on an error", async () => {
-    binaries.setState({ installing: true });
+    binaries.setState({ installingId: "ffmpeg" });
 
-    fireEvent("binaries://error", { message: "checksum mismatch" });
-    expect(binaries.getState().installing).toBe(false);
+    fireEvent("binaries://error", { id: "ffmpeg", message: "checksum mismatch" });
+    expect(binaries.getState().installingId).toBeNull();
+  });
+
+  it("tracks WHICH entry is installing from the progress events", async () => {
+    // The registry holds several entries now; the modal must narrate the one
+    // actually downloading, and the chip must ignore a model's install.
+    fireEvent("binaries://progress", {
+      id: "whisper-large-v3-turbo",
+      phase: "download",
+      detail: "300 / 1549 MB",
+    });
+    expect(binaries.getState().installingId).toBe("whisper-large-v3-turbo");
+    expect(binaries.getState().progress).toContain("300 / 1549 MB");
   });
 });

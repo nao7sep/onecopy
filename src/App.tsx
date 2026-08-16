@@ -52,7 +52,12 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
-import { ffmpegChipText, ffmpegRole, useBinariesStore } from "./state/binaries-store";
+import {
+  ffmpegChipText,
+  ffmpegEntry,
+  ffmpegRole,
+  useBinariesStore,
+} from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
 import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
 import PreviewSurface from "./components/PreviewSurface";
@@ -90,9 +95,12 @@ export default function App() {
   };
   const issuesTotal = useIssuesStore((s) => s.total);
   const setIssuesOpen = useIssuesStore((s) => s.setOpen);
-  const ffmpegState = useBinariesStore((s) => s.state);
-  const binariesInstalling = useBinariesStore((s) => s.installing);
+  const ffmpeg = useBinariesStore((s) => ffmpegEntry(s.entries));
+  const installingId = useBinariesStore((s) => s.installingId);
   const binariesProgress = useBinariesStore((s) => s.progress);
+  // The chip narrates ffmpeg's own install only; a model download in flight
+  // is the modal's story.
+  const binariesInstalling = installingId === "ffmpeg";
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
   const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -759,25 +767,18 @@ export default function App() {
               exception the convention names: staying silent there "risks a
               dead feature", and for OneCopy that is every video and every HEIC
               reduced to a placeholder tile. */}
-          {ffmpegChipText(
-            binariesInstalling,
-            binariesProgress,
-            ffmpegState?.status ?? null,
-          ) !== null ? (
+          {ffmpegChipText(binariesInstalling, binariesProgress, ffmpeg?.status ?? null) !==
+          null ? (
             <button
               className={
-                ffmpegRole(ffmpegState?.status ?? null) === "warning"
+                ffmpegRole(ffmpeg?.status ?? null) === "warning"
                   ? "text-warning hover:underline"
                   : "text-ink-muted hover:text-ink"
               }
               title="Managed tools"
               onClick={() => setBinariesModalOpen(true)}
             >
-              {ffmpegChipText(
-                binariesInstalling,
-                binariesProgress,
-                ffmpegState?.status ?? null,
-              )}
+              {ffmpegChipText(binariesInstalling, binariesProgress, ffmpeg?.status ?? null)}
             </button>
           ) : null}
         </span>

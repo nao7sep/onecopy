@@ -25,6 +25,7 @@ const HOME_ENV_VAR: &str = "ONECOPY_HOME";
 // pinned together by the storage_file_names integration test).
 pub const LOGS_DIR_NAME: &str = "logs";
 pub const BIN_DIR_NAME: &str = "bin";
+pub const MODELS_DIR_NAME: &str = "models";
 pub const TEMP_DIR_NAME: &str = "temp";
 pub const TRASH_DIR_NAME: &str = "trash";
 pub const DEPENDENCIES_FILE_NAME: &str = "dependencies.json";

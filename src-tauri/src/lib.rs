@@ -986,26 +986,38 @@ fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
     )
 }
 
-// Managed ffmpeg: presence + facts + derived status.
+// Every managed dependency's presence + facts + derived status, in display
+// order — the Managed tools window renders one row per entry, and the ffmpeg
+// chip reads its entry out of the same list.
 #[tauri::command]
-fn binaries_state(app: AppHandle) -> Result<binaries_manager::FfmpegState, String> {
+fn binaries_state(app: AppHandle) -> Result<Vec<binaries_manager::DependencyState>, String> {
     let data_root = paths::data_root(&app)?;
-    Ok(binaries_manager::state(&data_root))
+    Ok(binaries_manager::states(&data_root))
 }
 
-// Installs or updates ffmpeg on a worker thread; progress arrives as
-// `binaries://progress`, completion as `binaries://done` / `binaries://error`.
+// Installs or updates ONE registry entry on a worker thread; progress arrives
+// as `binaries://progress` (id in the payload), completion as
+// `binaries://done` / `binaries://error`.
 #[tauri::command]
-fn binaries_install(app: AppHandle) -> Result<(), String> {
+fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let handle = app.clone();
     std::thread::spawn(move || {
-        let emit = |phase: &str, detail: String| {
-            let _ = handle.emit("binaries://progress", json!({ "phase": phase, "detail": detail }));
+        let progress_id = id.clone();
+        let progress_handle = handle.clone();
+        let emit = move |phase: &str, detail: String| {
+            let _ = progress_handle.emit(
+                "binaries://progress",
+                json!({ "id": progress_id, "phase": phase, "detail": detail }),
+            );
         };
-        match binaries_manager::install_or_update(&data_root, emit) {
+        let is_ffmpeg = id == "ffmpeg";
+        match binaries_manager::install_entry(&data_root, &id, emit) {
             Ok(facts) => {
-                let _ = handle.emit("binaries://done", json!({ "facts": facts }));
+                let _ = handle.emit("binaries://done", json!({ "id": id, "facts": facts }));
+                if !is_ffmpeg {
+                    return;
+                }
                 // Installing ffmpeg IS the remedy for everything it blocked —
                 // HEIC/AVIF stills and every video — so pick that work up now
                 // rather than leaving the library on placeholder tiles until
@@ -1035,26 +1047,32 @@ fn binaries_install(app: AppHandle) -> Result<(), String> {
                 }
             }
             Err(err) => {
-                logging::warn("ffmpeg install failed", json!({ "error": { "message": err.clone() } }));
-                let _ = handle.emit("binaries://error", json!({ "message": err }));
+                logging::warn(
+                    "dependency install failed",
+                    json!({ "id": id, "error": { "message": err.clone() } }),
+                );
+                let _ = handle.emit("binaries://error", json!({ "id": id, "message": err }));
             }
         }
     });
     Ok(())
 }
 
-// Version check only — never installs; a failure writes nothing.
+// Version check for one entry — never installs; a failure writes nothing.
 #[tauri::command]
-fn binaries_check(app: AppHandle) -> Result<binaries_manager::FfmpegState, String> {
+fn binaries_check(
+    app: AppHandle,
+    id: String,
+) -> Result<Vec<binaries_manager::DependencyState>, String> {
     logging::boundary(
         "binaries_check",
-        json!({}),
+        json!({ "id": id }),
         || {
             let data_root = paths::data_root(&app)?;
-            binaries_manager::check_for_updates(&data_root)?;
-            Ok(binaries_manager::state(&data_root))
+            binaries_manager::check_entry(&data_root, &id)?;
+            Ok(binaries_manager::states(&data_root))
         },
-        |state| json!({ "status": format!("{:?}", state.status) }),
+        |states| json!({ "entries": states.len() }),
     )
 }
 
@@ -1241,7 +1259,6 @@ pub fn run() {
             // source roots (the Camera Roll inflow case). Restart picks up
             // source-dir changes; correctness never depends on it.
             let watch_settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
-            let ffmpeg_present = watch_settings.ffmpeg.is_some();
             watcher::start(app.handle().clone(), watch_settings.source_dirs);
 
             // The one update switch (managed-runtime-dependencies): when ON,
@@ -1254,33 +1271,45 @@ pub fn run() {
                 .and_then(|c| c.get("checkUpdatesAtLaunch"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if check_at_launch && ffmpeg_present {
-                let facts = binaries_manager::load_facts(&data_root);
-                let stale = facts
-                    .last_checked_at_utc
-                    .as_deref()
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map(|t| chrono::Utc::now().signed_duration_since(t) > chrono::Duration::hours(24))
-                    .unwrap_or(true);
-                if stale {
-                    let root = data_root.clone();
-                    let handle = app.handle().clone();
+            if check_at_launch {
+                // The conventions' one toggle covers every INSTALLED entry:
+                // each stale one (>24 h since its own last check) gets checked
+                // on a worker thread; not-installed entries are never checked
+                // — there is nothing to update.
+                let root = data_root.clone();
+                let handle = app.handle().clone();
+                let stale_ids: Vec<String> = binaries_manager::states(&data_root)
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.status != binaries::BinaryStatus::NotInstalled
+                            && entry
+                                .facts
+                                .last_checked_at_utc
+                                .as_deref()
+                                .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
+                                .map(|t| {
+                                    chrono::Utc::now().signed_duration_since(t)
+                                        > chrono::Duration::hours(24)
+                                })
+                                .unwrap_or(true)
+                    })
+                    .map(|entry| entry.id)
+                    .collect();
+                if !stale_ids.is_empty() {
                     std::thread::spawn(move || {
-                        match binaries_manager::check_for_updates(&root) {
-                            Ok(facts) => {
-                                logging::info(
+                        for id in stale_ids {
+                            match binaries_manager::check_entry(&root, &id) {
+                                Ok(facts) => logging::info(
                                     "launch update check",
-                                    json!({ "latestKnown": facts.latest_known_version }),
-                                );
-                                let _ = handle.emit("binaries://changed", json!({}));
-                            }
-                            Err(err) => {
-                                logging::warn(
+                                    json!({ "id": id, "latestKnown": facts.latest_known_version }),
+                                ),
+                                Err(err) => logging::warn(
                                     "launch update check failed",
-                                    json!({ "error": { "message": err } }),
-                                );
+                                    json!({ "id": id, "error": { "message": err } }),
+                                ),
                             }
                         }
+                        let _ = handle.emit("binaries://changed", json!({}));
                     });
                 }
             }

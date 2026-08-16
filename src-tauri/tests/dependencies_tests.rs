@@ -1,0 +1,132 @@
+// The generalized managed-dependency registry (Phase 28's foundation).
+//
+// The contract that matters: N entries share one facts file WITHOUT sharing
+// fate — one entry's install, check, or corruption can never touch another's
+// facts — and a model's presence check is size-exact, so a truncated download
+// that somehow reached the models directory reads not-installed rather than
+// installed-broken.
+
+use onecopy_lib::binaries::{BinaryFacts, BinaryStatus};
+use onecopy_lib::binaries_manager::*;
+use onecopy_lib::paths::MODELS_DIR_NAME;
+
+fn home(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("onecopy-deps-{label}-"))
+        .tempdir()
+        .unwrap()
+}
+
+#[test]
+fn the_registry_carries_ffmpeg_and_the_whisper_model() {
+    // Display order is registry order; adding an entry is the whole
+    // registration, so this doubles as the "declare it deliberately" pin the
+    // schema test uses for tables.
+    let ids: Vec<&str> = DEPENDENCIES.iter().map(|d| d.id).collect();
+    assert_eq!(ids, ["ffmpeg", "whisper-large-v3-turbo"]);
+
+    let whisper = spec_of("whisper-large-v3-turbo").unwrap();
+    let pinned = whisper.pinned.as_ref().expect("models carry a pin");
+    assert!(pinned.url.starts_with("https://"));
+    assert_eq!(pinned.sha256.len(), 64);
+    assert!(pinned.bytes > 1_000_000_000, "large-v3-turbo is ~1.6 GB");
+}
+
+#[test]
+#[serial_test::serial(backup_store)]
+fn entries_share_the_facts_file_without_sharing_fate() {
+    let dir = home("fate");
+    let ffmpeg = BinaryFacts {
+        installed_version: Some("9.0".into()),
+        latest_known_version: Some("9.0".into()),
+        last_checked_at_utc: Some("2026-08-01T00:00:00.000Z".into()),
+    };
+    let whisper = BinaryFacts {
+        installed_version: Some("1fc70f774d38".into()),
+        latest_known_version: Some("1fc70f774d38".into()),
+        last_checked_at_utc: Some("2026-08-02T00:00:00.000Z".into()),
+    };
+    save_facts_for(dir.path(), "ffmpeg", &ffmpeg).unwrap();
+    save_facts_for(dir.path(), "whisper-large-v3-turbo", &whisper).unwrap();
+
+    // Both persist independently through the one file.
+    assert_eq!(load_facts_for(dir.path(), "ffmpeg"), ffmpeg);
+    assert_eq!(load_facts_for(dir.path(), "whisper-large-v3-turbo"), whisper);
+
+    // Updating one leaves the other byte-for-byte alone.
+    let newer = BinaryFacts {
+        latest_known_version: Some("9.1".into()),
+        ..ffmpeg.clone()
+    };
+    save_facts_for(dir.path(), "ffmpeg", &newer).unwrap();
+    assert_eq!(load_facts_for(dir.path(), "whisper-large-v3-turbo"), whisper);
+
+    // The historical `{"ffmpeg": …}` reader still answers.
+    assert_eq!(load_facts(dir.path()), newer);
+}
+
+#[test]
+fn a_corrupt_facts_file_self_heals_per_entry() {
+    let dir = home("corrupt");
+    std::fs::write(dir.path().join(DEPENDENCIES_FILE_NAME), b"{ not json").unwrap();
+    assert_eq!(load_facts_for(dir.path(), "ffmpeg"), BinaryFacts::default());
+    assert_eq!(
+        load_facts_for(dir.path(), "whisper-large-v3-turbo"),
+        BinaryFacts::default()
+    );
+}
+
+#[test]
+fn a_models_presence_check_is_size_exact() {
+    // A truncated model that somehow reached models/ must read NOT-INSTALLED:
+    // whisper.cpp would reject or garble it, and "installed but broken" is
+    // exactly the state the conventions' honest-state rule forbids showing.
+    let dir = home("truncated");
+    let spec = spec_of("whisper-large-v3-turbo").unwrap();
+    let target = installed_path(dir.path(), spec);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"way too short to be a model").unwrap();
+
+    let state = state_of(dir.path(), spec);
+    assert_eq!(state.status, BinaryStatus::NotInstalled);
+}
+
+#[test]
+#[serial_test::serial(backup_store)]
+fn a_model_check_needs_no_network_and_surfaces_a_repin() {
+    // The app's own pin IS "latest" for a model, so checking works offline —
+    // and an app update that re-pins shows update-available exactly like a
+    // new ffmpeg build would.
+    let dir = home("repin");
+    let spec = spec_of("whisper-large-v3-turbo").unwrap();
+
+    // Simulate an install under an OLDER pin.
+    let old = BinaryFacts {
+        installed_version: Some("aaaaaaaaaaaa".into()),
+        latest_known_version: Some("aaaaaaaaaaaa".into()),
+        last_checked_at_utc: Some("2026-08-01T00:00:00.000Z".into()),
+    };
+    save_facts_for(dir.path(), spec.id, &old).unwrap();
+    // Present on disk at the pinned size, so status derivation sees installed.
+    let target = installed_path(dir.path(), spec);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(&target).unwrap();
+    file.set_len(spec.pinned.as_ref().unwrap().bytes).unwrap();
+
+    let facts = check_entry(dir.path(), spec.id).unwrap();
+    assert_eq!(
+        facts.latest_known_version.as_deref(),
+        Some(&spec.pinned.as_ref().unwrap().sha256[..12]),
+    );
+    assert_eq!(state_of(dir.path(), spec).status, BinaryStatus::UpdateAvailable);
+}
+
+#[test]
+fn installed_paths_split_binaries_from_models() {
+    let dir = home("paths");
+    let ffmpeg = installed_path(dir.path(), spec_of("ffmpeg").unwrap());
+    let model = installed_path(dir.path(), spec_of("whisper-large-v3-turbo").unwrap());
+    assert!(ffmpeg.starts_with(dir.path().join(BIN_DIR_NAME)));
+    assert!(model.starts_with(dir.path().join(MODELS_DIR_NAME)));
+    assert_ne!(ffmpeg, model);
+}

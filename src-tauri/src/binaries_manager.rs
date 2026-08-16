@@ -1,9 +1,15 @@
-//! Orchestration half of the managed-binaries mechanism (the pure half lives
-//! in `binaries.rs`): resolve the latest build per platform, download to
-//! `temp/` staging, verify against the published checksums, extract, make the
-//! staged file runnable BEFORE it reaches `bin/` (chmod + de-quarantine), then
-//! publish with a same-volume rename. One install/check at a time; a failed
-//! check writes nothing (the honest-state rule).
+//! Orchestration half of the managed-dependencies mechanism (the pure half
+//! lives in `binaries.rs`): a REGISTRY of N entries of two kinds — binaries
+//! (resolved live per platform) and model files (pinned artifacts) — each
+//! downloading to `temp/` staging, verifying, then publishing with a
+//! same-volume rename. One install/check at a time across the registry; a
+//! failed check writes nothing (the honest-state rule).
+//!
+//! Model entries pin their canonical artifact IN CODE: URL, sha256 (taken
+//! from the upstream's own LFS metadata), and byte size. A model's "version"
+//! is the pin's short digest, so an app update that re-pins shows
+//! update-available exactly like a new ffmpeg build does — and a model check
+//! needs no network at all, because the app itself is the source of "latest".
 //!
 //! Endpoint shapes verified live at build time:
 //!   macOS arm64  https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip
@@ -25,11 +31,79 @@ use crate::{logging, nanoid, storage};
 
 // Subpath names are owned by the one resolver module (storage-path
 // conventions); re-exported here so existing call sites keep their imports.
-pub use crate::paths::{BIN_DIR_NAME, DEPENDENCIES_FILE_NAME, TEMP_DIR_NAME};
+pub use crate::paths::{BIN_DIR_NAME, DEPENDENCIES_FILE_NAME, MODELS_DIR_NAME, TEMP_DIR_NAME};
 
 const MARTIN_REDIRECT_URL: &str =
     "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip";
 const BTBN_LATEST_API: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DependencyKind {
+    Binary,
+    Model,
+}
+
+/// One managed dependency. `pinned` is Some for model entries — the canonical
+/// artifact the app provisions; None for binaries, which resolve live.
+pub struct DependencySpec {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub kind: DependencyKind,
+    pub file_name: &'static str,
+    pub pinned: Option<PinnedModel>,
+}
+
+pub struct PinnedModel {
+    pub url: &'static str,
+    /// From the upstream repository's own LFS metadata, not our download.
+    pub sha256: &'static str,
+    pub bytes: u64,
+}
+
+/// The registry. Order is display order in Managed tools. Adding an entry
+/// here is the WHOLE registration — facts, status, download, and the UI row
+/// all derive from it.
+pub const DEPENDENCIES: &[DependencySpec] = &[
+    DependencySpec {
+        id: "ffmpeg",
+        label: "ffmpeg",
+        kind: DependencyKind::Binary,
+        file_name: "", // platform-resolved by ffmpeg_file_name()
+        pinned: None,
+    },
+    DependencySpec {
+        id: "whisper-large-v3-turbo",
+        label: "Transcription model (Whisper large-v3-turbo)",
+        kind: DependencyKind::Model,
+        file_name: "ggml-large-v3-turbo.bin",
+        pinned: Some(PinnedModel {
+            // Canonical whisper.cpp model repository; sha256 from its LFS
+            // pointer (probed live 2026-08-16).
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+            sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+            bytes: 1_624_555_275,
+        }),
+    },
+];
+
+pub fn spec_of(id: &str) -> Option<&'static DependencySpec> {
+    DEPENDENCIES.iter().find(|d| d.id == id)
+}
+
+/// A model pin's user-facing version: the digest's short prefix — changes
+/// exactly when the app re-pins, which is the only way a model updates.
+fn pin_version(pinned: &PinnedModel) -> String {
+    pinned.sha256[..12].to_string()
+}
+
+/// The installed location for any entry.
+pub fn installed_path(root: &Path, spec: &DependencySpec) -> PathBuf {
+    match spec.kind {
+        DependencyKind::Binary => root.join(BIN_DIR_NAME).join(ffmpeg_file_name()),
+        DependencyKind::Model => root.join(MODELS_DIR_NAME).join(spec.file_name),
+    }
+}
 
 pub fn ffmpeg_file_name() -> &'static str {
     if cfg!(windows) {
@@ -55,26 +129,44 @@ pub fn reset_temp_dir(root: &Path) {
 // fresh defaults; the opposite of the config store's quarantine, because
 // every field is re-derivable by a check). ---
 
-pub fn load_facts(root: &Path) -> BinaryFacts {
+fn load_facts_map(root: &Path) -> serde_json::Map<String, serde_json::Value> {
     let file = root.join(DEPENDENCIES_FILE_NAME);
     let Ok(bytes) = std::fs::read(&file) else {
-        return BinaryFacts::default();
+        return serde_json::Map::new();
     };
     serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
-        .and_then(|v| serde_json::from_value(v.get("ffmpeg")?.clone()).ok())
+        .and_then(|v| v.as_object().cloned())
         .unwrap_or_default()
 }
 
-pub fn save_facts(root: &Path, facts: &BinaryFacts) -> Result<(), String> {
+/// One entry's facts out of the shared map — the historical `{"ffmpeg": …}`
+/// shape generalized in place, so an existing file needs no migration.
+pub fn load_facts_for(root: &Path, id: &str) -> BinaryFacts {
+    load_facts_map(root)
+        .get(id)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Read-modify-write of ONE entry's facts; every other entry's are untouched
+/// (the registry claim serializes callers, so the RMW cannot interleave).
+pub fn save_facts_for(root: &Path, id: &str, facts: &BinaryFacts) -> Result<(), String> {
     // records: dependencies.json rides write_atomic's backup hook. The facts
     // are re-derivable, so recording is not REQUIRED — but tiny self-healing
     // text in the store is harmless, and a separate unrecorded write path
     // would cost more than it saves (accounted in storage.rs's table).
-    let value = serde_json::json!({ "ffmpeg": facts });
-    let mut text = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    let mut map = load_facts_map(root);
+    map.insert(id.to_string(), serde_json::to_value(facts).map_err(|e| e.to_string())?);
+    let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .map_err(|e| e.to_string())?;
     text.push('\n');
     storage::write_atomic(&root.join(DEPENDENCIES_FILE_NAME), text.as_bytes())
+}
+
+/// Back-compat readers used by the scan settings and launch check.
+pub fn load_facts(root: &Path) -> BinaryFacts {
+    load_facts_for(root, "ffmpeg")
 }
 
 // --- Resolution ---
@@ -319,8 +411,68 @@ fn claim() -> Result<BusyGuard, String> {
     Ok(BusyGuard)
 }
 
-/// The full install/update: resolve → download → verify → extract → make
-/// runnable → publish → record facts.
+/// The full install/update for any registry entry. Binaries: resolve →
+/// download → verify → extract → make runnable → publish. Models: pinned
+/// download → sha256 verify → publish. Both stage in `temp/` and land with a
+/// same-volume rename; both record facts only on success.
+pub fn install_entry(
+    root: &Path,
+    id: &str,
+    mut on_progress: impl FnMut(&str, String),
+) -> Result<BinaryFacts, String> {
+    let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    match spec.kind {
+        DependencyKind::Binary => install_or_update(root, on_progress),
+        DependencyKind::Model => {
+            let _guard = claim()?;
+            let pinned = spec.pinned.as_ref().ok_or("model entry carries no pin")?;
+            let temp = root.join(TEMP_DIR_NAME);
+            std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
+            let partial = temp.join(format!("{id}-{}.partial", nanoid::generate()));
+            let result = (|| -> Result<BinaryFacts, String> {
+                on_progress(
+                    "download",
+                    format!("{} ({} MB)", spec.label, pinned.bytes / 1_048_576),
+                );
+                download_to(pinned.url, &partial, |done| {
+                    on_progress(
+                        "download",
+                        format!("{} / {} MB", done / 1_048_576, pinned.bytes / 1_048_576),
+                    );
+                })?;
+                on_progress("verify", "checking integrity".to_string());
+                let actual = file_sha256(&partial)?;
+                if actual != pinned.sha256 {
+                    return Err(format!(
+                        "checksum mismatch for {id}: expected {}, got {actual}",
+                        pinned.sha256
+                    ));
+                }
+                let target = installed_path(root, spec);
+                std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+                // Replace-in-place over any previous model (same volume).
+                // not recorded: the model file is a re-downloadable artifact.
+                std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
+                let version = pin_version(pinned);
+                let facts = BinaryFacts {
+                    installed_version: Some(version.clone()),
+                    latest_known_version: Some(version),
+                    last_checked_at_utc: Some(logging::now_iso_millis()),
+                };
+                save_facts_for(root, id, &facts)?;
+                logging::info(
+                    "model installed",
+                    serde_json::json!({ "id": id, "path": target.to_string_lossy() }),
+                );
+                Ok(facts)
+            })();
+            let _ = std::fs::remove_file(&partial);
+            result
+        }
+    }
+}
+
+/// The ffmpeg install/update (the registry's one binary entry).
 pub fn install_or_update(
     root: &Path,
     mut on_progress: impl FnMut(&str, String),
@@ -365,7 +517,7 @@ pub fn install_or_update(
             latest_known_version: Some(resolved.version.clone()),
             last_checked_at_utc: Some(logging::now_iso_millis()),
         };
-        save_facts(root, &facts)?;
+        save_facts_for(root, "ffmpeg", &facts)?;
         logging::info(
             "ffmpeg installed",
             serde_json::json!({ "version": resolved.version, "path": target.to_string_lossy() }),
@@ -378,33 +530,76 @@ pub fn install_or_update(
 
 /// Version check only. Success updates `latestKnownVersion` + the check stamp;
 /// failure writes NOTHING so stale knowledge is never dressed up as fresh.
-pub fn check_for_updates(root: &Path) -> Result<BinaryFacts, String> {
+/// Model entries need no network: the app's own pin IS "latest", so a re-pin
+/// shipped in an update surfaces as update-available on the next check.
+pub fn check_entry(root: &Path, id: &str) -> Result<BinaryFacts, String> {
+    let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
     let _guard = claim()?;
-    let resolved = resolve_latest()?;
-    let mut facts = load_facts(root);
-    facts.latest_known_version = Some(resolved.version);
+    let mut facts = load_facts_for(root, id);
+    match spec.kind {
+        DependencyKind::Binary => {
+            let resolved = resolve_latest()?;
+            facts.latest_known_version = Some(resolved.version);
+        }
+        DependencyKind::Model => {
+            let pinned = spec.pinned.as_ref().ok_or("model entry carries no pin")?;
+            facts.latest_known_version = Some(pin_version(pinned));
+        }
+    }
     facts.last_checked_at_utc = Some(logging::now_iso_millis());
-    save_facts(root, &facts)?;
+    save_facts_for(root, id, &facts)?;
     Ok(facts)
+}
+
+/// Back-compat: the ffmpeg check.
+pub fn check_for_updates(root: &Path) -> Result<BinaryFacts, String> {
+    check_entry(root, "ffmpeg")
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FfmpegState {
+pub struct DependencyState {
+    pub id: String,
+    pub label: String,
+    pub kind: DependencyKind,
     pub status: BinaryStatus,
     pub facts: BinaryFacts,
     pub path: String,
 }
 
-/// Presence re-scanned from disk every call; never persisted.
-pub fn state(root: &Path) -> FfmpegState {
-    let path = ffmpeg_path(root);
-    let facts = load_facts(root);
-    FfmpegState {
-        status: binaries::derive_status(binaries::is_usable_binary(&path), &facts),
+/// One entry's live state; presence re-scanned from disk, never persisted.
+/// A model's presence check is size-exact — a truncated download that somehow
+/// reached the models dir must read not-installed, not installed-broken.
+pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
+    let path = installed_path(root, spec);
+    let facts = load_facts_for(root, spec.id);
+    let present = match spec.kind {
+        DependencyKind::Binary => binaries::is_usable_binary(&path),
+        DependencyKind::Model => {
+            let expected = spec.pinned.as_ref().map(|p| p.bytes);
+            std::fs::metadata(&path)
+                .map(|m| m.is_file() && Some(m.len()) == expected)
+                .unwrap_or(false)
+        }
+    };
+    DependencyState {
+        id: spec.id.to_string(),
+        label: spec.label.to_string(),
+        kind: spec.kind,
+        status: binaries::derive_status(present, &facts),
         path: path.to_string_lossy().to_string(),
         facts,
     }
+}
+
+/// Every registry entry's state, in display order.
+pub fn states(root: &Path) -> Vec<DependencyState> {
+    DEPENDENCIES.iter().map(|spec| state_of(root, spec)).collect()
+}
+
+/// Back-compat: the ffmpeg state (the scan settings and chip read it).
+pub fn state(root: &Path) -> DependencyState {
+    state_of(root, spec_of("ffmpeg").expect("ffmpeg is registered"))
 }
 
 #[cfg(test)]
@@ -469,7 +664,7 @@ mod tests {
             latest_known_version: Some("9.1".into()),
             last_checked_at_utc: Some("2026-08-08T12:00:00.000Z".into()),
         };
-        save_facts(dir.path(), &facts).unwrap();
+        save_facts_for(dir.path(), "ffmpeg", &facts).unwrap();
         assert_eq!(load_facts(dir.path()), facts);
     }
 

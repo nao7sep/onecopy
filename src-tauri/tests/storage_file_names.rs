@@ -7,6 +7,7 @@
 
 use onecopy_lib::backup_store::BACKUPS_DB_FILE_NAME;
 use onecopy_lib::paths::{
+    MODELS_DIR_NAME,
     BIN_DIR_NAME, DEPENDENCIES_FILE_NAME, LOGS_DIR_NAME, TEMP_DIR_NAME, TRASH_DIR_NAME,
 };
 use onecopy_lib::storage::{CACHE_DIR_NAME, CONFIG_FILE_NAME, INDEX_DB_FILE_NAME, STATE_FILE_NAME};
@@ -53,6 +54,7 @@ fn standard_subpaths_stay_pinned() {
         "the per-volume and home-volume trash names are distinct"
     );
     assert_eq!(DEPENDENCIES_FILE_NAME, "dependencies.json");
+    assert_eq!(MODELS_DIR_NAME, "models");
 }
 
 #[test]
@@ -69,6 +71,7 @@ fn every_store_has_its_own_file() {
         CACHE_DIR_NAME,
         LOGS_DIR_NAME,
         BIN_DIR_NAME,
+        MODELS_DIR_NAME,
         TEMP_DIR_NAME,
         TRASH_DIR_NAME,
     ];

@@ -1,5 +1,5 @@
 import { useWizardStore } from "../state/wizard-store";
-import { useBinariesStore } from "../state/binaries-store";
+import { ffmpegEntry, useBinariesStore } from "../state/binaries-store";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
@@ -173,22 +173,22 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
  * started here keeps running after Finish — the footer chip carries its
  * progress, so the offer never blocks the scan. */
 function FfmpegOfferRow() {
-  const state = useBinariesStore((s) => s.state);
-  const installing = useBinariesStore((s) => s.installing);
+  const ffmpeg = useBinariesStore((s) => ffmpegEntry(s.entries));
+  const installing = useBinariesStore((s) => s.installingId) === "ffmpeg";
   const progress = useBinariesStore((s) => s.progress);
   const install = useBinariesStore((s) => s.install);
-  const installed = state !== null && state.status !== "not-installed";
+  const installed = ffmpeg !== null && ffmpeg.status !== "not-installed";
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-muted/40 px-3 py-2 text-sm">
       <span className="text-ink">
         {installing
           ? progress
           : installed
-            ? `Installed (${state?.facts.installedVersion ?? "unknown version"})`
+            ? `Installed (${ffmpeg?.facts.installedVersion ?? "unknown version"})`
             : "Not installed"}
       </span>
       {!installed && !installing ? (
-        <Button variant="primary" onClick={() => void install()}>
+        <Button variant="primary" onClick={() => void install("ffmpeg")}>
           Install
         </Button>
       ) : null}
