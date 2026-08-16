@@ -73,10 +73,14 @@ export const emit = vi.fn(async (event: string, payload?: unknown) => {
 
 export const setFocus = vi.fn(async () => {});
 export const setZoom = vi.fn(async () => {});
+// Typed with its argument so a spec can assert the DERIVED minimum actually
+// reached the window, not merely that the call happened.
+export const setMinSize = vi.fn(async (_size: LogicalSize) => {});
 
 export const getCurrentWindow = vi.fn(() => ({
   label: currentWindowLabel,
   setFocus,
+  setMinSize,
 }));
 
 export const getCurrentWebview = vi.fn(() => ({ setZoom }));
@@ -166,6 +170,7 @@ export function resetTauriMocks(
     emit,
     setFocus,
     setZoom,
+    setMinSize,
     getCurrentWindow,
     getCurrentWebview,
     availableMonitors,

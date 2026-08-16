@@ -3,8 +3,8 @@
 // fixed chrome, never hand-typed, so the window and its content can never
 // disagree (app-chrome-conventions).
 //
-// The layout (App) is a vertical stack: a content row of
-// [sections sidebar | divider | grid | divider | right pane] over the status
+// The layout (App) is a vertical stack: a title band, then a content row of
+// [sections sidebar | divider | grid | divider | right pane], then the status
 // footer. Both side panes are user-resizable: the persisted value is the
 // user's INTENT in pixels (written only on a drag), the displayed width is
 // the intent clamped against what fits right now, and a window resize
@@ -29,6 +29,10 @@ export const SPLITTER_WIDTH = 4;
 // Content row minimum height before the grid's own scrolling takes over.
 export const CONTENT_MIN_HEIGHT = 400;
 
+// Title band height: the app name beside the menu trigger, whose 24px button
+// sets the row (py-1 + a 24px control ≈ 32px).
+export const HEADER_HEIGHT = 32;
+
 // Status footer height (one text row: py-1 + text-xs ≈ 24px).
 export const FOOTER_HEIGHT = 24;
 
@@ -38,8 +42,11 @@ export function computeMinWindowWidth(): number {
   );
 }
 
+// Both fixed bands are reserved BEFORE the content row (app-chrome: fixed
+// chrome is never the thing that gets clipped), so each one costs the window
+// its own height in minimum.
 export function computeMinWindowHeight(): number {
-  return CONTENT_MIN_HEIGHT + FOOTER_HEIGHT;
+  return HEADER_HEIGHT + CONTENT_MIN_HEIGHT + FOOTER_HEIGHT;
 }
 
 /** Clamps the two pane INTENTS against the live container width. When both

@@ -3,6 +3,7 @@ import {
   CONTENT_MIN_HEIGHT,
   FOOTER_HEIGHT,
   GRID_MIN_WIDTH,
+  HEADER_HEIGHT,
   RIGHT_PANE_MIN_WIDTH,
   SIDEBAR_MIN_WIDTH,
   SPLITTER_WIDTH,
@@ -18,8 +19,11 @@ describe("window minimums are derived, never hand-typed", () => {
     );
   });
 
-  it("height is the content plus the footer", () => {
-    expect(computeMinWindowHeight()).toBe(CONTENT_MIN_HEIGHT + FOOTER_HEIGHT);
+  it("height reserves BOTH fixed bands around the content", () => {
+    expect(computeMinWindowHeight()).toBe(HEADER_HEIGHT + CONTENT_MIN_HEIGHT + FOOTER_HEIGHT);
+    // Neither band may be forgotten: the app-chrome rule is that fixed chrome
+    // is reserved before the fill region, so each one raises the minimum.
+    expect(computeMinWindowHeight()).toBeGreaterThan(CONTENT_MIN_HEIGHT + FOOTER_HEIGHT);
   });
 
   it("the launch size in tauri.conf.json clears the minimums", async () => {
