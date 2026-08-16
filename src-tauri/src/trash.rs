@@ -187,6 +187,86 @@ pub fn trash_root_for(volume_root: &Path, app_root: &Path) -> Result<PathBuf, St
     }
 }
 
+
+/// One trash root's standing facts for the Trash surface: where it is, how
+/// much it holds. Sizes are computed on demand — the surface opens rarely and
+/// a cached number would only be a chance to lie.
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashRootInfo {
+    pub root: String,
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Every trash root the configured source directories imply (their volumes,
+/// deduplicated) plus the app-home trash, each with its current size. A root
+/// that does not exist yet reports zero rather than being omitted — the row
+/// tells the user where trash WOULD go, which is standing state too.
+pub fn overview(source_dirs: &[String], app_root: &Path) -> Vec<TrashRootInfo> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for dir in source_dirs {
+        if let Ok(volume) = volume_root_of(Path::new(dir)) {
+            if let Ok(root) = trash_root_for(&volume, app_root) {
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+    }
+    let home = app_root.join(HOME_TRASH_SUBDIR);
+    if !roots.contains(&home) {
+        roots.push(home);
+    }
+    roots
+        .into_iter()
+        .map(|root| {
+            let (bytes, files) = tree_size(&root);
+            TrashRootInfo {
+                root: root.to_string_lossy().to_string(),
+                bytes,
+                files,
+            }
+        })
+        .collect()
+}
+
+/// Empties one trash root by deleting its day folders. PERMANENT by nature —
+/// the caller confirms with the totals first — and the root itself stays so
+/// the next trash move needs no re-setup. A file that refuses deletion is
+/// simply left (reported in the count difference); the trash never needs to
+/// be perfect, only smaller.
+pub fn empty_root(root: &Path) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(root).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            // Stray top-level files (none are written today) go too: the
+            // user asked for empty.
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// Total bytes and file count under a tree; a missing tree is (0, 0).
+fn tree_size(root: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().flatten() {
+        if entry.file_type().is_file() {
+            files += 1;
+            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    (bytes, files)
+}
+
 fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))

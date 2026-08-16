@@ -259,3 +259,48 @@ fn home_volume_files_trash_into_the_app_root() {
 
     assert_eq!(root, app_root.join("trash"));
 }
+
+#[test]
+fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
+    // The Trash surface's whole contract: sizes tell the truth on open, and
+    // emptying destroys the CONTENTS while the root survives for the next
+    // trash move. The root path check lives in the command layer; this is
+    // the engine half.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-trash-surface-")
+        .tempdir()
+        .unwrap();
+    let app_root = dir.path().join("apphome");
+    std::fs::create_dir_all(&app_root).unwrap();
+
+    // Two files trashed through the real path so the day-folder layout is
+    // the one the surface will meet.
+    let source = dir.path().join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    let a = source.join("one.jpg");
+    let b = source.join("two.jpg");
+    std::fs::write(&a, vec![1u8; 1000]).unwrap();
+    std::fs::write(&b, vec![2u8; 500]).unwrap();
+    trash_file(&a, &app_root, Some("h1")).unwrap();
+    trash_file(&b, &app_root, Some("h2")).unwrap();
+
+    let rows = overview(&[source.to_string_lossy().to_string()], &app_root);
+    // The temp dir lives on the home volume, so the source's volume trash IS
+    // the app-home trash — one deduplicated row.
+    let row = rows
+        .iter()
+        .find(|r| r.files >= 2)
+        .expect("a row must carry the two trashed files");
+    // Bytes cover the files plus the manifest — at least the payloads.
+    assert!(row.bytes >= 1500, "sizes must count the stored bytes");
+
+    empty_root(Path::new(&row.root)).unwrap();
+    let after = overview(&[source.to_string_lossy().to_string()], &app_root);
+    let same = after.iter().find(|r| r.root == row.root).unwrap();
+    assert_eq!(same.files, 0, "emptied means empty");
+    assert_eq!(same.bytes, 0);
+    assert!(
+        Path::new(&row.root).exists(),
+        "the root itself survives for the next trash move"
+    );
+}

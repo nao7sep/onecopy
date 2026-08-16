@@ -867,6 +867,45 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
     )
 }
 
+// The Trash surface: standing sizes per trash root, and the one deliberately
+// destructive convenience — emptying a root. The trash is otherwise
+// write-only; these are the only two readers the design allows.
+#[tauri::command]
+fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
+    logging::boundary(
+        "trash_overview",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let dirs = storage::load_config_source_dirs(&data_root)?;
+            Ok(trash::overview(&dirs, &data_root))
+        },
+        |roots| json!({ "roots": roots.len() }),
+    )
+}
+
+// Emptying is PERMANENT (the trash is the safety net; emptying it removes
+// the net for everything inside). The frontend confirms with the totals
+// before calling; the root path must be one `trash_overview` reported —
+// verified here so the command can never delete an arbitrary tree.
+#[tauri::command]
+fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
+    logging::boundary(
+        "trash_empty",
+        json!({ "root": root }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let dirs = storage::load_config_source_dirs(&data_root)?;
+            let known = trash::overview(&dirs, &data_root);
+            if !known.iter().any(|r| r.root == root) {
+                return Err("not a known trash root".to_string());
+            }
+            trash::empty_root(std::path::Path::new(&root))
+        },
+        |_| json!({}),
+    )
+}
+
 // Dismissal is the user's half of the issues lifecycle: scan-derived rows
 // clear themselves when a scan finds the condition resolved, these two clear
 // everything else. Deleting is honest — the log file keeps the history, and a
@@ -1268,6 +1307,8 @@ pub fn run() {
             rescan_section,
             move_cache,
             get_issues,
+            trash_overview,
+            trash_empty,
             dismiss_issue,
             dismiss_all_issues,
             binaries_state,
