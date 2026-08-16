@@ -62,9 +62,29 @@ export function stripUrl(hash: string, index: number): string {
   return convertFileSrc(`strip-${hash}-${index}`, "mediacache");
 }
 
-// The range-capable original-file protocol: video playback and the 100% view.
+// The range-capable original-file protocol: video playback, audio playback,
+// and the 100% view. Hash-keyed when a hash exists; `path-<id>` otherwise —
+// an audio memo with a unique size is never content-read, so it may live its
+// whole life unhashed.
 export function originalUrl(hash: string): string {
   return convertFileSrc(hash, "mediafile");
+}
+
+export function originalUrlByPath(pathId: number): string {
+  return convertFileSrc(`path-${pathId}`, "mediafile");
+}
+
+/** Audio detection by extension — the file stays an OTHER-file everywhere
+ * (list view, sections); only the preview treats it specially, by playing
+ * it instead of showing a blank surface. */
+const AUDIO_EXTENSIONS = new Set([
+  "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "oga", "opus", "amr",
+]);
+
+export function isAudioFile(fileName: string): boolean {
+  const dot = fileName.lastIndexOf(".");
+  if (dot <= 0 || dot === fileName.length - 1) return false;
+  return AUDIO_EXTENSIONS.has(fileName.slice(dot + 1).toLowerCase());
 }
 
 /** `m:ss` / `h:mm:ss` for duration badges. */

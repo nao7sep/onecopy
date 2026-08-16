@@ -50,6 +50,15 @@ pub fn content_type_for(path: &str) -> &'static str {
         "wmv" => "video/x-ms-wmv",
         "3gp" => "video/3gpp",
         "mts" | "m2ts" => "video/mp2t",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "aiff" | "aif" => "audio/aiff",
+        "flac" => "audio/flac",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        "amr" => "audio/amr",
         _ => "application/octet-stream",
     }
 }

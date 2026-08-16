@@ -103,3 +103,22 @@ fn images_are_not_streamable_and_video_is() {
     assert!(!is_streamable("image/jpeg"));
     assert!(!is_streamable("application/octet-stream"));
 }
+
+#[test]
+fn audio_types_resolve_and_stream() {
+    // Audio other-files play in the preview (decided 2026-08-16): the type
+    // map must name them (a generic octet-stream makes the webview download
+    // instead of play) and the streamable gate must include them so the
+    // head-chunk shortcut applies.
+    for (name, expected) in [
+        ("memo.m4a", "audio/mp4"),
+        ("song.mp3", "audio/mpeg"),
+        ("raw.wav", "audio/wav"),
+        ("lossless.flac", "audio/flac"),
+        ("talk.opus", "audio/opus"),
+    ] {
+        let content_type = content_type_for(name);
+        assert_eq!(content_type, expected, "{name}");
+        assert!(is_streamable(content_type), "{name} must stream");
+    }
+}
