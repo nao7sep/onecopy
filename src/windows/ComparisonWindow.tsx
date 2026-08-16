@@ -39,6 +39,9 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
       // from a bare slot-0 press, and forwarding strips the distinction.
       void emit("comparison://key", {
         key: event.key,
+        // The physical key: Shift+digit delivers a symbol in `key`, so the
+        // unlink chord can only be recognized from `code`.
+        code: event.code,
         shiftKey: event.shiftKey,
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
@@ -72,20 +75,31 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         {chunk.length === 0 ? (
           <p className="m-auto text-ink-muted">Waiting for the comparison…</p>
         ) : (
-          chunk.map((slot) => (
-            <ComparisonSlot
-              key={slot.member.hash}
-              member={slot.member}
-              slotKey={slot.slotKey}
-              kept={slot.kept}
-              onToggle={() =>
-                void emit("comparison://key", { key: slot.slotKey, shiftKey: false })
-              }
-              onEnlarge={() =>
-                setEnlarged({ hash: slot.member.hash, name: slot.member.fileName })
-              }
-            />
-          ))
+          chunk.map((slot) =>
+            slot.member !== null ? (
+              <ComparisonSlot
+                key={slot.member.hash}
+                member={slot.member}
+                slotKey={slot.slotKey}
+                kept={slot.kept}
+                onToggle={() =>
+                  void emit("comparison://key", { key: slot.slotKey, shiftKey: false })
+                }
+                onEnlarge={() =>
+                  setEnlarged({ hash: slot.member!.hash, name: slot.member!.fileName })
+                }
+              />
+            ) : (
+              <div
+                key={`empty-${slot.slotKey}`}
+                className="flex h-full w-full items-center justify-center rounded-lg border-2 border-dashed border-border"
+              >
+                <span className="text-lg font-bold text-ink-muted opacity-40">
+                  {slot.slotKey.toUpperCase()}
+                </span>
+              </div>
+            ),
+          )
         )}
       </div>
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">

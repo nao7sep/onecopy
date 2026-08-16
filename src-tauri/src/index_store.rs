@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS similar_group_members (
   PRIMARY KEY (group_id, content_hash)
 );
 
+-- The user's unlink verdicts from the comparison view: these two images are
+-- NOT the same subject. A fact about the IMAGES, deliberately not a group:
+-- groups are rebuilt wholesale every scan, so anything keyed on a group id
+-- evaporates — the pair survives rebuilds and keeps the intruder out
+-- forever. Canonical order (hash_a < hash_b), one row per pair.
+CREATE TABLE IF NOT EXISTS similar_exclusions (
+  hash_a         TEXT NOT NULL,
+  hash_b         TEXT NOT NULL,
+  created_at_utc TEXT NOT NULL,
+  PRIMARY KEY (hash_a, hash_b)
+);
+
 -- Issues are CURRENT-STATE diagnostics, not a log — the log file is the
 -- history. Identity is (kind, path): a recurrence UPDATES the row, so a
 -- condition persisting for weeks is one line, not one per scan. `path` is ''
@@ -235,6 +247,7 @@ mod tests {
             "issues",
             "paths",
             "scan_dirs",
+            "similar_exclusions",
             "similar_group_members",
             "similar_groups",
             "source_volumes",

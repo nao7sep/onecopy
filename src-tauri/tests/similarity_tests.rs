@@ -17,6 +17,7 @@ fn seeded() -> (tempfile::TempDir, Connection) {
 fn config() -> SimilarityConfig {
     SimilarityConfig {
         max_gap_seconds: 90,
+        diameter_multiplier: 2,
         phash_max_distance: 4,
         embedding_min_cosine: None,
     }
@@ -192,7 +193,7 @@ fn a_chain_cannot_glue_dissimilar_photos_into_one_family() {
         0b0000_1111_1111,          // c: d4 from b, d8 from a  (still within 2d)
         0b1111_1111_1111,          // d: d4 from c, d12 from a (chained past 2d)
     ];
-    let clusters = cluster_by_appearance(&hashes, 4);
+    let clusters = cluster_by_appearance(&hashes, 4, 2);
     assert_eq!(clusters.len(), 2, "the chain must split");
     // Split at the seam, not scattered: sorted-by-hash leaders keep the near
     // pairs together.
@@ -210,7 +211,7 @@ fn a_tight_family_with_spread_ends_stays_whole() {
         0b0000_0011, // middle (d2 from both ends)
         0b0011_0011, // end two: d4 from middle, d6 from end one (≤ 2d)
     ];
-    let clusters = cluster_by_appearance(&hashes, 4);
+    let clusters = cluster_by_appearance(&hashes, 4, 2);
     assert_eq!(clusters.len(), 1, "within-diameter components stand whole");
     assert_eq!(clusters[0].len(), 3);
 }
@@ -227,7 +228,7 @@ fn identical_twins_survive_a_hairball_split() {
         0b0000_0000_0000, // twin 2
         0b0000_0000_1111, // chain link
     ];
-    let clusters = cluster_by_appearance(&hashes, 4);
+    let clusters = cluster_by_appearance(&hashes, 4, 2);
     let twins: Vec<&Vec<usize>> =
         clusters.iter().filter(|c| c.contains(&1) || c.contains(&3)).collect();
     assert_eq!(twins.len(), 1, "distance-0 twins must share a cluster");
@@ -246,4 +247,114 @@ fn rebuild_is_wholesale_and_idempotent() {
         .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
         .unwrap();
     assert_eq!(member_rows, 2, "no duplicate membership after a rebuild");
+}
+
+// ---- Unlink: the user's "not the same subject" verdicts ----
+
+/// Two images whose phashes pair, seeded the way the engine reads them.
+fn seed_pairable(conn: &Connection, hash: &str, phash: i64) {
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind, phash, sharpness, camera_make) \
+         VALUES (?1, 100, 'image', ?2, 1.0, '|')",
+        params![hash, phash],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, mtime_ms, \
+         content_hash, resolved_utc_ms, resolved_source, date_only, missing, companion_of) \
+         VALUES (?1, '/b', ?2, ?3, 'jpg', 'image', 100, 0, ?4, 1700000000000, 'metadata', 0, 0, NULL)",
+        params![format!("/b/{hash}.jpg"), format!("{hash}.jpg"), hash, hash],
+    )
+    .unwrap();
+}
+
+#[test]
+fn split_by_exclusions_removes_the_intruder_and_keeps_the_family_whole() {
+    use std::collections::HashSet;
+    let family = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // The intruder was unlinked against every member — the shape the unlink
+    // command writes.
+    let excluded: HashSet<(String, String)> = ["a", "b", "c"]
+        .iter()
+        .map(|m| {
+            let (x, y) = if *m < "intruder" { (m.to_string(), "intruder".into()) } else { ("intruder".into(), m.to_string()) };
+            (x, y)
+        })
+        .collect();
+    let out = split_by_exclusions(vec![family(&["a", "b", "intruder", "c"])], &excluded);
+    assert_eq!(out, vec![family(&["a", "b", "c"])], "family whole, intruder out (dropped: alone)");
+
+    // No exclusions → untouched, same allocation path.
+    let untouched = split_by_exclusions(vec![family(&["a", "b"])], &HashSet::new());
+    assert_eq!(untouched, vec![family(&["a", "b"])]);
+}
+
+#[test]
+fn an_unlinked_pair_never_regroups_however_similar_their_pixels_are() {
+    // The persistence promise: groups are rebuilt WHOLESALE every scan, so an
+    // unlink stored against the group would evaporate. Stored against the
+    // pair, it must hold on every later rebuild.
+    let (_dir, conn) = seeded();
+    seed_pairable(&conn, "keeper", 0b0001);
+    seed_pairable(&conn, "bolt", 0b0011); // distance 1 — pairs on looks
+
+    let cfg = config();
+    rebuild_groups(&conn, &cfg).unwrap();
+    let grouped: i64 = conn
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(grouped, 2, "they pair before the verdict");
+
+    let written = unlink_from_group(&conn, "bolt").unwrap();
+    assert_eq!(written, 1, "one exclusion per other member");
+    // Immediate effect, no rescan needed: membership gone, and a group of one
+    // is dissolved rather than left as a phantom ≈ badge.
+    let (members, groups): (i64, i64) = (
+        conn.query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0)).unwrap(),
+        conn.query_row("SELECT COUNT(*) FROM similar_groups", [], |r| r.get(0)).unwrap(),
+    );
+    assert_eq!((members, groups), (0, 0));
+
+    // And the verdict binds every future rebuild.
+    rebuild_groups(&conn, &cfg).unwrap();
+    let regrouped: i64 = conn
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(regrouped, 0, "the pair must never re-form");
+
+    // Unlinking something ungrouped is a quiet no-op, not an error.
+    assert_eq!(unlink_from_group(&conn, "keeper").unwrap(), 0);
+}
+
+#[test]
+fn an_unlinked_image_still_groups_with_a_genuine_twin() {
+    // The exclusion is PAIRWISE, not a ban on the image: a real duplicate of
+    // the unlinked photo arriving later must still pair with it.
+    let (_dir, conn) = seeded();
+    seed_pairable(&conn, "bolt", 0b0011);
+    seed_pairable(&conn, "family", 0b0001);
+    let cfg = config();
+    rebuild_groups(&conn, &cfg).unwrap();
+    unlink_from_group(&conn, "bolt").unwrap();
+
+    seed_pairable(&conn, "bolt-copy", 0b0010); // distance 1 from bolt
+    rebuild_groups(&conn, &cfg).unwrap();
+    let bolt_group: Option<i64> = conn
+        .query_row(
+            "SELECT group_id FROM similar_group_members WHERE content_hash = 'bolt'",
+            [],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .unwrap_or(None);
+    let group = bolt_group.expect("the twin pairs with the unlinked image");
+    let with: Vec<String> = conn
+        .prepare("SELECT content_hash FROM similar_group_members WHERE group_id = ?1 ORDER BY 1")
+        .unwrap()
+        .query_map([group], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(with.contains(&"bolt-copy".to_string()));
+    assert!(!with.contains(&"family".to_string()), "the verdict still holds: {with:?}");
 }

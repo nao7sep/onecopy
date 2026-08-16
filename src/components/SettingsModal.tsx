@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../state/settings-store";
+import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
   describePosition,
@@ -130,18 +132,23 @@ function ScreensSection() {
 // the minimum under the caret); parsing and clamping happen on blur only.
 function NumberField({
   label,
+  hint,
   value,
   min,
   onChange,
 }: {
   label: string;
+  /** What the number MEANS, for the knobs whose effect is not obvious from
+   * their name — a similarity threshold is a judgement call, so the row says
+   * which direction is stricter. */
+  hint?: string;
   value: number;
   min: number;
   onChange: (value: number) => void;
 }) {
   const [text, setText] = useState<string | null>(null);
   return (
-    <Row label={label}>
+    <Row label={label} hint={hint}>
       <TextInput
         type="number"
         className="w-24 text-right"
@@ -155,6 +162,36 @@ function NumberField({
           setText(null);
         }}
       />
+    </Row>
+  );
+}
+
+/** The unlink store's one surface: how many "not the same subject" verdicts
+ * exist, and the way to take them all back. Without the count the exclusions
+ * would be an invisible permanent store; with only the count there would be
+ * no recovery from an accidental unlink. */
+function UnlinkedPairsRow() {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    void invoke<number>("similar_exclusions_count")
+      .then(setCount)
+      .catch((error) => log.warn("exclusions count failed", toErrorFields(error)));
+  }, []);
+  if (count === null || count === 0) return null;
+  return (
+    <Row
+      label={`Unlinked pairs (${count})`}
+      hint="Photos you marked as not similar. Forgetting lets them group again on the next scan."
+    >
+      <Button
+        onClick={() => {
+          void invoke("similar_exclusions_clear")
+            .then(() => setCount(0))
+            .catch((error) => log.warn("exclusions clear failed", toErrorFields(error)));
+        }}
+      >
+        Forget all
+      </Button>
     </Row>
   );
 }
@@ -318,9 +355,17 @@ export default function SettingsModal() {
           />
           <NumberField
             label="Visual distance limit (0–64)"
+            hint="How different two photos may look and still pair. Lower is stricter; flat graphics crowd together, so a corpus of icons wants a lower number than photos do."
             value={draft.similarityPhashMaxDistance}
             min={0}
             onChange={(v) => update({ similarityPhashMaxDistance: v })}
+          />
+          <NumberField
+            label="Family width (× the limits above)"
+            hint="How far one family may spread. 1 means every photo must resemble the family's first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family."
+            value={draft.similarityDiameterMultiplier}
+            min={1}
+            onChange={(v) => update({ similarityDiameterMultiplier: Math.min(4, v) })}
           />
           <Row
             label="Match across devices"
@@ -331,8 +376,10 @@ export default function SettingsModal() {
               onChange={(checked) => update({ similarityEmbeddingEnabled: checked })}
             />
           </Row>
+          <UnlinkedPairsRow />
           <NumberField
             label="Cross-device match strictness (%)"
+            hint="Higher pairs less, and wrongly pairs less. Measured on the icon corpus, 95 admits about half the false pairs 90 does."
             value={draft.similarityEmbeddingThresholdPercent}
             min={50}
             onChange={(v) =>

@@ -197,7 +197,7 @@ describe("the culling journey", () => {
     await settle();
     const comparison = useComparisonStore.getState();
     expect(comparison.open).toBe(true);
-    expect(comparison.slots.map((s) => s.hash)).toEqual(["h2", "h1", "h3"]);
+    expect(comparison.slots.map((s) => s!.hash)).toEqual(["h2", "h1", "h3"]);
 
     // ---- Keeper key + Enter commits: losers to trash, view refreshes ----
     const deleted: string[] = [];

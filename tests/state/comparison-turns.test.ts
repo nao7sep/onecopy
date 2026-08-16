@@ -73,7 +73,7 @@ describe("committing a turn", () => {
     // it closed having shown them — what it may never do is close with a
     // queue still holding photos the user never saw.
     expect(after.open && after.slots.length > 0).toBe(true);
-    expect(after.slots.map((s) => s.hash)).toContain("h8");
+    expect(after.slots.map((s) => s!.hash)).toContain("h8");
   });
 
   it("closes when the queue really is empty", async () => {
@@ -102,7 +102,7 @@ describe("committing a turn", () => {
 
     expect(deleted()).toHaveLength(0);
     // Undecided photos stay in the app; the turn simply advances.
-    expect(useComparisonStore.getState().slots.map((s) => s.hash)).toEqual([
+    expect(useComparisonStore.getState().slots.map((s) => s!.hash)).toEqual([
       "h4",
       "h5",
       "h6",

@@ -89,6 +89,22 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
     assert_eq!(fresh, serde_json::json!({ "zoomLevel": 1.2 }));
 }
 
+#[test]
+#[serial(backup_store, quarantine_journal)]
+fn patching_corrupt_config_reseeds_before_merging() {
+    let dir = temp_dir("patch-corrupt-config");
+    let target = dir.join(CONFIG_FILE_NAME);
+    std::fs::write(&target, b"not json").unwrap();
+    let _ = drain_quarantines();
+
+    let merged = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
+
+    assert_eq!(merged["theme"], "dark");
+    assert_eq!(merged["goodRangeStartYear"], 1995);
+    assert_eq!(merged["sourceDirs"], serde_json::json!([]));
+    assert_eq!(drain_quarantines().len(), 1);
+}
+
 
 #[test]
 #[serial(backup_store)]
@@ -125,10 +141,7 @@ fn write_atomic_replaces_and_leaves_no_temps() {
 }
 
 
-// A corrupt store's recovery, end to end: the branch taken, the bytes kept,
-// and the REPORT that makes the branch acceptable. An unreported quarantine
-// is a silent reset with extra steps (storage-path-conventions), so the
-// record reaching the caller is as much the contract as the rename is.
+// A corrupt store's recovery, end to end: branch, preserved bytes and report.
 #[test]
 #[serial(quarantine_journal)]
 fn a_corrupt_config_is_set_aside_reported_and_reseeded_in_the_same_load() {

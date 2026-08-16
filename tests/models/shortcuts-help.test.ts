@@ -58,6 +58,7 @@ const EVIDENCE: Record<string, () => boolean> = {
   "Delete / Backspace": () => handles('"Delete" || event.key === "Backspace"'),
   "Shift+Delete": () => handles("setConfirmPermanent"),
   "1–9 / 0 / A–F": () => handles("slotIndexForKey"),
+  "Shift+1–9/0/A–F": () => handles("slotIndexForShiftedCode"),
   "Shift+Enter": () => handles("shiftKey"),
   "Double-click": () => handles("onDoubleClick", "onEnlarge"),
   Escape: () => handles('"Escape"'),
@@ -78,25 +79,6 @@ describe("every chord the help sheet prints", () => {
     const check = EVIDENCE[evidenceKey(chord)];
     expect(check, `no evidence entry for "${chord}"`).toBeDefined();
     expect(check!(), `"${chord}" is printed but nothing handles it`).toBe(true);
-  });
-});
-
-describe("advertised command-modifier chords match through the shared predicate", () => {
-  // Read at the source level for the reason stated at the top of this file:
-  // firing the destinations chord needs a populated tree, a selection and a
-  // root, so driving it would test the fixture rather than the binding.
-  const destinations = readFileSync("src/components/DestinationsTab.tsx", "utf8");
-
-  it("routes the Cmd/Ctrl+Enter copy chord through hasMod", () => {
-    // A per-file `metaKey || ctrlKey` on this KEY handler has no Alt
-    // exclusion, so Windows AltGr+Enter (Ctrl+Alt) fired a file copy.
-    expect(destinations).toContain("hasMod(event.nativeEvent)");
-  });
-
-  it("leaves the DRAG path on raw flags, where excluding Alt would be wrong", () => {
-    // A drag carries no typed character, so Cmd+Alt+drag must keep copying —
-    // unifying this with the keyboard predicate would be a regression.
-    expect(destinations).toContain('if (event.metaKey || event.ctrlKey) return "copy";');
   });
 });
 

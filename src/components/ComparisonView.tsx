@@ -3,6 +3,7 @@ import ComparisonSlot from "./ComparisonSlot";
 import ZoomableImage from "./ZoomableImage";
 import {
   slotIndexForKey,
+  slotIndexForShiftedCode,
   chunkSlots,
   gridColumns,
   useComparisonStore,
@@ -43,6 +44,12 @@ export default function ComparisonView() {
           event.preventDefault();
           setEnlarged(null);
         }
+        return;
+      }
+      const unlinkIndex = slotIndexForShiftedCode(event);
+      if (unlinkIndex >= 0) {
+        event.preventDefault();
+        void useComparisonStore.getState().unlinkSlot(unlinkIndex);
         return;
       }
       const slotIndex = slotIndexForKey(event);
@@ -99,7 +106,10 @@ export default function ComparisonView() {
             {spreadCount > 0 ? ` across ${spreadCount + 1} screens` : ""}
             {queue.length > 0 ? ` · ${queue.length} waiting` : ""}
           </span>
-          <span>Keys 1–9/0/A–F keep · Enter commits (Shift = permanent) · Escape leaves</span>
+          <span>
+            Keys 1–9/0/A–F keep · Shift+key removes from the set · Enter commits
+            (Shift = permanent) · Escape leaves
+          </span>
           <button
             className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"
             onClick={close}
@@ -115,18 +125,23 @@ export default function ComparisonView() {
           gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
         }}
       >
-        {localChunk.map((slot, index) => (
-          <ComparisonSlot
-            key={slot.member.hash}
-            member={slot.member}
-            slotKey={slot.slotKey}
-            kept={slot.kept}
-            onToggle={() => toggleKeep(index)}
-            onEnlarge={() =>
-              setEnlarged({ hash: slot.member.hash, name: slot.member.fileName })
-            }
-          />
-        ))}
+        {localChunk.map((slot, index) =>
+          slot.member !== null ? (
+            <ComparisonSlot
+              key={slot.member.hash}
+              member={slot.member}
+              slotKey={slot.slotKey}
+              kept={slot.kept}
+              onToggle={() => toggleKeep(index)}
+              onUnlink={() => void useComparisonStore.getState().unlinkSlot(index)}
+              onEnlarge={() =>
+                setEnlarged({ hash: slot.member!.hash, name: slot.member!.fileName })
+              }
+            />
+          ) : (
+            <EmptySlot key={`empty-${slot.slotKey}`} slotKey={slot.slotKey} />
+          ),
+        )}
         {perChunk === 0 ? (
           <p className="m-auto text-ink-muted">All slots are on the other screens</p>
         ) : null}
@@ -146,6 +161,19 @@ export default function ComparisonView() {
           </footer>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** An unlinked slot's place for the rest of the turn: keeping the hole is
+ * what keeps every other slot's key number true. The dimmed key label says
+ * which number this was. */
+function EmptySlot({ slotKey }: { slotKey: string }) {
+  return (
+    <div className="flex h-full w-full items-center justify-center rounded-lg border-2 border-dashed border-border">
+      <span className="text-lg font-bold text-ink-muted opacity-40">
+        {slotKey.toUpperCase()}
+      </span>
     </div>
   );
 }

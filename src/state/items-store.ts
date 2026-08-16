@@ -71,6 +71,11 @@ interface ItemsState {
   deleteKeys: (keys: Set<string>, permanent: boolean) => Promise<void>;
   rescanSection: () => Promise<void>;
   refresh: () => Promise<void>;
+  /** After a similar-family is fully decided, land the anchor on the first
+   * item PAST the family (in the shown order), so Enter chains straight into
+   * the next group. Past the KEEPERS, deliberately: Enter on a keeper would
+   * reopen the family just decided. */
+  selectAfterFamily: (memberHashes: string[]) => void;
 }
 
 export const useItemsStore = create<ItemsState>((set, get) => ({
@@ -273,6 +278,24 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     } catch (error) {
       log.error("delete failed", toErrorFields(error));
       set({ message: messageOf(error) });
+    }
+  },
+
+  selectAfterFamily: (memberHashes) => {
+    const { items, sortOrder } = get();
+    const family = new Set(memberHashes);
+    const shown = sortItems(items, sortOrder);
+    const lastMember = shown.reduce(
+      (last, item, index) => (item.hash !== null && family.has(item.hash) ? index : last),
+      -1,
+    );
+    const next =
+      shown.slice(lastMember + 1).find((item) => item.hash === null || !family.has(item.hash)) ??
+      // The family sat at the end: rest on its last keeper rather than
+      // leaving the anchor on a trashed item.
+      (lastMember >= 0 ? shown[lastMember] : undefined);
+    if (next) {
+      get().selectItem(itemKey(next));
     }
   },
 

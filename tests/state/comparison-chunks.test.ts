@@ -42,7 +42,7 @@ describe("chunkSlots", () => {
   it("marks keepers inside the chunks", () => {
     const chunks = chunkSlots(eight, new Set(["d"]), [4, 4]);
     const flat = chunks.flat();
-    expect(flat.find((s) => s.member.hash === "d")?.kept).toBe(true);
+    expect(flat.find((s) => s.member!.hash === "d")?.kept).toBe(true);
     expect(flat.filter((s) => s.kept)).toHaveLength(1);
   });
 

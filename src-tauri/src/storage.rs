@@ -51,6 +51,13 @@ pub struct DefaultConfig {
     pub similarity_max_gap_seconds: u32,
     /// Max perceptual-hash Hamming distance for two photos to cluster.
     pub similarity_phash_max_distance: u32,
+    /// How much WIDER than one pairing step a single family may spread, as a
+    /// multiple of the pairing thresholds. 1 = every member must resemble the
+    /// family's leader directly; 2 (the default) allows a burst whose ends
+    /// meet only through their shared middle. Raising it invites chaining —
+    /// the setting exists so a corpus that needs looser families can have
+    /// them deliberately, never by accident.
+    pub similarity_diameter_multiplier: u32,
     /// Embedding (cross-device) pairing: the one toggle and its cosine
     /// threshold as a percent (90 = 0.90).
     pub similarity_embedding_enabled: bool,
@@ -95,9 +102,10 @@ impl Default for DefaultConfig {
             similarity_max_gap_seconds: 90,
             // Deliberately tight: on a measured 548-image corpus, 12 collapsed
             // everything into one 484-member hairball; 2-4 recovered families.
-            similarity_phash_max_distance: 4,
+            similarity_phash_max_distance: 3,
+            similarity_diameter_multiplier: 2,
             similarity_embedding_enabled: true,
-            similarity_embedding_threshold_percent: 90,
+            similarity_embedding_threshold_percent: 95,
             preview_long_edge_px: 1600,
             thumbnail_edge_px: 320,
             video_strip_seconds_per_frame: 20,
@@ -156,15 +164,6 @@ pub struct QuarantineRecord {
 static QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Takes everything recorded so far. The caller owns reporting it from here.
-/// How many quarantines this launch has recorded, WITHOUT consuming them. Callers that
-/// need to know a quarantine just happened — the patch path's reseed, setup's read — use
-/// this instead of draining, because draining is what publishes the report to the user and
-/// only the reporting surface may do it.
-pub fn quarantine_count() -> usize {
-    QUARANTINES.lock().unwrap_or_else(|p| p.into_inner()).len()
-}
-
 pub fn drain_quarantines() -> Vec<QuarantineRecord> {
     let mut journal = QUARANTINES.lock().unwrap_or_else(|p| p.into_inner());
     std::mem::take(&mut *journal)
@@ -174,43 +173,26 @@ pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
     load_from_root(&paths::data_root(app)?)
 }
 
-/// The whole load, against a root — the half that decides anything, kept out
-/// of the AppHandle shell so a corrupt store's branch can be exercised.
-/// Reads config.json for SETUP, which runs before the window and therefore before any
-/// surface can report. It deliberately does not drain the quarantine journal: draining is
-/// what publishes the report, and if setup consumed it the frontend's later load would see
-/// an empty journal and tell the user nothing — the store would have been quarantined and
-/// reseeded in silence. Corruption is still handled here (the read quarantines and the
-/// reseed runs), it is only the REPORT that is left for the frontend to drain.
+/// Reads config without draining the quarantine journal, so a later frontend
+/// load can publish any recovery notice.
 pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let before = quarantine_count();
-    let config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
-    if quarantine_count() > before {
+    let read = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
+    if read.quarantined {
         materialize_config_if_missing(root)?;
-        return read_json_optional(&root.join(CONFIG_FILE_NAME));
+        return Ok(read_json_optional(&root.join(CONFIG_FILE_NAME))?.value);
     }
-    Ok(config)
+    Ok(read.value)
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
-    let mut config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
-    let state = read_json_optional(&root.join(STATE_FILE_NAME))?;
-    let quarantines = drain_quarantines();
-    // A quarantine leaves the store ABSENT, and this launch's materialization
-    // already ran during setup — before this load — so without reseeding here
-    // config.json would stay missing until the next save that happens to
-    // write it. The conventions require the reseed in the SAME launch, keyed
-    // on absence AFTER the quarantine rather than before the load.
-    if !quarantines.is_empty() {
+    let config_read = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
+    let state = read_json_optional(&root.join(STATE_FILE_NAME))?.value;
+    let mut config = config_read.value;
+    if config_read.quarantined {
         materialize_config_if_missing(root)?;
-        // Re-read so what the app runs on IS the file it just seeded — the
-        // report says "started with its built-in defaults", and that should
-        // be literally what happened rather than a coincidence of every
-        // consumer falling back to the same in-code baseline.
-        if config.is_none() {
-            config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
-        }
+        config = read_json_optional(&root.join(CONFIG_FILE_NAME))?.value;
     }
+    let quarantines = drain_quarantines();
     Ok(LoadedAppData {
         config,
         state,
@@ -224,7 +206,7 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
 /// root. Used by the startup resume, which decides before any AppHandle-bound
 /// load and needs only this one key.
 pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> {
-    let config = read_json_optional(&data_root.join(CONFIG_FILE_NAME))?;
+    let config = read_config_for_setup(data_root)?;
     Ok(config
         .as_ref()
         .and_then(|c| c.get("sourceDirs"))
@@ -275,19 +257,13 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<JsonValue, S
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    // A quarantine here leaves the store ABSENT, exactly as it does on the load path —
-    // so the reseed has to happen here too. Merging into a bare `{}` instead would write
-    // a config containing ONLY the patched key: every other setting gone from disk, on a
-    // file the next launch then finds present and never reseeds (storage-path
-    // conventions: after a quarantine, first-run materialization runs in the same
-    // launch). Keyed on absence AFTER the read, never before it.
-    let before = quarantine_count();
-    let mut current = read_json_optional(target)?;
-    if quarantine_count() > before {
+    let read = read_json_optional(target)?;
+    let mut current = read.value;
+    if read.quarantined && target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
         if let Some(root) = target.parent() {
             materialize_config_if_missing(root)?;
         }
-        current = read_json_optional(target)?;
+        current = read_json_optional(target)?.value;
     }
     let mut current = current.unwrap_or_else(|| serde_json::json!({}));
     if !current.is_object() {
@@ -318,18 +294,29 @@ pub fn materialize_config_if_missing(root: &Path) -> Result<(), String> {
     atomic_write_json(&target, &defaults)
 }
 
-/// Reads an optional JSON store: missing → None; parseable → Some; corrupt →
-/// quarantine aside (rename to `<stem>-<utc>.invalid`, preserving the original
-/// bytes) then None so the caller proceeds with defaults. The quarantine rename
-/// is OUTSIDE the parse-failure swallow: its own failure propagates.
-fn read_json_optional(path: &Path) -> Result<Option<JsonValue>, String> {
+struct JsonRead {
+    value: Option<JsonValue>,
+    quarantined: bool,
+}
+
+/// Reads an optional JSON store and reports whether this read quarantined it.
+/// The rename failure propagates before any caller can write defaults.
+fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(JsonRead {
+                value: None,
+                quarantined: false,
+            });
+        }
         Err(err) => return Err(err.to_string()),
     };
     match serde_json::from_slice::<JsonValue>(&bytes) {
-        Ok(value) => Ok(Some(value)),
+        Ok(value) => Ok(JsonRead {
+            value: Some(value),
+            quarantined: false,
+        }),
         Err(parse_err) => {
             let quarantined = quarantine_name(path);
             std::fs::rename(path, &quarantined).map_err(|rename_err| {
@@ -346,8 +333,6 @@ fn read_json_optional(path: &Path) -> Result<Option<JsonValue>, String> {
                     "error": { "message": parse_err.to_string() },
                 }),
             );
-            // The log is the debugging record; the journal is what reaches
-            // the USER. Both, never one.
             QUARANTINES
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -358,7 +343,10 @@ fn read_json_optional(path: &Path) -> Result<Option<JsonValue>, String> {
                         .unwrap_or_else(|| path.to_string_lossy().into_owned()),
                     quarantined_to: quarantined.to_string_lossy().into_owned(),
                 });
-            Ok(None)
+            Ok(JsonRead {
+                value: None,
+                quarantined: true,
+            })
         }
     }
 }
@@ -467,18 +455,22 @@ mod tests {
         let path = dir.join("config.json");
 
         // Missing → None.
-        assert!(read_json_optional(&path).unwrap().is_none());
+        let missing = read_json_optional(&path).unwrap();
+        assert!(missing.value.is_none());
+        assert!(!missing.quarantined);
 
         // Valid → Some.
         write_atomic(&path, b"{\"a\": 1}").unwrap();
         assert_eq!(
-            read_json_optional(&path).unwrap(),
+            read_json_optional(&path).unwrap().value,
             Some(serde_json::json!({"a": 1}))
         );
 
         // Corrupt → quarantined aside (original bytes preserved) and None.
         std::fs::write(&path, b"{ not json").unwrap();
-        assert!(read_json_optional(&path).unwrap().is_none());
+        let corrupt = read_json_optional(&path).unwrap();
+        assert!(corrupt.value.is_none());
+        assert!(corrupt.quarantined);
         assert!(!path.exists(), "corrupt file must be renamed aside, not left in place");
         let quarantined: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()

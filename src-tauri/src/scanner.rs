@@ -136,6 +136,10 @@ pub fn settings_from_config(
                 "similarityPhashMaxDistance",
                 defaults.similarity_phash_max_distance,
             ),
+            diameter_multiplier: u32_of(
+                "similarityDiameterMultiplier",
+                defaults.similarity_diameter_multiplier,
+            ),
             // 0..=100 percent in config; the engine wants cosine 0..=1. The
             // toggle folds in here: disabled → None → dHash-only.
             embedding_min_cosine: get("similarityEmbeddingEnabled")

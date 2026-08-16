@@ -13,6 +13,7 @@ export interface SettingsDraft {
   goodRangeStartYear: number;
   similarityMaxGapSeconds: number;
   similarityPhashMaxDistance: number;
+  similarityDiameterMultiplier: number;
   similarityEmbeddingEnabled: boolean;
   similarityEmbeddingThresholdPercent: number;
   previewLongEdgePx: number;
@@ -41,7 +42,8 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC",
     goodRangeStartYear: numberOr(config?.goodRangeStartYear, 1995),
     similarityMaxGapSeconds: numberOr(config?.similarityMaxGapSeconds, 90),
-    similarityPhashMaxDistance: numberOr(config?.similarityPhashMaxDistance, 4),
+    similarityPhashMaxDistance: numberOr(config?.similarityPhashMaxDistance, 3),
+    similarityDiameterMultiplier: numberOr(config?.similarityDiameterMultiplier, 2),
     similarityEmbeddingEnabled: config?.similarityEmbeddingEnabled !== false,
     similarityEmbeddingThresholdPercent: numberOr(
       config?.similarityEmbeddingThresholdPercent,

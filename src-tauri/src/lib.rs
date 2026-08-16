@@ -424,9 +424,9 @@ fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
     scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
     let prepared = (|| -> Result<(), String> {
         let data_root = paths::data_root(&app)?;
-        let loaded = storage::load_app_data(&app)?;
+        let config = storage::read_config_for_setup(&data_root)?;
         let settings = scanner::settings_from_config(
-            loaded.config.as_ref(),
+            config.as_ref(),
             &data_root,
             chrono::Utc::now().timestamp_millis(),
         );
@@ -585,9 +585,9 @@ struct SourceDirsStatus {
 // for since-removed dirs are pruned; a volume without a readable identity
 // degrades to presence-only, logged at debug.
 fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
-    let loaded = storage::load_app_data(app)?;
     let data_root = paths::data_root(app)?;
-    let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+    let config = storage::read_config_for_setup(&data_root)?;
+    let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
     let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
 
     let mut status = SourceDirsStatus::default();
@@ -706,8 +706,8 @@ fn move_item_out(
         || {
             ensure_sources_present(&app)?;
             let data_root = paths::data_root(&app)?;
-            let loaded = storage::load_app_data(&app)?;
-            let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+            let config = storage::read_config_for_setup(&data_root)?;
+            let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
             let dest = std::path::Path::new(&dest_dir);
             for source in &settings.source_dirs {
                 if dest.starts_with(source) {
@@ -851,9 +851,9 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
         json!({}),
         || {
             let data_root = paths::data_root(&app)?;
-            let loaded = storage::load_app_data(&app)?;
+            let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
-                loaded.config.as_ref(),
+                config.as_ref(),
                 &data_root,
                 chrono::Utc::now().timestamp_millis(),
             );
@@ -880,9 +880,9 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
         json!({ "kind": kind, "month": month }),
         || {
             let data_root = paths::data_root(&app)?;
-            let loaded = storage::load_app_data(&app)?;
+            let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
-                loaded.config.as_ref(),
+                config.as_ref(),
                 &data_root,
                 chrono::Utc::now().timestamp_millis(),
             );
@@ -1230,6 +1230,60 @@ fn get_similar_group(app: AppHandle, hash: String) -> Result<Vec<queries::GroupM
     )
 }
 
+// The comparison view's unlink: this image is not the same subject as its
+// similar-family. Persistent — an excluded pair never regroups on any later
+// rebuild — and non-destructive: no file is touched.
+#[tauri::command(async)]
+fn similar_unlink(app: AppHandle, hash: String) -> Result<u64, String> {
+    logging::boundary(
+        "similar_unlink",
+        json!({ "hash": hash }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            similarity::unlink_from_group(&conn, &hash)
+        },
+        |written| json!({ "exclusions": written }),
+    )
+}
+
+// The Settings surface for the unlink store: how many verdicts exist, and the
+// one way to take them all back. Without a visible count the exclusions would
+// be an invisible permanent store — the kind of silence the app avoids.
+#[tauri::command(async)]
+fn similar_exclusions_count(app: AppHandle) -> Result<u64, String> {
+    logging::boundary(
+        "similar_exclusions_count",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            conn.query_row("SELECT COUNT(*) FROM similar_exclusions", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n.max(0) as u64)
+            .map_err(|e| e.to_string())
+        },
+        |n| json!({ "count": n }),
+    )
+}
+
+#[tauri::command(async)]
+fn similar_exclusions_clear(app: AppHandle) -> Result<u64, String> {
+    logging::boundary(
+        "similar_exclusions_clear",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            conn.execute("DELETE FROM similar_exclusions", [])
+                .map(|n| n as u64)
+                .map_err(|e| e.to_string())
+        },
+        |n| json!({ "cleared": n }),
+    )
+}
+
 // The metadata pane's detail for one logical item.
 #[tauri::command]
 fn get_item_detail(
@@ -1496,6 +1550,9 @@ pub fn run() {
             get_section_items,
             get_item_detail,
             get_similar_group,
+            similar_unlink,
+            similar_exclusions_count,
+            similar_exclusions_clear,
             delete_item,
             move_item_out,
             list_subdirs,

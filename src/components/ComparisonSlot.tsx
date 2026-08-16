@@ -10,12 +10,17 @@ export default function ComparisonSlot({
   slotKey,
   kept,
   onToggle,
+  onUnlink,
   onEnlarge,
 }: {
   member: GroupMember;
   slotKey: string;
   kept: boolean;
   onToggle: () => void;
+  /** "Not the same subject": removes this image from the similar set,
+   * permanently and non-destructively. Absent in surfaces that cannot
+   * mutate the session (the secondary windows forward keys instead). */
+  onUnlink?: () => void;
   onEnlarge?: () => void;
 }) {
   const facts = factsLine(member);
@@ -30,7 +35,7 @@ export default function ComparisonSlot({
       // Fills its GRID CELL: the fixed-width wrapping tiles left every image
       // small however much screen there was — the cell is as big as the
       // count allows, so the image is too.
-      className={`relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
+      className={`group/slot relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
         kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
       }`}
       onClick={onToggle}
@@ -55,6 +60,18 @@ export default function ComparisonSlot({
         <span className="absolute right-2 top-2 rounded bg-primary-surface px-1 text-xs text-primary">
           ×{member.copyCount}
         </span>
+      ) : null}
+      {onUnlink ? (
+        <button
+          className="absolute bottom-8 right-2 hidden rounded-md bg-surface-muted px-1.5 py-0.5 text-xs text-ink-muted hover:text-ink group-hover/slot:block"
+          title="Not similar — remove from this set (Shift+slot key). The photo is not deleted."
+          onClick={(event) => {
+            event.stopPropagation();
+            onUnlink();
+          }}
+        >
+          Not similar
+        </button>
       ) : null}
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">

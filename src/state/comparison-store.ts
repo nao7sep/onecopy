@@ -61,10 +61,42 @@ export function slotIndexForKey(event: {
   return (SLOT_KEYS as readonly string[]).indexOf(event.key.toLowerCase());
 }
 
+/** The slot a SHIFTED keydown unlinks, or -1. Matched on `event.code` — the
+ * layout-independent physical key — because Shift+1 delivers `key: "!"` on
+ * US layouts and other symbols elsewhere; the physical digit row is the one
+ * thing every layout shares. Bare `event.key` matching (the keeper path)
+ * cannot express this, which is why the two resolvers stay separate. */
+export function slotIndexForShiftedCode(event: {
+  code?: string;
+  shiftKey?: boolean;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+}): number {
+  if (event.shiftKey !== true) return -1;
+  if (event.metaKey === true || event.ctrlKey === true || event.altKey === true) {
+    return -1;
+  }
+  const code = event.code ?? "";
+  if (code.startsWith("Digit")) {
+    const digit = code.slice(5);
+    if (digit === "0") return 9;
+    const n = Number.parseInt(digit, 10);
+    return n >= 1 && n <= 9 ? n - 1 : -1;
+  }
+  if (code.startsWith("Key")) {
+    const index = (SLOT_KEYS as readonly string[]).indexOf(code.slice(3).toLowerCase());
+    return index >= 10 ? index : -1;
+  }
+  return -1;
+}
+
 /** What the secondary windows render: contiguous chunks of the slot list,
  * each entry carrying its GLOBAL slot key so 1–9/0/A–F stay one key space. */
 export interface ComparisonBroadcast {
-  chunks: { member: GroupMember; slotKey: string; kept: boolean }[][];
+  /** `member: null` is an unlinked slot — rendered as an empty cell so the
+   * other slots keep their key numbers for the rest of the turn. */
+  chunks: { member: GroupMember | null; slotKey: string; kept: boolean }[][];
   queueCount: number;
   /** The group's dominant image orientation, driving each window's grid. */
   portraitDominant: boolean;
@@ -72,7 +104,8 @@ export interface ComparisonBroadcast {
 
 interface ComparisonState {
   open: boolean;
-  slots: GroupMember[];
+  /** null = a slot unlinked this turn (the hole keeps key numbers stable). */
+  slots: (GroupMember | null)[];
   queue: GroupMember[];
   kept: Set<string>;
   busy: boolean;
@@ -92,8 +125,15 @@ interface ComparisonState {
   portraitDominant: boolean;
   /** Resolves false when no live group opened (fewer than 2 members) so the
    * caller can fall back honestly instead of doing nothing on Enter. */
+  /** Every member of the session's group as opened — what the finish
+   * advances past. Unlinking removes the image from this list too: it is no
+   * longer family, so the anchor may land on it afterwards. */
+  sessionMembers: string[];
   openGroup: (hash: string) => Promise<boolean>;
   toggleKeep: (slotIndex: number) => void;
+  /** The unlink: this slot's image is NOT the same subject. Persistent
+   * core-side; the slot becomes a hole for the rest of the turn. */
+  unlinkSlot: (slotIndex: number) => Promise<void>;
   commitTurn: (permanent: boolean) => Promise<void>;
   close: () => void;
 }
@@ -101,7 +141,7 @@ interface ComparisonState {
 /** Chunks the slots across screens by their capacities, contiguous, keeping
  * ONE global key space (the design's 3-vertical / 4-horizontal per screen). */
 export function chunkSlots(
-  slots: GroupMember[],
+  slots: (GroupMember | null)[],
   kept: Set<string>,
   capacities: number[],
 ): ComparisonBroadcast["chunks"] {
@@ -113,7 +153,7 @@ export function chunkSlots(
       slots.slice(offset, offset + capacity).map((member, i) => ({
         member,
         slotKey: SLOT_KEYS[offset + i] ?? "?",
-        kept: kept.has(member.hash),
+        kept: member !== null && kept.has(member.hash),
       })),
     );
     offset += capacity;
@@ -291,6 +331,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   slots: [],
   queue: [],
   kept: new Set<string>(),
+  sessionMembers: [],
   busy: false,
   permanentArmed: false,
   pendingPermanentCommit: false,
@@ -328,6 +369,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         slots: members.slice(0, size),
         queue: members.slice(size),
         kept: new Set<string>(),
+        sessionMembers: members.map((m) => m.hash),
         // A new comparison session re-arms the one permanent confirmation.
         permanentArmed: false,
         pendingPermanentCommit: false,
@@ -355,6 +397,30 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     broadcast();
   },
 
+  unlinkSlot: async (slotIndex) => {
+    const { slots, kept, busy, sessionMembers } = get();
+    if (busy) return;
+    const member = slots[slotIndex];
+    if (!member) return;
+    try {
+      await invoke("similar_unlink", { hash: member.hash });
+    } catch (error) {
+      log.error("similar unlink failed", { hash: member.hash, ...toErrorFields(error) });
+      return;
+    }
+    const nextKept = new Set(kept);
+    nextKept.delete(member.hash);
+    set({
+      // The hole stays: remaining slots keep their key numbers this turn.
+      slots: get().slots.map((slot, i) => (i === slotIndex ? null : slot)),
+      kept: nextKept,
+      // No longer family: the finish may land the anchor on it, which is the
+      // natural way to meet the intruder again and decide its own fate.
+      sessionMembers: sessionMembers.filter((hash) => hash !== member.hash),
+    });
+    broadcast();
+  },
+
   commitTurn: async (permanent) => {
     const { slots, queue, kept, busy, permanentArmed } = get();
     if (busy) return;
@@ -364,8 +430,9 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     }
     set({ busy: true });
     try {
-      const keepers = slots.filter((s) => kept.has(s.hash));
-      const goners = kept.size > 0 ? slots.filter((s) => !kept.has(s.hash)) : [];
+      const live = slots.filter((s): s is GroupMember => s !== null);
+      const keepers = live.filter((s) => kept.has(s.hash));
+      const goners = kept.size > 0 ? live.filter((s) => !kept.has(s.hash)) : [];
 
       for (const member of goners) {
         await invoke("delete_item", {
@@ -393,9 +460,23 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
 
       if (incoming.length === 0) {
         // Nothing new to decide: the group is finished.
-        set({ open: false, slots: [], queue: [], kept: new Set(), busy: false });
+        const family = get().sessionMembers;
+        set({
+          open: false,
+          slots: [],
+          queue: [],
+          kept: new Set(),
+          sessionMembers: [],
+          busy: false,
+        });
         void closeSpread();
         await refreshAfterChange();
+        // Land the anchor on the next photo PAST this family, so Enter chains
+        // straight into the next group (the developer's cull rhythm). After
+        // the keepers, not after the old anchor: Enter on a keeper would
+        // reopen the family just decided.
+        const { useItemsStore } = await import("./items-store");
+        useItemsStore.getState().selectAfterFamily(family);
         return;
       }
       set({
@@ -433,6 +514,7 @@ void (async () => {
     if (getCurrentWindow().label !== "main") return;
     await listen<{
       key: string;
+      code?: string;
       shiftKey: boolean;
       metaKey?: boolean;
       ctrlKey?: boolean;
@@ -444,6 +526,11 @@ void (async () => {
       // keys too — a secondary screen's Escape must not tear the session
       // down from under an open dialog.
       if (hasOpenModal()) return;
+      const unlinkIndex = slotIndexForShiftedCode(event.payload);
+      if (unlinkIndex >= 0) {
+        void store.unlinkSlot(unlinkIndex);
+        return;
+      }
       const slotIndex = slotIndexForKey(event.payload);
       if (slotIndex >= 0) {
         store.toggleKeep(slotIndex);

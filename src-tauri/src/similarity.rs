@@ -29,11 +29,15 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 pub struct SimilarityConfig {
     pub max_gap_seconds: u32,
     pub phash_max_distance: u32,
+    /// How much wider than one pairing step a family may spread (see the
+    /// config field of the same name). Applied to BOTH signals: the dHash
+    /// diameter allowance and, in angular terms, the embedding one.
+    pub diameter_multiplier: u32,
     /// Cosine threshold for embedding pairing; None = disabled or no model —
     /// dHash-only, exactly the pre-embedding behaviour.
     pub embedding_min_cosine: Option<f32>,
@@ -66,7 +70,11 @@ fn hamming(a: i64, b: i64) -> u32 {
 /// diameter can exceed `2d` by construction. Members are ordered by hash
 /// first, which keeps near-identical twins adjacent (they meet the same
 /// leader) and makes the result deterministic.
-pub fn cluster_by_appearance(phashes: &[i64], max_distance: u32) -> Vec<Vec<usize>> {
+pub fn cluster_by_appearance(
+    phashes: &[i64],
+    max_distance: u32,
+    diameter_multiplier: u32,
+) -> Vec<Vec<usize>> {
     let n = phashes.len();
     let mut uf = UnionFind::new(n);
     for a in 0..n {
@@ -82,7 +90,7 @@ pub fn cluster_by_appearance(phashes: &[i64], max_distance: u32) -> Vec<Vec<usiz
         components.entry(root).or_default().push(i);
     }
 
-    let diameter_limit = max_distance * 2;
+    let diameter_limit = max_distance * diameter_multiplier.max(1);
     let mut out: Vec<Vec<usize>> = Vec::new();
     for mut members in components.into_values() {
         members.sort_unstable();
@@ -159,6 +167,143 @@ struct Candidate {
 /// perceptual hash participate; the logical item's time is the earliest among
 /// its copies (the same rule the sections use), and undated images form their
 /// own bucket rather than being excluded.
+/// Canonical form of an exclusion pair: lexicographic, so one row (and one
+/// set entry) represents "a and b are not the same subject" regardless of
+/// which side the user unlinked from.
+fn canonical_pair(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    }
+}
+
+/// Every excluded pair, canonical, for the rebuild to honour.
+fn load_exclusions(
+    conn: &Connection,
+) -> Result<std::collections::HashSet<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT hash_a, hash_b FROM similar_exclusions")
+        .map_err(|e| e.to_string())?;
+    let pairs = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(pairs)
+}
+
+/// Enforces the user's unlink verdicts on a finished group list: no group may
+/// contain an excluded pair. Applied AFTER both clustering stages rather than
+/// inside them, deliberately — an edge skipped during union-find still joins
+/// its endpoints through a middleman, so pairwise enforcement during
+/// clustering is a lie. Greedy: members keep their order and each lands in
+/// the first subset holding nobody it is excluded against, so the common case
+/// — one intruder unlinked against a whole family — costs exactly that
+/// intruder, and the family stands whole.
+pub fn split_by_exclusions(
+    groups: Vec<Vec<String>>,
+    excluded: &std::collections::HashSet<(String, String)>,
+) -> Vec<Vec<String>> {
+    if excluded.is_empty() {
+        return groups;
+    }
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for members in groups {
+        let conflicted = members.iter().enumerate().any(|(i, a)| {
+            members[(i + 1)..]
+                .iter()
+                .any(|b| excluded.contains(&canonical_pair(a, b)))
+        });
+        if !conflicted {
+            out.push(members);
+            continue;
+        }
+        let mut subsets: Vec<Vec<String>> = Vec::new();
+        for member in members {
+            match subsets.iter_mut().find(|subset| {
+                subset
+                    .iter()
+                    .all(|other| !excluded.contains(&canonical_pair(&member, other)))
+            }) {
+                Some(subset) => subset.push(member),
+                None => subsets.push(vec![member]),
+            }
+        }
+        out.extend(subsets.into_iter().filter(|subset| subset.len() >= 2));
+    }
+    out
+}
+
+/// The comparison view's unlink: this image is NOT the same subject as its
+/// similar-family. Writes one exclusion per other CURRENT member (a fact
+/// about the images, so it survives the wholesale group rebuilds), removes
+/// the membership row for immediate effect, and dissolves the group when
+/// fewer than two members remain. Returns how many exclusions were recorded.
+pub fn unlink_from_group(conn: &Connection, hash: &str) -> Result<u64, String> {
+    let group_id: Option<i64> = conn
+        .query_row(
+            "SELECT group_id FROM similar_group_members WHERE content_hash = ?1",
+            [hash],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(group_id) = group_id else {
+        return Ok(0);
+    };
+    let others: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content_hash FROM similar_group_members                  WHERE group_id = ?1 AND content_hash != ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![group_id, hash], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    };
+    let now = crate::logging::now_iso_millis();
+    let mut written = 0u64;
+    for other in &others {
+        let (a, b) = canonical_pair(hash, other);
+        written += conn
+            .execute(
+                "INSERT OR IGNORE INTO similar_exclusions (hash_a, hash_b, created_at_utc)                  VALUES (?1, ?2, ?3)",
+                rusqlite::params![a, b, now],
+            )
+            .map_err(|e| e.to_string())? as u64;
+    }
+    conn.execute(
+        "DELETE FROM similar_group_members WHERE group_id = ?1 AND content_hash = ?2",
+        rusqlite::params![group_id, hash],
+    )
+    .map_err(|e| e.to_string())?;
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM similar_group_members WHERE group_id = ?1",
+            [group_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if remaining < 2 {
+        conn.execute(
+            "DELETE FROM similar_group_members WHERE group_id = ?1",
+            [group_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM similar_groups WHERE id = ?1", [group_id])
+            .map_err(|e| e.to_string())?;
+    }
+    crate::logging::info(
+        "similar unlink",
+        serde_json::json!({ "hash": hash, "exclusions": written, "groupDissolved": remaining < 2 }),
+    );
+    Ok(written)
+}
+
 pub fn rebuild_groups(
     conn: &Connection,
     config: &SimilarityConfig,
@@ -210,7 +355,11 @@ pub fn rebuild_groups(
         // cluster_by_appearance).
         let mut bucket_groups: Vec<Vec<usize>> = Vec::new();
         let phashes: Vec<i64> = indices.iter().map(|&i| candidates[i].phash).collect();
-        for cluster in cluster_by_appearance(&phashes, config.phash_max_distance) {
+        for cluster in cluster_by_appearance(
+            &phashes,
+            config.phash_max_distance,
+            config.diameter_multiplier,
+        ) {
             let cluster: Vec<usize> = cluster.into_iter().map(|local| indices[local]).collect();
             if cluster.len() < 2 {
                 continue;
@@ -275,6 +424,10 @@ pub fn rebuild_groups(
             }
         }
     }
+
+    // The user's unlink verdicts bind every rebuild, not just the session
+    // they were made in.
+    let groups = split_by_exclusions(groups, &load_exclusions(conn)?);
 
     // Persist wholesale.
     conn.execute("DELETE FROM similar_group_members", [])

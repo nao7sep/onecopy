@@ -58,6 +58,7 @@ export function shortcutGroups(): ShortcutGroup[] {
       title: "Comparison view",
       rows: [
         { chord: "1–9 / 0 / A–F", action: "Keep the photo in that slot" },
+        { chord: "Shift+1–9/0/A–F", action: "Not similar — remove that slot from the set (never deletes)" },
         { chord: "Enter", action: "Commit the turn" },
         { chord: "Shift+Enter", action: "Commit, deleting the rest permanently" },
         { chord: "Double-click", action: "Enlarge one slot" },

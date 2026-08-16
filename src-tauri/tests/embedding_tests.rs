@@ -83,6 +83,7 @@ fn a_visual_group_never_bridges_two_unrelated_subjects_into_one_family() {
 
     let config = SimilarityConfig {
         max_gap_seconds: 90,
+        diameter_multiplier: 2,
         phash_max_distance: 4,
         embedding_min_cosine: Some(0.9),
     };
@@ -157,6 +158,7 @@ fn cross_camera_photos_group_by_embedding_alone() {
 
     let on = SimilarityConfig {
         max_gap_seconds: 90,
+        diameter_multiplier: 2,
         phash_max_distance: 4,
         embedding_min_cosine: Some(0.95),
     };
@@ -166,6 +168,7 @@ fn cross_camera_photos_group_by_embedding_alone() {
 
     let off = SimilarityConfig {
         max_gap_seconds: 90,
+        diameter_multiplier: 2,
         phash_max_distance: 4,
         embedding_min_cosine: None,
     };
@@ -182,6 +185,7 @@ fn embedding_merges_do_not_disturb_pure_visual_groups() {
     seed(&conn, "v2", "Ricoh|", 0b0011, None);
     let on = SimilarityConfig {
         max_gap_seconds: 90,
+        diameter_multiplier: 2,
         phash_max_distance: 4,
         embedding_min_cosine: Some(0.9),
     };

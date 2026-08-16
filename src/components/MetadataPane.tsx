@@ -55,6 +55,8 @@ function PathRow({ path }: { path: string }) {
  * pane could not show at all. */
 function SimilarSection({ hash }: { hash: string }) {
   const [members, setMembers] = useState<GroupMember[]>([]);
+  // Bumped after an unlink so the list refetches without an anchor move.
+  const [generation, setGeneration] = useState(0);
   useEffect(() => {
     let stale = false;
     void invoke<GroupMember[]>("get_similar_group", { hash })
@@ -65,36 +67,55 @@ function SimilarSection({ hash }: { hash: string }) {
     return () => {
       stale = true;
     };
-  }, [hash]);
+  }, [hash, generation]);
   if (members.length < 2) return null;
   return (
     <div className="mb-1 mt-3">
       <dt className="text-xs text-ink-muted">Similar ({members.length})</dt>
       <dd className="mt-1 flex flex-wrap gap-1">
         {members.map((member) => (
-          <button
-            key={member.hash}
-            title={member.fileName}
-            className={`h-12 w-12 overflow-hidden rounded-md border transition-colors ${
-              member.hash === hash
-                ? "border-primary-ring ring-1 ring-primary-ring"
-                : "border-border hover:border-border-strong"
-            }`}
-            onClick={() => {
-              // Select that member in the grid; the preview follows through
-              // the ordinary anchor path.
-              const { items, selectItem } = useItemsStore.getState();
-              const target = items.find((i) => itemKey(i) === member.hash);
-              if (target) selectItem(member.hash);
-            }}
-          >
-            <img
-              src={thumbUrl(member.hash)}
-              alt={member.fileName}
-              loading="lazy"
-              className="h-full w-full object-cover"
-            />
-          </button>
+          <span key={member.hash} className="group/similar relative">
+            <button
+              title={member.fileName}
+              className={`h-12 w-12 overflow-hidden rounded-md border transition-colors ${
+                member.hash === hash
+                  ? "border-primary-ring ring-1 ring-primary-ring"
+                  : "border-border hover:border-border-strong"
+              }`}
+              onClick={() => {
+                // Select that member in the grid; the preview follows through
+                // the ordinary anchor path.
+                const { items, selectItem } = useItemsStore.getState();
+                const target = items.find((i) => itemKey(i) === member.hash);
+                if (target) selectItem(member.hash);
+              }}
+            >
+              <img
+                src={thumbUrl(member.hash)}
+                alt={member.fileName}
+                loading="lazy"
+                className="h-full w-full object-cover"
+              />
+            </button>
+            {/* The unlink where intruders are usually SPOTTED. Non-destructive
+                and persistent: the pair never regroups on any later scan. */}
+            <button
+              className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-muted text-[10px] leading-none text-ink-muted hover:text-danger group-hover/similar:flex"
+              title={`Not similar — remove ${member.fileName} from this set. The photo is not deleted.`}
+              onClick={() => {
+                void invoke("similar_unlink", { hash: member.hash })
+                  .then(() => setGeneration((n) => n + 1))
+                  .catch((error) => {
+                    log.warn("similar unlink failed", {
+                      hash: member.hash,
+                      ...toErrorFields(error),
+                    });
+                  });
+              }}
+            >
+              ✕
+            </button>
+          </span>
         ))}
       </dd>
       <dd className="mt-1.5">
