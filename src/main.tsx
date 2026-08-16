@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import PreviewWindow from "./windows/PreviewWindow";
 import ComparisonWindow from "./windows/ComparisonWindow";
+import IdentifyWindow from "./windows/IdentifyWindow";
 import "./App.css";
 import { log, toErrorFields, initLogging, loadAppData } from "./repositories";
 import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
@@ -48,6 +49,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <PreviewWindow />
     ) : view === "comparison" ? (
       <ComparisonWindow slice={slice} />
+    ) : view === "identify" ? (
+      <IdentifyWindow number={slice} />
     ) : (
       <App />
     )}

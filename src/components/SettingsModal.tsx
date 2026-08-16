@@ -19,7 +19,12 @@ import { Plus } from "lucide-react";
  * a pane width. Meaningful only with two or more monitors. */
 function ScreensSection() {
   const [monitors, setMonitors] = useState<
-    { name: string | null; position: { x: number; y: number }; size: { width: number; height: number } }[]
+    {
+      name: string | null;
+      position: { x: number; y: number };
+      size: { width: number; height: number };
+      scaleFactor?: number;
+    }[]
   >([]);
   const priority = priorityFromState(useAppStore((s) => s.appData?.state) ?? null);
   useEffect(() => {
@@ -47,6 +52,33 @@ function ScreensSection() {
         Order decides the role: 1 = main window, 2 = preview, the rest join
         the comparison spread. Applies immediately.
       </p>
+      <Button
+        className="mb-2"
+        onClick={() => {
+          // One self-closing flash per monitor, showing its ordinal — the
+          // only way to tell a matched pair apart beyond "left"/"right".
+          void import("@tauri-apps/api/webviewWindow").then(({ WebviewWindow }) => {
+            ordered.forEach((monitor, index) => {
+              const scale = monitor.scaleFactor || 1;
+              new WebviewWindow(`identify-${index + 1}`, {
+                url: `index.html?view=identify&slice=${index + 1}`,
+                title: "OneCopy",
+                x: monitor.position.x / scale + monitor.size.width / scale / 2 - 110,
+                y: monitor.position.y / scale + monitor.size.height / scale / 2 - 110,
+                width: 220,
+                height: 220,
+                decorations: false,
+                alwaysOnTop: true,
+                skipTaskbar: true,
+                resizable: false,
+                focus: false,
+              });
+            });
+          });
+        }}
+      >
+        Identify screens
+      </Button>
       {ordered.map((monitor, index) => (
         <div
           key={monitorKey(monitor)}
