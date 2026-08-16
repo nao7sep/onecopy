@@ -23,10 +23,13 @@ export function fileManagerWord(): string {
 /**
  * BOTH Cmd and Ctrl fire the command on every platform (the conventions'
  * cross-machine muscle-memory rule); only the DISPLAY word is platform-bound.
- * The one shared detector — zoom and every future chord import this.
+ * Alt is excluded so Windows AltGr — delivered as Ctrl+Alt by the webview —
+ * keeps typing characters instead of firing accelerators (the Chromium /
+ * VS Code rule). The one shared detector — zoom and every future chord
+ * import this.
  */
 export function hasMod(event: KeyboardEvent): boolean {
-  return event.metaKey || event.ctrlKey;
+  return (event.metaKey || event.ctrlKey) && !event.altKey;
 }
 
 /** Cmd+Slash, with bare Question as the conventional alias. */

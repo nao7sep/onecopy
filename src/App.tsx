@@ -42,6 +42,7 @@ import SettingsModal from "./components/SettingsModal";
 import { useSettingsStore } from "./state/settings-store";
 import { isHelpShortcut, isSettingsShortcut } from "./utils/shortcuts";
 import { hasOpenModal } from "./utils/modalStack";
+import { isComposingEvent } from "./hooks/useComposing";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
 import ScenesModal from "./components/ScenesModal";
@@ -274,6 +275,9 @@ export default function App() {
 
   useEffect(() => {
     const onZoomKey = (event: KeyboardEvent) => {
+      // Mid-composition the chord belongs to the pending IME candidate;
+      // matters on macOS where Ctrl+; is an IME conversion chord.
+      if (isComposingEvent(event)) return;
       if (hasOpenModal()) return;
       const zoomIn = isZoomIn(event);
       const zoomOut = isZoomOut(event);

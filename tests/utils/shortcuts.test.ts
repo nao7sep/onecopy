@@ -21,11 +21,24 @@ describe("command modifier", () => {
     expect(hasMod(key({ key: "/" }))).toBe(false);
   });
 
+  it("stays quiet under AltGr (Ctrl+Alt on Windows) so typed characters keep typing", () => {
+    // Hungarian AltGr+Comma produces ";" — a zoom-in key — and unmapped AltGr
+    // combos fall back to the base letter; neither may fire an accelerator.
+    expect(hasMod(key({ key: ";", ctrlKey: true, altKey: true }))).toBe(false);
+    expect(hasMod(key({ key: "/", ctrlKey: true, altKey: true }))).toBe(false);
+    // Plain Alt without a command modifier never counted; still doesn't.
+    expect(hasMod(key({ key: "/", altKey: true }))).toBe(false);
+  });
+
   it("help binds the chord under either modifier plus the bare Question alias", () => {
     expect(isHelpShortcut(key({ key: "/", metaKey: true }))).toBe(true);
     expect(isHelpShortcut(key({ key: "/", ctrlKey: true }))).toBe(true);
     expect(isHelpShortcut(key({ key: "?" }))).toBe(true);
     expect(isHelpShortcut(key({ key: "/" }))).toBe(false);
+    // An AltGr combo that happens to produce "?" is typing, not the alias —
+    // the branch's own !altKey check keeps it quiet now that hasMod ignores
+    // Ctrl+Alt chords.
+    expect(isHelpShortcut(key({ key: "?", ctrlKey: true, altKey: true }))).toBe(false);
   });
 
   it("zoom chords accept either modifier and the JIS semicolon", () => {
@@ -34,6 +47,13 @@ describe("command modifier", () => {
     expect(isZoomOut(key({ key: "-", ctrlKey: true }))).toBe(true);
     expect(isZoomReset(key({ key: "0", metaKey: true }))).toBe(true);
     expect(isZoomIn(key({ key: "=" }))).toBe(false);
+  });
+
+  it("zoom chords reject AltGr so layouts that type zoom keys via AltGr keep typing", () => {
+    expect(isZoomIn(key({ key: ";", ctrlKey: true, altKey: true }))).toBe(false);
+    expect(isZoomIn(key({ key: "=", ctrlKey: true, altKey: true }))).toBe(false);
+    expect(isZoomOut(key({ key: "-", ctrlKey: true, altKey: true }))).toBe(false);
+    expect(isZoomReset(key({ key: "0", ctrlKey: true, altKey: true }))).toBe(false);
   });
 });
 
@@ -68,5 +88,6 @@ describe("the settings chord", () => {
     expect(isSettingsShortcut(key({ key: ",", ctrlKey: true }))).toBe(true);
     expect(isSettingsShortcut(key({ key: "," }))).toBe(false);
     expect(isSettingsShortcut(key({ key: ".", metaKey: true }))).toBe(false);
+    expect(isSettingsShortcut(key({ key: ",", ctrlKey: true, altKey: true }))).toBe(false);
   });
 });
