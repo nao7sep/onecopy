@@ -59,7 +59,12 @@ export default function PreviewWindow() {
   return (
     <div className="flex h-screen flex-col bg-background">
       <div className="min-h-0 flex-1">
-        <PreviewSurface hash={message.hash} detail={message.detail} />
+        <PreviewSurface
+          hash={message.hash}
+          detail={message.detail}
+          pathId={message.pathId}
+          zoom={message.zoom === true}
+        />
       </div>
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span className="truncate" title={message.detail?.fileName ?? ""}>

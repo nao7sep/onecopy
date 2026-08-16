@@ -39,9 +39,9 @@ export function shortcutGroups(): ShortcutGroup[] {
     {
       title: "Looking",
       rows: [
-        { chord: "Space", action: "Show or hide the preview" },
+        { chord: "Space", action: "Show or hide the preview (plays/pauses a loaded video)" },
         { chord: "P", action: "Show or hide the preview" },
-        { chord: "Enter", action: "Compare similar photos, video scenes, or open the preview" },
+        { chord: "Enter", action: "Go deeper: compare similar photos, video scenes, or 100% view" },
         { chord: "Z", action: "100% view of the original (in the preview)" },
         { chord: "F", action: "Fullscreen (in the preview window)" },
       ],

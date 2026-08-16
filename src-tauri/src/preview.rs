@@ -59,6 +59,16 @@ impl CachePaths {
             .join(Self::shard(hash))
             .join(format!("{hash}.webp"))
     }
+
+    /// Full-resolution conversion of a format the webview cannot paint
+    /// (HEIC/AVIF), decoded on demand for the 100% view. PNG: lossless, so
+    /// pixel-peeping stays honest; reconstructible like every other entry.
+    pub fn fullres(&self, hash: &str) -> PathBuf {
+        self.root
+            .join("fullres")
+            .join(Self::shard(hash))
+            .join(format!("{hash}.png"))
+    }
 }
 
 pub struct DerivedFacts {
@@ -78,7 +88,11 @@ pub const NEEDS_FFMPEG: &str = "needs-ffmpeg";
 /// orientation rule, a new phash) — every row stamped with an older version
 /// becomes pending again on the next pass. Nothing on disk is touched: the
 /// cache is reconstructible by definition.
-pub const DERIVE_VERSION: i64 = 1;
+///
+/// 2: the analysis luminance composites alpha over mid-gray (dhash and
+/// sharpness previously read the RGB hidden under transparent pixels), so
+/// every stored phash for an alpha-bearing image is wrong until re-derived.
+pub const DERIVE_VERSION: i64 = 2;
 
 /// Extensions the `image` crate cannot decode, which route through the
 /// managed ffmpeg instead. Measured against image 0.25 and ffmpeg 9.0
@@ -214,7 +228,7 @@ fn derive_from_decoded(
     // Preview first (higher quality resize), thumbnail from the preview so the
     // original is traversed once and the thumb resize input is already small.
     let preview = fit_long_edge(&oriented, preview_long_edge, image::imageops::FilterType::CatmullRom);
-    let sharpness = laplacian_variance(&preview.to_luma8());
+    let sharpness = laplacian_variance(&luma_for_analysis(&preview));
     let phash = dhash(&preview);
 
     // An image that already fits the preview edge needs no resize — and when
@@ -280,10 +294,40 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
 /// comparison. Hand-rolled (the img_hash crate pins an older image version);
 /// Hamming distance over these bits is the similarity comparator the config's
 /// `similarityPhashMaxDistance` names.
+/// Luminance with alpha composited over MID-GRAY. `to_luma8` alone ignores
+/// alpha, so the RGB hidden UNDER transparent pixels — pixels the user cannot
+/// see — drove both the visual hash and the sharpness score: two
+/// identical-looking icons could hash apart while different-looking ones
+/// collided (the icon-corpus hairball was partly this). Mid-gray is the one
+/// backdrop that keeps both white-on-transparent and black-on-transparent art
+/// visible; photos carry no alpha and take the plain path untouched.
+pub fn luma_for_analysis(img: &DynamicImage) -> image::GrayImage {
+    if !img.color().has_alpha() {
+        return img.to_luma8();
+    }
+    let rgba = img.to_rgba8();
+    image::GrayImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+        let p = rgba.get_pixel(x, y);
+        let a = u32::from(p[3]);
+        // The same Rec.709 weights `to_luma8` uses, then the alpha blend.
+        let lum =
+            (2126 * u32::from(p[0]) + 7152 * u32::from(p[1]) + 722 * u32::from(p[2])) / 10000;
+        image::Luma([u8::try_from((lum * a + 128 * (255 - a)) / 255).unwrap_or(255)])
+    })
+}
+
 pub fn dhash(img: &DynamicImage) -> u64 {
-    let small = img
-        .resize_exact(9, 8, image::imageops::FilterType::Triangle)
-        .to_luma8();
+    // Composite BEFORE the resize: resizing RGBA blends the hidden RGB of
+    // transparent pixels into their opaque neighbours (the filter does not
+    // weight by alpha), so downscaling first re-leaks exactly the invisible
+    // pixels the analysis luminance exists to exclude — the pinning test
+    // caught this order.
+    let small = image::imageops::resize(
+        &luma_for_analysis(img),
+        9,
+        8,
+        image::imageops::FilterType::Triangle,
+    );
     let mut bits: u64 = 0;
     let mut bit = 0u32;
     for y in 0..8 {
@@ -295,6 +339,55 @@ pub fn dhash(img: &DynamicImage) -> u64 {
         }
     }
     bits
+}
+
+/// Ensures the full-resolution conversion for one HEIC/AVIF content exists,
+/// decoding through the managed ffmpeg on first request. Runs on a COMMAND
+/// (a pool thread) — never inside the protocol handler, which is synchronous
+/// on the main thread; the 100% view calls this first and then loads the
+/// cache entry like any other. Idempotent: an existing entry returns at once.
+pub fn ensure_fullres(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: Option<&Path>,
+    hash: &str,
+) -> Result<(), String> {
+    let target = cache.fullres(hash);
+    if target.exists() {
+        return Ok(());
+    }
+    let Some(ffmpeg) = ffmpeg else {
+        return Err("ffmpeg is not installed — install it from Managed tools".to_string());
+    };
+    let path: String = conn
+        .query_row(
+            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+            [hash],
+            |r| r.get(0),
+        )
+        .map_err(|_| "no live copy of this photo".to_string())?;
+    // ffmpeg applies display orientation itself (the orientation rule), so
+    // the decode is already upright.
+    let decoded = decode_via_ffmpeg(ffmpeg, Path::new(&path))?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    decoded
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("cache");
+    let parent = target.parent().ok_or("cache path has no parent")?;
+    let tmp = parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()));
+    std::fs::write(&tmp, &bytes).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    Ok(())
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -487,7 +580,7 @@ pub fn derive_images_pending(
 /// The cache's own subtrees under a root — the ONLY directories a cache move
 /// copies or deletes. The root itself may be a user-picked folder holding
 /// unrelated content, so tree-wide operations never touch anything else.
-pub const CACHE_SUBTREES: [&str; 3] = ["thumbs", "previews", "strips"];
+pub const CACHE_SUBTREES: [&str; 4] = ["thumbs", "previews", "strips", "fullres"];
 
 /// Copies every cache entry from `old_root` to `new_root` (same layout),
 /// reporting (copied_bytes, total_bytes) as it goes, and size-verifying each
@@ -568,6 +661,7 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
     let mut moves = vec![
         (cache.thumb(old), cache.thumb(new)),
         (cache.preview(old), cache.preview(new)),
+        (cache.fullres(old), cache.fullres(new)),
     ];
     for i in 0..strip_frames.max(0) as u32 {
         moves.push((
@@ -595,7 +689,7 @@ pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, Strin
         .prepare("SELECT 1 FROM contents WHERE hash = ?1")
         .map_err(|e| e.to_string())?;
 
-    for sub in ["thumbs", "previews"] {
+    for sub in ["thumbs", "previews", "fullres"] {
         let tree = cache.root.join(sub);
         if !tree.exists() {
             continue;
@@ -606,7 +700,12 @@ pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, Strin
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let orphan = if let Some(hash) = name.strip_suffix(".webp") {
+            let hash_of = |n: &str| {
+                n.strip_suffix(".webp")
+                    .or_else(|| n.strip_suffix(".png"))
+                    .map(str::to_string)
+            };
+            let orphan = if let Some(hash) = hash_of(&name) {
                 !exists
                     .exists([hash])
                     .map_err(|e| e.to_string())?

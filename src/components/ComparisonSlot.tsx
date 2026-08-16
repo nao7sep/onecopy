@@ -27,18 +27,21 @@ export default function ComparisonSlot({
       role="button"
       aria-pressed={kept}
       aria-label={`Slot ${slotKey}: ${member.fileName}`}
-      className={`relative w-[23%] min-w-56 cursor-pointer rounded border-2 p-1 ${
+      // Fills its GRID CELL: the fixed-width wrapping tiles left every image
+      // small however much screen there was — the cell is as big as the
+      // count allows, so the image is too.
+      className={`relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
         kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
       }`}
       onClick={onToggle}
       onDoubleClick={onEnlarge}
       title="Click: keep · double-click: enlarge"
     >
-      <div className="flex h-64 items-center justify-center overflow-hidden">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         <img
           src={previewUrl(member.hash)}
           alt={member.fileName}
-          className="max-h-full max-w-full object-contain"
+          className="h-full w-full object-contain"
         />
       </div>
       <span
@@ -53,7 +56,7 @@ export default function ComparisonSlot({
           ×{member.copyCount}
         </span>
       ) : null}
-      <figcaption className="mt-1 text-xs text-ink-muted">
+      <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">
           <span className="truncate text-ink" title={member.fileName}>
             {member.fileName}

@@ -9,12 +9,18 @@ import {
   type SortOrder,
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
-import { usePreviewStore } from "../state/preview-store";
+import { handleSpaceLook } from "../state/preview-store";
+import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import PreviewControl from "./PreviewControl";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
 const TILE_GAP = 12;
+// List rows use gap-0.5 (2px).
+const LIST_GAP = 2;
+// Row-height fallbacks until the first real row is measured.
+const TILE_ROW_ESTIMATE = 190;
+const LIST_ROW_ESTIMATE = 34;
 
 // The center-pane thumbnail grid. Native lazy loading keeps a large month
 // cheap; every pixel comes from the mediacache protocol, never original files.
@@ -231,14 +237,54 @@ export default function Grid({
     return () => observer.disconnect();
   }, [loading, items.length, layout]);
 
+  // Virtualization state: only rows near the viewport exist in the DOM — at
+  // 20,000+ items per month, mounting every tile's node makes scroll and
+  // selection crawl even though the images themselves lazy-load. The row
+  // height is MEASURED off the first rendered item (a constant would drift
+  // with any styling change); the estimate carries the first paint.
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(600);
+  const [measuredItemHeight, setMeasuredItemHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const measure = () => setViewportHeight(container.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+  const gap = layout === "list" ? LIST_GAP : TILE_GAP;
+  const rowHeight =
+    (measuredItemHeight ?? (layout === "list" ? LIST_ROW_ESTIMATE - gap : TILE_ROW_ESTIMATE - gap)) +
+    gap;
+  const measureItem = (node: HTMLDivElement | null) => {
+    if (node !== null && node.offsetHeight > 0 && node.offsetHeight !== measuredItemHeight) {
+      setMeasuredItemHeight(node.offsetHeight);
+    }
+  };
+
   // The anchor stays in view across deletes and refreshes — the recovery
   // selection lands off-screen otherwise ("nearest" makes it a no-op when
-  // already visible, so arrow navigation double-scrolls harmlessly).
+  // already visible, so arrow navigation double-scrolls harmlessly). A
+  // virtualized-out anchor has no node to ask, so its row position is
+  // computed instead.
   useEffect(() => {
     if (selectedItem === null) return;
-    containerRef.current
-      ?.querySelector(`[data-item-key="${CSS.escape(selectedItem)}"]`)
-      ?.scrollIntoView({ block: "nearest" });
+    const container = containerRef.current;
+    if (!container) return;
+    const node = container.querySelector(`[data-item-key="${CSS.escape(selectedItem)}"]`);
+    if (node !== null) {
+      node.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    const index = sortedKeysRef.current.indexOf(selectedItem);
+    if (index < 0) return;
+    container.scrollTop = scrollTopForRow(
+      Math.floor(index / Math.max(1, columnsRef.current)),
+      container.clientHeight,
+      rowHeightRef.current,
+    );
   }, [selectedItem]);
 
   // During a same-section refresh the stale items keep rendering (the store
@@ -249,16 +295,25 @@ export default function Grid({
     items.length === 0 ? (loading ? "Loading…" : "Nothing in this section") : null;
   const sorted = emptyState === null ? sortItems(items, sortOrder) : [];
   const sortedKeys = sorted.map(itemKey);
+  // Refs for the anchor effect, which must read current values without
+  // re-running on every scroll.
+  const sortedKeysRef = useRef(sortedKeys);
+  sortedKeysRef.current = sortedKeys;
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
+  const rowHeightRef = useRef(rowHeight);
+  rowHeightRef.current = rowHeight;
+
+  const totalRows = Math.ceil(sorted.length / Math.max(1, columns));
+  const win = visibleWindow(scrollTop, viewportHeight, rowHeight, totalRows);
+  const visible = sorted.slice(win.startRow * columns, win.endRow * columns);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
-    // Space is QUICK LOOK: it opens the preview on the anchor and closes it
-    // again, the gesture every Finder user already has. It previously toggled
-    // the anchor's membership in the multi-selection — technically the listbox
-    // idiom, but nobody found it, and Cmd-click and Shift-click already cover
-    // multi-select. Nothing else in the app claims Space.
+    // Space = LOOK (the agreed model): toggle the preview, through the one
+    // shared rule — with a video loaded in the preview the video surface owns
+    // the key instead (play/pause), so the rule must not claim it here.
     if (event.key === " ") {
-      event.preventDefault();
-      void usePreviewStore.getState().toggleFollow();
+      handleSpaceLook(event);
       return;
     }
     // PageUp/PageDown jump by roughly a viewport of rows.
@@ -349,11 +404,18 @@ export default function Grid({
             : "flex flex-wrap content-start gap-3 p-3"
         }`}
         onKeyDown={onGridKeyDown}
+        onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
       >
         {emptyState !== null ? (
           <p className="m-auto text-ink-muted">{emptyState}</p>
         ) : null}
-        {sorted.map((item) => {
+        {/* The spacers stand in for the unmounted rows, keeping the
+            scrollbar's geometry honest. basis-full forces each onto its own
+            flex row. */}
+        {win.topPad > 0 ? (
+          <div aria-hidden className="w-full shrink-0 basis-full" style={{ height: win.topPad - gap }} />
+        ) : null}
+        {visible.map((item, i) => {
           const key = itemKey(item);
           const isSelected = selectedKeys.has(key);
           const onSelect = (event: React.MouseEvent) => {
@@ -369,6 +431,7 @@ export default function Grid({
           return (
             <div
               key={key}
+              ref={i === 0 ? measureItem : undefined}
               id={`grid-opt-${key}`}
               data-item-key={key}
               role="option"
@@ -383,6 +446,9 @@ export default function Grid({
             </div>
           );
         })}
+        {win.bottomPad > 0 ? (
+          <div aria-hidden className="w-full shrink-0 basis-full" style={{ height: win.bottomPad - gap }} />
+        ) : null}
       </div>
     </div>
   );

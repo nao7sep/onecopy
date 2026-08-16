@@ -45,6 +45,7 @@ import { hasOpenModal } from "./utils/modalStack";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
 import ScenesModal from "./components/ScenesModal";
+import TrashModal from "./components/TrashModal";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { Menu as MenuIcon } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -53,7 +54,7 @@ import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
 import { ffmpegChipText, ffmpegRole, useBinariesStore } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
-import { usePreviewStore } from "./state/preview-store";
+import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
 import PreviewSurface from "./components/PreviewSurface";
 
 // The main-window shell: the sidebar listbox, the thumbnail grid for the
@@ -95,6 +96,7 @@ export default function App() {
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
   const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
   /** Enter on an anchor video opens the scenes modal for this hash. */
   const [scenesFor, setScenesFor] = useState<string | null>(null);
   /** Pending permanent deletion awaiting confirmation (item count shown). */
@@ -318,12 +320,17 @@ export default function App() {
         } else {
           void useItemsStore.getState().deleteSelected(false);
         }
-      } else if (event.key.toLowerCase() === "p" && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        // P and Space are the same command, and the chrome control is a third
-        // way to reach it — all three go through the store's one toggle so
-        // they cannot drift into disagreeing about what state they left.
-        event.preventDefault();
-        void usePreviewStore.getState().toggleFollow();
+      } else if (
+        (event.key === " " || event.key.toLowerCase() === "p") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        // Space = LOOK, with P as its alias; the chrome control is the third
+        // entry — all through the store's one rule so they cannot drift. A
+        // video loaded in the preview owns Space (play/pause), which is why
+        // the rule may decline to claim the event.
+        handleSpaceLook(event);
       } else if (event.key === "Enter") {
         const { items, selectedItem } = useItemsStore.getState();
         const item = items.find((i) => itemKey(i) === selectedItem);
@@ -336,23 +343,27 @@ export default function App() {
         } else if (item.hash && item.similarGroupId !== null) {
           // Similar photos exist: Enter means "show them all at once" — and
           // when the group turns out to have no other live members, Enter
-          // falls back to the preview instead of doing nothing.
+          // falls back to inspecting the one photo instead of doing nothing.
           void useComparisonStore
             .getState()
             .openGroup(item.hash)
             .then((opened) => {
               if (opened) return;
               return import("./state/preview-store").then(({ showPreview }) =>
-                showPreview({ hash: item.hash, pathId: null }),
+                showPreview({ hash: item.hash, pathId: null }, true),
               );
             });
         } else {
-          // No similars: Enter opens the item in the preview window.
+          // No similars: Enter INSPECTS — the preview opens at 100%
+          // (Space peeks at fit; Enter goes deeper, the agreed split).
           void import("./state/preview-store").then(({ showPreview }) =>
-            showPreview({
-              hash: item.hash,
-              pathId: item.hash === null ? item.pathId : null,
-            }),
+            showPreview(
+              {
+                hash: item.hash,
+                pathId: item.hash === null ? item.pathId : null,
+              },
+              true,
+            ),
           );
         }
       }
@@ -467,6 +478,7 @@ export default function App() {
       ) : null}
       <SettingsModal />
       <IssuesModal />
+      <TrashModal open={trashOpen} onClose={() => setTrashOpen(false)} />
       <div ref={contentRowRef} className="flex min-h-0 flex-1">
         <aside
           style={{ width: paneWidths.left }}
@@ -510,6 +522,7 @@ export default function App() {
               <MenuSeparator />
               <MenuItem onSelect={openSettings}>Settings…</MenuItem>
               <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
+              <MenuItem onSelect={() => setTrashOpen(true)}>Trash…</MenuItem>
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}
@@ -616,6 +629,8 @@ export default function App() {
               <PreviewSurface
                 hash={previewCurrent?.hash ?? null}
                 detail={previewCurrent?.detail ?? null}
+                pathId={previewCurrent?.pathId ?? null}
+                zoom={previewCurrent?.zoom === true}
               />
               <button
                 aria-label="Close preview"

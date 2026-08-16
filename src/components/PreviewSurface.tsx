@@ -6,19 +6,58 @@
 // Detail arrives as a prop (the anchor owner fetched it once); the surface
 // itself fetches nothing.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { originalUrl, previewUrl, stripUrl } from "../models/items";
+import { hasOpenModal } from "../utils/modalStack";
+import {
+  isAudioFile,
+  originalUrl,
+  originalUrlByPath,
+  previewUrl,
+  stripUrl,
+} from "../models/items";
 import ZoomableImage from "./ZoomableImage";
 import type { ItemDetail } from "../state/items-store";
 
 function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
   const [playing, setPlaying] = useState(false);
   const [playbackFailed, setPlaybackFailed] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // The one exception in "Space = look": with a video loaded here, Space
+  // plays/pauses it (the media convention) instead of closing the preview.
+  // The store's shared Space rule DECLINES the key in that state, so this
+  // listener is the only claimant left standing.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== " " || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (hasOpenModal()) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      event.preventDefault();
+      const video = videoRef.current;
+      if (video === null) {
+        setPlaying(true);
+        return;
+      }
+      if (video.paused) void video.play();
+      else video.pause();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
     <div className="flex h-full w-full flex-col items-center gap-2 overflow-y-auto">
       {playing && !playbackFailed ? (
         <video
+          ref={videoRef}
           controls
           autoPlay
           poster={previewUrl(hash)}
@@ -75,7 +114,15 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
 /** An image whose missing/undecodable preview reads as words, never as the
  * webview's broken-image icon (a file the scan hasn't reached yet; a HEIC or
  * AVIF still waiting on the ffmpeg install that decodes it). */
-function ImageSurface({ hash, fileName }: { hash: string; fileName: string }) {
+function ImageSurface({
+  hash,
+  fileName,
+  startZoomed = false,
+}: {
+  hash: string;
+  fileName: string;
+  startZoomed?: boolean;
+}) {
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (
@@ -84,16 +131,59 @@ function ImageSurface({ hash, fileName }: { hash: string; fileName: string }) {
       </p>
     );
   }
-  return <ZoomableImage key={hash} hash={hash} fileName={fileName} onError={() => setFailed(true)} />;
+  return (
+    <ZoomableImage
+      key={hash}
+      hash={hash}
+      fileName={fileName}
+      startZoomed={startZoomed}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+/** Audio other-files play instead of showing a blank surface (decided
+ * 2026-08-16). The file stays an other-file everywhere else; the element
+ * streams over the mediafile protocol — by hash when one exists, by path id
+ * otherwise (a memo with a unique size is never content-read). */
+function AudioSurface({
+  src,
+  fileName,
+}: {
+  src: string;
+  fileName: string;
+}) {
+  return (
+    <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-4">
+      <p className="max-w-full truncate text-sm text-ink" title={fileName}>
+        {fileName}
+      </p>
+      {/* Keyed by src so playback state never carries across files. */}
+      <audio key={src} controls src={src} className="w-full max-w-[420px]" />
+    </div>
+  );
 }
 
 export default function PreviewSurface({
   hash,
   detail,
+  pathId = null,
+  zoom = false,
 }: {
   hash: string | null;
   detail: ItemDetail | null;
+  /** The unhashed route: identifies the file when no hash exists yet. */
+  pathId?: number | null;
+  /** Enter's inspect: the image mounts at 100%. */
+  zoom?: boolean;
 }) {
+  if (detail !== null && isAudioFile(detail.fileName)) {
+    const src =
+      hash !== null ? originalUrl(hash) : pathId !== null ? originalUrlByPath(pathId) : null;
+    if (src !== null) {
+      return <AudioSurface src={src} fileName={detail.fileName} />;
+    }
+  }
   if (hash === null && detail === null) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -114,7 +204,12 @@ export default function PreviewSurface({
         // Keyed by hash so playback state never carries across files.
         <VideoSurface key={hash} hash={hash} detail={detail} />
       ) : (
-        <ImageSurface key={hash} hash={hash} fileName={detail?.fileName ?? ""} />
+        <ImageSurface
+          key={hash}
+          hash={hash}
+          fileName={detail?.fileName ?? ""}
+          startZoomed={zoom}
+        />
       )}
     </div>
   );

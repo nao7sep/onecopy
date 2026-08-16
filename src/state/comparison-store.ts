@@ -13,13 +13,14 @@ import { emit, listen } from "@tauri-apps/api/event";
 import {
   getCurrentWindow,
   availableMonitors,
+  currentMonitor,
   PhysicalPosition,
   PhysicalSize,
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { log, toErrorFields } from "../repositories";
 import { hasOpenModal } from "../utils/modalStack";
-import { orderMonitors, priorityFromState } from "../utils/screens";
+import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
 
 export interface GroupMember {
   hash: string;
@@ -64,6 +65,8 @@ export function slotIndexForKey(event: {
 export interface ComparisonBroadcast {
   chunks: { member: GroupMember; slotKey: string; kept: boolean }[][];
   queueCount: number;
+  /** The group's dominant image orientation, driving each window's grid. */
+  portraitDominant: boolean;
 }
 
 interface ComparisonState {
@@ -84,6 +87,8 @@ interface ComparisonState {
   /** Per-screen slot capacities (screen 0 = the main window). The turn size is
    * their sum, capped by the 16 slot keys. */
   capacities: number[];
+  /** The group's dominant image orientation (drives the slot grids). */
+  portraitDominant: boolean;
   /** Resolves false when no live group opened (fewer than 2 members) so the
    * caller can fall back honestly instead of doing nothing on Enter. */
   openGroup: (hash: string) => Promise<boolean>;
@@ -121,12 +126,33 @@ export function turnSize(capacities: number[]): number {
 }
 
 function broadcast(): void {
-  const { slots, kept, queue, capacities } = useComparisonStore.getState();
+  const { slots, kept, queue, capacities, portraitDominant } =
+    useComparisonStore.getState();
   const payload: ComparisonBroadcast = {
     chunks: chunkSlots(slots, kept, capacities),
     queueCount: queue.length,
+    portraitDominant,
   };
   void emit("comparison://state", payload);
+}
+
+/** How many COLUMNS a window's slot grid takes, so the cells' shape tracks
+ * the photos' shape: portrait photos on a landscape screen stand three
+ * abreast; landscape photos take a 2×2; landscape photos on a portrait
+ * screen stack. The developer's finding was that a wrapping row of
+ * fixed-size tiles left every image small however much screen there was —
+ * the grid fills the window and lets the cells be as big as the count
+ * allows. Derivation: pick the column count whose cell aspect lands nearest
+ * the image aspect. */
+export function gridColumns(
+  slotCount: number,
+  containerAspect: number,
+  portraitImages: boolean,
+): number {
+  if (slotCount <= 1) return 1;
+  const imageAspect = portraitImages ? 2 / 3 : 3 / 2;
+  const ideal = Math.sqrt((slotCount * containerAspect) / imageAspect);
+  return Math.min(slotCount, Math.max(1, Math.round(ideal)));
 }
 
 /// The design's per-screen rule: three slots when the photos run portrait,
@@ -153,23 +179,37 @@ export function perScreenCapacity(members: GroupMember[]): number {
  * 16 keys. */
 async function resolveSpread(
   perScreen: number,
-): Promise<{ monitors: Awaited<ReturnType<typeof availableMonitors>>; capacities: number[] }> {
+): Promise<{ others: Awaited<ReturnType<typeof availableMonitors>>; capacities: number[] }> {
   try {
-    // Screen priority orders which monitors take which role (1 = main,
-    // 2 = preview, 3+ = comparison; the spread walks the ordered tail).
+    // `others` is every monitor EXCEPT the one hosting the main window —
+    // found by ASKING, never assumed. The spread used to target priority
+    // slots 2+ blind, so whenever the priority list disagreed with where the
+    // main window really was (a moved window; the broken matched-pair keys),
+    // an always-on-top borderless window landed ON TOP of the main window
+    // and buried its slots — the developer never saw keys 1–4. The main
+    // window's own screen hosts chunk 0 by construction now; priority still
+    // orders which of the OTHER monitors join first.
     const { useAppStore } = await import("./app-store");
     const monitors = orderMonitors(
       await availableMonitors(),
       priorityFromState(useAppStore.getState().appData?.state ?? null),
     );
-    const extras = Math.max(0, monitors.length - 1);
+    const hosting = await currentMonitor().catch(() => null);
+    const hostKey = hosting !== null ? monitorKey(hosting) : null;
+    const others =
+      hostKey === null
+        ? monitors.slice(1)
+        : monitors.filter((m) => monitorKey(m) !== hostKey);
     return {
-      monitors,
-      capacities: extras === 0 ? [SLOT_KEYS.length] : monitors.map(() => perScreen),
+      others,
+      capacities:
+        others.length === 0
+          ? [SLOT_KEYS.length]
+          : [perScreen, ...others.map(() => perScreen)],
     };
   } catch (error) {
     log.warn("monitor query failed; staying single-window", toErrorFields(error));
-    return { monitors: [], capacities: [SLOT_KEYS.length] };
+    return { others: [], capacities: [SLOT_KEYS.length] };
   }
 }
 
@@ -183,14 +223,13 @@ async function resolveSpread(
  * others looks the same and appears instantly (imagequeue's viewer proves the
  * approach). */
 async function openSpread(
-  monitors: Awaited<ReturnType<typeof availableMonitors>>,
-  extras: number,
+  others: Awaited<ReturnType<typeof availableMonitors>>,
 ): Promise<void> {
   try {
-    for (let i = 0; i < extras; i += 1) {
+    for (let i = 0; i < others.length; i += 1) {
       const label = `comparison-${i + 1}`;
       const existing = await WebviewWindow.getByLabel(label);
-      const monitor = monitors[i + 1];
+      const monitor = others[i];
       if (existing !== null) {
         // Reused from a previous session: reveal and re-place it, cheaper
         // than a webview boot and it keeps its listener registered.
@@ -256,6 +295,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   pendingPermanentCommit: false,
   spreadCount: 0,
   capacities: [SLOT_KEYS.length],
+  portraitDominant: false,
 
   confirmPermanentCommit: async () => {
     set({ permanentArmed: true, pendingPermanentCommit: false });
@@ -276,13 +316,14 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // Resolve the screens first (their capacities decide the turn size),
       // publish the state, and only THEN create the windows — a window that
       // announces itself must find a session already open to be answered.
-      const { monitors, capacities } = await resolveSpread(perScreenCapacity(members));
-      const extras = Math.max(0, monitors.length - 1);
+      const perScreen = perScreenCapacity(members);
+      const { others, capacities } = await resolveSpread(perScreen);
       const size = turnSize(capacities);
       set({
         open: true,
         capacities,
-        spreadCount: extras,
+        spreadCount: others.length,
+        portraitDominant: perScreen === 3,
         slots: members.slice(0, size),
         queue: members.slice(size),
         kept: new Set<string>(),
@@ -291,7 +332,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         pendingPermanentCommit: false,
       });
       broadcast();
-      await openSpread(monitors, extras);
+      await openSpread(others);
       return true;
     } catch (error) {
       log.error("similar group load failed", toErrorFields(error));

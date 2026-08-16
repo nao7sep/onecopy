@@ -85,6 +85,7 @@ describe("a comparison window", () => {
       ],
     ],
     queueCount: 3,
+    portraitDominant: false,
   };
 
   it("mounts without throwing and waits", () => {

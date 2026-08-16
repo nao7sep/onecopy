@@ -16,11 +16,13 @@ import {
   perScreenCapacity,
   type GroupMember,
 } from "../../src/state/comparison-store";
+import { gridColumns } from "../../src/state/comparison-store";
 import {
   createdWindows,
   emitCalls,
   mockCommands,
   resetTauriMocks,
+  setCurrentMonitor,
   setMonitors,
   setWindowCreatedHook,
 } from "../mocks/tauri";
@@ -153,6 +155,63 @@ describe("opening a group across screens", () => {
 
     expect(createdWindows.filter((w) => w.label.startsWith("comparison-"))).toHaveLength(0);
     expect(useComparisonStore.getState().capacities).toEqual([16]);
+  });
+});
+
+describe("the spread avoids the main window's own screen", () => {
+  it("never covers the main window, wherever it actually is", async () => {
+    // The developer's report: "left bottom is my primary screen but I have
+    // never seen slots 1-4". The spread targeted priority slots 2+ BLIND, so
+    // when the priority list disagreed with where the main window really was,
+    // an always-on-top borderless window landed on top of it and buried its
+    // chunk. The spread must ask which monitor hosts the main window and
+    // skip exactly that one.
+    const THREE = [
+      ...TWO_SCREENS,
+      {
+        name: "three",
+        position: { x: 5120, y: 0 },
+        size: { width: 2560, height: 1440 },
+        scaleFactor: 2,
+      },
+    ];
+    setMonitors(THREE);
+    // The main window actually lives on the SECOND monitor of the list.
+    setCurrentMonitor(THREE[1]);
+    mockCommands({
+      get_similar_group: () => [member("a"), member("b"), member("c")],
+      patch_state: () => ({}),
+    });
+
+    await useComparisonStore.getState().openGroup("a");
+
+    const targets = createdWindows
+      .filter((w) => w.label.startsWith("comparison-"))
+      .map((w) => w.options.x);
+    // Windows on monitors 0 (x=0) and 2 (x=5120/2 logical) — never on the
+    // hosting monitor (x=2560/2 logical = 1280).
+    expect(targets).toHaveLength(2);
+    expect(targets).not.toContain(1280);
+    expect(targets).toContain(0);
+    expect(targets).toContain(2560);
+  });
+});
+
+describe("slot grids track the photos' shape", () => {
+  it("puts four landscape photos in a 2×2 on a landscape screen", () => {
+    expect(gridColumns(4, 16 / 9, false)).toBe(2);
+  });
+
+  it("stands three portrait photos abreast on a landscape screen", () => {
+    expect(gridColumns(3, 16 / 9, true)).toBe(3);
+  });
+
+  it("stacks landscape photos on a portrait screen", () => {
+    expect(gridColumns(4, 9 / 16, false)).toBe(1);
+  });
+
+  it("one photo takes the whole window", () => {
+    expect(gridColumns(1, 16 / 9, false)).toBe(1);
   });
 });
 

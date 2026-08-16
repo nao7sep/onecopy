@@ -46,6 +46,70 @@ fn hamming(a: i64, b: i64) -> u32 {
     (a ^ b).count_ones()
 }
 
+/// Visual clustering within a bucket, with a BOUNDED DIAMETER.
+///
+/// Plain union-find components chain: A within distance of B and B of C puts
+/// A and C in one "family" however far apart they are. On flat graphics —
+/// icons, screenshots, renders, which crowd into a small corner of dhash
+/// space — that chained a 75-member group whose farthest pair sat at distance
+/// 28 with the threshold at 4: a ghost and a moon, "similar". Measured on the
+/// developer's own index, 2026-08-16.
+///
+/// The repair keeps union-find for the well-behaved case and bounds the rest:
+/// a component whose diameter is within TWICE the threshold stands whole (two
+/// members of a real burst may sit `2d` apart through their shared middle),
+/// and a wider component is re-clustered around LEADERS — each member joins
+/// the first cluster whose leader is within the threshold, so no cluster's
+/// diameter can exceed `2d` by construction. Members are ordered by hash
+/// first, which keeps near-identical twins adjacent (they meet the same
+/// leader) and makes the result deterministic.
+pub fn cluster_by_appearance(phashes: &[i64], max_distance: u32) -> Vec<Vec<usize>> {
+    let n = phashes.len();
+    let mut uf = UnionFind::new(n);
+    for a in 0..n {
+        for b in (a + 1)..n {
+            if hamming(phashes[a], phashes[b]) <= max_distance {
+                uf.union(a, b);
+            }
+        }
+    }
+    let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let root = uf.find(i);
+        components.entry(root).or_default().push(i);
+    }
+
+    let diameter_limit = max_distance * 2;
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for mut members in components.into_values() {
+        members.sort_unstable();
+        let chained = members.iter().enumerate().any(|(i, &a)| {
+            members[(i + 1)..]
+                .iter()
+                .any(|&b| hamming(phashes[a], phashes[b]) > diameter_limit)
+        });
+        if !chained {
+            out.push(members);
+            continue;
+        }
+        members.sort_by_key(|&i| (phashes[i], i));
+        let mut clusters: Vec<Vec<usize>> = Vec::new();
+        for &i in &members {
+            match clusters
+                .iter_mut()
+                .find(|c| hamming(phashes[c[0]], phashes[i]) <= max_distance)
+            {
+                Some(cluster) => cluster.push(i),
+                None => clusters.push(vec![i]),
+            }
+        }
+        out.extend(clusters);
+    }
+    // Deterministic output order regardless of HashMap iteration.
+    out.sort_by_key(|c| c[0]);
+    out
+}
+
 /// The month bucket key: UTC `yyyy-mm`, or `undated`.
 fn bucket_key(resolved_utc_ms: Option<i64>) -> String {
     match resolved_utc_ms.and_then(chrono::DateTime::from_timestamp_millis) {
@@ -130,24 +194,12 @@ pub fn rebuild_groups(
     let mut groups: Vec<Vec<String>> = Vec::new();
 
     for indices in buckets.values() {
-        // Union-find over pairs within the visual threshold. Quadratic within
-        // the bucket — integer work over in-memory rows, no file reads.
-        let mut uf = UnionFind::new(indices.len());
-        for a in 0..indices.len() {
-            for b in (a + 1)..indices.len() {
-                let (ca, cb) = (&candidates[indices[a]], &candidates[indices[b]]);
-                if hamming(ca.phash, cb.phash) <= config.phash_max_distance {
-                    uf.union(a, b);
-                }
-            }
-        }
-        let mut clusters: HashMap<usize, Vec<usize>> = HashMap::new();
-        for local in 0..indices.len() {
-            let root = uf.find(local);
-            clusters.entry(root).or_default().push(indices[local]);
-        }
-
-        for cluster in clusters.into_values() {
+        // Quadratic within the bucket — integer work over in-memory rows, no
+        // file reads. Chained components split around leaders (see
+        // cluster_by_appearance).
+        let phashes: Vec<i64> = indices.iter().map(|&i| candidates[i].phash).collect();
+        for cluster in cluster_by_appearance(&phashes, config.phash_max_distance) {
+            let cluster: Vec<usize> = cluster.into_iter().map(|local| indices[local]).collect();
             if cluster.len() < 2 {
                 continue;
             }

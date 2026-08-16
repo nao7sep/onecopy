@@ -46,6 +46,7 @@ vi.mock("@tauri-apps/api/window", async () => {
   return {
     getCurrentWindow: m.getCurrentWindow,
     availableMonitors: m.availableMonitors,
+    currentMonitor: m.currentMonitor,
     LogicalSize: m.LogicalSize,
     PhysicalSize: m.PhysicalSize,
     PhysicalPosition: m.PhysicalPosition,

@@ -100,9 +100,52 @@ fn dhash_known_answers_pin_the_bit_layout() {
     assert_eq!(dhash(&falling), 0);
 
     // A flat image is degenerate by design: zero hash, distance 0 to
-    // every other flat image — which is why the group-size cap exists.
+    // every other flat image — bounded-diameter clustering is what keeps
+    // that corner of hash space from chaining into one mega-family.
     let flat = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([128; 3])));
     assert_eq!(dhash(&flat), 0);
+}
+
+#[test]
+fn dhash_sees_what_the_user_sees_never_the_pixels_under_transparency() {
+    // Two icons IDENTICAL on screen — an opaque bright square on a
+    // transparent field — differing only in the RGB hidden under the
+    // alpha-zero pixels. `to_luma8` alone reads that hidden RGB, so these
+    // two hashed APART while genuinely different icons collided; the
+    // analysis luminance composites over mid-gray instead.
+    let icon = |hidden: [u8; 3]| {
+        DynamicImage::ImageRgba8(image::RgbaImage::from_fn(64, 64, |x, y| {
+            let inside = (16..48).contains(&x) && (16..48).contains(&y);
+            if inside {
+                image::Rgba([230, 230, 230, 255])
+            } else {
+                image::Rgba([hidden[0], hidden[1], hidden[2], 0])
+            }
+        }))
+    };
+    assert_eq!(
+        dhash(&icon([0, 0, 0])),
+        dhash(&icon([255, 20, 147])),
+        "invisible pixels must not change the hash"
+    );
+
+    // And the backdrop is MID-gray so both polarities stay visible: a white
+    // shape and a black shape on transparency must not collapse together.
+    let shape = |v: u8| {
+        DynamicImage::ImageRgba8(image::RgbaImage::from_fn(64, 64, |x, y| {
+            let inside = (16..48).contains(&x) && (16..48).contains(&y);
+            if inside {
+                image::Rgba([v, v, v, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        }))
+    };
+    assert_ne!(
+        dhash(&shape(245)),
+        dhash(&shape(10)),
+        "white-on-transparent and black-on-transparent are different icons"
+    );
 }
 
 #[test]
@@ -633,4 +676,28 @@ fn a_stale_derive_version_makes_a_row_pending_again() {
     .unwrap();
     let failed = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
     assert_eq!(failed.derived, 0, "a failed row stays failed");
+}
+
+#[test]
+fn ensure_fullres_short_circuits_and_reports_missing_ffmpeg_honestly() {
+    // The two contracts that need no live ffmpeg: an existing entry returns
+    // at once (the idempotence the 100% view leans on per keystroke), and a
+    // missing ffmpeg is a plain actionable error, never a panic or a blank.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-fullres-")
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("index.sqlite3");
+    let conn = onecopy_lib::index_store::open(&db).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+
+    // Pre-existing entry: no ffmpeg needed, no DB row needed.
+    let target = cache.fullres("abc123");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"png-bytes").unwrap();
+    assert!(ensure_fullres(&conn, &cache, None, "abc123").is_ok());
+
+    // No entry and no ffmpeg: the error names the remedy.
+    let err = ensure_fullres(&conn, &cache, None, "def456").unwrap_err();
+    assert!(err.contains("Managed tools"), "{err}");
 }

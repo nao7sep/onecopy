@@ -4,6 +4,7 @@ import ZoomableImage from "./ZoomableImage";
 import {
   slotIndexForKey,
   chunkSlots,
+  gridColumns,
   useComparisonStore,
 } from "../state/comparison-store";
 import { hasOpenModal } from "../utils/modalStack";
@@ -71,6 +72,13 @@ export default function ComparisonView() {
   const chunks = chunkSlots(slots, kept, capacities);
   const localChunk = chunks[0] ?? [];
   const perChunk = localChunk.length;
+  const portraitDominant = useComparisonStore.getState().portraitDominant;
+  const columns = gridColumns(
+    Math.max(1, perChunk),
+    window.innerWidth / Math.max(1, window.innerHeight),
+    portraitDominant,
+  );
+  const rows = Math.max(1, Math.ceil(Math.max(1, perChunk) / columns));
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-background">
@@ -100,7 +108,13 @@ export default function ComparisonView() {
           </button>
         </div>
       </header>
-      <div className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3">
+      <div
+        className="grid min-h-0 flex-1 gap-3 p-3"
+        style={{
+          gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+        }}
+      >
         {localChunk.map((slot, index) => (
           <ComparisonSlot
             key={slot.member.hash}

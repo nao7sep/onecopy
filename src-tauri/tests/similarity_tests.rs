@@ -179,6 +179,60 @@ fn large_families_group_whole_with_no_cap() {
 }
 
 #[test]
+fn a_chain_cannot_glue_dissimilar_photos_into_one_family() {
+    // The developer's screenshot, reduced to numbers: union-find chains
+    // distance-4 LINKS into a 75-member "family" whose farthest pair sat 28
+    // bits apart — a ghost and a moon, "similar". A group's diameter is now
+    // bounded at twice the threshold, so the chain splits where it stops
+    // looking like one family.
+    let hashes: Vec<i64> = vec![
+        0b0000_0000_0000,          // a
+        0b0000_0000_1111,          // b: d4 from a
+        0b0000_1111_1111,          // c: d4 from b, d8 from a  (still within 2d)
+        0b1111_1111_1111,          // d: d4 from c, d12 from a (chained past 2d)
+    ];
+    let clusters = cluster_by_appearance(&hashes, 4);
+    assert_eq!(clusters.len(), 2, "the chain must split");
+    // Split at the seam, not scattered: sorted-by-hash leaders keep the near
+    // pairs together.
+    assert_eq!(clusters[0], vec![0, 1], "a and b stay a family");
+    assert_eq!(clusters[1], vec![2, 3], "c and d stay a family");
+}
+
+#[test]
+fn a_tight_family_with_spread_ends_stays_whole() {
+    // A real burst: every member within the threshold of a shared middle, the
+    // two ends up to 2d apart. That is one family, not a chain — splitting it
+    // is the shattering the union-find design existed to prevent.
+    let hashes: Vec<i64> = vec![
+        0b0000_1111, // end one
+        0b0000_0011, // middle (d2 from both ends)
+        0b0011_0011, // end two: d4 from middle, d6 from end one (≤ 2d)
+    ];
+    let clusters = cluster_by_appearance(&hashes, 4);
+    assert_eq!(clusters.len(), 1, "within-diameter components stand whole");
+    assert_eq!(clusters[0].len(), 3);
+}
+
+#[test]
+fn identical_twins_survive_a_hairball_split() {
+    // Same art at two sizes hashes identically (distance 0). When their
+    // component is chained and must split, the twins have to land in ONE
+    // cluster — hash-ordered leaders make them adjacent, so they do.
+    let hashes: Vec<i64> = vec![
+        0b1111_1111_1111, // far end of a chain
+        0b0000_0000_0000, // twin 1
+        0b0000_1111_1111, // chain middle
+        0b0000_0000_0000, // twin 2
+        0b0000_0000_1111, // chain link
+    ];
+    let clusters = cluster_by_appearance(&hashes, 4);
+    let twins: Vec<&Vec<usize>> =
+        clusters.iter().filter(|c| c.contains(&1) || c.contains(&3)).collect();
+    assert_eq!(twins.len(), 1, "distance-0 twins must share a cluster");
+}
+
+#[test]
 fn rebuild_is_wholesale_and_idempotent() {
     let (_d, conn) = seeded();
     let t = 1_700_000_000_000i64;

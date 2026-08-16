@@ -87,6 +87,10 @@ export const getCurrentWebview = vi.fn(() => ({ setZoom }));
 
 export const availableMonitors = vi.fn(async () => monitors);
 
+/** The monitor hosting the calling window; specs set it with
+ * `setCurrentMonitor`. Null (the default) mirrors Tauri's "unknown". */
+export const currentMonitor = vi.fn(async () => hostMonitor);
+
 export class LogicalSize {
   constructor(
     public width: number,
@@ -152,6 +156,7 @@ export const openUrl = vi.fn(async () => {});
 
 let currentWindowLabel = "main";
 let monitors: Array<Record<string, unknown>> = [];
+let hostMonitor: Record<string, unknown> | null = null;
 
 // --- test-side controls -----------------------------------------------------
 
@@ -187,6 +192,10 @@ export function setMonitors(next: Array<Record<string, unknown>>): void {
   monitors = next;
 }
 
+export function setCurrentMonitor(monitor: Record<string, unknown> | null): void {
+  hostMonitor = monitor;
+}
+
 /** Full reset. Call from beforeEach so no spec inherits another's stubs.
  *
  * `keepListeners` matters for stores that register their event wiring ONCE at
@@ -204,6 +213,7 @@ export function resetTauriMocks(
   onWindowCreated = null;
   currentWindowLabel = "main";
   monitors = [];
+  hostMonitor = null;
   for (const spy of [
     invoke,
     convertFileSrc,
@@ -213,6 +223,7 @@ export function resetTauriMocks(
     setZoom,
     setMinSize,
     getCurrentWindow,
+    currentMonitor,
     getCurrentWebview,
     availableMonitors,
     openDialog,

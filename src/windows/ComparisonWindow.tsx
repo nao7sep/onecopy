@@ -3,7 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import { listenThenAnnounce } from "../utils/handshake";
 import ComparisonSlot from "../components/ComparisonSlot";
 import ZoomableImage from "../components/ZoomableImage";
-import type { ComparisonBroadcast } from "../state/comparison-store";
+import { gridColumns, type ComparisonBroadcast } from "../state/comparison-store";
 
 // A secondary comparison surface on an extra monitor: renders its contiguous
 // slice of the slot list with GLOBAL slot keys, forwards every relevant key to
@@ -53,10 +53,22 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
   }, []);
 
   const chunk = state?.chunks[slice] ?? [];
+  const columns = gridColumns(
+    Math.max(1, chunk.length),
+    window.innerWidth / Math.max(1, window.innerHeight),
+    state?.portraitDominant ?? false,
+  );
+  const rows = Math.max(1, Math.ceil(Math.max(1, chunk.length) / columns));
 
   return (
     <div className="flex h-screen flex-col bg-background">
-      <div className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3">
+      <div
+        className="grid min-h-0 flex-1 gap-3 p-3"
+        style={{
+          gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+        }}
+      >
         {chunk.length === 0 ? (
           <p className="m-auto text-ink-muted">Waiting for the comparison…</p>
         ) : (
