@@ -1086,6 +1086,10 @@ pub fn run() {
         .register_uri_scheme_protocol("mediacache", |_ctx, request| serve_mediacache(&request))
         .register_uri_scheme_protocol("mediafile", |_ctx, request| serve_mediafile(&request))
         .setup(move |app| {
+            // Everything in this closure runs BEFORE the window appears, so it
+            // is the launch latency. Each phase logs its cost so a slow start
+            // is attributable from the session log alone.
+            let setup_started = std::time::Instant::now();
             // Open the per-session log file under the app's own data dir. The Rust
             // core has filesystem access even though the webview is sandboxed, and
             // it routes through the single storage-root resolver (paths::data_root)
@@ -1122,17 +1126,32 @@ pub fn run() {
                 .cache_root;
             set_cache_root(cache_root.clone());
             let _ = DATA_ROOT.set(data_root.clone());
-            if let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
+            // The sweep walks the ENTIRE cache tree, which grows with the
+            // library — it was the launch's biggest fixed cost, paid before
+            // the window could appear. It maintains a reconstructible cache
+            // and nothing needs its result before first paint, so it runs on
+            // a background thread (its own connection; WAL carries the
+            // concurrency).
+            {
+                let db_path = data_root.join(storage::INDEX_DB_FILE_NAME);
                 let cache = preview::CachePaths::new(cache_root);
-                match preview::startup_sweep(&conn, &cache) {
-                    Ok(0) => {}
-                    Ok(removed) => {
-                        logging::info("cache sweep", json!({ "removed": removed }));
+                std::thread::spawn(move || {
+                    let started = std::time::Instant::now();
+                    if let Ok(conn) = index_store::open(&db_path) {
+                        match preview::startup_sweep(&conn, &cache) {
+                            Ok(0) => {}
+                            Ok(removed) => {
+                                logging::info(
+                                    "cache sweep",
+                                    json!({ "removed": removed, "ms": started.elapsed().as_millis() as u64 }),
+                                );
+                            }
+                            Err(err) => {
+                                logging::warn("cache sweep failed", json!({ "error": { "message": err } }));
+                            }
+                        }
                     }
-                    Err(err) => {
-                        logging::warn("cache sweep failed", json!({ "error": { "message": err } }));
-                    }
-                }
+                });
             }
 
             // The watcher: ON by default, best-effort, over the configured
@@ -1223,6 +1242,9 @@ pub fn run() {
                     "logPath": log_path.to_string_lossy(),
                     "os": std::env::consts::OS,
                     "arch": std::env::consts::ARCH,
+                    // The pre-window cost. Anything slow after this line is a
+                    // background thread, not launch latency.
+                    "setupMs": setup_started.elapsed().as_millis() as u64,
                 }),
             );
             Ok(())

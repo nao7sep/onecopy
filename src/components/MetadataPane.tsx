@@ -1,10 +1,14 @@
+import { useEffect, useState } from "react";
 import { FolderOpen } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { formatBytes, stripUrl } from "../models/items";
-import type { ItemDetail } from "../state/items-store";
+import { formatBytes, stripUrl, thumbUrl } from "../models/items";
+import { itemKey, useItemsStore, type ItemDetail } from "../state/items-store";
+import { useComparisonStore, type GroupMember } from "../state/comparison-store";
 import { formatLocalMinute } from "../utils/displayTime";
 import { fileManagerWord } from "../utils/shortcuts";
 import { log, toErrorFields } from "../repositories";
+import Button from "./ui/Button";
 
 // The right pane's metadata tab: content facts, the resolved capture time
 // with its source, and the full copy-path list — the live health check (1 copy
@@ -18,8 +22,12 @@ import { log, toErrorFields } from "../repositories";
 function PathRow({ path }: { path: string }) {
   const word = fileManagerWord();
   return (
-    <dd className="group flex items-start gap-1 py-0.5">
-      <span className="min-w-0 flex-1 break-all text-xs text-ink" title={path}>
+    <dd className="group flex items-start gap-1.5 py-0.5">
+      {/* A leading glyph plus a hanging indent: paths WRAP, and without a
+          marker the wrapped lines read as separate entries — the developer
+          could not see where one copy ended and the next began. */}
+      <span aria-hidden className="mt-1 h-1 w-1 shrink-0 rounded-full bg-ink-muted" />
+      <span className="min-w-0 flex-1 break-all text-xs leading-relaxed text-ink" title={path}>
         {path}
       </span>
       <button
@@ -37,6 +45,64 @@ function PathRow({ path }: { path: string }) {
         <FolderOpen size={13} />
       </button>
     </dd>
+  );
+}
+
+/** The similar-group strip: every member as a small thumb, the shown item
+ * marked, click selecting that member in the grid (same section by
+ * construction — groups are bucketed within one section), and Compare doing
+ * exactly what Enter does. The group is the one fact about a photo that the
+ * pane could not show at all. */
+function SimilarSection({ hash }: { hash: string }) {
+  const [members, setMembers] = useState<GroupMember[]>([]);
+  useEffect(() => {
+    let stale = false;
+    void invoke<GroupMember[]>("get_similar_group", { hash })
+      .then((rows) => {
+        if (!stale) setMembers(rows);
+      })
+      .catch((error) => log.error("similar group load failed", toErrorFields(error)));
+    return () => {
+      stale = true;
+    };
+  }, [hash]);
+  if (members.length < 2) return null;
+  return (
+    <div className="mb-1 mt-3">
+      <dt className="text-xs text-ink-muted">Similar ({members.length})</dt>
+      <dd className="mt-1 flex flex-wrap gap-1">
+        {members.map((member) => (
+          <button
+            key={member.hash}
+            title={member.fileName}
+            className={`h-12 w-12 overflow-hidden rounded-md border transition-colors ${
+              member.hash === hash
+                ? "border-primary-ring ring-1 ring-primary-ring"
+                : "border-border hover:border-border-strong"
+            }`}
+            onClick={() => {
+              // Select that member in the grid; the preview follows through
+              // the ordinary anchor path.
+              const { items, selectItem } = useItemsStore.getState();
+              const target = items.find((i) => itemKey(i) === member.hash);
+              if (target) selectItem(member.hash);
+            }}
+          >
+            <img
+              src={thumbUrl(member.hash)}
+              alt={member.fileName}
+              loading="lazy"
+              className="h-full w-full object-cover"
+            />
+          </button>
+        ))}
+      </dd>
+      <dd className="mt-1.5">
+        <Button onClick={() => void useComparisonStore.getState().openGroup(hash)}>
+          Compare
+        </Button>
+      </dd>
+    </div>
   );
 }
 
@@ -99,6 +165,7 @@ export default function MetadataPane({
       {detail.durationMs !== null ? (
         <Row label="Duration" value={`${Math.round(detail.durationMs / 1000)} s`} />
       ) : null}
+      {hash !== null && detail.kind === "image" ? <SimilarSection hash={hash} /> : null}
       <div className="mb-1 mt-3">
         <dt className="text-xs text-ink-muted">
           Copies ({detail.copyPaths.length})
