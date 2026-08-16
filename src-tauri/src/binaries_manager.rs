@@ -98,6 +98,33 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             bytes: 1_624_555_275,
         }),
     },
+    DependencySpec {
+        id: "ultraface-rfb320",
+        label: "Face detector (Ultraface RFB-320)",
+        kind: DependencyKind::Model,
+        file_name: "ultraface-rfb320.onnx",
+        pinned: Some(PinnedModel {
+            // Official ONNX model zoo (repo Apache-2.0; the Ultraface upstream
+            // is MIT); sha256 computed from the downloaded artifact 2026-08-16.
+            url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/version-RFB-320.onnx",
+            sha256: "34cd7e60aeff28744c657de7a3dc64e872d506741de66987f3426f2b79f88017",
+            bytes: 1_270_727,
+        }),
+    },
+    DependencySpec {
+        id: "emotion-ferplus",
+        label: "Expression model (Emotion FER+)",
+        kind: DependencyKind::Model,
+        file_name: "emotion-ferplus-8.onnx",
+        pinned: Some(PinnedModel {
+            // Official ONNX model zoo, MIT per its model card; sha256 computed
+            // from the downloaded artifact 2026-08-16. Face scoring needs BOTH
+            // this and the detector — either alone stays inert.
+            url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/emotion_ferplus/model/emotion-ferplus-8.onnx",
+            sha256: "a2a2ba6a335a3b29c21acb6272f962bd3d47f84952aaffa03b60986e04efa61c",
+            bytes: 35_040_571,
+        }),
+    },
 ];
 
 pub fn spec_of(id: &str) -> Option<&'static DependencySpec> {

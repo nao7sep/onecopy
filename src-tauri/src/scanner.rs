@@ -79,6 +79,9 @@ pub struct ScanSettings {
     /// The managed CLIP model when present AND embedding pairing is enabled;
     /// None degrades similarity to dHash-only, silently — today's behaviour.
     pub embedding_model: Option<std::path::PathBuf>,
+    /// Both face models, or None — the pair is all-or-nothing because the
+    /// score needs detection AND expression.
+    pub face_models: Option<(std::path::PathBuf, std::path::PathBuf)>,
     pub temp_dir: std::path::PathBuf,
 }
 
@@ -164,6 +167,16 @@ pub fn settings_from_config(
             (state.status != crate::binaries::BinaryStatus::NotInstalled)
                 .then(|| crate::binaries_manager::installed_path(data_root, spec))
         }),
+        face_models: {
+            let installed = |id: &str| {
+                crate::binaries_manager::spec_of(id).and_then(|spec| {
+                    let state = crate::binaries_manager::state_of(data_root, spec);
+                    (state.status != crate::binaries::BinaryStatus::NotInstalled)
+                        .then(|| crate::binaries_manager::installed_path(data_root, spec))
+                })
+            };
+            installed("ultraface-rfb320").zip(installed("emotion-ferplus"))
+        },
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
         preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
@@ -604,6 +617,22 @@ pub fn run_pipeline_tail(
         progress(
             "embed",
             format!("{} embeddings, {} failures", embed_stats.embedded, embed_stats.failed),
+        );
+    }
+
+    let face_stats = crate::face::face_scores_pending(
+        conn,
+        &cache,
+        settings
+            .face_models
+            .as_ref()
+            .map(|(detector, emotion)| (detector.as_path(), emotion.as_path())),
+        |done, total| progress("faces", format!("{done}/{total} face scores")),
+    )?;
+    if face_stats.scored > 0 || face_stats.failed > 0 {
+        progress(
+            "faces",
+            format!("{} face scores, {} failures", face_stats.scored, face_stats.failed),
         );
     }
 

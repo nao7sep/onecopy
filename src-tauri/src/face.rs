@@ -1,0 +1,318 @@
+//! Face scoring for group ordering (Design: Rating) — two small managed ONNX
+//! models run through the same linked ONNX Runtime as the embedding pass:
+//! Ultraface RFB-320 finds faces, Emotion FER+ reads the expression, and the
+//! combined score orders a group's face-bearing members ahead of sharpness.
+//! Advisory only, never auto-deletes, exactly like sharpness.
+//!
+//! The score, in one sentence: the best face's detection confidence weighted
+//! by how much it smiles — `conf × (0.5 + 0.5 × P(happiness))`, the maximum
+//! over detected faces, so a photo where someone clearly smiles beats the
+//! frame where the same person blurs or grimaces. FER+ carries no eyes-open
+//! signal and no small permissively-licensed model in the official zoo does;
+//! the smile weight is the honest v1 of the Design's "eyes-open/smiling".
+//!
+//! Storage contract on `contents.face_score`: NULL = never scored (model
+//! absent or content not yet seen); 0.0 = scored, no face found; > 0 = the
+//! score above. Ordering treats NULL and 0.0 identically, which is what keeps
+//! a model-less install ordering exactly as today.
+
+use std::path::Path;
+
+use image::DynamicImage;
+
+/// Detections below this confidence are noise, not faces (the RFB-320
+/// paper's own evaluation threshold).
+pub const MIN_FACE_CONFIDENCE: f32 = 0.7;
+/// Greedy NMS overlap bound — boxes overlapping more than this are one face.
+pub const NMS_MAX_IOU: f32 = 0.3;
+
+/// One detected face: confidence plus its RELATIVE corner box on the scored
+/// image (the detector works in normalized coordinates).
+#[derive(Debug, Clone, Copy)]
+pub struct Face {
+    pub confidence: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+}
+
+/// Both sessions loaded once per pass — model load costs real time, one
+/// image costs milliseconds.
+pub struct FaceScorer {
+    detector: ort::session::Session,
+    det_input: String,
+    det_scores: String,
+    det_boxes: String,
+    emotion: ort::session::Session,
+    emo_input: String,
+    emo_output: String,
+}
+
+impl FaceScorer {
+    pub fn load(detector_model: &Path, emotion_model: &Path) -> Result<FaceScorer, String> {
+        let detector = ort::session::Session::builder()
+            .map_err(|e| e.to_string())?
+            .commit_from_file(detector_model)
+            .map_err(|e| format!("face detector load failed: {e}"))?;
+        let det_input = detector
+            .inputs()
+            .first()
+            .map(|i| i.name().to_string())
+            .ok_or("detector declares no inputs")?;
+        // Discovered by name at load with the honest error — the same rule
+        // the embedding session follows, so an artifact swap cannot silently
+        // hand boxes to the score reader.
+        let det_names: Vec<String> =
+            detector.outputs().iter().map(|o| o.name().to_string()).collect();
+        let det_scores = det_names
+            .iter()
+            .find(|n| n.contains("score") || n.contains("conf"))
+            .cloned()
+            .ok_or_else(|| format!("no score output among {det_names:?}"))?;
+        let det_boxes = det_names
+            .iter()
+            .find(|n| n.contains("box"))
+            .cloned()
+            .ok_or_else(|| format!("no box output among {det_names:?}"))?;
+
+        let emotion = ort::session::Session::builder()
+            .map_err(|e| e.to_string())?
+            .commit_from_file(emotion_model)
+            .map_err(|e| format!("expression model load failed: {e}"))?;
+        let emo_input = emotion
+            .inputs()
+            .first()
+            .map(|i| i.name().to_string())
+            .ok_or("expression model declares no inputs")?;
+        let emo_output = emotion
+            .outputs()
+            .first()
+            .map(|o| o.name().to_string())
+            .ok_or("expression model declares no outputs")?;
+
+        crate::logging::debug(
+            "face models loaded",
+            serde_json::json!({
+                "detector": { "input": det_input, "scores": det_scores, "boxes": det_boxes },
+                "emotion": { "input": emo_input, "output": emo_output },
+            }),
+        );
+        Ok(FaceScorer { detector, det_input, det_scores, det_boxes, emotion, emo_input, emo_output })
+    }
+
+    /// Faces on the image, confidence-thresholded and NMS-deduplicated,
+    /// best-first.
+    pub fn detect(&mut self, img: &DynamicImage) -> Result<Vec<Face>, String> {
+        // RFB-320's published contract: 320×240 RGB, (x − 127) / 128.
+        let resized = img.resize_exact(320, 240, image::imageops::FilterType::Triangle).to_rgb8();
+        let mut tensor = ndarray::Array4::<f32>::zeros((1, 3, 240, 320));
+        for (x, y, pixel) in resized.enumerate_pixels() {
+            for channel in 0..3 {
+                tensor[[0, channel, y as usize, x as usize]] =
+                    (pixel[channel] as f32 - 127.0) / 128.0;
+            }
+        }
+        let input = self.det_input.clone();
+        let outputs = self
+            .detector
+            .run(ort::inputs![input.as_str() => ort::value::Tensor::from_array(tensor).map_err(|e| e.to_string())?])
+            .map_err(|e| format!("face detection failed: {e}"))?;
+        let (_, scores) = outputs
+            .get(self.det_scores.as_str())
+            .ok_or("score output vanished mid-session")?
+            .try_extract_tensor::<f32>()
+            .map_err(|e| e.to_string())?;
+        let (_, boxes) = outputs
+            .get(self.det_boxes.as_str())
+            .ok_or("box output vanished mid-session")?
+            .try_extract_tensor::<f32>()
+            .map_err(|e| e.to_string())?;
+
+        // scores: [1, N, 2] (background, face); boxes: [1, N, 4] relative
+        // corners. The two flats must agree on N or the artifact is not what
+        // the pin promises.
+        if scores.len() % 2 != 0 || boxes.len() % 4 != 0 || scores.len() / 2 != boxes.len() / 4 {
+            return Err(format!(
+                "detector output shapes disagree: {} scores vs {} box values",
+                scores.len(),
+                boxes.len()
+            ));
+        }
+        let candidates: Vec<Face> = (0..scores.len() / 2)
+            .filter_map(|i| {
+                let confidence = scores[i * 2 + 1];
+                (confidence >= MIN_FACE_CONFIDENCE).then(|| Face {
+                    confidence,
+                    x1: boxes[i * 4],
+                    y1: boxes[i * 4 + 1],
+                    x2: boxes[i * 4 + 2],
+                    y2: boxes[i * 4 + 3],
+                })
+            })
+            .collect();
+        Ok(non_max_suppression(candidates))
+    }
+
+    /// P(happiness) for one face crop — FER+'s contract: 64×64 grayscale,
+    /// raw 0–255 values, eight emotion logits out, happiness at index 1.
+    pub fn smile(&mut self, img: &DynamicImage, face: &Face) -> Result<f32, String> {
+        let (w, h) = (img.width() as f32, img.height() as f32);
+        // A 15% margin each side: FER+ was trained on loose crops, and the
+        // detector's boxes hug the face tightly.
+        let (bw, bh) = (face.x2 - face.x1, face.y2 - face.y1);
+        let x1 = ((face.x1 - bw * 0.15) * w).max(0.0) as u32;
+        let y1 = ((face.y1 - bh * 0.15) * h).max(0.0) as u32;
+        let x2 = (((face.x2 + bw * 0.15) * w) as u32).min(img.width());
+        let y2 = (((face.y2 + bh * 0.15) * h) as u32).min(img.height());
+        if x2 <= x1 || y2 <= y1 {
+            return Err("degenerate face box".to_string());
+        }
+        let crop = img
+            .crop_imm(x1, y1, x2 - x1, y2 - y1)
+            .resize_exact(64, 64, image::imageops::FilterType::Triangle)
+            .to_luma8();
+        let mut tensor = ndarray::Array4::<f32>::zeros((1, 1, 64, 64));
+        for (x, y, pixel) in crop.enumerate_pixels() {
+            tensor[[0, 0, y as usize, x as usize]] = pixel[0] as f32;
+        }
+        let input = self.emo_input.clone();
+        let outputs = self
+            .emotion
+            .run(ort::inputs![input.as_str() => ort::value::Tensor::from_array(tensor).map_err(|e| e.to_string())?])
+            .map_err(|e| format!("expression inference failed: {e}"))?;
+        let (_, logits) = outputs
+            .get(self.emo_output.as_str())
+            .ok_or("expression output vanished mid-session")?
+            .try_extract_tensor::<f32>()
+            .map_err(|e| e.to_string())?;
+        let probabilities = softmax(logits);
+        probabilities
+            .get(1)
+            .copied()
+            .ok_or_else(|| format!("expression output has {} classes, not 8", probabilities.len()))
+    }
+
+    /// The composite: 0.0 = no face; otherwise the best face's
+    /// `conf × (0.5 + 0.5 × P(happiness))`.
+    pub fn score(&mut self, img: &DynamicImage) -> Result<f32, String> {
+        let mut best = 0.0_f32;
+        for face in self.detect(img)? {
+            // A failed crop degrades to the neutral-expression weight rather
+            // than sinking the photo: the face is still real.
+            let smile = self.smile(img, &face).unwrap_or(0.0);
+            best = best.max(face.confidence * (0.5 + 0.5 * smile));
+        }
+        Ok(best)
+    }
+}
+
+/// Greedy NMS, best-first: keeps each face and suppresses every remaining
+/// candidate overlapping it beyond [`NMS_MAX_IOU`].
+pub fn non_max_suppression(mut candidates: Vec<Face>) -> Vec<Face> {
+    candidates.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
+    let mut kept: Vec<Face> = Vec::new();
+    for candidate in candidates {
+        if kept.iter().all(|k| iou(k, &candidate) <= NMS_MAX_IOU) {
+            kept.push(candidate);
+        }
+    }
+    kept
+}
+
+/// Intersection over union of two relative corner boxes; degenerate boxes
+/// read as no overlap.
+pub fn iou(a: &Face, b: &Face) -> f32 {
+    let ix = (a.x2.min(b.x2) - a.x1.max(b.x1)).max(0.0);
+    let iy = (a.y2.min(b.y2) - a.y1.max(b.y1)).max(0.0);
+    let intersection = ix * iy;
+    let area = |f: &Face| ((f.x2 - f.x1).max(0.0)) * ((f.y2 - f.y1).max(0.0));
+    let union = area(a) + area(b) - intersection;
+    if union <= 0.0 { 0.0 } else { intersection / union }
+}
+
+/// Numerically-stable softmax; an empty slice stays empty.
+pub fn softmax(logits: &[f32]) -> Vec<f32> {
+    let Some(max) = logits.iter().copied().reduce(f32::max) else {
+        return Vec::new();
+    };
+    let exps: Vec<f32> = logits.iter().map(|v| (v - max).exp()).collect();
+    let sum: f32 = exps.iter().sum();
+    exps.iter().map(|v| v / sum).collect()
+}
+
+#[derive(Default, Debug)]
+pub struct FaceStats {
+    pub scored: u64,
+    pub failed: u64,
+}
+
+/// The face pass over the index — the embed pass's exact shape: images with a
+/// derived preview and no score yet, read FROM THE CACHE, scored serially
+/// through one session pair. Either model absent → an empty pass, silently:
+/// sharpness-only ordering is the designed fallback. Cancellable between
+/// items like every pipeline stage.
+pub fn face_scores_pending(
+    conn: &rusqlite::Connection,
+    cache: &crate::preview::CachePaths,
+    models: Option<(&Path, &Path)>,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<FaceStats, String> {
+    let mut stats = FaceStats::default();
+    let Some((detector_model, emotion_model)) = models else {
+        return Ok(stats);
+    };
+    let pending: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT hash FROM contents \
+                 WHERE kind = 'image' AND face_score IS NULL \
+                   AND derived_at_utc IS NOT NULL \
+                   AND derived_at_utc NOT IN ('failed', ?1) \
+                   AND EXISTS (SELECT 1 FROM paths p \
+                               WHERE p.content_hash = contents.hash AND p.missing = 0)",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([crate::preview::NEEDS_FFMPEG], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    };
+    if pending.is_empty() {
+        return Ok(stats);
+    }
+
+    let mut scorer = FaceScorer::load(detector_model, emotion_model)?;
+    let total = pending.len() as u64;
+    for hash in pending {
+        if crate::scanner::cancelled() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        let preview = cache.preview(&hash);
+        let outcome = std::fs::read(&preview)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| image::load_from_memory(&bytes).map_err(|e| e.to_string()))
+            .and_then(|img| scorer.score(&img));
+        match outcome {
+            Ok(score) => {
+                conn.execute(
+                    "UPDATE contents SET face_score = ?2 WHERE hash = ?1",
+                    rusqlite::params![hash, score as f64],
+                )
+                .map_err(|e| e.to_string())?;
+                stats.scored += 1;
+            }
+            Err(err) => {
+                crate::logging::warn(
+                    "face scoring failed",
+                    serde_json::json!({ "hash": hash, "error": { "message": err } }),
+                );
+                stats.failed += 1;
+            }
+        }
+        on_progress(stats.scored + stats.failed, total);
+    }
+    Ok(stats)
+}

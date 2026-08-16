@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS contents (
   -- CLIP image embedding (f32 LE blob), present once the similarity model
   -- has seen this content; the cross-device pairing signal.
   embedding       BLOB,
+  -- Face score (face.rs's contract): NULL never scored, 0.0 scored faceless,
+  -- > 0 the smile-weighted best-face confidence. Orders groups ahead of
+  -- sharpness for face-bearing members.
+  face_score      REAL,
   strip_frames    INTEGER,
   derived_at_utc  TEXT,
   -- The DERIVE_VERSION that produced this row's cache entries. Both derive

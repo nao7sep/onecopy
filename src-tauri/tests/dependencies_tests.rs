@@ -23,7 +23,10 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     // registration, so this doubles as the "declare it deliberately" pin the
     // schema test uses for tables.
     let ids: Vec<&str> = DEPENDENCIES.iter().map(|d| d.id).collect();
-    assert_eq!(ids, ["ffmpeg", "clip-vit-b32", "whisper-large-v3-turbo"]);
+    assert_eq!(
+        ids,
+        ["ffmpeg", "clip-vit-b32", "whisper-large-v3-turbo", "ultraface-rfb320", "emotion-ferplus"]
+    );
 
     let clip = spec_of("clip-vit-b32").unwrap();
     let clip_pin = clip.pinned.as_ref().unwrap();
@@ -35,6 +38,15 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     assert!(pinned.url.starts_with("https://"));
     assert_eq!(pinned.sha256.len(), 64);
     assert!(pinned.bytes > 1_000_000_000, "large-v3-turbo is ~1.6 GB");
+
+    // The face pair: every model entry carries a complete pin, and the two
+    // stay distinct artifacts (the score needs BOTH installed).
+    for id in ["ultraface-rfb320", "emotion-ferplus"] {
+        let pin = spec_of(id).unwrap().pinned.as_ref().expect("models carry a pin");
+        assert!(pin.url.starts_with("https://"));
+        assert_eq!(pin.sha256.len(), 64);
+        assert!(pin.bytes > 1_000_000);
+    }
 }
 
 #[test]

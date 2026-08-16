@@ -29,6 +29,7 @@ export interface GroupMember {
   height: number | null;
   byteSize: number | null;
   sharpness: number | null;
+  faceScore: number | null;
   copyCount: number;
   hasThumb: boolean;
 }

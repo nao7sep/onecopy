@@ -310,12 +310,16 @@ pub struct GroupMember {
     pub height: Option<i64>,
     pub byte_size: Option<i64>,
     pub sharpness: Option<f64>,
+    pub face_score: Option<f64>,
     pub copy_count: u64,
     pub has_thumb: bool,
 }
 
-/// Every member of the similar group containing `hash`, best-first by
-/// sharpness (the machine's advisory guess); empty when the item is ungrouped.
+/// Every member of the similar group containing `hash`, best-first: face
+/// score, then sharpness (both advisory machine guesses); empty when the item
+/// is ungrouped. COALESCE makes NULL and scored-faceless order identically,
+/// so a group with no faces — or no face models — orders exactly by
+/// sharpness, as before the models existed.
 pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember>, String> {
     let group_id: Option<i64> = conn
         .query_row(
@@ -333,13 +337,13 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
         .prepare(
             "SELECT c.hash, \
              (SELECT MIN(p.file_name) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
-             c.width, c.height, c.byte_size, c.sharpness, \
+             c.width, c.height, c.byte_size, c.sharpness, c.face_score, \
              (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
              (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
               AND c.derived_at_utc != 'needs-ffmpeg') \
              FROM similar_group_members m JOIN contents c ON c.hash = m.content_hash \
              WHERE m.group_id = ?1 \
-             ORDER BY c.sharpness DESC NULLS LAST, c.hash",
+             ORDER BY COALESCE(c.face_score, 0) DESC, c.sharpness DESC NULLS LAST, c.hash",
         )
         .map_err(|e| e.to_string())?;
     let members: Vec<GroupMember> = stmt
@@ -351,8 +355,9 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
                 height: r.get(3)?,
                 byte_size: r.get(4)?,
                 sharpness: r.get(5)?,
-                copy_count: r.get::<_, i64>(6)?.max(0) as u64,
-                has_thumb: r.get(7)?,
+                face_score: r.get(6)?,
+                copy_count: r.get::<_, i64>(7)?.max(0) as u64,
+                has_thumb: r.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?

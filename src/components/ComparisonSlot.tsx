@@ -61,11 +61,17 @@ export default function ComparisonSlot({
           <span className="truncate text-ink" title={member.fileName}>
             {member.fileName}
           </span>
-          {member.sharpness !== null ? (
-            <span className="shrink-0" title="Sharpness (advisory)">
-              ◐ {Math.round(member.sharpness)}
-            </span>
-          ) : null}
+          <span className="flex shrink-0 gap-2">
+            {/* Face score beside sharpness — both advisory. Only a real face
+                (> 0) earns the badge; scored-faceless and unscored show
+                nothing, so face-free libraries never see the column. */}
+            {member.faceScore !== null && member.faceScore > 0 ? (
+              <span title="Face score (advisory)">☺ {Math.round(member.faceScore * 100)}</span>
+            ) : null}
+            {member.sharpness !== null ? (
+              <span title="Sharpness (advisory)">◐ {Math.round(member.sharpness)}</span>
+            ) : null}
+          </span>
         </span>
         {/* Pixels and bytes are what make the choice possible. A group is very
             often one shot at three qualities — original, export, web copy —
