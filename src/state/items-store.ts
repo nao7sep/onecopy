@@ -166,8 +166,12 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     } else {
       next.add(key);
     }
-    // The anchor moves to the toggled key (or clears with the selection).
-    const anchor = next.has(key) ? key : null;
+    // The anchor moves to the toggled key; toggling the anchor OFF falls back
+    // to the most recently selected item remaining — a Set preserves
+    // insertion order, so that is its last element. Cmd-clicking through a
+    // pile and then un-clicking the last one previews the one before it,
+    // which is what "which one is selected?" needs during a multi-select.
+    const anchor = next.has(key) ? key : ([...next].pop() ?? null);
     set({
       selectedKeys: next,
       selectedItem: anchor,
@@ -331,7 +335,15 @@ function notifyAnchor(key: string | null): void {
   void import("./app-store").then(({ useAppStore }) =>
     useAppStore.getState().patchState({ lastItem: key }),
   );
-  if (key === null) return;
+  if (key === null) {
+    // The selection emptied: the preview must BLANK, not hold the previous
+    // photo — for a trashed file the hold was a small lie. This return used
+    // to come before the preview heard anything.
+    void import("./preview-store").then(({ usePreviewStore }) =>
+      usePreviewStore.getState().anchorCleared(),
+    );
+    return;
+  }
   const item = useItemsStore.getState().items.find((i) => itemKey(i) === key);
   if (!item) return;
   const payload = { hash: item.hash, pathId: item.hash === null ? item.pathId : null };

@@ -30,21 +30,15 @@ export interface PreviewShowMessage extends PreviewPayload {
   detail: ItemDetail | null;
 }
 
-/** Where the user wants the preview. `null` is AUTO: a second screen when one
- * exists, the split otherwise — the original implicit rule, kept as the
- * default but no longer the only possibility. Someone running OneCopy on one
- * screen of several has to be able to say so. */
+/** Where the user wants the preview; `null` means never chosen, which is the
+ * in-window pane. Purely the user's statement — monitor counting left this
+ * path entirely (the developer's call: two windows on halves of one screen,
+ * or one window on one screen of three, are the user's business, and any
+ * auto-rule makes one of those impossible to ask for). */
 export type PlacementPreference = "split" | "window" | null;
 
-/** Resolves the preference against the machine. A second-screen preference on
- * a single-monitor machine degrades to the split rather than opening a window
- * on top of the grid, which would cover it and steal the keyboard. */
-export function resolvePlacement(
-  preference: PlacementPreference,
-  screenCount: number,
-): "window" | "split" {
-  if (screenCount < 2) return "split";
-  return preference === "split" ? "split" : "window";
+export function resolvePlacement(preference: PlacementPreference): "window" | "split" {
+  return preference === "window" ? "window" : "split";
 }
 
 interface PreviewState {
@@ -54,14 +48,8 @@ interface PreviewState {
   placement: "window" | "split" | null;
   /** The user's stated placement, independent of whether it is open. */
   placementPreference: PlacementPreference;
-  /** Monitors currently attached, so the chrome knows whether the
-   * second-screen option is even offerable. */
-  screenCount: number;
-  /** What the split pane renders (the window renders from events). */
+  /** What the side pane renders (the window renders from events). */
   current: PreviewShowMessage | null;
-  /** Split ratio: the preview's share of the main content column (persisted). */
-  splitRatio: number;
-  setSplitRatio: (ratio: number) => void;
   /** Opens the surface for the payload and turns follow on. */
   open: (payload: PreviewPayload, detail: ItemDetail | null) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
@@ -70,10 +58,10 @@ interface PreviewState {
   toggleFollow: () => Promise<void>;
   /** Moves the open surface to the other placement, and remembers the choice. */
   setPlacementPreference: (preference: PlacementPreference) => Promise<void>;
-  /** Counts the attached monitors into the store (startup, and on open). */
-  refreshScreens: () => Promise<number>;
   /** Restores the persisted follow flag without opening anything yet. */
-  restoreFollow: (on: boolean, ratio: number | null, preference: PlacementPreference) => void;
+  restoreFollow: (on: boolean, preference: PlacementPreference) => void;
+  /** The selection emptied: clear the surface, keep follow armed. */
+  anchorCleared: () => void;
   /** The anchor moved: feed the surface if follow is on. */
   anchorChanged: (payload: PreviewPayload, detail: ItemDetail | null) => void;
   /** The anchor's detail finished loading: complete the earlier message. */
@@ -91,13 +79,14 @@ async function ensurePreviewWindow(): Promise<void> {
     previewWindowOpen = true;
     return;
   }
+  // Created RAISED — a window that opens behind the main window is a bug the
+  // user reads as "nothing happened" (and did). The keyboard goes straight
+  // back to the main window below, so arrow culling never breaks.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
     title: "OneCopy Preview",
     width: 1280,
     height: 800,
-    // Never steal the keyboard from the grid being culled.
-    focus: false,
   });
   await new Promise<void>((resolve, reject) => {
     void window.once("tauri://created", () => resolve());
@@ -113,14 +102,15 @@ async function ensurePreviewWindow(): Promise<void> {
       usePreviewStore.setState({ placement: null });
       // The placement PREFERENCE survives — closing the window means "not
       // now", not "never on that screen again".
-      store.restoreFollow(false, null, store.placementPreference);
+      store.restoreFollow(false, store.placementPreference);
       persistFollow(false);
     }
   });
   try {
     const monitors = await availableMonitors();
     if (monitors.length >= 2) {
-      // Screen priority: slot 2 of the ordered list is the preview screen.
+      // A POSITION nicety only, never a mode decision: with several screens
+      // the window lands on priority slot 2, else wherever the OS puts it.
       const { useAppStore } = await import("./app-store");
       const ordered = orderMonitors(
         monitors,
@@ -133,6 +123,16 @@ async function ensurePreviewWindow(): Promise<void> {
   } catch (error) {
     log.warn("preview window placement failed", toErrorFields(error));
   }
+}
+
+/** Reveals an already-existing preview window: raised above the main window,
+ * keyboard handed straight back. The reuse counterpart of the raised create. */
+async function frontPreviewWindow(): Promise<void> {
+  const existing = await WebviewWindow.getByLabel("preview").catch(() => null);
+  if (existing === null) return;
+  await existing.show().catch(() => {});
+  await existing.setFocus().catch(() => {});
+  await getCurrentWindow().setFocus().catch(() => {});
 }
 
 // ---- Follow throttle ------------------------------------------------------
@@ -185,30 +185,21 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   follow: false,
   placement: null,
   placementPreference: null,
-  screenCount: 1,
   current: null,
-  splitRatio: 0.5,
-
-  setSplitRatio: (ratio) => {
-    const clamped = Math.min(0.85, Math.max(0.15, ratio));
-    set({ splitRatio: clamped });
-  },
-
-  refreshScreens: async () => {
-    const monitors = await availableMonitors().catch(() => []);
-    const screenCount = Math.max(1, monitors.length);
-    set({ screenCount });
-    return screenCount;
-  },
 
   open: async (payload, detail) => {
     try {
-      const screenCount = await get().refreshScreens();
-      const placement = resolvePlacement(get().placementPreference, screenCount);
+      const placement = resolvePlacement(get().placementPreference);
+      // State FIRST: the side pane renders `current` the moment this lands,
+      // which is what makes the image appear immediately on activation.
       set({ follow: true, placement, current: { ...payload, detail } });
       persistFollow(true);
       if (placement === "window") {
         await ensurePreviewWindow();
+        await frontPreviewWindow();
+        // A freshly created webview misses this emit (still booting) — its
+        // ready announcement fetches the current state instead; an already
+        // -open window hears it directly.
         void emit("preview://show", { ...payload, detail });
       }
     } catch (error) {
@@ -254,8 +245,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       useAppStore.getState().patchState({ previewPlacement: preference }),
     );
     if (!follow) return;
-    const screenCount = await get().refreshScreens();
-    const next = resolvePlacement(preference, screenCount);
+    const next = resolvePlacement(preference);
     if (next === placement) return;
     // Moving between placements tears the old one down first: leaving the
     // preview window open behind a split pane would show the same photo twice
@@ -266,18 +256,22 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     set({ placement: next });
     if (next === "window" && current !== null) {
       await ensurePreviewWindow();
+      await frontPreviewWindow();
       void emit("preview://show", current);
     }
   },
 
-  restoreFollow: (on, ratio, preference) => {
-    set({
-      follow: on,
-      placementPreference: preference,
-      ...(ratio !== null && Number.isFinite(ratio)
-        ? { splitRatio: Math.min(0.85, Math.max(0.15, ratio)) }
-        : {}),
-    });
+  restoreFollow: (on, preference) => {
+    set({ follow: on, placementPreference: preference });
+  },
+
+  // The selection emptied — deselected to nothing, or its last item trashed.
+  // The surface goes blank rather than holding the previous photo (which for
+  // a trashed file was a small lie); follow stays armed for the next anchor.
+  anchorCleared: () => {
+    const { follow, placement } = get();
+    if (!follow || placement === null) return;
+    deliver({ hash: null, pathId: null, detail: null });
   },
 
   anchorChanged: (payload, detail) => {
@@ -285,8 +279,11 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     if (!follow) return;
     if (placement === null) {
       // Follow restored from state but the surface not opened yet this
-      // session: open it on the first anchor.
-      void get().open(payload, detail);
+      // session: open it on the first REAL anchor (a cleared selection must
+      // not open an empty surface).
+      if (payload.hash !== null || payload.pathId !== null) {
+        void get().open(payload, detail);
+      }
       return;
     }
     throttledDeliver({ ...payload, detail });

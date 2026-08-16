@@ -4,6 +4,7 @@ import {
   FOOTER_HEIGHT,
   GRID_MIN_WIDTH,
   HEADER_HEIGHT,
+  PREVIEW_PANE_MIN_WIDTH,
   RIGHT_PANE_MIN_WIDTH,
   SIDEBAR_MIN_WIDTH,
   SPLITTER_WIDTH,
@@ -40,8 +41,8 @@ describe("window minimums are derived, never hand-typed", () => {
 
 describe("pane clamping derives display from intent", () => {
   it("passes both intents through when they fit", () => {
-    // Wide container: intents display as dragged.
-    expect(clampPaneWidths(300, 350, 2000)).toEqual({ left: 300, right: 350 });
+    // Wide container: intents display as dragged (preview closed → 0).
+    expect(clampPaneWidths(300, 350, 2000)).toEqual({ left: 300, right: 350, preview: 0 });
   });
 
   it("shrinks proportionally to headroom when they do not fit", () => {
@@ -72,6 +73,33 @@ describe("pane clamping derives display from intent", () => {
     expect(clampPaneWidths(10, 10, 2000)).toEqual({
       left: SIDEBAR_MIN_WIDTH,
       right: RIGHT_PANE_MIN_WIDTH,
+      preview: 0,
     });
+  });
+
+  it("clamps the preview as a third pane when it is open", () => {
+    // Everything fits: intents pass through.
+    expect(clampPaneWidths(256, 288, 2000, 480)).toEqual({
+      left: 256,
+      right: 288,
+      preview: 480,
+    });
+    // Too narrow: every pane shrinks toward its own minimum, the grid keeps
+    // its fill minimum, and nothing goes below its floor.
+    const tight = clampPaneWidths(400, 400, 1400, 600);
+    expect(tight.left).toBeGreaterThanOrEqual(SIDEBAR_MIN_WIDTH);
+    expect(tight.right).toBeGreaterThanOrEqual(RIGHT_PANE_MIN_WIDTH);
+    expect(tight.preview).toBeGreaterThanOrEqual(PREVIEW_PANE_MIN_WIDTH);
+    expect(tight.left + tight.right + tight.preview).toBeLessThanOrEqual(
+      1400 - GRID_MIN_WIDTH - 3 * SPLITTER_WIDTH,
+    );
+    // The pane with the most headroom gives up the most.
+    expect(600 - tight.preview).toBeGreaterThanOrEqual(400 - tight.left);
+  });
+
+  it("raises the window minimum only while the preview pane is open", () => {
+    expect(computeMinWindowWidth(true)).toBe(
+      computeMinWindowWidth(false) + PREVIEW_PANE_MIN_WIDTH + SPLITTER_WIDTH,
+    );
   });
 });

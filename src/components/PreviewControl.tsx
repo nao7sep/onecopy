@@ -7,24 +7,20 @@
 // and the only control was an undiscoverable `P`, which made running OneCopy
 // on ONE screen of several impossible to ask for.
 //
-// The placement pair only appears with two or more monitors: on a single
-// screen there is nothing to choose between, and a disabled control that never
-// becomes enabled is just clutter.
+// Both placement buttons show ALWAYS — monitor counting left the preview
+// path entirely. Splitting one screen into two windows is a legitimate
+// choice, so the pair is never gated on hardware.
 
 import { Columns2, Eye, EyeOff, Monitor } from "lucide-react";
-import { usePreviewStore } from "../state/preview-store";
+import { resolvePlacement, usePreviewStore } from "../state/preview-store";
 
 export default function PreviewControl() {
   const follow = usePreviewStore((s) => s.follow);
   const preference = usePreviewStore((s) => s.placementPreference);
-  const screenCount = usePreviewStore((s) => s.screenCount);
   const toggleFollow = usePreviewStore((s) => s.toggleFollow);
   const setPlacementPreference = usePreviewStore((s) => s.setPlacementPreference);
 
-  // Auto resolves to the second screen when one exists, so that is what the
-  // pair should show as chosen — the control must never claim a placement the
-  // preview would not actually use.
-  const effective = preference ?? (screenCount >= 2 ? "window" : "split");
+  const effective = resolvePlacement(preference);
 
   return (
     <span className="flex items-center gap-1">
@@ -41,8 +37,7 @@ export default function PreviewControl() {
         {follow ? <Eye size={14} /> : <EyeOff size={14} />}
         Preview
       </button>
-      {screenCount >= 2 ? (
-        <span className="flex items-center rounded-md border border-border p-0.5">
+      <span className="flex items-center rounded-md border border-border p-0.5">
           <button
             aria-pressed={effective === "split"}
             title="Show the preview inside this window"
@@ -67,8 +62,7 @@ export default function PreviewControl() {
           >
             <Monitor size={13} />
           </button>
-        </span>
-      ) : null}
+      </span>
     </span>
   );
 }

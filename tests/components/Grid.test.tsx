@@ -69,7 +69,6 @@ beforeEach(() => {
     follow: false,
     placement: null,
     placementPreference: null,
-    screenCount: 1,
     current: null,
   });
   useItemsStore.setState({

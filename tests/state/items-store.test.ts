@@ -235,7 +235,7 @@ describe("deleteSelected", () => {
     expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
 
-  it("does not jump to item zero when the anchor was toggled off", async () => {
+  it("falls back to the most recently selected item when the anchor toggles off", async () => {
     const items = [
       item({ pathId: 1 }),
       item({ pathId: 2 }),
@@ -243,21 +243,22 @@ describe("deleteSelected", () => {
       item({ pathId: 4 }),
     ];
     seed(items);
-    mockCommand("get_section_items", () =>
-      items.filter((i) => i.hash !== "h3"),
-    );
+    mockCommand("get_section_items", () => items);
 
-    // Click h3, ctrl-click h4, ctrl-click h4 again — an ordinary "take that
-    // back". The anchor is now null while h3 is still selected.
-    useItemsStore.getState().selectItem("h3");
+    // Click h2, ctrl-click h3, ctrl-click h4, then take h4 back. The anchor
+    // must land on h3 — the most recently selected REMAINING item — so the
+    // user always sees which photo a multi-select is "on". It previously went
+    // null, leaving the preview and metadata pane pointing at nothing while
+    // two photos were still selected.
+    useItemsStore.getState().selectItem("h2");
+    useItemsStore.getState().toggleItem("h3");
     useItemsStore.getState().toggleItem("h4");
     useItemsStore.getState().toggleItem("h4");
-    expect(useItemsStore.getState().selectedItem).toBeNull();
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
 
-    await useItemsStore.getState().deleteSelected(false);
-
-    // Recovery must be adjacent to the deleted h3, never the top of the grid.
-    expect(useItemsStore.getState().selectedItem).toBe("h4");
+    // And taking h3 back too steps to the one before it.
+    useItemsStore.getState().toggleItem("h3");
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
 
   it("deletes every selected item and nothing else", async () => {

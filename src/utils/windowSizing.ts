@@ -3,10 +3,11 @@
 // fixed chrome, never hand-typed, so the window and its content can never
 // disagree (app-chrome-conventions).
 //
-// The layout (App) is a vertical stack: a title band, then a content row of
-// [sections sidebar | divider | grid | divider | right pane], then the status
-// footer. Both side panes are user-resizable: the persisted value is the
-// user's INTENT in pixels (written only on a drag), the displayed width is
+// The layout (App) is a vertical stack: a content row of
+// [sections sidebar | divider | grid | divider | (preview pane | divider)? |
+// right pane] over the status footer — the preview joins the row side-by-side
+// when open, because screens are wide. Every adjustable pane persists the
+// user's INTENT in pixels (written only on a drag); the displayed width is
 // the intent clamped against what fits right now, and a window resize
 // re-derives without ever rewriting the intent.
 
@@ -18,6 +19,11 @@ export const SIDEBAR_MIN_WIDTH = 180;
 // Right pane: default and minimum (copy paths and the destination tree).
 export const RIGHT_PANE_DEFAULT_WIDTH = 288;
 export const RIGHT_PANE_MIN_WIDTH = 220;
+
+// In-window preview pane (only when open): wide enough by default that a
+// landscape photo reads, floored where it stops being a preview at all.
+export const PREVIEW_PANE_DEFAULT_WIDTH = 480;
+export const PREVIEW_PANE_MIN_WIDTH = 260;
 
 // Grid (fill pane) minimum width: two 160px tiles plus gaps/padding — below
 // this the grid is a single column and comparison entry points get cramped.
@@ -45,9 +51,17 @@ export const HEADER_HEIGHT = 36;
 // Status footer height (one text row: py-1 + text-xs ≈ 24px).
 export const FOOTER_HEIGHT = 24;
 
-export function computeMinWindowWidth(): number {
+/** The preview pane, when open, is REAL fixed content like the others, so it
+ * raises the window minimum for exactly as long as it is on screen — App
+ * re-applies setMinSize when it opens or closes. */
+export function computeMinWindowWidth(previewOpen = false): number {
   return (
-    SIDEBAR_MIN_WIDTH + SPLITTER_WIDTH + GRID_MIN_WIDTH + SPLITTER_WIDTH + RIGHT_PANE_MIN_WIDTH
+    SIDEBAR_MIN_WIDTH +
+    SPLITTER_WIDTH +
+    GRID_MIN_WIDTH +
+    SPLITTER_WIDTH +
+    RIGHT_PANE_MIN_WIDTH +
+    (previewOpen ? PREVIEW_PANE_MIN_WIDTH + SPLITTER_WIDTH : 0)
   );
 }
 
@@ -59,32 +73,52 @@ export function computeMinWindowHeight(): number {
   return CONTENT_MIN_HEIGHT + FOOTER_HEIGHT;
 }
 
-/** Clamps the two pane INTENTS against the live container width. When both
- * fit beside the grid's minimum they pass through; when they do not, both
- * shrink toward their minimums proportionally to their headroom above them
- * (two adjustable panes, so a one-sided clamp cannot work). The intents are
- * never modified — only the display derives. */
+/** Clamps the adjustable panes' INTENTS against the live container width.
+ * When everything fits beside the grid's minimum the intents pass through;
+ * when not, every pane shrinks toward its minimum proportionally to its
+ * headroom above it (several adjustable panes, so a one-sided clamp cannot
+ * work). The intents are never modified — only the display derives.
+ * `previewIntent` null means the preview pane is closed and takes nothing. */
 export function clampPaneWidths(
   leftIntent: number,
   rightIntent: number,
   containerWidth: number,
-): { left: number; right: number } {
-  const left = Math.max(SIDEBAR_MIN_WIDTH, leftIntent);
-  const right = Math.max(RIGHT_PANE_MIN_WIDTH, rightIntent);
-  const available = containerWidth - GRID_MIN_WIDTH - 2 * SPLITTER_WIDTH;
-  if (left + right <= available) {
-    return { left, right };
+  previewIntent: number | null = null,
+): { left: number; right: number; preview: number } {
+  const mins = [
+    SIDEBAR_MIN_WIDTH,
+    RIGHT_PANE_MIN_WIDTH,
+    ...(previewIntent !== null ? [PREVIEW_PANE_MIN_WIDTH] : []),
+  ];
+  const wants = [
+    Math.max(SIDEBAR_MIN_WIDTH, leftIntent),
+    Math.max(RIGHT_PANE_MIN_WIDTH, rightIntent),
+    ...(previewIntent !== null ? [Math.max(PREVIEW_PANE_MIN_WIDTH, previewIntent)] : []),
+  ];
+  const splitters = previewIntent !== null ? 3 : 2;
+  const available = containerWidth - GRID_MIN_WIDTH - splitters * SPLITTER_WIDTH;
+  const wanted = wants.reduce((a, b) => a + b, 0);
+  const result = (values: number[]) => ({
+    left: values[0],
+    right: values[1],
+    preview: values[2] ?? 0,
+  });
+  if (wanted <= available) {
+    return result(wants);
   }
-  const overflow = left + right - Math.max(available, SIDEBAR_MIN_WIDTH + RIGHT_PANE_MIN_WIDTH);
-  const leftRoom = left - SIDEBAR_MIN_WIDTH;
-  const rightRoom = right - RIGHT_PANE_MIN_WIDTH;
-  const room = leftRoom + rightRoom;
+  const overflow = wanted - Math.max(available, mins.reduce((a, b) => a + b, 0));
+  const rooms = wants.map((w, i) => w - mins[i]);
+  const room = rooms.reduce((a, b) => a + b, 0);
   if (room <= 0) {
-    return { left: SIDEBAR_MIN_WIDTH, right: RIGHT_PANE_MIN_WIDTH };
+    return result(mins);
   }
-  const shrinkLeft = Math.min(leftRoom, (overflow * leftRoom) / room);
-  return {
-    left: Math.max(SIDEBAR_MIN_WIDTH, Math.round(left - shrinkLeft)),
-    right: Math.max(RIGHT_PANE_MIN_WIDTH, Math.round(right - (overflow - shrinkLeft))),
-  };
+  // Proportional-to-headroom, sequential so rounding never busts a minimum.
+  let remaining = overflow;
+  const values = wants.map((want, i) => {
+    const shrink = Math.min(rooms[i], Math.round((overflow * rooms[i]) / room));
+    const taken = Math.min(shrink, remaining);
+    remaining -= taken;
+    return Math.max(mins[i], want - taken);
+  });
+  return result(values);
 }

@@ -14,6 +14,8 @@ import {
 import {
   GRID_MIN_WIDTH,
   HEADER_HEIGHT,
+  PREVIEW_PANE_DEFAULT_WIDTH,
+  PREVIEW_PANE_MIN_WIDTH,
   RIGHT_PANE_DEFAULT_WIDTH,
   RIGHT_PANE_MIN_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
@@ -100,30 +102,8 @@ export default function App() {
   const previewFollow = usePreviewStore((s) => s.follow);
   const previewPlacement = usePreviewStore((s) => s.placement);
   const previewCurrent = usePreviewStore((s) => s.current);
-  const splitRatio = usePreviewStore((s) => s.splitRatio);
   const splitOpen = previewFollow && previewPlacement === "split";
   const mainColRef = useRef<HTMLElement | null>(null);
-
-  const beginSplitDrag = (event: React.MouseEvent) => {
-    event.preventDefault();
-    const startY = event.clientY;
-    const startRatio = usePreviewStore.getState().splitRatio;
-    const height = mainColRef.current?.clientHeight ?? 1;
-    document.body.classList.add("row-resizing");
-    const onMove = (e: MouseEvent) => {
-      usePreviewStore.getState().setSplitRatio(startRatio + (e.clientY - startY) / height);
-    };
-    const onUp = () => {
-      document.body.classList.remove("row-resizing");
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      void useAppStore
-        .getState()
-        .patchState({ previewSplitRatio: usePreviewStore.getState().splitRatio });
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  };
 
   // The one open-Settings path — the menu item and the Cmd+, chord both use
   // it, so the two can never drift.
@@ -183,9 +163,11 @@ export default function App() {
   // silently in the browser-dev case where no Tauri window exists.
   useEffect(() => {
     void getCurrentWindow()
-      .setMinSize(new LogicalSize(computeMinWindowWidth(), computeMinWindowHeight()))
+      .setMinSize(
+        new LogicalSize(computeMinWindowWidth(splitOpen), computeMinWindowHeight()),
+      )
       .catch(() => {});
-  }, []);
+  }, [splitOpen]);
 
   // Pane widths: persisted INTENT in pixels (written only on drag-end); the
   // displayed width is the intent clamped against the live container width,
@@ -193,6 +175,7 @@ export default function App() {
   const [paneIntents, setPaneIntents] = useState({
     left: SIDEBAR_DEFAULT_WIDTH,
     right: RIGHT_PANE_DEFAULT_WIDTH,
+    preview: PREVIEW_PANE_DEFAULT_WIDTH,
   });
   const paneIntentsRef = useRef(paneIntents);
   paneIntentsRef.current = paneIntents;
@@ -211,38 +194,48 @@ export default function App() {
     paneIntents.left,
     paneIntents.right,
     containerWidth ?? computeMinWindowWidth() * 4,
+    splitOpen ? paneIntents.preview : null,
   );
 
-  const beginPaneDrag = (side: "left" | "right") => (event: React.MouseEvent) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const start = { ...paneIntentsRef.current };
-    // Window-wide resize cursor for the drag's duration — the pointer roams
-    // over elements carrying their own cursors otherwise (cursor conventions).
-    document.body.classList.add("col-resizing");
-    const onMove = (e: MouseEvent) => {
-      const delta = e.clientX - startX;
-      const next =
-        side === "left"
-          ? { ...paneIntentsRef.current, left: Math.max(SIDEBAR_MIN_WIDTH, start.left + delta) }
-          : {
-              ...paneIntentsRef.current,
-              right: Math.max(RIGHT_PANE_MIN_WIDTH, start.right - delta),
-            };
-      setPaneIntents(next);
+  const beginPaneDrag =
+    (side: "left" | "right" | "preview") => (event: React.MouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const start = { ...paneIntentsRef.current };
+      // Window-wide resize cursor for the drag's duration — the pointer roams
+      // over elements carrying their own cursors otherwise (cursor conventions).
+      document.body.classList.add("col-resizing");
+      const onMove = (e: MouseEvent) => {
+        const delta = e.clientX - startX;
+        // The sidebar grows rightward; the preview and right pane grow
+        // leftward (their dividers sit on their left edges).
+        const next =
+          side === "left"
+            ? { ...paneIntentsRef.current, left: Math.max(SIDEBAR_MIN_WIDTH, start.left + delta) }
+            : side === "preview"
+              ? {
+                  ...paneIntentsRef.current,
+                  preview: Math.max(PREVIEW_PANE_MIN_WIDTH, start.preview - delta),
+                }
+              : {
+                  ...paneIntentsRef.current,
+                  right: Math.max(RIGHT_PANE_MIN_WIDTH, start.right - delta),
+                };
+        setPaneIntents(next);
+      };
+      const onUp = () => {
+        document.body.classList.remove("col-resizing");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        void useAppStore.getState().patchState({
+          sidebarWidth: paneIntentsRef.current.left,
+          rightPaneWidth: paneIntentsRef.current.right,
+          previewPaneWidth: paneIntentsRef.current.preview,
+        });
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
     };
-    const onUp = () => {
-      document.body.classList.remove("col-resizing");
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      void useAppStore.getState().patchState({
-        sidebarWidth: paneIntentsRef.current.left,
-        rightPaneWidth: paneIntentsRef.current.right,
-      });
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  };
 
   const zoomRef = useRef(ZOOM_DEFAULT);
   // Reactive mirror of zoomRef so the menu's zoom stepper can display it.
@@ -390,9 +383,12 @@ export default function App() {
     if (state.rightPaneTab === "destinations") setRightTabRaw("destinations");
     const left = state.sidebarWidth;
     const right = state.rightPaneWidth;
+    const preview = state.previewPaneWidth;
     setPaneIntents((current) => ({
       left: typeof left === "number" && Number.isFinite(left) ? left : current.left,
       right: typeof right === "number" && Number.isFinite(right) ? right : current.right,
+      preview:
+        typeof preview === "number" && Number.isFinite(preview) ? preview : current.preview,
     }));
     void import("./state/preview-store").then(({ usePreviewStore }) => {
       const placement = state.previewPlacement;
@@ -400,12 +396,8 @@ export default function App() {
         .getState()
         .restoreFollow(
           state.previewFollow === true,
-          typeof state.previewSplitRatio === "number" ? state.previewSplitRatio : null,
           placement === "split" || placement === "window" ? placement : null,
         );
-      // The chrome control needs the monitor count to know whether the
-      // second-screen option is even offerable, before anything opens.
-      void usePreviewStore.getState().refreshScreens();
     });
     const last = state.lastSection as { kind?: string; month?: string } | undefined;
     if (
@@ -587,38 +579,6 @@ export default function App() {
           style={{ minWidth: GRID_MIN_WIDTH }}
           className="flex min-w-0 flex-1 flex-col overflow-hidden"
         >
-          {splitOpen ? (
-            <>
-              {/* Single-monitor placement: the preview rides ABOVE the grid —
-                  a separate window would cover it and steal the keyboard. */}
-              <div
-                style={{ height: `${splitRatio * 100}%` }}
-                className="relative min-h-24 shrink-0 overflow-hidden"
-              >
-                <PreviewSurface
-                  hash={previewCurrent?.hash ?? null}
-                  detail={previewCurrent?.detail ?? null}
-                />
-                <button
-                  aria-label="Close preview"
-                  title="Close preview (P)"
-                  className="absolute right-2 top-2 rounded bg-surface/80 px-1.5 text-sm text-ink-muted hover:bg-surface hover:text-ink"
-                  onClick={() => usePreviewStore.getState().close()}
-                >
-                  ✕
-                </button>
-              </div>
-              <div
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label="Resize preview"
-                className="group flex h-[9px] shrink-0 cursor-row-resize flex-col justify-center"
-                onMouseDown={beginSplitDrag}
-              >
-                <div className="h-px bg-border transition-colors group-hover:bg-border-strong" />
-              </div>
-            </>
-          ) : null}
           {loadError !== null ? (
             <p className="m-auto text-danger">{loadError}</p>
           ) : selected !== null ? (
@@ -633,6 +593,41 @@ export default function App() {
             <p className="m-auto text-ink-muted">Select a month</p>
           )}
         </main>
+        {splitOpen ? (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize preview"
+              style={{ width: SPLITTER_WIDTH }}
+              className="group flex shrink-0 cursor-col-resize justify-center"
+              onMouseDown={beginPaneDrag("preview")}
+            >
+              <div className="w-px bg-border transition-colors group-hover:bg-border-strong" />
+            </div>
+            {/* The in-window preview: a SIDE pane, because screens are wide —
+                sidebar › grid › preview › right pane. It renders the anchor
+                from `current`, which `open` seeds immediately, so activating
+                the preview with a selection shows that image at once. */}
+            <div
+              style={{ width: paneWidths.preview }}
+              className="relative shrink-0 overflow-hidden bg-surface"
+            >
+              <PreviewSurface
+                hash={previewCurrent?.hash ?? null}
+                detail={previewCurrent?.detail ?? null}
+              />
+              <button
+                aria-label="Close preview"
+                title="Close preview (Space)"
+                className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md bg-surface/80 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+                onClick={() => usePreviewStore.getState().close()}
+              >
+                ✕
+              </button>
+            </div>
+          </>
+        ) : null}
         <div
           role="separator"
           aria-orientation="vertical"
