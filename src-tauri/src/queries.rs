@@ -536,7 +536,8 @@ pub fn section_dirs(
     Ok(rows)
 }
 
-/// One issues row for the first-class issues surface.
+/// One issues row for the issues modal. `path` is None when the row has no
+/// file anchor (stored as '' for the (kind, path) identity).
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueRow {
@@ -544,28 +545,32 @@ pub struct IssueRow {
     pub path: Option<String>,
     pub kind: String,
     pub message: Option<String>,
-    pub created_at_utc: String,
+    pub first_seen_utc: String,
+    pub last_seen_utc: String,
 }
 
-/// Newest first, capped; the count comes with it for the left-pane entry.
+/// OLDEST first (the developer's call — the longest-standing condition leads),
+/// capped; the count comes with it for the status-bar element.
 pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), String> {
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, kind, message, created_at_utc FROM issues \
-             ORDER BY id DESC LIMIT ?1",
+            "SELECT id, path, kind, message, first_seen_utc, last_seen_utc FROM issues \
+             ORDER BY first_seen_utc ASC, id ASC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
     let rows: Vec<IssueRow> = stmt
         .query_map([limit], |r| {
+            let path: String = r.get(1)?;
             Ok(IssueRow {
                 id: r.get(0)?,
-                path: r.get(1)?,
+                path: if path.is_empty() { None } else { Some(path) },
                 kind: r.get(2)?,
                 message: r.get(3)?,
-                created_at_utc: r.get(4)?,
+                first_seen_utc: r.get(4)?,
+                last_seen_utc: r.get(5)?,
             })
         })
         .map_err(|e| e.to_string())?

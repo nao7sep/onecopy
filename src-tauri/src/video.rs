@@ -207,15 +207,13 @@ pub fn derive_videos_pending(
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                // Current-state issues: a derive that now succeeds retires the
+                // failure it recorded on an earlier pass.
+                crate::index_store::clear_issues(conn, &path, &["video-derive-error"])?;
             }
             Err(err) => {
                 stats.failed += 1;
-                conn.execute(
-                    "INSERT INTO issues (path, kind, message, created_at_utc) \
-                     VALUES (?1, 'video-derive-error', ?2, ?3)",
-                    params![path, err, logging::now_iso_millis()],
-                )
-                .map_err(|e| e.to_string())?;
+                crate::index_store::upsert_issue(conn, Some(&path), "video-derive-error", &err)?;
                 conn.execute(
                     "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
                     [&hash],

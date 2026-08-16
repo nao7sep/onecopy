@@ -443,6 +443,9 @@ pub fn derive_images_pending(
                         ],
                     )
                     .map_err(|e| e.to_string())?;
+                    // Current-state issues: a decode that now succeeds retires
+                    // the failure it recorded on an earlier pass.
+                    crate::index_store::clear_issues(conn, &path, &["decode-error"])?;
                 }
                 Err(err) if err == crate::scanner::CANCELLED => {
                     // Skipped by the cancel — no checkpoint, no issue; the
@@ -462,12 +465,7 @@ pub fn derive_images_pending(
                 }
                 Err(err) => {
                     stats.failed += 1;
-                    conn.execute(
-                        "INSERT INTO issues (path, kind, message, created_at_utc) \
-                         VALUES (?1, 'decode-error', ?2, ?3)",
-                        params![path, err, logging::now_iso_millis()],
-                    )
-                    .map_err(|e| e.to_string())?;
+                    crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err)?;
                     conn.execute(
                         "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
                         [hash],

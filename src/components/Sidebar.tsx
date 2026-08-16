@@ -10,7 +10,6 @@ import {
   type Row,
 } from "../models/sectionTree";
 import { useItemsStore } from "../state/items-store";
-import { useIssuesStore } from "../state/issues-store";
 
 // The left pane as ONE tree composite (the composite-control conventions):
 // the container is the single tab stop, Up/Down walk the VISIBLE rows,
@@ -18,10 +17,9 @@ import { useIssuesStore } from "../state/issues-store";
 // jump the ends. Activating a month row opens that section; kind and year rows
 // only expand, because there is no such thing as "all of 2016" to show.
 //
-// Issues is a row in the same tree rather than a button beside it. It is one of
-// the things the left pane can be showing, so it must behave like the others:
-// choosing a month leaves Issues, exactly as choosing Issues leaves the month.
-// As a separate toggle it could be entered but only left by clicking itself.
+// SECTIONS only, deliberately: Issues is a status-bar count opening a modal
+// (issues are diagnostics, not something to handle), so nothing here competes
+// with the months.
 
 function rowLabel(row: Row): string {
   switch (row.type) {
@@ -48,9 +46,6 @@ function rowCount(row: Row): number {
 export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   const selected = useItemsStore((s) => s.selected);
   const select = useItemsStore((s) => s.select);
-  const issuesOpen = useIssuesStore((s) => s.open);
-  const issuesTotal = useIssuesStore((s) => s.total);
-  const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(defaultExpanded);
 
@@ -71,11 +66,8 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   }, [selected]);
 
   const rows = visibleRows(tree, expanded);
-  /** Issues trails the tree as the last row, so Down off the last month
-   * reaches it and Up off it returns — one continuous axis. */
-  const activeKey = issuesOpen ? "issues" : selectedKey;
-  const keys = [...rows.map((r) => r.key), "issues"];
-  const activeIndex = activeKey === null ? -1 : keys.indexOf(activeKey);
+  const keys = rows.map((r) => r.key);
+  const activeIndex = selectedKey === null ? -1 : keys.indexOf(selectedKey);
 
   const toggle = (key: string, open?: boolean) =>
     setExpanded((current) => {
@@ -87,7 +79,6 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
     });
 
   const openSection = (kind: ItemKind, month: string) => {
-    setIssuesOpen(false);
     void select({ kind, month });
   };
 
@@ -103,28 +94,18 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
    * rather than merely move a highlight. Expandable rows have nothing to
    * activate, so arrowing onto one only moves — it never blanks the grid. */
   const activate = (index: number) => {
-    const key = keys[index];
-    if (key === undefined) return;
-    if (key === "issues") {
-      setIssuesOpen(true);
-    } else {
-      const row = rows[index];
-      if (row.type === "month") openSection(row.kind, row.month);
-      else toggle(row.key);
-    }
+    const row = rows[index];
+    if (row === undefined) return;
+    if (row.type === "month") openSection(row.kind, row.month);
+    else toggle(row.key);
     focusRow(index);
   };
 
   /** Up/Down move and, on a month, open it. */
   const step = (index: number) => {
-    const key = keys[index];
-    if (key === undefined) return;
-    if (key === "issues") {
-      setIssuesOpen(true);
-    } else {
-      const row = rows[index];
-      if (row.type === "month") openSection(row.kind, row.month);
-    }
+    const row = rows[index];
+    if (row === undefined) return;
+    if (row.type === "month") openSection(row.kind, row.month);
     focusRow(index);
   };
 
@@ -205,7 +186,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       {rows.map((row, index) => {
         const isBranch = row.type !== "month";
         const isOpen = expanded.has(row.key);
-        const isSelected = !issuesOpen && row.key === selectedKey;
+        const isSelected = row.key === selectedKey;
         const empty = row.type === "kind" && row.node.count === 0;
         return [
           <div
@@ -259,30 +240,6 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
         <p className="mt-2 px-2 text-sm text-ink-muted">Nothing to handle</p>
       ) : null}
 
-      {/* Issues closes the tree as a peer row — see the note at the top. */}
-      <div
-        id={`section-row-${rows.length}`}
-        role="treeitem"
-        aria-selected={issuesOpen}
-        aria-level={1}
-        data-row-key="issues"
-        style={{ paddingLeft: 6 }}
-        className={`mt-2 flex cursor-pointer items-center gap-1 rounded-md py-1 pr-2 text-sm transition-colors ${
-          issuesOpen
-            ? "bg-danger-surface font-medium text-danger"
-            : issuesTotal > 0
-              ? "text-danger hover:bg-danger-surface"
-              : "text-ink-muted hover:bg-surface-muted"
-        }`}
-        onClick={() => {
-          containerRef.current?.focus();
-          activate(rows.length);
-        }}
-      >
-        <ChevronRight size={13} aria-hidden className="invisible shrink-0" />
-        <span className="min-w-0 flex-1 truncate">Issues</span>
-        <span className="shrink-0 text-xs tabular-nums text-ink-muted">{issuesTotal}</span>
-      </div>
     </div>
   );
 }

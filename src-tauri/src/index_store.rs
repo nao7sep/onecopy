@@ -105,14 +105,20 @@ CREATE TABLE IF NOT EXISTS similar_group_members (
   PRIMARY KEY (group_id, content_hash)
 );
 
+-- Issues are CURRENT-STATE diagnostics, not a log — the log file is the
+-- history. Identity is (kind, path): a recurrence UPDATES the row, so a
+-- condition persisting for weeks is one line, not one per scan. `path` is ''
+-- when the condition has no file anchor (a rootless walk error); NULLs would
+-- break the unique identity, which is why the column is NOT NULL.
 CREATE TABLE IF NOT EXISTS issues (
   id             INTEGER PRIMARY KEY,
-  path           TEXT,
+  path           TEXT NOT NULL DEFAULT '',
   kind           TEXT NOT NULL,
   message        TEXT,
-  created_at_utc TEXT NOT NULL
+  first_seen_utc TEXT NOT NULL,
+  last_seen_utc  TEXT NOT NULL,
+  UNIQUE (kind, path)
 );
-CREATE INDEX IF NOT EXISTS idx_issues_kind ON issues (kind);
 
 CREATE TABLE IF NOT EXISTS scan_dirs (
   id                    INTEGER PRIMARY KEY,
@@ -141,6 +147,52 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
 
 // EXCEPTION (tests-folder conventions): the schema-shape test stays in-file
 // because it asserts the private SCHEMA constant's effect on a fresh file,
+/// Records (or refreshes) one issue. Identity is (kind, path): a recurrence
+/// updates the message and last-seen stamp, never inserts a second row, so a
+/// condition persisting across many scans stays ONE line. `path` None anchors
+/// to '' — the rootless case.
+pub fn upsert_issue(
+    conn: &Connection,
+    path: Option<&str>,
+    kind: &str,
+    message: &str,
+) -> Result<(), String> {
+    let now = crate::logging::now_iso_millis();
+    conn.execute(
+        "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
+         VALUES (?1, ?2, ?3, ?4, ?4) \
+         ON CONFLICT (kind, path) DO UPDATE \
+         SET message = excluded.message, last_seen_utc = excluded.last_seen_utc",
+        rusqlite::params![path.unwrap_or(""), kind, message, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Clears an issue whose condition a scan has just found RESOLVED — the
+/// success counterpart of `upsert_issue`, which is what makes scan-derived
+/// issues current-state rather than a log: a fixed file's row disappears the
+/// next time the pipeline touches it. Clearing something never recorded is a
+/// no-op by design.
+pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<(), String> {
+    for kind in kinds {
+        conn.execute(
+            "DELETE FROM issues WHERE kind = ?1 AND path = ?2",
+            rusqlite::params![kind, path],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether any issue rows exist at all — the walk and the passes consult this
+/// once so a clean index never pays a per-file DELETE for conditions that were
+/// never recorded.
+pub fn any_issues(conn: &Connection) -> bool {
+    conn.query_row("SELECT EXISTS (SELECT 1 FROM issues)", [], |r| r.get(0))
+        .unwrap_or(true)
+}
+
 // which has no public seam. The copy-count semantics it used to sit beside
 // moved to tests/queries_tests.rs, where they are asserted through the real
 // query instead of a SELECT the test wrote itself.
@@ -193,11 +245,7 @@ mod tests {
 
         // Re-opening an existing file is fine (IF NOT EXISTS schema).
         let conn = open(&db).unwrap();
-        conn.execute(
-            "INSERT INTO issues (kind, message, created_at_utc) VALUES ('test', 'x', '2026-01-01T00:00:00.000Z')",
-            [],
-        )
-        .unwrap();
+        upsert_issue(&conn, Some("/x"), "test", "x").unwrap();
     }
 
 }

@@ -716,6 +716,8 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
 
     // Collect the currently-present set to diff against the DB afterwards.
     let mut present: Vec<String> = Vec::new();
+    // One probe up front so a clean index never pays a per-file DELETE.
+    let issues_present = crate::index_store::any_issues(conn);
 
     // The walk root carries the long-path form so every entry beneath it
     // inherits it; without this a deep tree is simply invisible on Windows.
@@ -747,9 +749,18 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
         present.push(abs.clone());
 
         match upsert_file(conn, path, lists) {
-            Ok(Upsert::Added) => stats.added += 1,
-            Ok(Upsert::Updated) => stats.updated += 1,
-            Ok(Upsert::Unchanged) => stats.unchanged += 1,
+            Ok(outcome) => {
+                match outcome {
+                    Upsert::Added => stats.added += 1,
+                    Upsert::Updated => stats.updated += 1,
+                    Upsert::Unchanged => stats.unchanged += 1,
+                }
+                // The success counterpart: a re-walked file that now stats
+                // clean drops its scan-condition rows (current-state issues).
+                if issues_present {
+                    crate::index_store::clear_issues(conn, &abs, &["stat-error", "walk-error"])?;
+                }
+            }
             Err(err) => {
                 stats.seen -= 1;
                 present.pop();
@@ -982,10 +993,21 @@ pub fn hash_pending(
     // Full-hashes one row and lands its identity (promotion for provisional
     // rows, creation/collapse otherwise). Returns the hash for disagreement
     // accounting.
+    let issues_present = crate::index_store::any_issues(conn);
     let land_full_hash = |row: &Row, stats: &mut HashStats| -> Result<Option<String>, String> {
         match hashing::full_hash_cancellable(Path::new(&row.abs), &SCAN_CANCEL) {
             Ok(hash) => {
                 stats.full_hashed += 1;
+                // A read that succeeds proves the earlier failure resolved —
+                // and this cohort's hashes now speak for copies-disagree, so
+                // its stale row goes too (re-recorded below if still true).
+                if issues_present {
+                    crate::index_store::clear_issues(
+                        conn,
+                        &row.abs,
+                        &["read-error", "copies-disagree"],
+                    )?;
+                }
                 if let Some(provisional) = &row.provisional {
                     promote_identity(conn, cache, provisional, &hash)?;
                 } else {
@@ -1034,6 +1056,9 @@ pub fn hash_pending(
                 None => match hashing::prehash(Path::new(&row.abs)) {
                     Ok(pre) => {
                         stats.prehashed += 1;
+                        if issues_present {
+                            crate::index_store::clear_issues(conn, &row.abs, &["read-error"])?;
+                        }
                         conn.execute(
                             "UPDATE paths SET prehash = ?2 WHERE id = ?1",
                             params![row.id, pre],
@@ -1072,15 +1097,19 @@ pub fn hash_pending(
             // divergent sync among supposed copies — surface it.
             if hashes_in_group.len() > 1 {
                 stats.copies_disagree += 1;
-                record_issue(
-                    conn,
-                    None,
-                    "copies-disagree",
-                    &format!(
-                        "{group_len} same-size same-prehash files split into {} distinct contents (size {size})",
-                        hashes_in_group.len()
-                    ),
-                )?;
+                // One row PER FILE: (kind, path) identity needs a real anchor,
+                // and naming the disagreeing files is what lets the user act.
+                for row in &collided {
+                    record_issue(
+                        conn,
+                        Some(row.abs.clone()),
+                        "copies-disagree",
+                        &format!(
+                            "{group_len} same-size same-prehash files split into {} distinct contents (size {size}) — bit rot or a divergent sync among supposed copies",
+                            hashes_in_group.len()
+                        ),
+                    )?;
+                }
             }
         }
     }
@@ -1362,12 +1391,7 @@ fn record_issue(
         "scan issue",
         serde_json::json!({ "kind": kind, "path": path, "detail": message }),
     );
-    conn.execute(
-        "INSERT INTO issues (path, kind, message, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
-        params![path, kind, message, logging::now_iso_millis()],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::index_store::upsert_issue(conn, path.as_deref(), kind, message)
 }
 
 fn collect_rows_4(

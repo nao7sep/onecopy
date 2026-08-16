@@ -134,15 +134,14 @@ fn a_missing_copy_does_not_count_toward_the_badge() {
 }
 
 #[test]
-fn issues_returns_the_full_total_and_the_newest_rows_within_the_limit() {
-    // Several tests assert issue rows were INSERTED; nothing asserted they can
-    // be read back, though the Issues view is the app's promise that a silent
-    // skip never happens.
+fn issues_page_oldest_first_with_the_full_total() {
+    // The modal's contract: OLDEST first (the longest-standing condition
+    // leads — the developer's call), the total counting every row.
     let conn = db();
     for i in 1..=5 {
         conn.execute(
-            "INSERT INTO issues (path, kind, message, created_at_utc) \
-             VALUES (?1, 'decode-error', ?2, ?3)",
+            "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
+             VALUES (?1, 'decode-error', ?2, ?3, ?3)",
             params![
                 format!("/root/{i}.jpg"),
                 format!("failure {i}"),
@@ -155,9 +154,47 @@ fn issues_returns_the_full_total_and_the_newest_rows_within_the_limit() {
     let (total, rows) = queries::issues(&conn, 2).unwrap();
     assert_eq!(total, 5, "the total counts every row, not the page");
     assert_eq!(rows.len(), 2, "the limit bounds the page");
-    // Newest first: the badge and the list both depend on this order.
-    assert_eq!(rows[0].message.as_deref(), Some("failure 5"));
-    assert_eq!(rows[1].message.as_deref(), Some("failure 4"));
+    assert_eq!(rows[0].message.as_deref(), Some("failure 1"));
+    assert_eq!(rows[1].message.as_deref(), Some("failure 2"));
+}
+
+#[test]
+fn a_recurring_issue_is_one_row_whose_last_seen_moves() {
+    // The flood the developer reported: the same condition re-recorded on
+    // every scan piled up identical rows. Identity is (kind, path) — a
+    // recurrence UPDATES, and first-seen keeps the original onset.
+    let conn = db();
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "decode-error", "first failure")
+        .unwrap();
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "decode-error", "same failure again")
+        .unwrap();
+    // A different KIND on the same path is a different condition.
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "unrelated").unwrap();
+
+    let (total, rows) = queries::issues(&conn, 10).unwrap();
+    assert_eq!(total, 2, "recurrence must never insert a second row");
+    let decode = rows.iter().find(|r| r.kind == "decode-error").unwrap();
+    assert_eq!(decode.message.as_deref(), Some("same failure again"));
+    assert!(decode.first_seen_utc <= decode.last_seen_utc);
+}
+
+#[test]
+fn clearing_retires_only_the_named_kinds_at_the_path() {
+    // The success counterpart that makes issues current-state: a scan that
+    // finds the condition resolved deletes the row, and only that row.
+    let conn = db();
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "x").unwrap();
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "delete-error", "op record").unwrap();
+    index_store::upsert_issue(&conn, Some("/root/b.jpg"), "read-error", "x").unwrap();
+
+    index_store::clear_issues(&conn, "/root/a.jpg", &["read-error", "copies-disagree"]).unwrap();
+
+    let (total, rows) = queries::issues(&conn, 10).unwrap();
+    assert_eq!(total, 2);
+    // The operation record survives (not re-checkable, waits for dismissal),
+    // and the OTHER path's condition is untouched.
+    assert!(rows.iter().any(|r| r.kind == "delete-error"));
+    assert!(rows.iter().any(|r| r.path.as_deref() == Some("/root/b.jpg")));
 }
 
 /// Seeds an image in a specific directory at a specific instant.

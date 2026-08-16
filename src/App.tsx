@@ -33,7 +33,7 @@ import DestinationsTab from "./components/DestinationsTab";
 import Wizard from "./components/Wizard";
 import PresenceGate from "./components/PresenceGate";
 import ComparisonView from "./components/ComparisonView";
-import IssuesView from "./components/IssuesView";
+import IssuesModal from "./components/IssuesModal";
 import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
@@ -85,7 +85,8 @@ export default function App() {
     setRightTabRaw(tab);
     void useAppStore.getState().patchState({ rightPaneTab: tab });
   };
-  const issuesOpen = useIssuesStore((s) => s.open);
+  const issuesTotal = useIssuesStore((s) => s.total);
+  const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const ffmpegState = useBinariesStore((s) => s.state);
   const binariesInstalling = useBinariesStore((s) => s.installing);
   const binariesProgress = useBinariesStore((s) => s.progress);
@@ -387,7 +388,6 @@ export default function App() {
       useItemsStore.setState({ sortOrder: sort });
     }
     if (state.rightPaneTab === "destinations") setRightTabRaw("destinations");
-    if (state.issuesOpen === true) useIssuesStore.getState().setOpen(true);
     const left = state.sidebarWidth;
     const right = state.rightPaneWidth;
     setPaneIntents((current) => ({
@@ -474,6 +474,7 @@ export default function App() {
         />
       ) : null}
       <SettingsModal />
+      <IssuesModal />
       <div ref={contentRowRef} className="flex min-h-0 flex-1">
         <aside
           style={{ width: paneWidths.left }}
@@ -621,8 +622,6 @@ export default function App() {
           ) : null}
           {loadError !== null ? (
             <p className="m-auto text-danger">{loadError}</p>
-          ) : issuesOpen ? (
-            <IssuesView />
           ) : selected !== null ? (
             <Grid
               items={items}
@@ -730,7 +729,19 @@ export default function App() {
         >
           {status.text}
         </span>
-        <span className="shrink-0">
+        <span className="flex shrink-0 items-center gap-3">
+          {/* The issues count: NOTHING at zero, a danger-tinted count when
+              conditions exist. No toasts anywhere — the design case is a
+              multi-day unattended scan, so the count simply waits here. */}
+          {issuesTotal > 0 ? (
+            <button
+              className="text-danger hover:underline"
+              title="Open the issues list"
+              onClick={() => setIssuesOpen(true)}
+            >
+              {issuesTotal} issue{issuesTotal === 1 ? "" : "s"}
+            </button>
+          ) : null}
           {/* Managed-tool state per the managed-runtime-dependencies
               conventions' Show rules: warning and error always show, and a
               benign FYI is silent rather than permanent. So "up to date" and

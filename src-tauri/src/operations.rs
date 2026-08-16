@@ -132,12 +132,7 @@ pub fn delete_item(
                     "delete failed for one copy",
                     json!({ "path": abs_path, "error": { "message": err } }),
                 );
-                conn.execute(
-                    "INSERT INTO issues (path, kind, message, created_at_utc) \
-                     VALUES (?1, 'delete-error', ?2, ?3)",
-                    params![abs_path, err, logging::now_iso_millis()],
-                )
-                .map_err(|e| e.to_string())?;
+                crate::index_store::upsert_issue(conn, Some(&abs_path), "delete-error", &err)?;
             }
         }
     }
@@ -455,12 +450,12 @@ fn deliver_one(
                     "copy-out failed for one source",
                     json!({ "path": source_path, "error": { "message": err.to_string() } }),
                 );
-                conn.execute(
-                    "INSERT INTO issues (path, kind, message, created_at_utc) \
-                     VALUES (?1, 'copy-error', ?2, ?3)",
-                    params![source_path, err.to_string(), logging::now_iso_millis()],
-                )
-                .map_err(|e| e.to_string())?;
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(source_path),
+                    "copy-error",
+                    &err.to_string(),
+                )?;
             }
         }
     }
@@ -477,16 +472,12 @@ fn record_rot_issue(
         "source copy failed tee verification (rot or divergence)",
         json!({ "path": source_path, "expected": expected, "actual": actual }),
     );
-    conn.execute(
-        "INSERT INTO issues (path, kind, message, created_at_utc) \
-         VALUES (?1, 'copy-verify-mismatch', ?2, ?3)",
-        params![
-            source_path,
-            format!("indexed {expected} but read {actual} — bit rot or external change"),
-            logging::now_iso_millis()
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    crate::index_store::upsert_issue(
+        conn,
+        Some(source_path),
+        "copy-verify-mismatch",
+        &format!("indexed {expected} but read {actual} — bit rot or external change"),
+    )?;
     Ok(())
 }
 

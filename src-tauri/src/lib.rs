@@ -867,6 +867,42 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
     )
 }
 
+// Dismissal is the user's half of the issues lifecycle: scan-derived rows
+// clear themselves when a scan finds the condition resolved, these two clear
+// everything else. Deleting is honest — the log file keeps the history, and a
+// dismissed-but-persisting scan condition returns on the next scan.
+#[tauri::command]
+fn dismiss_issue(app: AppHandle, id: i64) -> Result<(), String> {
+    logging::boundary(
+        "dismiss_issue",
+        json!({ "id": id }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            conn.execute("DELETE FROM issues WHERE id = ?1", [id])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        },
+        |_| json!({}),
+    )
+}
+
+#[tauri::command]
+fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
+    logging::boundary(
+        "dismiss_all_issues",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            conn.execute("DELETE FROM issues", [])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        },
+        |_| json!({}),
+    )
+}
+
 // Managed ffmpeg: presence + facts + derived status.
 #[tauri::command]
 fn binaries_state(app: AppHandle) -> Result<binaries_manager::FfmpegState, String> {
@@ -1210,6 +1246,8 @@ pub fn run() {
             rescan_section,
             move_cache,
             get_issues,
+            dismiss_issue,
+            dismiss_all_issues,
             binaries_state,
             binaries_install,
             binaries_check,

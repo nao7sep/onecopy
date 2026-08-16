@@ -239,12 +239,24 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     walk_root(&f.conn, &f.root, &lists()).unwrap();
     let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
     assert_eq!(stats.copies_disagree, 1);
+    // One row PER FILE — (kind, path) identity needs a real anchor, and
+    // naming the disagreeing files is what lets the user act on the finding.
     assert_eq!(
         count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'copies-disagree'"),
-        1
+        2
     );
     // Both files keep their own distinct contents rows.
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
+
+    // Current-state: a second pass re-detects the same divergence and must
+    // UPDATE the same two rows, never pile up more.
+    let stats2 = hash_pending(&f.conn, &test_cache(&f)).unwrap();
+    let _ = stats2;
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'copies-disagree'"),
+        2,
+        "a recurrence updates rows in place"
+    );
 }
 
 #[test]
