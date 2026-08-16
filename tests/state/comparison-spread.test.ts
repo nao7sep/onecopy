@@ -35,6 +35,7 @@ function member(hash: string, width = 4000, height = 3000): GroupMember {
     height,
     byteSize: width * height,
     sharpness: 1,
+    faceScore: null,
     copyCount: 1,
     hasThumb: true,
   };

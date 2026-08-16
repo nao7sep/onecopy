@@ -14,6 +14,7 @@ function member(hash: string): GroupMember {
     height: null,
   byteSize: null,
     sharpness: null,
+    faceScore: null,
     copyCount: 1,
     hasThumb: true,
   };

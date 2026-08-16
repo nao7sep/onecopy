@@ -76,6 +76,7 @@ describe("a comparison window", () => {
             height: 3000,
             byteSize: 5_000_000,
             sharpness: 12,
+    faceScore: null,
             copyCount: 2,
             hasThumb: true,
           },
