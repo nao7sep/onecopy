@@ -158,6 +158,28 @@ fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> 
 /// to apply — always 1 for an ffmpeg decode, which arrives upright already.
 fn decode_image(src: &Path, ffmpeg: Option<&Path>) -> Result<(DynamicImage, u16), String> {
     if needs_ffmpeg_decode(src) {
+        // Optional acceleration (Design: Stack): a system libheif, when
+        // present, decodes in-process — no subprocess per still. It applies
+        // the container's display transforms exactly as ffmpeg does (the
+        // orientation fixtures pin the agreement), and ANY failure falls
+        // back to the ffmpeg route unconditionally.
+        if crate::heif_native::available() {
+            match crate::heif_native::decode(src) {
+                Ok(decoded) => {
+                    logging::debug(
+                        "still decoded",
+                        serde_json::json!({ "route": "libheif", "src": src.to_string_lossy() }),
+                    );
+                    return Ok((decoded, 1));
+                }
+                Err(err) => {
+                    logging::debug(
+                        "libheif decode fell back to ffmpeg",
+                        serde_json::json!({ "src": src.to_string_lossy(), "error": { "message": err } }),
+                    );
+                }
+            }
+        }
         let ffmpeg = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
         return Ok((decode_via_ffmpeg(ffmpeg, src)?, 1));
     }
@@ -377,9 +399,31 @@ pub fn ensure_fullres(
             |r| r.get(0),
         )
         .map_err(|_| "no live copy of this photo".to_string())?;
-    // ffmpeg applies display orientation itself (the orientation rule), so
-    // the decode is already upright.
-    let decoded = decode_via_ffmpeg(ffmpeg, Path::new(&path))?;
+    // Both routes apply display orientation themselves (the orientation
+    // rule), so the decode is already upright. Same acceleration as
+    // decode_image: libheif in-process when present, ffmpeg the
+    // unconditional fallback on any failure.
+    let src = Path::new(&path);
+    let decoded = if crate::heif_native::available() {
+        match crate::heif_native::decode(src) {
+            Ok(decoded) => {
+                logging::debug(
+                    "fullres decoded",
+                    serde_json::json!({ "route": "libheif", "src": path }),
+                );
+                decoded
+            }
+            Err(err) => {
+                logging::debug(
+                    "libheif fullres fell back to ffmpeg",
+                    serde_json::json!({ "src": path, "error": { "message": err } }),
+                );
+                decode_via_ffmpeg(ffmpeg, src)?
+            }
+        }
+    } else {
+        decode_via_ffmpeg(ffmpeg, src)?
+    };
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
