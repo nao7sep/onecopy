@@ -277,6 +277,8 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
         cache.thumb(hash)
     } else if let Some(hash) = path.strip_prefix("preview-") {
         cache.preview(hash)
+    } else if let Some(hash) = path.strip_prefix("fullres-") {
+        cache.fullres(hash)
     } else if let Some(rest) = path.strip_prefix("strip-") {
         // strip-<hash>-<index>
         match rest.rsplit_once('-') {
@@ -881,6 +883,34 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
     )
 }
 
+// The 100% view's on-demand conversion for formats the webview cannot paint
+// (HEIC/AVIF — WebView2 paints neither; routing every platform through the
+// same path keeps behaviour identical and testable on macOS). Runs on the
+// command pool, never in the synchronous protocol handler; the view calls
+// this and then loads `mediacache://fullres-<hash>`.
+#[tauri::command]
+fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
+    logging::boundary(
+        "ensure_fullres",
+        json!({ "hash": hash }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let cache_root = CACHE_ROOT
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .ok_or("cache root unset")?;
+            let cache = preview::CachePaths::new(cache_root);
+            // Presence decides availability, same rule as the scan settings.
+            let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
+            let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
+            preview::ensure_fullres(&conn, &cache, ffmpeg.as_deref(), &hash)
+        },
+        |_| json!({}),
+    )
+}
+
 // The Trash surface: standing sizes per trash root, and the one deliberately
 // destructive convenience — emptying a root. The trash is otherwise
 // write-only; these are the only two readers the design allows.
@@ -1321,6 +1351,7 @@ pub fn run() {
             rescan_section,
             move_cache,
             get_issues,
+            ensure_fullres,
             trash_overview,
             trash_empty,
             dismiss_issue,

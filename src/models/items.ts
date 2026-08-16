@@ -74,6 +74,21 @@ export function originalUrlByPath(pathId: number): string {
   return convertFileSrc(`path-${pathId}`, "mediafile");
 }
 
+/** Formats the webview cannot paint from original bytes (WebView2 paints
+ * neither; every platform routes the 100% view through the converted cache
+ * entry so behaviour never differs by OS). */
+const CONVERTED_FULLRES_EXTENSIONS = new Set(["heic", "heif", "hif", "avif"]);
+
+export function needsConvertedFullres(fileName: string): boolean {
+  const dot = fileName.lastIndexOf(".");
+  if (dot <= 0 || dot === fileName.length - 1) return false;
+  return CONVERTED_FULLRES_EXTENSIONS.has(fileName.slice(dot + 1).toLowerCase());
+}
+
+export function fullresUrl(hash: string): string {
+  return convertFileSrc(`fullres-${hash}`, "mediacache");
+}
+
 /** Audio detection by extension — the file stays an OTHER-file everywhere
  * (list view, sections); only the preview treats it specially, by playing
  * it instead of showing a blank surface. */
