@@ -152,6 +152,7 @@ export class WebviewWindow {
 
 export const openDialog = vi.fn(async () => null as string | null);
 export const openPath = vi.fn(async () => {});
+export const revealItemInDir = vi.fn(async () => {});
 export const openUrl = vi.fn(async () => {});
 
 let currentWindowLabel = "main";

@@ -1,17 +1,21 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { formatBytes } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
 import Button from "./ui/Button";
 
-// The Trash surface: per-root sizes and the one deliberately destructive
-// convenience — Empty. Sizes are computed when the modal opens (it opens
-// rarely; a cached number would only be a chance to lie). Emptying is
-// PERMANENT — the trash is the safety net, and emptying removes the net for
-// everything inside — so it confirms with the exact totals it is about to
-// destroy. The trash stays write-only otherwise.
+// The Trash surface: every trash on the system — the configured volumes,
+// the app home, AND any mounted drive carrying one from an earlier
+// configuration — with per-root sizes, Reveal, and the one deliberately
+// destructive convenience: Empty. Sizes are computed when the modal opens
+// (it opens rarely; a cached number would only be a chance to lie).
+// Emptying is PERMANENT — the trash is the safety net, and emptying removes
+// the net for everything inside — so it confirms with the exact totals it
+// is about to destroy. The trash stays write-only otherwise: the app NEVER
+// purges on its own (by design — see the README's trash section).
 
 interface TrashRootInfo {
   root: string;
@@ -73,9 +77,10 @@ export default function TrashModal({
         />
       ) : null}
       <p className="mb-3 text-sm text-ink-muted">
-        Deleted files wait here — one trash per drive, so a delete is instant.
-        Emptying is permanent. Deleting these folders in the file manager is
-        also always safe.
+        Deleted files wait here — one trash per drive, so a delete is instant,
+        and every attached drive is checked. The app never empties a trash on
+        its own; emptying is permanent. Deleting these folders in the file
+        manager is also always safe.
       </p>
       {rows === null ? (
         <p className="py-4 text-center text-sm text-ink-muted">Measuring…</p>
@@ -95,6 +100,15 @@ export default function TrashModal({
                   {formatBytes(row.bytes)}
                 </p>
               </div>
+              <Button
+                onClick={() => {
+                  void revealItemInDir(row.root).catch((error) => {
+                    log.warn("trash reveal failed", { root: row.root, ...toErrorFields(error) });
+                  });
+                }}
+              >
+                Reveal
+              </Button>
               <Button
                 variant="danger"
                 disabled={busy || row.files === 0}

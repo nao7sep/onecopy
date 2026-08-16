@@ -12,7 +12,13 @@ Similarity grouping and the best-shot ordering are deliberately best-effort — 
 
 - To run: macOS (Apple silicon) or Windows 10/11. Extra monitors are optional but make the similar-photos comparison view considerably better.
 - Video thumbnails, snapshot strips and durations use ffmpeg, which the app downloads and manages itself (free; one click in *Managed tools*). So do photos in HEIC, HEIF and AVIF; JPEG, PNG and the other everyday formats need nothing. That makes it effectively required for any library containing video, not only a phone library. Files waiting on ffmpeg show placeholders and start working the moment you install it — you are never asked to rescan. Playing a video does not need it: playback runs in the app wherever the system supports the codec, with *Open in player* as the fallback.
-- To build from source: Node.js (LTS) and stable Rust.
+- To build from source: Node.js (LTS), stable Rust, and cmake (the linked-in whisper.cpp transcription engine builds through it). A system libheif is optional — when present it accelerates HEIC decoding in-process; without it the managed ffmpeg covers everything. `company/scripts/setup` installs all of it on either OS.
+
+## Trash
+
+Deleting in OneCopy moves files to an app-managed trash, not the OS one (OS trashes have size caps and quiet eviction). One trash lives at the root of each drive — `.onecopy-trash`, hidden — so a delete is an instant same-drive rename; files from your system drive go to the app's own folder instead (`~/.onecopy/trash` on macOS). Inside, each UTC day gets a folder holding that day's deletions flat, plus a `manifest.jsonl` recording every file's original path, stored name, and content hash.
+
+The trash is write-only by design: **the app never empties or prunes it on its own** — nothing leaves a trash except by your explicit hand. The *Trash…* window lists every trash on every attached drive (including drives you no longer scan), shows exact file counts and sizes, reveals any of them in the file manager, and can empty one after confirming precisely what will be destroyed. Deleting a trash folder yourself in Finder or Explorer is also always safe — nothing in the app depends on its contents.
 
 ## Download
 

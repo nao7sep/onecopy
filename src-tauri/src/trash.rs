@@ -218,6 +218,14 @@ pub fn overview(source_dirs: &[String], app_root: &Path) -> Vec<TrashRootInfo> {
     if !roots.contains(&home) {
         roots.push(home);
     }
+    // Every MOUNTED volume is also probed, so a trash left behind on a drive
+    // no longer configured as a source still appears here (and only here —
+    // the overview is the single authority Empty verifies against).
+    for root in mounted_trash_roots() {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
     roots
         .into_iter()
         .map(|root| {
@@ -228,6 +236,46 @@ pub fn overview(source_dirs: &[String], app_root: &Path) -> Vec<TrashRootInfo> {
                 files,
             }
         })
+        .collect()
+}
+
+/// Trash roots on the volumes mounted under `volumes` — the pure, testable
+/// half of mounted-volume discovery. Presence-only and read-cheap: one
+/// existence probe per volume, no sizing. Symlinked entries are skipped
+/// (macOS keeps a boot-volume symlink in /Volumes, and the boot volume's
+/// trash lives in the app root, not at `/`). Sorted for a stable overview.
+pub fn discover_in_volumes_dir(volumes: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(volumes) else {
+        return Vec::new();
+    };
+    let mut roots: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .symlink_metadata()
+                .map(|meta| meta.file_type().is_dir())
+                .unwrap_or(false)
+        })
+        .map(|entry| entry.path().join(TRASH_DIR_NAME))
+        .filter(|candidate| candidate.is_dir())
+        .collect();
+    roots.sort();
+    roots
+}
+
+/// The platform's mounted volumes: /Volumes on macOS, present drive letters
+/// on Windows (an absent letter fails its probe instantly).
+#[cfg(unix)]
+fn mounted_trash_roots() -> Vec<PathBuf> {
+    discover_in_volumes_dir(Path::new("/Volumes"))
+}
+
+#[cfg(windows)]
+fn mounted_trash_roots() -> Vec<PathBuf> {
+    ('A'..='Z')
+        .map(|letter| PathBuf::from(format!("{letter}:\\{TRASH_DIR_NAME}")))
+        .filter(|candidate| candidate.is_dir())
         .collect()
 }
 

@@ -70,5 +70,5 @@ vi.mock("@tauri-apps/plugin-dialog", async () => {
 
 vi.mock("@tauri-apps/plugin-opener", async () => {
   const m = await import("./mocks/tauri");
-  return { openPath: m.openPath, openUrl: m.openUrl };
+  return { openPath: m.openPath, openUrl: m.openUrl, revealItemInDir: m.revealItemInDir };
 });

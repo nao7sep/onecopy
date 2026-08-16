@@ -304,3 +304,35 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
         "the root itself survives for the next trash move"
     );
 }
+
+#[test]
+fn mounted_volume_discovery_finds_only_real_trash_dirs() {
+    // The pure seam behind "every attached drive appears in the overview":
+    // a volume WITH a trash is found, one without is not, and a symlinked
+    // volume entry (macOS keeps one for the boot volume) is skipped so the
+    // home volume can never appear twice.
+    let f = fixture("discover");
+    let volumes = f.app_root.join("volumes");
+    std::fs::create_dir_all(volumes.join("DriveA/.onecopy-trash/20260101-utc")).unwrap();
+    std::fs::write(
+        volumes.join("DriveA/.onecopy-trash/20260101-utc/img.jpg"),
+        b"bytes",
+    )
+    .unwrap();
+    std::fs::create_dir_all(volumes.join("DriveB")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(volumes.join("DriveA"), volumes.join("BootAlias")).unwrap();
+
+    let found = discover_in_volumes_dir(&volumes);
+    assert_eq!(found, vec![volumes.join("DriveA/.onecopy-trash")]);
+
+    // A discovered root is emptiable exactly like a configured one: day
+    // folders go, the root itself survives for the next trash move.
+    empty_root(&found[0]).unwrap();
+    assert!(found[0].exists(), "the root survives emptying");
+    assert_eq!(
+        std::fs::read_dir(&found[0]).unwrap().count(),
+        0,
+        "its day folders are gone"
+    );
+}

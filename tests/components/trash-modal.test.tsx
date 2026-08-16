@@ -76,3 +76,18 @@ describe("the trash modal", () => {
     expect(document.body.textContent).toContain("0 files");
   });
 });
+
+describe("reveal", () => {
+  it("opens the root in the file manager without touching anything", async () => {
+    const { revealItemInDir } = await import("../mocks/tauri");
+    render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    const reveal = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Reveal",
+    )!;
+    await act(async () => reveal.click());
+    expect(revealItemInDir).toHaveBeenCalledWith(ROWS[0].root);
+    // Reveal is a LOOK, never an operation: no command fired.
+    expect(invokeCalls.filter((c) => c.command === "trash_empty")).toHaveLength(0);
+  });
+});
