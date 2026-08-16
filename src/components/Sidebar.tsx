@@ -180,7 +180,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       role="tree"
       aria-label="Sections"
       aria-activedescendant={activeIndex >= 0 ? `section-row-${activeIndex}` : undefined}
-      className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+      className="outline-none"
       onKeyDown={onKeyDown}
     >
       {rows.map((row, index) => {

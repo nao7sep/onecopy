@@ -369,6 +369,16 @@ export default function SettingsModal() {
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Appearance
           </h2>
+          <Row
+            label="UI font"
+            hint="A CSS font-family list, resolved by the webview"
+          >
+            <TextInput
+              className="w-64"
+              value={draft.uiFontFamily}
+              onChange={(e) => update({ uiFontFamily: e.target.value })}
+            />
+          </Row>
           <Row label="Theme">
             <Select
               value={draft.theme}

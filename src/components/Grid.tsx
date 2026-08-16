@@ -343,7 +343,7 @@ export default function Grid({
         aria-label="Section items"
         aria-activedescendant={selectedItem !== null ? `grid-opt-${selectedItem}` : undefined}
         aria-multiselectable
-        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring ${
+        className={`min-h-0 flex-1 overflow-y-auto outline-none ${
           layout === "list"
             ? "flex flex-col gap-0.5 p-2"
             : "flex flex-wrap content-start gap-3 p-3"

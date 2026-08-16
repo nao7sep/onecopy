@@ -22,6 +22,7 @@ export interface SettingsDraft {
   scenesGridRows: number;
   pairingEnabled: boolean;
   theme: "system" | "light" | "dark";
+  uiFontFamily: string;
   keepAwakeDuringIndexing: boolean;
   verifyAfterCopy: boolean;
   cacheDir: string | null;
@@ -49,6 +50,7 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     pairingEnabled: config?.pairingEnabled !== false,
     theme:
       config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",
+    uiFontFamily: typeof config?.uiFontFamily === "string" ? config.uiFontFamily : "",
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
     verifyAfterCopy: config?.verifyAfterCopy !== false,
     cacheDir:

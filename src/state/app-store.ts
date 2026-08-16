@@ -16,7 +16,7 @@ import {
   toErrorFields,
   type LoadedAppData,
 } from "../repositories";
-import { applyTheme } from "../utils/theme";
+import { applyTheme, applyUiFont } from "../utils/theme";
 
 interface AppState {
   appData: LoadedAppData | null;
@@ -45,6 +45,7 @@ export const useAppStore = create<AppState>((set) => ({
       );
       // The main window re-themes live; other windows apply at their load.
       applyTheme(merged.theme);
+      applyUiFont(merged.uiFontFamily);
     } catch (error) {
       log.error("config patch failed", toErrorFields(error));
       throw error;

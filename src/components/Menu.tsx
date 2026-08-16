@@ -14,6 +14,7 @@
 // because items are discovered via [role="menuitem"].
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { isComposingEvent } from "../hooks/useComposing";
 
 /** Lets an item close its menu (with focus restored to the trigger) before
@@ -22,7 +23,7 @@ const MenuCloseContext = createContext<() => void>(() => {});
 
 export function Menu({
   trigger,
-  panelClassName = "",
+  align = "start",
   ariaLabel,
   children,
 }: {
@@ -33,11 +34,15 @@ export function Menu({
     "aria-expanded": boolean;
     onClick: () => void;
   }) => React.ReactNode;
-  panelClassName?: string;
+  /** Which trigger edge the panel's matching edge sticks to. */
+  align?: "start" | "end";
   ariaLabel: string;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  /** Fixed-position coordinates for the portalled panel, from the trigger's
+   * rect at open time. */
+  const [position, setPosition] = useState<{ top: number; left?: number; right?: number }>();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -56,7 +61,15 @@ export function Menu({
     if (!open) return;
     const raf = requestAnimationFrame(() => items()[0]?.focus());
     const onOutside = (event: MouseEvent) => {
-      if (wrapRef.current !== null && !wrapRef.current.contains(event.target as Node)) {
+      // The panel is portalled, so "outside" means outside BOTH the trigger
+      // wrap and the panel — the two no longer share a DOM subtree.
+      const target = event.target as Node;
+      if (
+        wrapRef.current !== null &&
+        !wrapRef.current.contains(target) &&
+        panelRef.current !== null &&
+        !panelRef.current.contains(target)
+      ) {
         setOpen(false); // pointer interaction: no focus restore
       }
     };
@@ -117,6 +130,18 @@ export function Menu({
     }
   };
 
+  const openAtTrigger = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      setPosition(
+        align === "end"
+          ? { top: rect.bottom + 4, right: window.innerWidth - rect.right }
+          : { top: rect.bottom + 4, left: rect.left },
+      );
+    }
+    setOpen((o) => !o);
+  };
+
   return (
     <div ref={wrapRef} className="relative">
       {trigger({
@@ -125,21 +150,29 @@ export function Menu({
         },
         "aria-haspopup": "menu",
         "aria-expanded": open,
-        onClick: () => setOpen((o) => !o),
+        onClick: openAtTrigger,
       })}
-      {open ? (
-        <MenuCloseContext.Provider value={() => close(true)}>
-          <div
-            ref={panelRef}
-            role="menu"
-            aria-label={ariaLabel}
-            className={`absolute z-20 min-w-56 rounded border border-border bg-surface py-1 shadow-lg ${panelClassName}`}
-            onKeyDown={onPanelKeyDown}
-          >
-            {children}
-          </div>
-        </MenuCloseContext.Provider>
-      ) : null}
+      {/* PORTALLED to the body: the panel used to be absolutely positioned
+          inside its column, whose overflow-hidden clipped it — the menu
+          opened UNDER the center pane. A portal with fixed positioning is
+          the root fix; z-index inside a clipping ancestor cannot be. */}
+      {open
+        ? createPortal(
+            <MenuCloseContext.Provider value={() => close(true)}>
+              <div
+                ref={panelRef}
+                role="menu"
+                aria-label={ariaLabel}
+                style={position}
+                className="fixed z-40 min-w-56 rounded-lg border border-border bg-surface py-1 shadow-xl"
+                onKeyDown={onPanelKeyDown}
+              >
+                {children}
+              </div>
+            </MenuCloseContext.Provider>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

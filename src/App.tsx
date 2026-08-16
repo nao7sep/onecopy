@@ -495,7 +495,6 @@ export default function App() {
             </h1>
             <Menu
               ariaLabel="Application menu"
-              panelClassName="left-0 top-full mt-1"
               trigger={(props) => (
                 <button
                   {...props}
@@ -703,7 +702,7 @@ export default function App() {
             role="tabpanel"
             aria-labelledby={`right-tab-${rightTab}`}
             tabIndex={0}
-            className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+            className="min-h-0 flex-1 overflow-y-auto outline-none"
           >
             {rightTab === "details" ? (
               <MetadataPane detail={detail} hash={selectedHash} />

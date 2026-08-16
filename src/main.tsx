@@ -5,7 +5,7 @@ import PreviewWindow from "./windows/PreviewWindow";
 import ComparisonWindow from "./windows/ComparisonWindow";
 import "./App.css";
 import { log, toErrorFields, initLogging, loadAppData } from "./repositories";
-import { applyTheme, watchSystemTheme } from "./utils/theme";
+import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
 // already works before this resolves (defaulting to the dev-build gate).
@@ -15,7 +15,11 @@ void initLogging();
 // all); the OS-preference listener keeps "system" live.
 watchSystemTheme();
 void loadAppData()
-  .then((data) => applyTheme((data.config as { theme?: unknown } | null)?.theme))
+  .then((data) => {
+    const config = data.config as { theme?: unknown; uiFontFamily?: unknown } | null;
+    applyTheme(config?.theme);
+    applyUiFont(config?.uiFontFamily);
+  })
   .catch(() => applyTheme("system"));
 
 // Global last-resort handlers — catch anything that slips past React's error

@@ -51,7 +51,6 @@ pub struct DefaultConfig {
     pub similarity_max_gap_seconds: u32,
     /// Max perceptual-hash Hamming distance for two photos to cluster.
     pub similarity_phash_max_distance: u32,
-    /// A visual cluster larger than this is flagged, never offered as a group.
     /// Long edge of the screen-fit preview cache entries.
     pub preview_long_edge_px: u32,
     /// Edge of the grid thumbnail cache entries.
@@ -66,6 +65,10 @@ pub struct DefaultConfig {
     pub pairing_enabled: bool,
     /// UI theme: "system" (follow the OS), "light", or "dark".
     pub theme: String,
+    /// UI font family: a free-text CSS family string, stored verbatim (the
+    /// app-chrome conventions' family-only rule — CSS resolves the stack, and
+    /// there is deliberately no size knob; zoom is the size remedy).
+    pub ui_font_family: String,
     /// The managed-runtime-dependencies conventions' one update switch:
     /// check installed tools for updates at launch (throttled to ~daily).
     pub check_updates_at_launch: bool,
@@ -99,6 +102,9 @@ impl Default for DefaultConfig {
             scenes_grid_rows: 4,
             pairing_enabled: true,
             theme: "system".to_string(),
+            ui_font_family:
+                "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif"
+                    .to_string(),
             check_updates_at_launch: false,
             cache_dir: None,
             keep_awake_during_indexing: true,

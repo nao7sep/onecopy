@@ -20,6 +20,20 @@ export function applyTheme(pref: unknown): void {
   document.documentElement.classList.toggle("dark", resolveDark(pref, prefersDark()));
 }
 
+/** Applies the configured UI font by setting the one `--font-ui` variable —
+ * the value every surface inherits through App.css's body rule. Stored
+ * verbatim and handed to CSS, which resolves the stack and falls back on its
+ * own (app-chrome conventions); an empty or non-string value clears the
+ * override so the stylesheet default rules. */
+export function applyUiFont(family: unknown): void {
+  const value = typeof family === "string" ? family.trim() : "";
+  if (value === "") {
+    document.documentElement.style.removeProperty("--font-ui");
+  } else {
+    document.documentElement.style.setProperty("--font-ui", value);
+  }
+}
+
 /** Re-applies on OS theme changes while the preference is "system". */
 export function watchSystemTheme(): void {
   window

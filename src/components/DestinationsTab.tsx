@@ -340,7 +340,7 @@ export default function DestinationsTab() {
           activePath !== null ? `tree-${encodeURIComponent(activePath)}` : undefined
         }
         tabIndex={0}
-        className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+        className="min-h-0 flex-1 overflow-y-auto outline-none"
         onKeyDown={onKeyDown}
       >
         {roots.length === 0 ? (
