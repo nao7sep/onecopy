@@ -25,7 +25,8 @@
   "bundle": {
     "active": true,
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "minimumSystemVersion": "10.15"
     },
     "targets": ["dmg", "nsis"],
     "icon": [
