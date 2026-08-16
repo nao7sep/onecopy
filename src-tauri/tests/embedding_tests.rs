@@ -6,7 +6,7 @@
 
 use onecopy_lib::embedding::*;
 use onecopy_lib::index_store;
-use onecopy_lib::similarity::{merge_clusters, rebuild_groups, SimilarityConfig};
+use onecopy_lib::similarity::{rebuild_groups, SimilarityConfig};
 use rusqlite::{params, Connection};
 
 #[test]
@@ -50,13 +50,67 @@ fn clusters_are_leader_bounded_and_skip_the_embeddingless() {
 }
 
 #[test]
-fn merging_unions_groups_through_a_cluster_and_leaves_the_rest_alone() {
-    // Groups {0,1} and {2,3}; a cluster links 1 and 2 (and loner 4): all five
-    // become one group. Group {5,6} is untouched.
-    let groups = vec![vec![0, 1], vec![2, 3], vec![5, 6]];
-    let clusters = vec![vec![1, 2, 4]];
-    let merged = merge_clusters(&groups, &clusters);
-    assert_eq!(merged, vec![vec![0, 1, 2, 3, 4], vec![5, 6]]);
+fn a_visual_group_never_bridges_two_unrelated_subjects_into_one_family() {
+    // THE REGRESSION THAT MATTERED, in the exact shape that bit: a visual
+    // group acts as a BRIDGE. Y is two shots of one subject that pair by
+    // dhash. X resembles Y's first member; Z resembles Y's second; X and Z
+    // resemble nothing of each other.
+    //
+    // Stage B once unioned every visual group that shared an embedding
+    // cluster, transitively — so {X,y1} and {y2,Z} both touched Y and fused
+    // X with Z. On the developer's real library that chained 207 unrelated
+    // app icons (butterflies, microphones, cassettes) into ONE group whose
+    // median pair sat at cosine 0.72 and dhash distance 28. Bounding the
+    // merge to a leader is what keeps a false pair costing one wrong
+    // neighbour instead of the whole bucket.
+    let (_d, conn) = db();
+    let at = |deg: f32| {
+        let r: f32 = (deg as f32).to_radians();
+        [r.cos(), r.sin()]
+    };
+    // Y: one subject, two shots — near-identical phashes, same camera, so
+    // dhash pairs them. Their EMBEDDINGS sit far apart (the subject moved),
+    // which is what makes the group a bridge rather than a blob.
+    seed(&conn, "y1", "Sony|", 0b0001, Some(&at(0.0)));
+    seed(&conn, "y2", "Sony|", 0b0011, Some(&at(90.0)));
+    // X pairs with y1 (cos 20° ≈ 0.94) and Z with y2 (cos 20° ≈ 0.94), while
+    // X vs Z is cos 90° = 0 — as unrelated as two images get. The angles are
+    // spread so that NO single leader can absorb both ends: whichever item
+    // the clustering starts from, two separate clusters form and each touches
+    // one half of Y. That is precisely the bridge the old union walked.
+    seed(&conn, "x", "Apple|", 0b1111_0000_0000_0000, Some(&at(20.0)));
+    seed(&conn, "z", "Nikon|", 0b0000_1111_1111_0000, Some(&at(110.0)));
+
+    let config = SimilarityConfig {
+        max_gap_seconds: 90,
+        phash_max_distance: 4,
+        embedding_min_cosine: Some(0.9),
+    };
+    rebuild_groups(&conn, &config).unwrap();
+
+    let mut stmt = conn
+        .prepare("SELECT group_id, content_hash FROM similar_group_members")
+        .unwrap();
+    let mut families: std::collections::HashMap<i64, Vec<String>> = Default::default();
+    for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap() {
+        let (group, hash) = row.unwrap();
+        families.entry(group).or_default().push(hash);
+    }
+    for members in families.values() {
+        assert!(
+            !(members.iter().any(|h| h == "x") && members.iter().any(|h| h == "z")),
+            "two unrelated subjects were bridged into one family: {members:?}"
+        );
+    }
+    // The genuine pairing still happens: Y stays whole and takes exactly the
+    // one end that resembles its representative — which end depends on which
+    // member represents the group, and either answer is correct.
+    let with_y1 = families
+        .values()
+        .find(|m| m.iter().any(|h| h == "y1"))
+        .expect("y1 is grouped");
+    assert!(with_y1.iter().any(|h| h == "y2"), "the burst stays whole");
+    assert_eq!(with_y1.len(), 3, "the burst plus ONE end: {with_y1:?}");
 }
 
 /// Seeds one image row with a camera, a phash, and an optional embedding.
@@ -217,5 +271,121 @@ fn live_model_orders_similarity_sanely() {
         month.as_secs_f64() / 3600.0 < 24.0,
         "a 30k month must stay within hours, not days: {:?}/image",
         per_image
+    );
+}
+
+// LIVE, and the test this feature should have had from the start: the whole
+// pipeline over REAL images, asserting the thing a user actually notices —
+// that unrelated pictures do not end up in one "similar" family.
+//
+// Everything above is hand-built vectors. That is what let a 207-member
+// hairball ship twice: the arithmetic was right in isolation, and no test
+// ever put real photographs through the real model and looked at the answer.
+//
+// Runs against company/assets — the authorized corpus, ~626 app icons, which
+// is the HARDEST case the app faces: flat art on dark rounded squares that
+// crowds into one corner of both dhash and embedding space. Photographs are
+// easier; if grouping is sane here it is sane there.
+//
+// Run with:
+//   cargo test live_corpus_grouping -- --ignored --nocapture
+// Set ONECOPY_TEST_EMBEDDING_MODEL to a local copy of the pinned artifact to
+// skip the 1.2 GB download on a re-run.
+#[test]
+#[ignore]
+#[serial_test::serial(backup_store)]
+fn live_corpus_grouping_keeps_unrelated_icons_apart() {
+    use onecopy_lib::binaries_manager::spec_of;
+
+    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../company/assets")
+        .canonicalize()
+        .expect("the authorized corpus");
+    // ONECOPY_TEST_KEEP_HOME leaves the index behind so the grouping can be
+    // inspected afterwards — tuning a threshold means reading the pairs it
+    // accepted, which a deleted temp dir makes impossible.
+    let kept = std::env::var_os("ONECOPY_TEST_KEEP_HOME").map(std::path::PathBuf::from);
+    let home = tempfile::Builder::new()
+        .prefix("onecopy-corpus-live-")
+        .tempdir()
+        .unwrap();
+    let home_path = match &kept {
+        Some(path) => {
+            std::fs::create_dir_all(path).unwrap();
+            path.clone()
+        }
+        None => home.path().to_path_buf(),
+    };
+
+    let pin = spec_of("siglip2-large-vision").unwrap().pinned.as_ref().unwrap();
+    let model = match std::env::var_os("ONECOPY_TEST_EMBEDDING_MODEL") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => {
+            let path = home_path.join("model.onnx");
+            let mut response = ureq::get(pin.url).call().expect("download");
+            let mut file = std::fs::File::create(&path).unwrap();
+            std::io::copy(&mut response.body_mut().as_reader(), &mut file).unwrap();
+            path
+        }
+    };
+    {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(std::fs::read(&model).unwrap());
+        assert_eq!(hex::encode(hasher.finalize()), pin.sha256, "model integrity");
+    }
+
+    let conn = index_store::open(&home_path.join("index.sqlite3")).unwrap();
+    let config = serde_json::json!({
+        "sourceDirs": [corpus.to_string_lossy()],
+        "defaultTimezone": "UTC",
+    });
+    let mut settings =
+        onecopy_lib::scanner::settings_from_config(Some(&config), &home_path, 1_800_000_000_000);
+    settings.embedding_model = Some(model);
+    onecopy_lib::scanner::run_full_scan(&conn, &settings, &|phase, detail| {
+        if phase == "group" || phase == "embed" {
+            eprintln!("  {phase}: {detail}");
+        }
+    })
+    .expect("the scan completes");
+
+    let images: i64 = conn
+        .query_row("SELECT COUNT(*) FROM contents WHERE kind = 'image'", [], |r| r.get(0))
+        .unwrap();
+    let embedded: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contents WHERE embedding IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(images > 100, "the corpus should yield real work: {images}");
+    assert_eq!(embedded, images, "every image must be embedded");
+
+    let mut stmt = conn
+        .prepare("SELECT group_id, COUNT(*) FROM similar_group_members GROUP BY group_id ORDER BY 2 DESC")
+        .unwrap();
+    let sizes: Vec<(i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let largest = sizes.first().map(|(_, n)| *n).unwrap_or(0);
+    let grouped: i64 = sizes.iter().map(|(_, n)| n).sum();
+    eprintln!(
+        "{images} images → {} groups, largest {largest}, grouped {grouped}",
+        sizes.len()
+    );
+
+    // THE HAIRBALL GUARD. Not a quality bar — a floor. This corpus holds
+    // genuine families (one icon rendered at several sizes), so groups of a
+    // dozen are correct; a group holding a tenth of everything is the chain
+    // this test exists to catch. The failure it replaces was 207 of 548.
+    assert!(
+        largest * 10 < images,
+        "one group swallowed {largest} of {images} images — that is a chain, \
+         not a family. Sizes: {:?}",
+        &sizes[..sizes.len().min(8)]
     );
 }

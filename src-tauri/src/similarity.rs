@@ -260,23 +260,12 @@ pub fn rebuild_groups(
             }
         }
 
-        // Stage B — cross-device pairing (Design: Similar-shot grouping).
-        // Embedding clusters are LEADER-bounded in cosine space, so they can
-        // never chain; each cluster merges the visual groups its members
-        // belong to into ONE group, deliberately crossing camera partitions
-        // and skipping the burst split — different devices' clocks disagree,
-        // which is exactly why appearance is the signal here.
+        // Stage B — cross-device pairing (Design: Similar-shot grouping):
+        // deliberately crosses camera partitions and skips the burst split,
+        // because different devices' clocks disagree and appearance is the
+        // only trustworthy signal there.
         let merged = if let Some(min_cosine) = config.embedding_min_cosine {
-            let embeddings: Vec<Option<Vec<f32>>> = indices
-                .iter()
-                .map(|&i| candidates[i].embedding.clone())
-                .collect();
-            let clusters: Vec<Vec<usize>> =
-                crate::embedding::embedding_clusters(&embeddings, min_cosine)
-                    .into_iter()
-                    .map(|cluster| cluster.into_iter().map(|local| indices[local]).collect())
-                    .collect();
-            merge_clusters(&bucket_groups, &clusters)
+            merge_by_embedding(bucket_groups, indices, &candidates, min_cosine)
         } else {
             bucket_groups
         };
@@ -318,56 +307,62 @@ pub fn rebuild_groups(
 /// Merges visual groups through cross-group clusters (the embedding stage):
 /// each cluster unions the groups its members belong to — members in no
 /// group join as singletons — and groups no cluster touches pass through.
-/// Pure over index sets, so the semantics are testable without a model.
-pub fn merge_clusters(groups: &[Vec<usize>], clusters: &[Vec<usize>]) -> Vec<Vec<usize>> {
-    use std::collections::HashMap;
-    // Slot space: one slot per group, plus one lazily per clustered loner.
-    let mut slot_of: HashMap<usize, usize> = HashMap::new();
-    let mut slots: Vec<Vec<usize>> = Vec::new();
-    for group in groups {
-        let slot = slots.len();
-        slots.push(group.clone());
-        for &member in group {
-            slot_of.insert(member, slot);
+/// Stage B's merge: visual groups and ungrouped loners are UNITS, and units
+/// join a merged cluster only when their representative sits within the
+/// cosine threshold OF THAT CLUSTER'S LEADER — the same leader-bounded
+/// discipline `cluster_by_appearance` applies to phashes, for exactly the
+/// same reason.
+///
+/// The previous form unioned any two groups that shared an embedding cluster,
+/// transitively. Leader-bounded CLUSTERS cannot chain, but a union OVER them
+/// can and did: with unrelated app icons reaching the threshold in about one
+/// pair in seventeen, that was enough connectivity to fuse 207 icons —
+/// butterflies, microphones, cassettes — into a single "similar" group whose
+/// median pair sat at cosine 0.72 and dhash distance 28 (measured on the
+/// developer's index, 2026-08-17). A false pair must cost one wrong neighbour,
+/// never the whole bucket.
+fn merge_by_embedding(
+    groups: Vec<Vec<usize>>,
+    indices: &[usize],
+    candidates: &[Candidate],
+    min_cosine: f32,
+) -> Vec<Vec<usize>> {
+    use std::collections::HashSet;
+    let grouped: HashSet<usize> = groups.iter().flatten().copied().collect();
+    // Units, in a deterministic order: every visual group, then every loner.
+    let mut units: Vec<Vec<usize>> = groups;
+    for &i in indices {
+        if !grouped.contains(&i) {
+            units.push(vec![i]);
         }
     }
-    let mut uf = UnionFind::new(slots.len() + clusters.iter().map(Vec::len).sum::<usize>());
-    let mut next_free = slots.len();
-    let mut loner_slot: HashMap<usize, usize> = HashMap::new();
-    for cluster in clusters {
-        let mut first: Option<usize> = None;
-        for &member in cluster {
-            let slot = *slot_of.get(&member).unwrap_or_else(|| {
-                loner_slot.entry(member).or_insert_with(|| {
-                    let slot = next_free;
-                    next_free += 1;
-                    slot
-                })
-            });
-            match first {
-                Some(anchor) => uf.union(anchor, slot),
-                None => first = Some(slot),
-            }
-        }
-    }
-    // Collect components back into member sets.
-    let mut merged: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (slot, members) in slots.iter().enumerate() {
-        merged.entry(uf.find(slot)).or_default().extend(members.iter().copied());
-    }
-    for (&member, &slot) in &loner_slot {
-        merged.entry(uf.find(slot)).or_default().push(member);
-    }
-    let mut out: Vec<Vec<usize>> = merged
-        .into_values()
-        .map(|mut members| {
-            members.sort_unstable();
-            members.dedup();
-            members
+    // A unit's representative is its first member carrying an embedding. A
+    // visual group is already tight in dhash space, so any member represents
+    // it; a unit with no embedding at all cannot merge and stands as it is.
+    let reps: Vec<Option<Vec<f32>>> = units
+        .iter()
+        .map(|unit| {
+            unit.iter()
+                .find_map(|&i| candidates[i].embedding.clone())
         })
         .collect();
-    out.sort_by_key(|group| group[0]);
-    out
+
+    let mut merged: Vec<Vec<usize>> = Vec::new();
+    let mut consumed = vec![false; units.len()];
+    for cluster in crate::embedding::embedding_clusters(&reps, min_cosine) {
+        let mut members: Vec<usize> = Vec::new();
+        for unit in cluster {
+            consumed[unit] = true;
+            members.extend(units[unit].iter().copied());
+        }
+        merged.push(members);
+    }
+    for (unit, used) in consumed.iter().enumerate() {
+        if !used {
+            merged.push(std::mem::take(&mut units[unit]));
+        }
+    }
+    merged
 }
 
 /// One group's members, best-first: sharpness descending (the advisory
