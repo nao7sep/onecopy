@@ -81,6 +81,25 @@ describe("every chord the help sheet prints", () => {
   });
 });
 
+describe("advertised command-modifier chords match through the shared predicate", () => {
+  // Read at the source level for the reason stated at the top of this file:
+  // firing the destinations chord needs a populated tree, a selection and a
+  // root, so driving it would test the fixture rather than the binding.
+  const destinations = readFileSync("src/components/DestinationsTab.tsx", "utf8");
+
+  it("routes the Cmd/Ctrl+Enter copy chord through hasMod", () => {
+    // A per-file `metaKey || ctrlKey` on this KEY handler has no Alt
+    // exclusion, so Windows AltGr+Enter (Ctrl+Alt) fired a file copy.
+    expect(destinations).toContain("hasMod(event.nativeEvent)");
+  });
+
+  it("leaves the DRAG path on raw flags, where excluding Alt would be wrong", () => {
+    // A drag carries no typed character, so Cmd+Alt+drag must keep copying —
+    // unifying this with the keyboard predicate would be a regression.
+    expect(destinations).toContain('if (event.metaKey || event.ctrlKey) return "copy";');
+  });
+});
+
 describe("keys the app handles but the sheet forgot", () => {
   const printed = new Set(rows.map((r) => evidenceKey(r.chord)));
 
@@ -92,6 +111,13 @@ describe("keys the app handles but the sheet forgot", () => {
     // Removing the chord hints from the hamburger menu made this sheet the
     // ONLY place Cmd+Comma is discoverable.
     expect(printed.has("Comma")).toBe(true);
+  });
+
+  it("lists the preview window's Escape, whose partner F was already printed", () => {
+    // Bound in PreviewWindow (leave fullscreen, else close) and unprinted
+    // until the convention's catalogue rule was checked in both directions.
+    const looking = shortcutGroups().find((g) => g.title === "Looking");
+    expect(looking?.rows.some((r) => r.chord === "Escape")).toBe(true);
   });
 
   it("does not print a chord for anything removed", () => {

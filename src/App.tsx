@@ -36,11 +36,12 @@ import Wizard from "./components/Wizard";
 import PresenceGate from "./components/PresenceGate";
 import ComparisonView from "./components/ComparisonView";
 import IssuesModal from "./components/IssuesModal";
+import QuarantineNotice from "./components/QuarantineNotice";
 import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
 import { useSettingsStore } from "./state/settings-store";
-import { isHelpShortcut, isSettingsShortcut } from "./utils/shortcuts";
+import { isEditableTarget, isHelpShortcut, isSettingsShortcut } from "./utils/shortcuts";
 import { hasOpenModal } from "./utils/modalStack";
 import { isComposingEvent } from "./hooks/useComposing";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
@@ -119,10 +120,10 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-        return;
-      }
+      // Both chords carry a Ctrl half that Cocoa binds inside a text field
+      // (Ctrl+Slash is in StandardKeyBinding.dict), so they stand down while
+      // the user is typing — through the app's one editable predicate.
+      if (isEditableTarget(event.target)) return;
       if (isHelpShortcut(event)) {
         event.preventDefault();
         // Over another modal the chord only closes an already-open help —
@@ -309,14 +310,7 @@ export default function App() {
       // window listener afterwards — without this, Enter on a destination row
       // moves the file AND opens the comparison view for the item being moved.
       if (event.defaultPrevented) return;
-      const target = event.target as HTMLElement | null;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target?.isContentEditable
-      ) {
-        return;
-      }
+      if (isEditableTarget(event.target)) return;
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
         if (event.shiftKey) {
@@ -486,6 +480,8 @@ export default function App() {
       ) : null}
       <SettingsModal />
       <IssuesModal />
+      {/* Renders itself only when the core set a store aside this launch. */}
+      <QuarantineNotice />
       <TrashModal open={trashOpen} onClose={() => setTrashOpen(false)} />
       <div ref={contentRowRef} className="flex min-h-0 flex-1">
         <aside

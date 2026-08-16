@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { hasOpenModal } from "../utils/modalStack";
+import { isEditableTarget } from "../utils/shortcuts";
 import {
   isAudioFile,
   originalUrl,
@@ -32,14 +33,7 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== " " || event.metaKey || event.ctrlKey || event.altKey) return;
       if (hasOpenModal()) return;
-      const target = event.target as HTMLElement | null;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target?.isContentEditable
-      ) {
-        return;
-      }
+      if (isEditableTarget(event.target)) return;
       event.preventDefault();
       const video = videoRef.current;
       if (video === null) {

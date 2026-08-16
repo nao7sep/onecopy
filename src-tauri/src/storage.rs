@@ -130,17 +130,69 @@ pub struct LoadedAppData {
     pub data_root: String,
     /// Set by the command layer from logging::debug_enabled(); storage leaves it false.
     pub debug_enabled: bool,
+    /// Stores quarantined during this launch, for the frontend to REPORT. An
+    /// unreported quarantine is a silent reset with extra steps
+    /// (storage-path-conventions), so a log line alone is not enough.
+    pub quarantines: Vec<QuarantineRecord>,
+}
+
+/// One quarantined store: which file, and where its original bytes now live.
+/// What the app started with instead is phrased at the reporting edge, which
+/// is the layer that knows how to say it.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantineRecord {
+    /// The store's file name — `config.json`, `state.json`.
+    pub file: String,
+    /// The `.invalid` path holding the original bytes, verbatim.
+    pub quarantined_to: String,
+}
+
+/// Quarantines wait here until something reports them. A journal rather than a
+/// return value because a store can be set aside at three different moments —
+/// the frontend's load, the pre-window source-roots read, and a patch that
+/// reads the file it is about to merge into — and only the first of those has
+/// a natural place to hand one back.
+static QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Takes everything recorded so far. The caller owns reporting it from here.
+pub fn drain_quarantines() -> Vec<QuarantineRecord> {
+    let mut journal = QUARANTINES.lock().unwrap_or_else(|p| p.into_inner());
+    std::mem::take(&mut *journal)
 }
 
 pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
-    let root = paths::data_root(app)?;
-    let config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
+    load_from_root(&paths::data_root(app)?)
+}
+
+/// The whole load, against a root — the half that decides anything, kept out
+/// of the AppHandle shell so a corrupt store's branch can be exercised.
+pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
+    let mut config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
     let state = read_json_optional(&root.join(STATE_FILE_NAME))?;
+    let quarantines = drain_quarantines();
+    // A quarantine leaves the store ABSENT, and this launch's materialization
+    // already ran during setup — before this load — so without reseeding here
+    // config.json would stay missing until the next save that happens to
+    // write it. The conventions require the reseed in the SAME launch, keyed
+    // on absence AFTER the quarantine rather than before the load.
+    if !quarantines.is_empty() {
+        materialize_config_if_missing(root)?;
+        // Re-read so what the app runs on IS the file it just seeded — the
+        // report says "started with its built-in defaults", and that should
+        // be literally what happened rather than a coincidence of every
+        // consumer falling back to the same in-code baseline.
+        if config.is_none() {
+            config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
+        }
+    }
     Ok(LoadedAppData {
         config,
         state,
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,
+        quarantines,
     })
 }
 
@@ -256,6 +308,18 @@ fn read_json_optional(path: &Path) -> Result<Option<JsonValue>, String> {
                     "error": { "message": parse_err.to_string() },
                 }),
             );
+            // The log is the debugging record; the journal is what reaches
+            // the USER. Both, never one.
+            QUARANTINES
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(QuarantineRecord {
+                    file: path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+                    quarantined_to: quarantined.to_string_lossy().into_owned(),
+                });
             Ok(None)
         }
     }

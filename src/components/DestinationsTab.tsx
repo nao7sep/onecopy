@@ -5,11 +5,18 @@ import {
   type MoveMode,
 } from "../state/destinations-store";
 import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
+import { hasMod } from "../utils/shortcuts";
 import ConfirmDialog from "./ConfirmDialog";
 
 // Drop-target behavior shared by roots and nodes: the OS-independent modifier
 // mapping is the design's — plain drop = move + trash the rest, Shift = move +
 // delete the rest permanently, Cmd/Ctrl = copy and touch nothing.
+//
+// This one tests the raw flags on purpose and must NOT be "unified" with the
+// keyboard path below (keyboard-shortcut-conventions): the shared predicate's
+// Alt exclusion exists because Chromium delivers Windows AltGr as Ctrl+Alt and
+// an accelerator would swallow the typed character. A drag carries no
+// character, so excluding Alt here would only break Cmd+Alt+drag.
 function dropMode(event: React.DragEvent): MoveMode {
   if (event.metaKey || event.ctrlKey) return "copy";
   if (event.shiftKey) return "move-delete-rest";
@@ -298,7 +305,10 @@ export default function DestinationsTab() {
     } else if (event.key === "Enter" && row) {
       event.preventDefault();
       event.stopPropagation();
-      const mode = event.metaKey || event.ctrlKey
+      // The advertised Cmd/Ctrl+Enter "Copy here" chord goes through the ONE
+      // shared predicate, which excludes Alt: without it, a Windows AltGr+Enter
+      // (delivered as Ctrl+Alt) fired a file copy.
+      const mode = hasMod(event.nativeEvent)
         ? "copy"
         : event.shiftKey
           ? "move-delete-rest"

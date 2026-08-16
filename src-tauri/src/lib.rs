@@ -102,8 +102,25 @@ fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
             data.debug_enabled = logging::debug_enabled();
             Ok(data)
         },
-        |d| json!({ "hasConfig": d.config.is_some(), "hasState": d.state.is_some() }),
+        |d| {
+            json!({
+                "hasConfig": d.config.is_some(),
+                "hasState": d.state.is_some(),
+                "quarantines": d.quarantines.len(),
+            })
+        },
     )
+}
+
+/// A store can also be quarantined mid-session — a patch reads the file it is
+/// about to merge into — where there is no load result to ride home on. The
+/// same journal is drained here and pushed to the same reporting surface, so
+/// the rule ("every quarantine reaches the user") has no hole in it.
+fn report_quarantines(app: &AppHandle) {
+    let records = storage::drain_quarantines();
+    if !records.is_empty() {
+        let _ = app.emit("storage://quarantined", json!({ "quarantines": records }));
+    }
 }
 
 // Config and state saves are PATCHES merged core-side: the core holds the
@@ -115,7 +132,11 @@ fn patch_config(app: AppHandle, patch: Value) -> Result<Value, String> {
     logging::boundary(
         "patch_config",
         json!({}),
-        || storage::patch_config(&app, &patch),
+        || {
+            let merged = storage::patch_config(&app, &patch);
+            report_quarantines(&app);
+            merged
+        },
         |_| json!({}),
     )
 }
@@ -125,7 +146,11 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
     logging::boundary(
         "patch_state",
         json!({}),
-        || storage::patch_state(&app, &patch),
+        || {
+            let merged = storage::patch_state(&app, &patch);
+            report_quarantines(&app);
+            merged
+        },
         |_| json!({}),
     )
 }

@@ -15,12 +15,18 @@ import {
   patchStateFile,
   toErrorFields,
   type LoadedAppData,
+  type QuarantineRecord,
 } from "../repositories";
 import { applyTheme, applyUiFont } from "../utils/theme";
+import { listen } from "@tauri-apps/api/event";
 
 interface AppState {
   appData: LoadedAppData | null;
   loadError: string | null;
+  /** Quarantines waiting to be shown. Dismissing clears them; nothing else
+   * does, so the notice cannot be missed by a re-render. */
+  quarantines: QuarantineRecord[];
+  dismissQuarantines: () => void;
   reload: () => Promise<void>;
   patchConfig: (patch: Record<string, unknown>) => Promise<void>;
   patchState: (patch: Record<string, unknown>) => Promise<void>;
@@ -36,6 +42,9 @@ const STATE_FLUSH_MS = 400;
 export const useAppStore = create<AppState>((set) => ({
   appData: null,
   loadError: null,
+  quarantines: [],
+
+  dismissQuarantines: () => set({ quarantines: [] }),
 
   patchConfig: async (patch) => {
     try {
@@ -76,7 +85,13 @@ export const useAppStore = create<AppState>((set) => ({
   reload: async () => {
     try {
       const data = await loadAppData();
-      set({ appData: data, loadError: null });
+      set((s) => ({
+        appData: data,
+        loadError: null,
+        // Appended, never replaced: a mid-session quarantine event may already
+        // be sitting here, and a reload must not swallow it.
+        quarantines: [...s.quarantines, ...(data.quarantines ?? [])],
+      }));
       log.info("app data loaded", {
         dataRoot: data.dataRoot,
         hasConfig: data.config !== null,
@@ -92,3 +107,18 @@ export const useAppStore = create<AppState>((set) => ({
     }
   },
 }));
+
+// A store can also be quarantined mid-session — a patch reads the file it is
+// about to merge into — where there is no load result to carry the record. The
+// core emits it instead, into the same list the boot load fills.
+void (async () => {
+  try {
+    await listen<{ quarantines: QuarantineRecord[] }>("storage://quarantined", (event) => {
+      const records = event.payload?.quarantines ?? [];
+      if (records.length === 0) return;
+      useAppStore.setState((s) => ({ quarantines: [...s.quarantines, ...records] }));
+    });
+  } catch (error) {
+    log.warn("quarantine event wiring failed", toErrorFields(error));
+  }
+})();

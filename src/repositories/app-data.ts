@@ -11,6 +11,19 @@ export interface LoadedAppData {
   state: Record<string, unknown> | null;
   dataRoot: string;
   debugEnabled: boolean;
+  /** Stores the core set aside this launch because they would not parse. The
+   * app must SHOW these — an unreported quarantine is a silent reset with
+   * extra steps (storage-path-conventions). */
+  quarantines: QuarantineRecord[];
+}
+
+/** Mirrors storage::QuarantineRecord. */
+export interface QuarantineRecord {
+  /** The store's file name — `config.json`, `state.json`. */
+  file: string;
+  /** Where the original bytes were moved, verbatim, so the user can go get
+   * them. */
+  quarantinedTo: string;
 }
 
 export function loadAppData(): Promise<LoadedAppData> {

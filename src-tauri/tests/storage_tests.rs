@@ -124,3 +124,73 @@ fn write_atomic_replaces_and_leaves_no_temps() {
     assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
 }
 
+
+// A corrupt store's recovery, end to end: the branch taken, the bytes kept,
+// and the REPORT that makes the branch acceptable. An unreported quarantine
+// is a silent reset with extra steps (storage-path-conventions), so the
+// record reaching the caller is as much the contract as the rename is.
+#[test]
+#[serial(quarantine_journal)]
+fn a_corrupt_config_is_set_aside_reported_and_reseeded_in_the_same_load() {
+    let root = temp_dir("quarantine-config");
+    let config = root.join("config.json");
+    std::fs::write(&config, b"{ not json").unwrap();
+    let _ = drain_quarantines(); // the journal is process-wide
+
+    let loaded = load_from_root(&root).unwrap();
+
+    // Reported: one record, naming the file and where its bytes went.
+    assert_eq!(loaded.quarantines.len(), 1);
+    let record = &loaded.quarantines[0];
+    assert_eq!(record.file, "config.json");
+    assert!(record.quarantined_to.ends_with(".invalid"), "{record:?}");
+
+    // Preserved: the original bytes are readable at that exact path.
+    assert_eq!(
+        std::fs::read(&record.quarantined_to).unwrap(),
+        b"{ not json",
+        "the report must name the file that actually holds the bytes"
+    );
+
+    // Reseeded IN THIS LOAD: setup's materialization already ran before the
+    // load, so without the re-check config.json would stay missing until
+    // some later save happened to write it.
+    assert!(config.is_file(), "the store comes back seeded, not absent");
+    let started_with = loaded.config.expect("the app runs on the seeded defaults");
+    assert_eq!(
+        started_with["goodRangeStartYear"],
+        serde_json::json!(1995),
+        "and those defaults are the canonical ones"
+    );
+
+    // Drained: a second load reports nothing, so the notice cannot re-appear
+    // for a file that is already dealt with.
+    assert!(load_from_root(&root).unwrap().quarantines.is_empty());
+}
+
+#[test]
+#[serial(quarantine_journal)]
+fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
+    let root = temp_dir("quarantine-state");
+    let config = root.join("config.json");
+    std::fs::write(&config, br#"{"sourceDirs": ["/photos"]}"#).unwrap();
+    std::fs::write(root.join("state.json"), b"not json at all").unwrap();
+    let _ = drain_quarantines();
+
+    let loaded = load_from_root(&root).unwrap();
+
+    assert_eq!(loaded.quarantines.len(), 1);
+    assert_eq!(loaded.quarantines[0].file, "state.json");
+    // Each store recovers on its own branch: one being set aside must not
+    // touch, reset or re-seed its neighbour.
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        br#"{"sourceDirs": ["/photos"]}"#,
+        "the good config is left exactly as the user left it"
+    );
+    assert_eq!(
+        loaded.config.unwrap()["sourceDirs"],
+        serde_json::json!(["/photos"])
+    );
+    assert!(loaded.state.is_none(), "view state starts fresh");
+}

@@ -44,6 +44,7 @@ export function shortcutGroups(): ShortcutGroup[] {
         { chord: "Enter", action: "Go deeper: compare similar photos, video scenes, or 100% view" },
         { chord: "Z", action: "100% view of the original (in the preview)" },
         { chord: "F", action: "Fullscreen (in the preview window)" },
+        { chord: "Escape", action: "Leave fullscreen, or close the preview window" },
       ],
     },
     {

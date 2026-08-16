@@ -91,6 +91,24 @@ describe("watcher events", () => {
   });
 });
 
+describe("quarantine events", () => {
+  it("carries a mid-session quarantine to the reporting surface", async () => {
+    // A patch reads the file it is about to merge into, so a store can be set
+    // aside long after boot — where no load result exists to carry the record
+    // home. It arrives as an event instead, into the same list.
+    const { useAppStore } = await import("../../src/state/app-store");
+    useAppStore.setState({ quarantines: [] });
+
+    fireEvent("storage://quarantined", {
+      quarantines: [{ file: "config.json", quarantinedTo: "/root/config-x.invalid" }],
+    });
+
+    expect(useAppStore.getState().quarantines).toEqual([
+      { file: "config.json", quarantinedTo: "/root/config-x.invalid" },
+    ]);
+  });
+});
+
 describe("binaries events", () => {
   it("clears the entry and keeps the failure visible on an error", async () => {
     binaries.setState({ installing: { ffmpeg: "Downloading — 12 MB" } });
