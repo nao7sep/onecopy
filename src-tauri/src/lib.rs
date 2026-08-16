@@ -174,8 +174,8 @@ fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
     let Some(data_root) = DATA_ROOT.get() else {
         return warn_404("data root unset", String::new());
     };
-    let hash = request.uri().path().trim_start_matches('/');
-    if hash.is_empty() || !hash.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    let key = request.uri().path().trim_start_matches('/');
+    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return not_found(); // malformed request, not a filesystem failure
     }
 
@@ -183,15 +183,29 @@ fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
         Ok(conn) => conn,
         Err(err) => return warn_404("index open failed", err),
     };
-    let path: Option<String> = conn
-        .query_row(
-            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-            [hash],
-            |r| r.get(0),
-        )
-        .ok();
+    // Two key forms, both DB lookups so the webview never holds a path:
+    // a content hash, or `path-<id>` for files that legitimately have no
+    // hash — an audio memo or document with a unique size is never
+    // content-read, so hash-only serving could not reach it at all.
+    let path: Option<String> = match key.strip_prefix("path-") {
+        Some(id) => id.parse::<i64>().ok().and_then(|id| {
+            conn.query_row(
+                "SELECT abs_path FROM paths WHERE id = ?1 AND missing = 0",
+                [id],
+                |r| r.get(0),
+            )
+            .ok()
+        }),
+        None => conn
+            .query_row(
+                "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+                [key],
+                |r| r.get(0),
+            )
+            .ok(),
+    };
     let Some(path) = path else {
-        return warn_404("no live path for hash", hash.to_string());
+        return warn_404("no live path for key", key.to_string());
     };
 
     let mut file = match std::fs::File::open(&path) {
