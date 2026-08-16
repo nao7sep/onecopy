@@ -14,10 +14,13 @@
 //! months are UTC — a scope, not a display concept; section display months
 //! can differ near boundaries by the display-timezone offset.
 //!
-//! A cluster larger than `max_group_size` is NOT a spare-shot family; it is
-//! left ungrouped and surfaced as an issue, never silently truncated —
-//! offering a hundred-member "group" to a keep-one-delete-the-rest flow is
-//! the destructive hazard the cap exists to prevent.
+//! Groups have NO size cap (the developer removed the earlier cap of 32,
+//! 2026-08-16). The comparison view runs any group in 16-slot turns backed by
+//! a queue, so a large family is several turns, not a hazard — and a cap was
+//! worse than useless: an over-cap cluster was never persisted, so the LARGEST
+//! families (the likeliest spares) silently got no group and no ≈ badge, while
+//! filing a fresh issue on every rebuild. The tight default distance is what
+//! keeps hairballs rare.
 //!
 //! Groups rebuild wholesale after each scan — membership is cheap to derive
 //! and rebuilding sidesteps every incremental staleness bug. A group needs
@@ -31,14 +34,12 @@ use rusqlite::{params, Connection};
 pub struct SimilarityConfig {
     pub max_gap_seconds: u32,
     pub phash_max_distance: u32,
-    pub max_group_size: u32,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct GroupStats {
     pub groups: u64,
     pub grouped_items: u64,
-    pub oversize_clusters: u64,
 }
 
 fn hamming(a: i64, b: i64) -> u32 {
@@ -127,9 +128,8 @@ pub fn rebuild_groups(
 
     let gap_ms = i64::from(config.max_gap_seconds) * 1000;
     let mut groups: Vec<Vec<String>> = Vec::new();
-    let mut oversize: Vec<(String, usize)> = Vec::new();
 
-    for (bucket, indices) in &buckets {
+    for indices in buckets.values() {
         // Union-find over pairs within the visual threshold. Quadratic within
         // the bucket — integer work over in-memory rows, no file reads.
         let mut uf = UnionFind::new(indices.len());
@@ -166,12 +166,8 @@ pub fn rebuild_groups(
                 let camera_less = camera == "|";
                 if camera_less {
                     if members.len() >= 2 {
-                        push_or_flag(
+                        groups.push(
                             members.iter().map(|&i| candidates[i].hash.clone()).collect(),
-                            bucket,
-                            config,
-                            &mut groups,
-                            &mut oversize,
                         );
                     }
                     continue;
@@ -188,12 +184,8 @@ pub fn rebuild_groups(
                         _ => false,
                     };
                     if splits && burst.len() >= 2 {
-                        push_or_flag(
+                        groups.push(
                             burst.iter().map(|&i| candidates[i].hash.clone()).collect(),
-                            bucket,
-                            config,
-                            &mut groups,
-                            &mut oversize,
                         );
                         burst.clear();
                     } else if splits {
@@ -203,12 +195,8 @@ pub fn rebuild_groups(
                     last_time = time.or(last_time);
                 }
                 if burst.len() >= 2 {
-                    push_or_flag(
+                    groups.push(
                         burst.iter().map(|&i| candidates[i].hash.clone()).collect(),
-                        bucket,
-                        config,
-                        &mut groups,
-                        &mut oversize,
                     );
                 }
             }
@@ -240,42 +228,7 @@ pub fn rebuild_groups(
         stats.groups += 1;
     }
 
-    // Over-cap clusters: ungrouped, surfaced, never silently truncated.
-    for (bucket, size) in &oversize {
-        stats.oversize_clusters += 1;
-        crate::logging::warn(
-            "similar cluster over the size cap left ungrouped",
-            serde_json::json!({ "bucket": bucket, "size": size, "cap": config.max_group_size }),
-        );
-        conn.execute(
-            "INSERT INTO issues (path, kind, message, created_at_utc) VALUES (NULL, 'similar-overflow', ?1, ?2)",
-            params![
-                format!(
-                    "{size} visually similar photos in {bucket} exceed the {} -photo group cap; \
-                     lower the visual distance in Settings or raise the cap to compare them",
-                    config.max_group_size
-                ),
-                crate::logging::now_iso_millis()
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
     Ok(stats)
-}
-
-fn push_or_flag(
-    members: Vec<String>,
-    bucket: &str,
-    config: &SimilarityConfig,
-    groups: &mut Vec<Vec<String>>,
-    oversize: &mut Vec<(String, usize)>,
-) {
-    if members.len() > config.max_group_size as usize {
-        oversize.push((bucket.to_string(), members.len()));
-    } else {
-        groups.push(members);
-    }
 }
 
 /// One group's members, best-first: sharpness descending (the advisory

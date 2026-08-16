@@ -18,7 +18,6 @@ fn config() -> SimilarityConfig {
     SimilarityConfig {
         max_gap_seconds: 90,
         phash_max_distance: 4,
-        max_group_size: 32,
     }
 }
 
@@ -152,15 +151,15 @@ fn month_buckets_bound_the_scope() {
 }
 
 #[test]
-fn oversize_clusters_are_flagged_not_truncated() {
+fn large_families_group_whole_with_no_cap() {
+    // The cap's removal is the contract here (developer, 2026-08-16): a
+    // 75-member family was previously NOT persisted at all — no group, no
+    // ≈ badge — which silently hid exactly the largest spare-shot families.
+    // The comparison view runs any group in 16-slot turns, so size is the
+    // queue's problem, never the grouper's.
     let (_d, conn) = seeded();
     let t = 1_700_000_000_000i64;
-    let tight = SimilarityConfig {
-        max_gap_seconds: 90,
-        phash_max_distance: 4,
-        max_group_size: 3,
-    };
-    for i in 0..5 {
+    for i in 0..75 {
         insert_image_with_camera(
             &conn,
             &format!("o{i}"),
@@ -170,17 +169,13 @@ fn oversize_clusters_are_flagged_not_truncated() {
             1.0,
         );
     }
-    let stats = rebuild_groups(&conn, &tight).unwrap();
-    assert_eq!(stats.groups, 0, "over-cap must not persist as a group");
-    assert_eq!(stats.oversize_clusters, 1);
+    let stats = rebuild_groups(&conn, &config()).unwrap();
+    assert_eq!(stats.groups, 1, "one family, however large");
+    assert_eq!(stats.grouped_items, 75);
     let issues: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM issues WHERE kind = 'similar-overflow'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(issues, 1);
+    assert_eq!(issues, 0, "a large family is not a problem to report");
 }
 
 #[test]
