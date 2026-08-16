@@ -24,6 +24,7 @@ pub mod similarity;
 pub mod storage;
 pub mod subprocess;
 pub mod timestamps;
+pub mod transcription;
 pub mod trash;
 pub mod video;
 pub mod volume;
@@ -911,7 +912,88 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
     )
 }
 
-// The Trash surface: standing sizes per trash root, and the one deliberately
+// On-demand transcription (Design: Video handling): runs on its own thread —
+// minutes-long and memory-heavy (~2–2.5 GB while running, released after) —
+// with progress/done/error events; the transcript lands in the cache and
+// `transcript_get` serves it thereafter. One at a time by the engine's own
+// claim; cancel via `transcribe_cancel`.
+#[tauri::command]
+fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
+    let data_root = paths::data_root(&app)?;
+    let cache_root = CACHE_ROOT
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .ok_or("cache root unset")?;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String, String> {
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let video: String = conn
+                .query_row(
+                    "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+                    [&hash],
+                    |r| r.get(0),
+                )
+                .map_err(|_| "no live copy of this video".to_string())?;
+            let cache = preview::CachePaths::new(cache_root);
+            let model_spec = binaries_manager::spec_of("whisper-large-v3-turbo")
+                .expect("whisper model is registered");
+            let model_state = binaries_manager::state_of(&data_root, model_spec);
+            let model = (model_state.status != binaries::BinaryStatus::NotInstalled)
+                .then(|| binaries_manager::installed_path(&data_root, model_spec));
+            let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
+            let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
+            let progress_handle = handle.clone();
+            let progress_hash = hash.clone();
+            transcription::transcribe_to_cache(
+                &cache,
+                model.as_deref(),
+                ffmpeg.as_deref(),
+                std::path::Path::new(&video),
+                &hash,
+                move |percent| {
+                    let _ = progress_handle.emit(
+                        "transcribe://progress",
+                        json!({ "hash": progress_hash, "percent": percent }),
+                    );
+                },
+            )
+        })();
+        match result {
+            Ok(text) => {
+                let _ = handle.emit("transcribe://done", json!({ "hash": hash, "text": text }));
+            }
+            Err(err) => {
+                logging::warn(
+                    "transcription failed",
+                    json!({ "hash": hash, "error": { "message": err.clone() } }),
+                );
+                let _ = handle.emit("transcribe://error", json!({ "hash": hash, "message": err }));
+            }
+        }
+    });
+    Ok(())
+}
+
+// The cached transcript, or null when none exists yet.
+#[tauri::command]
+fn transcript_get(hash: String) -> Result<Option<String>, String> {
+    let cache_root = CACHE_ROOT
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .ok_or("cache root unset")?;
+    let cache = preview::CachePaths::new(cache_root);
+    Ok(std::fs::read_to_string(cache.transcript(&hash)).ok())
+}
+
+#[tauri::command]
+fn transcribe_cancel() {
+    transcription::TRANSCRIBE_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+// The Trash surface: standing sizes per trash root// The Trash surface: standing sizes per trash root, and the one deliberately
 // destructive convenience — emptying a root. The trash is otherwise
 // write-only; these are the only two readers the design allows.
 #[tauri::command]
@@ -1381,6 +1463,9 @@ pub fn run() {
             move_cache,
             get_issues,
             ensure_fullres,
+            transcribe,
+            transcript_get,
+            transcribe_cancel,
             trash_overview,
             trash_empty,
             dismiss_issue,

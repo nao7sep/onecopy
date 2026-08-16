@@ -69,6 +69,15 @@ impl CachePaths {
             .join(Self::shard(hash))
             .join(format!("{hash}.png"))
     }
+
+    /// A video's on-demand transcript (Design: Video handling) — derived
+    /// data like everything else here, keyed by the content hash.
+    pub fn transcript(&self, hash: &str) -> PathBuf {
+        self.root
+            .join("transcripts")
+            .join(Self::shard(hash))
+            .join(format!("{hash}.txt"))
+    }
 }
 
 pub struct DerivedFacts {
@@ -580,7 +589,8 @@ pub fn derive_images_pending(
 /// The cache's own subtrees under a root — the ONLY directories a cache move
 /// copies or deletes. The root itself may be a user-picked folder holding
 /// unrelated content, so tree-wide operations never touch anything else.
-pub const CACHE_SUBTREES: [&str; 4] = ["thumbs", "previews", "strips", "fullres"];
+pub const CACHE_SUBTREES: [&str; 5] =
+    ["thumbs", "previews", "strips", "fullres", "transcripts"];
 
 /// Copies every cache entry from `old_root` to `new_root` (same layout),
 /// reporting (copied_bytes, total_bytes) as it goes, and size-verifying each
@@ -662,6 +672,7 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
         (cache.thumb(old), cache.thumb(new)),
         (cache.preview(old), cache.preview(new)),
         (cache.fullres(old), cache.fullres(new)),
+        (cache.transcript(old), cache.transcript(new)),
     ];
     for i in 0..strip_frames.max(0) as u32 {
         moves.push((
@@ -689,7 +700,7 @@ pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, Strin
         .prepare("SELECT 1 FROM contents WHERE hash = ?1")
         .map_err(|e| e.to_string())?;
 
-    for sub in ["thumbs", "previews", "fullres"] {
+    for sub in ["thumbs", "previews", "fullres", "transcripts"] {
         let tree = cache.root.join(sub);
         if !tree.exists() {
             continue;
@@ -703,6 +714,7 @@ pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, Strin
             let hash_of = |n: &str| {
                 n.strip_suffix(".webp")
                     .or_else(|| n.strip_suffix(".png"))
+                    .or_else(|| n.strip_suffix(".txt"))
                     .map(str::to_string)
             };
             let orphan = if let Some(hash) = hash_of(&name) {

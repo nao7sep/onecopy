@@ -51,6 +51,7 @@ keepawake = "0.6.0"
 ureq = "3.3.0"
 zip = "8.6.0"
 notify = "8.2.0"
+whisper-rs = "0.16.0"
 
 # Dependencies must not run at opt-level 0 in dev builds: libwebp's C (built by
 # cc, which inherits OPT_LEVEL) and the image crate become ~18x slower there,

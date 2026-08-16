@@ -2,16 +2,23 @@
 // opens a configurable grid of strip frames — default 6×4 — drawn from the
 // CACHED strip, so opening costs no ffmpeg work. Short videos carry fewer
 // frames by derivation (near-identical neighbours earn nothing), so the grid
-// simply shows what exists. Space below the grid is reserved for the deferred
-// transcription text. Delete acts from here exactly as from the grid
-// (Delete/Backspace, Shift for permanent); moving stays a grid/tree act.
+// simply shows what exists. Below the grid: the on-demand TRANSCRIPT —
+// cached after the first run, one Transcribe click otherwise, with the
+// missing-model case naming its remedy. Delete acts from here exactly as
+// from the grid (Delete/Backspace, Shift for permanent); moving stays a
+// grid/tree act.
 
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
+import Button from "./ui/Button";
 import { stripUrl } from "../models/items";
 import { useItemsStore } from "../state/items-store";
 import { useAppStore } from "../state/app-store";
+import { useBinariesStore } from "../state/binaries-store";
+import { log, toErrorFields } from "../repositories";
 
 export default function ScenesModal({
   hash,
@@ -63,8 +70,7 @@ export default function ScenesModal({
       }
     >
       <ScenesGrid hash={hash} frames={frames} />
-      {/* Reserved: the deferred on-demand transcription renders here as one
-          text block under the scenes (Design: Video handling). */}
+      <TranscriptSection hash={hash} />
       {confirmPermanent ? (
         <ConfirmDialog
           title="Delete permanently?"
@@ -107,6 +113,121 @@ function ScenesGrid({ hash, frames }: { hash: string; frames: number }) {
           className="w-full rounded-lg border border-border object-cover"
         />
       ))}
+    </div>
+  );
+}
+
+/** The transcript block under the scenes. States, in order of appearance:
+ * cached text (instant) → a Transcribe control → live progress → the text.
+ * With the model absent the control is replaced by the honest remedy: what to
+ * install and the one click that opens Managed tools. */
+function TranscriptSection({ hash }: { hash: string }) {
+  const [text, setText] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [percent, setPercent] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const modelInstalled = useBinariesStore((s) =>
+    s.entries.some(
+      (entry) => entry.id === "whisper-large-v3-turbo" && entry.status !== "not-installed",
+    ),
+  );
+
+  useEffect(() => {
+    let stale = false;
+    setText(null);
+    setError(null);
+    setRunning(false);
+    void invoke<string | null>("transcript_get", { hash })
+      .then((cached) => {
+        if (!stale) setText(cached);
+      })
+      .catch((err) => log.warn("transcript load failed", toErrorFields(err)));
+
+    const disposers: Array<() => void> = [];
+    void listen<{ hash: string; percent: number }>("transcribe://progress", (event) => {
+      if (event.payload.hash === hash && !stale) {
+        setRunning(true);
+        setPercent(event.payload.percent);
+      }
+    }).then((fn) => disposers.push(fn));
+    void listen<{ hash: string; text: string }>("transcribe://done", (event) => {
+      if (event.payload.hash === hash && !stale) {
+        setRunning(false);
+        setText(event.payload.text);
+      }
+    }).then((fn) => disposers.push(fn));
+    void listen<{ hash: string; message: string }>("transcribe://error", (event) => {
+      if (event.payload.hash === hash && !stale) {
+        setRunning(false);
+        setError(event.payload.message);
+      }
+    }).then((fn) => disposers.push(fn));
+    return () => {
+      stale = true;
+      for (const dispose of disposers) dispose();
+    };
+  }, [hash]);
+
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+          Transcript
+        </h2>
+        {running ? (
+          <span className="flex items-center gap-2 text-xs text-primary">
+            Transcribing… {percent}%
+            <Button
+              variant="ghost"
+              onClick={() => {
+                void invoke("transcribe_cancel");
+              }}
+            >
+              Cancel
+            </Button>
+          </span>
+        ) : text === null && modelInstalled ? (
+          <Button
+            onClick={() => {
+              setError(null);
+              setRunning(true);
+              setPercent(0);
+              void invoke("transcribe", { hash }).catch((err) => {
+                setRunning(false);
+                log.error("transcribe start failed", toErrorFields(err));
+              });
+            }}
+          >
+            Transcribe
+          </Button>
+        ) : null}
+      </div>
+      {error !== null ? (
+        <p className="text-xs text-danger">{error}</p>
+      ) : text !== null ? (
+        text.trim() === "" ? (
+          <p className="text-xs text-ink-muted">No speech found in this video.</p>
+        ) : (
+          <pre className="max-h-48 select-text overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink">
+            {text}
+          </pre>
+        )
+      ) : running ? null : modelInstalled ? (
+        <p className="text-xs text-ink-muted">
+          Not transcribed yet — the transcript is created once and kept.
+        </p>
+      ) : (
+        <p className="text-xs text-ink-muted">
+          Transcription needs the Whisper model.{" "}
+          <button
+            className="text-primary hover:underline"
+            onClick={() => useBinariesStore.getState().setModalOpen(true)}
+          >
+            Install it from Managed tools
+          </button>
+          .
+        </p>
+      )}
     </div>
   );
 }

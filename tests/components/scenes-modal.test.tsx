@@ -73,6 +73,7 @@ function deleteInvokes() {
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
+    transcript_get: () => null,
     patch_state: () => ({}),
     get_item_detail: () => null,
     delete_item: () => ({ deletedFiles: 1, failedFiles: 0, removedRows: 1 }),
