@@ -157,6 +157,14 @@ static QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Takes everything recorded so far. The caller owns reporting it from here.
+/// How many quarantines this launch has recorded, WITHOUT consuming them. Callers that
+/// need to know a quarantine just happened — the patch path's reseed, setup's read — use
+/// this instead of draining, because draining is what publishes the report to the user and
+/// only the reporting surface may do it.
+pub fn quarantine_count() -> usize {
+    QUARANTINES.lock().unwrap_or_else(|p| p.into_inner()).len()
+}
+
 pub fn drain_quarantines() -> Vec<QuarantineRecord> {
     let mut journal = QUARANTINES.lock().unwrap_or_else(|p| p.into_inner());
     std::mem::take(&mut *journal)
@@ -168,6 +176,22 @@ pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
 
 /// The whole load, against a root — the half that decides anything, kept out
 /// of the AppHandle shell so a corrupt store's branch can be exercised.
+/// Reads config.json for SETUP, which runs before the window and therefore before any
+/// surface can report. It deliberately does not drain the quarantine journal: draining is
+/// what publishes the report, and if setup consumed it the frontend's later load would see
+/// an empty journal and tell the user nothing — the store would have been quarantined and
+/// reseeded in silence. Corruption is still handled here (the read quarantines and the
+/// reseed runs), it is only the REPORT that is left for the frontend to drain.
+pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
+    let before = quarantine_count();
+    let config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
+    if quarantine_count() > before {
+        materialize_config_if_missing(root)?;
+        return read_json_optional(&root.join(CONFIG_FILE_NAME));
+    }
+    Ok(config)
+}
+
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     let mut config = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
     let state = read_json_optional(&root.join(STATE_FILE_NAME))?;
@@ -251,7 +275,21 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<JsonValue, S
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let mut current = read_json_optional(target)?.unwrap_or_else(|| serde_json::json!({}));
+    // A quarantine here leaves the store ABSENT, exactly as it does on the load path —
+    // so the reseed has to happen here too. Merging into a bare `{}` instead would write
+    // a config containing ONLY the patched key: every other setting gone from disk, on a
+    // file the next launch then finds present and never reseeds (storage-path
+    // conventions: after a quarantine, first-run materialization runs in the same
+    // launch). Keyed on absence AFTER the read, never before it.
+    let before = quarantine_count();
+    let mut current = read_json_optional(target)?;
+    if quarantine_count() > before {
+        if let Some(root) = target.parent() {
+            materialize_config_if_missing(root)?;
+        }
+        current = read_json_optional(target)?;
+    }
+    let mut current = current.unwrap_or_else(|| serde_json::json!({}));
     if !current.is_object() {
         current = serde_json::json!({});
     }

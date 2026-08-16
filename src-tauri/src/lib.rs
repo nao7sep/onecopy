@@ -1343,8 +1343,13 @@ pub fn run() {
 
             // Resolve the cache root once for the mediacache protocol, then
             // sweep crash leftovers (hash-orphaned entries, stranded temps).
-            let loaded = storage::load_app_data(app.handle())?;
-            let cache_root = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0)
+            // Setup reads config for the cache root only. It must NOT go through
+            // load_app_data: that drains the quarantine journal, and draining is what
+            // publishes the report — consuming it here left the frontend's later load
+            // with an empty journal, so a quarantined-and-reseeded config was never
+            // mentioned to the user (storage-path conventions: both branches report).
+            let setup_config = storage::read_config_for_setup(&data_root)?;
+            let cache_root = scanner::settings_from_config(setup_config.as_ref(), &data_root, 0)
                 .cache_root;
             set_cache_root(cache_root.clone());
             let _ = DATA_ROOT.set(data_root.clone());
@@ -1379,15 +1384,14 @@ pub fn run() {
             // The watcher: ON by default, best-effort, over the configured
             // source roots (the Camera Roll inflow case). Restart picks up
             // source-dir changes; correctness never depends on it.
-            let watch_settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
+            let watch_settings = scanner::settings_from_config(setup_config.as_ref(), &data_root, 0);
             watcher::start(app.handle().clone(), watch_settings.source_dirs);
 
             // The one update switch (managed-runtime-dependencies): when ON,
             // an INSTALLED tool is checked at launch, throttled to ~daily so
             // launches never hammer the endpoints. Default off; a failed
             // check writes nothing (check_for_updates' own contract).
-            let check_at_launch = loaded
-                .config
+            let check_at_launch = setup_config
                 .as_ref()
                 .and_then(|c| c.get("checkUpdatesAtLaunch"))
                 .and_then(|v| v.as_bool())
@@ -1518,8 +1522,31 @@ pub fn run() {
             log_event,
             logging_debug_enabled
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application");
+        .build(tauri::generate_context!());
+
+    // A setup failure lands here — most consequentially a store that is unreadable for a
+    // reason other than absence, or one that could not be set aside. OneCopy must not
+    // reset over bytes it failed to preserve, so it halts; a panic into stderr is not a
+    // halt for a double-clicked app, so the halt is reported natively before exiting
+    // (storage-path conventions: a halt names the store and reaches the user).
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => {
+            let message = error.to_string();
+            logging::error("startup failed", json!({ "error": { "message": message } }));
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("OneCopy could not start")
+                .set_description(format!(
+                    "A settings file could not be read, and OneCopy could not set it aside either — so it \
+                     has been left exactly where it is rather than risk overwriting it.\n\n{message}\n\n\
+                     Your photos are not affected. Repair or move the file under the OneCopy data folder, \
+                     then start OneCopy again."
+                ))
+                .show();
+            std::process::exit(1);
+        }
+    };
 
     app.run(|_app_handle, event| match event {
         // Cooperative scan interruption: flag as soon as exit is requested so
