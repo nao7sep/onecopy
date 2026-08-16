@@ -19,11 +19,12 @@ describe("window minimums are derived, never hand-typed", () => {
     );
   });
 
-  it("height reserves BOTH fixed bands around the content", () => {
-    expect(computeMinWindowHeight()).toBe(HEADER_HEIGHT + CONTENT_MIN_HEIGHT + FOOTER_HEIGHT);
-    // Neither band may be forgotten: the app-chrome rule is that fixed chrome
-    // is reserved before the fill region, so each one raises the minimum.
-    expect(computeMinWindowHeight()).toBeGreaterThan(CONTENT_MIN_HEIGHT + FOOTER_HEIGHT);
+  it("height reserves the footer, and the title section does not tax it", () => {
+    expect(computeMinWindowHeight()).toBe(CONTENT_MIN_HEIGHT + FOOTER_HEIGHT);
+    // The title section lives INSIDE the sidebar column, so it must not be
+    // added on top — that is the whole point of not making it a full-width
+    // band. It still has to fit within the content row it shares.
+    expect(HEADER_HEIGHT).toBeLessThan(CONTENT_MIN_HEIGHT);
   });
 
   it("the launch size in tauri.conf.json clears the minimums", async () => {

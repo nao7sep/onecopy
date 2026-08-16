@@ -147,13 +147,10 @@ export function Menu({
 export function MenuItem({
   onSelect,
   disabled = false,
-  shortcut,
   children,
 }: {
   onSelect: () => void;
   disabled?: boolean;
-  /** Displayed chord (discoverability); binding lives in the command layer. */
-  shortcut?: string;
   children: React.ReactNode;
 }) {
   const closeMenu = useContext(MenuCloseContext);
@@ -164,7 +161,7 @@ export function MenuItem({
       disabled={disabled}
       // Keyboard focus shows as a background fill, not a ring — clip-safe
       // inside the rounded panel (composite-control conventions).
-      className="flex w-full items-center justify-between gap-6 px-3 py-1 text-left text-sm text-ink outline-none hover:bg-surface-muted focus:bg-surface-muted disabled:text-ink-muted"
+      className="flex w-full items-center whitespace-nowrap px-3 py-1.5 text-left text-sm text-ink outline-none transition-colors hover:bg-surface-muted focus:bg-surface-muted disabled:text-ink-muted"
       onClick={() => {
         // Close first (focus back on the trigger), then act — an action that
         // opens a modal then owns focus from a stable base.
@@ -172,8 +169,7 @@ export function MenuItem({
         onSelect();
       }}
     >
-      <span>{children}</span>
-      {shortcut ? <span className="font-mono text-xs text-ink-muted">{shortcut}</span> : null}
+      {children}
     </button>
   );
 }

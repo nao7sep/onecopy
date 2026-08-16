@@ -24,14 +24,23 @@ export const RIGHT_PANE_MIN_WIDTH = 220;
 export const GRID_MIN_WIDTH = 420;
 
 // The drag dividers between the panes.
-export const SPLITTER_WIDTH = 4;
+//
+// This is the HIT area, not the line. The line itself is 1px, drawn centred
+// inside; at 4px the target was too small to catch reliably with a mouse,
+// which reads as "the panes are not resizable" rather than as a near miss.
+export const SPLITTER_WIDTH = 9;
 
 // Content row minimum height before the grid's own scrolling takes over.
 export const CONTENT_MIN_HEIGHT = 400;
 
-// Title band height: the app name beside the menu trigger, whose 24px button
-// sets the row (py-1 + a 24px control ≈ 32px).
-export const HEADER_HEIGHT = 32;
+// Title section height: the app name beside the menu trigger.
+//
+// It sits INSIDE the sidebar column, not across the window, so it does not
+// enter the height sum below — a full-width band would have taxed every pane's
+// height to host one button and a word, and only the sidebar has room to
+// spare. It is still a real reservation within the sidebar, which is why the
+// number lives here with the other minimums rather than inline in the markup.
+export const HEADER_HEIGHT = 36;
 
 // Status footer height (one text row: py-1 + text-xs ≈ 24px).
 export const FOOTER_HEIGHT = 24;
@@ -42,11 +51,12 @@ export function computeMinWindowWidth(): number {
   );
 }
 
-// Both fixed bands are reserved BEFORE the content row (app-chrome: fixed
-// chrome is never the thing that gets clipped), so each one costs the window
-// its own height in minimum.
+// The footer is the one full-width fixed band, reserved before the content row
+// (app-chrome: fixed chrome is never the thing that gets clipped). The title
+// section is inside the sidebar and is covered by the content row's own
+// minimum, so it deliberately does not appear here.
 export function computeMinWindowHeight(): number {
-  return HEADER_HEIGHT + CONTENT_MIN_HEIGHT + FOOTER_HEIGHT;
+  return CONTENT_MIN_HEIGHT + FOOTER_HEIGHT;
 }
 
 /** Clamps the two pane INTENTS against the live container width. When both

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   extLabel,
+  factsLine,
   formatDuration,
   sortItems,
   thumbUrl,
@@ -8,6 +9,8 @@ import {
   type SortOrder,
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
+import { usePreviewStore } from "../state/preview-store";
+import PreviewControl from "./PreviewControl";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -18,6 +21,54 @@ const TILE_GAP = 12;
 // Click selects; Delete/Backspace trash-deletes the selection (every copy),
 // Shift makes it permanent — the keydown lives in App.
 
+/** Starts a drag carrying the whole selection. Shared by the tile and the list
+ * row so both layouts drop into the destination tree identically. */
+function dragProps(item: SectionItem) {
+  return {
+    draggable: true,
+    onDragStart: (event: React.DragEvent) => {
+      // Dragging an unselected item re-anchors the selection onto it, so the
+      // drag always carries exactly what looks selected.
+      const { selectedKeys, selectItem } = useItemsStore.getState();
+      const key = itemKey(item);
+      if (!selectedKeys.has(key)) selectItem(key);
+      event.dataTransfer.setData("application/x-onecopy-drag", "selection");
+      event.dataTransfer.effectAllowed = "copyMove";
+      // Window-wide closed hand for the drag's duration (App.css rule) — the
+      // pointer roams over elements with their own cursors otherwise.
+      document.body.classList.add("dragging");
+    },
+    onDragEnd: () => document.body.classList.remove("dragging"),
+  };
+}
+
+function Thumb({ item }: { item: SectionItem }) {
+  const [thumbFailed, setThumbFailed] = useState(false);
+  if (item.hash === null || !item.hasThumb || thumbFailed) {
+    return (
+      <span className="text-sm font-semibold text-ink-muted">{extLabel(item.fileName)}</span>
+    );
+  }
+  return (
+    <img
+      src={thumbUrl(item.hash)}
+      alt={item.fileName}
+      loading="lazy"
+      // h/w-full rather than max-h/max-w: an image SMALLER than the tile is
+      // scaled UP to fill it, so its softness is the signal that it is a small
+      // file. Left at its native size it sat neatly in the middle and looked
+      // like a deliberately small thumbnail of a large photo. The derive
+      // pipeline still never upscales what it stores — this is display only.
+      className="h-full w-full object-contain"
+      // A cache entry can be absent even when the row claims one (a
+      // hand-deleted cache file, a move interrupted mid-flight). Falling back
+      // to the extension label keeps the grid readable instead of showing the
+      // webview's broken-image glyph.
+      onError={() => setThumbFailed(true)}
+    />
+  );
+}
+
 function Tile({
   item,
   isSelected,
@@ -27,82 +78,105 @@ function Tile({
   isSelected: boolean;
   onSelect: (event: React.MouseEvent) => void;
 }) {
-  const [thumbFailed, setThumbFailed] = useState(false);
+  const facts = factsLine(item);
   return (
-    <figure
-      className="relative w-40 cursor-grab"
-      onClick={onSelect}
-      draggable
-      onDragStart={(event) => {
-        // Dragging an unselected tile re-anchors the selection onto it, so
-        // the drag always carries exactly what looks selected.
-        const { selectedKeys, selectItem } = useItemsStore.getState();
-        const key = itemKey(item);
-        if (!selectedKeys.has(key)) selectItem(key);
-        event.dataTransfer.setData("application/x-onecopy-drag", "selection");
-        event.dataTransfer.effectAllowed = "copyMove";
-        // Window-wide closed hand for the drag's duration (App.css rule) —
-        // the pointer roams over elements with their own cursors otherwise.
-        document.body.classList.add("dragging");
-      }}
-      onDragEnd={() => document.body.classList.remove("dragging")}
-    >
+    <figure className="relative w-40 cursor-grab" onClick={onSelect} {...dragProps(item)}>
       <div
-        className={`flex h-32 w-40 items-center justify-center overflow-hidden rounded border ${
+        className={`flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
           isSelected ? "border-primary-ring ring-2 ring-primary-ring" : "border-border"
         } bg-surface`}
       >
-        {item.hash !== null && item.hasThumb && !thumbFailed ? (
-          <img
-            src={thumbUrl(item.hash)}
-            alt={item.fileName}
-            loading="lazy"
-            className="max-h-full max-w-full object-contain"
-            // A cache entry can be absent even when the row claims one (a
-            // hand-deleted cache file, a move interrupted mid-flight). Falling
-            // back to the extension label keeps the grid readable instead of
-            // showing the webview's broken-image glyph.
-            onError={() => setThumbFailed(true)}
-          />
-        ) : (
-          <span className="text-lg font-semibold text-ink-muted">
-            {extLabel(item.fileName)}
-          </span>
-        )}
+        <Thumb item={item} />
       </div>
       {item.copyCount > 1 ? (
-        <span className="absolute right-1 top-1 rounded bg-primary-surface px-1 text-xs text-primary">
+        <span className="absolute right-1 top-1 rounded-md bg-primary-surface px-1.5 py-0.5 text-[11px] font-medium text-primary">
           ×{item.copyCount}
         </span>
       ) : null}
       {item.similarGroupId !== null ? (
         <span
-          className="absolute left-1 top-1 rounded bg-surface-muted px-1 text-xs text-ink"
+          className="absolute left-1 top-1 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink"
           title="Has similar photos — press Enter to compare"
         >
           ≈
         </span>
       ) : null}
       {item.durationMs !== null ? (
-        <span className="absolute bottom-7 left-1 rounded bg-surface-muted px-1 text-xs text-ink">
+        <span className="absolute bottom-9 left-1 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink">
           {formatDuration(item.durationMs)}
         </span>
       ) : null}
       {item.hasCompanions ? (
         <span
-          className="absolute bottom-7 right-1 rounded bg-surface-muted px-1 text-xs text-ink-muted"
+          className="absolute bottom-9 right-1 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink-muted"
           title="Has a paired companion file (RAW/sidecar) — every action includes it"
         >
           pair
         </span>
       ) : null}
-      <figcaption
-        className="mt-0.5 w-40 truncate text-xs text-ink-muted"
-        title={item.fileName}
-      >
-        {item.fileName}
+      <figcaption className="mt-1 w-40" title={item.fileName}>
+        <span className="block truncate text-xs text-ink">{item.fileName}</span>
+        {/* Pixels and bytes, quietly. Without them a section of the same shot
+            at three qualities is undecidable: the original and the for-web
+            copy are the same picture at tile size. */}
+        {facts !== "" ? (
+          <span className="block truncate text-[11px] tabular-nums text-ink-muted">
+            {facts}
+          </span>
+        ) : null}
       </figcaption>
     </figure>
+  );
+}
+
+/** Other-files render as ROWS, not tiles.
+ *
+ * A document has nothing to look at, so a thumbnail grid spent a 160×128 box
+ * per file to show an extension in the middle of it — a handful per screen
+ * where a list shows dozens, and none of the facts that actually distinguish
+ * two files. The keyboard contract is unchanged: the same composite, one
+ * column instead of several. */
+function ListRow({
+  item,
+  isSelected,
+  onSelect,
+}: {
+  item: SectionItem;
+  isSelected: boolean;
+  onSelect: (event: React.MouseEvent) => void;
+}) {
+  const facts = factsLine(item);
+  return (
+    <div
+      className={`flex w-full cursor-grab items-center gap-3 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+        isSelected
+          ? "border-primary-ring bg-primary-surface"
+          : "border-transparent hover:bg-surface-muted"
+      }`}
+      onClick={onSelect}
+      {...dragProps(item)}
+    >
+      <span className="w-12 shrink-0 truncate text-[11px] font-semibold text-ink-muted">
+        {extLabel(item.fileName)}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-ink" title={item.fileName}>
+        {item.fileName}
+      </span>
+      {item.hasCompanions ? (
+        <span
+          className="shrink-0 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink-muted"
+          title="Has a paired companion file (RAW/sidecar) — every action includes it"
+        >
+          pair
+        </span>
+      ) : null}
+      {item.copyCount > 1 ? (
+        <span className="shrink-0 rounded-md bg-primary-surface px-1.5 py-0.5 text-[11px] font-medium text-primary">
+          ×{item.copyCount}
+        </span>
+      ) : null}
+      <span className="shrink-0 tabular-nums text-xs text-ink-muted">{facts}</span>
+    </div>
   );
 }
 
@@ -116,9 +190,13 @@ const SORT_LABELS: Record<SortOrder, string> = {
 export default function Grid({
   items,
   loading,
+  layout,
 }: {
   items: SectionItem[];
   loading: boolean;
+  /** Thumbnails for images and videos; rows for other-files, which have
+   * nothing to show in a tile. */
+  layout: "tiles" | "list";
 }) {
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
@@ -135,6 +213,12 @@ export default function Grid({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [columns, setColumns] = useState(1);
   useEffect(() => {
+    // A list is one column by definition, so Down moves one row — measuring
+    // would compute a tile count the layout does not have.
+    if (layout === "list") {
+      setColumns(1);
+      return;
+    }
     const container = containerRef.current;
     if (!container) return;
     const measure = () =>
@@ -145,7 +229,7 @@ export default function Grid({
     const observer = new ResizeObserver(measure);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [loading, items.length]);
+  }, [loading, items.length, layout]);
 
   // The anchor stays in view across deletes and refreshes — the recovery
   // selection lands off-screen otherwise ("nearest" makes it a no-op when
@@ -167,17 +251,22 @@ export default function Grid({
   const sortedKeys = sorted.map(itemKey);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
-    // Space toggles the active item in the multi-selection (the container is
-    // aria-multiselectable; the command layer never claims Space).
-    if (event.key === " " && selectedItem !== null) {
+    // Space is QUICK LOOK: it opens the preview on the anchor and closes it
+    // again, the gesture every Finder user already has. It previously toggled
+    // the anchor's membership in the multi-selection — technically the listbox
+    // idiom, but nobody found it, and Cmd-click and Shift-click already cover
+    // multi-select. Nothing else in the app claims Space.
+    if (event.key === " ") {
       event.preventDefault();
-      toggleItem(selectedItem);
+      void usePreviewStore.getState().toggleFollow();
       return;
     }
     // PageUp/PageDown jump by roughly a viewport of rows.
     const pageRows = Math.max(
       2,
-      Math.floor((containerRef.current?.clientHeight ?? 600) / 190),
+      Math.floor(
+        (containerRef.current?.clientHeight ?? 600) / (layout === "list" ? 34 : 190),
+      ),
     );
     const step =
       event.key === "ArrowRight"
@@ -223,9 +312,11 @@ export default function Grid({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-3 py-1 text-xs text-ink-muted">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-ink-muted">
+        <PreviewControl />
+        <span className="flex-1" />
         <button
-          className="rounded border border-border px-1 py-0.5 text-ink hover:bg-surface-muted"
+          className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
           title="Re-check only the directories this section's files came from"
           onClick={() => void useItemsStore.getState().rescanSection()}
         >
@@ -234,7 +325,7 @@ export default function Grid({
         <label htmlFor="grid-sort">Sort</label>
         <select
           id="grid-sort"
-          className="rounded border border-border bg-surface px-1 py-0.5 text-ink"
+          className="h-7 rounded-md border border-border bg-surface px-2 text-ink"
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value as SortOrder)}
         >
@@ -252,7 +343,11 @@ export default function Grid({
         aria-label="Section items"
         aria-activedescendant={selectedItem !== null ? `grid-opt-${selectedItem}` : undefined}
         aria-multiselectable
-        className="flex min-h-0 flex-1 flex-wrap content-start gap-3 overflow-y-auto p-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring ${
+          layout === "list"
+            ? "flex flex-col gap-0.5 p-2"
+            : "flex flex-wrap content-start gap-3 p-3"
+        }`}
         onKeyDown={onGridKeyDown}
       >
         {emptyState !== null ? (
@@ -260,28 +355,31 @@ export default function Grid({
         ) : null}
         {sorted.map((item) => {
           const key = itemKey(item);
+          const isSelected = selectedKeys.has(key);
+          const onSelect = (event: React.MouseEvent) => {
+            containerRef.current?.focus();
+            if (event.metaKey || event.ctrlKey) {
+              toggleItem(key);
+            } else if (event.shiftKey) {
+              rangeSelect(sortedKeys, key);
+            } else {
+              selectItem(key);
+            }
+          };
           return (
             <div
               key={key}
               id={`grid-opt-${key}`}
               data-item-key={key}
               role="option"
-              aria-selected={selectedKeys.has(key)}
+              aria-selected={isSelected}
+              className={layout === "list" ? "w-full" : undefined}
             >
-              <Tile
-                item={item}
-                isSelected={selectedKeys.has(key)}
-                onSelect={(event) => {
-                  containerRef.current?.focus();
-                  if (event.metaKey || event.ctrlKey) {
-                    toggleItem(key);
-                  } else if (event.shiftKey) {
-                    rangeSelect(sortedKeys, key);
-                  } else {
-                    selectItem(key);
-                  }
-                }}
-              />
+              {layout === "list" ? (
+                <ListRow item={item} isSelected={isSelected} onSelect={onSelect} />
+              ) : (
+                <Tile item={item} isSelected={isSelected} onSelect={onSelect} />
+              )}
             </div>
           );
         })}

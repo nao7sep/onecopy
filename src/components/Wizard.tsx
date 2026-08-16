@@ -1,26 +1,21 @@
 import { useWizardStore } from "../state/wizard-store";
 import { useBinariesStore } from "../state/binaries-store";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
+import DirectoryRow from "./DirectoryRow";
+import Button from "./ui/Button";
+import { Plus } from "lucide-react";
 
 /** The wizard's numbered steps. The ffmpeg screen follows as an OFFER, not a
  * fourth step, so it is deliberately not counted here. */
 const WIZARD_STEPS = 3;
 
-// The first-run Setup surface: three steps, blocking by design (there is
-// nothing behind it until source directories exist), completable only —
-// not dismissable, so no Close affordance is owed.
-
-function totalEstimateGb(
-  dirs: { counts: { images: number; videos: number } | null }[],
-): number {
-  // Coarse preview-cache estimate: ~0.25 MB per image preview+thumb, videos
-  // get posters/strips later at roughly half that.
-  const megabytes = dirs.reduce((sum, dir) => {
-    if (!dir.counts) return sum;
-    return sum + dir.counts.images * 0.25 + dir.counts.videos * 0.12;
-  }, 0);
-  return Math.round((megabytes / 1024) * 10) / 10;
-}
+// The Setup surface: three steps and one offer, blocking by design.
+//
+// A FIRST run is completable only — there is nothing behind it until source
+// directories exist, so it owes no Close affordance. A RE-RUN is different:
+// the app is already configured and the user may simply be looking, so it
+// offers Cancel, which writes nothing (every step edits store state, and
+// `finish` is the sole writer).
 
 export default function Wizard({ dataRoot }: { dataRoot: string }) {
   const step = useWizardStore((s) => s.step);
@@ -28,187 +23,144 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
   const timezone = useWizardStore((s) => s.timezone);
   const timezoneValid = useWizardStore((s) => s.timezoneValid);
   const cacheDir = useWizardStore((s) => s.cacheDir);
+  const reconfigure = useWizardStore((s) => s.reconfigure);
   const addDirs = useWizardStore((s) => s.addDirs);
   const removeDir = useWizardStore((s) => s.removeDir);
   const setStep = useWizardStore((s) => s.setStep);
   const setTimezone = useWizardStore((s) => s.setTimezone);
   const pickCacheDir = useWizardStore((s) => s.pickCacheDir);
   const finish = useWizardStore((s) => s.finish);
-
-  const counting = dirs.some((d) => d.counting);
+  const cancel = useWizardStore((s) => s.cancel);
 
   useBlockingSurface();
 
+  /** Back on steps 2+; Cancel on step 1 of a re-run; nothing on a first run's
+   * first step, where there is no state to return to. */
+  const leading =
+    step > 1 ? (
+      <Button variant="ghost" onClick={() => setStep((step - 1) as 1 | 2 | 3)}>
+        Back
+      </Button>
+    ) : reconfigure ? (
+      <Button variant="ghost" onClick={cancel}>
+        Cancel
+      </Button>
+    ) : (
+      <span />
+    );
+
   return (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-background">
-      <div className="w-[560px] max-w-[90vw] rounded border border-border bg-surface p-6">
-        <h1 className="mb-1 text-lg font-semibold text-ink-strong">Setup</h1>
+    <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
+      <div className="w-[560px] max-w-full rounded-2xl border border-border bg-surface p-7 shadow-xl">
+        <h1 className="text-xl font-semibold tracking-tight text-ink-strong">
+          {reconfigure ? "Reconfigure" : "Setup"}
+        </h1>
         {/* Three STEPS and one OFFER (Design: First-run wizard). The offer is
             step 4 in the flow's own counter but is not a fourth step, so it
             must not read "Step 4 of 3" — it announces itself as optional
             instead, which is also the honest signal that Finish is reachable
             from here without doing anything. */}
-        <p className="mb-4 text-sm text-ink-muted">
+        <p className="mt-1 mb-6 text-sm text-ink-muted">
           {step <= WIZARD_STEPS ? `Step ${step} of ${WIZARD_STEPS}` : "Optional"}
         </p>
 
         {step === 1 ? (
           <section>
-            <h2 className="mb-2 text-sm font-semibold text-ink-strong">
+            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
               Directories to handle
             </h2>
-            <ul className="mb-3 max-h-64 overflow-y-auto">
+            <p className="mb-3 text-sm text-ink-muted">
+              Everything in these folders is indexed, deduped, and offered for
+              culling. Nothing is ever changed without you asking.
+            </p>
+            <ul className="mb-4 max-h-64 space-y-1.5 overflow-y-auto">
               {dirs.map((dir) => (
-                <li
-                  key={dir.path}
-                  className="mb-1 rounded border border-border px-2 py-1"
-                >
-                  {/* The path owns its own line and WRAPS rather than
-                      truncating — same treatment as the cache location below.
-                      Source roots are long and what distinguishes two of them
-                      is often deep in the middle, so an ellipsis hides exactly
-                      the part that identifies which folder this is. */}
-                  <p className="break-all text-sm text-ink">{dir.path}</p>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs text-ink-muted">
-                      {dir.counting
-                        ? "scanning…"
-                        : dir.counts
-                          ? `${dir.counts.images} images · ${dir.counts.videos} videos · ${dir.counts.others} other`
-                          : "—"}
-                    </span>
-                    <button
-                      className="shrink-0 text-xs text-danger"
-                      onClick={() => removeDir(dir.path)}
-                    >
-                      Remove
-                    </button>
-                  </div>
+                <li key={dir.path}>
+                  <DirectoryRow path={dir.path} onRemove={() => removeDir(dir.path)} />
                 </li>
               ))}
             </ul>
-            <button
-              className="mb-4 rounded border border-border px-2 py-1 text-sm text-primary hover:bg-primary-surface"
-              onClick={() => void addDirs()}
-            >
-              Add directory…
-            </button>
-            <div className="flex justify-end">
-              <button
-                className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
-                disabled={dirs.length === 0}
-                onClick={() => setStep(2)}
-              >
+            <Button className="mb-6" onClick={() => void addDirs()}>
+              <Plus size={14} />
+              Add directory
+            </Button>
+            <div className="flex items-center justify-between">
+              {leading}
+              <Button variant="primary" disabled={dirs.length === 0} onClick={() => setStep(2)}>
                 Next
-              </button>
+              </Button>
             </div>
           </section>
         ) : null}
 
         {step === 2 ? (
           <section>
-            <h2 className="mb-2 text-sm font-semibold text-ink-strong">
-              Default timezone
-            </h2>
-            <p className="mb-2 text-sm text-ink-muted">
-              Applied when a photo's metadata has no timezone of its own (most
-              cameras). IANA name, e.g. Asia/Tokyo.
+            <h2 className="mb-1 text-sm font-semibold text-ink-strong">Default timezone</h2>
+            <p className="mb-3 text-sm text-ink-muted">
+              Applied when a photo&apos;s metadata has no timezone of its own
+              (most cameras). IANA name, e.g. Asia/Tokyo.
             </p>
             <input
-              className="mb-1 w-full rounded border border-border bg-background px-2 py-1 text-sm text-ink"
+              className="mb-1 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-ink outline-none transition-colors focus:border-border-strong focus-visible:ring-2 focus-visible:ring-primary-ring"
               value={timezone}
               onChange={(e) => void setTimezone(e.target.value)}
             />
-            {!timezoneValid ? (
-              <p className="mb-2 text-xs text-danger">Not a recognized timezone name</p>
-            ) : (
-              <p className="mb-2 text-xs text-ink-muted">&nbsp;</p>
-            )}
-            <div className="flex justify-between">
-              <button
-                className="rounded border border-border px-3 py-1 text-sm text-ink"
-                onClick={() => setStep(1)}
-              >
-                Back
-              </button>
-              <button
-                className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
+            <p className="mb-6 min-h-4 text-xs text-danger">
+              {timezoneValid ? "" : "Not a recognized timezone name"}
+            </p>
+            <div className="flex items-center justify-between">
+              {leading}
+              <Button
+                variant="primary"
                 disabled={!timezoneValid || timezone.trim() === ""}
                 onClick={() => setStep(3)}
               >
                 Next
-              </button>
+              </Button>
             </div>
           </section>
         ) : null}
 
         {step === 3 ? (
           <section>
-            <h2 className="mb-2 text-sm font-semibold text-ink-strong">Cache location</h2>
-            <p className="mb-2 text-sm text-ink-muted">
+            <h2 className="mb-1 text-sm font-semibold text-ink-strong">Cache location</h2>
+            <p className="mb-3 text-sm text-ink-muted">
               Thumbnails and fast previews live here — put it on your fastest
-              disk. Estimated size for the added directories: ~
-              {totalEstimateGb(dirs)} GB.
+              disk. It rebuilds itself if you ever delete it.
             </p>
-            <p className="mb-2 break-all rounded border border-border px-2 py-1 text-sm text-ink">
+            <p className="mb-4 break-all rounded-lg border border-border bg-surface-muted/40 px-3 py-2 text-sm leading-relaxed text-ink">
               {cacheDir ?? `${dataRoot}/cache (default)`}
             </p>
-            <button
-              className="mb-4 rounded border border-border px-2 py-1 text-sm text-primary hover:bg-primary-surface"
-              onClick={() => void pickCacheDir()}
-            >
-              Change…
-            </button>
-            <div className="flex justify-between">
-              <button
-                className="rounded border border-border px-3 py-1 text-sm text-ink"
-                onClick={() => setStep(2)}
-              >
-                Back
-              </button>
-              <button
-                className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted"
-                onClick={() => setStep(4)}
-              >
+            <Button className="mb-6" onClick={() => void pickCacheDir()}>
+              Change
+            </Button>
+            <div className="flex items-center justify-between">
+              {leading}
+              <Button variant="primary" onClick={() => setStep(4)}>
                 Next
-              </button>
+              </Button>
             </div>
           </section>
         ) : null}
+
         {step === 4 ? (
           <section>
             {/* The one OFFER (not a step): skippable, and skipping degrades
                 honestly — placeholder tiles plus the Managed tools path. */}
-            <h2 className="mb-2 text-sm font-semibold text-ink-strong">ffmpeg</h2>
+            <h2 className="mb-1 text-sm font-semibold text-ink-strong">ffmpeg</h2>
             {/* Leads with VIDEO deliberately. Framing this as an iPhone
                 feature told anyone with a camera full of clips that it did not
-                apply to them — and every one of those videos would then have
-                had no thumbnail, no length and no scene frames. */}
-            <p className="mb-2 text-sm text-ink-muted">
-              Every video needs ffmpeg — for its thumbnail, its length, and the
-              frames the scenes view shows. So do photos in HEIC, HEIF or AVIF,
-              the formats phones shoot; JPEG, PNG and the rest need nothing.
-              OneCopy downloads and manages it itself (free, one click).
-              Skipping is fine and reversible: those files show plain
-              placeholder tiles, and installing it later from the menu&apos;s
-              Managed tools fills them in straight away.
+                apply to them. */}
+            <p className="mb-4 text-sm text-ink-muted">
+              Needed for videos and for HEIC photos. Free, managed by OneCopy,
+              and you can install it later from the menu.
             </p>
             <FfmpegOfferRow />
-            <div className="mt-4 flex justify-between">
-              <button
-                className="rounded border border-border px-3 py-1 text-sm text-ink"
-                onClick={() => setStep(3)}
-              >
-                Back
-              </button>
-              <button
-                className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
-                disabled={counting}
-                title={counting ? "Waiting for directory counts" : undefined}
-                onClick={() => void finish()}
-              >
+            <div className="mt-6 flex items-center justify-between">
+              {leading}
+              <Button variant="primary" onClick={() => void finish()}>
                 Finish and scan
-              </button>
+              </Button>
             </div>
           </section>
         ) : null}
@@ -227,21 +179,18 @@ function FfmpegOfferRow() {
   const install = useBinariesStore((s) => s.install);
   const installed = state !== null && state.status !== "not-installed";
   return (
-    <div className="flex items-center justify-between rounded border border-border px-2 py-1 text-sm">
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-muted/40 px-3 py-2 text-sm">
       <span className="text-ink">
         {installing
           ? progress
           : installed
-            ? `ffmpeg ${state?.facts.installedVersion ?? ""} is installed`
-            : "ffmpeg is not installed"}
+            ? `Installed (${state?.facts.installedVersion ?? "unknown version"})`
+            : "Not installed"}
       </span>
       {!installed && !installing ? (
-        <button
-          className="rounded bg-primary px-2 py-0.5 text-xs text-ink-inverted"
-          onClick={() => void install()}
-        >
-          Install ffmpeg
-        </button>
+        <Button variant="primary" onClick={() => void install()}>
+          Install
+        </Button>
       ) : null}
     </div>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { listen, emit } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
+import { listenThenAnnounce } from "../utils/handshake";
 import ComparisonSlot from "../components/ComparisonSlot";
 import ZoomableImage from "../components/ZoomableImage";
 import type { ComparisonBroadcast } from "../state/comparison-store";
@@ -16,10 +17,12 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
   enlargedRef.current = enlarged;
 
   useEffect(() => {
-    const unlisten = listen<ComparisonBroadcast>("comparison://state", (event) => {
-      setState(event.payload);
-    });
-    void emit("comparison://ready", {});
+    // Announce only once this window can hear the reply (see handshake.ts).
+    const unlisten = listenThenAnnounce<ComparisonBroadcast>(
+      "comparison://state",
+      "comparison://ready",
+      setState,
+    );
     const onKeyDown = (event: KeyboardEvent) => {
       if (enlargedRef.current !== null) {
         // The enlarged overlay owns the keyboard locally: Escape returns to
@@ -44,7 +47,7 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      void unlisten.then((fn) => fn());
+      unlisten();
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);

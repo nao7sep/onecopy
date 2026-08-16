@@ -25,7 +25,7 @@ export default function IssuesView() {
       </p>
       <ul>
         {rows.map((row) => (
-          <li key={row.id} className="mb-1 rounded border border-border bg-surface p-2 text-xs">
+          <li key={row.id} className="mb-1.5 rounded-lg border border-border bg-surface p-3 text-xs">
             <div className="flex justify-between gap-2">
               <span className="font-semibold text-danger">{row.kind}</span>
               <span className="shrink-0 text-ink-muted">

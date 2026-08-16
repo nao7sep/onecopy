@@ -939,83 +939,6 @@ fn binaries_check(app: AppHandle) -> Result<binaries_manager::FfmpegState, Strin
     )
 }
 
-// Wizard support: a fast extension-classified count of one directory tree —
-// no stat, no hashing, just names — so an added directory shows its
-// image/video/other numbers while the user is still in the wizard.
-#[derive(serde::Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct QuickCount {
-    images: u64,
-    videos: u64,
-    others: u64,
-}
-
-// Roots whose in-flight quick count the wizard cancelled (directory removed
-// mid-count): the walk checks membership and stops, so removing a huge
-// directory stops its disk churn, not just discards the result.
-static QUICK_COUNT_CANCELLED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-
-#[tauri::command]
-fn cancel_quick_count(root: String) {
-    if let Ok(mut cancelled) = QUICK_COUNT_CANCELLED.lock() {
-        cancelled.insert(root);
-    }
-}
-
-#[tauri::command]
-fn quick_count(app: AppHandle, root: String) -> Result<QuickCount, String> {
-    logging::boundary(
-        "quick_count",
-        json!({ "root": root }),
-        || {
-            if let Ok(mut cancelled) = QUICK_COUNT_CANCELLED.lock() {
-                cancelled.remove(&root);
-            }
-            let loaded = storage::load_app_data(&app)?;
-            let data_root = paths::data_root(&app)?;
-            let settings = scanner::settings_from_config(loaded.config.as_ref(), &data_root, 0);
-            let mut count = QuickCount::default();
-            let mut checked = 0u32;
-            for entry in walkdir::WalkDir::new(&root).follow_links(false) {
-                checked += 1;
-                if checked % 256 == 0 {
-                    let is_cancelled = QUICK_COUNT_CANCELLED
-                        .lock()
-                        .map(|mut c| c.remove(&root))
-                        .unwrap_or(false);
-                    if is_cancelled {
-                        return Err("cancelled".to_string());
-                    }
-                }
-                let Ok(entry) = entry else { continue };
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy();
-                if entry.path().to_string_lossy().contains(trash::TRASH_DIR_NAME) {
-                    continue;
-                }
-                let ext = extensions::lowercase_ext(&name);
-                match extensions::classify(
-                    &ext,
-                    &settings.lists.images,
-                    &settings.lists.videos,
-                    &settings.lists.companions,
-                ) {
-                    extensions::Kind::Image => count.images += 1,
-                    extensions::Kind::Video => count.videos += 1,
-                    // Companions ride with primaries; the wizard counts them
-                    // as other-files, matching how unattached ones display.
-                    extensions::Kind::Companion | extensions::Kind::Other => count.others += 1,
-                }
-            }
-            Ok(count)
-        },
-        |c| json!({ "images": c.images, "videos": c.videos, "others": c.others }),
-    )
-}
-
 // Wizard support: is this a real IANA timezone name?
 #[tauri::command]
 fn validate_timezone(name: String) -> bool {
@@ -1290,8 +1213,6 @@ pub fn run() {
             binaries_state,
             binaries_install,
             binaries_check,
-            quick_count,
-            cancel_quick_count,
             validate_timezone,
             check_source_dirs,
             log_event,

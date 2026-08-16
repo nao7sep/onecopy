@@ -12,6 +12,7 @@ function member(hash: string): GroupMember {
     fileName: `${hash}.jpg`,
     width: null,
     height: null,
+  byteSize: null,
     sharpness: null,
     copyCount: 1,
     hasThumb: true,

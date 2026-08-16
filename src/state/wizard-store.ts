@@ -8,16 +8,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 
-export interface QuickCount {
-  images: number;
-  videos: number;
-  others: number;
-}
-
 export interface WizardDir {
   path: string;
-  counts: QuickCount | null;
-  counting: boolean;
 }
 
 interface WizardState {
@@ -27,6 +19,9 @@ interface WizardState {
   timezone: string;
   timezoneValid: boolean;
   cacheDir: string | null;
+  /** True when the wizard was RE-RUN over an existing setup. A first run has
+   * nothing to return to, so only a re-run offers Cancel. */
+  reconfigure: boolean;
   missingDirs: string[];
   substitutedDirs: string[];
   init: (config: Record<string, unknown> | null, dataRoot: string) => Promise<void>;
@@ -39,6 +34,8 @@ interface WizardState {
   setTimezone: (name: string) => Promise<void>;
   pickCacheDir: () => Promise<void>;
   finish: () => Promise<void>;
+  /** Abandons a re-run, changing nothing. Never available on a first run. */
+  cancel: () => void;
   recheckPresence: () => Promise<void>;
 }
 
@@ -49,6 +46,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   timezone: "",
   timezoneValid: true,
   cacheDir: null,
+  reconfigure: false,
   missingDirs: [],
   substitutedDirs: [],
 
@@ -63,9 +61,9 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         ? config.cacheDir
         : null;
     if (sourceDirs.length === 0) {
-      set({ open: true, step: 1, dirs: [], timezone, cacheDir });
+      set({ open: true, step: 1, dirs: [], timezone, cacheDir, reconfigure: false });
     } else {
-      set({ open: false, timezone, cacheDir });
+      set({ open: false, timezone, cacheDir, reconfigure: false });
       await get().recheckPresence();
     }
   },
@@ -85,9 +83,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       step: 1,
       timezone,
       cacheDir,
-      // Existing directories seed the list; counts refresh lazily so the
-      // reopen itself costs nothing.
-      dirs: sourceDirs.map((path) => ({ path, counts: null, counting: false })),
+      reconfigure: true,
+      dirs: sourceDirs.map((path) => ({ path })),
     });
   },
 
@@ -100,39 +97,13 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       const existing = new Set(get().dirs.map((d) => d.path));
       const fresh = paths.filter((p) => !existing.has(p));
       if (fresh.length === 0) return;
-      set({
-        dirs: [
-          ...get().dirs,
-          ...fresh.map((path) => ({ path, counts: null, counting: true })),
-        ],
-      });
-      for (const path of fresh) {
-        void invoke<QuickCount>("quick_count", { root: path })
-          .then((counts) => {
-            // A directory removed while counting stays removed (stale guard).
-            set({
-              dirs: get().dirs.map((d) =>
-                d.path === path ? { ...d, counts, counting: false } : d,
-              ),
-            });
-          })
-          .catch((error) => {
-            log.error("quick count failed", toErrorFields(error));
-            set({
-              dirs: get().dirs.map((d) =>
-                d.path === path ? { ...d, counting: false } : d,
-              ),
-            });
-          });
-      }
+      set({ dirs: [...get().dirs, ...fresh.map((path) => ({ path }))] });
     } catch (error) {
       log.error("directory picker failed", toErrorFields(error));
     }
   },
 
   removeDir: (path) => {
-    // Stop an in-flight count's disk churn, not just its result.
-    void invoke("cancel_quick_count", { root: path }).catch(() => {});
     set({ dirs: get().dirs.filter((d) => d.path !== path) });
   },
 
@@ -184,6 +155,12 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     } catch (error) {
       log.error("wizard save failed", toErrorFields(error));
     }
+  },
+
+  cancel: () => {
+    // Nothing was written on the way through — every step edits store state
+    // only, and `finish` is the sole writer — so abandoning is just a close.
+    set({ open: false, reconfigure: false });
   },
 
   recheckPresence: async () => {

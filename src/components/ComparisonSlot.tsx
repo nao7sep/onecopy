@@ -1,4 +1,4 @@
-import { previewUrl } from "../models/items";
+import { factsLine, previewUrl } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
 
 // One comparison slot, shared by the main comparison surface and the
@@ -18,6 +18,7 @@ export default function ComparisonSlot({
   onToggle: () => void;
   onEnlarge?: () => void;
 }) {
+  const facts = factsLine(member);
   return (
     <figure
       // Assistive tech learns the keep state; the slot stays out of the Tab
@@ -52,12 +53,22 @@ export default function ComparisonSlot({
           ×{member.copyCount}
         </span>
       ) : null}
-      <figcaption className="mt-1 flex justify-between text-xs text-ink-muted">
-        <span className="truncate" title={member.fileName}>
-          {member.fileName}
+      <figcaption className="mt-1 text-xs text-ink-muted">
+        <span className="flex justify-between gap-2">
+          <span className="truncate text-ink" title={member.fileName}>
+            {member.fileName}
+          </span>
+          {member.sharpness !== null ? (
+            <span className="shrink-0" title="Sharpness (advisory)">
+              ◐ {Math.round(member.sharpness)}
+            </span>
+          ) : null}
         </span>
-        {member.sharpness !== null ? (
-          <span title="Sharpness (advisory)">{Math.round(member.sharpness)}</span>
+        {/* Pixels and bytes are what make the choice possible. A group is very
+            often one shot at three qualities — original, export, web copy —
+            and at slot size they are the same picture. */}
+        {facts !== "" ? (
+          <span className="mt-0.5 block tabular-nums">{facts}</span>
         ) : null}
       </figcaption>
     </figure>

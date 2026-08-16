@@ -1,23 +1,43 @@
-import { stripUrl } from "../models/items";
+import { FolderOpen } from "lucide-react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { formatBytes, stripUrl } from "../models/items";
 import type { ItemDetail } from "../state/items-store";
 import { formatLocalMinute } from "../utils/displayTime";
+import { fileManagerWord } from "../utils/shortcuts";
+import { log, toErrorFields } from "../repositories";
 
 // The right pane's metadata tab: content facts, the resolved capture time
 // with its source, and the full copy-path list — the live health check (1 copy
 // = backups missing or a drive absent; more than the sync factor = a
 // misdetection worth a look).
 
-function formatBytes(bytes: number | null): string {
-  if (bytes === null) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
+/** Every copy is revealable individually. A logical item can live on four
+ * drives, so "show me the file" has no single answer — the button belongs on
+ * each PATH, which is also the only place the user can say which copy they
+ * meant. */
+function PathRow({ path }: { path: string }) {
+  const word = fileManagerWord();
+  return (
+    <dd className="group flex items-start gap-1 py-0.5">
+      <span className="min-w-0 flex-1 break-all text-xs text-ink" title={path}>
+        {path}
+      </span>
+      <button
+        aria-label={`Show in ${word}`}
+        title={`Show in ${word}`}
+        className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition-opacity hover:bg-surface-muted hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+        onClick={() => {
+          void revealItemInDir(path).catch((error) => {
+            // A copy on an unplugged drive is the ordinary failure here, and
+            // it is worth a log line rather than silence.
+            log.warn("reveal failed", { path, ...toErrorFields(error) });
+          });
+        }}
+      >
+        <FolderOpen size={13} />
+      </button>
+    </dd>
+  );
 }
 
 function formatTaken(detail: ItemDetail): string {
@@ -53,7 +73,10 @@ export default function MetadataPane({
     <dl className="p-3">
       <Row label="Name" value={detail.fileName} />
       <Row label="Taken" value={formatTaken(detail)} />
-      <Row label="Size" value={formatBytes(detail.byteSize)} />
+      <Row
+        label="Size"
+        value={detail.byteSize !== null ? formatBytes(detail.byteSize) : "—"}
+      />
       {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
         <div className="mb-2">
           <dt className="text-xs text-ink-muted">Snapshots</dt>
@@ -81,9 +104,7 @@ export default function MetadataPane({
           Copies ({detail.copyPaths.length})
         </dt>
         {detail.copyPaths.map((path) => (
-          <dd key={path} className="break-all py-0.5 text-xs text-ink" title={path}>
-            {path}
-          </dd>
+          <PathRow key={path} path={path} />
         ))}
       </div>
       {detail.companionPaths.length > 0 ? (
@@ -92,9 +113,7 @@ export default function MetadataPane({
             Companions ({detail.companionPaths.length})
           </dt>
           {detail.companionPaths.map((path) => (
-            <dd key={path} className="break-all py-0.5 text-xs text-ink" title={path}>
-              {path}
-            </dd>
+            <PathRow key={path} path={path} />
           ))}
         </div>
       ) : null}

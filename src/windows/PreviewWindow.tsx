@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listen, emit } from "@tauri-apps/api/event";
+import { listenThenAnnounce } from "../utils/handshake";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import PreviewSurface from "../components/PreviewSurface";
 import type { PreviewShowMessage } from "../state/preview-store";
@@ -16,11 +16,13 @@ export default function PreviewWindow() {
   const [message, setMessage] = useState<PreviewShowMessage | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<PreviewShowMessage>("preview://show", (event) => {
-      setMessage(event.payload);
-    });
-    // Ask the main window for the current selection on load.
-    void emit("preview://ready", {});
+    // Ask the main window for the current selection — only once this window
+    // can actually hear the reply (see handshake.ts).
+    const unlisten = listenThenAnnounce<PreviewShowMessage>(
+      "preview://show",
+      "preview://ready",
+      setMessage,
+    );
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === "f") {
         event.preventDefault();
@@ -41,7 +43,7 @@ export default function PreviewWindow() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      void unlisten.then((fn) => fn());
+      unlisten();
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);

@@ -30,11 +30,33 @@ export interface PreviewShowMessage extends PreviewPayload {
   detail: ItemDetail | null;
 }
 
+/** Where the user wants the preview. `null` is AUTO: a second screen when one
+ * exists, the split otherwise — the original implicit rule, kept as the
+ * default but no longer the only possibility. Someone running OneCopy on one
+ * screen of several has to be able to say so. */
+export type PlacementPreference = "split" | "window" | null;
+
+/** Resolves the preference against the machine. A second-screen preference on
+ * a single-monitor machine degrades to the split rather than opening a window
+ * on top of the grid, which would cover it and steal the keyboard. */
+export function resolvePlacement(
+  preference: PlacementPreference,
+  screenCount: number,
+): "window" | "split" {
+  if (screenCount < 2) return "split";
+  return preference === "split" ? "split" : "window";
+}
+
 interface PreviewState {
   /** The surface follows the grid anchor while true (persisted). */
   follow: boolean;
   /** Which placement the open surface uses; null while closed. */
   placement: "window" | "split" | null;
+  /** The user's stated placement, independent of whether it is open. */
+  placementPreference: PlacementPreference;
+  /** Monitors currently attached, so the chrome knows whether the
+   * second-screen option is even offerable. */
+  screenCount: number;
   /** What the split pane renders (the window renders from events). */
   current: PreviewShowMessage | null;
   /** Split ratio: the preview's share of the main content column (persisted). */
@@ -44,8 +66,14 @@ interface PreviewState {
   open: (payload: PreviewPayload, detail: ItemDetail | null) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
   close: () => void;
+  /** Space and the chrome toggle: show the preview, or hide it. */
+  toggleFollow: () => Promise<void>;
+  /** Moves the open surface to the other placement, and remembers the choice. */
+  setPlacementPreference: (preference: PlacementPreference) => Promise<void>;
+  /** Counts the attached monitors into the store (startup, and on open). */
+  refreshScreens: () => Promise<number>;
   /** Restores the persisted follow flag without opening anything yet. */
-  restoreFollow: (on: boolean, ratio: number | null) => void;
+  restoreFollow: (on: boolean, ratio: number | null, preference: PlacementPreference) => void;
   /** The anchor moved: feed the surface if follow is on. */
   anchorChanged: (payload: PreviewPayload, detail: ItemDetail | null) => void;
   /** The anchor's detail finished loading: complete the earlier message. */
@@ -83,7 +111,9 @@ async function ensurePreviewWindow(): Promise<void> {
     const store = usePreviewStore.getState();
     if (store.placement === "window") {
       usePreviewStore.setState({ placement: null });
-      store.restoreFollow(false, null);
+      // The placement PREFERENCE survives — closing the window means "not
+      // now", not "never on that screen again".
+      store.restoreFollow(false, null, store.placementPreference);
       persistFollow(false);
     }
   });
@@ -154,6 +184,8 @@ function persistFollow(on: boolean): void {
 export const usePreviewStore = create<PreviewState>((set, get) => ({
   follow: false,
   placement: null,
+  placementPreference: null,
+  screenCount: 1,
   current: null,
   splitRatio: 0.5,
 
@@ -162,10 +194,17 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     set({ splitRatio: clamped });
   },
 
+  refreshScreens: async () => {
+    const monitors = await availableMonitors().catch(() => []);
+    const screenCount = Math.max(1, monitors.length);
+    set({ screenCount });
+    return screenCount;
+  },
+
   open: async (payload, detail) => {
     try {
-      const monitors = await availableMonitors().catch(() => []);
-      const placement = monitors.length >= 2 ? "window" : "split";
+      const screenCount = await get().refreshScreens();
+      const placement = resolvePlacement(get().placementPreference, screenCount);
       set({ follow: true, placement, current: { ...payload, detail } });
       persistFollow(true);
       if (placement === "window") {
@@ -186,9 +225,55 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     }
   },
 
-  restoreFollow: (on, ratio) => {
+  // The one show/hide path: Space and the chrome control both call it, so the
+  // key and the button can never disagree about what state they left behind.
+  toggleFollow: async () => {
+    const { follow, close, open } = get();
+    if (follow) {
+      close();
+      return;
+    }
+    const { useItemsStore } = await import("./items-store");
+    const { items, selectedItem, detail } = useItemsStore.getState();
+    const { itemKey } = await import("./items-store");
+    const item = items.find((i) => itemKey(i) === selectedItem);
+    // With no anchor there is nothing to preview yet, so arm follow and let
+    // the first selection open it — the same path a restored flag takes.
+    if (!item) {
+      set({ follow: true });
+      persistFollow(true);
+      return;
+    }
+    await open({ hash: item.hash, pathId: item.hash === null ? item.pathId : null }, detail);
+  },
+
+  setPlacementPreference: async (preference) => {
+    const { follow, placement, current } = get();
+    set({ placementPreference: preference });
+    void import("./app-store").then(({ useAppStore }) =>
+      useAppStore.getState().patchState({ previewPlacement: preference }),
+    );
+    if (!follow) return;
+    const screenCount = await get().refreshScreens();
+    const next = resolvePlacement(preference, screenCount);
+    if (next === placement) return;
+    // Moving between placements tears the old one down first: leaving the
+    // preview window open behind a split pane would show the same photo twice
+    // and keep a window the user just asked to be rid of.
+    if (placement === "window") {
+      await WebviewWindow.getByLabel("preview").then((w) => w?.close());
+    }
+    set({ placement: next });
+    if (next === "window" && current !== null) {
+      await ensurePreviewWindow();
+      void emit("preview://show", current);
+    }
+  },
+
+  restoreFollow: (on, ratio, preference) => {
     set({
       follow: on,
+      placementPreference: preference,
       ...(ratio !== null && Number.isFinite(ratio)
         ? { splitRatio: Math.min(0.85, Math.max(0.15, ratio)) }
         : {}),

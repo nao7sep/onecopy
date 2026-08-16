@@ -19,6 +19,8 @@ import { pushModal, popModal, isTopmostModal } from "../utils/modalStack";
 import { acquireScrollLock, releaseScrollLock } from "../utils/scrollLock";
 import { resolveInitialFocus, resolveTrapTarget } from "../utils/focusTrap";
 import { isComposingEvent } from "../hooks/useComposing";
+import { X } from "lucide-react";
+import Button from "./ui/Button";
 
 export default function ModalShell({
   title,
@@ -96,31 +98,27 @@ export default function ModalShell({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`flex max-h-[90vh] ${widthClass} max-w-[90vw] flex-col rounded border border-border bg-surface`}
+        className={`flex max-h-[90vh] ${widthClass} max-w-[90vw] flex-col rounded-2xl border border-border bg-surface shadow-xl`}
       >
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
-          <h1 id={titleId} className="text-sm font-semibold text-ink-strong">
+        <div className="flex shrink-0 items-center justify-between gap-4 px-5 pb-3 pt-4">
+          <h1 id={titleId} className="text-base font-semibold tracking-tight text-ink-strong">
             {title}
           </h1>
           <button
             data-modal-close
             aria-label="Close"
-            className="rounded px-1.5 text-sm text-ink-muted hover:bg-surface-muted hover:text-ink"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
             onClick={onClose}
           >
-            ✕
+            <X size={15} />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
-        <div className="flex shrink-0 items-center gap-2 border-t border-border px-4 py-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-1">{children}</div>
+        <div className="flex shrink-0 items-center gap-2 px-5 pb-4 pt-4">
           <span className="min-w-0 flex-1 truncate text-xs text-danger">{footerStart}</span>
-          <button
-            data-modal-close
-            className="rounded border border-border px-3 py-1 text-sm text-ink hover:bg-surface-muted"
-            onClick={onClose}
-          >
+          <Button data-modal-close onClick={onClose}>
             {closeLabel}
-          </button>
+          </Button>
           {primaryAction}
         </div>
       </div>

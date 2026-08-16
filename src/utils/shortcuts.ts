@@ -13,6 +13,13 @@ export function primaryModWord(): string {
   return isApplePlatform ? "Cmd" : "Ctrl";
 }
 
+/** What the file manager is called here. Naming the wrong one is a small lie
+ * that makes the whole surface feel foreign, so it follows the same
+ * display-the-running-platform rule the modifier word does. */
+export function fileManagerWord(): string {
+  return isApplePlatform ? "Finder" : "Explorer";
+}
+
 /**
  * BOTH Cmd and Ctrl fire the command on every platform (the conventions'
  * cross-machine muscle-memory rule); only the DISPLAY word is platform-bound.

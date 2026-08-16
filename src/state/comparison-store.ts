@@ -10,7 +10,12 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow, availableMonitors } from "@tauri-apps/api/window";
+import {
+  getCurrentWindow,
+  availableMonitors,
+  PhysicalPosition,
+  PhysicalSize,
+} from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { log, toErrorFields } from "../repositories";
 import { hasOpenModal } from "../utils/modalStack";
@@ -21,6 +26,7 @@ export interface GroupMember {
   fileName: string;
   width: number | null;
   height: number | null;
+  byteSize: number | null;
   sharpness: number | null;
   copyCount: number;
   hasThumb: boolean;
@@ -133,11 +139,21 @@ export function perScreenCapacity(members: GroupMember[]): number {
   return portrait * 2 > members.length ? 3 : 4;
 }
 
-// Spreads the comparison across every extra monitor: one fullscreen window
-// per monitor beyond the first, per-screen capacity from the group's dominant
-// image orientation. Best-effort — a machine with one monitor keeps the
-// single-window form and all 16 keys.
-async function openSpread(perScreen: number): Promise<void> {
+/** The monitors the spread will use and the per-screen capacities they imply,
+ * resolved BEFORE any window exists.
+ *
+ * Splitting this out of the window creation is what makes the handshake sound:
+ * a secondary window announces itself the moment it mounts, and the main
+ * window can only answer if `open` is already true. Creating the windows first
+ * and setting the state afterwards left a gap in which that announcement was
+ * answered with silence — the window then waited forever for a broadcast that
+ * only fires on a state change. Resolve, set state, THEN create.
+ *
+ * Best-effort: a machine with one monitor keeps the single-window form and all
+ * 16 keys. */
+async function resolveSpread(
+  perScreen: number,
+): Promise<{ monitors: Awaited<ReturnType<typeof availableMonitors>>; capacities: number[] }> {
   try {
     // Screen priority orders which monitors take which role (1 = main,
     // 2 = preview, 3+ = comparison; the spread walks the ordered tail).
@@ -147,36 +163,78 @@ async function openSpread(perScreen: number): Promise<void> {
       priorityFromState(useAppStore.getState().appData?.state ?? null),
     );
     const extras = Math.max(0, monitors.length - 1);
-    const capacities =
-      extras === 0 ? [SLOT_KEYS.length] : monitors.map(() => perScreen);
-    useComparisonStore.setState({ spreadCount: extras, capacities });
+    return {
+      monitors,
+      capacities: extras === 0 ? [SLOT_KEYS.length] : monitors.map(() => perScreen),
+    };
+  } catch (error) {
+    log.warn("monitor query failed; staying single-window", toErrorFields(error));
+    return { monitors: [], capacities: [SLOT_KEYS.length] };
+  }
+}
+
+/** Creates (or reveals) one borderless window per extra monitor, sized to that
+ * monitor's own bounds.
+ *
+ * Deliberately NOT the OS fullscreen call: on macOS that animates the window
+ * into its own Space, which costs about a second every time a group opens and
+ * again when it closes — unusable in a keystroke-paced culling flow. A
+ * frameless window placed at the monitor's exact bounds and held above the
+ * others looks the same and appears instantly (imagequeue's viewer proves the
+ * approach). */
+async function openSpread(
+  monitors: Awaited<ReturnType<typeof availableMonitors>>,
+  extras: number,
+): Promise<void> {
+  try {
     for (let i = 0; i < extras; i += 1) {
       const label = `comparison-${i + 1}`;
       const existing = await WebviewWindow.getByLabel(label);
-      if (existing !== null) continue;
-      const window = new WebviewWindow(label, {
+      const monitor = monitors[i + 1];
+      if (existing !== null) {
+        // Reused from a previous session: reveal and re-place it, cheaper
+        // than a webview boot and it keeps its listener registered.
+        // A monitor reports PHYSICAL pixels, so place it with the physical
+        // types rather than converting — on a Retina display the logical
+        // numbers are half these, and a half-sized window would be the bug.
+        await existing.setPosition(
+          new PhysicalPosition(monitor.position.x, monitor.position.y),
+        );
+        await existing.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
+        await existing.show();
+        await existing.setFocus();
+        continue;
+      }
+      // The constructor's x/y/width/height are LOGICAL, so the monitor's
+      // physical bounds are divided by its own scale factor here.
+      const scale = monitor.scaleFactor || 1;
+      new WebviewWindow(label, {
         url: `index.html?view=comparison&slice=${i + 1}`,
         title: "OneCopy Comparison",
-        x: monitors[i + 1].position.x,
-        y: monitors[i + 1].position.y,
-        width: 1024,
-        height: 768,
-      });
-      void window.once("tauri://created", () => {
-        void window.setFullscreen(true).catch(() => {});
+        x: monitor.position.x / scale,
+        y: monitor.position.y / scale,
+        width: monitor.size.width / scale,
+        height: monitor.size.height / scale,
+        decorations: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
       });
     }
   } catch (error) {
     log.warn("comparison spread failed; staying single-window", toErrorFields(error));
-    useComparisonStore.setState({ spreadCount: 0, capacities: [SLOT_KEYS.length] });
   }
 }
 
+/** HIDES the spread rather than closing it. A hidden window keeps its webview
+ * and its `comparison://state` listener, so the next group opens without a
+ * boot — the same reuse imagequeue's viewer relies on. They are real windows
+ * owned by the app and go away with it. */
 async function closeSpread(): Promise<void> {
   const { spreadCount } = useComparisonStore.getState();
   for (let i = 1; i <= spreadCount; i += 1) {
     const window = await WebviewWindow.getByLabel(`comparison-${i}`).catch(() => null);
-    if (window !== null) await window.close().catch(() => {});
+    if (window !== null) await window.hide().catch(() => {});
   }
   useComparisonStore.setState({ spreadCount: 0 });
 }
@@ -215,11 +273,16 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         log.warn("similar group has fewer than 2 live members", { hash });
         return false;
       }
-      // Spread first: the screens' capacities decide the turn size.
-      await openSpread(perScreenCapacity(members));
-      const size = turnSize(get().capacities);
+      // Resolve the screens first (their capacities decide the turn size),
+      // publish the state, and only THEN create the windows — a window that
+      // announces itself must find a session already open to be answered.
+      const { monitors, capacities } = await resolveSpread(perScreenCapacity(members));
+      const extras = Math.max(0, monitors.length - 1);
+      const size = turnSize(capacities);
       set({
         open: true,
+        capacities,
+        spreadCount: extras,
         slots: members.slice(0, size),
         queue: members.slice(size),
         kept: new Set<string>(),
@@ -228,6 +291,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         pendingPermanentCommit: false,
       });
       broadcast();
+      await openSpread(monitors, extras);
       return true;
     } catch (error) {
       log.error("similar group load failed", toErrorFields(error));

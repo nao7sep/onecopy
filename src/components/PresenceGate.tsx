@@ -17,7 +17,7 @@ export default function PresenceGate({
   useBlockingSurface();
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background">
-      <div className="w-[560px] max-w-[90vw] rounded border border-border bg-surface p-6">
+      <div className="w-[560px] max-w-full rounded-2xl border border-border bg-surface p-7 shadow-xl">
         <h1 className="mb-1 text-lg font-semibold text-ink-strong">
           Volumes missing
         </h1>
@@ -30,7 +30,7 @@ export default function PresenceGate({
           {missing.map((path) => (
             <li
               key={path}
-              className="mb-1 break-all rounded border border-danger-surface bg-danger-surface px-2 py-1 text-sm text-danger"
+              className="mb-1.5 break-all rounded-lg bg-danger-surface px-3 py-2 text-sm leading-relaxed text-danger"
             >
               {path}
             </li>
@@ -38,7 +38,7 @@ export default function PresenceGate({
           {substituted.map((path) => (
             <li
               key={path}
-              className="mb-1 break-all rounded border border-danger-surface bg-danger-surface px-2 py-1 text-sm text-danger"
+              className="mb-1.5 break-all rounded-lg bg-danger-surface px-3 py-2 text-sm leading-relaxed text-danger"
             >
               {path}
               <span className="mt-0.5 block text-xs">
@@ -52,7 +52,7 @@ export default function PresenceGate({
         </ul>
         <div className="flex justify-end">
           <button
-            className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted"
+            className="inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-ink-inverted shadow-sm outline-none transition-all hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary-ring"
             onClick={() => void recheck()}
           >
             Check again

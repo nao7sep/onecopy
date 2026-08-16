@@ -79,6 +79,43 @@ export function formatDuration(durationMs: number): string {
     : `${minutes}:${two(seconds)}`;
 }
 
+/** Compact byte size for tiles and list rows — one decimal below 10 units so
+ * "1.4 MB" and "940 KB" both stay short. Binary units, as every file manager
+ * on both platforms reports them. */
+export function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rounded = unit === 0 || value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
+  return `${rounded} ${units[unit]}`;
+}
+
+/** `4032×3024`, or null when the item carries no dimensions (an other-file, or
+ * a still whose decode is still blocked on ffmpeg). */
+export function formatDimensions(
+  width: number | null,
+  height: number | null,
+): string | null {
+  if (width === null || height === null) return null;
+  return `${width}×${height}`;
+}
+
+/** The one line of hard facts a tile or row shows beneath the name: pixels
+ * then bytes, whichever of the two is known. */
+export function factsLine(item: {
+  width: number | null;
+  height: number | null;
+  byteSize: number | null;
+}): string {
+  return [formatDimensions(item.width, item.height), item.byteSize !== null ? formatBytes(item.byteSize) : null]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+}
+
 /** Uppercased extension for the no-thumbnail placeholder tile. */
 export function extLabel(fileName: string): string {
   const dot = fileName.lastIndexOf(".");

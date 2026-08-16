@@ -1,6 +1,8 @@
 import { useBinariesStore } from "../state/binaries-store";
 import { useAppStore } from "../state/app-store";
 import ModalShell from "./ModalShell";
+import Button from "./ui/Button";
+import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
 
 // The "Managed tools" modal: one row per tool (ffmpeg today), the one
@@ -38,56 +40,60 @@ export default function BinariesModal() {
 
   return (
     <ModalShell title="Managed tools" onClose={() => setModalOpen(false)}>
-      <div className="rounded border border-border p-2 text-sm">
+      <div className="rounded-xl border border-border p-3 text-sm">
         <div className="flex items-center justify-between">
-          <span className="font-medium text-ink-strong">ffmpeg</span>
+          <span className="font-semibold text-ink-strong">ffmpeg</span>
           <span className="text-xs text-ink-muted">
             {state ? STATUS_LABELS[state.status] : "…"}
           </span>
         </div>
-        <div className="mt-1 text-xs text-ink-muted">
-          Installed: {state?.facts.installedVersion ?? "—"} · Latest known:{" "}
-          {state?.facts.latestKnownVersion ?? "—"}
-          {state?.facts.lastCheckedAtUtc
-            ? ` · Checked ${formatLocalMinute(state.facts.lastCheckedAtUtc)}`
-            : " · Never checked"}
-        </div>
+        {/* Ordered the way the facts are READ: when it was last checked
+            decides how much the next two are worth, and the latest known
+            version is the thing the installed one is being judged against.
+            Installed last, as the conclusion. */}
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+          <dt className="text-ink-muted">Checked</dt>
+          <dd className="text-ink">
+            {state?.facts.lastCheckedAtUtc
+              ? formatLocalMinute(state.facts.lastCheckedAtUtc)
+              : "Never"}
+          </dd>
+          <dt className="text-ink-muted">Latest known</dt>
+          <dd className="text-ink">{state?.facts.latestKnownVersion ?? "—"}</dd>
+          <dt className="text-ink-muted">Installed</dt>
+          <dd className="text-ink">{state?.facts.installedVersion ?? "—"}</dd>
+        </dl>
         {installing ? (
-          <p className="mt-2 text-xs text-primary">{progress}</p>
+          <p className="mt-3 text-xs text-primary">{progress}</p>
         ) : (
-          <div className="mt-2 flex gap-2">
+          <div className="mt-3 flex gap-2">
             {action ? (
-              <button
-                className="rounded bg-primary px-2 py-0.5 text-xs text-ink-inverted"
-                onClick={() => void install()}
-              >
+              <Button variant="primary" onClick={() => void install()}>
                 {action}
-              </button>
+              </Button>
             ) : null}
-            <button
-              className="rounded border border-border px-2 py-0.5 text-xs text-ink hover:bg-surface-muted"
-              onClick={() => void check()}
-            >
-              Check for updates
-            </button>
+            <Button onClick={() => void check()}>Check for updates</Button>
           </div>
         )}
       </div>
       {/* The conventions' ONE update switch, living in the management
           surface: launch-time checks for installed tools, ~daily at most.
           Default off — nothing automatic unless asked for. */}
-      <label className="mt-3 flex items-center justify-between gap-2 text-sm text-ink">
-        <span>Check for updates at launch (about once a day)</span>
-        <input
-          type="checkbox"
-          checked={checkAtLaunch}
-          onChange={(e) =>
-            void useAppStore.getState().patchConfig({ checkUpdatesAtLaunch: e.target.checked })
-          }
-        />
-      </label>
+      <div className="mt-4">
+        <Row
+          label="Check for updates at launch"
+          hint="About once a day. Nothing is ever installed without asking."
+        >
+          <Toggle
+            checked={checkAtLaunch}
+            onChange={(checked) =>
+              void useAppStore.getState().patchConfig({ checkUpdatesAtLaunch: checked })
+            }
+          />
+        </Row>
+      </div>
       <p className="mt-2 text-xs text-ink-muted">
-        Video posters and snapshot strips need ffmpeg; photos work without it.
+        Videos and HEIC photos need ffmpeg; everything else works without it.
       </p>
     </ModalShell>
   );

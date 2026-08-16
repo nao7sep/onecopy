@@ -94,16 +94,55 @@ export class LogicalSize {
   ) {}
 }
 
+export class PhysicalSize {
+  constructor(
+    public width: number,
+    public height: number,
+  ) {}
+}
+
+export class PhysicalPosition {
+  constructor(
+    public x: number,
+    public y: number,
+  ) {}
+}
+
+/** Windows the app believes exist, by label — what `getByLabel` answers from.
+ * The comparison spread REUSES its windows across sessions (hidden, not
+ * closed), so a double that forgets them cannot exercise the reuse path. */
+const liveWindows = new Map<string, WebviewWindow>();
+
+/** Runs INSIDE the constructor, before it returns. A real webview starts
+ * booting at this instant and may announce itself immediately, so a spec
+ * asserting what the app had published *by then* has to observe here — after
+ * the call it is too late to tell an early publish from a late one. */
+let onWindowCreated: ((label: string) => void) | null = null;
+export function setWindowCreatedHook(fn: ((label: string) => void) | null): void {
+  onWindowCreated = fn;
+}
+
 export class WebviewWindow {
   label: string;
   constructor(label: string, options: Record<string, unknown> = {}) {
     this.label = label;
     createdWindows.push({ label, options });
+    liveWindows.set(label, this);
+    onWindowCreated?.(label);
   }
+  static getByLabel = vi.fn(
+    async (label: string): Promise<WebviewWindow | null> => liveWindows.get(label) ?? null,
+  );
   once = vi.fn(async () => () => {});
   listen = vi.fn(async () => () => {});
   emit = vi.fn(async () => {});
-  close = vi.fn(async () => {});
+  close = vi.fn(async () => {
+    liveWindows.delete(this.label);
+  });
+  show = vi.fn(async () => {});
+  hide = vi.fn(async () => {});
+  setPosition = vi.fn(async (_p: PhysicalPosition) => {});
+  setSize = vi.fn(async (_s: PhysicalSize) => {});
   setFocus = vi.fn(async () => {});
 }
 
@@ -161,6 +200,8 @@ export function resetTauriMocks(
   invokeCalls.length = 0;
   emitCalls.length = 0;
   createdWindows.length = 0;
+  liveWindows.clear();
+  onWindowCreated = null;
   currentWindowLabel = "main";
   monitors = [];
   for (const spy of [

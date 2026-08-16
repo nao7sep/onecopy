@@ -50,7 +50,7 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
             src={stripUrl(hash, i)}
             alt={`snapshot ${i + 1}`}
             loading="lazy"
-            className="h-24 rounded border border-border"
+            className="h-24 rounded-lg border border-border"
           />
         ))}
       </div>
@@ -60,7 +60,7 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
         </p>
       ) : null}
       <button
-        className="rounded border border-border px-3 py-1 text-sm text-primary hover:bg-primary-surface"
+        className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-3 text-sm font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
         onClick={() => {
           const path = detail.copyPaths[0];
           if (path) void openPath(path);

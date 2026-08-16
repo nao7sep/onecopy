@@ -68,7 +68,7 @@ function NodeActions({
     >
       <button
         tabIndex={-1}
-        className="rounded border border-border px-1 text-primary hover:bg-primary-surface"
+        className="rounded-md px-1.5 py-0.5 text-primary transition-colors hover:bg-primary-surface"
         title="Move the selected item here; its other copies go to trash. Shift-click: delete them permanently."
         onClick={(e) =>
           void moveSelectionTo(path, e.shiftKey ? "move-delete-rest" : "move-trash-rest")
@@ -78,7 +78,7 @@ function NodeActions({
       </button>
       <button
         tabIndex={-1}
-        className="rounded border border-border px-1 text-ink hover:bg-surface-muted"
+        className="rounded-md px-1.5 py-0.5 text-ink transition-colors hover:bg-surface-muted"
         title="Copy the selected item here; nothing else is touched."
         onClick={() => void moveSelectionTo(path, "copy")}
       >
@@ -87,7 +87,7 @@ function NodeActions({
       {creating ? (
         <input
           autoFocus
-          className="w-24 rounded border border-border bg-background px-1 text-ink"
+          className="h-7 w-28 rounded-md border border-border bg-background px-2 text-ink outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
           value={name}
           placeholder="folder name"
           onChange={(e) => setName(e.target.value)}
@@ -117,7 +117,7 @@ function NodeActions({
       ) : (
         <button
           tabIndex={-1}
-          className="rounded border border-border px-1 text-ink hover:bg-surface-muted"
+          className="rounded-md px-1.5 py-0.5 text-ink transition-colors hover:bg-surface-muted"
           title="New subfolder"
           onClick={() => setCreating(true)}
         >
@@ -127,7 +127,7 @@ function NodeActions({
       {isEmpty && parent !== null ? (
         <button
           tabIndex={-1}
-          className="rounded border border-border px-1 text-danger hover:bg-danger-surface"
+          className="rounded-md px-1.5 py-0.5 text-danger transition-colors hover:bg-danger-surface"
           title="Delete this empty folder"
           onClick={() => void deleteFolder(path, parent)}
         >
@@ -167,7 +167,7 @@ function DirNode({
     >
       <div
         data-tree-path={entry.path}
-        className={`group flex items-center rounded px-1 py-0.5 text-sm ${
+        className={`group flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
           dropReady || isActive
             ? "bg-primary-surface ring-1 ring-primary-ring"
             : "hover:bg-surface-muted"
@@ -325,7 +325,7 @@ export default function DestinationsTab() {
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-ink-strong">Destinations</h2>
         <button
-          className="rounded border border-border px-2 py-0.5 text-xs text-primary hover:bg-primary-surface"
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
           onClick={() => void addRoot()}
         >
           Add root…
@@ -381,7 +381,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
     >
       <div
         data-tree-path={root}
-        className={`group flex items-center rounded px-1 py-0.5 text-sm ${
+        className={`group flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
           dropReady || isActive
             ? "bg-primary-surface ring-1 ring-primary-ring"
             : "hover:bg-surface-muted"
@@ -410,7 +410,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
                   />
                   <button
                     tabIndex={-1}
-                    className="ml-1 hidden shrink-0 rounded border border-border px-1 text-xs text-ink-muted group-hover:inline hover:bg-surface-muted"
+                    className="ml-1 hidden shrink-0 rounded-md px-1.5 py-0.5 text-xs text-ink-muted transition-colors group-hover:inline hover:bg-surface-muted hover:text-ink"
                     title="Remove this root from the list (the folder itself is untouched)"
                     onClick={() => void removeRoot(root)}
                   >

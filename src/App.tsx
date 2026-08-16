@@ -13,6 +13,7 @@ import {
 } from "./utils/zoom";
 import {
   GRID_MIN_WIDTH,
+  HEADER_HEIGHT,
   RIGHT_PANE_DEFAULT_WIDTH,
   RIGHT_PANE_MIN_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
@@ -23,6 +24,7 @@ import {
   computeMinWindowWidth,
 } from "./utils/windowSizing";
 import { useSectionsStore } from "./state/sections-store";
+import { statusLine } from "./models/status";
 import { useItemsStore } from "./state/items-store";
 import Sidebar from "./components/Sidebar";
 import Grid from "./components/Grid";
@@ -36,7 +38,7 @@ import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
 import { useSettingsStore } from "./state/settings-store";
-import { isHelpShortcut, isSettingsShortcut, primaryModWord } from "./utils/shortcuts";
+import { isHelpShortcut, isSettingsShortcut } from "./utils/shortcuts";
 import { hasOpenModal } from "./utils/modalStack";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
@@ -84,8 +86,6 @@ export default function App() {
     void useAppStore.getState().patchState({ rightPaneTab: tab });
   };
   const issuesOpen = useIssuesStore((s) => s.open);
-  const issuesTotal = useIssuesStore((s) => s.total);
-  const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const ffmpegState = useBinariesStore((s) => s.state);
   const binariesInstalling = useBinariesStore((s) => s.installing);
   const binariesProgress = useBinariesStore((s) => s.progress);
@@ -325,27 +325,11 @@ export default function App() {
           void useItemsStore.getState().deleteSelected(false);
         }
       } else if (event.key.toLowerCase() === "p" && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        // Preview follow toggle (FastStone's model): on opens the surface for
-        // the current anchor; off closes it by any placement.
+        // P and Space are the same command, and the chrome control is a third
+        // way to reach it — all three go through the store's one toggle so
+        // they cannot drift into disagreeing about what state they left.
         event.preventDefault();
-        void import("./state/preview-store").then(({ usePreviewStore, showPreview }) => {
-          const preview = usePreviewStore.getState();
-          if (preview.follow) {
-            preview.close();
-            return;
-          }
-          const { items, selectedItem } = useItemsStore.getState();
-          const item = items.find((i) => itemKey(i) === selectedItem);
-          if (item) {
-            void showPreview({
-              hash: item.hash,
-              pathId: item.hash === null ? item.pathId : null,
-            });
-          } else {
-            // No anchor yet: arm follow; the first selection opens it.
-            usePreviewStore.setState({ follow: true });
-          }
-        });
+        void usePreviewStore.getState().toggleFollow();
       } else if (event.key === "Enter") {
         const { items, selectedItem } = useItemsStore.getState();
         const item = items.find((i) => itemKey(i) === selectedItem);
@@ -410,14 +394,19 @@ export default function App() {
       left: typeof left === "number" && Number.isFinite(left) ? left : current.left,
       right: typeof right === "number" && Number.isFinite(right) ? right : current.right,
     }));
-    void import("./state/preview-store").then(({ usePreviewStore }) =>
+    void import("./state/preview-store").then(({ usePreviewStore }) => {
+      const placement = state.previewPlacement;
       usePreviewStore
         .getState()
         .restoreFollow(
           state.previewFollow === true,
           typeof state.previewSplitRatio === "number" ? state.previewSplitRatio : null,
-        ),
-    );
+          placement === "split" || placement === "window" ? placement : null,
+        );
+      // The chrome control needs the monitor count to know whether the
+      // second-screen option is even offerable, before anything opens.
+      void usePreviewStore.getState().refreshScreens();
+    });
     const last = state.lastSection as { kind?: string; month?: string } | undefined;
     if (
       last &&
@@ -441,6 +430,14 @@ export default function App() {
       }
     }
   }, [appData, counts]);
+
+  const status = statusLine({
+    message: itemsMessage,
+    scanning,
+    progress,
+    rescanNeeded,
+    counts,
+  });
 
   const allEmpty =
     counts !== null &&
@@ -477,122 +474,114 @@ export default function App() {
         />
       ) : null}
       <SettingsModal />
-      {/* Title band. The menu used to sit at the footer's right end on the
-          reasoning that a header band hosting only a button earns nothing —
-          which stopped being true once the band carries the app's name too.
-          The version is deliberately NOT here: it belongs to About, and a
-          permanent version number is not standing state anyone needs at a
-          glance. Fixed chrome, so it costs the window its own height in
-          minimum (windowSizing.ts) rather than eating the grid's. */}
-      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-2 py-1">
-        <Menu
-          ariaLabel="Application menu"
-          panelClassName="left-0 top-full mt-1"
-          trigger={(props) => (
-            <button
-              {...props}
-              aria-label="Open menu"
-              className="flex h-6 w-6 items-center justify-center rounded text-ink-muted hover:bg-surface-muted hover:text-ink"
-            >
-              <MenuIcon size={16} />
-            </button>
-          )}
-        >
-          <MenuItem disabled={scanning} onSelect={() => void startScan()}>
-            {scanning ? "Scanning…" : "Scan all sources"}
-          </MenuItem>
-          <MenuItem
-            onSelect={() =>
-              useWizardStore.getState().reopen(useAppStore.getState().appData?.config ?? null)
-            }
-          >
-            Re-run setup wizard…
-          </MenuItem>
-          <MenuSeparator />
-          <MenuItem onSelect={openSettings} shortcut={`${primaryModWord()}+Comma`}>
-            Settings…
-          </MenuItem>
-          <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
-          <MenuSeparator />
-          {/* A contained widget, not menu items — arrow navigation skips it
-              because only [role="menuitem"] participates. */}
-          <div className="flex items-center justify-between gap-2 px-3 py-1 text-sm text-ink">
-            <span>Zoom</span>
-            <span className="flex items-center gap-1">
-              <button
-                className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
-                aria-label="Zoom out"
-                onClick={() => applyZoom(stepZoomOut(zoomRef.current))}
-              >
-                −
-              </button>
-              <span className="w-10 text-center font-mono text-xs text-ink-muted">
-                {Math.round(zoomLevel * 100)}%
-              </span>
-              <button
-                className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
-                aria-label="Zoom in"
-                onClick={() => applyZoom(stepZoomIn(zoomRef.current))}
-              >
-                +
-              </button>
-            </span>
-          </div>
-          <MenuSeparator />
-          <MenuItem
-            onSelect={() => {
-              const root = useAppStore.getState().appData?.dataRoot;
-              if (root) void openPath(`${root}/logs`);
-            }}
-          >
-            Reveal logs folder
-          </MenuItem>
-          <MenuItem
-            onSelect={() => {
-              const root = useAppStore.getState().appData?.dataRoot;
-              if (root) void openPath(root);
-            }}
-          >
-            Reveal app home
-          </MenuItem>
-          <MenuSeparator />
-          <MenuItem
-            onSelect={() => setHelpOpen(true)}
-            shortcut={`${primaryModWord()}+Slash`}
-          >
-            Keyboard shortcuts…
-          </MenuItem>
-          <MenuItem onSelect={() => setAboutOpen(true)}>About OneCopy…</MenuItem>
-        </Menu>
-        <h1 className="text-sm font-semibold text-ink-strong">OneCopy</h1>
-      </header>
       <div ref={contentRowRef} className="flex min-h-0 flex-1">
         <aside
           style={{ width: paneWidths.left }}
-          className="shrink-0 overflow-y-auto bg-surface p-3"
+          className="flex shrink-0 flex-col overflow-hidden bg-surface"
         >
-          <Sidebar counts={counts} />
-          <button
-            className={`mt-2 w-full rounded px-1 py-0.5 text-left text-sm ${
-              issuesOpen
-                ? "bg-danger-surface text-danger"
-                : issuesTotal > 0
-                  ? "text-danger hover:bg-danger-surface"
-                  : "text-ink-muted hover:bg-surface-muted"
-            }`}
-            onClick={() => setIssuesOpen(!issuesOpen)}
+          {/* Title section. Deliberately scoped to the SIDEBAR's width rather
+              than spanning the window: a full-width band would cost every
+              pane its height, and only this one has room to spare. The
+              hamburger sits at its right end. The version is not here — it
+              belongs to About, and a permanent version number is not standing
+              state anyone needs at a glance. */}
+          <header
+            style={{ height: HEADER_HEIGHT }}
+            className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3"
           >
-            Issues ({issuesTotal})
-          </button>
+            <h1 className="truncate text-sm font-semibold tracking-tight text-ink-strong">
+              OneCopy
+            </h1>
+            <Menu
+              ariaLabel="Application menu"
+              panelClassName="left-0 top-full mt-1"
+              trigger={(props) => (
+                <button
+                  {...props}
+                  aria-label="Open menu"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+                >
+                  <MenuIcon size={16} />
+                </button>
+              )}
+            >
+              <MenuItem disabled={scanning} onSelect={() => void startScan()}>
+                {scanning ? "Scanning…" : "Scan all sources"}
+              </MenuItem>
+              <MenuItem
+                onSelect={() =>
+                  useWizardStore.getState().reopen(useAppStore.getState().appData?.config ?? null)
+                }
+              >
+                Re-run setup wizard…
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem onSelect={openSettings}>Settings…</MenuItem>
+              <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
+              <MenuSeparator />
+              {/* A contained widget, not menu items — arrow navigation skips it
+                  because only [role="menuitem"] participates. */}
+              <div className="flex items-center justify-between gap-2 px-3 py-1 text-sm text-ink">
+                <span>Zoom</span>
+                <span className="flex items-center gap-1">
+                  <button
+                    className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
+                    aria-label="Zoom out"
+                    onClick={() => applyZoom(stepZoomOut(zoomRef.current))}
+                  >
+                    −
+                  </button>
+                  <span className="w-10 text-center font-mono text-xs text-ink-muted">
+                    {Math.round(zoomLevel * 100)}%
+                  </span>
+                  <button
+                    className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
+                    aria-label="Zoom in"
+                    onClick={() => applyZoom(stepZoomIn(zoomRef.current))}
+                  >
+                    +
+                  </button>
+                </span>
+              </div>
+              <MenuSeparator />
+              <MenuItem
+                onSelect={() => {
+                  const root = useAppStore.getState().appData?.dataRoot;
+                  if (root) void openPath(`${root}/logs`);
+                }}
+              >
+                Reveal logs folder
+              </MenuItem>
+              <MenuItem
+                onSelect={() => {
+                  const root = useAppStore.getState().appData?.dataRoot;
+                  if (root) void openPath(root);
+                }}
+              >
+                Reveal app home
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem onSelect={() => setHelpOpen(true)}>Keyboard shortcuts…</MenuItem>
+              <MenuItem onSelect={() => setAboutOpen(true)}>About OneCopy…</MenuItem>
+            </Menu>
+          </header>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            <Sidebar counts={counts} />
+          </div>
         </aside>
         <div
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize sidebar"
+          // The element IS the hit area; the 1px child is the visible line. At
+          // 4px the target was too small to catch, which reads as "the panes
+          // do not resize" rather than as a near miss.
           style={{ width: SPLITTER_WIDTH }}
-          className="shrink-0 cursor-col-resize bg-border hover:bg-border-strong"
+          className="group flex shrink-0 cursor-col-resize justify-center"
           onMouseDown={beginPaneDrag("left")}
-        />
+        >
+          <div className="w-px bg-border transition-colors group-hover:bg-border-strong" />
+        </div>
         <main
           ref={mainColRef}
           style={{ minWidth: GRID_MIN_WIDTH }}
@@ -623,9 +612,11 @@ export default function App() {
                 role="separator"
                 aria-orientation="horizontal"
                 aria-label="Resize preview"
-                className="h-1 shrink-0 cursor-row-resize bg-border hover:bg-border-strong"
+                className="group flex h-[9px] shrink-0 cursor-row-resize flex-col justify-center"
                 onMouseDown={beginSplitDrag}
-              />
+              >
+                <div className="h-px bg-border transition-colors group-hover:bg-border-strong" />
+              </div>
             </>
           ) : null}
           {loadError !== null ? (
@@ -633,7 +624,11 @@ export default function App() {
           ) : issuesOpen ? (
             <IssuesView />
           ) : selected !== null ? (
-            <Grid items={items} loading={itemsLoading} />
+            <Grid
+              items={items}
+              loading={itemsLoading}
+              layout={selected.kind === "other" ? "list" : "tiles"}
+            />
           ) : allEmpty ? (
             <p className="m-auto text-ink-muted">Nothing to handle</p>
           ) : (
@@ -645,9 +640,11 @@ export default function App() {
           aria-orientation="vertical"
           aria-label="Resize details pane"
           style={{ width: SPLITTER_WIDTH }}
-          className="shrink-0 cursor-col-resize bg-border hover:bg-border-strong"
+          className="group flex shrink-0 cursor-col-resize justify-center"
           onMouseDown={beginPaneDrag("right")}
-        />
+        >
+          <div className="w-px bg-border transition-colors group-hover:bg-border-strong" />
+        </div>
         <aside
           style={{ width: paneWidths.right }}
           className="flex shrink-0 flex-col overflow-hidden bg-surface"
@@ -717,32 +714,23 @@ export default function App() {
           </div>
         </aside>
       </div>
-      {/* The footer is now standing STATE only — the app name and the menu
-          moved to the title band, and the actions were always in the menu
-          (app-chrome: a curated summary surface, not a dumping ground). */}
-      <footer className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        <span>
-          {/* A failed delete outranks standing state: it is the one thing the
-              user just did that did not happen, and silence there reads as
-              "Delete does nothing". */}
-          {itemsMessage ? (
-            <span className="text-danger" title={itemsMessage}>
-              {itemsMessage}
-            </span>
-          ) : scanning ? (
-            progress
-          ) : rescanNeeded ? (
-            <span
-              className="text-warning"
-              title="The watcher lost events — run Scan all sources to repair the index"
-            >
-              Rescan needed
-            </span>
-          ) : (
-            ""
-          )}
+      {/* The status bar: standing state always, transient conditions on top.
+          What it says is decided by `statusLine`, which is where the priority
+          order and the "never blank" rule live. */}
+      <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs">
+        <span
+          className={`min-w-0 truncate ${
+            status.tone === "danger"
+              ? "text-danger"
+              : status.tone === "warning"
+                ? "text-warning"
+                : "text-ink-muted"
+          }`}
+          title={status.title}
+        >
+          {status.text}
         </span>
-        <span>
+        <span className="shrink-0">
           {/* Managed-tool state per the managed-runtime-dependencies
               conventions' Show rules: warning and error always show, and a
               benign FYI is silent rather than permanent. So "up to date" and

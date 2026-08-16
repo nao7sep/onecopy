@@ -294,8 +294,13 @@ pub fn section_items(
     Ok(items)
 }
 
-/// One comparison-view member: enough to render a preview tile and order the
-/// group best-first.
+/// One comparison-view member: enough to render a preview tile, ORDER the
+/// group best-first, and tell two versions of the same picture apart.
+///
+/// `byte_size` and the dimensions carry that last job. A group is very often
+/// one shot at three qualities — the camera original, an export, and a
+/// downscaled copy for the web — and at slot size they are the same image. The
+/// keep-one-delete-the-rest flow is undecidable without the numbers.
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMember {
@@ -303,6 +308,7 @@ pub struct GroupMember {
     pub file_name: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    pub byte_size: Option<i64>,
     pub sharpness: Option<f64>,
     pub copy_count: u64,
     pub has_thumb: bool,
@@ -327,7 +333,7 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
         .prepare(
             "SELECT c.hash, \
              (SELECT MIN(p.file_name) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
-             c.width, c.height, c.sharpness, \
+             c.width, c.height, c.byte_size, c.sharpness, \
              (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
              (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
               AND c.derived_at_utc != 'needs-ffmpeg') \
@@ -343,9 +349,10 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
                 file_name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 width: r.get(2)?,
                 height: r.get(3)?,
-                sharpness: r.get(4)?,
-                copy_count: r.get::<_, i64>(5)?.max(0) as u64,
-                has_thumb: r.get(6)?,
+                byte_size: r.get(4)?,
+                sharpness: r.get(5)?,
+                copy_count: r.get::<_, i64>(6)?.max(0) as u64,
+                has_thumb: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?

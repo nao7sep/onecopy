@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+body {
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Native form controls follow the app's own accent rather than the OS blue,
+   so a checkbox does not read as a foreign object dropped into the UI. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--primary);
+}
+
 /* The webview hand on every live clickable (cursor conventions). Tailwind v4's
    Preflight no longer sets the button pointer, so the app owns it here — and a
    disabled button shows the plain arrow, never the hand or not-allowed: a dead
@@ -36,6 +49,15 @@ body.row-resizing * {
    directly, so the `.dark` overrides take effect at runtime. */
 :root {
   color-scheme: light;
+
+  /* The UI font, set explicitly (app-chrome-conventions: nothing about
+     typography is left to the toolkit's default, and the engine-hosted
+     default is a system-ui-led stack). Without it the webview picked its own
+     face at its own weight, which is much of what made the app look
+     undesigned. One variable, so a future font setting has one knob to turn.
+     Not themed, so it stays out of the `.dark` block below. */
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
 
   /* Neutral chrome — surfaces & borders */
   --background: var(--color-gray-50);

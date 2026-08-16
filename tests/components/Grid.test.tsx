@@ -10,7 +10,8 @@ import { render, cleanup, act } from "@testing-library/react";
 import Grid from "../../src/components/Grid";
 import { useItemsStore } from "../../src/state/items-store";
 import type { SectionItem } from "../../src/models/items";
-import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { usePreviewStore } from "../../src/state/preview-store";
+import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -33,8 +34,8 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
 
 const ITEMS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => item(n));
 
-function renderGrid(items = ITEMS, loading = false) {
-  const view = render(<Grid items={items} loading={loading} />);
+function renderGrid(items = ITEMS, loading = false, layout: "tiles" | "list" = "tiles") {
+  const view = render(<Grid items={items} loading={loading} layout={layout} />);
   const container = view.container.querySelector<HTMLElement>("[role='listbox']");
   return { view, container: container! };
 }
@@ -63,6 +64,13 @@ beforeEach(() => {
     get_item_detail: () => null,
     get_section_items: () => ITEMS,
     get_section_counts: () => [],
+  });
+  usePreviewStore.setState({
+    follow: false,
+    placement: null,
+    placementPreference: null,
+    screenCount: 1,
+    current: null,
   });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
@@ -120,14 +128,44 @@ describe("Home and End", () => {
 });
 
 describe("Space", () => {
-  it("toggles the anchor without deleting anything", async () => {
+  it("is Quick Look: it shows the preview and leaves the selection alone", async () => {
+    // It used to toggle the anchor in and out of the multi-selection, which
+    // nobody found and which made Space a way to silently DESELECT the photo
+    // about to be deleted. Selection stays put now; Space only previews.
     const { container } = renderGrid();
     await anchor("h3");
 
-    press(container, " ");
+    await act(async () => press(container, " "));
 
-    // Toggling off clears the anchor but must not invoke a delete.
-    expect(useItemsStore.getState().selectedKeys.has("h3")).toBe(false);
+    expect(usePreviewStore.getState().follow).toBe(true);
+    expect(useItemsStore.getState().selectedKeys.has("h3")).toBe(true);
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
+
+    // And again hides it — one key, both directions.
+    await act(async () => press(container, " "));
+    expect(usePreviewStore.getState().follow).toBe(false);
+  });
+
+  it("never reaches a delete", async () => {
+    const { container } = renderGrid();
+    await anchor("h3");
+
+    await act(async () => press(container, " "));
+
+    expect(invokeCalls.some((c) => c.command === "delete_item")).toBe(false);
+  });
+});
+
+describe("other files", () => {
+  it("render as rows, and Down moves ONE row rather than a tile column", async () => {
+    // A list is one column by definition; measuring tiles would compute a
+    // column count the layout does not have, and Down would skip files.
+    const { container } = renderGrid(ITEMS, false, "list");
+    await anchor("h2");
+
+    press(container, "ArrowDown");
+
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
   });
 });
 

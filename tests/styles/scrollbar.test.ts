@@ -25,6 +25,17 @@ describe("scrollbar styling", () => {
     expect(css).toMatch(/::-webkit-scrollbar-corner\s*{[^}]*transparent/);
   });
 
+  it("sets the UI font explicitly, from a single token", () => {
+    // app-chrome-conventions: nothing about typography is left to the
+    // toolkit's default. Left unset, the webview picks its own face and the
+    // whole app reads as undesigned.
+    expect(css).toMatch(/--font-ui:\s*system-ui/);
+    expect(css).toMatch(/body\s*{[^}]*font-family:\s*var\(--font-ui\)/);
+    // ONE :root block, so the token set has a single home — and so the
+    // block-finding below cannot land on the wrong one.
+    expect(css.match(/^:root\s*{/gm)).toHaveLength(1);
+  });
+
   it("themes the thumb differently in each mode", () => {
     // Counting occurrences proved nothing: two definitions in the same block
     // with the same value passed. What matters is that the dark-mode value

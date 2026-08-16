@@ -1,8 +1,17 @@
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "../state/settings-store";
 import { useAppStore } from "../state/app-store";
-import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
+import {
+  describePosition,
+  monitorKey,
+  orderMonitors,
+  priorityFromState,
+} from "../utils/screens";
 import ModalShell from "./ModalShell";
+import DirectoryRow from "./DirectoryRow";
+import Button from "./ui/Button";
+import { Row, Select, TextInput, Toggle } from "./ui/Field";
+import { Plus } from "lucide-react";
 
 /** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
  * comparison). Persisted as app STATE, not part of the config draft — screen
@@ -33,7 +42,7 @@ function ScreensSection() {
 
   return (
     <>
-      <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">Screens</h2>
+      <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">Screens</h2>
       <p className="mb-1 text-xs text-ink-muted">
         Order decides the role: 1 = main window, 2 = preview, the rest join
         the comparison spread. Applies immediately.
@@ -41,29 +50,37 @@ function ScreensSection() {
       {ordered.map((monitor, index) => (
         <div
           key={monitorKey(monitor)}
-          className="mb-0.5 flex items-center justify-between gap-2 rounded border border-border px-2 py-0.5 text-sm"
+          className="mb-1 flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm"
         >
-          <span className="min-w-0 flex-1 truncate text-ink">
-            {index + 1}. {monitor.name ?? "Display"} ({monitor.size.width}×
-            {monitor.size.height}) · {role(index)}
+          <span className="min-w-0 flex-1">
+            {/* The POSITION leads, because a matched pair reports the same
+                name and the same resolution — where it sits is the only fact
+                that maps onto the desk. */}
+            <span className="text-ink">
+              {index + 1}. {describePosition(monitor, ordered) || "Display"}
+            </span>
+            <span className="block truncate text-xs text-ink-muted">
+              {monitor.name ?? "Display"} · {monitor.size.width}×{monitor.size.height} ·{" "}
+              {role(index)}
+            </span>
           </span>
           <span className="flex gap-1">
-            <button
-              className="rounded border border-border px-1 text-xs disabled:text-ink-muted"
+            <Button
+              variant="ghost"
               aria-label="Move up"
               disabled={index === 0}
               onClick={() => move(index, -1)}
             >
               ↑
-            </button>
-            <button
-              className="rounded border border-border px-1 text-xs disabled:text-ink-muted"
+            </Button>
+            <Button
+              variant="ghost"
               aria-label="Move down"
               disabled={index === ordered.length - 1}
               onClick={() => move(index, 1)}
             >
               ↓
-            </button>
+            </Button>
           </span>
         </div>
       ))}
@@ -92,11 +109,10 @@ function NumberField({
 }) {
   const [text, setText] = useState<string | null>(null);
   return (
-    <label className="flex items-center justify-between gap-2 py-0.5 text-sm text-ink">
-      <span>{label}</span>
-      <input
+    <Row label={label}>
+      <TextInput
         type="number"
-        className="w-24 rounded border border-border bg-background px-2 py-0.5 text-right text-sm"
+        className="w-24 text-right"
         value={text ?? String(value)}
         min={min}
         onFocus={() => setText(String(value))}
@@ -107,7 +123,7 @@ function NumberField({
           setText(null);
         }}
       />
-    </label>
+    </Row>
   );
 }
 
@@ -121,14 +137,9 @@ function CheckField({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex items-center justify-between gap-2 py-0.5 text-sm text-ink">
-      <span>{label}</span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-    </label>
+    <Row label={label}>
+      <Toggle checked={checked} onChange={onChange} />
+    </Row>
   );
 }
 
@@ -165,13 +176,13 @@ export default function SettingsModal() {
       widthClass="w-[520px]"
       footerStart={message}
       primaryAction={
-        <button
-          className="rounded bg-primary px-3 py-1 text-sm text-ink-inverted disabled:bg-surface-muted disabled:text-ink-muted"
+        <Button
+          variant="primary"
           disabled={saving || !dirty || !timezoneValid}
           onClick={() => void save()}
         >
           {saving ? "Saving…" : "Save"}
-        </button>
+        </Button>
       }
     >
       {movingCache !== null ? (
@@ -229,49 +240,34 @@ export default function SettingsModal() {
           </p>
         </ModalShell>
       ) : null}
-          <h2 className="mb-1 mt-2 text-xs font-semibold uppercase text-ink-muted">
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Directories
           </h2>
-          <ul className="mb-1">
+          {/* The same rows the wizard shows — one shared component, so the two
+              lists cannot drift apart. */}
+          <ul className="mb-3 space-y-1.5">
             {draft.sourceDirs.map((dir) => (
-              <li
-                key={dir}
-                className="mb-0.5 rounded border border-border px-2 py-0.5 text-xs"
-              >
-                {/* Same treatment as the wizard's list: the modal is a fixed
-                    width, so sharing a row with Remove truncated the path
-                    almost immediately. It wraps instead — what tells two
-                    source roots apart is often deep in the middle, which an
-                    ellipsis is exactly what hides. */}
-                <p className="break-all text-ink">{dir}</p>
-                <div className="flex justify-end">
-                  <button className="text-danger" onClick={() => removeSourceDir(dir)}>
-                    Remove
-                  </button>
-                </div>
+              <li key={dir}>
+                <DirectoryRow path={dir} onRemove={() => removeSourceDir(dir)} />
               </li>
             ))}
           </ul>
-          <button
-            className="rounded border border-border px-2 py-0.5 text-xs text-primary hover:bg-primary-surface"
-            onClick={() => void addSourceDir()}
-          >
-            Add directory…
-          </button>
+          <Button onClick={() => void addSourceDir()}>
+            <Plus size={14} />
+            Add directory
+          </Button>
 
-          <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Timestamps
           </h2>
-          <label className="flex items-center justify-between gap-2 py-0.5 text-sm text-ink">
-            <span>Default timezone</span>
-            <input
-              className={`w-48 rounded border px-2 py-0.5 text-sm ${
-                timezoneValid ? "border-border" : "border-danger"
-              } bg-background`}
+          <Row label="Default timezone" hint="IANA name, e.g. Asia/Tokyo">
+            <TextInput
+              className="w-48"
+              invalid={!timezoneValid}
               value={draft.defaultTimezone}
               onChange={(e) => void validateTimezone(e.target.value)}
             />
-          </label>
+          </Row>
           <NumberField
             label="Good range starts (year)"
             value={draft.goodRangeStartYear}
@@ -279,7 +275,7 @@ export default function SettingsModal() {
             onChange={(v) => update({ goodRangeStartYear: v })}
           />
 
-          <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Similar photos
           </h2>
           <NumberField
@@ -301,7 +297,7 @@ export default function SettingsModal() {
             onChange={(v) => update({ similarityMaxGroupSize: v })}
           />
 
-          <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Previews
           </h2>
           <NumberField
@@ -342,7 +338,7 @@ export default function SettingsModal() {
             </span>
           </div>
 
-          <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Videos
           </h2>
           <NumberField
@@ -376,13 +372,11 @@ export default function SettingsModal() {
             onChange={(v) => update({ scenesGridRows: v })}
           />
 
-          <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Appearance
           </h2>
-          <label className="flex items-center justify-between gap-2 py-0.5 text-sm text-ink">
-            <span>Theme</span>
-            <select
-              className="rounded border border-border bg-background px-2 py-0.5 text-sm"
+          <Row label="Theme">
+            <Select
               value={draft.theme}
               onChange={(e) =>
                 update({ theme: e.target.value as "system" | "light" | "dark" })
@@ -391,12 +385,12 @@ export default function SettingsModal() {
               <option value="system">Follow the system</option>
               <option value="light">Light</option>
               <option value="dark">Dark</option>
-            </select>
-          </label>
+            </Select>
+          </Row>
 
           <ScreensSection />
 
-          <h2 className="mb-1 mt-3 text-xs font-semibold uppercase text-ink-muted">
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Behavior
           </h2>
           <CheckField

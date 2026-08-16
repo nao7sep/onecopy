@@ -1,129 +1,288 @@
-import { useRef } from "react";
-import { monthLabel, type MonthSection, type SectionCounts } from "../models/sections";
-import { useItemsStore, type SelectedSection } from "../state/items-store";
+import { useEffect, useRef, useState } from "react";
+import { ChevronRight } from "lucide-react";
+import { monthLabel, type SectionCounts } from "../models/sections";
+import {
+  branchesFor,
+  buildSectionTree,
+  defaultExpanded,
+  visibleRows,
+  type ItemKind,
+  type Row,
+} from "../models/sectionTree";
+import { useItemsStore } from "../state/items-store";
+import { useIssuesStore } from "../state/issues-store";
 
-// The left pane's month navigation as ONE composite listbox (the
-// composite-control conventions): the container is the single tab stop,
-// Up/Down flow continuously across the three groups (headers are
-// non-interactive labels), Home/End jump the ends, and activation follows
-// focus — selecting a month is a cheap indexed query. Click mirrors the
-// keyboard through the same source of truth (items-store.selected).
+// The left pane as ONE tree composite (the composite-control conventions):
+// the container is the single tab stop, Up/Down walk the VISIBLE rows,
+// Right expands or descends, Left collapses or climbs to the parent, Home/End
+// jump the ends. Activating a month row opens that section; kind and year rows
+// only expand, because there is no such thing as "all of 2016" to show.
+//
+// Issues is a row in the same tree rather than a button beside it. It is one of
+// the things the left pane can be showing, so it must behave like the others:
+// choosing a month leaves Issues, exactly as choosing Issues leaves the month.
+// As a separate toggle it could be entered but only left by clicking itself.
 
-interface FlatEntry {
-  kind: SelectedSection["kind"];
-  month: string;
-  count: number;
+function rowLabel(row: Row): string {
+  switch (row.type) {
+    case "kind":
+      return row.node.title;
+    case "year":
+      return row.node.year;
+    case "month":
+      return monthLabel(row.month);
+  }
 }
 
-function flatten(counts: SectionCounts | null): {
-  entries: FlatEntry[];
-  groups: { title: string; kind: SelectedSection["kind"]; sections: MonthSection[]; emptyLabel: string }[];
-} {
-  const groups = [
-    { title: "Images", kind: "image" as const, sections: counts?.images ?? [], emptyLabel: "No images" },
-    { title: "Videos", kind: "video" as const, sections: counts?.videos ?? [], emptyLabel: "No videos" },
-    { title: "Other files", kind: "other" as const, sections: counts?.others ?? [], emptyLabel: "No other files" },
-  ];
-  const entries: FlatEntry[] = groups.flatMap((group) =>
-    group.sections.map((section) => ({
-      kind: group.kind,
-      month: section.month,
-      count: section.count,
-    })),
-  );
-  return { entries, groups };
+function rowCount(row: Row): number {
+  switch (row.type) {
+    case "kind":
+      return row.node.count;
+    case "year":
+      return row.node.count;
+    case "month":
+      return row.count;
+  }
 }
 
 export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   const selected = useItemsStore((s) => s.selected);
   const select = useItemsStore((s) => s.select);
+  const issuesOpen = useIssuesStore((s) => s.open);
+  const issuesTotal = useIssuesStore((s) => s.total);
+  const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const { entries, groups } = flatten(counts);
+  const [expanded, setExpanded] = useState<Set<string>>(defaultExpanded);
 
-  const activeIndex = selected
-    ? entries.findIndex((e) => e.kind === selected.kind && e.month === selected.month)
-    : -1;
+  const tree = buildSectionTree(counts);
 
-  const activate = (index: number) => {
-    const entry = entries[index];
-    if (!entry) return;
-    void select({ kind: entry.kind, month: entry.month });
+  // The restored (or newly chosen) section's branches open with it — a
+  // selection the user cannot see would be worse than no restore at all.
+  const selectedKey = selected ? `month:${selected.kind}:${selected.month}` : null;
+  useEffect(() => {
+    const needed = branchesFor(selected);
+    if (needed.length === 0) return;
+    setExpanded((current) => {
+      if (needed.every((key) => current.has(key))) return current;
+      const next = new Set(current);
+      for (const key of needed) next.add(key);
+      return next;
+    });
+  }, [selected]);
+
+  const rows = visibleRows(tree, expanded);
+  /** Issues trails the tree as the last row, so Down off the last month
+   * reaches it and Up off it returns — one continuous axis. */
+  const activeKey = issuesOpen ? "issues" : selectedKey;
+  const keys = [...rows.map((r) => r.key), "issues"];
+  const activeIndex = activeKey === null ? -1 : keys.indexOf(activeKey);
+
+  const toggle = (key: string, open?: boolean) =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      const shouldOpen = open ?? !next.has(key);
+      if (shouldOpen) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+
+  const openSection = (kind: ItemKind, month: string) => {
+    setIssuesOpen(false);
+    void select({ kind, month });
+  };
+
+  const focusRow = (index: number) => {
+    const key = keys[index];
+    if (key === undefined) return;
     containerRef.current
-      ?.querySelector(`[data-entry-index="${index}"]`)
+      ?.querySelector(`[data-row-key="${CSS.escape(key)}"]`)
       ?.scrollIntoView({ block: "nearest" });
   };
 
-  const onKeyDown = (event: React.KeyboardEvent) => {
-    if (entries.length === 0) return;
-    const target =
-      event.key === "ArrowDown"
-        ? Math.min(activeIndex + 1, entries.length - 1)
-        : event.key === "ArrowUp"
-          ? Math.max(activeIndex - 1, 0)
-          : event.key === "PageDown"
-            ? Math.min(activeIndex + 10, entries.length - 1)
-            : event.key === "PageUp"
-              ? Math.max(activeIndex - 10, 0)
-              : event.key === "Home"
-                ? 0
-                : event.key === "End"
-                  ? entries.length - 1
-                  : null;
-    if (target === null) return;
-    event.preventDefault();
-    activate(target);
+  /** Activation follows focus, which is what makes Up/Down browse the library
+   * rather than merely move a highlight. Expandable rows have nothing to
+   * activate, so arrowing onto one only moves — it never blanks the grid. */
+  const activate = (index: number) => {
+    const key = keys[index];
+    if (key === undefined) return;
+    if (key === "issues") {
+      setIssuesOpen(true);
+    } else {
+      const row = rows[index];
+      if (row.type === "month") openSection(row.kind, row.month);
+      else toggle(row.key);
+    }
+    focusRow(index);
   };
 
-  let flatIndex = 0;
+  /** Up/Down move and, on a month, open it. */
+  const step = (index: number) => {
+    const key = keys[index];
+    if (key === undefined) return;
+    if (key === "issues") {
+      setIssuesOpen(true);
+    } else {
+      const row = rows[index];
+      if (row.type === "month") openSection(row.kind, row.month);
+    }
+    focusRow(index);
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    if (keys.length === 0) return;
+    const row = activeIndex >= 0 ? rows[activeIndex] : undefined;
+    const isBranch = row !== undefined && row.type !== "month";
+    const isOpen = row !== undefined && expanded.has(row.key);
+
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        step(Math.min(activeIndex + 1, keys.length - 1));
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        step(Math.max(activeIndex - 1, 0));
+        return;
+      case "PageDown":
+        event.preventDefault();
+        step(Math.min(activeIndex + 10, keys.length - 1));
+        return;
+      case "PageUp":
+        event.preventDefault();
+        step(Math.max(activeIndex - 10, 0));
+        return;
+      case "Home":
+        event.preventDefault();
+        step(0);
+        return;
+      case "End":
+        event.preventDefault();
+        step(keys.length - 1);
+        return;
+      case "ArrowRight":
+        event.preventDefault();
+        // Open a closed branch; on an open one, descend to its first child.
+        if (isBranch && !isOpen) toggle(row.key, true);
+        else if (isBranch) step(Math.min(activeIndex + 1, keys.length - 1));
+        return;
+      case "ArrowLeft": {
+        event.preventDefault();
+        // Close an open branch; otherwise climb to the enclosing one.
+        if (isBranch && isOpen) {
+          toggle(row.key, false);
+          return;
+        }
+        for (let i = activeIndex - 1; i >= 0; i -= 1) {
+          const candidate = rows[i];
+          if (candidate !== undefined && candidate.depth < (row?.depth ?? 3)) {
+            step(i);
+            return;
+          }
+        }
+        return;
+      }
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        activate(activeIndex >= 0 ? activeIndex : 0);
+        return;
+      default:
+    }
+  };
+
+  const allEmpty = tree.every((node) => node.count === 0);
+
   return (
     <div
       ref={containerRef}
       tabIndex={0}
-      role="listbox"
+      role="tree"
       aria-label="Sections"
-      aria-activedescendant={activeIndex >= 0 ? `section-opt-${activeIndex}` : undefined}
+      aria-activedescendant={activeIndex >= 0 ? `section-row-${activeIndex}` : undefined}
       className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
       onKeyDown={onKeyDown}
     >
-      {groups.map((group) => (
-        <section key={group.kind} className="mb-4" role="group" aria-label={group.title}>
-          <h2 className="mb-1 text-sm font-semibold text-ink-strong">{group.title}</h2>
-          {group.sections.length === 0 ? (
-            <p className="text-sm text-ink-muted">{group.emptyLabel}</p>
-          ) : (
-            <ul role="presentation">
-              {group.sections.map((section) => {
-                const index = flatIndex;
-                flatIndex += 1;
-                const isSelected =
-                  selected?.kind === group.kind && selected.month === section.month;
-                return (
-                  <li role="presentation" key={section.month}>
-                    <div
-                      id={`section-opt-${index}`}
-                      role="option"
-                      aria-selected={isSelected}
-                      data-entry-index={index}
-                      className={`flex w-full cursor-pointer justify-between rounded px-1 py-0.5 text-sm ${
-                        isSelected
-                          ? "bg-primary-surface text-primary"
-                          : "text-ink hover:bg-surface-muted"
-                      }`}
-                      onClick={() => {
-                        containerRef.current?.focus();
-                        activate(index);
-                      }}
-                    >
-                      <span>{monthLabel(section.month)}</span>
-                      <span className="text-ink-muted">{section.count}</span>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-      ))}
+      {rows.map((row, index) => {
+        const isBranch = row.type !== "month";
+        const isOpen = expanded.has(row.key);
+        const isSelected = !issuesOpen && row.key === selectedKey;
+        const empty = row.type === "kind" && row.node.count === 0;
+        return [
+          <div
+            key={row.key}
+            id={`section-row-${index}`}
+            role="treeitem"
+            aria-selected={isSelected}
+            aria-expanded={isBranch ? isOpen : undefined}
+            aria-level={row.depth + 1}
+            data-row-key={row.key}
+            style={{ paddingLeft: 6 + row.depth * 14 }}
+            className={`flex cursor-pointer items-center gap-1 rounded-md py-1 pr-2 text-sm transition-colors ${
+              isSelected
+                ? "bg-primary-surface font-medium text-primary"
+                : row.type === "kind"
+                  ? "font-semibold text-ink-strong hover:bg-surface-muted"
+                  : "text-ink hover:bg-surface-muted"
+            }`}
+            onClick={() => {
+              containerRef.current?.focus();
+              activate(index);
+            }}
+          >
+            <ChevronRight
+              size={13}
+              aria-hidden
+              className={`shrink-0 transition-transform ${
+                isBranch ? (isOpen ? "rotate-90 text-ink-muted" : "text-ink-muted") : "invisible"
+              }`}
+            />
+            <span className="min-w-0 flex-1 truncate">{rowLabel(row)}</span>
+            <span className="shrink-0 text-xs tabular-nums text-ink-muted">
+              {empty ? "" : rowCount(row)}
+            </span>
+          </div>,
+          // The design's per-kind empty states, shown where the branch would
+          // have been rather than as a row (there is nothing to select).
+          empty && isOpen ? (
+            <p
+              key={`${row.key}-empty`}
+              className="py-1 pr-2 text-sm text-ink-muted"
+              style={{ paddingLeft: 6 + 14 + 17 }}
+            >
+              {row.node.emptyLabel}
+            </p>
+          ) : null,
+        ];
+      })}
+
+      {allEmpty ? (
+        <p className="mt-2 px-2 text-sm text-ink-muted">Nothing to handle</p>
+      ) : null}
+
+      {/* Issues closes the tree as a peer row — see the note at the top. */}
+      <div
+        id={`section-row-${rows.length}`}
+        role="treeitem"
+        aria-selected={issuesOpen}
+        aria-level={1}
+        data-row-key="issues"
+        style={{ paddingLeft: 6 }}
+        className={`mt-2 flex cursor-pointer items-center gap-1 rounded-md py-1 pr-2 text-sm transition-colors ${
+          issuesOpen
+            ? "bg-danger-surface font-medium text-danger"
+            : issuesTotal > 0
+              ? "text-danger hover:bg-danger-surface"
+              : "text-ink-muted hover:bg-surface-muted"
+        }`}
+        onClick={() => {
+          containerRef.current?.focus();
+          activate(rows.length);
+        }}
+      >
+        <ChevronRight size={13} aria-hidden className="invisible shrink-0" />
+        <span className="min-w-0 flex-1 truncate">Issues</span>
+        <span className="shrink-0 text-xs tabular-nums text-ink-muted">{issuesTotal}</span>
+      </div>
     </div>
   );
 }

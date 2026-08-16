@@ -104,7 +104,7 @@ function ScenesGrid({ hash, frames }: { hash: string; frames: number }) {
           src={stripUrl(hash, i)}
           alt={`scene ${i + 1}`}
           loading="lazy"
-          className="w-full rounded border border-border object-cover"
+          className="w-full rounded-lg border border-border object-cover"
         />
       ))}
     </div>
