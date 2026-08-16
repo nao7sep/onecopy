@@ -130,14 +130,28 @@ fn bind() -> Option<Bound> {
     None
 }
 
-/// Whether a system libheif is present and bindable (probed once).
+/// Whether a system libheif is present and bindable (probed once). The
+/// `ONECOPY_NO_LIBHEIF` environment variable disables the route entirely —
+/// the user's escape hatch for a misbehaving system library, and the seam
+/// that lets one machine exercise BOTH decode routes (the ffmpeg-route tests
+/// set it; without it a libheif-equipped host could never test the fallback).
 pub fn available() -> bool {
+    if disabled_by_env() {
+        return false;
+    }
     BOUND.get_or_init(bind).is_some()
+}
+
+fn disabled_by_env() -> bool {
+    std::env::var_os("ONECOPY_NO_LIBHEIF").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 /// Decodes a HEIF-family file through the system libheif. Every failure is a
 /// plain Err the caller answers with the ffmpeg fallback.
 pub fn decode(path: &Path) -> Result<DynamicImage, String> {
+    if disabled_by_env() {
+        return Err("libheif disabled by ONECOPY_NO_LIBHEIF".to_string());
+    }
     let Some(bound) = BOUND.get_or_init(bind).as_ref() else {
         return Err("libheif not present".to_string());
     };

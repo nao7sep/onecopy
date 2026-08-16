@@ -498,8 +498,15 @@ fn stills_needing_ffmpeg_wait_for_it_instead_of_failing() {
 #[test]
 #[ignore]
 #[serial_test::serial(backup_store)]
+#[serial_test::serial(libheif_env)]
 fn live_still_decode_through_ffmpeg() {
     use onecopy_lib::binaries_manager;
+
+    // The name is a promise: on a libheif-equipped host the routing would
+    // silently satisfy this test through the OTHER route, so ffmpeg is
+    // forced for the duration (the same seam the route-matrix tests use).
+    std::env::set_var("ONECOPY_NO_LIBHEIF", "1");
+    let _restore = scopeguard_remove();
 
     let dir = tempfile::Builder::new()
         .prefix("onecopy-still-live-")
@@ -574,6 +581,18 @@ fn live_still_decode_through_ffmpeg() {
     // byte-copy of the HEIC original.
     let bytes = std::fs::read(cache.preview("rot01")).unwrap();
     assert!(bytes.starts_with(b"RIFF"), "preview is re-encoded WebP");
+}
+
+/// Removes the libheif kill switch when dropped, so a panicking assertion
+/// cannot leave it set for the rest of the process.
+fn scopeguard_remove() -> impl Drop {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var("ONECOPY_NO_LIBHEIF");
+        }
+    }
+    Restore
 }
 
 // The same route carries AVIF, which the image crate also cannot open. The

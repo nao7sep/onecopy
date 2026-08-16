@@ -156,7 +156,8 @@ fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> 
 
 /// Decodes `src`, returning the image alongside the EXIF orientation still
 /// to apply — always 1 for an ffmpeg decode, which arrives upright already.
-fn decode_image(src: &Path, ffmpeg: Option<&Path>) -> Result<(DynamicImage, u16), String> {
+/// Public as the routing seam the decode-path tests drive directly.
+pub fn decode_image(src: &Path, ffmpeg: Option<&Path>) -> Result<(DynamicImage, u16), String> {
     if needs_ffmpeg_decode(src) {
         // Optional acceleration (Design: Stack): a system libheif, when
         // present, decodes in-process — no subprocess per still. It applies
