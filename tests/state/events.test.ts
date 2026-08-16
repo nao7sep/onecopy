@@ -39,11 +39,13 @@ describe("scan events", () => {
     fireEvent("scan://progress", { phase: "hashing", detail: "12/40" });
 
     expect(sections.getState().scanning).toBe(true);
-    expect(sections.getState().progress).toBe("hashing: 12/40");
+    // An unknown phase token degrades to a capitalized word, dash-joined —
+    // the store speaks user language, never raw pipeline tokens.
+    expect(sections.getState().progress).toBe("Hashing \u2014 12/40");
   });
 
   it("clears the scan on a clean finish", async () => {
-    sections.setState({ scanning: true, progress: "hashing: 1/2" });
+    sections.setState({ scanning: true, progress: "Hashing \u2014 1/2" });
 
     fireEvent("scan://done", {});
     expect(sections.getState().scanning).toBe(false);
@@ -61,7 +63,7 @@ describe("scan events", () => {
   });
 
   it("clears the scan on an error rather than leaving the footer stuck", async () => {
-    sections.setState({ scanning: true, progress: "hashing: 1/2" });
+    sections.setState({ scanning: true, progress: "Hashing \u2014 1/2" });
 
     fireEvent("scan://error", { message: "index open failed" });
     expect(sections.getState().scanning).toBe(false);
@@ -90,22 +92,29 @@ describe("watcher events", () => {
 });
 
 describe("binaries events", () => {
-  it("clears the install on an error", async () => {
-    binaries.setState({ installingId: "ffmpeg" });
+  it("clears the entry and keeps the failure visible on an error", async () => {
+    binaries.setState({ installing: { ffmpeg: "Downloading — 12 MB" } });
 
     fireEvent("binaries://error", { id: "ffmpeg", message: "checksum mismatch" });
-    expect(binaries.getState().installingId).toBeNull();
+    expect(binaries.getState().installing["ffmpeg"]).toBeUndefined();
+    expect(binaries.getState().errors["ffmpeg"]).toBe("checksum mismatch");
   });
 
-  it("tracks WHICH entry is installing from the progress events", async () => {
-    // The registry holds several entries now; the modal must narrate the one
-    // actually downloading, and the chip must ignore a model's install.
+  it("narrates SEVERAL installs at once, each in words", async () => {
+    // Installs are parallel per entry (developer, 2026-08-17): the map keeps
+    // one humanized line per id — "download" never reaches the user raw.
     fireEvent("binaries://progress", {
       id: "whisper-large-v3-turbo",
       phase: "download",
       detail: "300 / 1549 MB",
     });
-    expect(binaries.getState().installingId).toBe("whisper-large-v3-turbo");
-    expect(binaries.getState().progress).toContain("300 / 1549 MB");
+    fireEvent("binaries://progress", {
+      id: "clip-vit-b32",
+      phase: "verify",
+      detail: "checking integrity",
+    });
+    const installing = binaries.getState().installing;
+    expect(installing["whisper-large-v3-turbo"]).toBe("Downloading — 300 / 1549 MB");
+    expect(installing["clip-vit-b32"]).toBe("Verifying — checking integrity");
   });
 });

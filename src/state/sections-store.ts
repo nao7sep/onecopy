@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { log, toErrorFields } from "../repositories";
+import { progressLine } from "../models/scan";
 import type { SectionCounts } from "../models/sections";
 
 interface SectionsState {
@@ -55,7 +56,7 @@ void (async () => {
     await listen<{ phase: string; detail: string }>("scan://progress", (event) => {
       useSectionsStore.setState({
         scanning: true,
-        progress: `${event.payload.phase}: ${event.payload.detail}`,
+        progress: progressLine(event.payload.phase, event.payload.detail),
       });
     });
     await listen<{ cancelled?: boolean }>("scan://done", (event) => {

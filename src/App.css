@@ -73,28 +73,28 @@ body.row-resizing * {
     "Helvetica Neue", Arial, sans-serif;
 
   /* Neutral chrome — surfaces & borders */
-  --background: var(--color-gray-50);
+  --background: var(--color-slate-50);
   --surface: var(--color-white);
-  --surface-muted: var(--color-gray-100);
-  --border: var(--color-gray-200);
-  --border-strong: var(--color-gray-300);
+  --surface-muted: var(--color-slate-100);
+  --border: var(--color-slate-200);
+  --border-strong: var(--color-slate-300);
 
   /* Neutral chrome — text ("ink") scale, strongest → faintest */
-  --ink-strong: var(--color-gray-800);
-  --ink: var(--color-gray-700);
-  --ink-muted: var(--color-gray-500);
+  --ink-strong: var(--color-slate-800);
+  --ink: var(--color-slate-700);
+  --ink-muted: var(--color-slate-500);
   --ink-inverted: var(--color-white);
 
   /* Primary — actions, focus, selection */
-  --primary: var(--color-sky-700);
-  --primary-hover: var(--color-sky-800);
+  --primary: var(--color-sky-600);
+  --primary-hover: var(--color-sky-700);
   --primary-ring: var(--color-sky-400);
-  --primary-surface: var(--color-sky-50);
+  --primary-surface: var(--color-sky-100);
 
   /* Danger — this is a destructive app; the delete surfaces lean on these */
-  --danger: var(--color-red-700);
-  --danger-solid: var(--color-red-700);
-  --danger-solid-hover: var(--color-red-800);
+  --danger: var(--color-red-600);
+  --danger-solid: var(--color-red-600);
+  --danger-solid-hover: var(--color-red-700);
   --danger-surface: var(--color-red-50);
 
   /* Warning — attention without alarm (an available update, a stale check) */
@@ -102,39 +102,39 @@ body.row-resizing * {
   --warning-surface: var(--color-amber-50);
 
   /* Scrollbar thumb, themed per mode and brightened on hover */
-  --scrollbar-thumb: var(--color-gray-300);
-  --scrollbar-thumb-hover: var(--color-gray-400);
+  --scrollbar-thumb: var(--color-slate-300);
+  --scrollbar-thumb-hover: var(--color-slate-400);
 }
 
 .dark {
   color-scheme: dark;
 
-  --background: var(--color-gray-950);
-  --surface: var(--color-gray-900);
-  --surface-muted: var(--color-gray-800);
-  --border: var(--color-gray-800);
-  --border-strong: var(--color-gray-700);
+  --background: var(--color-slate-950);
+  --surface: var(--color-slate-900);
+  --surface-muted: var(--color-slate-800);
+  --border: var(--color-slate-700);
+  --border-strong: var(--color-slate-600);
 
-  --ink-strong: var(--color-gray-100);
-  --ink: var(--color-gray-200);
-  --ink-muted: var(--color-gray-400);
-  --ink-inverted: var(--color-gray-950);
+  --ink-strong: var(--color-slate-100);
+  --ink: var(--color-slate-200);
+  --ink-muted: var(--color-slate-400);
+  --ink-inverted: var(--color-slate-950);
 
   --primary: var(--color-sky-400);
   --primary-hover: var(--color-sky-300);
   --primary-ring: var(--color-sky-500);
-  --primary-surface: var(--color-sky-950);
+  --primary-surface: var(--color-sky-900);
 
   --danger: var(--color-red-400);
   --danger-solid: var(--color-red-600);
   --danger-solid-hover: var(--color-red-500);
-  --danger-surface: var(--color-red-950);
+  --danger-surface: var(--color-red-900);
 
   --warning: var(--color-amber-400);
-  --warning-surface: var(--color-amber-950);
+  --warning-surface: var(--color-amber-900);
 
-  --scrollbar-thumb: var(--color-gray-600);
-  --scrollbar-thumb-hover: var(--color-gray-500);
+  --scrollbar-thumb: var(--color-slate-600);
+  --scrollbar-thumb-hover: var(--color-slate-500);
 }
 
 @theme inline {

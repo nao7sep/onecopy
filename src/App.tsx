@@ -54,9 +54,7 @@ import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
 import {
-  ffmpegChipText,
-  ffmpegEntry,
-  ffmpegRole,
+  toolsChip,
   useBinariesStore,
 } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
@@ -96,12 +94,10 @@ export default function App() {
   };
   const issuesTotal = useIssuesStore((s) => s.total);
   const setIssuesOpen = useIssuesStore((s) => s.setOpen);
-  const ffmpeg = useBinariesStore((s) => ffmpegEntry(s.entries));
-  const installingId = useBinariesStore((s) => s.installingId);
-  const binariesProgress = useBinariesStore((s) => s.progress);
+  const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
   // is the modal's story.
-  const binariesInstalling = installingId === "ffmpeg";
+  const ffmpegProgress = useBinariesStore((s) => s.installing["ffmpeg"]);
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
   const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -504,9 +500,9 @@ export default function App() {
               state anyone needs at a glance. */}
           <header
             style={{ height: HEADER_HEIGHT }}
-            className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3"
+            className="flex shrink-0 items-center justify-between gap-2 border-b border-border pl-4 pr-2"
           >
-            <h1 className="truncate text-sm font-semibold tracking-tight text-ink-strong">
+            <h1 className="truncate text-base font-semibold tracking-tight text-ink-strong">
               OneCopy
             </h1>
             <Menu
@@ -515,9 +511,9 @@ export default function App() {
                 <button
                   {...props}
                   aria-label="Open menu"
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
                 >
-                  <MenuIcon size={16} />
+                  <MenuIcon size={18} />
                 </button>
               )}
             >
@@ -763,28 +759,24 @@ export default function App() {
               {issuesTotal} issue{issuesTotal === 1 ? "" : "s"}
             </button>
           ) : null}
-          {/* Managed-tool state per the managed-runtime-dependencies
-              conventions' Show rules: warning and error always show, and a
-              benign FYI is silent rather than permanent. So "up to date" and
-              "installed (not checked)" render NOTHING — the version belongs in
-              the tools modal, which lists it. Not-installed is the deliberate
-              exception the convention names: staying silent there "risks a
-              dead feature", and for OneCopy that is every video and every HEIC
-              reduced to a placeholder tile. */}
-          {ffmpegChipText(binariesInstalling, binariesProgress, ffmpeg?.status ?? null) !==
-          null ? (
-            <button
-              className={
-                ffmpegRole(ffmpeg?.status ?? null) === "warning"
-                  ? "text-warning hover:underline"
-                  : "text-ink-muted hover:text-ink"
-              }
-              title="Managed tools"
-              onClick={() => setBinariesModalOpen(true)}
-            >
-              {ffmpegChipText(binariesInstalling, binariesProgress, ffmpeg?.status ?? null)}
-            </button>
-          ) : null}
+          {/* The managed-tools chip (toolsChip owns the words and the
+              loudness — see its rules); clicking always opens the modal. */}
+          {(() => {
+            const chip = toolsChip(ffmpegProgress !== undefined, ffmpegProgress ?? "", binariesEntries);
+            return chip !== null ? (
+              <button
+                className={
+                  chip.role === "warning"
+                    ? "text-warning hover:underline"
+                    : "text-ink-muted hover:text-ink"
+                }
+                title="Managed tools"
+                onClick={() => setBinariesModalOpen(true)}
+              >
+                {chip.text}
+              </button>
+            ) : null;
+          })()}
         </span>
       </footer>
     </div>

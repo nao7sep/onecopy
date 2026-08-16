@@ -110,14 +110,16 @@ fn a_models_presence_check_is_size_exact() {
 
 #[test]
 #[serial_test::serial(backup_store)]
-fn a_model_check_needs_no_network_and_surfaces_a_repin() {
-    // The app's own pin IS "latest" for a model, so checking works offline —
-    // and an app update that re-pins shows update-available exactly like a
-    // new ffmpeg build would.
+fn a_repinned_model_surfaces_as_update_available_with_no_check_at_all() {
+    // A model has no upstream to ask: "latest" is the pin compiled into this
+    // build. So `state_of` DERIVES it, an app update that re-pins shows
+    // update-available on its own, and `check_entry` refuses the entry
+    // outright rather than stamping a lookup that never happened.
     let dir = home("repin");
     let spec = spec_of("whisper-large-v3-turbo").unwrap();
 
-    // Simulate an install under an OLDER pin.
+    // Simulate an install under an OLDER pin — including a stale "latest",
+    // which the derivation must override rather than trust.
     let old = BinaryFacts {
         installed_version: Some("aaaaaaaaaaaa".into()),
         latest_known_version: Some("aaaaaaaaaaaa".into()),
@@ -130,12 +132,24 @@ fn a_model_check_needs_no_network_and_surfaces_a_repin() {
     let file = std::fs::File::create(&target).unwrap();
     file.set_len(spec.pinned.as_ref().unwrap().bytes).unwrap();
 
-    let facts = check_entry(dir.path(), spec.id).unwrap();
+    let state = state_of(dir.path(), spec);
+    assert_eq!(state.status, BinaryStatus::UpdateAvailable, "no check needed");
     assert_eq!(
-        facts.latest_known_version.as_deref(),
+        state.facts.latest_known_version.as_deref(),
         Some(&spec.pinned.as_ref().unwrap().sha256[..12]),
+        "latest is derived from the pin, not from stored facts"
     );
-    assert_eq!(state_of(dir.path(), spec).status, BinaryStatus::UpdateAvailable);
+    assert!(!state.checkable, "a model has no upstream to ask");
+    assert!(spec_of("ffmpeg").is_some_and(|_| state_of(dir.path(), spec_of("ffmpeg").unwrap()).checkable));
+
+    let refused = check_entry(dir.path(), spec.id).expect_err("models cannot be checked");
+    assert!(refused.contains("ships with the app"), "honest refusal, got: {refused}");
+    // And nothing was written: no fake "checked at" stamp appeared.
+    assert_eq!(
+        load_facts_for(dir.path(), spec.id).last_checked_at_utc.as_deref(),
+        Some("2026-08-01T00:00:00.000Z"),
+        "a refused check writes nothing"
+    );
 }
 
 #[test]

@@ -21,7 +21,6 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
@@ -59,6 +58,13 @@ pub struct PinnedModel {
     /// From the upstream repository's own LFS metadata, not our download.
     pub sha256: &'static str,
     pub bytes: u64,
+    /// When this artifact was PUBLISHED upstream (probed from the upstream's
+    /// own commit history 2026-08-17) — the only honest answer to "how old is
+    /// this model?", since a content hash carries no date. Note for the ONNX
+    /// zoo entries: the file's current path was created by a repo-wide
+    /// restructure in Dec 2023, so these dates come from the pre-restructure
+    /// path, where the artifact actually first appeared.
+    pub released: &'static str,
 }
 
 /// The registry. Order is display order in Managed tools. Adding an entry
@@ -83,6 +89,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             url: "https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/main/model.onnx",
             sha256: "c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63",
             bytes: 351_686_194,
+            released: "2024-04-30",
         }),
     },
     DependencySpec {
@@ -96,6 +103,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
             sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
             bytes: 1_624_555_275,
+            released: "2024-10-01",
         }),
     },
     DependencySpec {
@@ -109,6 +117,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/version-RFB-320.onnx",
             sha256: "34cd7e60aeff28744c657de7a3dc64e872d506741de66987f3426f2b79f88017",
             bytes: 1_270_727,
+            released: "2020-12-17",
         }),
     },
     DependencySpec {
@@ -123,6 +132,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/emotion_ferplus/model/emotion-ferplus-8.onnx",
             sha256: "a2a2ba6a335a3b29c21acb6272f962bd3d47f84952aaffa03b60986e04efa61c",
             bytes: 35_040_571,
+            released: "2020-03-18",
         }),
     },
 ];
@@ -189,9 +199,13 @@ pub fn load_facts_for(root: &Path, id: &str) -> BinaryFacts {
         .unwrap_or_default()
 }
 
-/// Read-modify-write of ONE entry's facts; every other entry's are untouched
-/// (the registry claim serializes callers, so the RMW cannot interleave).
+/// Read-modify-write of ONE entry's facts; every other entry's are untouched.
+/// Serialized by its OWN lock: installs run in parallel per-id (2026-08-17),
+/// so the RMW can no longer lean on a global operation claim.
+static FACTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn save_facts_for(root: &Path, id: &str, facts: &BinaryFacts) -> Result<(), String> {
+    let _lock = FACTS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // records: dependencies.json rides write_atomic's backup hook. The facts
     // are re-derivable, so recording is not REQUIRED — but tiny self-healing
     // text in the store is harmless, and a separate unrecorded write path
@@ -435,20 +449,28 @@ fn macho_has_arm64(header: &[u8]) -> bool {
     false
 }
 
-static BUSY: AtomicBool = AtomicBool::new(false);
+/// In-flight operations by entry id. PER-ID, deliberately (developer,
+/// 2026-08-17): several dependencies may download AT ONCE — only a second
+/// operation on the SAME entry is refused. The facts-file RMW no longer
+/// rides this claim; it has its own lock below.
+static IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
-struct BusyGuard;
+struct BusyGuard {
+    id: String,
+}
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        BUSY.store(false, Ordering::SeqCst);
+        IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.id);
     }
 }
 
-fn claim() -> Result<BusyGuard, String> {
-    if BUSY.swap(true, Ordering::SeqCst) {
-        return Err("a binaries operation is already running".to_string());
+fn claim(id: &str) -> Result<BusyGuard, String> {
+    let mut in_flight = IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+    if !in_flight.insert(id.to_string()) {
+        return Err(format!("{id} is already being worked on"));
     }
-    Ok(BusyGuard)
+    Ok(BusyGuard { id: id.to_string() })
 }
 
 /// The full install/update for any registry entry. Binaries: resolve →
@@ -464,7 +486,7 @@ pub fn install_entry(
     match spec.kind {
         DependencyKind::Binary => install_or_update(root, on_progress),
         DependencyKind::Model => {
-            let _guard = claim()?;
+            let _guard = claim(id)?;
             let pinned = spec.pinned.as_ref().ok_or("model entry carries no pin")?;
             let temp = root.join(TEMP_DIR_NAME);
             std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
@@ -517,7 +539,7 @@ pub fn install_or_update(
     root: &Path,
     mut on_progress: impl FnMut(&str, String),
 ) -> Result<BinaryFacts, String> {
-    let _guard = claim()?;
+    let _guard = claim("ffmpeg")?;
     let temp = root.join(TEMP_DIR_NAME);
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
 
@@ -570,20 +592,24 @@ pub fn install_or_update(
 
 /// Version check only. Success updates `latestKnownVersion` + the check stamp;
 /// failure writes NOTHING so stale knowledge is never dressed up as fresh.
-/// Model entries need no network: the app's own pin IS "latest", so a re-pin
-/// shipped in an update surfaces as update-available on the next check.
+/// BINARIES ONLY: a model's "latest" is the pin compiled into this build, so
+/// there is nothing to ask and nothing to stamp — `state_of` derives it and
+/// a re-pin shipped in an app update shows up on its own.
 pub fn check_entry(root: &Path, id: &str) -> Result<BinaryFacts, String> {
     let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
-    let _guard = claim()?;
+    let _guard = claim(id)?;
     let mut facts = load_facts_for(root, id);
     match spec.kind {
         DependencyKind::Binary => {
             let resolved = resolve_latest()?;
             facts.latest_known_version = Some(resolved.version);
         }
+        // Refused rather than faked: a model has no upstream to ask. Its
+        // version ships with the app, and `state_of` already derives it.
         DependencyKind::Model => {
-            let pinned = spec.pinned.as_ref().ok_or("model entry carries no pin")?;
-            facts.latest_known_version = Some(pin_version(pinned));
+            return Err(format!(
+                "{id} ships with the app — there is no update to check for"
+            ));
         }
     }
     facts.last_checked_at_utc = Some(logging::now_iso_millis());
@@ -605,6 +631,13 @@ pub struct DependencyState {
     pub status: BinaryStatus,
     pub facts: BinaryFacts,
     pub path: String,
+    /// True when this entry's "latest" is DISCOVERABLE — a binary resolved
+    /// live from upstream. A model's latest is a constant compiled into the
+    /// app, so there is nothing to look up and nothing to check.
+    pub checkable: bool,
+    /// A pinned artifact's upstream publication date — how old this model
+    /// actually is. None for binaries, whose live version is the answer.
+    pub released: Option<String>,
 }
 
 /// One entry's live state; presence re-scanned from disk, never persisted.
@@ -612,7 +645,15 @@ pub struct DependencyState {
 /// reached the models dir must read not-installed, not installed-broken.
 pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
     let path = installed_path(root, spec);
-    let facts = load_facts_for(root, spec.id);
+    let mut facts = load_facts_for(root, spec.id);
+    // A model's "latest" is the pin in THIS app build — a constant, not a
+    // lookup. Deriving it here means a re-pinned model surfaces as
+    // update-available the moment the app updates, with no check to run and
+    // no timestamp to record. (Recording a "checked at" for a model would
+    // claim a lookup that never happened.)
+    if let Some(pinned) = spec.pinned.as_ref() {
+        facts.latest_known_version = Some(pin_version(pinned));
+    }
     let present = match spec.kind {
         DependencyKind::Binary => binaries::is_usable_binary(&path),
         DependencyKind::Model => {
@@ -629,6 +670,8 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
         status: binaries::derive_status(present, &facts),
         path: path.to_string_lossy().to_string(),
         facts,
+        checkable: matches!(spec.kind, DependencyKind::Binary),
+        released: spec.pinned.as_ref().map(|p| p.released.to_string()),
     }
 }
 

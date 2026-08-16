@@ -136,7 +136,7 @@ describe("the culling journey", () => {
     await act(async () => {
       fireEvent("scan://progress", { phase: "walk", detail: "/photos: 4 files" });
     });
-    expect(useSectionsStore.getState().progress).toContain("walk");
+    expect(useSectionsStore.getState().progress).toContain("Scanning");
 
     mockCommand("get_section_counts", () => ({
       images: [{ month: "2026-01", count: 4 }],

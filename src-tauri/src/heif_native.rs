@@ -90,7 +90,7 @@ fn bind() -> Option<Bound> {
         // build is treated as absent, never half-used.
         let bound = unsafe {
             let resolved = (|| -> Result<[*const c_void; 10], libloading::Error> {
-                let mut get =
+                let get =
                     |name: &[u8]| library.get::<*const c_void>(name).map(|s| *s);
                 Ok([
                     get(b"heif_context_alloc\0")?,

@@ -562,7 +562,7 @@ pub fn run_pipeline_tail(
     progress("pair", format!("{} companions", pair_stats.paired));
 
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
-    let per_item = |done: u64, total: u64| progress("derive", format!("{done}/{total} previews"));
+    let per_item = |done: u64, total: u64| progress("derive", format!("{done}/{total}"));
     let derive_stats = crate::preview::derive_images_pending(
         conn,
         &cache,
@@ -611,12 +611,12 @@ pub fn run_pipeline_tail(
         conn,
         &cache,
         settings.embedding_model.as_deref(),
-        |done, total| progress("embed", format!("{done}/{total} embeddings")),
+        |done, total| progress("embed", format!("{done}/{total}")),
     )?;
     if embed_stats.embedded > 0 || embed_stats.failed > 0 {
         progress(
             "embed",
-            format!("{} embeddings, {} failures", embed_stats.embedded, embed_stats.failed),
+            format!("{} compared, {} failures", embed_stats.embedded, embed_stats.failed),
         );
     }
 
@@ -627,12 +627,12 @@ pub fn run_pipeline_tail(
             .face_models
             .as_ref()
             .map(|(detector, emotion)| (detector.as_path(), emotion.as_path())),
-        |done, total| progress("faces", format!("{done}/{total} face scores")),
+        |done, total| progress("faces", format!("{done}/{total}")),
     )?;
     if face_stats.scored > 0 || face_stats.failed > 0 {
         progress(
             "faces",
-            format!("{} face scores, {} failures", face_stats.scored, face_stats.failed),
+            format!("{} scored, {} failures", face_stats.scored, face_stats.failed),
         );
     }
 

@@ -46,7 +46,7 @@ export const CONTENT_MIN_HEIGHT = 400;
 // height to host one button and a word, and only the sidebar has room to
 // spare. It is still a real reservation within the sidebar, which is why the
 // number lives here with the other minimums rather than inline in the markup.
-export const HEADER_HEIGHT = 36;
+export const HEADER_HEIGHT = 48;
 
 // Status footer height (one text row: py-1 + text-xs ≈ 24px).
 export const FOOTER_HEIGHT = 24;

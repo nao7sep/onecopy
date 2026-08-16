@@ -5,25 +5,63 @@ import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
 
-// The "Managed tools" modal: ONE ROW PER REGISTRY ENTRY — the ffmpeg binary
-// and the model files — each with the one context-aware action and an
-// explicit check button. It never checks on open — the buttons and the
-// launch toggle are the only triggers.
+// "Managed tools" — grouped by the two genuinely different LIFECYCLES the
+// registry holds (developer, 2026-08-17; one flat list forced an update
+// vocabulary that only a single entry could honor):
+//
+//   ffmpeg resolves live from upstream. It has a real version, a real
+//   "latest", and a check worth running — so the check button lives in ITS
+//   row, where its scope is unmistakable. A registry-wide "Check for
+//   updates" that in truth only ever checked ffmpeg was a promise the app
+//   could not keep.
+//
+//   The models are chosen BY THIS APP BUILD. There is no upstream to ask, so
+//   they never say "Up to date" (a claim about a comparison nobody made) —
+//   installed is simply "Installed" — and they never carry a "checked at"
+//   stamp. They do show their upstream RELEASE DATE, which is the only
+//   honest answer to "how old is this model?". A re-pinned model still
+//   surfaces as an update, because it genuinely is one: this app version now
+//   expects a different file.
+//
+// Installs run in PARALLEL, so one row's download never disables another's.
 
-const STATUS_LABELS: Record<string, string> = {
-  "not-installed": "Not installed",
-  "update-available": "Update available",
-  "up-to-date": "Up to date",
-  "installed-unchecked": "Installed (not checked)",
-};
+/** What a row's state is called, which depends on whether "latest" is a
+ * thing this entry can even have. */
+function statusLabel(entry: DependencyState): string {
+  if (entry.status === "not-installed") return "Not installed";
+  if (entry.status === "update-available") return "Update available";
+  // Only a live-resolved entry may claim up-to-date: it was actually
+  // compared against its upstream. A model has nothing to compare with.
+  if (!entry.checkable) return "Installed";
+  return entry.status === "up-to-date" ? "Up to date" : "Installed";
+}
+
+/** The one line of version fact a row shows. */
+function factLine(entry: DependencyState): string | null {
+  const released = entry.released !== null ? `Released ${entry.released}` : null;
+  if (entry.status === "not-installed") return released;
+  const installed = entry.facts.installedVersion;
+  const latest = entry.facts.latestKnownVersion;
+  const version =
+    entry.status === "update-available" && installed !== null && latest !== null
+      ? entry.checkable
+        ? `Version ${installed} · ${latest} available`
+        : `Version ${installed} · this app version expects ${latest}`
+      : installed !== null
+        ? `Version ${installed}`
+        : null;
+  return [version, released].filter((part) => part !== null).join(" · ") || null;
+}
 
 function EntryRow({ entry }: { entry: DependencyState }) {
-  const installingId = useBinariesStore((s) => s.installingId);
-  const progress = useBinariesStore((s) => s.progress);
+  const progress = useBinariesStore((s) => s.installing[entry.id]);
+  const error = useBinariesStore((s) => s.errors[entry.id]);
+  const checking = useBinariesStore((s) => s.checking);
+  const cooldownUntil = useBinariesStore((s) => s.cooldownUntil);
+  const lastCheckOutcome = useBinariesStore((s) => s.lastCheckOutcome);
   const install = useBinariesStore((s) => s.install);
-  const check = useBinariesStore((s) => s.check);
-  const installing = installingId === entry.id;
-  const busyElsewhere = installingId !== null && !installing;
+  const checkAll = useBinariesStore((s) => s.checkAll);
+  const installing = progress !== undefined;
 
   const action =
     entry.status === "not-installed"
@@ -31,48 +69,50 @@ function EntryRow({ entry }: { entry: DependencyState }) {
       : entry.status === "update-available"
         ? "Update"
         : null;
+  const fact = factLine(entry);
+  // Only a checkable, installed entry offers a check — and ffmpeg is the only
+  // checkable entry, so this IS the single check button, standing where its
+  // scope is obvious rather than floating above a list it cannot cover.
+  const offersCheck = entry.checkable && entry.status !== "not-installed";
+  const coolingDown = !checking && Date.now() < cooldownUntil;
+  const checked =
+    entry.facts.lastCheckedAtUtc !== null
+      ? `Checked ${formatLocalMinute(entry.facts.lastCheckedAtUtc)}`
+      : null;
 
   return (
     <div className="rounded-xl border border-border p-3 text-sm">
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0 truncate font-semibold text-ink-strong">{entry.label}</span>
-        <span className="shrink-0 text-xs text-ink-muted">
-          {STATUS_LABELS[entry.status] ?? entry.status}
-        </span>
+        <span className="shrink-0 text-xs text-ink-muted">{statusLabel(entry)}</span>
       </div>
-      {/* Ordered the way the facts are READ: when it was last checked decides
-          how much the next two are worth, and the latest known version is the
-          thing the installed one is being judged against. */}
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-        <dt className="text-ink-muted">Checked</dt>
-        <dd className="text-ink">
-          {entry.facts.lastCheckedAtUtc
-            ? formatLocalMinute(entry.facts.lastCheckedAtUtc)
-            : "Never"}
-        </dd>
-        <dt className="text-ink-muted">Latest known</dt>
-        <dd className="text-ink">{entry.facts.latestKnownVersion ?? "—"}</dd>
-        <dt className="text-ink-muted">Installed</dt>
-        <dd className="text-ink">{entry.facts.installedVersion ?? "—"}</dd>
-      </dl>
+      {fact !== null ? <p className="mt-1 text-xs text-ink-muted">{fact}</p> : null}
+      {error !== undefined && !installing ? (
+        <p className="mt-1 text-xs text-danger">{error}</p>
+      ) : null}
       {installing ? (
-        <p className="mt-3 text-xs text-primary">{progress}</p>
-      ) : (
-        <div className="mt-3 flex gap-2">
-          {action ? (
-            <Button
-              variant="primary"
-              disabled={busyElsewhere}
-              onClick={() => void install(entry.id)}
-            >
+        <p className="mt-2 text-xs text-primary">{progress}</p>
+      ) : action !== null || offersCheck ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {action !== null ? (
+            <Button variant="primary" onClick={() => void install(entry.id)}>
               {action}
             </Button>
           ) : null}
-          <Button disabled={busyElsewhere} onClick={() => void check(entry.id)}>
-            Check for updates
-          </Button>
+          {offersCheck ? (
+            <>
+              <Button disabled={checking || coolingDown} onClick={() => void checkAll()}>
+                {checking ? "Checking…" : "Check for updates"}
+              </Button>
+              {lastCheckOutcome !== null ? (
+                <span className="text-xs font-medium text-ink">{lastCheckOutcome}</span>
+              ) : checked !== null ? (
+                <span className="text-xs text-ink-muted">{checked}</span>
+              ) : null}
+            </>
+          ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -80,28 +120,64 @@ function EntryRow({ entry }: { entry: DependencyState }) {
 export default function BinariesModal() {
   const open = useBinariesStore((s) => s.modalOpen);
   const entries = useBinariesStore((s) => s.entries);
+  const installing = useBinariesStore((s) => s.installing);
   const setModalOpen = useBinariesStore((s) => s.setModalOpen);
+  const installAll = useBinariesStore((s) => s.installAll);
   const checkAtLaunch =
     useAppStore((s) => s.appData?.config?.checkUpdatesAtLaunch) === true;
 
   if (!open) return null;
 
+  const actionable = entries.filter(
+    (entry) =>
+      (entry.status === "not-installed" || entry.status === "update-available") &&
+      installing[entry.id] === undefined,
+  ).length;
+  const upstream = entries.filter((entry) => entry.checkable);
+  const bundled = entries.filter((entry) => !entry.checkable);
+
   return (
     <ModalShell title="Managed tools" onClose={() => setModalOpen(false)}>
+      {actionable > 1 ? (
+        <div className="mb-3">
+          <Button variant="primary" onClick={() => void installAll()}>
+            Install all
+          </Button>
+        </div>
+      ) : null}
+
+      {entries.length === 0 ? (
+        <p className="py-4 text-center text-sm text-ink-muted">…</p>
+      ) : null}
+
       <div className="space-y-2">
-        {entries.length === 0 ? (
-          <p className="py-4 text-center text-sm text-ink-muted">…</p>
-        ) : (
-          entries.map((entry) => <EntryRow key={entry.id} entry={entry} />)
-        )}
+        {upstream.map((entry) => (
+          <EntryRow key={entry.id} entry={entry} />
+        ))}
       </div>
+
+      {bundled.length > 0 ? (
+        <section className="mt-5">
+          <h3 className="text-sm font-semibold text-ink-strong">Included with OneCopy</h3>
+          <p className="mb-2 text-xs text-ink-muted">
+            OneCopy picks these versions, so they change only when the app
+            itself updates — there is nothing to check for.
+          </p>
+          <div className="space-y-2">
+            {bundled.map((entry) => (
+              <EntryRow key={entry.id} entry={entry} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {/* The conventions' ONE update switch, living in the management
-          surface: launch-time checks for INSTALLED entries, ~daily at most.
-          Default off — nothing automatic unless asked for. */}
-      <div className="mt-4">
+          surface. It covers the tools that HAVE upstream updates — ffmpeg
+          today — at most about once a day. Default off. */}
+      <div className="mt-5">
         <Row
-          label="Check for updates at launch"
-          hint="About once a day, installed tools only. Nothing is ever installed without asking."
+          label="Check ffmpeg for updates at launch"
+          hint="About once a day. Nothing is ever installed without asking."
         >
           <Toggle
             checked={checkAtLaunch}

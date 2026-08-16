@@ -81,7 +81,18 @@ fn install_panic_hook() {
 // arise, not as errors.
 
 // Config + state + data root in one startup round-trip.
-#[tauri::command]
+// THREADING: Tauri dispatches a plain `#[tauri::command]` on the MAIN thread
+// (`ExecutionContext::Blocking` in tauri-macros). On macOS the main thread
+// also commits the window's layer updates, so a command doing file, network,
+// subprocess or decode work freezes the visible UI for its whole duration —
+// which is how a 40 ms check came to feel like half a second of dead button.
+// Every command below that touches the disk, the network, a subprocess or the
+// index carries `(async)` so it runs on the async runtime instead. The ones
+// left plain are pure or atomic (validate_timezone, logging_debug_enabled,
+// transcribe_cancel), or must keep strict call order (log_event), or are
+// small reads whose FIFO ordering the frontend still relies on (the
+// get_* queries — see the plan's follow-up task before converting those).
+#[tauri::command(async)]
 fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
     logging::boundary(
         "load_app_data",
@@ -99,7 +110,7 @@ fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
 // file, so it is the one owner of the read-modify-write, and no frontend
 // store's stale cached copy can blind-overwrite another's save. Returns the
 // merged document so the caller can publish it without a second read.
-#[tauri::command]
+#[tauri::command(async)]
 fn patch_config(app: AppHandle, patch: Value) -> Result<Value, String> {
     logging::boundary(
         "patch_config",
@@ -109,7 +120,7 @@ fn patch_config(app: AppHandle, patch: Value) -> Result<Value, String> {
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
     logging::boundary(
         "patch_state",
@@ -317,7 +328,7 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
 // derive) on a worker thread. Progress arrives as `scan://progress` events,
 // completion as `scan://done` (with the summary) or `scan://error`. Returns
 // false when a scan is already running.
-#[tauri::command]
+#[tauri::command(async)]
 fn start_scan(app: AppHandle) -> Result<bool, String> {
     spawn_scan(app, true)
 }
@@ -460,7 +471,7 @@ fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
 // modal, no restart, never a redirect that orphans tens of GB. Refused while
 // a scan runs (derive writes into the cache mid-move). On failure the copied
 // partial is removed and the old location stays live.
-#[tauri::command]
+#[tauri::command(async)]
 fn move_cache(app: AppHandle, new_dir: Option<String>) -> Result<Value, String> {
     logging::boundary(
         "move_cache",
@@ -593,7 +604,7 @@ fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
 // Deletes one logical item — every copy plus companions — to trash, or
 // permanently when `permanent` is true. The item is addressed the way the grid
 // knows it: by hash, or by path id for unhashed other-files.
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_item(
     app: AppHandle,
     hash: Option<String>,
@@ -656,7 +667,7 @@ fn display_timezone() -> chrono_tz::Tz {
 // "move-trash-rest" (plain drag), "move-delete-rest" (Shift), "copy" (Cmd/Ctrl).
 // Destinations under a configured source root are rejected — moving files into
 // a scanned directory would only re-index them.
-#[tauri::command]
+#[tauri::command(async)]
 fn move_item_out(
     app: AppHandle,
     hash: Option<String>,
@@ -719,7 +730,7 @@ struct DirEntry {
     has_children: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
     let mut entries: Vec<DirEntry> = Vec::new();
     let read = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
@@ -750,7 +761,7 @@ fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
 
 // Creates a subfolder under a tree node. The name must be case-insensitively
 // unique within its directory (storage-path conventions' hard invariant).
-#[tauri::command]
+#[tauri::command(async)]
 fn create_subdir(parent: String, name: String) -> Result<String, String> {
     logging::boundary(
         "create_subdir",
@@ -788,7 +799,7 @@ fn create_subdir(parent: String, name: String) -> Result<String, String> {
 
 // Deletes a tree folder ONLY when empty — remove_dir refuses otherwise, which
 // is the entire safety model (empty folders render distinctly in the tree).
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_empty_dir(path: String) -> Result<(), String> {
     logging::boundary(
         "delete_empty_dir",
@@ -799,7 +810,7 @@ fn delete_empty_dir(path: String) -> Result<(), String> {
 }
 
 // Is this directory empty? Drives the tree's distinct empty-folder rendering.
-#[tauri::command]
+#[tauri::command(async)]
 fn dir_is_empty(path: String) -> Result<bool, String> {
     let mut read = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
     Ok(read.next().is_none())
@@ -808,7 +819,7 @@ fn dir_is_empty(path: String) -> Result<bool, String> {
 // Re-resolves every indexed item from stored evidence and rebuilds similar
 // groups — the settings-change path (timezone, good range, thresholds); no
 // file is read.
-#[tauri::command]
+#[tauri::command(async)]
 fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
     logging::boundary(
         "re_resolve_all",
@@ -837,7 +848,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
 // Scoped rescan: re-stats exactly the directories that contributed files to
 // one section (never the whole roots), then runs the pending pipeline tail.
 // The full per-root walk remains the Scan button's escape hatch.
-#[tauri::command]
+#[tauri::command(async)]
 fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, String> {
     logging::boundary(
         "rescan_section",
@@ -892,7 +903,7 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
 // same path keeps behaviour identical and testable on macOS). Runs on the
 // command pool, never in the synchronous protocol handler; the view calls
 // this and then loads `mediacache://fullres-<hash>`.
-#[tauri::command]
+#[tauri::command(async)]
 fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
     logging::boundary(
         "ensure_fullres",
@@ -920,7 +931,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 // with progress/done/error events; the transcript lands in the cache and
 // `transcript_get` serves it thereafter. One at a time by the engine's own
 // claim; cancel via `transcribe_cancel`.
-#[tauri::command]
+#[tauri::command(async)]
 fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = CACHE_ROOT
@@ -980,7 +991,7 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
 }
 
 // The cached transcript, or null when none exists yet.
-#[tauri::command]
+#[tauri::command(async)]
 fn transcript_get(hash: String) -> Result<Option<String>, String> {
     let cache_root = CACHE_ROOT
         .read()
@@ -999,7 +1010,7 @@ fn transcribe_cancel() {
 // The Trash surface: standing sizes per trash root// The Trash surface: standing sizes per trash root, and the one deliberately
 // destructive convenience — emptying a root. The trash is otherwise
 // write-only; these are the only two readers the design allows.
-#[tauri::command]
+#[tauri::command(async)]
 fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
     logging::boundary(
         "trash_overview",
@@ -1017,7 +1028,7 @@ fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
 // the net for everything inside). The frontend confirms with the totals
 // before calling; the root path must be one `trash_overview` reported —
 // verified here so the command can never delete an arbitrary tree.
-#[tauri::command]
+#[tauri::command(async)]
 fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
     logging::boundary(
         "trash_empty",
@@ -1039,7 +1050,7 @@ fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
 // clear themselves when a scan finds the condition resolved, these two clear
 // everything else. Deleting is honest — the log file keeps the history, and a
 // dismissed-but-persisting scan condition returns on the next scan.
-#[tauri::command]
+#[tauri::command(async)]
 fn dismiss_issue(app: AppHandle, id: i64) -> Result<(), String> {
     logging::boundary(
         "dismiss_issue",
@@ -1055,7 +1066,7 @@ fn dismiss_issue(app: AppHandle, id: i64) -> Result<(), String> {
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
     logging::boundary(
         "dismiss_all_issues",
@@ -1074,7 +1085,7 @@ fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
 // Every managed dependency's presence + facts + derived status, in display
 // order — the Managed tools window renders one row per entry, and the ffmpeg
 // chip reads its entry out of the same list.
-#[tauri::command]
+#[tauri::command(async)]
 fn binaries_state(app: AppHandle) -> Result<Vec<binaries_manager::DependencyState>, String> {
     let data_root = paths::data_root(&app)?;
     Ok(binaries_manager::states(&data_root))
@@ -1083,7 +1094,7 @@ fn binaries_state(app: AppHandle) -> Result<Vec<binaries_manager::DependencyStat
 // Installs or updates ONE registry entry on a worker thread; progress arrives
 // as `binaries://progress` (id in the payload), completion as
 // `binaries://done` / `binaries://error`.
-#[tauri::command]
+#[tauri::command(async)]
 fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let handle = app.clone();
@@ -1144,7 +1155,7 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 // Version check for one entry — never installs; a failure writes nothing.
-#[tauri::command]
+#[tauri::command(async)]
 fn binaries_check(
     app: AppHandle,
     id: String,
@@ -1169,7 +1180,7 @@ fn validate_timezone(name: String) -> bool {
 
 // The session gate's check: configured source directories that are not
 // currently present (an unmounted volume manifests as a missing directory).
-#[tauri::command]
+#[tauri::command(async)]
 fn check_source_dirs(app: AppHandle) -> Result<SourceDirsStatus, String> {
     logging::boundary(
         "check_source_dirs",
@@ -1357,16 +1368,17 @@ pub fn run() {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if check_at_launch {
-                // The conventions' one toggle covers every INSTALLED entry:
-                // each stale one (>24 h since its own last check) gets checked
-                // on a worker thread; not-installed entries are never checked
-                // — there is nothing to update.
+                // The conventions' one toggle covers every installed entry
+                // that HAS an upstream to ask — binaries. A model's version
+                // is compiled into the app, so it is never checked (and
+                // never stamped): `state_of` derives its latest from the pin.
                 let root = data_root.clone();
                 let handle = app.handle().clone();
                 let stale_ids: Vec<String> = binaries_manager::states(&data_root)
                     .into_iter()
                     .filter(|entry| {
-                        entry.status != binaries::BinaryStatus::NotInstalled
+                        entry.checkable
+                            && entry.status != binaries::BinaryStatus::NotInstalled
                             && entry
                                 .facts
                                 .last_checked_at_utc

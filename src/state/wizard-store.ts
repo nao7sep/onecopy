@@ -14,7 +14,7 @@ export interface WizardDir {
 
 interface WizardState {
   open: boolean;
-  step: 1 | 2 | 3 | 4;
+  step: 1 | 2 | 3;
   dirs: WizardDir[];
   timezone: string;
   timezoneValid: boolean;
@@ -30,7 +30,7 @@ interface WizardState {
   reopen: (config: Record<string, unknown> | null) => void;
   addDirs: () => Promise<void>;
   removeDir: (path: string) => void;
-  setStep: (step: 1 | 2 | 3 | 4) => void;
+  setStep: (step: 1 | 2 | 3) => void;
   setTimezone: (name: string) => Promise<void>;
   pickCacheDir: () => Promise<void>;
   finish: () => Promise<void>;

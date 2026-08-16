@@ -376,10 +376,13 @@ pub fn dhash(img: &DynamicImage) -> u64 {
 }
 
 /// Ensures the full-resolution conversion for one HEIC/AVIF content exists,
-/// decoding through the managed ffmpeg on first request. Runs on a COMMAND
-/// (a pool thread) — never inside the protocol handler, which is synchronous
-/// on the main thread; the 100% view calls this first and then loads the
-/// cache entry like any other. Idempotent: an existing entry returns at once.
+/// decoding through the managed ffmpeg (or libheif) on first request. Its
+/// command is declared `#[tauri::command(async)]` so it runs on the async
+/// runtime — Tauri dispatches a plain command on the MAIN thread, where a
+/// multi-hundred-millisecond decode stalls the compositor and the whole
+/// window stops repainting. Never inside the protocol handler either, which
+/// is synchronous on the main thread. Idempotent: an existing entry returns
+/// at once.
 pub fn ensure_fullres(
     conn: &Connection,
     cache: &CachePaths,

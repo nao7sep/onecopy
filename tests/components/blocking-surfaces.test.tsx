@@ -52,10 +52,10 @@ describe("the setup wizard", () => {
     useWizardStore.setState({ step: 1, dirs: [], timezone: "UTC" });
   });
 
-  it("counts only the numbered steps, never the ffmpeg offer", () => {
-    // The design is "three steps and one offer". The offer is step 4 in the
-    // flow's own counter, so a hardcoded "of 3" rendered "Step 4 of 3" — a
-    // number that cannot be true and reads as a bug the moment it is seen.
+  it("is exactly three steps, ending in Finish and scan — no install page", () => {
+    // The offer page is deliberately GONE (developer, 2026-08-17): Managed
+    // tools is the one install surface, funnelled to by the warning chip. A
+    // wizard install row would be a second UI drifting from it.
     const view = render(<Wizard dataRoot="/tmp/onecopy" />);
     expect(view.container.textContent).toContain("Step 1 of 3");
 
@@ -63,10 +63,21 @@ describe("the setup wizard", () => {
       act(() => useWizardStore.setState({ step }));
       expect(view.container.textContent).toContain(`Step ${step} of 3`);
     }
+    expect(view.container.textContent).toContain("Finish and scan");
+    expect(view.container.textContent).not.toContain("ffmpeg");
+  });
 
-    act(() => useWizardStore.setState({ step: 4 }));
-    expect(view.container.textContent).not.toContain("of 3");
-    expect(view.container.textContent).toContain("Optional");
+  it("offers Cancel on every page of a re-run, and never on a first run", () => {
+    // Being three pages deep is no reason to walk back out first (developer,
+    // 2026-08-17). A FIRST run stays completable-only: nothing exists behind
+    // it to cancel back to.
+    const view = render(<Wizard dataRoot="/tmp/onecopy" />);
+    for (const step of [1, 2, 3] as const) {
+      act(() => useWizardStore.setState({ step, reconfigure: true }));
+      expect(view.container.textContent).toContain("Cancel");
+      act(() => useWizardStore.setState({ step, reconfigure: false }));
+      expect(view.container.textContent).not.toContain("Cancel");
+    }
   });
 
   it("silences the command layer while it is open", () => {
