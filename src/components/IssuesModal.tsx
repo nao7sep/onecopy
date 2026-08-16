@@ -71,12 +71,12 @@ export default function IssuesModal() {
                 </span>
               </div>
               {row.path ? (
-                <div className="mt-0.5 break-all text-ink" title={row.path}>
+                <div className="mt-0.5 select-text break-all text-ink" title={row.path}>
                   {row.path}
                 </div>
               ) : null}
               {row.message ? (
-                <div className="mt-0.5 break-words text-ink-muted">{row.message}</div>
+                <div className="mt-0.5 select-text break-words text-ink-muted">{row.message}</div>
               ) : null}
             </li>
           ))}

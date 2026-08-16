@@ -27,7 +27,7 @@ function PathRow({ path }: { path: string }) {
           marker the wrapped lines read as separate entries — the developer
           could not see where one copy ended and the next began. */}
       <span aria-hidden className="mt-1 h-1 w-1 shrink-0 rounded-full bg-ink-muted" />
-      <span className="min-w-0 flex-1 break-all text-xs leading-relaxed text-ink" title={path}>
+      <span className="min-w-0 flex-1 select-text break-all text-xs leading-relaxed text-ink" title={path}>
         {path}
       </span>
       <button
@@ -118,7 +118,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="mb-1">
       <dt className="text-xs text-ink-muted">{label}</dt>
-      <dd className="break-words text-sm text-ink">{value}</dd>
+      <dd className="select-text break-words text-sm text-ink">{value}</dd>
     </div>
   );
 }

@@ -23,6 +23,17 @@ void loadAppData()
   })
   .catch(() => applyTheme("system"));
 
+// The webview's default context menu (Look Up, Translate, Search with
+// Google, Inspect Element…) belongs to a web page, not a desktop app —
+// suppressed everywhere except text-entry surfaces, where the native menu
+// carries Paste. Registered here so EVERY window gets it.
+window.addEventListener("contextmenu", (event) => {
+  const target = event.target as HTMLElement | null;
+  if (!target?.closest("input, textarea, [contenteditable='true']")) {
+    event.preventDefault();
+  }
+});
+
 // Global last-resort handlers — catch anything that slips past React's error
 // handling and record it before the page can tear down.
 window.addEventListener("error", (event) => {
