@@ -1,28 +1,31 @@
 //! Image embeddings for cross-device similarity (Design: Similar-shot
-//! grouping) — a CLIP ViT-B/32 vision encoder run through ONNX Runtime,
+//! grouping) — a SigLIP 2 large vision tower run through ONNX Runtime,
 //! linked in like the whisper engine; only the MODEL is provisioned, by the
 //! managed registry. dHash sees gradient layouts, so two devices' renderings
 //! of one scene rarely match it; the embedding is the signal that does.
 //!
 //! Preprocessing follows the model's own published contract exactly
-//! (preprocessor_config.json, probed 2026-08-16): resize shortest edge to
-//! 224 (bicubic), centre-crop 224×224, RGB, scale 1/255, normalize with the
-//! CLIP mean/std. The output embedding is L2-normalized here so similarity
-//! is a plain dot product.
+//! (preprocessor_config.json, probed 2026-08-17): resize DIRECTLY to
+//! 384×384 — SigLIP squares the image rather than cropping it, so nothing at
+//! the edges is thrown away — RGB, scale 1/255, then normalize with mean and
+//! std 0.5. This differs from CLIP's shortest-edge-plus-centre-crop and its
+//! own mean/std, which is why the contract is read per model rather than
+//! carried over. The output embedding is L2-normalized here so similarity is
+//! a plain dot product.
 
 use std::path::Path;
 
 use image::DynamicImage;
 
-/// The pinned artifact exports CLIP's PROJECTED image embedding (512-dim —
-/// the space CLIP similarity is defined in, better than the raw 768 pooler
-/// output). The code accepts what the model declares rather than pinning the
-/// number, so a future artifact swap cannot silently truncate; the sanity
-/// bound only rejects the absurd.
+/// The code accepts whatever embedding width the model declares rather than
+/// pinning the number, so an artifact swap cannot silently truncate; the
+/// sanity bound only rejects the absurd.
 pub const MAX_EMBEDDING_DIM: usize = 4096;
 
-const CLIP_MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
-const CLIP_STD: [f32; 3] = [0.268_629_54, 0.261_302_58, 0.275_777_1];
+/// The published input size and normalization for the pinned tower.
+const INPUT_EDGE: u32 = 384;
+const NORM_MEAN: f32 = 0.5;
+const NORM_STD: f32 = 0.5;
 
 /// One session reused across a whole pass — model load costs seconds, one
 /// image costs tens of milliseconds.
@@ -64,22 +67,18 @@ impl Embedder {
 
     /// The published preprocessing, then the encoder, then L2 normalization.
     pub fn embed(&mut self, img: &DynamicImage) -> Result<Vec<f32>, String> {
-        // Resize shortest edge to 224 (Triangle ≈ the contract's bicubic for
-        // this purpose), centre-crop to 224×224.
-        let (w, h) = (img.width().max(1), img.height().max(1));
-        let scale = 224.0 / w.min(h) as f32;
-        let (rw, rh) = (
-            ((w as f32 * scale).round() as u32).max(224),
-            ((h as f32 * scale).round() as u32).max(224),
-        );
-        let resized = img.resize_exact(rw, rh, image::imageops::FilterType::Triangle);
-        let cropped = resized.crop_imm((rw - 224) / 2, (rh - 224) / 2, 224, 224).to_rgb8();
+        // A DIRECT square resize, per the contract — no centre crop, so a
+        // subject at the edge of a wide frame still reaches the encoder.
+        let square = img
+            .resize_exact(INPUT_EDGE, INPUT_EDGE, image::imageops::FilterType::Triangle)
+            .to_rgb8();
 
-        let mut tensor = ndarray::Array4::<f32>::zeros((1, 3, 224, 224));
-        for (x, y, pixel) in cropped.enumerate_pixels() {
+        let edge = INPUT_EDGE as usize;
+        let mut tensor = ndarray::Array4::<f32>::zeros((1, 3, edge, edge));
+        for (x, y, pixel) in square.enumerate_pixels() {
             for channel in 0..3 {
                 tensor[[0, channel, y as usize, x as usize]] =
-                    (pixel[channel] as f32 / 255.0 - CLIP_MEAN[channel]) / CLIP_STD[channel];
+                    (pixel[channel] as f32 / 255.0 - NORM_MEAN) / NORM_STD;
             }
         }
 

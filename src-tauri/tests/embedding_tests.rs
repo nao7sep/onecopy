@@ -147,7 +147,7 @@ fn live_model_orders_similarity_sanely() {
     use image::DynamicImage;
     use onecopy_lib::binaries_manager::{spec_of};
 
-    let pin = spec_of("clip-vit-b32").unwrap().pinned.as_ref().unwrap();
+    let pin = spec_of("siglip2-large-vision").unwrap().pinned.as_ref().unwrap();
     let dir = tempfile::Builder::new()
         .prefix("onecopy-embed-live-")
         .tempdir()
@@ -191,7 +191,31 @@ fn live_model_orders_similarity_sanely() {
 
     let same = cosine(&a, &a_scaled);
     let different = cosine(&a, &b);
-    eprintln!("same-scene cosine {same:.4}, different-scene {different:.4}");
+    eprintln!("dims {} | same-scene cosine {same:.4}, different-scene {different:.4}", a.len());
     assert!(same > different, "the same scene must embed closer");
     assert!(same > 0.9, "scale must barely move the embedding: {same}");
+
+    // SPEED IS AN ACCEPTANCE CRITERION, not a curiosity: this pass runs over
+    // every image in the library, and a per-image cost that turns the
+    // developer's worst month (~30k photos) into DAYS rather than hours is a
+    // rejection however good the embedding is. Measured after a warm-up so
+    // the first-run graph setup is not counted as steady state.
+    let _ = embedder.embed(&disc(384)).unwrap();
+    let started = std::time::Instant::now();
+    const RUNS: u32 = 5;
+    for _ in 0..RUNS {
+        let _ = embedder.embed(&disc(512)).unwrap();
+    }
+    let per_image = started.elapsed() / RUNS;
+    let month = per_image * 30_000;
+    eprintln!(
+        "per image {:?} → a 30k-photo month costs {:.1} h",
+        per_image,
+        month.as_secs_f64() / 3600.0
+    );
+    assert!(
+        month.as_secs_f64() / 3600.0 < 24.0,
+        "a 30k month must stay within hours, not days: {:?}/image",
+        per_image
+    );
 }

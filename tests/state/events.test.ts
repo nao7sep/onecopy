@@ -127,12 +127,12 @@ describe("binaries events", () => {
       detail: "300 / 1549 MB",
     });
     fireEvent("binaries://progress", {
-      id: "clip-vit-b32",
+      id: "siglip2-large-vision",
       phase: "verify",
       detail: "checking integrity",
     });
     const installing = binaries.getState().installing;
     expect(installing["whisper-large-v3-turbo"]).toBe("Downloading — 300 / 1549 MB");
-    expect(installing["clip-vit-b32"]).toBe("Verifying — checking integrity");
+    expect(installing["siglip2-large-vision"]).toBe("Verifying — checking integrity");
   });
 });

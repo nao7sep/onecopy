@@ -167,8 +167,8 @@ fn live_face_models_find_nothing_in_a_face_free_image() {
         assert_eq!(hex::encode(hasher.finalize()), pin.sha256, "{id} integrity");
         path
     };
-    let detector = fetch("ultraface-rfb320", "det.onnx");
-    let emotion = fetch("emotion-ferplus", "emo.onnx");
+    let detector = fetch("ultraface-rfb640", "det.onnx");
+    let emotion = fetch("hsemotion-enet-b2", "emo.onnx");
 
     // A gradient has structure but no face; a broken binding (wrong output
     // wiring, wrong preprocessing) shows up as phantom faces or an error.

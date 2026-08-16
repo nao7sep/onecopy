@@ -79,17 +79,21 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         pinned: None,
     },
     DependencySpec {
-        id: "clip-vit-b32",
-        label: "Similarity model (CLIP ViT-B/32)",
+        id: "siglip2-large-vision",
+        label: "Similarity model (SigLIP 2 large)",
         kind: DependencyKind::Model,
-        file_name: "clip-vit-b32-vision.onnx",
+        file_name: "siglip2-large-vision.onnx",
         pinned: Some(PinnedModel {
-            // Qdrant's MIT-licensed ONNX export of openai/clip-vit-base-patch32;
-            // sha256 from the repository's LFS pointer (probed 2026-08-16).
-            url: "https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/main/model.onnx",
-            sha256: "c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63",
-            bytes: 351_686_194,
-            released: "2024-04-30",
+            // The VISION TOWER only — the repo also ships the text tower and a
+            // combined model, neither of which this app has any use for.
+            // Apache-2.0 (declared on the repo; the sibling base variants
+            // declare no license at all, which is why the large one is the
+            // pick among cleanly-licensed SigLIP 2 exports). sha256 and size
+            // computed from the downloaded artifact 2026-08-17.
+            url: "https://huggingface.co/onnx-community/siglip2-large-patch16-384-ONNX/resolve/main/onnx/vision_model.onnx",
+            sha256: "a91b175aeb1bf2aebf134fe2450e3ff212a210adc0dc5d02df4e2338a5943f3e",
+            bytes: 1_265_655_968,
+            released: "2025-02-21",
         }),
     },
     DependencySpec {
@@ -107,32 +111,38 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         }),
     },
     DependencySpec {
-        id: "ultraface-rfb320",
-        label: "Face detector (Ultraface RFB-320)",
+        id: "ultraface-rfb640",
+        label: "Face detector (Ultraface RFB-640)",
         kind: DependencyKind::Model,
-        file_name: "ultraface-rfb320.onnx",
+        file_name: "ultraface-rfb640.onnx",
         pinned: Some(PinnedModel {
             // Official ONNX model zoo (repo Apache-2.0; the Ultraface upstream
-            // is MIT); sha256 computed from the downloaded artifact 2026-08-16.
-            url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/version-RFB-320.onnx",
-            sha256: "34cd7e60aeff28744c657de7a3dc64e872d506741de66987f3426f2b79f88017",
-            bytes: 1_270_727,
+            // is MIT); sha256 computed from the downloaded artifact 2026-08-17.
+            // The 640 variant over the 320: same family and licence, double the
+            // input resolution, so a face that is small in the frame — the
+            // common case in family photos — is still found.
+            url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/version-RFB-640.onnx",
+            sha256: "8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430",
+            bytes: 1_588_012,
             released: "2020-12-17",
         }),
     },
     DependencySpec {
-        id: "emotion-ferplus",
-        label: "Expression model (Emotion FER+)",
+        id: "hsemotion-enet-b2",
+        label: "Expression model (HSEmotion EfficientNet-B2)",
         kind: DependencyKind::Model,
-        file_name: "emotion-ferplus-8.onnx",
+        file_name: "hsemotion-enet-b2-8.onnx",
         pinned: Some(PinnedModel {
-            // Official ONNX model zoo, MIT per its model card; sha256 computed
-            // from the downloaded artifact 2026-08-16. Face scoring needs BOTH
-            // this and the detector — either alone stays inert.
-            url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/emotion_ferplus/model/emotion-ferplus-8.onnx",
-            sha256: "a2a2ba6a335a3b29c21acb6272f962bd3d47f84952aaffa03b60986e04efa61c",
-            bytes: 35_040_571,
-            released: "2020-03-18",
+            // HSEmotion's AffectNet-trained EfficientNet-B2, from the project's
+            // current home (sb-ai-lab/EmotiEffLib, Apache-2.0 — the old
+            // av-savchenko repo redirects here); sha256 computed from the
+            // downloaded artifact 2026-08-17. Replaces FER+, which was trained
+            // on 2016-era FER data and is five years older. Face scoring needs
+            // BOTH this and the detector — either alone stays inert.
+            url: "https://github.com/sb-ai-lab/EmotiEffLib/raw/main/models/affectnet_emotions/onnx/enet_b2_8.onnx",
+            sha256: "180a9d4845b59393de4511598a0d1d34b705034691ea32959ce5009db7cf52b7",
+            bytes: 30_779_724,
+            released: "2022-11-09",
         }),
     },
 ];

@@ -1,15 +1,23 @@
 //! Face scoring for group ordering (Design: Rating) — two small managed ONNX
 //! models run through the same linked ONNX Runtime as the embedding pass:
-//! Ultraface RFB-320 finds faces, Emotion FER+ reads the expression, and the
+//! Ultraface RFB-640 finds faces, HSEmotion reads the expression, and the
 //! combined score orders a group's face-bearing members ahead of sharpness.
 //! Advisory only, never auto-deletes, exactly like sharpness.
 //!
 //! The score, in one sentence: the best face's detection confidence weighted
 //! by how much it smiles — `conf × (0.5 + 0.5 × P(happiness))`, the maximum
 //! over detected faces, so a photo where someone clearly smiles beats the
-//! frame where the same person blurs or grimaces. FER+ carries no eyes-open
-//! signal and no small permissively-licensed model in the official zoo does;
-//! the smile weight is the honest v1 of the Design's "eyes-open/smiling".
+//! frame where the same person blurs or grimaces. No cleanly-licensed model
+//! carries an eyes-open signal, so the smile weight is the honest v1 of the
+//! Design's "eyes-open/smiling".
+//!
+//! Both models' input contracts are read from their upstreams, never assumed
+//! (probed 2026-08-17). They disagree on everything that matters: the
+//! detector takes 640×480 with a (x−127)/128 scaling, while the expression
+//! model takes a 260×260 RGB crop with ImageNet normalization and returns
+//! EIGHT AffectNet logits whose happiness sits at index 4 — where the FER+
+//! model it replaces put happiness at index 1. Assuming an order carried
+//! over would have scored a different emotion entirely, silently.
 //!
 //! Storage contract on `contents.face_score`: NULL = never scored (model
 //! absent or content not yet seen); 0.0 = scored, no face found; > 0 = the
@@ -20,9 +28,24 @@ use std::path::Path;
 
 use image::DynamicImage;
 
-/// Detections below this confidence are noise, not faces (the RFB-320
+/// Detections below this confidence are noise, not faces (the Ultraface
 /// paper's own evaluation threshold).
 pub const MIN_FACE_CONFIDENCE: f32 = 0.7;
+
+/// The detector's published input size (RFB-640).
+const DETECT_WIDTH: u32 = 640;
+const DETECT_HEIGHT: u32 = 480;
+
+/// The expression model's published input size (EfficientNet-B2) and the
+/// ImageNet normalization it was trained with.
+const EXPRESSION_EDGE: u32 = 260;
+const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
+/// Index of "Happiness" in the model's AffectNet class order
+/// (Anger, Contempt, Disgust, Fear, HAPPINESS, Neutral, Sadness, Surprise).
+const HAPPINESS_CLASS: usize = 4;
+const EXPRESSION_CLASSES: usize = 8;
 /// Greedy NMS overlap bound — boxes overlapping more than this are one face.
 pub const NMS_MAX_IOU: f32 = 0.3;
 
@@ -104,9 +127,13 @@ impl FaceScorer {
     /// Faces on the image, confidence-thresholded and NMS-deduplicated,
     /// best-first.
     pub fn detect(&mut self, img: &DynamicImage) -> Result<Vec<Face>, String> {
-        // RFB-320's published contract: 320×240 RGB, (x − 127) / 128.
-        let resized = img.resize_exact(320, 240, image::imageops::FilterType::Triangle).to_rgb8();
-        let mut tensor = ndarray::Array4::<f32>::zeros((1, 3, 240, 320));
+        // Ultraface's published contract: RGB at the model's input size,
+        // scaled (x − 127) / 128.
+        let resized = img
+            .resize_exact(DETECT_WIDTH, DETECT_HEIGHT, image::imageops::FilterType::Triangle)
+            .to_rgb8();
+        let mut tensor =
+            ndarray::Array4::<f32>::zeros((1, 3, DETECT_HEIGHT as usize, DETECT_WIDTH as usize));
         for (x, y, pixel) in resized.enumerate_pixels() {
             for channel in 0..3 {
                 tensor[[0, channel, y as usize, x as usize]] =
@@ -154,8 +181,9 @@ impl FaceScorer {
         Ok(non_max_suppression(candidates))
     }
 
-    /// P(happiness) for one face crop — FER+'s contract: 64×64 grayscale,
-    /// raw 0–255 values, eight emotion logits out, happiness at index 1.
+    /// P(happiness) for one face crop — the expression model's contract:
+    /// 260×260 RGB, 1/255 then ImageNet-normalized, eight AffectNet logits
+    /// out, happiness at index 4.
     pub fn smile(&mut self, img: &DynamicImage, face: &Face) -> Result<f32, String> {
         let (w, h) = (img.width() as f32, img.height() as f32);
         // A 15% margin each side: FER+ was trained on loose crops, and the
@@ -170,11 +198,15 @@ impl FaceScorer {
         }
         let crop = img
             .crop_imm(x1, y1, x2 - x1, y2 - y1)
-            .resize_exact(64, 64, image::imageops::FilterType::Triangle)
-            .to_luma8();
-        let mut tensor = ndarray::Array4::<f32>::zeros((1, 1, 64, 64));
+            .resize_exact(EXPRESSION_EDGE, EXPRESSION_EDGE, image::imageops::FilterType::Triangle)
+            .to_rgb8();
+        let edge = EXPRESSION_EDGE as usize;
+        let mut tensor = ndarray::Array4::<f32>::zeros((1, 3, edge, edge));
         for (x, y, pixel) in crop.enumerate_pixels() {
-            tensor[[0, 0, y as usize, x as usize]] = pixel[0] as f32;
+            for channel in 0..3 {
+                tensor[[0, channel, y as usize, x as usize]] =
+                    (pixel[channel] as f32 / 255.0 - IMAGENET_MEAN[channel]) / IMAGENET_STD[channel];
+            }
         }
         let input = self.emo_input.clone();
         let outputs = self
@@ -187,10 +219,16 @@ impl FaceScorer {
             .try_extract_tensor::<f32>()
             .map_err(|e| e.to_string())?;
         let probabilities = softmax(logits);
-        probabilities
-            .get(1)
-            .copied()
-            .ok_or_else(|| format!("expression output has {} classes, not 8", probabilities.len()))
+        if probabilities.len() != EXPRESSION_CLASSES {
+            // An artifact that changed shape has almost certainly changed its
+            // class ORDER too, and scoring the wrong emotion silently is the
+            // failure this refuses to risk.
+            return Err(format!(
+                "expression model returned {} classes, not {EXPRESSION_CLASSES}",
+                probabilities.len()
+            ));
+        }
+        Ok(probabilities[HAPPINESS_CLASS])
     }
 
     /// The composite: 0.0 = no face; otherwise the best face's

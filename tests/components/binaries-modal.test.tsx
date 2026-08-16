@@ -59,7 +59,7 @@ beforeEach(() => {
   });
   seed([
     entry("ffmpeg", "not-installed"),
-    entry("clip-vit-b32", "not-installed"),
+    entry("siglip2-large-vision", "not-installed"),
     entry("whisper-large-v3-turbo", "up-to-date"),
   ]);
 });
@@ -72,13 +72,13 @@ const buttons = (label: string) =>
 describe("parallel installs", () => {
   it("keeps every other row's button live while one entry downloads", () => {
     useBinariesStore.setState({
-      installing: { "clip-vit-b32": "Downloading — 100 / 335 MB" },
+      installing: { "siglip2-large-vision": "Downloading — 100 / 1207 MB" },
     });
     render(<BinariesModal />);
     const install = buttons("Install");
-    expect(install).toHaveLength(1); // ffmpeg's — clip's row shows progress instead
+    expect(install).toHaveLength(1); // ffmpeg's — the model row shows progress
     expect(install[0]!.disabled).toBe(false);
-    expect(document.body.textContent).toContain("Downloading — 100 / 335 MB");
+    expect(document.body.textContent).toContain("Downloading — 100 / 1207 MB");
   });
 });
 
@@ -100,7 +100,7 @@ describe("installing everything", () => {
     const installed = invokeCalls
       .filter((c) => c.command === "binaries_install")
       .map((c) => c.args.id);
-    expect(installed.sort()).toEqual(["clip-vit-b32", "ffmpeg"]);
+    expect(installed.sort()).toEqual(["ffmpeg", "siglip2-large-vision"]);
   });
 });
 
@@ -121,7 +121,7 @@ describe("the two lifecycles", () => {
   });
 
   it("offers the check only on the entry that has an upstream", () => {
-    seed([entry("ffmpeg", "up-to-date"), entry("clip-vit-b32", "up-to-date")]);
+    seed([entry("ffmpeg", "up-to-date"), entry("siglip2-large-vision", "up-to-date")]);
     render(<BinariesModal />);
     const check = buttons("Check for updates");
     expect(check).toHaveLength(1);

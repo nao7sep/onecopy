@@ -162,7 +162,7 @@ pub fn settings_from_config(
             let path = crate::binaries_manager::ffmpeg_path(data_root);
             path.is_file().then_some(path)
         },
-        embedding_model: crate::binaries_manager::spec_of("clip-vit-b32").and_then(|spec| {
+        embedding_model: crate::binaries_manager::spec_of("siglip2-large-vision").and_then(|spec| {
             let state = crate::binaries_manager::state_of(data_root, spec);
             (state.status != crate::binaries::BinaryStatus::NotInstalled)
                 .then(|| crate::binaries_manager::installed_path(data_root, spec))
@@ -175,7 +175,7 @@ pub fn settings_from_config(
                         .then(|| crate::binaries_manager::installed_path(data_root, spec))
                 })
             };
-            installed("ultraface-rfb320").zip(installed("emotion-ferplus"))
+            installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2"))
         },
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),

@@ -25,13 +25,24 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     let ids: Vec<&str> = DEPENDENCIES.iter().map(|d| d.id).collect();
     assert_eq!(
         ids,
-        ["ffmpeg", "clip-vit-b32", "whisper-large-v3-turbo", "ultraface-rfb320", "emotion-ferplus"]
+        [
+            "ffmpeg",
+            "siglip2-large-vision",
+            "whisper-large-v3-turbo",
+            "ultraface-rfb640",
+            "hsemotion-enet-b2",
+        ]
     );
 
-    let clip = spec_of("clip-vit-b32").unwrap();
-    let clip_pin = clip.pinned.as_ref().unwrap();
-    assert!(clip_pin.url.starts_with("https://"));
-    assert_eq!(clip_pin.sha256.len(), 64);
+    let embedding = spec_of("siglip2-large-vision").unwrap();
+    let embedding_pin = embedding.pinned.as_ref().unwrap();
+    assert!(embedding_pin.url.starts_with("https://"));
+    assert_eq!(embedding_pin.sha256.len(), 64);
+    assert!(
+        embedding_pin.url.contains("vision_model"),
+        "the VISION tower alone — the text tower and the combined model are \
+         megabytes this app would never run"
+    );
 
     let whisper = spec_of("whisper-large-v3-turbo").unwrap();
     let pinned = whisper.pinned.as_ref().expect("models carry a pin");
@@ -41,11 +52,23 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
 
     // The face pair: every model entry carries a complete pin, and the two
     // stay distinct artifacts (the score needs BOTH installed).
-    for id in ["ultraface-rfb320", "emotion-ferplus"] {
+    for id in ["ultraface-rfb640", "hsemotion-enet-b2"] {
         let pin = spec_of(id).unwrap().pinned.as_ref().expect("models carry a pin");
         assert!(pin.url.starts_with("https://"));
         assert_eq!(pin.sha256.len(), 64);
         assert!(pin.bytes > 1_000_000);
+    }
+
+    // Every model states when its artifact was PUBLISHED — the only honest
+    // answer to "how old is this?", and the thing that made these two face
+    // models' age visible enough to act on.
+    for spec in DEPENDENCIES.iter().filter(|d| d.pinned.is_some()) {
+        let released = spec.pinned.as_ref().unwrap().released;
+        assert!(
+            released.len() == 10 && released.starts_with("20"),
+            "{} carries an ISO release date, got {released:?}",
+            spec.id
+        );
     }
 }
 
