@@ -110,7 +110,7 @@ beforeEach(() => {
     message: null,
   });
   usePreviewStore.setState({ follow: false, current: null });
-  useComparisonStore.setState({ open: false, slots: [], queue: [], kept: new Set() });
+  useComparisonStore.setState({ open: false, members: [], kept: new Set() });
 });
 
 afterEach(() => cleanup());
@@ -199,7 +199,7 @@ describe("the culling journey", () => {
     await settle();
     const comparison = useComparisonStore.getState();
     expect(comparison.open).toBe(true);
-    expect(comparison.slots.map((s) => s!.hash)).toEqual(["h2", "h1", "h3"]);
+    expect(comparison.members.map((m) => m!.hash)).toEqual(["h2", "h1", "h3"]);
 
     // ---- Keeper key + Enter commits: losers to trash, view refreshes ----
     const deleted: string[] = [];

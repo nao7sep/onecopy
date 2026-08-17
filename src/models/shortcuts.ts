@@ -65,12 +65,14 @@ export function shortcutGroups(): ShortcutGroup[] {
       title: "Comparison view",
       context: "while a comparison is open",
       rows: [
-        { chord: "1–9 / 0 / A–F", action: "Keep the photo in that slot" },
-        { chord: "Shift+1–9/0/A–F", action: "Not similar — remove that slot from the set (never deletes)" },
-        { chord: "Enter", action: "Commit the turn" },
+        { chord: "1–9 / 0 / A–F", action: "Mark the photo in that slot as a keeper" },
+        { chord: "Shift+1–9/0/A–F", action: "Not similar — remove that slot from the group (never deletes)" },
+        { chord: "Left / Right", action: "Page through the group (marks persist; nothing deletes)" },
+        { chord: "S", action: "Shortlist — see the marked photos side by side" },
+        { chord: "Enter", action: "Next unseen page; once all pages are seen, commit — keep the marked, trash the rest" },
         { chord: "Shift+Enter", action: "Commit, deleting the rest permanently" },
         { chord: "Double-click", action: "Enlarge one slot" },
-        { chord: "Escape", action: "Leave without committing" },
+        { chord: "Escape", action: "Leave — nothing is deleted, marks are discarded" },
       ],
     },
     {

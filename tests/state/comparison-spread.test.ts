@@ -60,9 +60,10 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   useComparisonStore.setState({
     open: false,
-    slots: [],
-    queue: [],
+    members: [],
     kept: new Set<string>(),
+    visited: new Set<number>(),
+    page: 0,
     spreadCount: 0,
     busy: false,
   });
@@ -84,7 +85,7 @@ describe("opening a group across screens", () => {
     setWindowCreatedHook(() => {
       const state = useComparisonStore.getState();
       openAtWindowCreation = state.open;
-      slotsAtWindowCreation = state.slots.length;
+      slotsAtWindowCreation = state.members.length;
     });
     const originalLength = createdWindows.length;
 

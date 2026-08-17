@@ -5,6 +5,9 @@ import {
   slotIndexForKey,
   slotIndexForShiftedCode,
   chunkSlots,
+  pageCountOf,
+  turnSize,
+  visibleSlots,
   liveSlotCount,
   gridColumns,
   useComparisonStore,
@@ -15,14 +18,19 @@ import ConfirmDialog from "./ConfirmDialog";
 // The similar-photos comparison surface in the main window. With extra
 // monitors the slot list spreads: this surface shows chunk 0 and the
 // per-monitor windows show the rest, all sharing one global key space.
-// Keys mark keepers, Enter commits the turn (trash the rest; Shift+Enter
-// deletes permanently), Escape or Close leaves.
+// The paged model (Phase 33): keys mark keepers (marks persist across
+// pages), ←/→ page freely, S shows the shortlist of marks, Enter advances
+// through unseen pages then commits the whole group — keep the marked,
+// trash the rest (Shift = permanent) — and Escape leaves with nothing
+// deleted. Nothing on an unvisited page can ever be deleted.
 
 export default function ComparisonView() {
   const open = useComparisonStore((s) => s.open);
-  const slots = useComparisonStore((s) => s.slots);
-  const queue = useComparisonStore((s) => s.queue);
+  const members = useComparisonStore((s) => s.members);
   const kept = useComparisonStore((s) => s.kept);
+  const page = useComparisonStore((s) => s.page);
+  const shortlist = useComparisonStore((s) => s.shortlist);
+  const shortlistPage = useComparisonStore((s) => s.shortlistPage);
   const busy = useComparisonStore((s) => s.busy);
   const spreadCount = useComparisonStore((s) => s.spreadCount);
   const capacities = useComparisonStore((s) => s.capacities);
@@ -31,6 +39,7 @@ export default function ComparisonView() {
   const close = useComparisonStore((s) => s.close);
   const [enlarged, setEnlarged] = useState<{ hash: string; name: string } | null>(null);
   const pendingPermanentCommit = useComparisonStore((s) => s.pendingPermanentCommit);
+  const pendingCommitState = useComparisonStore((s) => s.pendingCommit);
 
   useEffect(() => {
     if (!open) return;
@@ -65,6 +74,15 @@ export default function ComparisonView() {
       } else if (event.key === "Escape") {
         event.preventDefault();
         close();
+      } else if (event.key === "ArrowRight" || event.key === "PageDown") {
+        event.preventDefault();
+        useComparisonStore.getState().nextPage();
+      } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        useComparisonStore.getState().prevPage();
+      } else if (event.key.toLowerCase() === "s" && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault();
+        useComparisonStore.getState().toggleShortlist();
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -77,7 +95,12 @@ export default function ComparisonView() {
 
   if (!open) return null;
 
-  const chunks = chunkSlots(slots, kept, capacities);
+  const state = useComparisonStore.getState();
+  const visible = visibleSlots(state);
+  const size = turnSize(capacities);
+  const pages = pageCountOf(members.length, size);
+  const unseen = pages - state.visited.size;
+  const chunks = chunkSlots(visible, kept, capacities);
   const localChunk = chunks[0] ?? [];
   const perChunk = localChunk.length;
   const portraitDominant = useComparisonStore.getState().portraitDominant;
@@ -90,6 +113,21 @@ export default function ComparisonView() {
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-background">
+      {pendingCommitState !== null ? (
+        <ConfirmDialog
+          title={pendingCommitState.keepCount === 0 ? "Trash the whole group?" : "Commit this group?"}
+          message={
+            pendingCommitState.keepCount === 0
+              ? `Nothing is marked to keep — move all ${pendingCommitState.trashCount} photos to the trash?`
+              : `Keep ${pendingCommitState.keepCount} and move ${pendingCommitState.trashCount} to the trash${
+                  pendingCommitState.permanent ? " (PERMANENT delete)" : ""
+                }?`
+          }
+          confirmLabel={pendingCommitState.keepCount === 0 ? "Trash all" : "Commit"}
+          onConfirm={() => void useComparisonStore.getState().confirmPendingCommit()}
+          onCancel={() => useComparisonStore.getState().cancelPendingCommit()}
+        />
+      ) : null}
       {pendingPermanentCommit ? (
         <ConfirmDialog
           title="Delete permanently this session?"
@@ -103,13 +141,21 @@ export default function ComparisonView() {
         <h1 className="text-sm font-semibold text-ink-strong">Similar photos</h1>
         <div className="flex items-center gap-4 text-xs text-ink-muted">
           <span>
-            {kept.size} kept · {liveSlotCount(slots)} shown
+            {shortlist
+              ? `Shortlist ${shortlistPage + 1}/${pageCountOf(
+                  members.filter((m) => m !== null && kept.has(m.hash)).length,
+                  size,
+                )} · ${kept.size} kept`
+              : `Page ${page + 1}/${pages} · ${kept.size} kept · ${liveSlotCount(
+                  members,
+                )} photos`}
             {spreadCount > 0 ? ` across ${spreadCount + 1} screens` : ""}
-            {queue.length > 0 ? ` · ${queue.length} waiting` : ""}
+            {!shortlist && unseen > 0 ? ` · ${unseen} page${unseen === 1 ? "" : "s"} unseen` : ""}
           </span>
           <span>
-            Keys 1–9/0/A–F keep · Shift+key removes from the set · Enter commits
-            (Shift = permanent) · Escape leaves
+            Keys keep · Shift+key not similar · ←/→ pages · S shortlist ·
+            Enter {unseen > 0 && !shortlist ? "next page" : "commits (Shift = permanent)"} ·
+            Escape leaves
           </span>
           <button
             className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"

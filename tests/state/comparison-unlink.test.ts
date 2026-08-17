@@ -32,19 +32,22 @@ function member(i: number) {
   };
 }
 
-function openSession(slotCount: number, queued = 0): void {
-  const slots = Array.from({ length: slotCount }, (_, i) => member(i));
-  const queue = Array.from({ length: queued }, (_, i) => member(slotCount + i));
+function openSession(count: number): void {
+  const members = Array.from({ length: count }, (_, i) => member(i));
   useComparisonStore.setState({
     open: true,
-    slots,
-    queue,
+    members,
     kept: new Set(),
-    sessionMembers: [...slots, ...queue].map((m) => m.hash),
-    capacities: [slotCount],
+    visited: new Set([0]),
+    page: 0,
+    shortlist: false,
+    shortlistPage: 0,
+    sessionMembers: members.map((m) => m.hash),
+    capacities: [count],
     busy: false,
     permanentArmed: true,
     pendingPermanentCommit: false,
+    pendingCommit: null,
   });
 }
 
@@ -101,13 +104,13 @@ describe("unlinking a slot", () => {
     expect(
       invokeCalls.filter((c) => c.command === "similar_unlink").map((c) => c.args.hash),
     ).toEqual(["h1"]);
-    expect(after.slots[1]).toBeNull();
+    expect(after.members[1]).toBeNull();
     expect(after.kept.has("h1")).toBe(false);
     // The photo is out of the family, so the finish may land the anchor on it.
     expect(after.sessionMembers).not.toContain("h1");
     // The hole PRESERVES key numbers: slot 3 is still key "3"... spelled as
     // the chunk the windows render.
-    const chunk = chunkSlots(after.slots, after.kept, [4])[0]!;
+    const chunk = chunkSlots(after.members, after.kept, [4])[0]!;
     expect(chunk[1]!.member).toBeNull();
     expect(chunk[2]!.member?.hash).toBe("h2");
     expect(chunk[2]!.slotKey).toBe(SLOT_KEYS[2]);
@@ -118,7 +121,7 @@ describe("unlinking a slot", () => {
     // entries but only three photos.
     openSession(4);
     await useComparisonStore.getState().unlinkSlot(1);
-    expect(liveSlotCount(useComparisonStore.getState().slots)).toBe(3);
+    expect(liveSlotCount(useComparisonStore.getState().members)).toBe(3);
   });
 
   it("never deletes the unlinked photo on commit", async () => {

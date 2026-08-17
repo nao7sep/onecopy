@@ -105,38 +105,85 @@ export interface ComparisonBroadcast {
 
 interface ComparisonState {
   open: boolean;
-  /** null = a slot unlinked this turn (the hole keeps key numbers stable). */
-  slots: (GroupMember | null)[];
-  queue: GroupMember[];
+  /** EVERY member of the group, in session order (best-first). null = a slot
+   * unlinked this session — the hole keeps page geometry and key numbers
+   * stable. Pages are a VIEWPORT over this list; nothing else is state. */
+  members: (GroupMember | null)[];
+  /** Keep marks, by hash — they persist across pages (the paged model,
+   * Phase 33: viewing and deciding are decoupled; navigation never deletes). */
   kept: Set<string>;
+  /** Pages the user has SEEN. The safety rule of the whole design: nothing
+   * from an unvisited page can ever be deleted, guaranteed by Enter
+   * advancing through unseen pages before it will commit. */
+  visited: Set<number>;
+  page: number;
+  /** The shortlist view (S): the current marks as their own paged viewport —
+   * the passport-photo finale, candidates compared side by side at the END. */
+  shortlist: boolean;
+  shortlistPage: number;
   busy: boolean;
   /** Permanent commits confirm ONCE per comparison session (a per-turn
    * prompt would destroy the keystroke rhythm the view exists for). */
   permanentArmed: boolean;
   /** A Shift+Enter awaiting that one confirmation. */
   pendingPermanentCommit: boolean;
+  /** A commit awaiting its count confirmation — zero marks (trash ALL), a
+   * multi-page group, or the confirmTrashDelete config. Single-page commits
+   * with at least one mark stay two keystrokes with no dialog. */
+  pendingCommit: { keepCount: number; trashCount: number; permanent: boolean } | null;
+  confirmPendingCommit: () => Promise<void>;
+  cancelPendingCommit: () => void;
   confirmPermanentCommit: () => Promise<void>;
   cancelPermanentCommit: () => void;
   /** Secondary comparison windows currently open (monitors beyond the first). */
   spreadCount: number;
-  /** Per-screen slot capacities (screen 0 = the main window). The turn size is
-   * their sum, capped by the 16 slot keys. */
+  /** Per-screen slot capacities (screen 0 = the main window). The page size
+   * is their sum, capped by the 16 slot keys. */
   capacities: number[];
   /** The group's dominant image orientation (drives the slot grids). */
   portraitDominant: boolean;
-  /** Resolves false when no live group opened (fewer than 2 members) so the
-   * caller can fall back honestly instead of doing nothing on Enter. */
-  /** Every member of the session's group as opened — what the finish
-   * advances past. Unlinking removes the image from this list too: it is no
-   * longer family, so the anchor may land on it afterwards. */
+  /** Every original member hash still in the family — what the finish
+   * advances past. Unlinking removes the image here too. */
   sessionMembers: string[];
   openGroup: (hash: string) => Promise<boolean>;
+  /** Toggles the keep mark of a slot ON THE VISIBLE PAGE. */
   toggleKeep: (slotIndex: number) => void;
-  /** The unlink: this slot's image is NOT the same subject. Persistent
-   * core-side; the slot becomes a hole for the rest of the turn. */
+  /** The unlink: this visible slot's image is NOT the same subject.
+   * Persistent core-side; the slot becomes a hole. */
   unlinkSlot: (slotIndex: number) => Promise<void>;
+  nextPage: () => void;
+  prevPage: () => void;
+  toggleShortlist: () => void;
+  /** Enter: advance to the next unseen page, or — once every page has been
+   * seen — commit the whole group (keep the marked, trash the rest),
+   * confirming by the policy above. */
   commitTurn: (permanent: boolean) => Promise<void>;
   close: () => void;
+}
+
+/** The page geometry: fixed windows of `pageSize` over the member list. */
+export function pageCountOf(memberCount: number, pageSize: number): number {
+  return Math.max(1, Math.ceil(memberCount / Math.max(1, pageSize)));
+}
+
+/** What the screens show right now: the current page, or the current
+ * shortlist page (marks only, live members, re-sliced by the same size). */
+export function visibleSlots(state: {
+  members: (GroupMember | null)[];
+  kept: Set<string>;
+  page: number;
+  shortlist: boolean;
+  shortlistPage: number;
+  capacities: number[];
+}): (GroupMember | null)[] {
+  const size = turnSize(state.capacities);
+  if (state.shortlist) {
+    const marked = state.members.filter(
+      (m): m is GroupMember => m !== null && state.kept.has(m.hash),
+    );
+    return marked.slice(state.shortlistPage * size, (state.shortlistPage + 1) * size);
+  }
+  return state.members.slice(state.page * size, (state.page + 1) * size);
 }
 
 /** How many photos the user is actually looking at. NOT `slots.length`: an
@@ -176,12 +223,19 @@ export function turnSize(capacities: number[]): number {
 }
 
 function broadcast(): void {
-  const { slots, kept, queue, capacities, portraitDominant } =
-    useComparisonStore.getState();
+  const state = useComparisonStore.getState();
+  const visible = visibleSlots(state);
+  const size = turnSize(state.capacities);
   const payload: ComparisonBroadcast = {
-    chunks: chunkSlots(slots, kept, capacities),
-    queueCount: queue.length,
-    portraitDominant,
+    chunks: chunkSlots(visible, state.kept, state.capacities),
+    // For the windows' footer: photos living on OTHER pages of this view.
+    queueCount: Math.max(
+      0,
+      (state.shortlist
+        ? state.members.filter((m) => m !== null && state.kept.has(m.hash)).length
+        : state.members.length) - visible.length - (state.shortlist ? state.shortlistPage : state.page) * size,
+    ),
+    portraitDominant: state.portraitDominant,
   };
   void emit("comparison://state", payload);
 }
@@ -359,13 +413,17 @@ const groupLoad = requestSeq();
 
 export const useComparisonStore = create<ComparisonState>((set, get) => ({
   open: false,
-  slots: [],
-  queue: [],
+  members: [],
   kept: new Set<string>(),
+  visited: new Set<number>(),
+  page: 0,
+  shortlist: false,
+  shortlistPage: 0,
   sessionMembers: [],
   busy: false,
   permanentArmed: false,
   pendingPermanentCommit: false,
+  pendingCommit: null,
   spreadCount: 0,
   capacities: [SLOT_KEYS.length],
   portraitDominant: false,
@@ -376,6 +434,15 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   },
 
   cancelPermanentCommit: () => set({ pendingPermanentCommit: false }),
+
+  confirmPendingCommit: async () => {
+    const pending = get().pendingCommit;
+    if (pending === null) return;
+    set({ pendingCommit: null });
+    await doCommit(set, get, pending.permanent);
+  },
+
+  cancelPendingCommit: () => set({ pendingCommit: null }),
 
   openGroup: async (hash) => {
     // get_similar_group is an async command: two quick Enters on different
@@ -394,24 +461,27 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         log.warn("similar group has fewer than 2 live members", { hash });
         return false;
       }
-      // Resolve the screens first (their capacities decide the turn size),
+      // Resolve the screens first (their capacities decide the page size),
       // publish the state, and only THEN create the windows — a window that
       // announces itself must find a session already open to be answered.
       const perScreen = perScreenCapacity(members);
       const { others, capacities } = await resolveSpread(perScreen, members.length);
-      const size = turnSize(capacities);
       set({
         open: true,
         capacities,
         spreadCount: others.length,
         portraitDominant: perScreen === 3,
-        slots: members.slice(0, size),
-        queue: members.slice(size),
+        members,
         kept: new Set<string>(),
+        visited: new Set([0]),
+        page: 0,
+        shortlist: false,
+        shortlistPage: 0,
         sessionMembers: members.map((m) => m.hash),
         // A new comparison session re-arms the one permanent confirmation.
         permanentArmed: false,
         pendingPermanentCommit: false,
+        pendingCommit: null,
       });
       broadcast();
       await openSpread(others);
@@ -423,10 +493,9 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   },
 
   toggleKeep: (slotIndex) => {
-    const { slots, kept } = get();
-    const member = slots[slotIndex];
+    const member = visibleSlots(get())[slotIndex];
     if (!member) return;
-    const next = new Set(kept);
+    const next = new Set(get().kept);
     if (next.has(member.hash)) {
       next.delete(member.hash);
     } else {
@@ -437,9 +506,9 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   },
 
   unlinkSlot: async (slotIndex) => {
-    const { slots, kept, busy, sessionMembers } = get();
+    const { busy, sessionMembers } = get();
     if (busy) return;
-    const member = slots[slotIndex];
+    const member = visibleSlots(get())[slotIndex];
     if (!member) return;
     try {
       await invoke("similar_unlink", { hash: member.hash });
@@ -447,104 +516,171 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       log.error("similar unlink failed", { hash: member.hash, ...toErrorFields(error) });
       return;
     }
-    const nextKept = new Set(kept);
+    const nextKept = new Set(get().kept);
     nextKept.delete(member.hash);
     set({
-      // The hole stays: remaining slots keep their key numbers this turn.
-      slots: get().slots.map((slot, i) => (i === slotIndex ? null : slot)),
+      // The hole stays: page geometry and key numbers hold for the session.
+      members: get().members.map((m) => (m !== null && m.hash === member.hash ? null : m)),
       kept: nextKept,
       // No longer family: the finish may land the anchor on it, which is the
       // natural way to meet the intruder again and decide its own fate.
-      sessionMembers: sessionMembers.filter((hash) => hash !== member.hash),
+      sessionMembers: sessionMembers.filter((h) => h !== member.hash),
     });
     broadcast();
   },
 
+  nextPage: () => movePage(set, get, 1),
+  prevPage: () => movePage(set, get, -1),
+
+  toggleShortlist: () => {
+    set({ shortlist: !get().shortlist, shortlistPage: 0 });
+    broadcast();
+  },
+
   commitTurn: async (permanent) => {
-    const { slots, queue, kept, busy, permanentArmed } = get();
-    if (busy) return;
-    if (permanent && !permanentArmed) {
+    const state = get();
+    if (state.busy) return;
+    const size = turnSize(state.capacities);
+    const pages = pageCountOf(state.members.length, size);
+    // The advance half of Enter's rhythm: while unseen pages remain, Enter
+    // means "next unseen page" — look, mark, Enter, unchanged muscle memory —
+    // and it is what GUARANTEES nothing unseen can be deleted.
+    if (!state.shortlist) {
+      const unseen = nextUnseenPage(state.visited, state.page, pages);
+      if (unseen !== null) {
+        set({
+          page: unseen,
+          visited: new Set(state.visited).add(unseen),
+        });
+        broadcast();
+        return;
+      }
+    } else if (state.visited.size < pages) {
+      // Committing FROM the shortlist still requires every page seen.
+      set({ shortlist: false });
+      get().commitTurn(permanent) as unknown;
+      return;
+    }
+    if (permanent && !state.permanentArmed) {
       set({ pendingPermanentCommit: true });
       return;
     }
-    set({ busy: true });
-    try {
-      const live = slots.filter((s): s is GroupMember => s !== null);
-      const keepers = live.filter((s) => kept.has(s.hash));
-      const goners = kept.size > 0 ? live.filter((s) => !kept.has(s.hash)) : [];
-
-      for (const member of goners) {
-        await invoke("delete_item", {
-          hash: member.hash,
-          pathId: null,
-          permanent,
-        });
-      }
-
-      // Keepers stay pinned; freed slots refill from the queue. A no-keeper
-      // commit skips the whole turn (those photos remain in the app).
-      const survivors = kept.size > 0 ? keepers : [];
-      const size = turnSize(get().capacities);
-      const room = size - survivors.length;
-      // Keeping every slot leaves no room to refill — but the queue's members
-      // have not been seen yet, and dropping them would hide part of the group
-      // permanently (reopening refills with the same keepers). Advance to a
-      // fresh turn from the queue instead, exactly as a no-keeper commit does.
-      // The keepers are already decided: kept means not deleted.
-      const pinned = room > 0 ? survivors : [];
-      const intake = room > 0 ? room : size;
-      const incoming = queue.slice(0, intake);
-      const nextQueue = queue.slice(intake);
-      const nextSlots = [...pinned, ...incoming];
-
-      if (incoming.length === 0) {
-        // Nothing new to decide: the group is finished.
-        const family = get().sessionMembers;
-        set({
-          open: false,
-          slots: [],
-          queue: [],
-          kept: new Set(),
-          sessionMembers: [],
-          busy: false,
-        });
-        void closeSpread();
-        await refreshAfterChange();
-        // Land the anchor on the next photo PAST this family, so Enter chains
-        // straight into the next group (the developer's cull rhythm). After
-        // the keepers, not after the old anchor: Enter on a keeper would
-        // reopen the family just decided.
-        const { useItemsStore } = await import("./items-store");
-        useItemsStore.getState().selectAfterFamily(family);
-        return;
-      }
+    const live = state.members.filter((m): m is GroupMember => m !== null);
+    const trashCount = live.filter((m) => !state.kept.has(m.hash)).length;
+    // The confirmation policy, tuned for pace: a single-page group with at
+    // least one mark commits instantly (1, Enter — two keystrokes); the
+    // count dialog appears for zero marks (trash ALL — the gesture that was
+    // impossible before), for multi-page trashing, and under the opt-in
+    // confirmTrashDelete config. Nothing-to-trash commits are free.
+    const { useAppStore } = await import("./app-store");
+    const configConfirms =
+      useAppStore.getState().appData?.config?.confirmTrashDelete === true;
+    const needsConfirm =
+      trashCount > 0 && (state.kept.size === 0 || pages > 1 || configConfirms);
+    if (needsConfirm) {
       set({
-        slots: nextSlots,
-        queue: nextQueue,
-        kept: new Set(pinned.map((s) => s.hash)),
-        busy: false,
+        pendingCommit: {
+          keepCount: state.kept.size,
+          trashCount,
+          permanent,
+        },
       });
-      broadcast();
-      if (goners.length > 0) await refreshAfterChange();
-    } catch (error) {
-      log.error("comparison commit failed", toErrorFields(error));
-      set({ busy: false });
+      return;
     }
+    await doCommit(set, get, permanent);
   },
 
   close: () => {
     set({
       open: false,
-      slots: [],
-      queue: [],
+      members: [],
       kept: new Set(),
+      visited: new Set(),
+      page: 0,
+      shortlist: false,
+      shortlistPage: 0,
+      sessionMembers: [],
       permanentArmed: false,
       pendingPermanentCommit: false,
+      pendingCommit: null,
     });
     void closeSpread();
     void refreshAfterChange();
   },
 }));
+
+/** The next unseen page at or after `from`, wrapping — or null when all seen. */
+export function nextUnseenPage(
+  visited: Set<number>,
+  from: number,
+  pageCount: number,
+): number | null {
+  for (let step = 1; step <= pageCount; step += 1) {
+    const candidate = (from + step) % pageCount;
+    if (!visited.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+function movePage(
+  set: (partial: Partial<ComparisonState>) => void,
+  get: () => ComparisonState,
+  delta: number,
+): void {
+  const state = get();
+  const size = turnSize(state.capacities);
+  if (state.shortlist) {
+    const marked = state.members.filter(
+      (m) => m !== null && state.kept.has(m.hash),
+    ).length;
+    const pages = pageCountOf(marked, size);
+    const next = Math.min(pages - 1, Math.max(0, state.shortlistPage + delta));
+    if (next !== state.shortlistPage) {
+      set({ shortlistPage: next });
+      broadcast();
+    }
+    return;
+  }
+  const pages = pageCountOf(state.members.length, size);
+  const next = Math.min(pages - 1, Math.max(0, state.page + delta));
+  if (next !== state.page) {
+    set({ page: next, visited: new Set(state.visited).add(next) });
+    broadcast();
+  }
+}
+
+/** The commit itself: keep the marked, trash the rest, close, chain. Only
+ * reachable once every page has been seen and any confirmation has passed. */
+async function doCommit(
+  set: (partial: Partial<ComparisonState>) => void,
+  get: () => ComparisonState,
+  permanent: boolean,
+): Promise<void> {
+  const state = get();
+  set({ busy: true });
+  try {
+    const live = state.members.filter((m): m is GroupMember => m !== null);
+    const goners = live.filter((m) => !state.kept.has(m.hash));
+    for (const member of goners) {
+      await invoke("delete_item", {
+        hash: member.hash,
+        pathId: null,
+        permanent,
+      });
+    }
+    const family = state.sessionMembers;
+    get().close();
+    set({ busy: false });
+    await refreshAfterChange();
+    // Land the anchor on the next photo PAST this family, so Enter chains
+    // straight into the next group (the developer's cull rhythm).
+    const { useItemsStore } = await import("./items-store");
+    useItemsStore.getState().selectAfterFamily(family);
+  } catch (error) {
+    log.error("comparison commit failed", toErrorFields(error));
+    set({ busy: false });
+  }
+}
 
 // Main-window-only wiring: secondary comparison windows forward their keys and
 // ask for the current state on load; the main window owns all mutations.
@@ -577,6 +713,12 @@ void (async () => {
         void store.commitTurn(event.payload.shiftKey);
       } else if (event.payload.key === "Escape") {
         store.close();
+      } else if (event.payload.key === "ArrowRight" || event.payload.key === "PageDown") {
+        store.nextPage();
+      } else if (event.payload.key === "ArrowLeft" || event.payload.key === "PageUp") {
+        store.prevPage();
+      } else if (event.payload.key.toLowerCase() === "s") {
+        store.toggleShortlist();
       }
     });
     await listen("comparison://ready", () => {

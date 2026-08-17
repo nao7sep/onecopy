@@ -58,6 +58,8 @@ const EVIDENCE: Record<string, () => boolean> = {
   "Delete / Backspace": () => handles('"Delete" || event.key === "Backspace"'),
   "Shift+Delete": () => handles("setConfirmPermanent"),
   "1–9 / 0 / A–F": () => handles("slotIndexForKey"),
+  "Left / Right": () => handles("nextPage()", "prevPage()"),
+  S: () => handles("toggleShortlist"),
   "Shift+1–9/0/A–F": () => handles("slotIndexForShiftedCode"),
   "Shift+Enter": () => handles("shiftKey"),
   "Double-click": () => handles("onDoubleClick", "onEnlarge"),
