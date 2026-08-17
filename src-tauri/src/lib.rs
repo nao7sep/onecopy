@@ -1491,6 +1491,7 @@ pub fn run() {
                 .join(logging::session_filename());
             logging::init(&log_path, debug_enabled);
             install_panic_hook();
+            logging::prune_old_logs(&data_root.join(paths::LOGS_DIR_NAME), 30);
 
             // Open the write-through data-backup store once, best-effort, under the
             // same ONECOPY_HOME-aware root. If it cannot open, one warn is logged

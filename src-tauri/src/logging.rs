@@ -745,3 +745,37 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// Retention (Phase 33): one file per launch and nothing ever pruned meant
+/// the logs folder grew for the life of the install — and it now has a menu
+/// item pointing at it. Age by modification time, 30 days, best-effort: a
+/// failure to prune must never touch startup, and the CURRENT session's file
+/// is naturally the newest. Called once from setup, after init.
+pub fn prune_old_logs(logs_dir: &Path, keep_days: u64) {
+    let Ok(entries) = std::fs::read_dir(logs_dir) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        - std::time::Duration::from_secs(keep_days * 24 * 60 * 60);
+    let mut removed = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("log") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| m < cutoff)
+            .unwrap_or(false);
+        if old && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        info(
+            "old logs pruned",
+            serde_json::json!({ "removed": removed, "keepDays": keep_days }),
+        );
+    }
+}
