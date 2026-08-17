@@ -51,6 +51,12 @@ pub struct DefaultConfig {
     pub similarity_max_gap_seconds: u32,
     /// Max perceptual-hash Hamming distance for two photos to cluster.
     pub similarity_phash_max_distance: u32,
+    /// The relaxed distance for pairs within the burst gap (Phase 33): real
+    /// bursts spread wider than the strict line tolerates, and capture time
+    /// is the cheap, strong signal that they belong together. 10 is a
+    /// REASONED default — it awaits tuning on the developer's real family
+    /// index (the strict default stays icon-tuned at 3).
+    pub similarity_phash_max_distance_burst: u32,
     /// How much WIDER than one pairing step a single family may spread, as a
     /// multiple of the pairing thresholds. 1 = every member must resemble the
     /// family's leader directly; 2 (the default) allows a burst whose ends
@@ -109,6 +115,7 @@ impl Default for DefaultConfig {
             // Deliberately tight: on a measured 548-image corpus, 12 collapsed
             // everything into one 484-member hairball; 2-4 recovered families.
             similarity_phash_max_distance: 3,
+            similarity_phash_max_distance_burst: 10,
             similarity_diameter_multiplier: 2,
             preview_long_edge_px: 1600,
             thumbnail_edge_px: 320,

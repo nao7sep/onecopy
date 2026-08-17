@@ -361,6 +361,13 @@ export default function SettingsModal() {
             onChange={(v) => update({ similarityPhashMaxDistance: v })}
           />
           <NumberField
+            label="Burst visual distance (0–64)"
+            hint="The relaxed limit for photos taken within the burst gap of each other. Real bursts differ more than the strict limit tolerates — a hand shifts, a child turns — and close capture times vouch for them."
+            value={draft.similarityPhashMaxDistanceBurst}
+            min={0}
+            onChange={(v) => update({ similarityPhashMaxDistanceBurst: v })}
+          />
+          <NumberField
             label="Family width (× the limits above)"
             hint="How far one family may spread. 1 means every photo must resemble the family's first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family."
             value={draft.similarityDiameterMultiplier}

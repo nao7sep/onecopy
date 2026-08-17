@@ -133,6 +133,10 @@ pub fn settings_from_config(
                 "similarityPhashMaxDistance",
                 defaults.similarity_phash_max_distance,
             ),
+            phash_max_distance_burst: u32_of(
+                "similarityPhashMaxDistanceBurst",
+                defaults.similarity_phash_max_distance_burst,
+            ),
             diameter_multiplier: u32_of(
                 "similarityDiameterMultiplier",
                 defaults.similarity_diameter_multiplier,

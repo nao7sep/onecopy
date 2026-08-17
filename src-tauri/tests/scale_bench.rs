@@ -81,6 +81,7 @@ fn similarity_rebuild_cost_by_bucket_size() {
         eprintln!("seeded {n} rows in {:?}", tx_started.elapsed());
 
         let config = SimilarityConfig {
+            phash_max_distance_burst: 10,
             max_gap_seconds: 90,
             diameter_multiplier: 2,
             phash_max_distance: 4,

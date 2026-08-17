@@ -13,6 +13,7 @@ export interface SettingsDraft {
   goodRangeStartYear: number;
   similarityMaxGapSeconds: number;
   similarityPhashMaxDistance: number;
+  similarityPhashMaxDistanceBurst: number;
   similarityDiameterMultiplier: number;
   previewLongEdgePx: number;
   thumbnailEdgePx: number;
@@ -43,6 +44,7 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     goodRangeStartYear: numberOr(config?.goodRangeStartYear, 1995),
     similarityMaxGapSeconds: numberOr(config?.similarityMaxGapSeconds, 90),
     similarityPhashMaxDistance: numberOr(config?.similarityPhashMaxDistance, 3),
+    similarityPhashMaxDistanceBurst: numberOr(config?.similarityPhashMaxDistanceBurst, 10),
     similarityDiameterMultiplier: numberOr(config?.similarityDiameterMultiplier, 2),
     previewLongEdgePx: numberOr(config?.previewLongEdgePx, 1600),
     thumbnailEdgePx: numberOr(config?.thumbnailEdgePx, 320),

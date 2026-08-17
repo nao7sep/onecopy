@@ -16,6 +16,7 @@ fn seeded() -> (tempfile::TempDir, Connection) {
 
 fn config() -> SimilarityConfig {
     SimilarityConfig {
+        phash_max_distance_burst: 10,
         max_gap_seconds: 90,
         diameter_multiplier: 2,
         phash_max_distance: 4,
@@ -192,7 +193,7 @@ fn a_chain_cannot_glue_dissimilar_photos_into_one_family() {
         0b0000_1111_1111,          // c: d4 from b, d8 from a  (still within 2d)
         0b1111_1111_1111,          // d: d4 from c, d12 from a (chained past 2d)
     ];
-    let clusters = cluster_by_appearance(&hashes, 4, 2);
+    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2);
     assert_eq!(clusters.len(), 2, "the chain must split");
     // Split at the seam, not scattered: sorted-by-hash leaders keep the near
     // pairs together.
@@ -210,7 +211,7 @@ fn a_tight_family_with_spread_ends_stays_whole() {
         0b0000_0011, // middle (d2 from both ends)
         0b0011_0011, // end two: d4 from middle, d6 from end one (≤ 2d)
     ];
-    let clusters = cluster_by_appearance(&hashes, 4, 2);
+    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2);
     assert_eq!(clusters.len(), 1, "within-diameter components stand whole");
     assert_eq!(clusters[0].len(), 3);
 }
@@ -227,7 +228,7 @@ fn identical_twins_survive_a_hairball_split() {
         0b0000_0000_0000, // twin 2
         0b0000_0000_1111, // chain link
     ];
-    let clusters = cluster_by_appearance(&hashes, 4, 2);
+    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2);
     let twins: Vec<&Vec<usize>> =
         clusters.iter().filter(|c| c.contains(&1) || c.contains(&3)).collect();
     assert_eq!(twins.len(), 1, "distance-0 twins must share a cluster");
@@ -356,4 +357,65 @@ fn an_unlinked_image_still_groups_with_a_genuine_twin() {
         .collect();
     assert!(with.contains(&"bolt-copy".to_string()));
     assert!(!with.contains(&"family".to_string()), "the verdict still holds: {with:?}");
+}
+
+// ---- Time-gated pairing (Phase 33) ----------------------------------------
+// Family bursts spread wider in dhash than the icon-tuned strict line, and
+// capture time is the strongest signal that frames belong together. The
+// relaxed allowance applies ONLY within the burst gap; everything else —
+// including everything undated — keeps the strict line, so flat art stays
+// exactly as hard to group as before.
+
+/// Two phashes exactly `bits` apart.
+fn apart(bits: u32) -> (i64, i64) {
+    let a: i64 = 0x0F0F_0F0F_0F0F_0F0F;
+    (a, a ^ ((1i64 << bits) - 1))
+}
+
+#[test]
+fn burst_close_pairs_group_at_the_relaxed_distance() {
+    let (a, b) = apart(8); // past strict 3, inside burst 10
+    let hashes = vec![a, b];
+    let times = vec![Some(1_000_000), Some(1_005_000)]; // 5 s apart
+    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2);
+    assert_eq!(clusters, vec![vec![0, 1]], "a real burst pair must group");
+}
+
+#[test]
+fn the_same_distance_an_hour_apart_stays_split() {
+    let (a, b) = apart(8);
+    let hashes = vec![a, b];
+    let times = vec![Some(1_000_000), Some(4_600_000_000)];
+    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2);
+    assert_eq!(clusters.len(), 2, "far apart in time means the strict line");
+}
+
+#[test]
+fn undated_pairs_never_get_the_relaxed_allowance() {
+    // No capture evidence = no burst claim: the relaxation must never leak
+    // to the icon corpus, whose files carry no times at all.
+    let (a, b) = apart(8);
+    let hashes = vec![a, b];
+    let clusters = cluster_by_appearance(&hashes, &[None, None], 3, 10, 90, 2);
+    assert_eq!(clusters.len(), 2);
+}
+
+#[test]
+fn a_burst_cannot_chain_into_a_far_photo() {
+    // a–b are a genuine burst; c looks somewhat like b but was shot far
+    // later. The pair allowance is per PAIR, so c must not ride the burst's
+    // relaxed line into the group.
+    let (a, b) = apart(8);
+    let c = b ^ ((1i64 << 8) - 1) << 20; // 8 bits from b, 16 from a
+    let hashes = vec![a, b, c];
+    let times = vec![Some(1_000_000), Some(1_005_000), Some(9_000_000_000)];
+    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2);
+    assert!(
+        clusters.contains(&vec![0, 1]),
+        "the burst survives: {clusters:?}"
+    );
+    assert!(
+        clusters.iter().all(|cl| !cl.contains(&2) || cl.len() == 1),
+        "the far photo stays out: {clusters:?}"
+    );
 }

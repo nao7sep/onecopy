@@ -34,6 +34,14 @@ use rusqlite::{params, Connection, OptionalExtension};
 pub struct SimilarityConfig {
     pub max_gap_seconds: u32,
     pub phash_max_distance: u32,
+    /// The RELAXED distance for pairs whose capture times sit within
+    /// `max_gap_seconds` of each other (Phase 33). Family bursts legitimately
+    /// spread wider in dhash than the strict threshold tolerates — handheld
+    /// shift, subject motion, a toddler mid-turn — and capture time is the
+    /// strongest, cheapest signal that two frames belong together. Pairs far
+    /// apart in time (or with no time at all) keep the strict distance, so
+    /// flat art and icons are exactly as hard to group as before.
+    pub phash_max_distance_burst: u32,
     /// How much wider than one pairing step a family may spread (see the
     /// config field of the same name), as a dHash diameter allowance.
     pub diameter_multiplier: u32,
@@ -68,14 +76,29 @@ fn hamming(a: i64, b: i64) -> u32 {
 /// leader) and makes the result deterministic.
 pub fn cluster_by_appearance(
     phashes: &[i64],
-    max_distance: u32,
+    times_ms: &[Option<i64>],
+    strict_distance: u32,
+    burst_distance: u32,
+    burst_gap_seconds: u32,
     diameter_multiplier: u32,
 ) -> Vec<Vec<usize>> {
     let n = phashes.len();
+    debug_assert_eq!(n, times_ms.len());
+    let gap_ms = i64::from(burst_gap_seconds) * 1000;
+    // The per-PAIR allowance is the whole time-gating mechanism: burst-close
+    // pairs may differ more visually, everything else keeps the strict line.
+    let allowed = |a: usize, b: usize| -> u32 {
+        match (times_ms[a], times_ms[b]) {
+            (Some(ta), Some(tb)) if (ta - tb).abs() <= gap_ms => {
+                strict_distance.max(burst_distance)
+            }
+            _ => strict_distance,
+        }
+    };
     let mut uf = UnionFind::new(n);
     for a in 0..n {
         for b in (a + 1)..n {
-            if hamming(phashes[a], phashes[b]) <= max_distance {
+            if hamming(phashes[a], phashes[b]) <= allowed(a, b) {
                 uf.union(a, b);
             }
         }
@@ -86,14 +109,16 @@ pub fn cluster_by_appearance(
         components.entry(root).or_default().push(i);
     }
 
-    let diameter_limit = max_distance * diameter_multiplier.max(1);
     let mut out: Vec<Vec<usize>> = Vec::new();
     for mut members in components.into_values() {
         members.sort_unstable();
+        // The diameter discipline survives the gating per pair: two members
+        // admitted through the burst allowance may spread to its multiple,
+        // two admitted through the strict one only to the strict multiple.
         let chained = members.iter().enumerate().any(|(i, &a)| {
-            members[(i + 1)..]
-                .iter()
-                .any(|&b| hamming(phashes[a], phashes[b]) > diameter_limit)
+            members[(i + 1)..].iter().any(|&b| {
+                hamming(phashes[a], phashes[b]) > allowed(a, b) * diameter_multiplier.max(1)
+            })
         });
         if !chained {
             out.push(members);
@@ -104,7 +129,7 @@ pub fn cluster_by_appearance(
         for &i in &members {
             match clusters
                 .iter_mut()
-                .find(|c| hamming(phashes[c[0]], phashes[i]) <= max_distance)
+                .find(|c| hamming(phashes[c[0]], phashes[i]) <= allowed(c[0], i))
             {
                 Some(cluster) => cluster.push(i),
                 None => clusters.push(vec![i]),
@@ -343,9 +368,13 @@ pub fn rebuild_groups(
         // cluster_by_appearance).
         let mut bucket_groups: Vec<Vec<usize>> = Vec::new();
         let phashes: Vec<i64> = indices.iter().map(|&i| candidates[i].phash).collect();
+        let times: Vec<Option<i64>> = indices.iter().map(|&i| candidates[i].time_ms).collect();
         for cluster in cluster_by_appearance(
             &phashes,
+            &times,
             config.phash_max_distance,
+            config.phash_max_distance_burst,
+            config.max_gap_seconds,
             config.diameter_multiplier,
         ) {
             let cluster: Vec<usize> = cluster.into_iter().map(|local| indices[local]).collect();
