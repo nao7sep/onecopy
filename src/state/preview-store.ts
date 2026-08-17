@@ -15,7 +15,13 @@
 
 import { create } from "zustand";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  PhysicalPosition,
+  PhysicalSize,
+  availableMonitors,
+  getCurrentWindow,
+} from "@tauri-apps/api/window";
+import { parseSavedBounds, restorableBounds } from "../utils/windowBounds";
 import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
 import { orderMonitors, priorityFromState } from "../utils/screens";
@@ -83,20 +89,18 @@ async function ensurePreviewWindow(): Promise<void> {
     previewWindowOpen = true;
     return;
   }
-  // Created ALWAYS-ON-TOP — the comparison windows' pattern, and the design's
-  // literal contract ("the preview window FRONTS itself when activated").
-  // Raising by focus could not deliver that: setFocus(preview) followed by
-  // setFocus(main) — the hand-the-keyboard-back half — raised MAIN over an
-  // overlapping preview, so on one screen Space appeared to do nothing.
-  // Always-on-top keeps the surface visible above the main window while the
-  // keyboard NEVER leaves the grid, which is the actual requirement; no focus
-  // ever moves to this window except by the user's own click.
+  // A PLAIN window that remembers (Phase 33, superseding both earlier
+  // z-order designs): its own position, size, and maximized flag persist in
+  // state.json — written by the preview window itself — and nothing else.
+  // Never topmost: permanent always-on-top floated over OTHER APPS, which is
+  // obnoxious; the raise PULSE in frontPreviewWindow does the fronting.
+  // Created hidden so the restore is never seen as a jump.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
     title: "OneCopy Preview",
     width: 1280,
     height: 800,
-    alwaysOnTop: true,
+    visible: false,
   });
   await new Promise<void>((resolve, reject) => {
     void window.once("tauri://created", () => resolve());
@@ -118,22 +122,32 @@ async function ensurePreviewWindow(): Promise<void> {
   });
   try {
     const monitors = await availableMonitors();
-    if (monitors.length >= 2) {
-      // A POSITION nicety only, never a mode decision: with several screens
-      // the window lands on priority slot 2, else wherever the OS puts it.
-      const { useAppStore } = await import("./app-store");
+    const { useAppStore } = await import("./app-store");
+    const state = useAppStore.getState().appData?.state ?? {};
+    const saved = restorableBounds(
+      parseSavedBounds((state as Record<string, unknown>).previewWindowBounds),
+      monitors as never,
+    );
+    if (saved !== null) {
+      // The remembered geometry IS the configuration (the half-monitor user
+      // sized it once; it comes back exactly there).
+      await window.setPosition(new PhysicalPosition(saved.x, saved.y));
+      await window.setSize(new PhysicalSize(saved.width, saved.height));
+    } else if (monitors.length >= 2) {
+      // Nothing remembered: a POSITION nicety only — priority slot 2.
       const ordered = orderMonitors(
         monitors,
         priorityFromState(useAppStore.getState().appData?.state ?? null),
       );
       await window.setPosition(ordered[1].position);
     }
-    // A maximized main window means the user works full-screen — the related
-    // windows follow suit (developer, 2026-08-17). Only at CREATION: a
-    // window the user later un-maximized stays how they left it.
-    if (await getCurrentWindow().isMaximized()) {
+    // First-ever open defaults to maximized (this is an enlarge-and-view
+    // surface); after that the flag is the window's own remembered state.
+    if ((state as Record<string, unknown>).previewWindowMaximized !== false) {
       await window.maximize();
     }
+    await window.show().catch(reportWindowCall("preview show"));
+    await raisePulse(window);
     // Keep the keyboard where the culling happens.
     await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
   } catch (error) {
@@ -141,16 +155,24 @@ async function ensurePreviewWindow(): Promise<void> {
   }
 }
 
-/** Reveals an already-existing preview window. Always-on-top does the raising
- * (see the creation site), so revealing is just `show()` — the old
- * focus-the-preview-then-refocus-main dance is gone, because its second step
- * raised MAIN over an overlapping preview and made Space look dead. A window
- * created by an older build without the flag is upgraded in passing. */
+/** Raise WITHOUT stealing: a topmost pulse leaves the window above the main
+ * window (Windows' documented TOPMOST→NOTOPMOST front placement; macOS keeps
+ * the front ordering after the level drop) while the keyboard never moves —
+ * and unlike a standing always-on-top, it floats over no other app. */
+async function raisePulse(window: WebviewWindow): Promise<void> {
+  await window.setAlwaysOnTop(true).catch(reportWindowCall("preview setAlwaysOnTop"));
+  await window.setAlwaysOnTop(false).catch(reportWindowCall("preview setAlwaysOnTop"));
+}
+
+/** Reveals an already-existing preview window: show, then the raise pulse.
+ * No focus call in either direction — the old focus-the-preview-then-
+ * refocus-main dance raised MAIN over an overlapping preview and made Space
+ * look dead. */
 async function frontPreviewWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview").catch(() => null);
   if (existing === null) return;
-  await existing.setAlwaysOnTop(true).catch(reportWindowCall("preview setAlwaysOnTop"));
   await existing.show().catch(reportWindowCall("preview show"));
+  await raisePulse(existing);
 }
 
 // ---- Follow throttle ------------------------------------------------------
