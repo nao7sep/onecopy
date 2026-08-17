@@ -128,6 +128,12 @@ async function ensurePreviewWindow(): Promise<void> {
       );
       await window.setPosition(ordered[1].position);
     }
+    // A maximized main window means the user works full-screen — the related
+    // windows follow suit (developer, 2026-08-17). Only at CREATION: a
+    // window the user later un-maximized stays how they left it.
+    if (await getCurrentWindow().isMaximized()) {
+      await window.maximize();
+    }
     // Keep the keyboard where the culling happens.
     await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
   } catch (error) {

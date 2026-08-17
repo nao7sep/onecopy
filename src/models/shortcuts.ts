@@ -47,7 +47,7 @@ export function shortcutGroups(): ShortcutGroup[] {
       rows: [
         { chord: "Space", action: "Show or hide the preview (plays/pauses a loaded video)" },
         { chord: "P", action: "Show or hide the preview" },
-        { chord: "Enter", action: "Go deeper: compare similar photos, video scenes, or 100% view" },
+        { chord: "Enter", action: "Compare similar photos (≈ badge), or open a video's scenes" },
         { chord: "Z", action: "100% view of the original (in the preview)" },
         { chord: "F", action: "Fullscreen (in the preview window)" },
         { chord: "Escape", action: "Leave fullscreen, or close the preview window" },

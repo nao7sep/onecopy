@@ -45,6 +45,8 @@ const NEEDS: Record<string, string> = {
   "availableMonitors(": "core:window:allow-available-monitors",
   "outerPosition(": "core:window:allow-outer-position",
   "innerSize(": "core:window:allow-inner-size",
+  "isMaximized(": "core:window:allow-is-maximized",
+  ".maximize(": "core:window:allow-maximize",
   "currentMonitor(": "core:window:allow-current-monitor",
   ".show(": "core:window:allow-show",
   ".hide(": "core:window:allow-hide",

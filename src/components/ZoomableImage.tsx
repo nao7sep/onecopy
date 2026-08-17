@@ -13,6 +13,18 @@ import { log, toErrorFields } from "../repositories";
 // double-click returns to fit. Shared by the preview window and the
 // comparison per-slot enlarge.
 
+/** Cursor position → pan position, with an edge margin: the outer 6% of the
+ * pane already reads as fully-there, so a corner never needs pixel-perfect
+ * aim (the exact edge pixel is hard to hit and the OS cursor may not even
+ * deliver it). Clamped to [0, 1]. */
+export function panFraction(position: number, extent: number): number {
+  if (extent <= 0) return 0;
+  const margin = extent * 0.06;
+  const usable = extent - margin * 2;
+  if (usable <= 0) return 0.5;
+  return Math.min(1, Math.max(0, (position - margin) / usable));
+}
+
 export default function ZoomableImage({
   hash,
   fileName,
@@ -57,7 +69,6 @@ export default function ZoomableImage({
     };
   }, [zoomed, converted, convertedSrc, hash]);
   const panRef = useRef<HTMLDivElement | null>(null);
-  const dragState = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -85,25 +96,28 @@ export default function ZoomableImage({
   return (
     <div
       ref={panRef}
-      className="h-full w-full cursor-grab overflow-auto active:cursor-grabbing"
-      onMouseDown={(e) => {
-        const pane = panRef.current;
-        if (!pane) return;
-        dragState.current = {
-          x: e.clientX,
-          y: e.clientY,
-          left: pane.scrollLeft,
-          top: pane.scrollTop,
-        };
-      }}
+      className="h-full w-full cursor-crosshair overflow-auto"
+      // Position-mapped panning (developer, 2026-08-17, replacing drag): the
+      // cursor's place IN THE PANE is the place IN THE IMAGE — top-left shows
+      // top-left, bottom-right shows bottom-right, continuously. Dragging a
+      // mostly-hidden original corner-to-corner took several grab strokes;
+      // this is one sweep. The mapping is proportional PER AXIS, which is
+      // what keeps a panorama's far edge reachable — a same-rate-both-axes
+      // mapping would preserve nothing (the zoom is uniform, so no aspect
+      // distortion exists to prevent) and strand the long axis. The cursor
+      // position is the view state, so wheel scrolling is deliberately left
+      // to be overridden by the next mouse move.
       onMouseMove={(e) => {
         const pane = panRef.current;
-        const drag = dragState.current;
-        if (!pane || !drag || e.buttons === 0) return;
-        pane.scrollLeft = drag.left - (e.clientX - drag.x);
-        pane.scrollTop = drag.top - (e.clientY - drag.y);
+        if (!pane) return;
+        const rect = pane.getBoundingClientRect();
+        pane.scrollLeft =
+          panFraction(e.clientX - rect.left, rect.width) *
+          (pane.scrollWidth - pane.clientWidth);
+        pane.scrollTop =
+          panFraction(e.clientY - rect.top, rect.height) *
+          (pane.scrollHeight - pane.clientHeight);
       }}
-      onMouseUp={() => (dragState.current = null)}
       onDoubleClick={() => setZoomed(false)}
     >
       {converted && convertedSrc === null ? (
@@ -112,7 +126,7 @@ export default function ZoomableImage({
         <img
           src={converted ? (convertedSrc ?? "") : originalUrl(hash)}
           alt={fileName}
-          title="Drag to pan · double-click or Z to fit"
+          title="Move the mouse to pan · double-click or Z to fit"
           className="max-w-none"
           draggable={false}
         />

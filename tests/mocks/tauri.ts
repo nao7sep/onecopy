@@ -86,6 +86,8 @@ export const outerPosition = vi.fn(async () => ({ x: 0, y: 0 }));
 // them; the returned unlisten is a no-op.
 export const onMoved = vi.fn(async (_handler: unknown) => () => {});
 export const onResized = vi.fn(async (_handler: unknown) => () => {});
+export const isMaximized = vi.fn(async () => false);
+export const maximize = vi.fn(async () => {});
 
 export const getCurrentWindow = vi.fn(() => ({
   label: currentWindowLabel,
@@ -98,6 +100,8 @@ export const getCurrentWindow = vi.fn(() => ({
   outerPosition,
   onMoved,
   onResized,
+  isMaximized,
+  maximize,
 }));
 
 export const getCurrentWebview = vi.fn(() => ({ setZoom }));
@@ -165,6 +169,8 @@ export class WebviewWindow {
   setPosition = vi.fn(async (_p: PhysicalPosition) => {});
   setSize = vi.fn(async (_s: PhysicalSize) => {});
   setFocus = vi.fn(async () => {});
+  setAlwaysOnTop = vi.fn(async (_flag: boolean) => {});
+  maximize = vi.fn(async () => {});
 }
 
 export const openDialog = vi.fn(async () => null as string | null);

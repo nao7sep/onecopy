@@ -172,16 +172,34 @@ export default function App() {
     };
   }, []);
 
-  // App chrome: the derived window minimum, applied once at startup; zoom is
-  // persisted app-level STATE (not a preference) on the discrete ladder, with
-  // cross-layout shortcut detection (JIS ";" included). Failures degrade
-  // silently in the browser-dev case where no Tauri window exists.
+  // App chrome: the derived window minimum, applied at startup and when the
+  // split preview changes it; zoom is persisted app-level STATE (not a
+  // preference) on the discrete ladder, with cross-layout shortcut detection
+  // (JIS ";" included). Failures degrade silently in the browser-dev case
+  // where no Tauri window exists.
+  //
+  // NEVER while maximized: on Windows the min-size call knocks a maximized
+  // window back to normal, which is how Space (split placement flips this
+  // effect's dependency) un-maximized the developer's always-maximized main
+  // window. A maximized window cannot go below any minimum anyway, so the
+  // constraint waits in `pendingMinSize` and the resize listener below
+  // applies it once the window is normal again.
+  const pendingMinSize = useRef<LogicalSize | null>(null);
   useEffect(() => {
-    void getCurrentWindow()
-      .setMinSize(
-        new LogicalSize(computeMinWindowWidth(splitOpen), computeMinWindowHeight()),
-      )
-      .catch(reportWindowCall("setMinSize"));
+    const size = new LogicalSize(computeMinWindowWidth(splitOpen), computeMinWindowHeight());
+    const window = getCurrentWindow();
+    void (async () => {
+      try {
+        if (await window.isMaximized()) {
+          pendingMinSize.current = size;
+          return;
+        }
+        pendingMinSize.current = null;
+        await window.setMinSize(size);
+      } catch (error) {
+        reportWindowCall("setMinSize")(error);
+      }
+    })();
   }, [splitOpen]);
 
   // Window bounds: the window is created HIDDEN (tauri.conf `visible: false` —
@@ -205,11 +223,14 @@ export default function App() {
       try {
         const { availableMonitors, currentMonitor, PhysicalPosition, PhysicalSize } =
           await import("@tauri-apps/api/window");
+        const state = useAppStore.getState().appData?.state;
         const saved = restorableBounds(
-          parseSavedBounds(useAppStore.getState().appData?.state?.windowBounds),
+          parseSavedBounds(state?.windowBounds),
           await availableMonitors(),
         );
         if (saved !== null) {
+          // The NORMAL-state geometry, applied even when maximizing next:
+          // it is what un-maximizing returns to.
           await window.setPosition(new PhysicalPosition(saved.x, saved.y));
           await window.setSize(new PhysicalSize(saved.width, saved.height));
         } else {
@@ -221,6 +242,12 @@ export default function App() {
           if (fitted !== null) {
             await window.setSize(new PhysicalSize(fitted.width, fitted.height));
           }
+        }
+        // The app is almost always used maximized (developer, 2026-08-17) —
+        // a state worth restoring in its own right, independent of whether
+        // the normal-state bounds survived the monitor check.
+        if (state?.windowMaximized === true) {
+          await window.maximize();
         }
       } catch (error) {
         reportWindowCall("restore bounds")(error);
@@ -235,6 +262,13 @@ export default function App() {
   // The save half: on move/resize, read the live outer position + inner size
   // (the restore counterparts) and persist, debounced — drags fire dozens of
   // events per second and state.json wants the landing place, not the journey.
+  //
+  // Maximized is a FLAG, never geometry: while maximized, only
+  // `windowMaximized` updates — writing the maximized rect into
+  // `windowBounds` would overwrite the remembered normal size, so
+  // un-maximizing (now or next session) would have nowhere real to return
+  // to. This is also where a deferred min-size constraint lands once the
+  // window is normal again (see the min-size effect).
   useEffect(() => {
     const window = getCurrentWindow();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -243,9 +277,19 @@ export default function App() {
       timer = setTimeout(() => {
         void (async () => {
           try {
+            if (await window.isMaximized()) {
+              await useAppStore.getState().patchState({ windowMaximized: true });
+              return;
+            }
+            if (pendingMinSize.current !== null) {
+              const size = pendingMinSize.current;
+              pendingMinSize.current = null;
+              await window.setMinSize(size).catch(reportWindowCall("setMinSize"));
+            }
             const position = await window.outerPosition();
             const size = await window.innerSize();
             await useAppStore.getState().patchState({
+              windowMaximized: false,
               windowBounds: {
                 x: position.x,
                 y: position.y,
@@ -443,30 +487,26 @@ export default function App() {
           // (selection-based culling — videos never group).
           setScenesFor(item.hash);
         } else if (item.hash && item.similarGroupId !== null) {
-          // Similar photos exist: Enter means "show them all at once" — and
-          // when the group turns out to have no other live members, Enter
-          // falls back to inspecting the one photo instead of doing nothing.
+          // Similar photos exist: Enter means "show them all at once". A
+          // group with no other live members says so instead of surprising
+          // the user with a different surface.
           void useComparisonStore
             .getState()
             .openGroup(item.hash)
             .then((opened) => {
               if (opened) return;
-              return import("./state/preview-store").then(({ showPreview }) =>
-                showPreview({ hash: item.hash, pathId: null }, true),
-              );
+              useItemsStore.setState({
+                message: "No similar photos left in this group",
+              });
             });
         } else {
-          // No similars: Enter INSPECTS — the preview opens at 100%
-          // (Space peeks at fit; Enter goes deeper, the agreed split).
-          void import("./state/preview-store").then(({ showPreview }) =>
-            showPreview(
-              {
-                hash: item.hash,
-                pathId: item.hash === null ? item.pathId : null,
-              },
-              true,
-            ),
-          );
+          // No similars: Enter says so and does nothing else (developer,
+          // 2026-08-17). It used to open the 100% view — but Enter is the
+          // trained "open the similar set" reflex, pressed without checking
+          // the ≈ badge first, and a surprise mode-switch punishes exactly
+          // that habit. Inspection stays where it belongs: Space to peek,
+          // Z or a click for 100%.
+          useItemsStore.setState({ message: "No similar photos for this image" });
         }
       }
     };
