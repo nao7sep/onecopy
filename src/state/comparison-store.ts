@@ -366,12 +366,18 @@ async function openSpread(
         await existing.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
         await existing.show();
         await existing.setFocus();
+        // macOS: cover the menu bar and dock too (simple fullscreen — no
+        // Spaces animation). No-op elsewhere; borderless-at-bounds already
+        // covers the Windows taskbar.
+        void invoke("set_window_simple_fullscreen", { label, enable: true }).catch(
+          (error) => log.warn("simple fullscreen failed", toErrorFields(error)),
+        );
         continue;
       }
       // The constructor's x/y/width/height are LOGICAL, so the monitor's
       // physical bounds are divided by its own scale factor here.
       const scale = monitor.scaleFactor || 1;
-      new WebviewWindow(label, {
+      const created = new WebviewWindow(label, {
         url: `index.html?view=comparison&slice=${i + 1}`,
         title: "OneCopy Comparison",
         x: monitor.position.x / scale,
@@ -382,6 +388,11 @@ async function openSpread(
         alwaysOnTop: true,
         skipTaskbar: true,
         resizable: false,
+      });
+      void created.once("tauri://created", () => {
+        void invoke("set_window_simple_fullscreen", { label, enable: true }).catch(
+          (error) => log.warn("simple fullscreen failed", toErrorFields(error)),
+        );
       });
     }
   } catch (error) {
@@ -396,8 +407,16 @@ async function openSpread(
 async function closeSpread(): Promise<void> {
   const { spreadCount } = useComparisonStore.getState();
   for (let i = 1; i <= spreadCount; i += 1) {
-    const window = await WebviewWindow.getByLabel(`comparison-${i}`).catch(() => null);
-    if (window !== null) await window.hide().catch(reportWindowCall("comparison hide"));
+    const label = `comparison-${i}`;
+    const window = await WebviewWindow.getByLabel(label).catch(() => null);
+    if (window !== null) {
+      // Leave simple fullscreen BEFORE hiding: a hidden simple-fullscreen
+      // window reappears in a broken half-state on macOS.
+      await invoke("set_window_simple_fullscreen", { label, enable: false }).catch(
+        reportWindowCall("comparison leave fullscreen"),
+      );
+      await window.hide().catch(reportWindowCall("comparison hide"));
+    }
   }
   useComparisonStore.setState({ spreadCount: 0 });
 }
@@ -484,6 +503,9 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         pendingCommit: null,
       });
       broadcast();
+      void import("./preview-store").then(({ hidePreviewForComparison }) =>
+        hidePreviewForComparison(),
+      );
       await openSpread(others);
       return true;
     } catch (error) {
@@ -605,6 +627,9 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       pendingCommit: null,
     });
     void closeSpread();
+    void import("./preview-store").then(({ restorePreviewAfterComparison }) =>
+      restorePreviewAfterComparison(),
+    );
     void refreshAfterChange();
   },
 }));

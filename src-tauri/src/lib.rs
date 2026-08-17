@@ -1131,6 +1131,28 @@ fn transcript_get(hash: String) -> Result<Option<String>, String> {
     Ok(std::fs::read_to_string(cache.transcript(&hash)).ok())
 }
 
+// Comparison-mode fullscreen for the spread windows (Phase 33). macOS only:
+// simple fullscreen (the pre-Lion kind) hides the menu bar and dock WITHOUT
+// the Spaces animation that made real fullscreen unusable at keystroke pace.
+// Elsewhere a borderless window at exact monitor bounds already covers the
+// taskbar, so the command is a no-op — never tauri's fullscreen fallback,
+// which would change proven Windows behaviour.
+#[tauri::command(async)]
+fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("no window labeled {label}"))?;
+    #[cfg(target_os = "macos")]
+    {
+        window.set_simple_fullscreen(enable).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, enable);
+        Ok(())
+    }
+}
+
 // The frontend's throttled input ping — the backfill scheduler's whole view
 // of the user. Atomic store; keeping it plain (main-thread) is deliberate,
 // it must never queue behind async work.
@@ -1707,6 +1729,7 @@ pub fn run() {
             reveal_data_subdir,
             open_item_externally,
             note_user_activity,
+            set_window_simple_fullscreen,
             ensure_preview,
             re_resolve_all,
             rescan_section,

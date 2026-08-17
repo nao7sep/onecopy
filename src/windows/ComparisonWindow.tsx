@@ -56,12 +56,25 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
   }, []);
 
   const chunk = state?.chunks[slice] ?? [];
+  // GEOMETRY FROM THE PAGE, NOT THIS SCREEN'S OCCUPANCY (Phase 33): every
+  // window of a page uses the grid of its FULLEST chunk, so a lone photo on
+  // the second screen renders as one cell of the same grid the first screen
+  // shows — never a giant full-screen image beside a 4-up (the developer's
+  // 5-member case). Empty cells render as cells.
+  const gridSlots = Math.max(1, ...(state?.chunks ?? []).map((c) => c.length));
   const columns = gridColumns(
-    Math.max(1, chunk.length),
+    gridSlots,
     window.innerWidth / Math.max(1, window.innerHeight),
     state?.portraitDominant ?? false,
   );
-  const rows = Math.max(1, Math.ceil(Math.max(1, chunk.length) / columns));
+  const rows = Math.max(1, Math.ceil(gridSlots / columns));
+
+  // A claimed screen whose chunk emptied (the last page is short) goes PURE
+  // BLACK — the curtain that says "still in comparison mode". "Waiting…"
+  // belongs only to the moment before the FIRST broadcast arrives.
+  if (state !== null && chunk.length === 0) {
+    return <div className="h-screen w-screen bg-black" />;
+  }
 
   return (
     <div className="flex h-screen flex-col bg-background">
