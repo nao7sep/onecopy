@@ -89,9 +89,11 @@ fn install_panic_hook() {
 // Every command below that touches the disk, the network, a subprocess or the
 // index carries `(async)` so it runs on the async runtime instead. The ones
 // left plain are pure or atomic (validate_timezone, logging_debug_enabled,
-// transcribe_cancel), or must keep strict call order (log_event), or are
-// small reads whose FIFO ordering the frontend still relies on (the
-// get_* queries — see the plan's follow-up task before converting those).
+// transcribe_cancel), or must keep strict call order (log_event). The get_*
+// reads are `(async)` as well — their responses may now arrive OUT OF ORDER,
+// which the stores absorb with request-sequence guards (`staleGuard` in
+// src/state/request-seq.ts): a 30k-item month query on the main thread was
+// exactly the block a slow machine felt as a frozen window.
 #[tauri::command(async)]
 fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
     logging::boundary(
@@ -662,7 +664,7 @@ fn delete_item(
 
 // One (kind, month) section's grid items, same month keys and timezone as the
 // counts so the two always agree.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_section_items(
     app: AppHandle,
     kind: String,
@@ -956,7 +958,7 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
 
 // The first-class issues surface: unreadable files, decode failures,
 // copies-disagree anomalies, delete/copy errors — a silent skip never happens.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, String> {
     logging::boundary(
         "get_issues",
@@ -1292,7 +1294,7 @@ fn check_source_dirs(app: AppHandle) -> Result<SourceDirsStatus, String> {
 }
 
 // The comparison view's group members for one item, best-first.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_similar_group(app: AppHandle, hash: String) -> Result<Vec<queries::GroupMember>, String> {
     logging::boundary(
         "get_similar_group",
@@ -1361,7 +1363,7 @@ fn similar_exclusions_clear(app: AppHandle) -> Result<u64, String> {
 }
 
 // The metadata pane's detail for one logical item.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_item_detail(
     app: AppHandle,
     hash: Option<String>,
@@ -1381,7 +1383,7 @@ fn get_item_detail(
 
 // Left-pane section counts (logical items per kind per month), bucketed in the
 // OS display timezone.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_section_counts(app: AppHandle) -> Result<queries::SectionCounts, String> {
     logging::boundary(
         "get_section_counts",

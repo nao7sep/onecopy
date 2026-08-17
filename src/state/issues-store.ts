@@ -6,6 +6,7 @@
 // multi-day unattended scan, where anything transient would be missed.
 
 import { create } from "zustand";
+import { requestSeq } from "./request-seq";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
 
@@ -30,17 +31,21 @@ interface IssuesState {
   dismissAll: () => Promise<void>;
 }
 
+const issuesLoad = requestSeq();
+
 export const useIssuesStore = create<IssuesState>((set, get) => ({
   total: 0,
   rows: [],
   open: false,
 
   load: async () => {
+    // Async command — the older of two in-flight loads must lose (request-seq.ts).
+    const fresh = issuesLoad.begin();
     try {
       const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", {
         limit: 500,
       });
-      set({ total: result.total, rows: result.rows });
+      if (fresh()) set({ total: result.total, rows: result.rows });
     } catch (error) {
       log.error("issues load failed", toErrorFields(error));
     }

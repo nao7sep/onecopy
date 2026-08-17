@@ -9,6 +9,7 @@
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { requestSeq } from "./request-seq";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   getCurrentWindow,
@@ -354,6 +355,8 @@ async function refreshAfterChange(): Promise<void> {
   await useSectionsStore.getState().loadCounts();
 }
 
+const groupLoad = requestSeq();
+
 export const useComparisonStore = create<ComparisonState>((set, get) => ({
   open: false,
   slots: [],
@@ -375,8 +378,16 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   cancelPermanentCommit: () => set({ pendingPermanentCommit: false }),
 
   openGroup: async (hash) => {
+    // get_similar_group is an async command: two quick Enters on different
+    // anchors race, and the OLDER group's continuation must not publish state
+    // or open windows over the newer one's (request-seq.ts).
+    const fresh = groupLoad.begin();
     try {
       const members = await invoke<GroupMember[]>("get_similar_group", { hash });
+      // True, not false: the newer call owns the outcome now, and false would
+      // send the caller down its "group vanished" path for a group that is
+      // simply someone else's.
+      if (!fresh()) return true;
       if (members.length < 2) {
         // A ≈ badge whose group lost its other members (deleted, drive
         // absent) must not swallow Enter silently.

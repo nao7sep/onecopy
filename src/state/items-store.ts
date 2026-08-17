@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
 import { sortItems } from "../models/items";
 import type { SectionItem, SortOrder } from "../models/items";
@@ -84,6 +85,11 @@ interface ItemsState {
   selectAfterFamily: (memberHashes: string[]) => void;
 }
 
+// One guard per query the store issues (request-seq.ts explains why: these
+// reads are async commands now, so responses can arrive out of order).
+const sectionLoad = requestSeq();
+const detailLoad = requestSeq();
+
 export const useItemsStore = create<ItemsState>((set, get) => ({
   selected: null,
   items: [],
@@ -139,21 +145,25 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     void import("./app-store").then(({ useAppStore }) =>
       useAppStore.getState().patchState({ lastSection: section }),
     );
+    // Sequence, not identity: `refresh` passes the SAME section object, so an
+    // identity check cannot tell two same-section reloads apart — with the
+    // reads async, an older response landing last would resurrect rows a
+    // newer reload had already dropped.
+    const fresh = sectionLoad.begin();
     try {
       const items = await invoke<SectionItem[]>("get_section_items", {
         kind: section.kind,
         month: section.month,
       });
-      // Ignore a stale response if the selection moved on meanwhile.
-      if (get().selected === section) {
+      if (fresh()) {
         set({ items, loading: false });
         if (sameSection) dropVanishedSelection(set, get);
       }
     } catch (error) {
       log.error("section items load failed", toErrorFields(error));
-      // Only the section still open may be blanked — a rejection for a section
-      // the user already navigated away from must not wipe the live one.
-      if (get().selected === section) {
+      // Only the latest request may blank — a rejection for a section the
+      // user already navigated away from must not wipe the live one.
+      if (fresh()) {
         set({ items: [], loading: false });
       }
     }
@@ -386,10 +396,12 @@ function notifyAnchor(key: string | null): void {
   void import("./preview-store").then(({ usePreviewStore }) =>
     usePreviewStore.getState().anchorChanged(payload, null),
   );
+  // Both guards: the key check drops a response for an anchor the user left,
+  // the sequence drops the OLDER of two responses for the same anchor.
+  const fresh = detailLoad.begin();
   void invoke<ItemDetail>("get_item_detail", payload)
     .then((detail) => {
-      // Ignore a stale response if the selection moved on meanwhile.
-      if (useItemsStore.getState().selectedItem === key) {
+      if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ detail });
         void import("./preview-store").then(({ usePreviewStore }) =>
           usePreviewStore.getState().detailLoaded(payload, detail),

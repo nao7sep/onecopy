@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { log, toErrorFields } from "../repositories";
 import { progressLine } from "../models/scan";
+import { requestSeq } from "./request-seq";
 import type { SectionCounts } from "../models/sections";
 
 interface SectionsState {
@@ -20,6 +21,8 @@ interface SectionsState {
   startScan: () => Promise<void>;
 }
 
+const countsLoad = requestSeq();
+
 export const useSectionsStore = create<SectionsState>((set) => ({
   counts: null,
   scanning: false,
@@ -27,9 +30,13 @@ export const useSectionsStore = create<SectionsState>((set) => ({
   rescanNeeded: false,
 
   loadCounts: async () => {
+    // Async command: with the per-phase reloads several of these can be in
+    // flight, and an older snapshot landing last would roll the tree
+    // backwards until the next refresh (request-seq.ts).
+    const fresh = countsLoad.begin();
     try {
       const counts = await invoke<SectionCounts>("get_section_counts");
-      set({ counts });
+      if (fresh()) set({ counts });
     } catch (error) {
       log.error("section counts load failed", toErrorFields(error));
     }

@@ -29,6 +29,7 @@ function item(over: Partial<SectionItem> & { pathId: number }): SectionItem {
     byteSize: 1000,
     hasCompanions: false,
     durationMs: null,
+    dirPath: "/photos",
     ...over,
   };
 }
@@ -302,5 +303,63 @@ describe("deleteSelected", () => {
     await useItemsStore.getState().deleteSelected(false);
 
     expect(useItemsStore.getState().message).toMatch(/not present/i);
+  });
+});
+
+describe("out-of-order responses (the reads are async commands now)", () => {
+  // The stores used to lean on main-thread commands serializing FIFO. On the
+  // async runtime two reloads race, and without the sequence guard the OLDER
+  // response landing last resurrects rows a newer reload already dropped —
+  // deleted photos reappearing until the next refresh.
+  it("a stale section reload cannot overwrite a fresher one", async () => {
+    const resolvers: ((items: SectionItem[]) => void)[] = [];
+    mockCommand(
+      "get_section_items",
+      () => new Promise<SectionItem[]>((resolve) => resolvers.push(resolve)),
+    );
+    const section = { kind: "image" as const, month: "2026-01" };
+    useItemsStore.setState({ selected: section });
+
+    const older = useItemsStore.getState().select(section);
+    const newer = useItemsStore.getState().refresh(); // same section OBJECT
+    expect(resolvers).toHaveLength(2);
+
+    // The newer reload returns first — post-delete, one row gone.
+    resolvers[1]([item({ pathId: 2 })]);
+    await newer;
+    // The OLDER response straggles in with the pre-delete rows.
+    resolvers[0]([item({ pathId: 1 }), item({ pathId: 2 })]);
+    await older;
+
+    expect(useItemsStore.getState().items.map((i) => i.pathId)).toEqual([2]);
+  });
+
+  it("a stale detail response for the same anchor is discarded", async () => {
+    const resolvers: ((detail: unknown) => void)[] = [];
+    mockCommand(
+      "get_item_detail",
+      () => new Promise((resolve) => resolvers.push(resolve)),
+    );
+    useItemsStore.setState({ items: [item({ pathId: 1 })], selected: { kind: "image", month: "2026-01" } });
+
+    useItemsStore.getState().selectItem("h1");
+    useItemsStore.getState().selectItem("h1"); // re-select fires a second fetch
+    // Macrotask drains, not bare microtask ticks: the response runs through
+    // invoke's async wrapper AND the .then chain, and a single microtask left
+    // the stale write still pending — the assertion passed with the guard
+    // deleted. setTimeout(0) flushes the whole chain (mutation-verified).
+    const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
+    await drain();
+    expect(resolvers).toHaveLength(2);
+
+    resolvers[1]({ fileName: "IMG_1.jpg", copyPaths: ["/b"], companionPaths: [] });
+    await drain();
+    resolvers[0]({ fileName: "IMG_1.jpg", copyPaths: ["/a"], companionPaths: [] });
+    await drain();
+
+    // The newer fetch's answer stands.
+    expect(
+      (useItemsStore.getState().detail as { copyPaths: string[] } | null)?.copyPaths,
+    ).toEqual(["/b"]);
   });
 });
