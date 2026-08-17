@@ -18,7 +18,7 @@ import {
   PhysicalSize,
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { log, toErrorFields } from "../repositories";
+import { log, toErrorFields, reportWindowCall } from "../repositories";
 import { hasOpenModal } from "../utils/modalStack";
 import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
 
@@ -136,6 +136,14 @@ interface ComparisonState {
   unlinkSlot: (slotIndex: number) => Promise<void>;
   commitTurn: (permanent: boolean) => Promise<void>;
   close: () => void;
+}
+
+/** How many photos the user is actually looking at. NOT `slots.length`: an
+ * unlinked slot stays in the array as a hole so the keys after it keep their
+ * numbers, and counting holes made the header claim photos that are not on
+ * screen ("2 kept · 4 shown" over three photos and a gap). */
+export function liveSlotCount(slots: (GroupMember | null)[]): number {
+  return slots.reduce((n, slot) => (slot === null ? n : n + 1), 0);
 }
 
 /** Chunks the slots across screens by their capacities, contiguous, keeping
@@ -314,7 +322,7 @@ async function closeSpread(): Promise<void> {
   const { spreadCount } = useComparisonStore.getState();
   for (let i = 1; i <= spreadCount; i += 1) {
     const window = await WebviewWindow.getByLabel(`comparison-${i}`).catch(() => null);
-    if (window !== null) await window.hide().catch(() => {});
+    if (window !== null) await window.hide().catch(reportWindowCall("comparison hide"));
   }
   useComparisonStore.setState({ spreadCount: 0 });
 }

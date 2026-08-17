@@ -58,7 +58,12 @@ const TEXT_INPUT_TYPES = new Set([
   "url",
 ]);
 
-function consumesPrintableKeys(node: Element): boolean {
+/** Does this element take TYPED text? Exported because `focusTrap` needs the
+ * same distinction for a different reason (where to land focus, not whether to
+ * stand down) and a second private copy is exactly the drift the convention
+ * forbids. Unlike `isEditableTarget` this asks about ONE element, not the
+ * ancestor chain. */
+export function consumesPrintableKeys(node: Element): boolean {
   if (node instanceof HTMLElement && node.isContentEditable) return true;
   const tag = node.tagName.toUpperCase();
   if (tag === "TEXTAREA") return true;

@@ -29,6 +29,9 @@ use serde::Serialize;
 use crate::logging;
 
 pub const TRASH_DIR_NAME: &str = ".onecopy-trash";
+/// The per-day restore ledger. Named once so the sizing pass can recognise and
+/// exclude its own bookkeeping (see `tree_size`).
+pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";
 /// The home-volume trash lives under the app root (macOS forbids creating
 /// `/.onecopy-trash`). Named once in paths.rs, like every other subpath.
 use crate::paths::TRASH_DIR_NAME as HOME_TRASH_SUBDIR;
@@ -160,7 +163,7 @@ fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String>
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(day_dir.join("manifest.jsonl"))
+        .open(day_dir.join(MANIFEST_FILE_NAME))
         .map_err(|e| e.to_string())?;
     // not recorded: the manifest is trash-side audit data, append-mode by
     // construction, never managed text.
@@ -302,12 +305,20 @@ pub fn empty_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Total bytes and file count under a tree; a missing tree is (0, 0).
+/// Total bytes and file count of the RECOVERABLE contents of a tree; a missing
+/// tree is (0, 0).
+///
+/// The per-day `manifest.jsonl` is excluded. It is our own bookkeeping, not
+/// something the user put in the trash, and counting it made the overview
+/// disagree with itself: a trash holding two deleted photos read "3 files",
+/// and a trash emptied of everything recoverable could still read "1 file" —
+/// with no way to reach zero. The count answers "how much of my library is in
+/// here", so only entries a restore could hand back may contribute.
 fn tree_size(root: &Path) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut files = 0u64;
     for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().flatten() {
-        if entry.file_type().is_file() {
+        if entry.file_type().is_file() && entry.file_name() != MANIFEST_FILE_NAME {
             files += 1;
             bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
         }

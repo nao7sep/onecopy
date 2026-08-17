@@ -8,6 +8,7 @@
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import Grid from "../../src/components/Grid";
+import { popModal, pushModal } from "../../src/utils/modalStack";
 import { useItemsStore } from "../../src/state/items-store";
 import type { SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
@@ -34,8 +35,15 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
 
 const ITEMS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => item(n));
 
-function renderGrid(items = ITEMS, loading = false, layout: "tiles" | "list" = "tiles") {
-  const view = render(<Grid items={items} loading={loading} layout={layout} />);
+function renderGrid(
+  items = ITEMS,
+  loading = false,
+  layout: "tiles" | "list" = "tiles",
+  mayClaimFocus = true,
+) {
+  const view = render(
+    <Grid items={items} loading={loading} layout={layout} mayClaimFocus={mayClaimFocus} />,
+  );
   const container = view.container.querySelector<HTMLElement>("[role='listbox']");
   return { view, container: container! };
 }
@@ -180,5 +188,53 @@ describe("shift+arrow", () => {
     // Reversing must shrink — the gesture that silently did nothing before.
     await act(async () => press(container, "ArrowLeft", { shiftKey: true }));
     expect(useItemsStore.getState().selectedKeys.size).toBe(2);
+  });
+});
+
+describe("taking the keyboard on arrival", () => {
+  // On boot the app reopens the last section by itself. Nobody clicked, so
+  // focus was still on <body> and every arrow key went nowhere — the app read
+  // as frozen until the user thought to click the grid.
+
+  it("focuses itself when a restored section's items arrive", () => {
+    const { container } = renderGrid();
+    expect(document.activeElement).toBe(container);
+  });
+
+  it("waits for the items", () => {
+    // Focusing an empty grid is not wrong, only useless — and it would fire
+    // once per section change, stealing focus from wherever the user is.
+    renderGrid([], true);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("leaves focus alone when something else already has it", async () => {
+    const outside = document.createElement("input");
+    document.body.appendChild(outside);
+    outside.focus();
+
+    const { container } = renderGrid();
+
+    expect(document.activeElement).toBe(outside);
+    expect(document.activeElement).not.toBe(container);
+    outside.remove();
+  });
+
+  it("does not reach through a modal", () => {
+    const token = {};
+    pushModal(token);
+    try {
+      renderGrid();
+      expect(document.activeElement).toBe(document.body);
+    } finally {
+      popModal(token);
+    }
+  });
+
+  it("does not reach through a boot gate", () => {
+    // The wizard and the missing-volume gate are opaque overlays that focus
+    // nothing themselves, so body stays active and only the flag stops it.
+    renderGrid(ITEMS, false, "tiles", false);
+    expect(document.activeElement).toBe(document.body);
   });
 });

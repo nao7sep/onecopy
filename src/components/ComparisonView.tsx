@@ -5,6 +5,7 @@ import {
   slotIndexForKey,
   slotIndexForShiftedCode,
   chunkSlots,
+  liveSlotCount,
   gridColumns,
   useComparisonStore,
 } from "../state/comparison-store";
@@ -102,7 +103,7 @@ export default function ComparisonView() {
         <h1 className="text-sm font-semibold text-ink-strong">Similar photos</h1>
         <div className="flex items-center gap-4 text-xs text-ink-muted">
           <span>
-            {kept.size} kept · {slots.length} shown
+            {kept.size} kept · {liveSlotCount(slots)} shown
             {spreadCount > 0 ? ` across ${spreadCount + 1} screens` : ""}
             {queue.length > 0 ? ` · ${queue.length} waiting` : ""}
           </span>

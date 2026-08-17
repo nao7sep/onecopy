@@ -10,6 +10,7 @@ import {
   type Row,
 } from "../models/sectionTree";
 import { useItemsStore } from "../state/items-store";
+import { useSectionsStore } from "../state/sections-store";
 
 // The left pane as ONE tree composite (the composite-control conventions):
 // the container is the single tab stop, Up/Down walk the VISIBLE rows,
@@ -172,6 +173,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   };
 
   const allEmpty = tree.every((node) => node.count === 0);
+  const scanning = useSectionsStore((s) => s.scanning);
 
   return (
     <div
@@ -237,7 +239,16 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       })}
 
       {allEmpty ? (
-        <p className="mt-2 px-2 text-sm text-ink-muted">Nothing to handle</p>
+        // A scan in flight and a finished scan that found nothing look
+        // IDENTICAL from the counts alone — both are an empty tree. Saying
+        // "Nothing to handle" during the first scan of a large library tells
+        // the user their photos were not found, which is the one thing they
+        // are watching for; the sidebar sat on that lie for minutes. The
+        // status bar carries the detailed progress, so this only has to stop
+        // asserting a verdict the app does not have yet.
+        <p className="mt-2 px-2 text-sm text-ink-muted">
+          {scanning ? "Scanning…" : "Nothing to handle"}
+        </p>
       ) : null}
 
     </div>

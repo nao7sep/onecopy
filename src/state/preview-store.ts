@@ -17,7 +17,7 @@ import { create } from "zustand";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
-import { log, toErrorFields } from "../repositories";
+import { log, toErrorFields, reportWindowCall } from "../repositories";
 import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "./items-store";
 
@@ -123,7 +123,7 @@ async function ensurePreviewWindow(): Promise<void> {
       await window.setPosition(ordered[1].position);
     }
     // Keep the keyboard where the culling happens.
-    await getCurrentWindow().setFocus().catch(() => {});
+    await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
   } catch (error) {
     log.warn("preview window placement failed", toErrorFields(error));
   }
@@ -134,9 +134,9 @@ async function ensurePreviewWindow(): Promise<void> {
 async function frontPreviewWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview").catch(() => null);
   if (existing === null) return;
-  await existing.show().catch(() => {});
-  await existing.setFocus().catch(() => {});
-  await getCurrentWindow().setFocus().catch(() => {});
+  await existing.show().catch(reportWindowCall("preview show"));
+  await existing.setFocus().catch(reportWindowCall("preview setFocus"));
+  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
 }
 
 // ---- Follow throttle ------------------------------------------------------

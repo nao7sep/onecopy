@@ -3,6 +3,7 @@ import { listenThenAnnounce } from "../utils/handshake";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import PreviewSurface from "../components/PreviewSurface";
 import type { PreviewShowMessage } from "../state/preview-store";
+import { reportWindowCall } from "../repositories";
 
 // The preview window placement (screen 2): renders the shared PreviewSurface
 // from `preview://show` messages — payload AND detail arrive together from
@@ -28,15 +29,27 @@ export default function PreviewWindow() {
         event.preventDefault();
         void (async () => {
           const window = getCurrentWindow();
-          const full = await window.isFullscreen().catch(() => false);
-          await window.setFullscreen(!full).catch(() => {});
+          // Defaults to "not fullscreen" so a failed READ still lets F enter
+          // and Escape close, rather than trapping the user in a surface
+          // whose exit key does nothing — but the reason is logged, not lost.
+          const full = await window.isFullscreen().catch((error: unknown) => {
+            reportWindowCall("isFullscreen")(error);
+            return false;
+          });
+          await window.setFullscreen(!full).catch(reportWindowCall("setFullscreen"));
         })();
       } else if (event.key === "Escape") {
         event.preventDefault();
         void (async () => {
           const window = getCurrentWindow();
-          const full = await window.isFullscreen().catch(() => false);
-          if (full) await window.setFullscreen(false).catch(() => {});
+          // Defaults to "not fullscreen" so a failed READ still lets F enter
+          // and Escape close, rather than trapping the user in a surface
+          // whose exit key does nothing — but the reason is logged, not lost.
+          const full = await window.isFullscreen().catch((error: unknown) => {
+            reportWindowCall("isFullscreen")(error);
+            return false;
+          });
+          if (full) await window.setFullscreen(false).catch(reportWindowCall("setFullscreen"));
           else await window.close();
         })();
       }

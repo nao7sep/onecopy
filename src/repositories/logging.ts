@@ -147,3 +147,16 @@ export async function initLogging(): Promise<void> {
     log.warn("logging: could not read debug gate from core", toErrorFields(e));
   }
 }
+
+/** A Tauri window/webview call that failed, reported rather than swallowed.
+ *
+ * `.catch(() => {})` around these calls is how a MISSING CAPABILITY becomes an
+ * invisible no-op: `setFullscreen()` rejected for want of
+ * `core:window:allow-set-fullscreen` while the preview footer went on
+ * advertising "F: fullscreen", and nothing anywhere said so. These calls are
+ * genuinely best-effort — a window the user closed mid-flight must not throw —
+ * so they still resolve, but the reason now reaches the log.
+ */
+export function reportWindowCall(op: string): (error: unknown) => void {
+  return (error) => log.warn(`window call failed: ${op}`, toErrorFields(error));
+}

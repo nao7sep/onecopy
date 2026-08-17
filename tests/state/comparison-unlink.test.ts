@@ -10,6 +10,7 @@ import {
   SLOT_KEYS,
   slotIndexForShiftedCode,
   chunkSlots,
+  liveSlotCount,
   useComparisonStore,
 } from "../../src/state/comparison-store";
 import { useItemsStore } from "../../src/state/items-store";
@@ -109,6 +110,14 @@ describe("unlinking a slot", () => {
     expect(chunk[1]!.member).toBeNull();
     expect(chunk[2]!.member?.hash).toBe("h2");
     expect(chunk[2]!.slotKey).toBe(SLOT_KEYS[2]);
+  });
+
+  it("stops counting a hole as a photo on screen", async () => {
+    // The header reads "N shown"; after an unlink the array still has four
+    // entries but only three photos.
+    openSession(4);
+    await useComparisonStore.getState().unlinkSlot(1);
+    expect(liveSlotCount(useComparisonStore.getState().slots)).toBe(3);
   });
 
   it("never deletes the unlinked photo on commit", async () => {

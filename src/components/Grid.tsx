@@ -11,6 +11,7 @@ import {
 import { itemKey, useItemsStore } from "../state/items-store";
 import { handleSpaceLook } from "../state/preview-store";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
+import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
@@ -197,12 +198,17 @@ export default function Grid({
   items,
   loading,
   layout,
+  mayClaimFocus,
 }: {
   items: SectionItem[];
   loading: boolean;
   /** Thumbnails for images and videos; rows for other-files, which have
    * nothing to show in a tile. */
   layout: "tiles" | "list";
+  /** False while a boot gate (the wizard, the missing-volume gate) owns the
+   * screen — those overlays are opaque but focus nothing themselves, so the
+   * grid behind them must not quietly take the keyboard. */
+  mayClaimFocus: boolean;
 }) {
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
@@ -217,6 +223,28 @@ export default function Grid({
   // in DOM focus), arrows move the selection, Shift+arrows extend it. The
   // command layer (Delete/Enter in App) reads the same source of truth.
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // A restored section arrives WITHOUT anyone having clicked: on boot the app
+  // reopens the last month itself, so the items appear under a keyboard that
+  // still points at <body>. Every arrow, Space and Enter then went nowhere,
+  // and the app read as frozen until the user happened to click the grid.
+  //
+  // Claimed only when nothing else has focus (body or null). A user who
+  // clicked the sidebar, opened a modal, or is typing in a field owns the
+  // keyboard, and a late-arriving refresh must never pull it away mid-word —
+  // which is also why this runs on ARRIVAL, not on every render.
+  const claimedFor = useRef<SectionItem | null>(null);
+  const first = items[0] ?? null;
+  useEffect(() => {
+    if (loading || first === null || !mayClaimFocus) return;
+    if (claimedFor.current === first) return;
+    claimedFor.current = first;
+    if (hasOpenModal()) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    containerRef.current?.focus({ preventScroll: true });
+  }, [loading, first, mayClaimFocus]);
+
   const [columns, setColumns] = useState(1);
   useEffect(() => {
     // A list is one column by definition, so Down moves one row — measuring

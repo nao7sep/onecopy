@@ -289,10 +289,14 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
     // the app-home trash — one deduplicated row.
     let row = rows
         .iter()
-        .find(|r| r.files >= 2)
+        .find(|r| r.files > 0)
         .expect("a row must carry the two trashed files");
-    // Bytes cover the files plus the manifest — at least the payloads.
-    assert!(row.bytes >= 1500, "sizes must count the stored bytes");
+    // EXACTLY the two files and EXACTLY their bytes. The counts answer "how
+    // much of my library is in here", so our own manifest.jsonl must not
+    // appear in either number — when it did, two trashed photos read as
+    // "3 files" and the byte total drifted by the ledger's size.
+    assert_eq!(row.files, 2, "only recoverable files may be counted");
+    assert_eq!(row.bytes, 1500, "only recoverable bytes may be counted");
 
     empty_root(Path::new(&row.root)).unwrap();
     let after = overview(&[source.to_string_lossy().to_string()], &app_root);

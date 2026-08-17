@@ -61,6 +61,7 @@ import {
 import { itemKey } from "./state/items-store";
 import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
 import PreviewSurface from "./components/PreviewSurface";
+import { reportWindowCall } from "./repositories";
 
 // The main-window shell: the sidebar listbox, the thumbnail grid for the
 // selected section, the tabbed right pane, and the scan lifecycle in the
@@ -174,7 +175,7 @@ export default function App() {
       .setMinSize(
         new LogicalSize(computeMinWindowWidth(splitOpen), computeMinWindowHeight()),
       )
-      .catch(() => {});
+      .catch(reportWindowCall("setMinSize"));
   }, [splitOpen]);
 
   // Pane widths: persisted INTENT in pixels (written only on drag-end); the
@@ -253,7 +254,7 @@ export default function App() {
   const applyZoom = (next: number) => {
     zoomRef.current = next;
     setZoomLevel(next);
-    void getCurrentWebview().setZoom(next).catch(() => {});
+    void getCurrentWebview().setZoom(next).catch(reportWindowCall("setZoom"));
     // Through the one state owner (patch of only this key, debounced) —
     // a failed write is logged there, never silently swallowed.
     void useAppStore.getState().patchState({ zoomLevel: next });
@@ -266,7 +267,7 @@ export default function App() {
     zoomRef.current = level;
     setZoomLevel(level);
     if (level !== ZOOM_DEFAULT) {
-      void getCurrentWebview().setZoom(level).catch(() => {});
+      void getCurrentWebview().setZoom(level).catch(reportWindowCall("setZoom"));
     }
   }, [appData]);
 
@@ -450,11 +451,15 @@ export default function App() {
     counts.videos.length === 0 &&
     counts.others.length === 0;
 
+  // The boot gates: opaque full-screen overlays that are NOT part of the modal
+  // stack, so anything behind them has to be told about them explicitly.
+  const gateOpen = missingDirs.length > 0 || substitutedDirs.length > 0;
+
   return (
     <div className="flex h-screen flex-col bg-background text-ink">
       {wizardOpen && appData !== null ? (
         <Wizard dataRoot={appData.dataRoot} />
-      ) : missingDirs.length > 0 || substitutedDirs.length > 0 ? (
+      ) : gateOpen ? (
         <PresenceGate missing={missingDirs} substituted={substitutedDirs} />
       ) : null}
       <ComparisonView />
@@ -603,9 +608,15 @@ export default function App() {
               items={items}
               loading={itemsLoading}
               layout={selected.kind === "other" ? "list" : "tiles"}
+              mayClaimFocus={!wizardOpen && !gateOpen}
             />
           ) : allEmpty ? (
-            <p className="m-auto text-ink-muted">Nothing to handle</p>
+            // Mid-scan the counts are empty because nothing has been indexed
+            // YET, not because there is nothing — the same distinction the
+            // sidebar's empty state makes.
+            <p className="m-auto text-ink-muted">
+              {scanning ? "Scanning…" : "Nothing to handle"}
+            </p>
           ) : (
             <p className="m-auto text-ink-muted">Select a month</p>
           )}

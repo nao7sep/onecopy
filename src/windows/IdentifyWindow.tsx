@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { reportWindowCall } from "../repositories";
 
 // The identify flash: one borderless window per monitor showing that screen's
 // priority ordinal, exactly as OS display settings do. Self-closing — it is a
@@ -8,7 +9,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 export default function IdentifyWindow({ number }: { number: number }) {
   useEffect(() => {
     const timer = setTimeout(() => {
-      void getCurrentWindow().close().catch(() => {});
+      void getCurrentWindow().close().catch(reportWindowCall("identify close"));
     }, 2200);
     return () => clearTimeout(timer);
   }, []);

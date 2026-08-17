@@ -53,6 +53,31 @@ describe("initial focus", () => {
     expect(focused.id).toBe("timezone");
   });
 
+  it("does not open a checkbox-first tab scrolled past its own heading", () => {
+    // Managed tools: its first "field" is a checkbox far down the panel.
+    // Focusing it scrolls the surface, so the tab opened below its heading —
+    // a checkbox buys no typing head start to pay for that.
+    const surface = surfaceFrom(`
+      <button data-modal-close aria-label="Close">✕</button>
+      <button>Check for updates</button>
+      <input type="checkbox" id="auto" />
+      <input type="radio" name="channel" />
+      <select id="channel"><option>stable</option></select>
+    `);
+    expect(resolveInitialFocus(surface).textContent).toBe("Check for updates");
+  });
+
+  it("still prefers a real text field over the first button", () => {
+    // The safety half of the rule survives the narrowing: a surface that DOES
+    // have somewhere to type still opens there rather than on a Remove button.
+    const surface = surfaceFrom(`
+      <button>Remove</button>
+      <input type="checkbox" id="auto" />
+      <input type="search" id="filter" />
+    `);
+    expect(resolveInitialFocus(surface).id).toBe("filter");
+  });
+
   it("still skips the header close on an ordinary surface", () => {
     const surface = surfaceFrom(`
       <button data-modal-close aria-label="Close">✕</button>

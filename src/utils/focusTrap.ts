@@ -5,6 +5,8 @@
 // shell (ModalShell) wires them to keydown/preventDefault and to focus() calls,
 // so the decision logic stays testable without rendering a component.
 
+import { consumesPrintableKeys } from "./shortcuts";
+
 const FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",
@@ -18,14 +20,25 @@ export function getFocusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
 }
 
-const FIELD_TAGS = new Set(["INPUT", "SELECT", "TEXTAREA"]);
+/** A field worth opening ON: one the user can immediately type into.
+ *
+ * SELECT and the toggle-ish INPUT types are deliberately NOT here. They are
+ * still perfectly good focus targets once tabbed to — but landing on one buys
+ * no typing head start, and it costs real orientation: browsers scroll a
+ * focused control into view, so a checkbox two thirds down a long tab opens
+ * that tab already scrolled PAST its own heading. That is what Managed tools
+ * did — its first field is a checkbox far down the panel, so opening Settings
+ * there hid the top of the surface the user had just asked to see. */
+function isTypeableField(el: HTMLElement): boolean {
+  return consumesPrintableKeys(el) && !el.hasAttribute("data-modal-close");
+}
 
 // Where focus should land when the modal opens.
 //
 // Order matters for safety, not just convenience:
-//  1. The first form field — what the user opened the surface to edit. Without
-//     this, Settings opens on the first source directory's "Remove" button,
-//     one reflexive Enter away from dropping a scanned directory.
+//  1. The first TYPEABLE field — what the user opened the surface to edit.
+//     Without this, Settings opens on the first source directory's "Remove"
+//     button, one reflexive Enter away from dropping a scanned directory.
 //  2. The dismiss control, when the surface carries a destructive primary
 //     ([data-destructive]). A confirmation focused on "Delete permanently" is
 //     not a speed bump — it is one more press of the key already being held,
@@ -34,9 +47,7 @@ const FIELD_TAGS = new Set(["INPUT", "SELECT", "TEXTAREA"]);
 // Falls back to the surface itself when there is nothing else to focus.
 export function resolveInitialFocus(surface: HTMLElement): HTMLElement {
   const focusables = getFocusableElements(surface);
-  const field = focusables.find(
-    (el) => FIELD_TAGS.has(el.tagName) && !el.hasAttribute("data-modal-close"),
-  );
+  const field = focusables.find(isTypeableField);
   if (field) return field;
   if (surface.querySelector("[data-destructive]")) {
     // The LAST dismiss control, not the first: the header ✕ comes first in
