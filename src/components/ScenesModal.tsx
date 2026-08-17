@@ -64,9 +64,11 @@ export default function ScenesModal({
       onClose={onClose}
       widthClass="w-[1100px]"
       footerStart={
-        frames === 0
-          ? "No snapshots for this video yet — ffmpeg derives them during a scan."
-          : `${frames} scenes · Delete/Backspace acts on the video (Shift: permanent)`
+        frames < 0
+          ? "Snapshot extraction failed for this video — see Issues."
+          : frames === 0
+            ? "No snapshots yet — they fill in on their own while the app is idle (needs video support installed)."
+            : `${frames} scenes · Delete/Backspace acts on the video (Shift: permanent)`
       }
     >
       <ScenesGrid hash={hash} frames={frames} />

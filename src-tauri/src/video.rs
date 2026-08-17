@@ -113,8 +113,12 @@ pub struct VideoDeriveStats {
     pub skipped_no_ffmpeg: bool,
 }
 
-/// The video half of the derive pass: duration + poster (through the image
-/// pipeline, so thumb/preview land in the shared cache) + strip frames.
+/// The video half of the SCAN derive pass: duration + poster only (through
+/// the image pipeline, so thumb/preview land in the shared cache). Scene
+/// strips deliberately do NOT happen here (Phase 33): a grid without posters
+/// reads as broken, so posters block the scan, but strips are many frames per
+/// video and belong to the idle backfill — `derive_strips_pending` finds them
+/// through the NULL `strip_frames` this pass leaves behind.
 pub fn derive_videos_pending(
     conn: &Connection,
     cache: &CachePaths,
@@ -122,7 +126,6 @@ pub fn derive_videos_pending(
     temp_dir: &Path,
     thumb_edge: u32,
     preview_long_edge: u32,
-    strip: &StripConfig,
 ) -> Result<VideoDeriveStats, String> {
     let mut stats = VideoDeriveStats::default();
     let Some(ffmpeg) = ffmpeg else {
@@ -173,19 +176,6 @@ pub fn derive_videos_pending(
             );
             let _ = std::fs::remove_file(&staged);
             poster_result?;
-
-            // The strip.
-            let count = strip_frame_count(duration_ms, strip);
-            for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
-                let staged = temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()));
-                let frame_result = extract_frame(ffmpeg, src, *at_ms, &staged).and_then(|()| {
-                    let img = image::open(&staged).map_err(|e| e.to_string())?;
-                    let target = strip_path(cache, &hash, index as u32);
-                    preview::write_webp(&img, &target, 76.0)
-                });
-                let _ = std::fs::remove_file(&staged);
-                frame_result?;
-            }
             Ok(duration_ms)
         })();
 
@@ -195,16 +185,11 @@ pub fn derive_videos_pending(
                 conn.execute(
                     &format!(
                         "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
-                         strip_frames = ?3, derived_at_utc = ?4, \
+                         derived_at_utc = ?3, \
                          derived_version = {} WHERE hash = ?1",
                         crate::preview::DERIVE_VERSION
                     ),
-                    params![
-                        hash,
-                        duration_ms as i64,
-                        strip_frame_count(duration_ms, strip) as i64,
-                        logging::now_iso_millis()
-                    ],
+                    params![hash, duration_ms as i64, logging::now_iso_millis()],
                 )
                 .map_err(|e| e.to_string())?;
                 // Current-state issues: a derive that now succeeds retires the
@@ -225,3 +210,92 @@ pub fn derive_videos_pending(
 
     Ok(stats)
 }
+
+/// The backfill half (Phase 33): scene strips for videos the scan already
+/// postered, found through their NULL `strip_frames`. Runs only while the app
+/// is idle — `stop` is consulted between videos, so the user's return waits
+/// at most one video's strip extraction. Returns how many videos got strips.
+pub fn derive_strips_pending(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: &Path,
+    temp_dir: &Path,
+    strip: &StripConfig,
+    stop: &dyn Fn() -> bool,
+    progress: &dyn Fn(u64, u64),
+) -> Result<u64, String> {
+    std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.hash, c.duration_ms, (SELECT p.abs_path FROM paths p \
+             WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
+             FROM contents c JOIN paths p2 ON p2.content_hash = c.hash \
+             WHERE c.kind = 'video' AND c.strip_frames IS NULL \
+               AND c.duration_ms IS NOT NULL \
+               AND c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
+               AND p2.missing = 0 \
+             GROUP BY c.hash \
+             ORDER BY MIN(p2.resolved_utc_ms) DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, i64, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    let total = rows.len() as u64;
+    let mut done = 0u64;
+    for (hash, duration_ms, path) in rows {
+        if stop() {
+            break;
+        }
+        let Some(path) = path else { continue };
+        let src = Path::new(&path);
+        let duration_ms = duration_ms.max(0) as u64;
+        let count = strip_frame_count(duration_ms, strip);
+        let result = (|| -> Result<(), String> {
+            for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
+                let staged = temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()));
+                let frame_result = extract_frame(ffmpeg, src, *at_ms, &staged).and_then(|()| {
+                    let img = image::open(&staged).map_err(|e| e.to_string())?;
+                    let target = strip_path(cache, &hash, index as u32);
+                    preview::write_webp(&img, &target, 76.0)
+                });
+                let _ = std::fs::remove_file(&staged);
+                frame_result?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute(
+                    "UPDATE contents SET strip_frames = ?2 WHERE hash = ?1",
+                    params![hash, count as i64],
+                )
+                .map_err(|e| e.to_string())?;
+                crate::index_store::clear_issues(conn, &path, &["video-derive-error"])?;
+                done += 1;
+                progress(done, total);
+            }
+            Err(err) => {
+                // -1 = strips failed: keeps the row out of every later pass
+                // (the churn the image pass's 'failed' marker exists to stop —
+                // retrying a broken video's N frame extractions every idle
+                // tick could eat whole minutes per pass). A rescan after a
+                // DERIVE_VERSION bump re-derives; the issue row carries the
+                // reason meanwhile.
+                conn.execute(
+                    "UPDATE contents SET strip_frames = -1 WHERE hash = ?1",
+                    params![hash],
+                )
+                .map_err(|e| e.to_string())?;
+                crate::index_store::upsert_issue(conn, Some(&path), "video-derive-error", &err)?;
+                progress(done, total);
+            }
+        }
+    }
+    Ok(done)
+}
+

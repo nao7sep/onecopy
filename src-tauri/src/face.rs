@@ -295,6 +295,7 @@ pub fn face_scores_pending(
     cache: &crate::preview::CachePaths,
     models: Option<(&Path, &Path)>,
     mut on_progress: impl FnMut(u64, u64),
+    stop: &dyn Fn() -> bool,
 ) -> Result<FaceStats, String> {
     let mut stats = FaceStats::default();
     let Some((detector_model, emotion_model)) = models else {
@@ -327,6 +328,11 @@ pub fn face_scores_pending(
     for hash in pending {
         if crate::scanner::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
+        }
+        // Backfill politeness (Phase 33): the user's return stops the pass
+        // between images; what is scored stays scored.
+        if stop() {
+            break;
         }
         let preview = cache.preview(&hash);
         let outcome = std::fs::read(&preview)

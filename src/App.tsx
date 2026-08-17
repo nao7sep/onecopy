@@ -62,6 +62,7 @@ import {
 import { itemKey } from "./state/items-store";
 import type { SortOrder } from "./models/items";
 import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
+import { installActivityPings, useBackfillStore } from "./state/backfill-store";
 import PreviewSurface from "./components/PreviewSurface";
 import { log, reportWindowCall, toErrorFields } from "./repositories";
 
@@ -97,6 +98,7 @@ export default function App() {
     void useAppStore.getState().patchState({ rightPaneTab: tab });
   };
   const issuesTotal = useIssuesStore((s) => s.total);
+  const backfillLine = useBackfillStore((s) => s.line);
   const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
@@ -143,6 +145,11 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // The backfill scheduler's view of the user: throttled input pings.
+  useEffect(() => {
+    installActivityPings(window);
   }, []);
 
   // A newly opened preview window asks for the current selection; answer
@@ -918,6 +925,11 @@ export default function App() {
           {status.text}
         </span>
         <span className="flex shrink-0 items-center gap-3">
+          {/* The idle backfill's narration — why the fans spin while the
+              user is away; disappears the moment there is nothing to say. */}
+          {backfillLine !== null ? (
+            <span className="text-ink-muted">{backfillLine}</span>
+          ) : null}
           {/* The issues count: NOTHING at zero, a danger-tinted count when
               conditions exist. No toasts anywhere — the design case is a
               multi-day unattended scan, so the count simply waits here. */}

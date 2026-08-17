@@ -151,6 +151,9 @@ pub fn settings_from_config(
             path.is_file().then_some(path)
         },
         face_models: {
+            // Opt-in (Phase 33): with scoring disabled the models are
+            // invisible to every pass even when a file happens to exist.
+            let enabled = get("scoreFaces").and_then(|v| v.as_bool()).unwrap_or(false);
             let installed = |id: &str| {
                 crate::binaries_manager::spec_of(id).and_then(|spec| {
                     let state = crate::binaries_manager::state_of(data_root, spec);
@@ -158,7 +161,9 @@ pub fn settings_from_config(
                         .then(|| crate::binaries_manager::installed_path(data_root, spec))
                 })
             };
-            installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2"))
+            enabled
+                .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
+                .flatten()
         },
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
@@ -575,7 +580,6 @@ pub fn run_pipeline_tail(
         &settings.temp_dir,
         settings.thumb_edge,
         settings.preview_long_edge,
-        &settings.strip,
     )?;
     summary.videos_derived = video_stats.derived;
     progress(
@@ -589,22 +593,6 @@ pub fn run_pipeline_tail(
             )
         },
     );
-
-    let face_stats = crate::face::face_scores_pending(
-        conn,
-        &cache,
-        settings
-            .face_models
-            .as_ref()
-            .map(|(detector, emotion)| (detector.as_path(), emotion.as_path())),
-        |done, total| progress("faces", format!("{done}/{total}")),
-    )?;
-    if face_stats.scored > 0 || face_stats.failed > 0 {
-        progress(
-            "faces",
-            format!("{} scored, {} failures", face_stats.scored, face_stats.failed),
-        );
-    }
 
     let group_stats = crate::similarity::rebuild_groups(conn, &settings.similarity)?;
     summary.similar_groups = group_stats.groups;

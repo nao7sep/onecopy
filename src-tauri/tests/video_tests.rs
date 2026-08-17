@@ -85,13 +85,30 @@ fn live_video_derive() {
         &root.join("temp"),
         320,
         1600,
-        &config(),
     )
     .unwrap();
     assert_eq!((stats.derived, stats.failed), (1, 0));
 
     assert!(cache.thumb("vid01").exists(), "poster thumb");
     assert!(cache.preview("vid01").exists(), "poster preview");
+    // The scan half leaves strips PENDING (Phase 33: they are the idle
+    // backfill's job) — strip_frames stays NULL until that pass runs.
+    let pending: Option<i64> = conn
+        .query_row("SELECT strip_frames FROM contents WHERE hash = 'vid01'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pending, None, "strips are pending, not scan work");
+
+    let done = derive_strips_pending(
+        &conn,
+        &cache,
+        &ffmpeg,
+        &root.join("temp"),
+        &config(),
+        &|| false,
+        &|_, _| {},
+    )
+    .unwrap();
+    assert_eq!(done, 1);
     // 30 s at 1/20 s clamps to min 5 frames.
     for i in 0..5 {
         assert!(strip_path(&cache, "vid01", i).exists(), "strip frame {i}");
@@ -134,7 +151,6 @@ fn videos_wait_when_ffmpeg_is_absent_and_never_get_checkpointed() {
             &dir.path().join("temp"),
             320,
             1600,
-            &config(),
         )
         .unwrap()
     };

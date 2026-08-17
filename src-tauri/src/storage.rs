@@ -84,6 +84,10 @@ pub struct DefaultConfig {
     pub keep_awake_during_indexing: bool,
     /// Read-back verification of every copy/move-out against the indexed hash.
     pub verify_after_copy: bool,
+    /// Face scoring for comparison-group ordering: OPT-IN (Phase 33). Off
+    /// means the models are not even downloaded by any automatic path, and
+    /// the backfill never runs the pass; ordering falls back to sharpness.
+    pub score_faces: bool,
     /// Confirm ordinary Delete/Backspace trash-deletes in the grid. OFF by
     /// default (developer, 2026-08-17): the trash is the net, and a dialog on
     /// every Delete would break the keystroke-paced cull — but a deliberate
@@ -123,6 +127,7 @@ impl Default for DefaultConfig {
             cache_dir: None,
             keep_awake_during_indexing: true,
             verify_after_copy: true,
+            score_faces: false,
             confirm_trash_delete: false,
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),

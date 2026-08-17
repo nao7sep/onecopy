@@ -94,7 +94,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
     },
     DependencySpec {
         id: "ultraface-rfb640",
-        label: "Face detector (Ultraface RFB-640)",
+        label: "Face detector (optional — Settings > Score faces)",
         kind: DependencyKind::Model,
         file_name: "ultraface-rfb640.onnx",
         pinned: Some(PinnedModel {
@@ -111,7 +111,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
     },
     DependencySpec {
         id: "hsemotion-enet-b2",
-        label: "Expression model (HSEmotion EfficientNet-B2)",
+        label: "Expression model (optional — Settings > Score faces)",
         kind: DependencyKind::Model,
         file_name: "hsemotion-enet-b2-8.onnx",
         pinned: Some(PinnedModel {

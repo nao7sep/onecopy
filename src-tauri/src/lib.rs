@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
+pub mod backfill;
 pub mod binaries;
 pub mod binaries_manager;
 pub mod extensions;
@@ -183,7 +184,7 @@ fn set_cache_root(path: std::path::PathBuf) {
 }
 
 // The storage root, for the mediafile protocol's hash→path lookups.
-static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+pub(crate) static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 // Serves ORIGINAL files by content hash (`mediafile://localhost/<hash>`) with
 // single-range support — what makes <video> seeking and the 100% zoom view
@@ -635,6 +636,8 @@ fn delete_item(
     path_id: Option<i64>,
     permanent: bool,
 ) -> Result<operations::DeleteOutcome, String> {
+    // The backfill must never compete with a user operation for the disk.
+    let _heavy = backfill::heavy_op();
     logging::boundary(
         "delete_item",
         json!({ "hash": hash, "pathId": path_id, "permanent": permanent }),
@@ -699,6 +702,8 @@ fn move_item_out(
     dest_dir: String,
     mode: String,
 ) -> Result<operations::MoveOutOutcome, String> {
+    // The backfill must never compete with a user operation for the disk.
+    let _heavy = backfill::heavy_op();
     logging::boundary(
         "move_item_out",
         json!({ "hash": hash, "pathId": path_id, "destDir": dest_dir, "mode": mode }),
@@ -1103,6 +1108,14 @@ fn transcript_get(hash: String) -> Result<Option<String>, String> {
     Ok(std::fs::read_to_string(cache.transcript(&hash)).ok())
 }
 
+// The frontend's throttled input ping — the backfill scheduler's whole view
+// of the user. Atomic store; keeping it plain (main-thread) is deliberate,
+// it must never queue behind async work.
+#[tauri::command]
+fn note_user_activity() {
+    backfill::note_activity();
+}
+
 #[tauri::command]
 fn transcribe_cancel() {
     transcription::TRANSCRIBE_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1131,6 +1144,8 @@ fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
 // verified here so the command can never delete an arbitrary tree.
 #[tauri::command(async)]
 fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
+    // The backfill must never compete with a user operation for the disk.
+    let _heavy = backfill::heavy_op();
     logging::boundary(
         "trash_empty",
         json!({ "root": root }),
@@ -1510,6 +1525,9 @@ pub fn run() {
                 .cache_root;
             set_cache_root(cache_root.clone());
             let _ = DATA_ROOT.set(data_root.clone());
+            // The idle backfill (Phase 33): strips, transcripts, faces fill
+            // in whenever tools exist and the user is away.
+            backfill::start(app.handle().clone());
             // The sweep walks the ENTIRE cache tree, which grows with the
             // library — it was the launch's biggest fixed cost, paid before
             // the window could appear. It maintains a reconstructible cache
@@ -1664,6 +1682,7 @@ pub fn run() {
             dir_is_empty,
             reveal_data_subdir,
             open_item_externally,
+            note_user_activity,
             ensure_preview,
             re_resolve_all,
             rescan_section,

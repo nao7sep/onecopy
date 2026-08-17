@@ -495,6 +495,11 @@ export default function SettingsModal() {
             checked={draft.confirmTrashDelete}
             onChange={(v) => update({ confirmTrashDelete: v })}
           />
+          <CheckField
+            label="Score faces for photo ordering (background, needs the face models)"
+            checked={draft.scoreFaces}
+            onChange={(v) => update({ scoreFaces: v })}
+          />
     </ModalShell>
   );
 }
