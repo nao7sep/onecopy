@@ -156,28 +156,33 @@ pub struct QuarantineRecord {
     pub quarantined_to: String,
 }
 
-/// Quarantines wait here until something reports them. A journal rather than a
-/// return value because a store can be set aside at three different moments —
-/// the frontend's load, the pre-window source-roots read, and a patch that
-/// reads the file it is about to merge into — and only the first of those has
-/// a natural place to hand one back.
-static QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
+/// Every read reports its own quarantine outcome in its result. The one
+/// exception needing a buffer: a pre-window setup read can set a store aside
+/// before any webview exists to report to, so `read_config_for_setup` parks
+/// the record here and the frontend's `load_from_root` picks it up. Nothing
+/// else feeds or drains this.
+static PENDING_QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
     std::sync::Mutex::new(Vec::new());
 
-pub fn drain_quarantines() -> Vec<QuarantineRecord> {
-    let mut journal = QUARANTINES.lock().unwrap_or_else(|p| p.into_inner());
-    std::mem::take(&mut *journal)
+fn take_pending_quarantines() -> Vec<QuarantineRecord> {
+    let mut pending = PENDING_QUARANTINES.lock().unwrap_or_else(|p| p.into_inner());
+    std::mem::take(&mut *pending)
 }
 
 pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
     load_from_root(&paths::data_root(app)?)
 }
 
-/// Reads config without draining the quarantine journal, so a later frontend
-/// load can publish any recovery notice.
+/// Reads config for the pre-window setup paths. A quarantine here happens
+/// before any reporting surface exists, so its record is parked for the
+/// frontend's `load_from_root` to publish.
 pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
     let read = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
-    if read.quarantined {
+    if let Some(record) = read.quarantined {
+        PENDING_QUARANTINES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record);
         materialize_config_if_missing(root)?;
         return Ok(read_json_optional(&root.join(CONFIG_FILE_NAME))?.value);
     }
@@ -185,17 +190,21 @@ pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
+    let mut quarantines = take_pending_quarantines();
     let config_read = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
-    let state = read_json_optional(&root.join(STATE_FILE_NAME))?.value;
+    let state_read = read_json_optional(&root.join(STATE_FILE_NAME))?;
     let mut config = config_read.value;
-    if config_read.quarantined {
+    if let Some(record) = config_read.quarantined {
+        quarantines.push(record);
         materialize_config_if_missing(root)?;
         config = read_json_optional(&root.join(CONFIG_FILE_NAME))?.value;
     }
-    let quarantines = drain_quarantines();
+    if let Some(record) = state_read.quarantined {
+        quarantines.push(record);
+    }
     Ok(LoadedAppData {
         config,
-        state,
+        state: state_read.value,
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,
         quarantines,
@@ -225,7 +234,7 @@ pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> 
 /// frontend sends only the keys it changes, and a stale cached copy in one
 /// store can never blind-overwrite another store's save (the lost-update the
 /// persisted-store-separation conventions' one-owner rule exists to prevent).
-pub fn patch_config(app: &AppHandle, patch: &JsonValue) -> Result<JsonValue, String> {
+pub fn patch_config(app: &AppHandle, patch: &JsonValue) -> Result<PatchOutcome, String> {
     // records: config.json is durable user settings — managed text, recorded on
     // every save (data-backup conventions).
     let root = paths::data_root(app)?;
@@ -233,18 +242,26 @@ pub fn patch_config(app: &AppHandle, patch: &JsonValue) -> Result<JsonValue, Str
 }
 
 /// Patch-merges into `state.json` (same one-owner contract as `patch_config`).
-pub fn patch_state(app: &AppHandle, patch: &JsonValue) -> Result<JsonValue, String> {
+pub fn patch_state(app: &AppHandle, patch: &JsonValue) -> Result<PatchOutcome, String> {
     // records: state.json is volatile UI state, still managed text — recorded on
     // every save; the store's per-path content dedup absorbs the churn.
     let root = paths::data_root(app)?;
     patch_json_store(&root.join(STATE_FILE_NAME), patch)
 }
 
+/// A patch's merged document plus the quarantine this read-modify-write
+/// performed, if any — a mid-session quarantine has no load result to ride
+/// home on, so the command layer publishes it from here.
+pub struct PatchOutcome {
+    pub merged: JsonValue,
+    pub quarantined: Option<QuarantineRecord>,
+}
+
 /// Shallow merge: each top-level key in `patch` replaces the stored value
 /// wholesale (arrays and objects included — `sourceDirs` is a list you set,
 /// not a list you splice). Keys are never deleted; `null` stores as null,
 /// which is a meaningful value here (`cacheDir: null` = the default).
-pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<JsonValue, String> {
+pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome, String> {
     // Serialized: this is a read-modify-write, and both `patch_config` and
     // `patch_state` are Tauri commands dispatched on a thread pool, so two
     // surfaces saving at once could otherwise interleave their reads and the
@@ -258,8 +275,9 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<JsonValue, S
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let read = read_json_optional(target)?;
+    let quarantined = read.quarantined;
     let mut current = read.value;
-    if read.quarantined && target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
+    if quarantined.is_some() && target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
         if let Some(root) = target.parent() {
             materialize_config_if_missing(root)?;
         }
@@ -276,7 +294,10 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<JsonValue, S
         doc.insert(key.clone(), value.clone());
     }
     atomic_write_json(target, &current)?;
-    Ok(current)
+    Ok(PatchOutcome {
+        merged: current,
+        quarantined,
+    })
 }
 
 /// First-run materialization (storage-path conventions): write `config.json`
@@ -296,18 +317,21 @@ pub fn materialize_config_if_missing(root: &Path) -> Result<(), String> {
 
 struct JsonRead {
     value: Option<JsonValue>,
-    quarantined: bool,
+    /// Set when this read set the store aside; the caller owns getting the
+    /// record to a reporting surface.
+    quarantined: Option<QuarantineRecord>,
 }
 
-/// Reads an optional JSON store and reports whether this read quarantined it.
-/// The rename failure propagates before any caller can write defaults.
+/// Reads an optional JSON store; a corrupt file is quarantined aside and the
+/// record returned. The rename failure propagates before any caller can write
+/// defaults.
 fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Ok(JsonRead {
                 value: None,
-                quarantined: false,
+                quarantined: None,
             });
         }
         Err(err) => return Err(err.to_string()),
@@ -315,7 +339,7 @@ fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
     match serde_json::from_slice::<JsonValue>(&bytes) {
         Ok(value) => Ok(JsonRead {
             value: Some(value),
-            quarantined: false,
+            quarantined: None,
         }),
         Err(parse_err) => {
             let quarantined = quarantine_name(path);
@@ -333,19 +357,15 @@ fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
                     "error": { "message": parse_err.to_string() },
                 }),
             );
-            QUARANTINES
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(QuarantineRecord {
+            Ok(JsonRead {
+                value: None,
+                quarantined: Some(QuarantineRecord {
                     file: path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.to_string_lossy().into_owned()),
                     quarantined_to: quarantined.to_string_lossy().into_owned(),
-                });
-            Ok(JsonRead {
-                value: None,
-                quarantined: true,
+                }),
             })
         }
     }
@@ -457,7 +477,7 @@ mod tests {
         // Missing → None.
         let missing = read_json_optional(&path).unwrap();
         assert!(missing.value.is_none());
-        assert!(!missing.quarantined);
+        assert!(missing.quarantined.is_none());
 
         // Valid → Some.
         write_atomic(&path, b"{\"a\": 1}").unwrap();
@@ -470,7 +490,7 @@ mod tests {
         std::fs::write(&path, b"{ not json").unwrap();
         let corrupt = read_json_optional(&path).unwrap();
         assert!(corrupt.value.is_none());
-        assert!(corrupt.quarantined);
+        assert!(corrupt.quarantined.is_some());
         assert!(!path.exists(), "corrupt file must be renamed aside, not left in place");
         let quarantined: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()

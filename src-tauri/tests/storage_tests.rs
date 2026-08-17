@@ -72,37 +72,41 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
 
     // Writer 1 patches one key; writer 2 patches another with a stale
     // mental model — neither loses the other's write.
-    let after1 = patch_json_store(&target, &serde_json::json!({ "list": ["x", "y"] })).unwrap();
+    let after1 = patch_json_store(&target, &serde_json::json!({ "list": ["x", "y"] })).unwrap().merged;
     assert_eq!(after1["a"], 1);
-    let after2 = patch_json_store(&target, &serde_json::json!({ "b": true })).unwrap();
+    let after2 = patch_json_store(&target, &serde_json::json!({ "b": true })).unwrap().merged;
     assert_eq!(after2["list"], serde_json::json!(["x", "y"]));
     assert_eq!(after2["a"], 1);
     assert_eq!(after2["b"], true);
 
     // Null is a stored value, not a deletion.
-    let after3 = patch_json_store(&target, &serde_json::json!({ "a": null })).unwrap();
+    let after3 = patch_json_store(&target, &serde_json::json!({ "a": null })).unwrap().merged;
     assert!(after3["a"].is_null());
     assert!(after3.get("a").is_some());
 
     // A missing file starts from an empty document.
     let fresh = patch_json_store(&dir.join("state.json"), &serde_json::json!({ "zoomLevel": 1.2 })).unwrap();
-    assert_eq!(fresh, serde_json::json!({ "zoomLevel": 1.2 }));
+    assert_eq!(fresh.merged, serde_json::json!({ "zoomLevel": 1.2 }));
+    assert!(fresh.quarantined.is_none(), "a missing file is first-run, not corruption");
 }
 
 #[test]
-#[serial(backup_store, quarantine_journal)]
+#[serial(backup_store)]
 fn patching_corrupt_config_reseeds_before_merging() {
     let dir = temp_dir("patch-corrupt-config");
     let target = dir.join(CONFIG_FILE_NAME);
     std::fs::write(&target, b"not json").unwrap();
-    let _ = drain_quarantines();
 
-    let merged = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
+    let outcome = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
 
-    assert_eq!(merged["theme"], "dark");
-    assert_eq!(merged["goodRangeStartYear"], 1995);
-    assert_eq!(merged["sourceDirs"], serde_json::json!([]));
-    assert_eq!(drain_quarantines().len(), 1);
+    assert_eq!(outcome.merged["theme"], "dark");
+    assert_eq!(outcome.merged["goodRangeStartYear"], 1995);
+    assert_eq!(outcome.merged["sourceDirs"], serde_json::json!([]));
+    // The outcome carries the record — a mid-session quarantine has no load
+    // result to ride home on, so the patch itself must hand it back.
+    let record = outcome.quarantined.expect("the patch reports its own quarantine");
+    assert_eq!(record.file, "config.json");
+    assert!(record.quarantined_to.ends_with(".invalid"));
 }
 
 
@@ -148,7 +152,6 @@ fn a_corrupt_config_is_set_aside_reported_and_reseeded_in_the_same_load() {
     let root = temp_dir("quarantine-config");
     let config = root.join("config.json");
     std::fs::write(&config, b"{ not json").unwrap();
-    let _ = drain_quarantines(); // the journal is process-wide
 
     let loaded = load_from_root(&root).unwrap();
 
@@ -188,7 +191,6 @@ fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
     let config = root.join("config.json");
     std::fs::write(&config, br#"{"sourceDirs": ["/photos"]}"#).unwrap();
     std::fs::write(root.join("state.json"), b"not json at all").unwrap();
-    let _ = drain_quarantines();
 
     let loaded = load_from_root(&root).unwrap();
 

@@ -114,12 +114,11 @@ fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
 
 /// A store can also be quarantined mid-session — a patch reads the file it is
 /// about to merge into — where there is no load result to ride home on. The
-/// same journal is drained here and pushed to the same reporting surface, so
-/// the rule ("every quarantine reaches the user") has no hole in it.
-fn report_quarantines(app: &AppHandle) {
-    let records = storage::drain_quarantines();
-    if !records.is_empty() {
-        let _ = app.emit("storage://quarantined", json!({ "quarantines": records }));
+/// patch hands its own outcome here, and it is pushed to the same reporting
+/// surface, so the rule ("every quarantine reaches the user") has no hole.
+fn report_quarantine(app: &AppHandle, record: Option<storage::QuarantineRecord>) {
+    if let Some(record) = record {
+        let _ = app.emit("storage://quarantined", json!({ "quarantines": [record] }));
     }
 }
 
@@ -133,9 +132,9 @@ fn patch_config(app: AppHandle, patch: Value) -> Result<Value, String> {
         "patch_config",
         json!({}),
         || {
-            let merged = storage::patch_config(&app, &patch);
-            report_quarantines(&app);
-            merged
+            let outcome = storage::patch_config(&app, &patch)?;
+            report_quarantine(&app, outcome.quarantined);
+            Ok(outcome.merged)
         },
         |_| json!({}),
     )
@@ -147,9 +146,9 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
         "patch_state",
         json!({}),
         || {
-            let merged = storage::patch_state(&app, &patch);
-            report_quarantines(&app);
-            merged
+            let outcome = storage::patch_state(&app, &patch)?;
+            report_quarantine(&app, outcome.quarantined);
+            Ok(outcome.merged)
         },
         |_| json!({}),
     )
@@ -1397,11 +1396,10 @@ pub fn run() {
 
             // Resolve the cache root once for the mediacache protocol, then
             // sweep crash leftovers (hash-orphaned entries, stranded temps).
-            // Setup reads config for the cache root only. It must NOT go through
-            // load_app_data: that drains the quarantine journal, and draining is what
-            // publishes the report — consuming it here left the frontend's later load
-            // with an empty journal, so a quarantined-and-reseeded config was never
-            // mentioned to the user (storage-path conventions: both branches report).
+            // Setup reads config for the cache root only, through the setup
+            // reader — a quarantine this early has no reporting surface yet,
+            // so the reader parks the record for the frontend's later load to
+            // publish (storage-path conventions: both branches report).
             let setup_config = storage::read_config_for_setup(&data_root)?;
             let cache_root = scanner::settings_from_config(setup_config.as_ref(), &data_root, 0)
                 .cache_root;

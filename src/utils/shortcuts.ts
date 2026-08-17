@@ -32,6 +32,16 @@ export function hasMod(event: KeyboardEvent): boolean {
   return (event.metaKey || event.ctrlKey) && !event.altKey;
 }
 
+/**
+ * On macOS, Ctrl inside a text field belongs to the text system whatever the
+ * key is, so the Ctrl half of a dual-bound chord stands down there — one
+ * blanket test, no per-chord key list (keyboard-shortcut-conventions). The
+ * Cmd half is the binding and always fires.
+ */
+export function shadowsMacTextEditing(event: KeyboardEvent): boolean {
+  return isApplePlatform && event.ctrlKey && !event.metaKey;
+}
+
 /** Cmd+Slash, with bare Question as the conventional alias. */
 export function isHelpShortcut(event: KeyboardEvent): boolean {
   if (hasMod(event) && event.key === "/") return true;

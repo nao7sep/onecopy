@@ -41,7 +41,7 @@ import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
 import { useSettingsStore } from "./state/settings-store";
-import { isEditableTarget, isHelpShortcut, isSettingsShortcut } from "./utils/shortcuts";
+import { isEditableTarget, isHelpShortcut, isSettingsShortcut, shadowsMacTextEditing } from "./utils/shortcuts";
 import { hasOpenModal } from "./utils/modalStack";
 import { isComposingEvent } from "./hooks/useComposing";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
@@ -121,10 +121,11 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // Both chords carry a Ctrl half that Cocoa binds inside a text field
-      // (Ctrl+Slash is in StandardKeyBinding.dict), so they stand down while
-      // the user is typing — through the app's one editable predicate.
-      if (isEditableTarget(event.target)) return;
+      // While typing: a bare "?" is text, not the help alias, and on macOS the
+      // Ctrl half of a dual-bound chord stands down — the Cmd half is the
+      // binding and always fires (keyboard-shortcut-conventions).
+      const editable = isEditableTarget(event.target);
+      if (editable && (event.key === "?" || shadowsMacTextEditing(event))) return;
       if (isHelpShortcut(event)) {
         event.preventDefault();
         // Over another modal the chord only closes an already-open help —
