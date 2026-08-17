@@ -276,15 +276,6 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
           .find((i) => !keys.has(itemKey(i))) ??
         null;
       const survivorKey = survivor ? itemKey(survivor) : null;
-      set({
-        selectedItem: survivorKey,
-        selectedKeys: survivorKey ? new Set([survivorKey]) : new Set(),
-        rangeOrigin: survivorKey,
-        rangeBase: survivorKey ? new Set([survivorKey]) : new Set<string>(),
-      });
-      // The recovery selection is an anchor move: the preview must stop
-      // showing the file that was just trashed.
-      notifyAnchor(survivorKey);
       // A per-copy failure is reported in the outcome, never as a rejection,
       // and leaves the file on disk. Saying so is the whole difference
       // between "Delete does nothing" and "that drive is read-only".
@@ -295,7 +286,21 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         const { useIssuesStore } = await import("./issues-store");
         await useIssuesStore.getState().load();
       }
+      // ORDER (Phase 33, the Windows walk): rows vanish FIRST, then focus
+      // lands where the deleted item was — follower, else previous, else
+      // none, the standard file-manager rhythm. Setting the survivor before
+      // the refresh made the focus ring visibly hop to a neighbour while the
+      // doomed tiles were still on screen.
       await refresh();
+      set({
+        selectedItem: survivorKey,
+        selectedKeys: survivorKey ? new Set([survivorKey]) : new Set(),
+        rangeOrigin: survivorKey,
+        rangeBase: survivorKey ? new Set([survivorKey]) : new Set<string>(),
+      });
+      // The recovery selection is an anchor move: the preview must stop
+      // showing the file that was just trashed.
+      notifyAnchor(survivorKey);
       const { useSectionsStore } = await import("./sections-store");
       await useSectionsStore.getState().loadCounts();
     } catch (error) {
