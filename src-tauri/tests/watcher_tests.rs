@@ -47,6 +47,28 @@ fn restat_upserts_new_files_and_marks_vanished_missing() {
     assert_eq!(missing, 1);
 }
 
+#[cfg(windows)]
+#[test]
+fn restat_uses_the_same_windows_spelling_as_a_full_scan() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-watch-winpath-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let root = dir.path().join("watched");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("new.jpg"), b"fresh").unwrap();
+
+    let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
+    onecopy_lib::scanner::walk_root(&conn, &stored_root, &lists()).unwrap();
+    assert_eq!(restat_dir(&conn, &root, &lists()).unwrap(), 0);
+
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "the watcher must not fork the full-scan row");
+}
+
 
 fn fold(paths: Vec<PathBuf>) -> (HashSet<PathBuf>, bool) {
     let mut dirty = HashSet::new();

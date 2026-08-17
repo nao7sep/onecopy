@@ -28,6 +28,11 @@ pub fn restat_dir(
     dir: &Path,
     lists: &ScanLists,
 ) -> Result<u64, String> {
+    // notify reports ordinary Windows paths even when the full scan stores
+    // their long-path spelling. Normalize at the boundary so a watcher pass
+    // cannot turn one physical file into a second database row.
+    let dir = crate::winpath::for_fs(dir);
+    let dir = dir.as_ref();
     let mut changed = 0u64;
     let mut present: HashSet<String> = HashSet::new();
 

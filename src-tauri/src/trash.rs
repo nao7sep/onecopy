@@ -74,7 +74,7 @@ pub fn trash_file(
     //
     // Still verified as being under its own volume root: the whole point of a
     // per-volume trash is that the move stays a same-volume rename.
-    if !file.starts_with(&volume_root) {
+    if !path_is_under_volume(file, &volume_root) {
         return Err(format!(
             "{} is not under its own volume root {}",
             file.display(),
@@ -354,13 +354,33 @@ pub fn volume_root_of(path: &Path) -> Result<PathBuf, String> {
 /// On Windows the volume root is the path's prefix (drive letter or UNC share).
 #[cfg(windows)]
 pub fn volume_root_of(path: &Path) -> Result<PathBuf, String> {
-    let mut components = path.components();
+    // WalkDir inherits the verbatim form from a long-path root, so indexed
+    // paths arrive here as `\\?\C:\…` (or `\\?\UNC\…`). The Prefix component
+    // of that spelling is itself verbatim; joining it produced `\\?\C:\` and
+    // made the home-volume comparison fail, routing deletes into C:\.onecopy-trash.
+    // Strip only the namespace marker before deriving the ordinary drive/share
+    // root. Filesystem calls still receive the verbatim spelling through for_fs.
+    let raw = path.to_string_lossy();
+    let conventional = crate::winpath::for_display(&raw);
+    let mut components = Path::new(conventional.as_ref()).components();
     match (components.next(), components.next()) {
         (Some(std::path::Component::Prefix(prefix)), Some(std::path::Component::RootDir)) => {
             Ok(PathBuf::from(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR.to_string()))
         }
         _ => Err(format!("no volume prefix in {}", path.display())),
     }
+}
+
+#[cfg(windows)]
+fn path_is_under_volume(file: &Path, volume_root: &Path) -> bool {
+    let raw = file.to_string_lossy();
+    let conventional = crate::winpath::for_display(&raw);
+    Path::new(conventional.as_ref()).starts_with(volume_root)
+}
+
+#[cfg(not(windows))]
+fn path_is_under_volume(file: &Path, volume_root: &Path) -> bool {
+    file.starts_with(volume_root)
 }
 
 // Walks up to the nearest existing ancestor, so a just-deleted sibling or a

@@ -213,6 +213,19 @@ fn volume_root_of_temp_paths_resolves_to_a_real_ancestor() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn verbatim_paths_resolve_to_their_ordinary_volume_roots() {
+    assert_eq!(
+        volume_root_of(Path::new(r"\\?\C:\photos\deep\image.jpg")).unwrap(),
+        PathBuf::from(r"C:\")
+    );
+    assert_eq!(
+        volume_root_of(Path::new(r"\\?\UNC\server\share\deep\image.jpg")).unwrap(),
+        PathBuf::from(r"\\server\share\")
+    );
+}
+
 #[test]
 fn external_volume_files_trash_into_a_dot_onecopy_trash_at_their_volume_root() {
     // The whole point of the per-volume trash: the move must stay a rename on
@@ -250,10 +263,10 @@ fn home_volume_files_trash_into_the_app_root() {
     let dir = tempfile::tempdir().unwrap();
     let app_root = dir.path().join("apphome");
     std::fs::create_dir_all(&app_root).unwrap();
-    let home_volume = volume_root_of(&std::path::PathBuf::from(
-        std::env::var("HOME").expect("HOME is set"),
-    ))
-    .unwrap();
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .expect("the platform home variable is set");
+    let home_volume = volume_root_of(&std::path::PathBuf::from(home)).unwrap();
 
     let root = trash_root_for(&home_volume, &app_root).unwrap();
 

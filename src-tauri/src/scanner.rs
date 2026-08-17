@@ -273,6 +273,15 @@ pub fn forget_unconfigured_roots(
     let mut keep: Vec<String> = Vec::new();
     for dir in configured {
         keep.push(dir.clone());
+        // An absent Windows root cannot be canonicalized, but its ordinary
+        // configured spelling still maps deterministically to the verbatim
+        // spelling scan_dirs uses. Keep both so an unplugged drive is never
+        // mistaken for a removed source and destructively forgotten.
+        keep.push(
+            crate::winpath::for_fs(Path::new(dir))
+                .to_string_lossy()
+                .to_string(),
+        );
         if let Ok(settled) = settled_root(conn, Path::new(dir)) {
             keep.push(settled.to_string_lossy().to_string());
         }
@@ -443,11 +452,12 @@ pub fn run_full_scan(
 /// forever while whole directories remain unread.
 pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
     for root in roots {
+        let fs_root = crate::winpath::for_fs(Path::new(root));
         let complete: Option<bool> = conn
             .query_row(
                 "SELECT last_completed_at_utc IS NOT NULL AND dirty = 0 \
                  FROM scan_dirs WHERE root = ?1",
-                params![root],
+                params![fs_root.to_string_lossy().as_ref()],
                 |r| r.get(0),
             )
             .optional()
@@ -785,7 +795,12 @@ pub fn upsert_file(
 /// under the root that no longer exist as missing.
 pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
     let mut stats = WalkStats::default();
-    let root_str = root.to_string_lossy().to_string();
+    // Pick the filesystem spelling once. On Windows WalkDir inherits the
+    // `\\?\` form into every entry it yields, so scan_dirs and the missing-row
+    // prefix must use that same spelling; mixing an ordinary root with
+    // verbatim child rows makes vanished files remain falsely live forever.
+    let fs_root = crate::winpath::for_fs(root);
+    let root_str = fs_root.to_string_lossy().to_string();
     let scanned_at = logging::now_iso_millis();
 
     // Claim the root as walk-in-flight. `upsert_file` writes in autocommit, so
@@ -808,7 +823,7 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
 
     // The walk root carries the long-path form so every entry beneath it
     // inherits it; without this a deep tree is simply invisible on Windows.
-    for entry in walkdir::WalkDir::new(crate::winpath::for_fs(root).as_ref()).follow_links(false) {
+    for entry in walkdir::WalkDir::new(fs_root.as_ref()).follow_links(false) {
         check_cancel()?;
         let entry = match entry {
             Ok(e) => e,

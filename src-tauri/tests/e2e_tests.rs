@@ -211,11 +211,11 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
         .len();
     let overview =
         trash::overview(&[w.corpus.to_string_lossy().to_string()], &w.home);
-    let trash_files: Vec<PathBuf> = overview
-        .iter()
-        .filter(|r| Path::new(&r.root).is_dir())
-        .flat_map(|r| walkdir(Path::new(&r.root)))
-        .collect();
+    // Scope byte/provenance equality to THIS fixture's trash. The overview
+    // deliberately discovers trash on every mounted volume, so summing all of
+    // it makes this test depend on unrelated trash left by an earlier run or a
+    // real user session on the same machine.
+    let trash_files = walkdir(&w.home.join("trash"));
     let media_bytes: u64 = trash_files
         .iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "manifest.jsonl"))

@@ -459,6 +459,7 @@ pub fn item_detail(
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
+        .map(|path| crate::winpath::for_display(&path).into_owned())
         .collect();
     drop(stmt);
 
@@ -472,7 +473,12 @@ pub fn item_detail(
         resolved_utc_ms: first.5,
         resolved_source: first.6.clone(),
         date_only: first.7 != 0,
-        copy_paths: copies.iter().map(|c| c.1.clone()).collect(),
+        // Keep the verbatim spelling in SQLite for filesystem work, but never
+        // make the Windows implementation detail part of a user-facing path.
+        copy_paths: copies
+            .iter()
+            .map(|c| crate::winpath::for_display(&c.1).into_owned())
+            .collect(),
         companion_paths,
         strip_frames,
     })
@@ -776,6 +782,31 @@ mod tests {
         assert_eq!(detail.copy_paths, vec!["/a/x.jpg", "/b/x.jpg"]);
         assert_eq!(detail.companion_paths, vec!["/a/x.arw"]);
         assert_eq!(detail.resolved_source.as_deref(), Some("metadata"));
+    }
+
+    #[test]
+    fn item_detail_hides_windows_verbatim_prefixes() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 42, 'image');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+             VALUES (?1, ?2, 'x.jpg', 'image', 'h1')",
+            [r"\\?\C:\photos\x.jpg", r"\\?\C:\photos"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, companion_of) \
+             VALUES (?1, ?2, 'x.xmp', 'companion', 1)",
+            [r"\\?\C:\photos\x.xmp", r"\\?\C:\photos"],
+        )
+        .unwrap();
+
+        let detail = item_detail(&conn, Some("h1"), None).unwrap();
+        assert_eq!(detail.copy_paths, vec![r"C:\photos\x.jpg"]);
+        assert_eq!(detail.companion_paths, vec![r"C:\photos\x.xmp"]);
     }
 
     #[test]

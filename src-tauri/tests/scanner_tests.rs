@@ -267,18 +267,20 @@ fn resolve_uses_filename_then_filesystem_and_flags_undated() {
     // No date anywhere in name or content: filesystem mtime wins.
     std::fs::write(f.root.join("scan.pdf"), b"pdf-ish").unwrap();
 
-    // Nothing resolvable anywhere: no date in the name, and a filesystem
-    // timestamp deliberately pushed outside the good range so the last tier
+    // Nothing resolvable anywhere: no date in the name, and stored filesystem
+    // evidence deliberately pushed outside the good range so the last tier
     // rejects it too. Without this file the test asserted `undated == 0` while
     // its name promised the Undated branch — nothing here ever reached it.
     std::fs::write(f.root.join("mystery.bin"), b"who-knows").unwrap();
-    let out_of_range = std::process::Command::new("touch")
-        .args(["-t", "198001010000", &f.root.join("mystery.bin").to_string_lossy()])
-        .status()
-        .expect("touch is available on unix CI and dev machines");
-    assert!(out_of_range.success());
 
     walk_root(&f.conn, &f.root, &lists()).unwrap();
+    f.conn
+        .execute(
+            "UPDATE paths SET mtime_ms = 315532800000, birthtime_ms = 315532800000 \
+             WHERE file_name = 'mystery.bin'",
+            [],
+        )
+        .unwrap();
     hash_pending(&f.conn, &test_cache(&f)).unwrap();
     extract_pending(&f.conn).unwrap();
     let stats =
@@ -515,8 +517,11 @@ fn replacing_a_provisionally_identified_file_resets_its_content_facts() {
 #[test]
 fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
     let f = fixture("walk-owed");
-    let root_str = f.root.to_string_lossy().to_string();
-    let roots = vec![root_str.clone()];
+    let configured_root = f.root.to_string_lossy().to_string();
+    let recorded_root = onecopy_lib::winpath::for_fs(&f.root)
+        .to_string_lossy()
+        .to_string();
+    let roots = vec![configured_root];
 
     // Never walked: owed.
     assert!(walk_owed(&f.conn, &roots).unwrap(), "an unwalked root is owed");
@@ -538,7 +543,7 @@ fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
     f.conn
         .execute(
             "UPDATE scan_dirs SET dirty = 1 WHERE root = ?1",
-            rusqlite::params![root_str],
+            rusqlite::params![recorded_root],
         )
         .unwrap();
     assert!(
