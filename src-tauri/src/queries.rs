@@ -575,9 +575,19 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
     let rows: Vec<IssueRow> = stmt
         .query_map([limit], |r| {
             let path: String = r.get(1)?;
+            // Issue rows are written straight from `abs_path`, and on Windows
+            // EVERY indexed path is stored verbatim (`for_fs` is unconditional
+            // there, not length-gated) — so without this the issues list shows
+            // `\\?\C:\…` for every file, not just deep ones. The stored
+            // spelling stays verbatim: issue identity is (kind, path), and
+            // `clear_issues` matches on what the pipeline wrote.
             Ok(IssueRow {
                 id: r.get(0)?,
-                path: if path.is_empty() { None } else { Some(path) },
+                path: if path.is_empty() {
+                    None
+                } else {
+                    Some(crate::winpath::for_display(&path).into_owned())
+                },
                 kind: r.get(2)?,
                 message: r.get(3)?,
                 first_seen_utc: r.get(4)?,

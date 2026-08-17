@@ -889,3 +889,24 @@ fn a_differently_spelled_configured_root_is_not_forgotten() {
     assert_eq!(forgotten, 0, "a capitalisation difference is not a removal");
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
 }
+
+#[test]
+fn the_walk_progress_line_shows_a_path_a_person_recognises() {
+    // `settled_root` hands this `fs::canonicalize`, which on Windows is the
+    // verbatim spelling — so this is the scan's one user-facing path and it
+    // has to come back conventional. Runs everywhere: `for_display` is a pure
+    // string transform, so a Mac can pin the Windows spelling.
+    assert_eq!(
+        walk_progress_line(r"\\?\C:\photos", 1234, 56),
+        r"C:\photos: 1234 files (56 new)"
+    );
+    assert_eq!(
+        walk_progress_line(r"\\?\UNC\nas\media", 7, 0),
+        r"\\nas\media: 7 files (0 new)"
+    );
+    // The unix spelling is untouched — the transform is a strip, not a rewrite.
+    assert_eq!(
+        walk_progress_line("/Volumes/Photos", 3, 3),
+        "/Volumes/Photos: 3 files (3 new)"
+    );
+}

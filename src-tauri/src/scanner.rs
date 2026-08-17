@@ -382,6 +382,19 @@ pub fn forget_unconfigured_roots(
 ///    capitalisation cannot fork the index. Matching case-insensitively is safe
 ///    HERE specifically: this compares roots, never individual files, and two
 ///    roots differing only by case cannot coexist on either target platform.
+/// The status bar's per-root walk line. A named seam rather than an inline
+/// `format!` because it is the one place a scan puts a PATH in front of the
+/// user, and the root it is handed comes from `settled_root` — that is
+/// `fs::canonicalize`, which on Windows returns the verbatim form. Inline, the
+/// status bar read `\\?\C:\photos: 1234 files` through every scan, and nothing
+/// short of a full scan on a Windows box could have caught it.
+pub fn walk_progress_line(root: &str, seen: u64, added: u64) -> String {
+    format!(
+        "{}: {seen} files ({added} new)",
+        crate::winpath::for_display(root)
+    )
+}
+
 pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, String> {
     let canonical = std::fs::canonicalize(configured)
         .map_err(|e| format!("{}: {e}", configured.display()))?;
@@ -430,10 +443,7 @@ pub fn run_full_scan(
         summary.roots += 1;
         summary.seen += stats.seen;
         summary.added += stats.added;
-        progress(
-            "walk",
-            format!("{root}: {} files ({} new)", stats.seen, stats.added),
-        );
+        progress("walk", walk_progress_line(root, stats.seen, stats.added));
     }
 
     run_pipeline_tail(conn, settings, progress, &mut summary)?;

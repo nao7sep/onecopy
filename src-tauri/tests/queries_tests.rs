@@ -298,3 +298,53 @@ fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
     assert!(members.iter().all(|m| m.copy_count == 1));
     assert!(members.iter().all(|m| m.has_thumb));
 }
+
+// The verbatim prefix is a FILESYSTEM detail, and the boundary where it must
+// come back off is the read that serves the UI — not each call site
+// remembering. On Windows `for_fs` is unconditional, so every indexed path is
+// stored `\\?\C:\…`, which makes this every path the user sees rather than
+// only the deep ones this machinery exists for. These run on every platform
+// because `for_display` is a pure string transform; the SPELLING under test is
+// Windows's, and pinning it here is what makes the rule testable from a Mac.
+#[test]
+fn issue_rows_never_carry_the_verbatim_prefix() {
+    let conn = db();
+    index_store::upsert_issue(&conn, Some(r"\\?\C:\photos\broken.heic"), "decode-error", "x")
+        .unwrap();
+    index_store::upsert_issue(&conn, Some(r"\\?\UNC\nas\media\clip.mov"), "video-derive-error", "y")
+        .unwrap();
+    // A rootless issue keeps its empty path as None, which the prefix strip
+    // must not disturb.
+    index_store::upsert_issue(&conn, None, "walk-error", "z").unwrap();
+
+    let (total, rows) = queries::issues(&conn, 50).unwrap();
+    assert_eq!(total, 3);
+    let paths: Vec<Option<&str>> = rows.iter().map(|r| r.path.as_deref()).collect();
+    assert!(
+        paths.contains(&Some(r"C:\photos\broken.heic")),
+        "drive-absolute must lose the marker: {paths:?}"
+    );
+    assert!(
+        paths.contains(&Some(r"\\nas\media\clip.mov")),
+        "UNC must come back as \\\\server\\share: {paths:?}"
+    );
+    assert!(paths.contains(&None), "a rootless issue stays None: {paths:?}");
+    for path in paths.into_iter().flatten() {
+        assert!(!path.starts_with(r"\\?\"), "{path} still leaks the prefix");
+    }
+}
+
+#[test]
+fn the_stored_issue_path_stays_verbatim_so_clearing_still_matches() {
+    // Display is a READ-time transform. If it were applied on the way IN, the
+    // pipeline's `clear_issues` — which passes the same `abs_path` it wrote —
+    // would stop matching and resolved issues would never disappear.
+    let conn = db();
+    let stored = r"\\?\C:\photos\broken.heic";
+    index_store::upsert_issue(&conn, Some(stored), "decode-error", "x").unwrap();
+
+    index_store::clear_issues(&conn, stored, &["decode-error"]).unwrap();
+
+    let (total, _) = queries::issues(&conn, 50).unwrap();
+    assert_eq!(total, 0, "the pipeline's own spelling must still clear the row");
+}
