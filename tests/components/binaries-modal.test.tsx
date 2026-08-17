@@ -59,7 +59,7 @@ beforeEach(() => {
   });
   seed([
     entry("ffmpeg", "not-installed"),
-    entry("siglip2-large-vision", "not-installed"),
+    entry("whisper-large-v3-turbo", "not-installed"),
     entry("whisper-large-v3-turbo", "up-to-date"),
   ]);
 });
@@ -72,7 +72,7 @@ const buttons = (label: string) =>
 describe("parallel installs", () => {
   it("keeps every other row's button live while one entry downloads", () => {
     useBinariesStore.setState({
-      installing: { "siglip2-large-vision": "Downloading — 100 / 1207 MB" },
+      installing: { "whisper-large-v3-turbo": "Downloading — 100 / 1207 MB" },
     });
     render(<BinariesModal />);
     const install = buttons("Install");
@@ -100,7 +100,7 @@ describe("installing everything", () => {
     const installed = invokeCalls
       .filter((c) => c.command === "binaries_install")
       .map((c) => c.args.id);
-    expect(installed.sort()).toEqual(["ffmpeg", "siglip2-large-vision"]);
+    expect(installed.sort()).toEqual(["ffmpeg", "whisper-large-v3-turbo"]);
   });
 });
 
@@ -121,7 +121,7 @@ describe("the two lifecycles", () => {
   });
 
   it("offers the check only on the entry that has an upstream", () => {
-    seed([entry("ffmpeg", "up-to-date"), entry("siglip2-large-vision", "up-to-date")]);
+    seed([entry("ffmpeg", "up-to-date"), entry("whisper-large-v3-turbo", "up-to-date")]);
     render(<BinariesModal />);
     const check = buttons("Check for updates");
     expect(check).toHaveLength(1);

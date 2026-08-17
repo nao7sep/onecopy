@@ -14,8 +14,6 @@ export interface SettingsDraft {
   similarityMaxGapSeconds: number;
   similarityPhashMaxDistance: number;
   similarityDiameterMultiplier: number;
-  similarityEmbeddingEnabled: boolean;
-  similarityEmbeddingThresholdPercent: number;
   previewLongEdgePx: number;
   thumbnailEdgePx: number;
   videoStripSecondsPerFrame: number;
@@ -45,11 +43,6 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     similarityMaxGapSeconds: numberOr(config?.similarityMaxGapSeconds, 90),
     similarityPhashMaxDistance: numberOr(config?.similarityPhashMaxDistance, 3),
     similarityDiameterMultiplier: numberOr(config?.similarityDiameterMultiplier, 2),
-    similarityEmbeddingEnabled: config?.similarityEmbeddingEnabled !== false,
-    similarityEmbeddingThresholdPercent: numberOr(
-      config?.similarityEmbeddingThresholdPercent,
-      90,
-    ),
     previewLongEdgePx: numberOr(config?.previewLongEdgePx, 1600),
     thumbnailEdgePx: numberOr(config?.thumbnailEdgePx, 320),
     videoStripSecondsPerFrame: numberOr(config?.videoStripSecondsPerFrame, 20),

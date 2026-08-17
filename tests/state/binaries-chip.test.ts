@@ -50,20 +50,20 @@ describe("the footer's managed-tools chip", () => {
     // A missing model disables one enhancement, not a media kind; its own
     // feature surface names the remedy.
     expect(
-      toolsChip(false, "", [entry("ffmpeg", "up-to-date"), entry("siglip2-large-vision", "not-installed")]),
+      toolsChip(false, "", [entry("ffmpeg", "up-to-date"), entry("whisper-large-v3-turbo", "not-installed")]),
     ).toBeNull();
   });
 
   it("warns when any entry has an update, counting them honestly", () => {
     const one = toolsChip(false, "", [
       entry("ffmpeg", "up-to-date"),
-      entry("siglip2-large-vision", "update-available"),
+      entry("whisper-large-v3-turbo", "update-available"),
     ]);
     expect(one?.role).toBe("warning");
     expect(one?.text).toBe("Tool update available");
     const two = toolsChip(false, "", [
       entry("ffmpeg", "update-available"),
-      entry("siglip2-large-vision", "update-available"),
+      entry("whisper-large-v3-turbo", "update-available"),
     ]);
     expect(two?.text).toBe("Tool updates available");
   });

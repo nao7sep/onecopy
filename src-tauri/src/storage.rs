@@ -58,10 +58,6 @@ pub struct DefaultConfig {
     /// the setting exists so a corpus that needs looser families can have
     /// them deliberately, never by accident.
     pub similarity_diameter_multiplier: u32,
-    /// Embedding (cross-device) pairing: the one toggle and its cosine
-    /// threshold as a percent (90 = 0.90).
-    pub similarity_embedding_enabled: bool,
-    pub similarity_embedding_threshold_percent: u32,
     /// Long edge of the screen-fit preview cache entries.
     pub preview_long_edge_px: u32,
     /// Edge of the grid thumbnail cache entries.
@@ -110,8 +106,6 @@ impl Default for DefaultConfig {
             // everything into one 484-member hairball; 2-4 recovered families.
             similarity_phash_max_distance: 3,
             similarity_diameter_multiplier: 2,
-            similarity_embedding_enabled: true,
-            similarity_embedding_threshold_percent: 95,
             preview_long_edge_px: 1600,
             thumbnail_edge_px: 320,
             video_strip_seconds_per_frame: 20,

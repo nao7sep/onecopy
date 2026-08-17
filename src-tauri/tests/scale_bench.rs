@@ -84,8 +84,7 @@ fn similarity_rebuild_cost_by_bucket_size() {
             max_gap_seconds: 90,
             diameter_multiplier: 2,
             phash_max_distance: 4,
-            embedding_min_cosine: None,
-        };
+            };
         let started = Instant::now();
         let stats = rebuild_groups(&conn, &config).unwrap();
         eprintln!("rebuild at n={n}: {:?}  ({stats:?})", started.elapsed());

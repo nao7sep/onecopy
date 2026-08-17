@@ -127,12 +127,12 @@ describe("binaries events", () => {
       detail: "300 / 1549 MB",
     });
     fireEvent("binaries://progress", {
-      id: "siglip2-large-vision",
+      id: "ultraface-rfb640",
       phase: "verify",
       detail: "checking integrity",
     });
     const installing = binaries.getState().installing;
     expect(installing["whisper-large-v3-turbo"]).toBe("Downloading — 300 / 1549 MB");
-    expect(installing["siglip2-large-vision"]).toBe("Verifying — checking integrity");
+    expect(installing["ultraface-rfb640"]).toBe("Verifying — checking integrity");
   });
 });

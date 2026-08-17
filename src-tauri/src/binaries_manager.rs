@@ -79,24 +79,6 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         pinned: None,
     },
     DependencySpec {
-        id: "siglip2-large-vision",
-        label: "Similarity model (SigLIP 2 large)",
-        kind: DependencyKind::Model,
-        file_name: "siglip2-large-vision.onnx",
-        pinned: Some(PinnedModel {
-            // The VISION TOWER only — the repo also ships the text tower and a
-            // combined model, neither of which this app has any use for.
-            // Apache-2.0 (declared on the repo; the sibling base variants
-            // declare no license at all, which is why the large one is the
-            // pick among cleanly-licensed SigLIP 2 exports). sha256 and size
-            // computed from the downloaded artifact 2026-08-17.
-            url: "https://huggingface.co/onnx-community/siglip2-large-patch16-384-ONNX/resolve/main/onnx/vision_model.onnx",
-            sha256: "a91b175aeb1bf2aebf134fe2450e3ff212a210adc0dc5d02df4e2338a5943f3e",
-            bytes: 1_265_655_968,
-            released: "2025-02-21",
-        }),
-    },
-    DependencySpec {
         id: "whisper-large-v3-turbo",
         label: "Transcription model (Whisper large-v3-turbo)",
         kind: DependencyKind::Model,

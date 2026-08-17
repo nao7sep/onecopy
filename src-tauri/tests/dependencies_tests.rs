@@ -27,21 +27,10 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
         ids,
         [
             "ffmpeg",
-            "siglip2-large-vision",
             "whisper-large-v3-turbo",
             "ultraface-rfb640",
             "hsemotion-enet-b2",
         ]
-    );
-
-    let embedding = spec_of("siglip2-large-vision").unwrap();
-    let embedding_pin = embedding.pinned.as_ref().unwrap();
-    assert!(embedding_pin.url.starts_with("https://"));
-    assert_eq!(embedding_pin.sha256.len(), 64);
-    assert!(
-        embedding_pin.url.contains("vision_model"),
-        "the VISION tower alone — the text tower and the combined model are \
-         megabytes this app would never run"
     );
 
     let whisper = spec_of("whisper-large-v3-turbo").unwrap();

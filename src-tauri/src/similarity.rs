@@ -35,12 +35,8 @@ pub struct SimilarityConfig {
     pub max_gap_seconds: u32,
     pub phash_max_distance: u32,
     /// How much wider than one pairing step a family may spread (see the
-    /// config field of the same name). Applied to BOTH signals: the dHash
-    /// diameter allowance and, in angular terms, the embedding one.
+    /// config field of the same name), as a dHash diameter allowance.
     pub diameter_multiplier: u32,
-    /// Cosine threshold for embedding pairing; None = disabled or no model —
-    /// dHash-only, exactly the pre-embedding behaviour.
-    pub embedding_min_cosine: Option<f32>,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -160,7 +156,6 @@ struct Candidate {
     camera: String,
     time_ms: Option<i64>,
     phash: i64,
-    embedding: Option<Vec<f32>>,
 }
 
 /// Rebuilds every similar group from the current index. Only images with a
@@ -308,12 +303,11 @@ pub fn rebuild_groups(
     conn: &Connection,
     config: &SimilarityConfig,
 ) -> Result<GroupStats, String> {
-    let read_embeddings = config.embedding_min_cosine.is_some();
     let mut stmt = conn
         .prepare(
             "SELECT c.hash, \
              COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''), \
-             MIN(p.resolved_utc_ms), c.phash, c.embedding \
+             MIN(p.resolved_utc_ms), c.phash \
              FROM contents c JOIN paths p ON p.content_hash = c.hash \
              WHERE c.kind = 'image' AND c.phash IS NOT NULL \
                AND p.missing = 0 AND p.companion_of IS NULL \
@@ -327,12 +321,6 @@ pub fn rebuild_groups(
                 camera: r.get(1)?,
                 time_ms: r.get(2)?,
                 phash: r.get(3)?,
-                embedding: if read_embeddings {
-                    r.get::<_, Option<Vec<u8>>>(4)?
-                        .and_then(|blob| crate::embedding::from_blob(&blob))
-                } else {
-                    None
-                },
             })
         })
         .map_err(|e| e.to_string())?
@@ -409,16 +397,7 @@ pub fn rebuild_groups(
             }
         }
 
-        // Stage B — cross-device pairing (Design: Similar-shot grouping):
-        // deliberately crosses camera partitions and skips the burst split,
-        // because different devices' clocks disagree and appearance is the
-        // only trustworthy signal there.
-        let merged = if let Some(min_cosine) = config.embedding_min_cosine {
-            merge_by_embedding(bucket_groups, indices, &candidates, min_cosine)
-        } else {
-            bucket_groups
-        };
-        for group in merged {
+        for group in bucket_groups {
             if group.len() >= 2 {
                 groups.push(group.iter().map(|&i| candidates[i].hash.clone()).collect());
             }
@@ -457,66 +436,6 @@ pub fn rebuild_groups(
     Ok(stats)
 }
 
-/// Merges visual groups through cross-group clusters (the embedding stage):
-/// each cluster unions the groups its members belong to — members in no
-/// group join as singletons — and groups no cluster touches pass through.
-/// Stage B's merge: visual groups and ungrouped loners are UNITS, and units
-/// join a merged cluster only when their representative sits within the
-/// cosine threshold OF THAT CLUSTER'S LEADER — the same leader-bounded
-/// discipline `cluster_by_appearance` applies to phashes, for exactly the
-/// same reason.
-///
-/// The previous form unioned any two groups that shared an embedding cluster,
-/// transitively. Leader-bounded CLUSTERS cannot chain, but a union OVER them
-/// can and did: with unrelated app icons reaching the threshold in about one
-/// pair in seventeen, that was enough connectivity to fuse 207 icons —
-/// butterflies, microphones, cassettes — into a single "similar" group whose
-/// median pair sat at cosine 0.72 and dhash distance 28 (measured on the
-/// developer's index, 2026-08-17). A false pair must cost one wrong neighbour,
-/// never the whole bucket.
-fn merge_by_embedding(
-    groups: Vec<Vec<usize>>,
-    indices: &[usize],
-    candidates: &[Candidate],
-    min_cosine: f32,
-) -> Vec<Vec<usize>> {
-    use std::collections::HashSet;
-    let grouped: HashSet<usize> = groups.iter().flatten().copied().collect();
-    // Units, in a deterministic order: every visual group, then every loner.
-    let mut units: Vec<Vec<usize>> = groups;
-    for &i in indices {
-        if !grouped.contains(&i) {
-            units.push(vec![i]);
-        }
-    }
-    // A unit's representative is its first member carrying an embedding. A
-    // visual group is already tight in dhash space, so any member represents
-    // it; a unit with no embedding at all cannot merge and stands as it is.
-    let reps: Vec<Option<Vec<f32>>> = units
-        .iter()
-        .map(|unit| {
-            unit.iter()
-                .find_map(|&i| candidates[i].embedding.clone())
-        })
-        .collect();
-
-    let mut merged: Vec<Vec<usize>> = Vec::new();
-    let mut consumed = vec![false; units.len()];
-    for cluster in crate::embedding::embedding_clusters(&reps, min_cosine) {
-        let mut members: Vec<usize> = Vec::new();
-        for unit in cluster {
-            consumed[unit] = true;
-            members.extend(units[unit].iter().copied());
-        }
-        merged.push(members);
-    }
-    for (unit, used) in consumed.iter().enumerate() {
-        if !used {
-            merged.push(std::mem::take(&mut units[unit]));
-        }
-    }
-    merged
-}
 
 /// One group's members, best-first: sharpness descending (the advisory
 /// machine guess), then time — never an auto-deletion criterion.

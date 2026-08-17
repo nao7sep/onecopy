@@ -367,25 +367,7 @@ export default function SettingsModal() {
             min={1}
             onChange={(v) => update({ similarityDiameterMultiplier: Math.min(4, v) })}
           />
-          <Row
-            label="Match across devices"
-            hint="Pairs the same scene from different cameras (needs the similarity model)"
-          >
-            <Toggle
-              checked={draft.similarityEmbeddingEnabled}
-              onChange={(checked) => update({ similarityEmbeddingEnabled: checked })}
-            />
-          </Row>
           <UnlinkedPairsRow />
-          <NumberField
-            label="Cross-device match strictness (%)"
-            hint="Higher pairs less, and wrongly pairs less. Measured on the icon corpus, 95 admits about half the false pairs 90 does."
-            value={draft.similarityEmbeddingThresholdPercent}
-            min={50}
-            onChange={(v) =>
-              update({ similarityEmbeddingThresholdPercent: Math.min(100, v) })
-            }
-          />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Previews
