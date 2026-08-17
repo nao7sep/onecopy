@@ -134,6 +134,21 @@ pub fn needs_ffmpeg_decode(src: &Path) -> bool {
 /// matching EXIF `Orientation` describing the SAME rotation, so re-applying
 /// it would turn every rotated photo a further 90°.
 fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> {
+    decode_via_ffmpeg_bounded(ffmpeg, src, None)
+}
+
+/// `max_edge` scales INSIDE ffmpeg (after its own display-orientation pass),
+/// never upscaling. The derive path uses it (Phase 33): a 48 MP HEIC piped as
+/// full-size BMP is ~144 MB of transfer, allocation and BMP parse per photo —
+/// at 1600 px it is ~6 MB, a 25× cut in everything after the decode. The
+/// decode itself is untouched (HEVC has no partial decode), and the original
+/// DIMENSIONS are safe: the metadata pass owns width/height and the derive's
+/// UPDATE goes through COALESCE. The 100% view keeps the unbounded route.
+fn decode_via_ffmpeg_bounded(
+    ffmpeg: &Path,
+    src: &Path,
+    max_edge: Option<u32>,
+) -> Result<DynamicImage, String> {
     logging::debug(
         "ffmpeg invocation",
         serde_json::json!({ "op": "decode-still", "src": src.to_string_lossy() }),
@@ -141,7 +156,12 @@ fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> 
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(src)
-        .args(["-frames:v", "1", "-f", "image2pipe", "-c:v", "bmp", "-"]);
+        .args(["-frames:v", "1"]);
+    if let Some(edge) = max_edge {
+        // min() so a small image never upscales; -2 keeps dimensions even.
+        cmd.args(["-vf", &format!("scale='min({edge},iw)':-2")]);
+    }
+    cmd.args(["-f", "image2pipe", "-c:v", "bmp", "-"]);
     let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
     if !run.status_ok || run.stdout.is_empty() {
         // The recent-output tail, bounded — the whole point is diagnosing
@@ -180,7 +200,17 @@ pub fn generate_for_image(
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
 ) -> Result<DerivedFacts, String> {
-    let (decoded, orientation) = decode_image(src, ffmpeg)?;
+    let (decoded, orientation) = if needs_ffmpeg_decode(src) {
+        let ffmpeg = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
+        // The derive needs at most the preview edge; the bounded pipe is the
+        // fast path (see decode_via_ffmpeg_bounded).
+        (
+            decode_via_ffmpeg_bounded(ffmpeg, src, Some(preview_long_edge))?,
+            1,
+        )
+    } else {
+        decode_image(src, ffmpeg)?
+    };
     derive_from_decoded(decoded, orientation, src, hash, cache, thumb_edge, preview_long_edge)
 }
 
@@ -200,7 +230,9 @@ pub fn generate_for_image_teeing(
         // hash it streaming (never a whole-file buffer, which for a 12 MP
         // still is the larger cost) and let the decode read separately.
         let real_hash = crate::hashing::full_hash(src).map_err(|e| e.to_string())?;
-        let (decoded, orientation) = decode_image(src, ffmpeg)?;
+        let ffmpeg_path = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
+        let (decoded, orientation) =
+            (decode_via_ffmpeg_bounded(ffmpeg_path, src, Some(preview_long_edge))?, 1);
         let facts = derive_from_decoded(
             decoded,
             orientation,
