@@ -55,7 +55,13 @@ interface ItemsState {
    * keys that were Cmd-clicked outside it. */
   rangeBase: Set<string>;
   detail: ItemDetail | null;
-  sortOrder: SortOrder;
+  /** Sort per LANE — other-files sort like a file manager (name, kind,
+   * folder), photos and videos sort like a light table (time taken,
+   * resolution); one shared order let each kind be shown in orders that are
+   * nonsense for it ("Time taken" over files nobody took). `currentSort()`
+   * resolves the active lane from the open section. */
+  sortOrders: { media: SortOrder; other: SortOrder };
+  currentSort: () => SortOrder;
   /** Last outcome worth showing the user (a delete that failed on disk, or a
    * command that was refused). Null whenever the last action was clean. */
   message: string | null;
@@ -87,13 +93,20 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   rangeOrigin: null,
   rangeBase: new Set<string>(),
   detail: null,
-  sortOrder: "time",
+  sortOrders: { media: "time", other: "name" },
   message: null,
 
+  currentSort: () => {
+    const { selected, sortOrders } = get();
+    return selected?.kind === "other" ? sortOrders.other : sortOrders.media;
+  },
+
   setSortOrder: (order) => {
-    set({ sortOrder: order });
+    const lane = get().selected?.kind === "other" ? "other" : "media";
+    const sortOrders = { ...get().sortOrders, [lane]: order };
+    set({ sortOrders });
     void import("./app-store").then(({ useAppStore }) =>
-      useAppStore.getState().patchState({ sortOrder: order }),
+      useAppStore.getState().patchState({ sortOrders }),
     );
   },
 
@@ -222,12 +235,12 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   // this rather than deleteSelected, whose target is whatever is selected in
   // the grid behind them.
   deleteKeys: async (keys, permanent) => {
-    const { items, selectedItem, sortOrder, refresh } = get();
+    const { items, selectedItem, refresh } = get();
     if (keys.size === 0) return;
     // Recovery walks the order the GRID renders, not the backend's — under
     // any sort but "time" the two diverge, and recovering through the backend
     // order lands the ring on a tile the user is not looking at.
-    const shown = sortItems(items, sortOrder);
+    const shown = sortItems(items, get().currentSort());
     // With the anchor toggled off, the deleted run still has a position: use
     // the first selected tile, so recovery stays adjacent instead of falling
     // back to index 0 and scrolling the grid to the top.
@@ -282,9 +295,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   selectAfterFamily: (memberHashes) => {
-    const { items, sortOrder } = get();
+    const { items } = get();
     const family = new Set(memberHashes);
-    const shown = sortItems(items, sortOrder);
+    const shown = sortItems(items, get().currentSort());
     const lastMember = shown.reduce(
       (last, item, index) => (item.hash !== null && family.has(item.hash) ? index : last),
       -1,

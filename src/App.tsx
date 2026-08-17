@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
@@ -25,6 +26,7 @@ import {
   computeMinWindowHeight,
   computeMinWindowWidth,
 } from "./utils/windowSizing";
+import { parseSavedBounds, restorableBounds, shrinkToFit } from "./utils/windowBounds";
 import { useSectionsStore } from "./state/sections-store";
 import { statusLine } from "./models/status";
 import { useItemsStore } from "./state/items-store";
@@ -50,7 +52,6 @@ import ScenesModal from "./components/ScenesModal";
 import TrashModal from "./components/TrashModal";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { Menu as MenuIcon } from "lucide-react";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
@@ -59,9 +60,10 @@ import {
   useBinariesStore,
 } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
+import type { SortOrder } from "./models/items";
 import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
 import PreviewSurface from "./components/PreviewSurface";
-import { reportWindowCall } from "./repositories";
+import { log, reportWindowCall, toErrorFields } from "./repositories";
 
 // The main-window shell: the sidebar listbox, the thumbnail grid for the
 // selected section, the tabbed right pane, and the scan lifecycle in the
@@ -108,6 +110,9 @@ export default function App() {
   const [scenesFor, setScenesFor] = useState<string | null>(null);
   /** Pending permanent deletion awaiting confirmation (item count shown). */
   const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
+  /** Pending TRASH deletion awaiting confirmation — exists only when the
+   * opt-in `confirmTrashDelete` config flag is on. */
+  const [confirmTrash, setConfirmTrash] = useState<number | null>(null);
   const previewFollow = usePreviewStore((s) => s.follow);
   const previewPlacement = usePreviewStore((s) => s.placement);
   const previewCurrent = usePreviewStore((s) => s.current);
@@ -178,6 +183,90 @@ export default function App() {
       )
       .catch(reportWindowCall("setMinSize"));
   }, [splitOpen]);
+
+  // Window bounds: the window is created HIDDEN (tauri.conf `visible: false` —
+  // on Windows a visible window paints a white frame before WebView2 loads),
+  // saved bounds are restored while nobody can see the jump, and only then is
+  // the window shown. Bounds are state like zoom: physical pixels, saved
+  // debounced from the move/resize events, validated against the LIVE monitor
+  // set at boot — this machine swings between one and three screens, and a
+  // window restored onto a detached monitor has no reachable title bar.
+  const bootShown = useRef(false);
+  useEffect(() => {
+    if (bootShown.current || (appData === null && loadError === null)) return;
+    bootShown.current = true;
+    const window = getCurrentWindow();
+    // Whatever restore does, the window MUST end up visible — a thrown
+    // monitor query on some exotic setup may cost the placement, never the app.
+    const showFallback = setTimeout(() => {
+      void window.show().catch(reportWindowCall("show"));
+    }, 3000);
+    void (async () => {
+      try {
+        const { availableMonitors, currentMonitor, PhysicalPosition, PhysicalSize } =
+          await import("@tauri-apps/api/window");
+        const saved = restorableBounds(
+          parseSavedBounds(useAppStore.getState().appData?.state?.windowBounds),
+          await availableMonitors(),
+        );
+        if (saved !== null) {
+          await window.setPosition(new PhysicalPosition(saved.x, saved.y));
+          await window.setSize(new PhysicalSize(saved.width, saved.height));
+        } else {
+          // First launch (or stale bounds): the 1400×900 default overflows a
+          // small laptop screen; shrink to the hosting monitor.
+          const monitor = await currentMonitor();
+          const inner = await window.innerSize();
+          const fitted = monitor !== null ? shrinkToFit(inner, monitor.size) : null;
+          if (fitted !== null) {
+            await window.setSize(new PhysicalSize(fitted.width, fitted.height));
+          }
+        }
+      } catch (error) {
+        reportWindowCall("restore bounds")(error);
+      } finally {
+        clearTimeout(showFallback);
+        await window.show().catch(reportWindowCall("show"));
+        await window.setFocus().catch(reportWindowCall("boot setFocus"));
+      }
+    })();
+  }, [appData, loadError]);
+
+  // The save half: on move/resize, read the live outer position + inner size
+  // (the restore counterparts) and persist, debounced — drags fire dozens of
+  // events per second and state.json wants the landing place, not the journey.
+  useEffect(() => {
+    const window = getCurrentWindow();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const save = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void (async () => {
+          try {
+            const position = await window.outerPosition();
+            const size = await window.innerSize();
+            await useAppStore.getState().patchState({
+              windowBounds: {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+              },
+            });
+          } catch (error) {
+            reportWindowCall("save bounds")(error);
+          }
+        })();
+      }, 500);
+    };
+    const unlistens: Array<() => void> = [];
+    void window.onMoved(save).then((fn) => unlistens.push(fn));
+    void window.onResized(save).then((fn) => unlistens.push(fn));
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      for (const fn of unlistens) fn();
+    };
+  }, []);
 
   // Pane widths: persisted INTENT in pixels (written only on drag-end); the
   // displayed width is the intent clamped against the live container width,
@@ -315,12 +404,21 @@ export default function App() {
       if (isEditableTarget(event.target)) return;
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
+        const { selectedKeys, selectedItem } = useItemsStore.getState();
+        const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;
+        if (count === 0) return;
         if (event.shiftKey) {
           // Permanent deletion always confirms with the count (the design's
-          // rule); trash deletion stays instant — the trash is the net.
-          const { selectedKeys, selectedItem } = useItemsStore.getState();
-          const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;
-          if (count > 0) setConfirmPermanent(count);
+          // rule, NOT configurable — this one bypasses the net).
+          setConfirmPermanent(count);
+        } else if (
+          useAppStore.getState().appData?.config?.confirmTrashDelete === true
+        ) {
+          // Opt-in confirmation for the ordinary trash delete (developer,
+          // 2026-08-17). OFF by default: the trash is the net, and a dialog
+          // on every Delete would break the keystroke-paced cull — but a
+          // deliberate user can trade that pace for the extra stop.
+          setConfirmTrash(count);
         } else {
           void useItemsStore.getState().deleteSelected(false);
         }
@@ -391,10 +489,23 @@ export default function App() {
     if (restoredRef.current || appData === null || counts === null) return;
     restoredRef.current = true;
     const state = appData.state ?? {};
-    const sort = state.sortOrder;
-    if (sort === "time" || sort === "name" || sort === "size" || sort === "resolution") {
-      useItemsStore.setState({ sortOrder: sort });
-    }
+    // Per-lane sort orders; the legacy single `sortOrder` key restores into
+    // the media lane so an existing machine keeps its choice.
+    const isOrder = (v: unknown): v is SortOrder =>
+      v === "time" || v === "name" || v === "size" || v === "resolution" ||
+      v === "ext" || v === "folder";
+    const savedOrders = (state.sortOrders ?? {}) as Record<string, unknown>;
+    const legacy = state.sortOrder;
+    useItemsStore.setState((current) => ({
+      sortOrders: {
+        media: isOrder(savedOrders.media)
+          ? savedOrders.media
+          : isOrder(legacy)
+            ? legacy
+            : current.sortOrders.media,
+        other: isOrder(savedOrders.other) ? savedOrders.other : current.sortOrders.other,
+      },
+    }));
     if (state.rightPaneTab === "destinations") setRightTabRaw("destinations");
     const left = state.sidebarWidth;
     const right = state.rightPaneWidth;
@@ -484,6 +595,20 @@ export default function App() {
           onCancel={() => setConfirmPermanent(null)}
         />
       ) : null}
+      {confirmTrash !== null ? (
+        <ConfirmDialog
+          title="Move to trash?"
+          message={`Move ${confirmTrash} item${
+            confirmTrash === 1 ? "" : "s"
+          } and every copy to the trash? Recoverable from Menu → Trash.`}
+          confirmLabel="Move to trash"
+          onConfirm={() => {
+            setConfirmTrash(null);
+            void useItemsStore.getState().deleteSelected(false);
+          }}
+          onCancel={() => setConfirmTrash(null)}
+        />
+      ) : null}
       <SettingsModal />
       <IssuesModal />
       {/* Renders itself only when the core set a store aside this launch. */}
@@ -561,19 +686,17 @@ export default function App() {
               <MenuSeparator />
               <MenuItem
                 onSelect={() => {
-                  const root = useAppStore.getState().appData?.dataRoot;
-                  if (root) void openPath(`${root}/logs`);
+                  // The core builds the path (paths.rs is the one authority);
+                  // the old frontend-built `openPath` was silently rejected by
+                  // the opener plugin's empty path scope. "Reveal app home"
+                  // was dropped with the fix — the data root is
+                  // machine-managed and no fleet app reveals its own innards.
+                  void invoke("reveal_data_subdir", { name: "logs" }).catch((error) =>
+                    log.warn("reveal logs failed", toErrorFields(error)),
+                  );
                 }}
               >
                 Reveal logs folder
-              </MenuItem>
-              <MenuItem
-                onSelect={() => {
-                  const root = useAppStore.getState().appData?.dataRoot;
-                  if (root) void openPath(root);
-                }}
-              >
-                Reveal app home
               </MenuItem>
               <MenuSeparator />
               <MenuItem onSelect={() => setHelpOpen(true)}>Keyboard shortcuts…</MenuItem>

@@ -41,6 +41,10 @@ function member(hash: string, width = 4000, height = 3000): GroupMember {
   };
 }
 
+function members(count: number): GroupMember[] {
+  return Array.from({ length: count }, (_, i) => member(`m${i}`));
+}
+
 const TWO_SCREENS = [
   { name: "one", position: { x: 0, y: 0 }, size: { width: 2560, height: 1440 }, scaleFactor: 2 },
   {
@@ -67,8 +71,10 @@ beforeEach(() => {
 describe("opening a group across screens", () => {
   it("publishes the session before any window can ask for it", async () => {
     setMonitors(TWO_SCREENS);
-    const members = [member("a"), member("b"), member("c")];
-    mockCommands({ get_similar_group: () => members, patch_state: () => ({}) });
+    // Six landscape members: past one screen's four slots, so the spread is
+    // genuinely needed (a family that fits one screen no longer spreads).
+    const family = members(6);
+    mockCommands({ get_similar_group: () => family, patch_state: () => ({}) });
 
     // Observed INSIDE the constructor: a real webview begins booting there and
     // can announce itself at once. Reading the store after openGroup returns
@@ -88,7 +94,7 @@ describe("opening a group across screens", () => {
     expect(createdWindows.length).toBeGreaterThan(originalLength);
     // The session must already be live AND populated at that instant.
     expect(openAtWindowCreation).toBe(true);
-    expect(slotsAtWindowCreation).toBe(3);
+    expect(slotsAtWindowCreation).toBe(6);
 
     // And the answer to a late announcement is a real broadcast, not silence.
     const broadcasts = emitCalls.filter((c) => c.event === "comparison://state");
@@ -96,17 +102,17 @@ describe("opening a group across screens", () => {
     const last = broadcasts[broadcasts.length - 1].payload as {
       chunks: unknown[][];
     };
-    expect(last.chunks.flat().length).toBe(3);
+    expect(last.chunks.flat().length).toBe(6);
   });
 
   it("sizes each window to its own monitor, converted out of physical pixels", async () => {
     setMonitors(TWO_SCREENS);
     mockCommands({
-      get_similar_group: () => [member("a"), member("b")],
+      get_similar_group: () => members(6),
       patch_state: () => ({}),
     });
 
-    await useComparisonStore.getState().openGroup("a");
+    await useComparisonStore.getState().openGroup("m0");
 
     const spread = createdWindows.find((w) => w.label === "comparison-1");
     expect(spread).toBeDefined();
@@ -126,23 +132,64 @@ describe("opening a group across screens", () => {
   it("reuses a hidden window instead of booting a second webview", async () => {
     setMonitors(TWO_SCREENS);
     mockCommands({
-      get_similar_group: () => [member("a"), member("b")],
+      get_similar_group: () => members(6),
       patch_state: () => ({}),
       get_section_counts: () => ({ images: [], videos: [], others: [] }),
       get_section_items: () => [],
       patch_config: () => ({}),
     });
 
-    await useComparisonStore.getState().openGroup("a");
+    await useComparisonStore.getState().openGroup("m0");
     const afterFirst = createdWindows.length;
 
     useComparisonStore.getState().close();
     // Let the hide settle before reopening.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await useComparisonStore.getState().openGroup("a");
+    await useComparisonStore.getState().openGroup("m0");
 
     // The window survived the close, so the second session constructs none.
     expect(createdWindows.length).toBe(afterFirst);
+  });
+
+  it("opens NO spread for a family that fits the main screen", async () => {
+    // Three monitors, three members: the old code opened a window on every
+    // extra monitor regardless — the developer's 6-member family on three
+    // screens always got one showing nothing. A family within one screen's
+    // capacity never spreads at all.
+    setMonitors([
+      ...TWO_SCREENS,
+      {
+        name: "three",
+        position: { x: 5120, y: 0 },
+        size: { width: 2560, height: 1440 },
+        scaleFactor: 2,
+      },
+    ]);
+    mockCommands({ get_similar_group: () => members(3), patch_state: () => ({}) });
+
+    await useComparisonStore.getState().openGroup("m0");
+
+    expect(createdWindows.filter((w) => w.label.startsWith("comparison-"))).toHaveLength(0);
+    expect(useComparisonStore.getState().capacities).toEqual([16]);
+  });
+
+  it("opens ONE spread window when the family fills exactly two screens", async () => {
+    // Six members on three monitors: 4 + 2 — the third screen stays dark.
+    setMonitors([
+      ...TWO_SCREENS,
+      {
+        name: "three",
+        position: { x: 5120, y: 0 },
+        size: { width: 2560, height: 1440 },
+        scaleFactor: 2,
+      },
+    ]);
+    mockCommands({ get_similar_group: () => members(6), patch_state: () => ({}) });
+
+    await useComparisonStore.getState().openGroup("m0");
+
+    expect(createdWindows.filter((w) => w.label.startsWith("comparison-"))).toHaveLength(1);
+    expect(useComparisonStore.getState().capacities).toEqual([4, 4]);
   });
 
   it("stays single-window on one monitor and keeps all sixteen keys", async () => {
@@ -180,11 +227,13 @@ describe("the spread avoids the main window's own screen", () => {
     // The main window actually lives on the SECOND monitor of the list.
     setCurrentMonitor(THREE[1]);
     mockCommands({
-      get_similar_group: () => [member("a"), member("b"), member("c")],
+      // Ten members: fills the host's four slots and both other screens, so
+      // BOTH secondary windows must exist for the avoidance to be provable.
+      get_similar_group: () => members(10),
       patch_state: () => ({}),
     });
 
-    await useComparisonStore.getState().openGroup("a");
+    await useComparisonStore.getState().openGroup("m0");
 
     const targets = createdWindows
       .filter((w) => w.label.startsWith("comparison-"))

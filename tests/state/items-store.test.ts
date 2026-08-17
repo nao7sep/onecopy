@@ -44,7 +44,7 @@ function seed(items: SectionItem[]): void {
     selectedItem: null,
     selectedKeys: new Set(),
     detail: null,
-    sortOrder: "time",
+    sortOrders: { media: "time", other: "name" },
   });
 }
 
@@ -57,7 +57,7 @@ beforeEach(() => {
     selectedItem: null,
     selectedKeys: new Set(),
     detail: null,
-    sortOrder: "time",
+    sortOrders: { media: "time", other: "name" },
   });
   // Anchor moves fan out to these; none is under test here.
   mockCommands({
@@ -210,7 +210,7 @@ describe("deleteSelected", () => {
       item({ pathId: 3, fileName: "a.jpg" }),
     ];
     seed(items);
-    useItemsStore.setState({ sortOrder: "name" });
+    useItemsStore.setState({ sortOrders: { media: "name", other: "name" } });
     mockCommand("get_section_items", () =>
       items.filter((i) => i.hash !== "h2"),
     );

@@ -16,12 +16,42 @@ export interface SectionItem {
   byteSize: number | null;
   hasCompanions: boolean;
   durationMs: number | null;
+  /** Representative copy's directory (display form). */
+  dirPath: string;
 }
 
-export type SortOrder = "time" | "name" | "size" | "resolution";
+export type SortOrder = "time" | "name" | "size" | "resolution" | "ext" | "folder";
+
+/** The extension, lowercased, for sorting — "" when the name has none. */
+export function extOf(fileName: string): string {
+  const dot = fileName.lastIndexOf(".");
+  return dot > 0 ? fileName.slice(dot + 1).toLowerCase() : "";
+}
+
+/** Sort is CONTEXT-AWARE (the developer's Finder/Explorer expectation):
+ * "time" means the capture time for photos and videos but is a nonsense
+ * label for other-files, whose date is filesystem-derived; "resolution" only
+ * exists for media at all. Each kind offers its own orders and default —
+ * the labels live beside them so a menu cannot offer an order the kind
+ * cannot honour. */
+export const SORT_ORDERS: Record<
+  "media" | "other",
+  { orders: Partial<Record<SortOrder, string>>; defaultOrder: SortOrder }
+> = {
+  media: {
+    orders: { time: "Time taken", name: "Name", size: "Size", resolution: "Resolution" },
+    defaultOrder: "time",
+  },
+  other: {
+    orders: { name: "Name", ext: "Kind", size: "Size", time: "Date", folder: "Folder" },
+    defaultOrder: "name",
+  },
+};
 
 export function sortItems(items: SectionItem[], order: SortOrder): SectionItem[] {
   const sorted = [...items];
+  const byName = (a: SectionItem, b: SectionItem) =>
+    a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase());
   switch (order) {
     case "time":
       sorted.sort(
@@ -31,9 +61,7 @@ export function sortItems(items: SectionItem[], order: SortOrder): SectionItem[]
       );
       break;
     case "name":
-      sorted.sort((a, b) =>
-        a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase()),
-      );
+      sorted.sort(byName);
       break;
     case "size":
       sorted.sort((a, b) => (b.byteSize ?? -1) - (a.byteSize ?? -1));
@@ -41,6 +69,15 @@ export function sortItems(items: SectionItem[], order: SortOrder): SectionItem[]
     case "resolution":
       sorted.sort(
         (a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0),
+      );
+      break;
+    case "ext":
+      // Ties fall to name, the way a file manager reads.
+      sorted.sort((a, b) => extOf(a.fileName).localeCompare(extOf(b.fileName)) || byName(a, b));
+      break;
+    case "folder":
+      sorted.sort(
+        (a, b) => a.dirPath.toLowerCase().localeCompare(b.dirPath.toLowerCase()) || byName(a, b),
       );
       break;
   }

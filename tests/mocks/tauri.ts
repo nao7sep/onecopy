@@ -77,10 +77,27 @@ export const setZoom = vi.fn(async () => {});
 // reached the window, not merely that the call happened.
 export const setMinSize = vi.fn(async (_size: LogicalSize) => {});
 
+export const show = vi.fn(async () => {});
+export const setPosition = vi.fn(async () => {});
+export const setSize = vi.fn(async () => {});
+export const innerSize = vi.fn(async () => ({ width: 1400, height: 900 }));
+export const outerPosition = vi.fn(async () => ({ x: 0, y: 0 }));
+// Move/resize listeners: registered handlers are captured so a spec can fire
+// them; the returned unlisten is a no-op.
+export const onMoved = vi.fn(async (_handler: unknown) => () => {});
+export const onResized = vi.fn(async (_handler: unknown) => () => {});
+
 export const getCurrentWindow = vi.fn(() => ({
   label: currentWindowLabel,
   setFocus,
   setMinSize,
+  show,
+  setPosition,
+  setSize,
+  innerSize,
+  outerPosition,
+  onMoved,
+  onResized,
 }));
 
 export const getCurrentWebview = vi.fn(() => ({ setZoom }));

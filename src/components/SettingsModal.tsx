@@ -508,6 +508,11 @@ export default function SettingsModal() {
             checked={draft.verifyAfterCopy}
             onChange={(v) => update({ verifyAfterCopy: v })}
           />
+          <CheckField
+            label="Confirm before moving items to trash"
+            checked={draft.confirmTrashDelete}
+            onChange={(v) => update({ confirmTrashDelete: v })}
+          />
     </ModalShell>
   );
 }

@@ -55,7 +55,7 @@ function seedMultiSelection(): void {
       companionPaths: [],
       stripFrames: 4,
     },
-    sortOrder: "time",
+    sortOrders: { media: "time", other: "name" },
     message: null,
   });
 }

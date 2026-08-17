@@ -11,6 +11,7 @@ import {
   slotIndexForShiftedCode,
   chunkSlots,
   liveSlotCount,
+  screensNeeded,
   useComparisonStore,
 } from "../../src/state/comparison-store";
 import { useItemsStore } from "../../src/state/items-store";
@@ -62,7 +63,7 @@ beforeEach(() => {
     items: [],
     selectedItem: null,
     selectedKeys: new Set(),
-    sortOrder: "time",
+    sortOrders: { media: "time", other: "name" },
   });
 });
 
@@ -180,5 +181,23 @@ describe("finishing a family", () => {
     await useComparisonStore.getState().commitTurn(false);
 
     expect(useItemsStore.getState().selectedItem).toBe("h0");
+  });
+});
+
+describe("how many screens a family fills", () => {
+  // A spread window with nothing to show must not open: an empty
+  // always-on-top surface covering a monitor is a curtain, not a comparison
+  // aid — the developer's 6-member family on 3 screens got a third window
+  // showing nothing, every time.
+  it("opens only the screens the members fill", () => {
+    expect(screensNeeded(6, 4, 3)).toBe(2); // 4 + 2, third screen dark
+    expect(screensNeeded(12, 4, 3)).toBe(3); // exactly full
+    expect(screensNeeded(13, 4, 3)).toBe(3); // overflow queues, never a 4th
+    expect(screensNeeded(2, 4, 3)).toBe(1); // a pair never spreads at all
+  });
+
+  it("always keeps the main window's screen", () => {
+    expect(screensNeeded(0, 4, 3)).toBe(1);
+    expect(screensNeeded(1, 3, 1)).toBe(1);
   });
 });

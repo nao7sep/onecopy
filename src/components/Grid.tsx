@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  SORT_ORDERS,
   extLabel,
+  extOf,
   factsLine,
+  formatBytes,
   formatDuration,
   sortItems,
   thumbUrl,
@@ -11,6 +14,7 @@ import {
 import { itemKey, useItemsStore } from "../state/items-store";
 import { handleSpaceLook } from "../state/preview-store";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
+import { formatLocalMinute } from "../utils/displayTime";
 import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
 
@@ -136,13 +140,45 @@ function Tile({
   );
 }
 
-/** Other-files render as ROWS, not tiles.
- *
- * A document has nothing to look at, so a thumbnail grid spent a 160×128 box
- * per file to show an extension in the middle of it — a handful per screen
- * where a list shows dozens, and none of the facts that actually distinguish
- * two files. The keyboard contract is unchanged: the same composite, one
- * column instead of several. */
+/** The other-files table columns, in render order. Each is a REAL sortable
+ * column (Finder/Explorer): clicking its header applies the matching order,
+ * and the set is exactly the model's `other` catalogue, so a column the sort
+ * cannot honour can never appear. Name is the flexible column; the rest are
+ * fixed so the table scans vertically. */
+const OTHER_COLUMNS: { order: SortOrder; label: string; width: string }[] = [
+  { order: "ext", label: "Kind", width: "w-14" },
+  { order: "name", label: "Name", width: "min-w-0 flex-1" },
+  { order: "size", label: "Size", width: "w-20 text-right" },
+  { order: "time", label: "Date", width: "w-36" },
+  { order: "folder", label: "Folder", width: "w-56" },
+];
+
+function ListHeader({
+  sortOrder,
+  onSort,
+}: {
+  sortOrder: SortOrder;
+  onSort: (order: SortOrder) => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+      {OTHER_COLUMNS.map((column) => (
+        <button
+          key={column.order}
+          className={`${column.width} shrink-0 truncate text-left transition-colors hover:text-ink ${
+            sortOrder === column.order ? "text-ink" : ""
+          } ${column.width.includes("text-right") ? "text-right" : ""}`}
+          onClick={() => onSort(column.order)}
+          title={`Sort by ${column.label.toLowerCase()}`}
+        >
+          {column.label}
+          {sortOrder === column.order ? " ▾" : ""}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ListRow({
   item,
   isSelected,
@@ -152,7 +188,6 @@ function ListRow({
   isSelected: boolean;
   onSelect: (event: React.MouseEvent) => void;
 }) {
-  const facts = factsLine(item);
   return (
     <div
       className={`flex w-full cursor-grab items-center gap-3 rounded-md border px-3 py-1.5 text-sm transition-colors ${
@@ -163,36 +198,44 @@ function ListRow({
       onClick={onSelect}
       {...dragProps(item)}
     >
-      <span className="w-12 shrink-0 truncate text-[11px] font-semibold text-ink-muted">
-        {extLabel(item.fileName)}
+      <span className="w-14 shrink-0 truncate text-[11px] font-semibold text-ink-muted">
+        {extOf(item.fileName).toUpperCase() || extLabel(item.fileName)}
       </span>
       <span className="min-w-0 flex-1 truncate text-ink" title={item.fileName}>
         {item.fileName}
+        {item.hasCompanions ? (
+          <span
+            className="ml-2 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink-muted"
+            title="Has a paired companion file (RAW/sidecar) — every action includes it"
+          >
+            pair
+          </span>
+        ) : null}
+        {item.copyCount > 1 ? (
+          <span className="ml-2 rounded-md bg-primary-surface px-1.5 py-0.5 text-[11px] font-medium text-primary">
+            ×{item.copyCount}
+          </span>
+        ) : null}
       </span>
-      {item.hasCompanions ? (
-        <span
-          className="shrink-0 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink-muted"
-          title="Has a paired companion file (RAW/sidecar) — every action includes it"
-        >
-          pair
-        </span>
-      ) : null}
-      {item.copyCount > 1 ? (
-        <span className="shrink-0 rounded-md bg-primary-surface px-1.5 py-0.5 text-[11px] font-medium text-primary">
-          ×{item.copyCount}
-        </span>
-      ) : null}
-      <span className="shrink-0 tabular-nums text-xs text-ink-muted">{facts}</span>
+      <span className="w-20 shrink-0 text-right tabular-nums text-xs text-ink-muted">
+        {item.byteSize !== null ? formatBytes(item.byteSize) : ""}
+      </span>
+      <span className="w-36 shrink-0 truncate tabular-nums text-xs text-ink-muted">
+        {item.resolvedUtcMs !== null ? formatLocalMinute(item.resolvedUtcMs) : "—"}
+      </span>
+      {/* dir="rtl" keeps the DEEP end of a long path visible — the part that
+          distinguishes two folders is the tail, not the shared root. */}
+      <span
+        dir="rtl"
+        className="w-56 shrink-0 truncate text-left text-xs text-ink-muted"
+        title={item.dirPath}
+      >
+        {item.dirPath}
+      </span>
     </div>
   );
 }
 
-const SORT_LABELS: Record<SortOrder, string> = {
-  time: "Time taken",
-  name: "Name",
-  size: "Size",
-  resolution: "Resolution",
-};
 
 export default function Grid({
   items,
@@ -215,8 +258,12 @@ export default function Grid({
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
-  const sortOrder = useItemsStore((s) => s.sortOrder);
+  const lane = layout === "list" ? "other" : "media";
+  const sortOrder = useItemsStore((s) =>
+    lane === "other" ? s.sortOrders.other : s.sortOrders.media,
+  );
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
+  const sortCatalogue = SORT_ORDERS[lane];
 
   // The grid is ONE composite control: the scroll container is the single tab
   // stop (active-descendant style — selection state lives in the store, never
@@ -412,13 +459,18 @@ export default function Grid({
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value as SortOrder)}
         >
-          {(Object.keys(SORT_LABELS) as SortOrder[]).map((order) => (
+          {(Object.keys(sortCatalogue.orders) as SortOrder[]).map((order) => (
             <option key={order} value={order}>
-              {SORT_LABELS[order]}
+              {sortCatalogue.orders[order]}
             </option>
           ))}
         </select>
       </div>
+      {layout === "list" ? (
+        // The table header lives OUTSIDE the scroll container, so the
+        // virtualization geometry below never has to account for it.
+        <ListHeader sortOrder={sortOrder} onSort={setSortOrder} />
+      ) : null}
       <div
         ref={containerRef}
         tabIndex={0}

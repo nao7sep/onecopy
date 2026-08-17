@@ -44,7 +44,7 @@ function selectAll(keys: string[]): void {
     selectedKeys: new Set(keys),
     rangeOrigin: keys[0] ?? null,
     rangeBase: new Set(keys),
-    sortOrder: "time",
+    sortOrders: { media: "time", other: "name" },
     loading: false,
     detail: null,
     message: null,
@@ -173,5 +173,48 @@ describe("outcome reporting", () => {
 
     expect(movedHashes()).toHaveLength(0);
     expect(useDestinationsStore.getState().message).toMatch(/select an item/i);
+  });
+});
+
+describe("a folder created inside the app is immediately usable", () => {
+  it("expands the parent and actives the new folder", async () => {
+    // The developer's report: "even if we make a subfolder, it won't be shown
+    // like a tree". The folder existed on disk; the tree could not show it.
+    mockCommands({
+      create_subdir: () => "/dest/photos/2026",
+      list_subdirs: () => [{ name: "2026", path: "/dest/photos/2026", hasChildren: false }],
+      dir_is_empty: () => true,
+    });
+    useDestinationsStore.setState({
+      roots: ["/dest/photos"],
+      children: {},
+      expanded: new Set(),
+      activePath: "/dest/photos",
+    });
+
+    await useDestinationsStore.getState().createFolder("/dest/photos", "2026");
+
+    const state = useDestinationsStore.getState();
+    expect(state.children["/dest/photos"]?.map((c) => c.name)).toEqual(["2026"]);
+    expect(state.expanded.has("/dest/photos")).toBe(true);
+    expect(state.activePath).toBe("/dest/photos/2026");
+  });
+});
+
+describe("expandability reads the live children map", () => {
+  it("a leaf that gained a child becomes expandable without re-listing its parent", async () => {
+    const { nodeHasChildren } = await import("../../src/components/DestinationsTab");
+    // The grandparent's listing said "no children" when it was true...
+    const entry = { path: "/dest/photos/2026", hasChildren: false };
+    // ...but the node has since been listed itself and HAS one.
+    const children = {
+      "/dest/photos/2026": [
+        { name: "spain", path: "/dest/photos/2026/spain", hasChildren: false },
+      ],
+    };
+    expect(nodeHasChildren(entry, children)).toBe(true);
+    // Unlisted nodes still trust the snapshot, in both directions.
+    expect(nodeHasChildren({ path: "/x", hasChildren: true }, {})).toBe(true);
+    expect(nodeHasChildren({ path: "/x", hasChildren: false }, {})).toBe(false);
   });
 });

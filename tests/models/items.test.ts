@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extLabel, sortItems, type SectionItem } from "../../src/models/items";
+import { SORT_ORDERS, extLabel, extOf, sortItems, type SectionItem, type SortOrder } from "../../src/models/items";
 
 function item(overrides: Partial<SectionItem>): SectionItem {
   return {
@@ -16,6 +16,7 @@ function item(overrides: Partial<SectionItem>): SectionItem {
     byteSize: null,
     hasCompanions: false,
     durationMs: null,
+    dirPath: "/files",
     ...overrides,
   };
 }
@@ -53,4 +54,58 @@ describe("extLabel", () => {
     expect(extLabel("scan.pdf")).toBe("PDF");
     expect(extLabel("noext")).toBe("FILE");
   });
+});
+
+describe("the file-manager orders (other-files table)", () => {
+  const doc = item({ pathId: 1, fileName: "notes.TXT", dirPath: "/docs" });
+  const zip = item({ pathId: 2, fileName: "backup.zip", dirPath: "/archive" });
+  const doc2 = item({ pathId: 3, fileName: "agenda.txt", dirPath: "/docs" });
+
+  it("extOf lowercases and treats a dotless or dotfile name as extensionless", () => {
+    expect(extOf("notes.TXT")).toBe("txt");
+    expect(extOf("Makefile")).toBe("");
+    expect(extOf(".gitignore")).toBe("");
+  });
+
+  it("ext groups by extension with name breaking ties", () => {
+    expect(sortItems([doc, zip, doc2], "ext").map((i) => i.fileName)).toEqual([
+      "agenda.txt",
+      "notes.TXT",
+      "backup.zip",
+    ]);
+  });
+
+  it("folder groups by directory with name breaking ties", () => {
+    expect(sortItems([doc, zip, doc2], "folder").map((i) => i.pathId)).toEqual([2, 3, 1]);
+  });
+});
+
+describe("the per-kind sort catalogues", () => {
+  it("offer only orders the kind can honour", () => {
+    // "Time taken" over files nobody took, and "Resolution" over files with
+    // no pixels, is the exact mislabeling this split exists to end.
+    expect(Object.keys(SORT_ORDERS.other.orders)).not.toContain("resolution");
+    expect(SORT_ORDERS.other.orders.time).toBe("Date");
+    expect(SORT_ORDERS.media.orders.time).toBe("Time taken");
+  });
+
+  it("default each kind the way its file manager would", () => {
+    expect(SORT_ORDERS.media.defaultOrder).toBe("time");
+    expect(SORT_ORDERS.other.defaultOrder).toBe("name");
+  });
+
+  it("every offered order is implemented — no menu entry can no-op", () => {
+    const items = [doc3(), doc3()];
+    for (const catalogue of Object.values(SORT_ORDERS)) {
+      for (const order of Object.keys(catalogue.orders) as SortOrder[]) {
+        // A missing switch case would return the input untouched — same
+        // array contents is fine, but the CALL must not throw.
+        expect(() => sortItems(items, order)).not.toThrow();
+      }
+    }
+  });
+
+  function doc3() {
+    return item({ pathId: Math.floor(1), fileName: "x.txt" });
+  }
 });

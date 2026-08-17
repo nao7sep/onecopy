@@ -119,6 +119,10 @@ pub struct SectionItem {
     pub byte_size: Option<i64>,
     pub has_companions: bool,
     pub duration_ms: Option<i64>,
+    /// The representative copy's directory, display-stripped (`for_display`,
+    /// like copy_paths) — the other-files table sorts and shows a Folder
+    /// column, and `\\?\` is not a folder anyone recognises.
+    pub dir_path: String,
 }
 
 /// Items of one (kind, month) section, oldest first; `month` is the same key
@@ -147,7 +151,7 @@ pub fn section_items(
                  EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                          WHERE pri.content_hash = c.hash AND comp.missing = 0 \
                            AND pri.missing = 0), \
-                 c.duration_ms \
+                 c.duration_ms, MIN(p.dir_path) \
                  FROM contents c JOIN paths p ON p.content_hash = c.hash \
                  WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
                  GROUP BY c.hash",
@@ -169,6 +173,7 @@ pub fn section_items(
             Option<i64>,
             bool,
             Option<i64>,
+            String,
         )> = stmt
             .query_map([kind], |r| {
                 Ok((
@@ -186,6 +191,7 @@ pub fn section_items(
                     r.get(11)?,
                     r.get(12)?,
                     r.get(13)?,
+                    r.get(14)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -208,6 +214,7 @@ pub fn section_items(
             byte_size,
             has_companions,
             duration_ms,
+            dir_path,
         ) in rows
         {
             let item_month = match min_ms {
@@ -229,6 +236,7 @@ pub fn section_items(
                     byte_size,
                     has_companions,
                     duration_ms,
+                    dir_path: crate::winpath::for_display(&dir_path).into_owned(),
                 });
             }
         }
@@ -241,14 +249,15 @@ pub fn section_items(
                    (SELECT COUNT(*) FROM paths cp \
                     WHERE cp.content_hash = p.content_hash AND cp.missing = 0) END, \
                  SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
-                 MIN(p.size) \
+                 MIN(p.size), MIN(p.dir_path) \
                  FROM paths p \
                  WHERE p.missing = 0 AND p.companion_of IS NULL \
                    AND p.kind NOT IN ('image', 'video') \
                  GROUP BY COALESCE(p.content_hash, 'path:' || p.id)",
             )
             .map_err(|e| e.to_string())?;
-        let rows: Vec<(Option<String>, i64, String, Option<i64>, i64, i64, Option<i64>)> = stmt
+        let rows: Vec<(Option<String>, i64, String, Option<i64>, i64, i64, Option<i64>, String)> =
+            stmt
             .query_map([], |r| {
                 Ok((
                     r.get(0)?,
@@ -258,6 +267,7 @@ pub fn section_items(
                     r.get(4)?,
                     r.get(5)?,
                     r.get(6)?,
+                    r.get(7)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -265,7 +275,9 @@ pub fn section_items(
             .collect();
         drop(stmt);
 
-        for (hash, path_id, file_name, min_ms, copies, resolved_count, byte_size) in rows {
+        for (hash, path_id, file_name, min_ms, copies, resolved_count, byte_size, dir_path) in
+            rows
+        {
             let item_month = match min_ms {
                 Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
                 _ => "undated".to_string(),
@@ -285,6 +297,7 @@ pub fn section_items(
                     byte_size,
                     has_companions: false,
                     duration_ms: None,
+                    dir_path: crate::winpath::for_display(&dir_path).into_owned(),
                 });
             }
         }

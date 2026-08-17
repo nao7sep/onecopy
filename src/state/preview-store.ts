@@ -83,14 +83,20 @@ async function ensurePreviewWindow(): Promise<void> {
     previewWindowOpen = true;
     return;
   }
-  // Created RAISED — a window that opens behind the main window is a bug the
-  // user reads as "nothing happened" (and did). The keyboard goes straight
-  // back to the main window below, so arrow culling never breaks.
+  // Created ALWAYS-ON-TOP — the comparison windows' pattern, and the design's
+  // literal contract ("the preview window FRONTS itself when activated").
+  // Raising by focus could not deliver that: setFocus(preview) followed by
+  // setFocus(main) — the hand-the-keyboard-back half — raised MAIN over an
+  // overlapping preview, so on one screen Space appeared to do nothing.
+  // Always-on-top keeps the surface visible above the main window while the
+  // keyboard NEVER leaves the grid, which is the actual requirement; no focus
+  // ever moves to this window except by the user's own click.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
     title: "OneCopy Preview",
     width: 1280,
     height: 800,
+    alwaysOnTop: true,
   });
   await new Promise<void>((resolve, reject) => {
     void window.once("tauri://created", () => resolve());
@@ -129,14 +135,16 @@ async function ensurePreviewWindow(): Promise<void> {
   }
 }
 
-/** Reveals an already-existing preview window: raised above the main window,
- * keyboard handed straight back. The reuse counterpart of the raised create. */
+/** Reveals an already-existing preview window. Always-on-top does the raising
+ * (see the creation site), so revealing is just `show()` — the old
+ * focus-the-preview-then-refocus-main dance is gone, because its second step
+ * raised MAIN over an overlapping preview and made Space look dead. A window
+ * created by an older build without the flag is upgraded in passing. */
 async function frontPreviewWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview").catch(() => null);
   if (existing === null) return;
+  await existing.setAlwaysOnTop(true).catch(reportWindowCall("preview setAlwaysOnTop"));
   await existing.show().catch(reportWindowCall("preview show"));
-  await existing.setFocus().catch(reportWindowCall("preview setFocus"));
-  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
 }
 
 // ---- Follow throttle ------------------------------------------------------
@@ -251,13 +259,20 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     if (!follow) return;
     const next = resolvePlacement(preference);
     if (next === placement) return;
-    // Moving between placements tears the old one down first: leaving the
-    // preview window open behind a split pane would show the same photo twice
-    // and keep a window the user just asked to be rid of.
+    // The new placement is published BEFORE the old window is torn down.
+    // The order is load-bearing: the preview window's tauri://destroyed
+    // handler treats "destroyed while placement is still 'window'" as the
+    // user closing the window and turns follow OFF — so closing first made
+    // every window→inline switch read as a manual close and disabled the
+    // preview the user was in the middle of moving. With placement already
+    // "split", that handler stands down and follow survives the switch.
+    set({ placement: next });
+    // Tearing the old surface down still happens: leaving the preview window
+    // open behind a split pane would show the same photo twice and keep a
+    // window the user just asked to be rid of.
     if (placement === "window") {
       await WebviewWindow.getByLabel("preview").then((w) => w?.close());
     }
-    set({ placement: next });
     if (next === "window" && current !== null) {
       await ensurePreviewWindow();
       await frontPreviewWindow();

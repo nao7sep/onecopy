@@ -7,8 +7,9 @@
 // itself fetches nothing.
 
 import { useEffect, useRef, useState } from "react";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import { hasOpenModal } from "../utils/modalStack";
+import { log, toErrorFields } from "../repositories";
 import { isEditableTarget } from "../utils/shortcuts";
 import {
   isAudioFile,
@@ -95,8 +96,12 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
       <button
         className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-3 text-sm font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
         onClick={() => {
-          const path = detail.copyPaths[0];
-          if (path) void openPath(path);
+          // The core resolves the hash to a live copy itself — the JS opener
+          // route was scope-rejected into a silent no-op, so this button did
+          // nothing for the exact user it exists for (unplayable codec).
+          void invoke("open_item_externally", { hash }).catch((error) =>
+            log.warn("open in player failed", toErrorFields(error)),
+          );
         }}
       >
         Open in player
@@ -117,21 +122,42 @@ function ImageSurface({
   fileName: string;
   startZoomed?: boolean;
 }) {
-  const [failed, setFailed] = useState(false);
-  if (failed) {
-    return (
-      <p className="text-sm text-ink-muted">
-        No preview yet — not derived, or this format cannot be decoded.
-      </p>
-    );
+  // A missing cache entry is USUALLY just a photo the scan's bulk pass has
+  // not reached (it runs walk-order; on a slow machine the tail is hours
+  // away), so the first failure asks the core to derive THIS one now and
+  // retries once. Only when that also fails does the surface settle on words
+  // — the core's own reason, which knows "install ffmpeg" from "broken file".
+  const [phase, setPhase] = useState<
+    { kind: "showing"; attempt: number } | { kind: "converting" } | { kind: "failed"; reason: string }
+  >({ kind: "showing", attempt: 0 });
+  if (phase.kind === "converting") {
+    return <p className="text-sm text-ink-muted">Converting…</p>;
+  }
+  if (phase.kind === "failed") {
+    return <p className="text-sm text-ink-muted">{phase.reason}</p>;
   }
   return (
     <ZoomableImage
-      key={hash}
+      key={`${hash}-${phase.attempt}`}
       hash={hash}
       fileName={fileName}
       startZoomed={startZoomed}
-      onError={() => setFailed(true)}
+      onError={() => {
+        if (phase.attempt > 0) {
+          setPhase({
+            kind: "failed",
+            reason: "No preview yet — not derived, or this format cannot be decoded.",
+          });
+          return;
+        }
+        setPhase({ kind: "converting" });
+        invoke("ensure_preview", { hash })
+          .then(() => setPhase({ kind: "showing", attempt: 1 }))
+          .catch((error) => {
+            log.warn("on-demand preview derive failed", toErrorFields(error));
+            setPhase({ kind: "failed", reason: String(error) });
+          });
+      }}
     />
   );
 }

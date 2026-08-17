@@ -88,6 +88,12 @@ pub struct DefaultConfig {
     pub keep_awake_during_indexing: bool,
     /// Read-back verification of every copy/move-out against the indexed hash.
     pub verify_after_copy: bool,
+    /// Confirm ordinary Delete/Backspace trash-deletes in the grid. OFF by
+    /// default (developer, 2026-08-17): the trash is the net, and a dialog on
+    /// every Delete would break the keystroke-paced cull — but a deliberate
+    /// user can opt into the extra stop. Permanent deletion always confirms
+    /// regardless; that rule is not configurable.
+    pub confirm_trash_delete: bool,
     /// Source directories to scan (wizard-configured; absolute paths).
     pub source_dirs: Vec<String>,
     /// Destination roots for the move/copy-out tree (absolute paths).
@@ -123,6 +129,7 @@ impl Default for DefaultConfig {
             cache_dir: None,
             keep_awake_during_indexing: true,
             verify_after_copy: true,
+            confirm_trash_delete: false,
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),
         }

@@ -28,6 +28,7 @@ export interface SettingsDraft {
   uiFontFamily: string;
   keepAwakeDuringIndexing: boolean;
   verifyAfterCopy: boolean;
+  confirmTrashDelete: boolean;
   cacheDir: string | null;
   sourceDirs: string[];
 }
@@ -62,6 +63,8 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     uiFontFamily: typeof config?.uiFontFamily === "string" ? config.uiFontFamily : "",
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
     verifyAfterCopy: config?.verifyAfterCopy !== false,
+    // Opt-in, so absence means OFF — the opposite polarity of the two above.
+    confirmTrashDelete: config?.confirmTrashDelete === true,
     cacheDir:
       typeof config?.cacheDir === "string" && config.cacheDir.trim() !== ""
         ? config.cacheDir

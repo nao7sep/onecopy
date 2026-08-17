@@ -26,6 +26,11 @@ export default function ShortcutsModal({
         <section key={group.title} className="mb-5 last:mb-0">
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {group.title}
+            {/* The scope, stated: a chord pressed with the wrong surface
+                focused looks broken rather than scoped. */}
+            <span className="ml-2 font-normal normal-case tracking-normal text-ink-muted/70">
+              {group.context}
+            </span>
           </h2>
           <dl className="space-y-1">
             {group.rows.map((row) => (

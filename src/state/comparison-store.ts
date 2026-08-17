@@ -226,8 +226,22 @@ export function perScreenCapacity(members: GroupMember[]): number {
  *
  * Best-effort: a machine with one monitor keeps the single-window form and all
  * 16 keys. */
+/** How many screens this family actually fills. A 6-member family on three
+ * 4-slot screens is 4 + 2 + NOTHING — and a spread window with nothing to
+ * show must not open at all: an empty always-on-top surface covering a whole
+ * monitor is not a comparison aid, it is a curtain. Never below 1 (the main
+ * window always hosts chunk 0), never above what exists. */
+export function screensNeeded(
+  memberCount: number,
+  perScreen: number,
+  available: number,
+): number {
+  return Math.min(available, Math.max(1, Math.ceil(memberCount / perScreen)));
+}
+
 async function resolveSpread(
   perScreen: number,
+  memberCount: number,
 ): Promise<{ others: Awaited<ReturnType<typeof availableMonitors>>; capacities: number[] }> {
   try {
     // `others` is every monitor EXCEPT the one hosting the main window —
@@ -245,10 +259,16 @@ async function resolveSpread(
     );
     const hosting = await currentMonitor().catch(() => null);
     const hostKey = hosting !== null ? monitorKey(hosting) : null;
-    const others =
+    const eligible =
       hostKey === null
         ? monitors.slice(1)
         : monitors.filter((m) => monitorKey(m) !== hostKey);
+    // Only as many screens as the family fills (screensNeeded's contract);
+    // priority order decides WHICH of the eligible monitors join.
+    const others = eligible.slice(
+      0,
+      screensNeeded(memberCount, perScreen, eligible.length + 1) - 1,
+    );
     return {
       others,
       capacities:
@@ -367,7 +387,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // publish the state, and only THEN create the windows — a window that
       // announces itself must find a session already open to be answered.
       const perScreen = perScreenCapacity(members);
-      const { others, capacities } = await resolveSpread(perScreen);
+      const { others, capacities } = await resolveSpread(perScreen, members.length);
       const size = turnSize(capacities);
       set({
         open: true,

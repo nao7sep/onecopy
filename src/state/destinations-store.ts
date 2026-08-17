@@ -52,6 +52,10 @@ interface DestinationsState {
   removeRoot: (root: string) => Promise<void>;
   toggleExpand: (path: string) => Promise<void>;
   refreshNode: (path: string) => Promise<void>;
+  /** Re-lists every expanded node (and re-probes emptiness) — the pane calls
+   * this on mount and when the app window regains focus, so a folder created
+   * in Finder/Explorer appears without a restart. */
+  refreshExpanded: () => Promise<void>;
   createFolder: (parent: string, name: string) => Promise<void>;
   deleteFolder: (path: string, parent: string) => Promise<void>;
   moveSelectionTo: (
@@ -166,11 +170,27 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     }
   },
 
+  refreshExpanded: async () => {
+    // Everything expanded — roots and subdirectories alike — re-lists; a
+    // collapsed node re-lists on its next expand anyway.
+    for (const path of get().expanded) {
+      await get().refreshNode(path);
+    }
+  },
+
   createFolder: async (parent, name) => {
     try {
-      await invoke<string>("create_subdir", { parent, name });
+      const created = await invoke<string>("create_subdir", { parent, name });
       await get().refreshNode(parent);
-      set({ message: "" });
+      // The new folder must be VISIBLE and active immediately — before this,
+      // a subfolder made under a collapsed leaf existed only on disk (the
+      // leaf's stale hasChildren said there was nothing to expand) and the
+      // developer read the feature as broken.
+      set({
+        expanded: new Set(get().expanded).add(parent),
+        activePath: created,
+        message: "",
+      });
     } catch (error) {
       set({ message: String(error) });
     }

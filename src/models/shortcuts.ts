@@ -19,6 +19,10 @@ export interface ShortcutRow {
 
 export interface ShortcutGroup {
   title: string;
+  /** Where these chords fire — every group is scoped to a focused surface,
+   * and the unstated scope was the one gap in an otherwise-pinned catalogue:
+   * a chord pressed with the wrong surface focused looks broken, not scoped. */
+  context: string;
   rows: ShortcutRow[];
 }
 
@@ -27,6 +31,7 @@ export function shortcutGroups(): ShortcutGroup[] {
   return [
     {
       title: "Browsing",
+      context: "when the photo grid has focus",
       rows: [
         { chord: "Arrows", action: "Move the selection" },
         { chord: "Home / End", action: "First or last item" },
@@ -38,6 +43,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     },
     {
       title: "Looking",
+      context: "anywhere in the main window",
       rows: [
         { chord: "Space", action: "Show or hide the preview (plays/pauses a loaded video)" },
         { chord: "P", action: "Show or hide the preview" },
@@ -49,6 +55,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     },
     {
       title: "Culling",
+      context: "when the photo grid has focus",
       rows: [
         { chord: "Delete / Backspace", action: "Trash the item and every copy" },
         { chord: "Shift+Delete", action: "Delete permanently, after confirming" },
@@ -56,6 +63,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     },
     {
       title: "Comparison view",
+      context: "while a comparison is open",
       rows: [
         { chord: "1–9 / 0 / A–F", action: "Keep the photo in that slot" },
         { chord: "Shift+1–9/0/A–F", action: "Not similar — remove that slot from the set (never deletes)" },
@@ -67,6 +75,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     },
     {
       title: "Destinations tree",
+      context: "when the destinations tree has focus",
       rows: [
         { chord: "Enter", action: "Move the selection here, trash the other copies" },
         { chord: "Shift+Enter", action: "Move here, permanently delete the rest" },
@@ -75,6 +84,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     },
     {
       title: "App",
+      context: "anywhere",
       rows: [
         { chord: `${mod}+Comma`, action: "Settings" },
         { chord: `${mod}+Slash / Question`, action: "This help" },

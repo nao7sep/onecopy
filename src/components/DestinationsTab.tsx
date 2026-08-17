@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useDestinationsStore,
   type DirEntry,
@@ -6,6 +6,17 @@ import {
 } from "../state/destinations-store";
 import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
 import ConfirmDialog from "./ConfirmDialog";
+
+// The right pane's destination tree, mirroring the sidebar's interaction
+// (redesigned 2026-08-17, developer-approved): one composite tree with the
+// sidebar's chevrons and rows, NO hover buttons and NO per-row buttons — the
+// commands live in one persistent action bar under the tree, acting on the
+// active row. Hover-revealed controls existed nowhere else in the app, they
+// hid the Copy command well enough that the developer asked for it as a
+// missing feature, and their width stole the path's. Root rows carry their
+// full path as a second muted line; every other row is single-line,
+// full-width. Move/copy work on ANY row — a root (the developer sorts the
+// rest by hand) or a subfolder, recursively discovered.
 
 type MoveModifiers = Pick<
   KeyboardEvent,
@@ -23,6 +34,18 @@ export function keyboardMoveMode(event: MoveModifiers): MoveMode | null {
   if (event.metaKey || event.ctrlKey) return "copy";
   if (event.shiftKey) return "move-delete-rest";
   return "move-trash-rest";
+}
+
+/** Expandability from the LIVE children map first, the listing's flag second.
+ * The listing's `hasChildren` is a snapshot taken when the PARENT was listed
+ * — after "New subfolder" inside a leaf it still says false, which is exactly
+ * how a freshly created folder used to be invisible until restart. */
+export function nodeHasChildren(
+  entry: { path: string; hasChildren: boolean },
+  children: Record<string, DirEntry[]>,
+): boolean {
+  const listed = children[entry.path];
+  return listed !== undefined ? listed.length > 0 : entry.hasChildren;
 }
 
 function useDropHandlers(path: string) {
@@ -47,113 +70,18 @@ function useDropHandlers(path: string) {
   };
 }
 
-// The right pane's destination tree. Empty folders render dimmed-italic (they
-// are the only deletable ones); "Move here" trashes the remaining copies,
-// Shift-click deletes them permanently, "Copy" touches nothing else.
-
-function NodeActions({
-  path,
-  parent,
-  isEmpty,
-  isActive,
-}: {
-  path: string;
-  parent: string | null;
-  isEmpty: boolean;
-  isActive: boolean;
-}) {
-  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
-  const deleteFolder = useDestinationsStore((s) => s.deleteFolder);
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
-  const createFolder = useDestinationsStore((s) => s.createFolder);
-  const { composingRef, handlers: composingHandlers } = useComposing();
-
-  return (
-    <span
-      className={`ml-1 shrink-0 gap-1 text-xs ${
-        isActive ? "inline-flex" : "hidden group-hover:inline-flex"
-      }`}
-    >
-      <button
-        tabIndex={-1}
-        className="rounded-md px-1.5 py-0.5 text-primary transition-colors hover:bg-primary-surface"
-        title="Move the selected item here; its other copies go to trash. Shift-click: delete them permanently."
-        onClick={(e) =>
-          void moveSelectionTo(path, e.shiftKey ? "move-delete-rest" : "move-trash-rest")
-        }
-      >
-        Move here
-      </button>
-      <button
-        tabIndex={-1}
-        className="rounded-md px-1.5 py-0.5 text-ink transition-colors hover:bg-surface-muted"
-        title="Copy the selected item here; nothing else is touched."
-        onClick={() => void moveSelectionTo(path, "copy")}
-      >
-        Copy
-      </button>
-      {creating ? (
-        <input
-          autoFocus
-          className="h-7 w-28 rounded-md border border-border bg-background px-2 text-ink outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
-          value={name}
-          placeholder="folder name"
-          onChange={(e) => setName(e.target.value)}
-          {...composingHandlers}
-          onKeyDown={(e) => {
-            // Enter/Escape during IME composition belong to the IME: Enter
-            // confirms the candidate (never commits a half-resolved name to
-            // disk), Escape cancels it (never destroys the edit).
-            if (isComposingKeyboardEvent(composingRef, e)) {
-              e.stopPropagation();
-              return;
-            }
-            const tree = e.currentTarget.closest('[role="tree"]') as HTMLElement | null;
-            if (e.key === "Enter" && name.trim() !== "") {
-              void createFolder(path, name.trim());
-              setCreating(false);
-              setName("");
-              requestAnimationFrame(() => tree?.focus());
-            } else if (e.key === "Escape") {
-              setCreating(false);
-              setName("");
-              requestAnimationFrame(() => tree?.focus());
-            }
-            e.stopPropagation();
-          }}
-        />
-      ) : (
-        <button
-          tabIndex={-1}
-          className="rounded-md px-1.5 py-0.5 text-ink transition-colors hover:bg-surface-muted"
-          title="New subfolder"
-          onClick={() => setCreating(true)}
-        >
-          +
-        </button>
-      )}
-      {isEmpty && parent !== null ? (
-        <button
-          tabIndex={-1}
-          className="rounded-md px-1.5 py-0.5 text-danger transition-colors hover:bg-danger-surface"
-          title="Delete this empty folder"
-          onClick={() => void deleteFolder(path, parent)}
-        >
-          ✕
-        </button>
-      ) : null}
-    </span>
-  );
+/** The last path segment — the row label for roots. */
+function leafName(path: string): string {
+  const trimmed = path.replace(/[/\\]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut >= 0 ? trimmed.slice(cut + 1) || trimmed : trimmed;
 }
 
 function DirNode({
   entry,
-  parent,
   depth,
 }: {
   entry: DirEntry;
-  parent: string;
   depth: number;
 }) {
   const expanded = useDestinationsStore((s) => s.expanded);
@@ -162,6 +90,7 @@ function DirNode({
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
   const isOpen = expanded.has(entry.path);
   const isEmpty = emptiness[entry.path] === true;
+  const hasChildren = nodeHasChildren(entry, children);
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const isActive = activePath === entry.path;
@@ -172,11 +101,11 @@ function DirNode({
       id={`tree-${encodeURIComponent(entry.path)}`}
       role="treeitem"
       aria-selected={isActive}
-      aria-expanded={entry.hasChildren ? isOpen : undefined}
+      aria-expanded={hasChildren ? isOpen : undefined}
     >
       <div
         data-tree-path={entry.path}
-        className={`group flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
+        className={`flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
           dropReady || isActive
             ? "bg-primary-surface ring-1 ring-primary-ring"
             : "hover:bg-surface-muted"
@@ -189,9 +118,9 @@ function DirNode({
           tabIndex={-1}
           className="w-4 shrink-0 text-ink-muted"
           onClick={() => void toggleExpand(entry.path)}
-          title={entry.hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
+          title={hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
         >
-          {entry.hasChildren ? (isOpen ? "▾" : "▸") : "·"}
+          {hasChildren ? (isOpen ? "▾" : "▸") : "·"}
         </button>
         <span
           className={`min-w-0 flex-1 truncate ${
@@ -201,12 +130,67 @@ function DirNode({
         >
           {entry.name}
         </span>
-        <NodeActions path={entry.path} parent={parent} isEmpty={isEmpty} isActive={isActive} />
       </div>
       {isOpen ? (
         <ul role="group">
           {(children[entry.path] ?? []).map((child) => (
-            <DirNode key={child.path} entry={child} parent={entry.path} depth={depth + 1} />
+            <DirNode key={child.path} entry={child} depth={depth + 1} />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
+  const children = useDestinationsStore((s) => s.children);
+  const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
+  const activePath = useDestinationsStore((s) => s.activePath);
+  const setActive = useDestinationsStore((s) => s.setActive);
+  const isActive = activePath === root;
+  const { dropReady, handlers } = useDropHandlers(root);
+  return (
+    <li
+      id={`tree-${encodeURIComponent(root)}`}
+      className="mb-1"
+      role="treeitem"
+      aria-selected={isActive}
+      aria-expanded={isOpen}
+    >
+      <div
+        data-tree-path={root}
+        className={`flex items-start rounded-md px-1.5 py-1 text-sm transition-colors ${
+          dropReady || isActive
+            ? "bg-primary-surface ring-1 ring-primary-ring"
+            : "hover:bg-surface-muted"
+        }`}
+        onClick={() => setActive(root)}
+        {...handlers}
+      >
+        <button
+          tabIndex={-1}
+          className="w-4 shrink-0 pt-0.5 text-ink-muted"
+          onClick={() => void toggleExpand(root)}
+        >
+          {isOpen ? "▾" : "▸"}
+        </button>
+        {/* Roots get TWO lines — name, then the full path in muted small
+            text. Only here: a root is where truncation actually hurt (the
+            path IS its identity), while hundreds of subfolder rows doubling
+            in height would halve the visible tree. */}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium text-ink-strong">
+            {leafName(root)}
+          </span>
+          <span className="block truncate text-[11px] text-ink-muted" title={root}>
+            {root}
+          </span>
+        </span>
+      </div>
+      {isOpen ? (
+        <ul>
+          {(children[root] ?? []).map((child) => (
+            <DirNode key={child.path} entry={child} depth={1} />
           ))}
         </ul>
       ) : null}
@@ -233,12 +217,128 @@ function visibleRows(
     rows.push({ path, parent, hasChildren, isExpanded });
     if (isExpanded) {
       for (const child of children[path] ?? []) {
-        walk(child.path, path, child.hasChildren);
+        walk(child.path, path, nodeHasChildren(child, children));
       }
     }
   };
   for (const root of roots) walk(root, null, true);
   return rows;
+}
+
+/** The persistent command bar under the tree: every command the old hover
+ * buttons carried, acting on the ACTIVE row, always visible at full width. */
+function ActionBar() {
+  const activePath = useDestinationsStore((s) => s.activePath);
+  const roots = useDestinationsStore((s) => s.roots);
+  const emptiness = useDestinationsStore((s) => s.emptiness);
+  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
+  const createFolder = useDestinationsStore((s) => s.createFolder);
+  const deleteFolder = useDestinationsStore((s) => s.deleteFolder);
+  const removeRoot = useDestinationsStore((s) => s.removeRoot);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const { composingRef, handlers: composingHandlers } = useComposing();
+
+  if (activePath === null) {
+    return (
+      <p className="mt-2 shrink-0 text-xs text-ink-muted">
+        Select a folder to move or copy into it.
+      </p>
+    );
+  }
+  const isRoot = roots.includes(activePath);
+  const parent = isRoot
+    ? null
+    : activePath.slice(
+        0,
+        Math.max(activePath.lastIndexOf("/"), activePath.lastIndexOf("\\")),
+      );
+
+  const button =
+    "inline-flex h-7 items-center rounded-md px-2 text-xs font-medium transition-colors";
+
+  return (
+    <div className="mt-2 shrink-0 border-t border-border pt-2">
+      <p className="mb-1 truncate text-[11px] text-ink-muted" title={activePath}>
+        {leafName(activePath)}
+      </p>
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          className={`${button} text-primary hover:bg-primary-surface`}
+          title="Move the selection here; its other copies go to trash (Enter). Shift: delete them permanently."
+          onClick={(e) =>
+            void moveSelectionTo(
+              activePath,
+              e.shiftKey ? "move-delete-rest" : "move-trash-rest",
+            )
+          }
+        >
+          Move here
+        </button>
+        <button
+          className={`${button} text-ink hover:bg-surface-muted`}
+          title="Copy the selection here; nothing else is touched (Cmd/Ctrl+Enter)"
+          onClick={() => void moveSelectionTo(activePath, "copy")}
+        >
+          Copy here
+        </button>
+        {creating ? (
+          <input
+            autoFocus
+            className="h-7 w-32 rounded-md border border-border bg-background px-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
+            value={name}
+            placeholder="folder name"
+            onChange={(e) => setName(e.target.value)}
+            {...composingHandlers}
+            onKeyDown={(e) => {
+              // Enter/Escape during IME composition belong to the IME: Enter
+              // confirms the candidate (never commits a half-resolved name to
+              // disk), Escape cancels it (never destroys the edit).
+              if (isComposingKeyboardEvent(composingRef, e)) {
+                e.stopPropagation();
+                return;
+              }
+              if (e.key === "Enter" && name.trim() !== "") {
+                void createFolder(activePath, name.trim());
+                setCreating(false);
+                setName("");
+              } else if (e.key === "Escape") {
+                setCreating(false);
+                setName("");
+              }
+              e.stopPropagation();
+            }}
+          />
+        ) : (
+          <button
+            className={`${button} text-ink hover:bg-surface-muted`}
+            title="Create a subfolder inside this folder"
+            onClick={() => setCreating(true)}
+          >
+            New subfolder
+          </button>
+        )}
+        {!isRoot && emptiness[activePath] === true && parent !== null ? (
+          <button
+            className={`${button} text-danger hover:bg-danger-surface`}
+            title="Delete this empty folder"
+            onClick={() => void deleteFolder(activePath, parent)}
+          >
+            Delete empty
+          </button>
+        ) : null}
+        {isRoot ? (
+          <button
+            className={`${button} text-ink-muted hover:bg-surface-muted hover:text-ink`}
+            title="Remove this root from the list (the folder itself is untouched)"
+            onClick={() => void removeRoot(activePath)}
+          >
+            Remove root
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 export default function DestinationsTab() {
@@ -251,6 +351,16 @@ export default function DestinationsTab() {
   const setActive = useDestinationsStore((s) => s.setActive);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
   const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
+
+  // Folders created OUTSIDE the app (Finder, Explorer) appear when the pane
+  // mounts and whenever the app window regains focus — the exact moment a
+  // user returns from making 2026/, 2027/ by hand.
+  useEffect(() => {
+    void useDestinationsStore.getState().refreshExpanded();
+    const onFocus = () => void useDestinationsStore.getState().refreshExpanded();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   // One composite tree (the conventions' sibling pattern): the container is
   // the single tab stop, Up/Down move across visible rows, Right expands or
@@ -361,75 +471,10 @@ export default function DestinationsTab() {
           })
         )}
       </ul>
+      <ActionBar />
       {message !== "" ? (
         <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">{message}</p>
       ) : null}
     </div>
-  );
-}
-
-function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
-  const children = useDestinationsStore((s) => s.children);
-  const emptiness = useDestinationsStore((s) => s.emptiness);
-  const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
-  const removeRoot = useDestinationsStore((s) => s.removeRoot);
-  const activePath = useDestinationsStore((s) => s.activePath);
-  const setActive = useDestinationsStore((s) => s.setActive);
-  const isActive = activePath === root;
-  const { dropReady, handlers } = useDropHandlers(root);
-  return (
-    <li
-      id={`tree-${encodeURIComponent(root)}`}
-      className="mb-1"
-      role="treeitem"
-      aria-selected={isActive}
-      aria-expanded={isOpen}
-    >
-      <div
-        data-tree-path={root}
-        className={`group flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
-          dropReady || isActive
-            ? "bg-primary-surface ring-1 ring-primary-ring"
-            : "hover:bg-surface-muted"
-        }`}
-        onClick={() => setActive(root)}
-        {...handlers}
-      >
-                  <button
-                    tabIndex={-1}
-                    className="w-4 shrink-0 text-ink-muted"
-                    onClick={() => void toggleExpand(root)}
-                  >
-                    {isOpen ? "▾" : "▸"}
-                  </button>
-                  <span
-                    className="min-w-0 flex-1 truncate font-medium text-ink-strong"
-                    title={root}
-                  >
-                    {root}
-                  </span>
-                  <NodeActions
-                    path={root}
-                    parent={null}
-                    isEmpty={emptiness[root] === true}
-                    isActive={isActive}
-                  />
-                  <button
-                    tabIndex={-1}
-                    className="ml-1 hidden shrink-0 rounded-md px-1.5 py-0.5 text-xs text-ink-muted transition-colors group-hover:inline hover:bg-surface-muted hover:text-ink"
-                    title="Remove this root from the list (the folder itself is untouched)"
-                    onClick={() => void removeRoot(root)}
-                  >
-                    −
-                  </button>
-                </div>
-      {isOpen ? (
-        <ul>
-          {(children[root] ?? []).map((child) => (
-            <DirNode key={child.path} entry={child} parent={root} depth={1} />
-          ))}
-        </ul>
-      ) : null}
-    </li>
   );
 }

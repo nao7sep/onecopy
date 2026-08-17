@@ -474,6 +474,87 @@ pub struct DeriveStats {
 /// chunk so a long pass is visibly alive, and the scan cancel flag is honored
 /// between chunks: derived rows keep their checkpoint, undone rows resume on
 /// the next pass.
+/// The one success write-back for a derived image — the bulk pass and the
+/// on-demand single-item derive both land here, so the checkpoint semantics
+/// (facts, version stamp, retired decode-error issue) cannot drift between
+/// the two routes.
+fn record_derive_success(
+    conn: &Connection,
+    hash: &str,
+    path: &str,
+    facts: &DerivedFacts,
+) -> Result<(), String> {
+    conn.execute(
+        &format!(
+            "UPDATE contents SET width = COALESCE(width, ?2), \
+             height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
+             derived_at_utc = ?6, derived_version = {DERIVE_VERSION} \
+             WHERE hash = ?1"
+        ),
+        params![
+            hash,
+            facts.width,
+            facts.height,
+            facts.sharpness,
+            facts.phash as i64,
+            logging::now_iso_millis()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    // Current-state issues: a decode that now succeeds retires
+    // the failure it recorded on an earlier pass.
+    crate::index_store::clear_issues(conn, path, &["decode-error"])?;
+    Ok(())
+}
+
+/// Derives ONE item's thumb + preview on demand — the user clicked a photo
+/// the scan's bulk pass has not reached yet (it runs walk-order, and on a
+/// slow machine the tail is hours away). Idempotent: an already-derived hash
+/// returns immediately. Deliberately refuses a provisional hash — identity
+/// promotion belongs to the scan that created it, and the pass will reach
+/// the row anyway.
+pub fn derive_one(
+    conn: &Connection,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
+    hash: &str,
+) -> Result<(), String> {
+    if cache.thumb(hash).exists() && cache.preview(hash).exists() {
+        return Ok(());
+    }
+    if crate::scanner::is_provisional(hash) {
+        return Err("still being indexed — the scan will reach this photo".to_string());
+    }
+    let path: String = conn
+        .query_row(
+            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+            [hash],
+            |r| r.get(0),
+        )
+        .map_err(|_| "no live copy of this photo".to_string())?;
+    let src = Path::new(&path);
+    if ffmpeg.is_none() && needs_ffmpeg_decode(src) {
+        return Err(
+            "this format needs the video & HEIC support — install it from Managed tools"
+                .to_string(),
+        );
+    }
+    let facts = generate_for_image(src, hash, cache, thumb_edge, preview_long_edge, ffmpeg)
+        .map_err(|err| {
+            // The same honesty as the bulk pass: a broken file is recorded,
+            // not silently retried on every click.
+            let _ = crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err);
+            let _ = conn.execute(
+                "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
+                [hash],
+            );
+            err
+        })?;
+    record_derive_success(conn, hash, &path, &facts)
+}
+
 pub fn derive_images_pending(
     conn: &Connection,
     cache: &CachePaths,
@@ -578,26 +659,7 @@ pub fn derive_images_pending(
                         None => hash.clone(),
                     };
                     stats.derived += 1;
-                    conn.execute(
-                        &format!(
-                            "UPDATE contents SET width = COALESCE(width, ?2), \
-                             height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
-                             derived_at_utc = ?6, derived_version = {DERIVE_VERSION} \
-                             WHERE hash = ?1"
-                        ),
-                        params![
-                            key,
-                            facts.width,
-                            facts.height,
-                            facts.sharpness,
-                            facts.phash as i64,
-                            logging::now_iso_millis()
-                        ],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    // Current-state issues: a decode that now succeeds retires
-                    // the failure it recorded on an earlier pass.
-                    crate::index_store::clear_issues(conn, &path, &["decode-error"])?;
+                    record_derive_success(conn, &key, path, &facts)?;
                 }
                 Err(err) if err == crate::scanner::CANCELLED => {
                     // Skipped by the cancel — no checkpoint, no issue; the

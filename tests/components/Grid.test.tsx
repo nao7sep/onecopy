@@ -88,7 +88,7 @@ beforeEach(() => {
     rangeOrigin: null,
     rangeBase: new Set(),
     detail: null,
-    sortOrder: "time",
+    sortOrders: { media: "time", other: "name" },
     message: null,
   });
 });
@@ -122,7 +122,7 @@ describe("Home and End", () => {
   it("jump to the ends of the DISPLAYED order", async () => {
     const { container } = renderGrid();
     // Sorted by size DESCENDING, so the display order reverses the fixtures.
-    await act(async () => useItemsStore.setState({ sortOrder: "size" }));
+    await act(async () => useItemsStore.setState({ sortOrders: { media: "size", other: "name" } }));
     await anchor("h4");
 
     press(container, "Home");

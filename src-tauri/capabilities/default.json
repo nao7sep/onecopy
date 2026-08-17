@@ -2,11 +2,15 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the app windows (main, preview, comparison)",
-  "windows": ["main", "preview", "comparison-*", "identify-*"],
+  "windows": [
+    "main",
+    "preview",
+    "comparison-*",
+    "identify-*"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
-    "opener:allow-open-path",
     "opener:allow-reveal-item-in-dir",
     "dialog:default",
     "dialog:allow-open",
@@ -23,6 +27,9 @@
     "core:window:allow-set-size",
     "core:window:allow-is-fullscreen",
     "core:window:allow-set-fullscreen",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-outer-position",
+    "core:window:allow-inner-size",
     "core:window:allow-available-monitors",
     "core:window:allow-current-monitor",
     "core:webview:allow-create-webview-window",

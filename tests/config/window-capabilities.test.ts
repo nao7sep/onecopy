@@ -34,6 +34,7 @@ const capabilities = JSON.parse(
  * what matters is that a method appearing in the source has its row here. */
 const NEEDS: Record<string, string> = {
   "setFullscreen(": "core:window:allow-set-fullscreen",
+  "setAlwaysOnTop(": "core:window:allow-set-always-on-top",
   "isFullscreen(": "core:window:allow-is-fullscreen",
   "setFocus(": "core:window:allow-set-focus",
   "setMinSize(": "core:window:allow-set-min-size",
@@ -42,6 +43,8 @@ const NEEDS: Record<string, string> = {
   "setTitle(": "core:window:allow-set-title",
   "setTheme(": "core:window:allow-set-theme",
   "availableMonitors(": "core:window:allow-available-monitors",
+  "outerPosition(": "core:window:allow-outer-position",
+  "innerSize(": "core:window:allow-inner-size",
   "currentMonitor(": "core:window:allow-current-monitor",
   ".show(": "core:window:allow-show",
   ".hide(": "core:window:allow-hide",

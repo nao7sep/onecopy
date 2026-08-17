@@ -840,6 +840,55 @@ fn dir_is_empty(path: String) -> Result<bool, String> {
     Ok(read.next().is_none())
 }
 
+// Opens a subdirectory of the app's data root in the OS file manager (the
+// "Reveal logs folder" menu item). The path is BUILT HERE from paths.rs and a
+// vetted subdir name — the frontend names a folder, never a path (paths.rs:
+// "the frontend never reconstructs ~/.onecopy itself"). Routing through the
+// opener plugin's RUST api rather than its JS command also sidesteps the
+// plugin's permission scope, which applies to webview calls only — the JS
+// route silently rejected every path because the scope allow-list was empty,
+// and a `void openPath(...)` threw the rejection away.
+#[tauri::command(async)]
+fn reveal_data_subdir(app: AppHandle, name: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let root = paths::data_root(&app)?;
+    // A vetted set, not a join of caller input: this command must never become
+    // "open any path the webview asks for".
+    let target = match name.as_str() {
+        "logs" => root.join(paths::LOGS_DIR_NAME),
+        other => return Err(format!("not a revealable folder: {other}")),
+    };
+    if !target.is_dir() {
+        return Err(format!("{} does not exist yet", target.display()));
+    }
+    app.opener()
+        .open_path(target.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+// Opens an indexed item in its OS default app (the preview's "Open in player"
+// codec-fallback). The path comes from the INDEX, never from the webview — a
+// hash is resolved to a live copy here, so this can only ever open a file the
+// scan actually indexed. Same reason as reveal_data_subdir for the Rust-side
+// opener: the JS route was scope-rejected into a silent no-op, which left the
+// fallback button for unplayable codecs doing nothing at all.
+#[tauri::command(async)]
+fn open_item_externally(app: AppHandle, hash: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let data_root = paths::data_root(&app)?;
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+    let path: String = conn
+        .query_row(
+            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .map_err(|_| "no live copy of this item".to_string())?;
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 // Re-resolves every indexed item from stored evidence and rebuilds similar
 // groups — the settings-change path (timezone, good range, thresholds); no
 // file is read.
@@ -919,6 +968,34 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
             Ok(json!({ "total": total, "rows": rows }))
         },
         |v| json!({ "total": v.get("total") }),
+    )
+}
+
+// On-demand derive for ONE clicked photo the scan's bulk pass has not reached
+// (walk-order; on a slow machine its tail is hours away). The preview surface
+// calls this when its cache entry 404s, then reloads the entry. Idempotent
+// and cheap when the entry already exists.
+#[tauri::command(async)]
+fn ensure_preview(app: AppHandle, hash: String) -> Result<(), String> {
+    logging::boundary(
+        "ensure_preview",
+        json!({ "hash": hash }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let config = storage::read_config_for_setup(&data_root)?;
+            let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let cache = preview::CachePaths::new(settings.cache_root.clone());
+            preview::derive_one(
+                &conn,
+                &cache,
+                settings.thumb_edge,
+                settings.preview_long_edge,
+                settings.ffmpeg.as_deref(),
+                &hash,
+            )
+        },
+        |_| json!({}),
     )
 }
 
@@ -1557,6 +1634,9 @@ pub fn run() {
             create_subdir,
             delete_empty_dir,
             dir_is_empty,
+            reveal_data_subdir,
+            open_item_externally,
+            ensure_preview,
             re_resolve_all,
             rescan_section,
             move_cache,
