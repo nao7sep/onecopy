@@ -47,6 +47,10 @@ interface DestinationsState {
   /** The tree's keyboard cursor (the composite-control active item). */
   activePath: string | null;
   setActive: (path: string | null) => void;
+  /** A drop landed on this folder and awaits the Move/Copy choice (Phase 33:
+   * a modal asks; modifier keys at drop time silently decided before). */
+  pendingDrop: string | null;
+  setPendingDrop: (path: string | null) => void;
   init: (config: Record<string, unknown> | null) => void;
   addRoot: () => Promise<void>;
   removeRoot: (root: string) => Promise<void>;
@@ -88,6 +92,9 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   activePath: null,
 
   setActive: (path) => set({ activePath: path }),
+
+  pendingDrop: null,
+  setPendingDrop: (path) => set({ pendingDrop: path }),
 
   pendingDeleteRest: null,
 

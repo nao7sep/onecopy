@@ -6,6 +6,7 @@ import {
 } from "../state/destinations-store";
 import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
 import ConfirmDialog from "./ConfirmDialog";
+import ModalShell from "./ModalShell";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -57,14 +58,26 @@ function useDropHandlers(path: string) {
       onDragOver: (event: React.DragEvent) => {
         if (event.dataTransfer.types.includes("application/x-onecopy-drag")) {
           event.preventDefault();
+          // Stop the window-level "none" handler from overriding: rows are
+          // the ONLY drop affordance (tapebox's rule).
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "move";
           setDropReady(true);
         }
       },
       onDragLeave: () => setDropReady(false),
       onDrop: (event: React.DragEvent) => {
         event.preventDefault();
+        event.stopPropagation();
         setDropReady(false);
-        void moveSelectionTo(path, dropMode(event));
+        // The choice is ASKED, never inferred from modifier keys held at
+        // drop time (Phase 33) — with one exception kept deliberately:
+        // Cmd/Ctrl-drop still means copy, the OS-wide drag convention.
+        if (event.metaKey || event.ctrlKey) {
+          void moveSelectionTo(path, "copy");
+          return;
+        }
+        useDestinationsStore.getState().setPendingDrop(path);
       },
     },
   };
@@ -106,9 +119,11 @@ function DirNode({
       <div
         data-tree-path={entry.path}
         className={`flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
-          dropReady || isActive
-            ? "bg-primary-surface ring-1 ring-primary-ring"
-            : "hover:bg-surface-muted"
+          dropReady
+            ? "bg-primary-surface ring-2 ring-primary"
+            : isActive
+              ? "bg-primary-surface ring-1 ring-primary-ring"
+              : "hover:bg-surface-muted"
         }`}
         style={{ paddingLeft: `${depth * 12}px` }}
         onClick={() => setActive(entry.path)}
@@ -160,9 +175,11 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
       <div
         data-tree-path={root}
         className={`flex items-start rounded-md px-1.5 py-1 text-sm transition-colors ${
-          dropReady || isActive
-            ? "bg-primary-surface ring-1 ring-primary-ring"
-            : "hover:bg-surface-muted"
+          dropReady
+            ? "bg-primary-surface ring-2 ring-primary"
+            : isActive
+              ? "bg-primary-surface ring-1 ring-primary-ring"
+              : "hover:bg-surface-muted"
         }`}
         onClick={() => setActive(root)}
         {...handlers}
@@ -259,7 +276,7 @@ function ActionBar() {
 
   return (
     <div className="mt-2 shrink-0 border-t border-border pt-2">
-      <p className="mb-1 truncate text-[11px] text-ink-muted" title={activePath}>
+      <p className="mb-1 truncate text-sm font-medium text-ink-strong" title={activePath}>
         {leafName(activePath)}
       </p>
       <div className="flex flex-wrap items-center gap-1">
@@ -424,9 +441,39 @@ export default function DestinationsTab() {
   };
 
   const pendingDeleteRest = useDestinationsStore((s) => s.pendingDeleteRest);
+  const pendingDrop = useDestinationsStore((s) => s.pendingDrop);
+
+  // Rows are the ONLY drop affordance: anywhere else in the window the drag
+  // must read not-allowed, not the webview's default "+" over panes that
+  // cannot accept anything. Rows stopPropagation, so this never sees them.
+  useEffect(() => {
+    const deny = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes("application/x-onecopy-drag")) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "none";
+      }
+    };
+    const swallow = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes("application/x-onecopy-drag")) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("dragover", deny);
+    window.addEventListener("drop", swallow);
+    return () => {
+      window.removeEventListener("dragover", deny);
+      window.removeEventListener("drop", swallow);
+    };
+  }, []);
 
   return (
     <div className="flex h-full flex-col p-3">
+      {pendingDrop !== null ? (
+        <DropChoiceModal
+          path={pendingDrop}
+          onClose={() => useDestinationsStore.getState().setPendingDrop(null)}
+        />
+      ) : null}
       {pendingDeleteRest !== null && !pendingDeleteRest.confirmed ? (
         <ConfirmDialog
           title="Move and delete the rest?"
@@ -476,5 +523,53 @@ export default function DestinationsTab() {
         <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">{message}</p>
       ) : null}
     </div>
+  );
+}
+
+/** The drop's Move/Copy question (Phase 33). Dropping used to read modifier
+ * keys held at release — a silent decision nobody remembers making with a
+ * mouse button down. The permanent variant is deliberately absent here: it
+ * stays behind the keyboard chord and its own confirmation. */
+function DropChoiceModal({ path, onClose }: { path: string; onClose: () => void }) {
+  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
+  const button =
+    "inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring";
+  return (
+    <ModalShell
+      title={`Drop into ${leafName(path)}`}
+      onClose={onClose}
+      widthClass="w-[440px]"
+      closeLabel="Cancel"
+      primaryAction={
+        <>
+          <button
+            className={`${button} bg-primary-solid text-ink-inverted shadow-sm hover:bg-primary-solid-hover`}
+            onClick={() => {
+              onClose();
+              void moveSelectionTo(path, "move-trash-rest");
+            }}
+          >
+            Move here
+          </button>
+          <button
+            className={`${button} border border-border text-ink hover:border-border-strong hover:bg-surface-muted`}
+            onClick={() => {
+              onClose();
+              void moveSelectionTo(path, "copy");
+            }}
+          >
+            Copy here
+          </button>
+        </>
+      }
+    >
+      <p className="truncate text-sm text-ink" title={path}>
+        {path}
+      </p>
+      <p className="mt-1 text-xs text-ink-muted">
+        Move delivers one copy here and trashes the rest; Copy leaves everything
+        in place.
+      </p>
+    </ModalShell>
   );
 }
