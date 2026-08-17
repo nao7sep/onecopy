@@ -730,6 +730,29 @@ fn move_item_out(
                 (None, Some(id)) => operations::ItemRef::PathId(id),
                 (None, None) => return Err("move_item_out needs a hash or a pathId".to_string()),
             };
+            // Same binary under DIFFERENT names (Phase 33): moving or copying
+            // delivers exactly one name, and which one lands must never be a
+            // surprise — for move-the-rest modes the other names would die
+            // with the deleted copies. Blocked core-side (the UI badges and
+            // pre-checks, but this is the authority); Reveal-per-copy is the
+            // manual resolution path. Case-insensitive: IMG.JPG and img.jpg
+            // are one name on the fleet's volumes.
+            if let Some(hash) = &hash {
+                let distinct: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(DISTINCT lower(file_name)) FROM paths \
+                         WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL",
+                        [hash],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if distinct > 1 {
+                    return Err(format!(
+                        "this item's copies carry {distinct} different names — \
+                         reveal the copies and resolve the names first"
+                    ));
+                }
+            }
             let mode = match mode.as_str() {
                 "move-trash-rest" => operations::MoveOutMode::MoveTrashRest,
                 "move-delete-rest" => operations::MoveOutMode::MoveDeleteRest,

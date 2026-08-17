@@ -119,6 +119,10 @@ pub struct SectionItem {
     pub byte_size: Option<i64>,
     pub has_companions: bool,
     pub duration_ms: Option<i64>,
+    /// This binary exists under MORE THAN ONE file name across its copies
+    /// (case-insensitive). Move and copy are blocked for such items — which
+    /// name lands cannot be a surprise — so every list badges them.
+    pub names_differ: bool,
     /// EVERY live copy's directory, deduped, sorted, display-stripped
     /// (`for_display`, like copy_paths). The other-files table shows them
     /// all in one Folders column — copies merge into one row, so a single
@@ -143,28 +147,38 @@ pub fn section_items(
     // directories may contain commas.
     let mut dirs_by_hash: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
+    let mut names_by_hash: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
     {
         let mut stmt = conn
             .prepare(
-                "SELECT content_hash, dir_path FROM paths \
+                "SELECT content_hash, dir_path, file_name FROM paths \
                  WHERE content_hash IS NOT NULL AND missing = 0 AND companion_of IS NULL",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok());
-        for (hash, dir) in rows {
+        for (hash, dir, name) in rows {
             let display = crate::winpath::for_display(&dir).into_owned();
-            let entry = dirs_by_hash.entry(hash).or_default();
+            let entry = dirs_by_hash.entry(hash.clone()).or_default();
             if !entry.contains(&display) {
                 entry.push(display);
             }
+            names_by_hash.entry(hash).or_default().insert(name.to_lowercase());
         }
         for dirs in dirs_by_hash.values_mut() {
             dirs.sort();
         }
     }
+    let names_differ = |hash: &str| names_by_hash.get(hash).is_some_and(|n| n.len() > 1);
 
     if kind == "image" || kind == "video" {
         let mut stmt = conn
@@ -250,6 +264,7 @@ pub fn section_items(
             };
             if item_month == month {
                 let dir_paths = dirs_by_hash.get(&hash).cloned().unwrap_or_default();
+                let differs = names_differ(&hash);
                 items.push(SectionItem {
                     hash: Some(hash),
                     path_id,
@@ -264,6 +279,7 @@ pub fn section_items(
                     byte_size,
                     has_companions,
                     duration_ms,
+                    names_differ: differs,
                     dir_paths,
                 });
             }
@@ -317,6 +333,7 @@ pub fn section_items(
                     .unwrap_or_else(|| {
                         vec![crate::winpath::for_display(&dir_path).into_owned()]
                     });
+                let differs = hash.as_deref().is_some_and(names_differ);
                 items.push(SectionItem {
                     hash,
                     path_id,
@@ -331,6 +348,7 @@ pub fn section_items(
                     byte_size,
                     has_companions: false,
                     duration_ms: None,
+                    names_differ: differs,
                     dir_paths,
                 });
             }

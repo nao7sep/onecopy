@@ -216,6 +216,26 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   moveSelectionTo: async (destDir, mode, explicitKeys) => {
     const { useItemsStore, itemKey } = await import("./items-store");
     const { items, selectedItem, selectedKeys } = useItemsStore.getState();
+    // Fast feedback for the name-divergence block (the core refuses too, but
+    // a whole multi-select should fail BEFORE any item moved): any selected
+    // item whose copies carry different names stops the operation.
+    {
+      const keySet =
+        explicitKeys !== undefined
+          ? new Set(explicitKeys)
+          : selectedKeys.size > 0
+            ? selectedKeys
+            : selectedItem !== null
+              ? new Set([selectedItem])
+              : new Set<string>();
+      const blocked = items.filter((i) => keySet.has(itemKey(i)) && i.namesDiffer);
+      if (blocked.length > 0) {
+        set({
+          message: `${blocked.length} selected item${blocked.length === 1 ? "" : "s"} have copies under different names — Move/Copy is disabled for them. Reveal the copies (Details) to resolve the names first.`,
+        });
+        return;
+      }
+    }
     // A confirmed permanent move acts on the set the dialog counted. Re-reading
     // the live selection here would let a click behind the dialog redirect it
     // — permanently destroying copies the user was never shown a count for.

@@ -16,6 +16,7 @@ function item(overrides: Partial<SectionItem>): SectionItem {
     byteSize: null,
     hasCompanions: false,
     durationMs: null,
+    namesDiffer: false,
     dirPaths: ["/files"],
     ...overrides,
   };

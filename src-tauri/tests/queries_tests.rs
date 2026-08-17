@@ -348,3 +348,36 @@ fn the_stored_issue_path_stays_verbatim_so_clearing_still_matches() {
     let (total, _) = queries::issues(&conn, 50).unwrap();
     assert_eq!(total, 0, "the pipeline's own spelling must still clear the row");
 }
+
+#[test]
+fn copies_under_different_names_are_flagged_case_insensitively() {
+    let conn = db();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('same', 9, 'image');
+         INSERT INTO contents (hash, byte_size, kind) VALUES ('diff', 9, 'image');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
+           VALUES ('/a/IMG.JPG', '/a', 'IMG.JPG', 'image', 'same', 1000);
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
+           VALUES ('/b/img.jpg', '/b', 'img.jpg', 'image', 'same', 1000);
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
+           VALUES ('/a/beach.jpg', '/a', 'beach.jpg', 'image', 'diff', 1000);
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
+           VALUES ('/b/renamed.jpg', '/b', 'renamed.jpg', 'image', 'diff', 1000);",
+    )
+    .unwrap();
+
+    let items = queries::section_items(&conn, "image", "1970-01", chrono_tz::UTC).unwrap();
+    let flag = |h: &str| {
+        items
+            .iter()
+            .find(|i| i.hash.as_deref() == Some(h))
+            .map(|i| i.names_differ)
+    };
+    // IMG.JPG vs img.jpg is ONE name on the fleet's volumes — no conflict.
+    assert_eq!(flag("same"), Some(false), "case-only difference is not a conflict");
+    // beach.jpg vs renamed.jpg is a real divergence: move/copy must block.
+    assert_eq!(flag("diff"), Some(true));
+    // And the Folders column carries BOTH directories for both items.
+    let diff = items.iter().find(|i| i.hash.as_deref() == Some("diff")).unwrap();
+    assert_eq!(diff.dir_paths, vec!["/a".to_string(), "/b".to_string()]);
+}

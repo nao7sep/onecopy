@@ -127,6 +127,14 @@ function Tile({
           pair
         </span>
       ) : null}
+      {item.namesDiffer ? (
+        <span
+          className="absolute bottom-9 left-1 rounded-md bg-warning-surface px-1.5 py-0.5 text-[11px] text-warning"
+          title="Copies of this file carry different names — Move and Copy are disabled until the names are resolved (reveal the copies from Details)"
+        >
+          ≠name
+        </span>
+      ) : null}
       <figcaption className="mt-1 w-40" title={item.fileName}>
         <span className="block truncate text-xs text-ink">{item.fileName}</span>
         {/* Pixels and bytes, quietly. Without them a section of the same shot
@@ -304,6 +312,14 @@ function ListRow({
         {item.copyCount > 1 ? (
           <span className="ml-2 rounded-md bg-primary-surface px-1.5 py-0.5 text-[11px] font-medium text-primary">
             ×{item.copyCount}
+          </span>
+        ) : null}
+        {item.namesDiffer ? (
+          <span
+            className="ml-2 rounded-md bg-warning-surface px-1.5 py-0.5 text-[11px] text-warning"
+            title="Copies carry different names — Move and Copy are disabled until resolved"
+          >
+            ≠name
           </span>
         ) : null}
       </span>
