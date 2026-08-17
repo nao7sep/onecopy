@@ -29,7 +29,7 @@ function item(over: Partial<SectionItem> & { pathId: number }): SectionItem {
     byteSize: 1000,
     hasCompanions: false,
     durationMs: null,
-    dirPath: "/photos",
+    dirPaths: ["/photos"],
     ...over,
   };
 }
@@ -45,7 +45,7 @@ function seed(items: SectionItem[]): void {
     selectedItem: null,
     selectedKeys: new Set(),
     detail: null,
-    sortOrders: { media: "time", other: "name" },
+    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
   });
 }
 
@@ -58,7 +58,7 @@ beforeEach(() => {
     selectedItem: null,
     selectedKeys: new Set(),
     detail: null,
-    sortOrders: { media: "time", other: "name" },
+    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
   });
   // Anchor moves fan out to these; none is under test here.
   mockCommands({
@@ -211,7 +211,7 @@ describe("deleteSelected", () => {
       item({ pathId: 3, fileName: "a.jpg" }),
     ];
     seed(items);
-    useItemsStore.setState({ sortOrders: { media: "name", other: "name" } });
+    useItemsStore.setState({ sortOrders: { media: { order: "name", desc: false }, other: { order: "name", desc: false } } });
     mockCommand("get_section_items", () =>
       items.filter((i) => i.hash !== "h2"),
     );
@@ -361,5 +361,25 @@ describe("out-of-order responses (the reads are async commands now)", () => {
     expect(
       (useItemsStore.getState().detail as { copyPaths: string[] } | null)?.copyPaths,
     ).toEqual(["/b"]);
+  });
+});
+
+describe("the direction toggle (Phase 33)", () => {
+  it("re-picking the active order flips it; a fresh order starts natural", () => {
+    useItemsStore.setState({
+      selected: { kind: "image", month: "2026-01" },
+      sortOrders: {
+        media: { order: "time", desc: false },
+        other: { order: "name", desc: false },
+      },
+    });
+    useItemsStore.getState().setSortOrder("time");
+    expect(useItemsStore.getState().sortOrders.media).toEqual({ order: "time", desc: true });
+    // A fresh order arrives in its NATURAL direction (size = biggest first),
+    // not whatever direction the previous order left behind.
+    useItemsStore.getState().setSortOrder("size");
+    expect(useItemsStore.getState().sortOrders.media).toEqual({ order: "size", desc: true });
+    // And only the active lane moved.
+    expect(useItemsStore.getState().sortOrders.other).toEqual({ order: "name", desc: false });
   });
 });

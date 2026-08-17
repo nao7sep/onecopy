@@ -39,6 +39,7 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
     byteSize: 1000,
     hasCompanions: false,
     durationMs: null,
+    dirPaths: ["/photos"],
     ...over,
   };
 }

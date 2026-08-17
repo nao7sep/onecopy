@@ -44,7 +44,7 @@ function selectAll(keys: string[]): void {
     selectedKeys: new Set(keys),
     rangeOrigin: keys[0] ?? null,
     rangeBase: new Set(keys),
-    sortOrders: { media: "time", other: "name" },
+    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
     loading: false,
     detail: null,
     message: null,

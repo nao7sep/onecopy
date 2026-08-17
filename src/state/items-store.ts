@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
 import { sortItems } from "../models/items";
-import type { SectionItem, SortOrder } from "../models/items";
+import { DEFAULT_DESC, SORT_ORDERS, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
 
 export interface SelectedSection {
   kind: "image" | "video" | "other";
@@ -56,13 +56,13 @@ interface ItemsState {
    * keys that were Cmd-clicked outside it. */
   rangeBase: Set<string>;
   detail: ItemDetail | null;
-  /** Sort per LANE — other-files sort like a file manager (name, kind,
-   * folder), photos and videos sort like a light table (time taken,
-   * resolution); one shared order let each kind be shown in orders that are
-   * nonsense for it ("Time taken" over files nobody took). `currentSort()`
-   * resolves the active lane from the open section. */
-  sortOrders: { media: SortOrder; other: SortOrder };
-  currentSort: () => SortOrder;
+  /** Sort per LANE — other-files sort like a file manager (name, kind),
+   * photos and videos sort like a light table (time taken, resolution); one
+   * shared order let each kind be shown in orders that are nonsense for it
+   * ("Time taken" over files nobody took). Each lane carries its direction;
+   * `currentSort()` resolves the active lane from the open section. */
+  sortOrders: { media: SortChoice; other: SortChoice };
+  currentSort: () => SortChoice;
   /** Last outcome worth showing the user (a delete that failed on disk, or a
    * command that was refused). Null whenever the last action was clean. */
   message: string | null;
@@ -99,7 +99,10 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   rangeOrigin: null,
   rangeBase: new Set<string>(),
   detail: null,
-  sortOrders: { media: "time", other: "name" },
+  sortOrders: {
+    media: SORT_ORDERS.media.defaultChoice,
+    other: SORT_ORDERS.other.defaultChoice,
+  },
   message: null,
 
   currentSort: () => {
@@ -109,7 +112,14 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
 
   setSortOrder: (order) => {
     const lane = get().selected?.kind === "other" ? "other" : "media";
-    const sortOrders = { ...get().sortOrders, [lane]: order };
+    const current = get().sortOrders[lane];
+    // Picking the ACTIVE order again flips its direction (the header-click
+    // convention); a fresh order starts in its natural direction.
+    const next: SortChoice =
+      current.order === order
+        ? { order, desc: !current.desc }
+        : { order, desc: DEFAULT_DESC[order] };
+    const sortOrders = { ...get().sortOrders, [lane]: next };
     set({ sortOrders });
     void import("./app-store").then(({ useAppStore }) =>
       useAppStore.getState().patchState({ sortOrders }),

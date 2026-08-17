@@ -16,11 +16,16 @@ export interface SectionItem {
   byteSize: number | null;
   hasCompanions: boolean;
   durationMs: number | null;
-  /** Representative copy's directory (display form). */
-  dirPath: string;
+  /** Every live copy's directory, deduped, sorted (display form). */
+  dirPaths: string[];
 }
 
-export type SortOrder = "time" | "name" | "size" | "resolution" | "ext" | "folder";
+export type SortOrder = "time" | "name" | "size" | "resolution" | "ext";
+
+export interface SortChoice {
+  order: SortOrder;
+  desc: boolean;
+}
 
 /** The extension, lowercased, for sorting — "" when the name has none. */
 export function extOf(fileName: string): string {
@@ -33,54 +38,71 @@ export function extOf(fileName: string): string {
  * label for other-files, whose date is filesystem-derived; "resolution" only
  * exists for media at all. Each kind offers its own orders and default —
  * the labels live beside them so a menu cannot offer an order the kind
- * cannot honour. */
+ * cannot honour. Folder sort is deliberately ABSENT: copies merge into one
+ * row with many folders, so any single sort key was an arbitrary pick. */
 export const SORT_ORDERS: Record<
   "media" | "other",
-  { orders: Partial<Record<SortOrder, string>>; defaultOrder: SortOrder }
+  { orders: Partial<Record<SortOrder, string>>; defaultChoice: SortChoice }
 > = {
   media: {
     orders: { time: "Time taken", name: "Name", size: "Size", resolution: "Resolution" },
-    defaultOrder: "time",
+    defaultChoice: { order: "time", desc: false },
   },
   other: {
-    orders: { name: "Name", ext: "Kind", size: "Size", time: "Date", folder: "Folder" },
-    defaultOrder: "name",
+    orders: { name: "Name", ext: "Kind", size: "Size", time: "Date" },
+    defaultChoice: { order: "name", desc: false },
   },
 };
 
-export function sortItems(items: SectionItem[], order: SortOrder): SectionItem[] {
+/** The direction a FRESH pick of each order starts with — what a person
+ * means by the bare words: "sort by time" walks history forward, but "sort
+ * by size" means biggest first. */
+export const DEFAULT_DESC: Record<SortOrder, boolean> = {
+  time: false,
+  name: false,
+  size: true,
+  resolution: true,
+  ext: false,
+};
+
+/** One primary comparator per order, ASCENDING; direction is applied to the
+ * primary alone. */
+const COMPARE: Record<SortOrder, (a: SectionItem, b: SectionItem) => number> = {
+  time: (a, b) =>
+    (a.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER) - (b.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER),
+  name: (a, b) => a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase()),
+  size: (a, b) => (a.byteSize ?? -1) - (b.byteSize ?? -1),
+  resolution: (a, b) => (a.width ?? 0) * (a.height ?? 0) - (b.width ?? 0) * (b.height ?? 0),
+  ext: (a, b) => extOf(a.fileName).localeCompare(extOf(b.fileName)),
+};
+
+/** Tie-break chains (Phase 33): every order resolves its ties through a
+ * defined sequence — same-resolution photos from one phone fall back to
+ * shooting order, then name — with pathId as the immutable final key, so
+ * every sort is total and stable. Chained keys stay ASCENDING even under a
+ * descending primary, the way Finder reads: resolution-descending still
+ * shows each resolution group in shooting order. */
+const CHAINS: Record<SortOrder, SortOrder[]> = {
+  time: ["name"],
+  name: ["time"],
+  size: ["time", "name"],
+  resolution: ["time", "name"],
+  ext: ["name"],
+};
+
+export function sortItems(items: SectionItem[], choice: SortChoice): SectionItem[] {
   const sorted = [...items];
-  const byName = (a: SectionItem, b: SectionItem) =>
-    a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase());
-  switch (order) {
-    case "time":
-      sorted.sort(
-        (a, b) =>
-          (a.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER) -
-            (b.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER) || a.pathId - b.pathId,
-      );
-      break;
-    case "name":
-      sorted.sort(byName);
-      break;
-    case "size":
-      sorted.sort((a, b) => (b.byteSize ?? -1) - (a.byteSize ?? -1));
-      break;
-    case "resolution":
-      sorted.sort(
-        (a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0),
-      );
-      break;
-    case "ext":
-      // Ties fall to name, the way a file manager reads.
-      sorted.sort((a, b) => extOf(a.fileName).localeCompare(extOf(b.fileName)) || byName(a, b));
-      break;
-    case "folder":
-      sorted.sort(
-        (a, b) => a.dirPath.toLowerCase().localeCompare(b.dirPath.toLowerCase()) || byName(a, b),
-      );
-      break;
-  }
+  const primary = COMPARE[choice.order];
+  const chain = CHAINS[choice.order].map((order) => COMPARE[order]);
+  sorted.sort((a, b) => {
+    const head = primary(a, b);
+    if (head !== 0) return choice.desc ? -head : head;
+    for (const compare of chain) {
+      const next = compare(a, b);
+      if (next !== 0) return next;
+    }
+    return a.pathId - b.pathId;
+  });
   return sorted;
 }
 

@@ -119,10 +119,12 @@ pub struct SectionItem {
     pub byte_size: Option<i64>,
     pub has_companions: bool,
     pub duration_ms: Option<i64>,
-    /// The representative copy's directory, display-stripped (`for_display`,
-    /// like copy_paths) — the other-files table sorts and shows a Folder
-    /// column, and `\\?\` is not a folder anyone recognises.
-    pub dir_path: String,
+    /// EVERY live copy's directory, deduped, sorted, display-stripped
+    /// (`for_display`, like copy_paths). The other-files table shows them
+    /// all in one Folders column — copies merge into one row, so a single
+    /// representative folder was an arbitrary MIN and sorting by it was
+    /// meaningless (Phase 33 dropped folder sort with it).
+    pub dir_paths: Vec<String>,
 }
 
 /// Items of one (kind, month) section, oldest first; `month` is the same key
@@ -135,6 +137,34 @@ pub fn section_items(
     display_tz: Tz,
 ) -> Result<Vec<SectionItem>, String> {
     let mut items: Vec<SectionItem> = Vec::new();
+
+    // hash -> every live copy's directory (deduped, display form). One pass,
+    // one map — GROUP_CONCAT cannot carry DISTINCT with a safe separator, and
+    // directories may contain commas.
+    let mut dirs_by_hash: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content_hash, dir_path FROM paths \
+                 WHERE content_hash IS NOT NULL AND missing = 0 AND companion_of IS NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok());
+        for (hash, dir) in rows {
+            let display = crate::winpath::for_display(&dir).into_owned();
+            let entry = dirs_by_hash.entry(hash).or_default();
+            if !entry.contains(&display) {
+                entry.push(display);
+            }
+        }
+        for dirs in dirs_by_hash.values_mut() {
+            dirs.sort();
+        }
+    }
 
     if kind == "image" || kind == "video" {
         let mut stmt = conn
@@ -151,7 +181,7 @@ pub fn section_items(
                  EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                          WHERE pri.content_hash = c.hash AND comp.missing = 0 \
                            AND pri.missing = 0), \
-                 c.duration_ms, MIN(p.dir_path) \
+                 c.duration_ms \
                  FROM contents c JOIN paths p ON p.content_hash = c.hash \
                  WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
                  GROUP BY c.hash",
@@ -173,7 +203,6 @@ pub fn section_items(
             Option<i64>,
             bool,
             Option<i64>,
-            String,
         )> = stmt
             .query_map([kind], |r| {
                 Ok((
@@ -191,7 +220,6 @@ pub fn section_items(
                     r.get(11)?,
                     r.get(12)?,
                     r.get(13)?,
-                    r.get(14)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -214,7 +242,6 @@ pub fn section_items(
             byte_size,
             has_companions,
             duration_ms,
-            dir_path,
         ) in rows
         {
             let item_month = match min_ms {
@@ -222,6 +249,7 @@ pub fn section_items(
                 _ => "undated".to_string(),
             };
             if item_month == month {
+                let dir_paths = dirs_by_hash.get(&hash).cloned().unwrap_or_default();
                 items.push(SectionItem {
                     hash: Some(hash),
                     path_id,
@@ -236,7 +264,7 @@ pub fn section_items(
                     byte_size,
                     has_companions,
                     duration_ms,
-                    dir_path: crate::winpath::for_display(&dir_path).into_owned(),
+                    dir_paths,
                 });
             }
         }
@@ -283,6 +311,12 @@ pub fn section_items(
                 _ => "undated".to_string(),
             };
             if item_month == month {
+                let dir_paths = hash
+                    .as_ref()
+                    .and_then(|h| dirs_by_hash.get(h).cloned())
+                    .unwrap_or_else(|| {
+                        vec![crate::winpath::for_display(&dir_path).into_owned()]
+                    });
                 items.push(SectionItem {
                     hash,
                     path_id,
@@ -297,7 +331,7 @@ pub fn section_items(
                     byte_size,
                     has_companions: false,
                     duration_ms: None,
-                    dir_path: crate::winpath::for_display(&dir_path).into_owned(),
+                    dir_paths,
                 });
             }
         }

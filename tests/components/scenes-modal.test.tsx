@@ -55,7 +55,7 @@ function seedMultiSelection(): void {
       companionPaths: [],
       stripFrames: 4,
     },
-    sortOrders: { media: "time", other: "name" },
+    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
     message: null,
   });
 }

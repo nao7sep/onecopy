@@ -63,7 +63,7 @@ beforeEach(() => {
     items: [],
     selectedItem: null,
     selectedKeys: new Set(),
-    sortOrders: { media: "time", other: "name" },
+    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
   });
 });
 

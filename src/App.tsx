@@ -60,7 +60,7 @@ import {
   useBinariesStore,
 } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
-import type { SortOrder } from "./models/items";
+import { DEFAULT_DESC, type SortChoice, type SortOrder } from "./models/items";
 import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
 import { installActivityPings, useBackfillStore } from "./state/backfill-store";
 import PreviewSurface from "./components/PreviewSurface";
@@ -536,21 +536,26 @@ export default function App() {
     if (restoredRef.current || appData === null || counts === null) return;
     restoredRef.current = true;
     const state = appData.state ?? {};
-    // Per-lane sort orders; the legacy single `sortOrder` key restores into
-    // the media lane so an existing machine keeps its choice.
+    // Per-lane sort choices; legacy shapes (a bare string, or a lane holding
+    // a bare order string) restore into their natural direction.
     const isOrder = (v: unknown): v is SortOrder =>
-      v === "time" || v === "name" || v === "size" || v === "resolution" ||
-      v === "ext" || v === "folder";
+      v === "time" || v === "name" || v === "size" || v === "resolution" || v === "ext";
+    const asChoice = (v: unknown): SortChoice | null => {
+      if (isOrder(v)) return { order: v, desc: DEFAULT_DESC[v] };
+      if (typeof v === "object" && v !== null) {
+        const rec = v as Record<string, unknown>;
+        if (isOrder(rec.order)) {
+          return { order: rec.order, desc: rec.desc === true };
+        }
+      }
+      return null;
+    };
     const savedOrders = (state.sortOrders ?? {}) as Record<string, unknown>;
-    const legacy = state.sortOrder;
     useItemsStore.setState((current) => ({
       sortOrders: {
-        media: isOrder(savedOrders.media)
-          ? savedOrders.media
-          : isOrder(legacy)
-            ? legacy
-            : current.sortOrders.media,
-        other: isOrder(savedOrders.other) ? savedOrders.other : current.sortOrders.other,
+        media:
+          asChoice(savedOrders.media) ?? asChoice(state.sortOrder) ?? current.sortOrders.media,
+        other: asChoice(savedOrders.other) ?? current.sortOrders.other,
       },
     }));
     if (state.rightPaneTab === "destinations") setRightTabRaw("destinations");

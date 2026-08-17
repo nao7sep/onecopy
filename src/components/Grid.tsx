@@ -9,9 +9,11 @@ import {
   sortItems,
   thumbUrl,
   type SectionItem,
+  type SortChoice,
   type SortOrder,
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
+import { useAppStore } from "../state/app-store";
 import { handleSpaceLook } from "../state/preview-store";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
@@ -140,40 +142,119 @@ function Tile({
   );
 }
 
-/** The other-files table columns, in render order. Each is a REAL sortable
- * column (Finder/Explorer): clicking its header applies the matching order,
- * and the set is exactly the model's `other` catalogue, so a column the sort
- * cannot honour can never appear. Name is the flexible column; the rest are
- * fixed so the table scans vertically. */
-const OTHER_COLUMNS: { order: SortOrder; label: string; width: string }[] = [
-  { order: "ext", label: "Kind", width: "w-14" },
-  { order: "name", label: "Name", width: "min-w-0 flex-1" },
-  { order: "size", label: "Size", width: "w-20 text-right" },
-  { order: "time", label: "Date", width: "w-36" },
-  { order: "folder", label: "Folder", width: "w-56" },
+/** The other-files table columns, in render order. Each sortable column maps
+ * to the model's `other` catalogue, so a column the sort cannot honour can
+ * never appear — the FOLDERS column is exactly that case: copies merge into
+ * one row with many folders (Phase 33), so it displays and never sorts.
+ * Kind/Name/Size/Date carry persisted, draggable widths; Folders takes the
+ * rest of the pane (the developer's rule — it is usually the longest text). */
+const SIZED_COLUMNS = ["kind", "name", "size", "date"] as const;
+export type SizedColumn = (typeof SIZED_COLUMNS)[number];
+export const DEFAULT_COLUMN_WIDTHS: Record<SizedColumn, number> = {
+  kind: 56,
+  name: 300,
+  size: 84,
+  date: 148,
+};
+const MIN_COLUMN_WIDTH = 40;
+
+/** Parses persisted widths; anything malformed falls back per column. */
+export function columnWidthsFrom(value: unknown): Record<SizedColumn, number> {
+  const out = { ...DEFAULT_COLUMN_WIDTHS };
+  if (typeof value === "object" && value !== null) {
+    const rec = value as Record<string, unknown>;
+    for (const key of SIZED_COLUMNS) {
+      const width = rec[key];
+      if (typeof width === "number" && Number.isFinite(width) && width >= MIN_COLUMN_WIDTH) {
+        out[key] = Math.round(width);
+      }
+    }
+  }
+  return out;
+}
+
+const OTHER_COLUMNS: {
+  key: SizedColumn | "folders";
+  order: SortOrder | null;
+  label: string;
+}[] = [
+  { key: "kind", order: "ext", label: "Kind" },
+  { key: "name", order: "name", label: "Name" },
+  { key: "size", order: "size", label: "Size" },
+  { key: "date", order: "time", label: "Date" },
+  { key: "folders", order: null, label: "Folders" },
 ];
 
+function columnStyle(
+  key: SizedColumn | "folders",
+  widths: Record<SizedColumn, number>,
+): React.CSSProperties {
+  return key === "folders"
+    ? { flex: "1 1 0", minWidth: 0 }
+    : { width: widths[key], flex: "0 0 auto" };
+}
+
 function ListHeader({
-  sortOrder,
+  sort,
   onSort,
+  widths,
+  onWidths,
 }: {
-  sortOrder: SortOrder;
+  sort: SortChoice;
   onSort: (order: SortOrder) => void;
+  widths: Record<SizedColumn, number>;
+  onWidths: (widths: Record<SizedColumn, number>) => void;
 }) {
+  const beginResize = (key: SizedColumn) => (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = widths[key];
+    document.body.classList.add("col-resizing");
+    const onMove = (e: MouseEvent) => {
+      onWidths({
+        ...widths,
+        [key]: Math.max(MIN_COLUMN_WIDTH, startWidth + (e.clientX - startX)),
+      });
+    };
+    const onUp = () => {
+      document.body.classList.remove("col-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   return (
-    <div className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+    <div className="flex shrink-0 items-center border-b border-border px-5 py-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
       {OTHER_COLUMNS.map((column) => (
-        <button
-          key={column.order}
-          className={`${column.width} shrink-0 truncate text-left transition-colors hover:text-ink ${
-            sortOrder === column.order ? "text-ink" : ""
-          } ${column.width.includes("text-right") ? "text-right" : ""}`}
-          onClick={() => onSort(column.order)}
-          title={`Sort by ${column.label.toLowerCase()}`}
+        <span
+          key={column.key}
+          className="relative flex items-center"
+          style={columnStyle(column.key, widths)}
         >
-          {column.label}
-          {sortOrder === column.order ? " ▾" : ""}
-        </button>
+          {column.order !== null ? (
+            <button
+              className={`min-w-0 flex-1 truncate text-left transition-colors hover:text-ink ${
+                sort.order === column.order ? "text-ink" : ""
+              } ${column.key === "size" ? "text-right" : ""}`}
+              onClick={() => onSort(column.order!)}
+              title={`Sort by ${column.label.toLowerCase()} (again to reverse)`}
+            >
+              {column.label}
+              {sort.order === column.order ? (sort.desc ? " ▾" : " ▴") : ""}
+            </button>
+          ) : (
+            <span className="min-w-0 flex-1 truncate text-left">{column.label}</span>
+          )}
+          {column.key !== "folders" ? (
+            <span
+              className="absolute -right-2 top-0 h-full w-3 cursor-col-resize"
+              onMouseDown={beginResize(column.key as SizedColumn)}
+              title="Drag to resize"
+            />
+          ) : null}
+        </span>
       ))}
     </div>
   );
@@ -183,14 +264,16 @@ function ListRow({
   item,
   isSelected,
   onSelect,
+  widths,
 }: {
   item: SectionItem;
   isSelected: boolean;
   onSelect: (event: React.MouseEvent) => void;
+  widths: Record<SizedColumn, number>;
 }) {
   return (
     <div
-      className={`flex w-full cursor-grab items-center gap-3 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+      className={`flex w-full cursor-grab items-center rounded-md border px-3 py-1.5 text-sm transition-colors ${
         isSelected
           ? "border-primary-ring bg-primary-surface"
           : "border-transparent hover:bg-surface-muted"
@@ -198,10 +281,17 @@ function ListRow({
       onClick={onSelect}
       {...dragProps(item)}
     >
-      <span className="w-14 shrink-0 truncate text-[11px] font-semibold text-ink-muted">
+      <span
+        className="shrink-0 truncate text-[11px] font-semibold text-ink-muted"
+        style={columnStyle("kind", widths)}
+      >
         {extOf(item.fileName).toUpperCase() || extLabel(item.fileName)}
       </span>
-      <span className="min-w-0 flex-1 truncate text-ink" title={item.fileName}>
+      <span
+        className="truncate text-ink"
+        style={columnStyle("name", widths)}
+        title={item.fileName}
+      >
         {item.fileName}
         {item.hasCompanions ? (
           <span
@@ -217,20 +307,28 @@ function ListRow({
           </span>
         ) : null}
       </span>
-      <span className="w-20 shrink-0 text-right tabular-nums text-xs text-ink-muted">
+      <span
+        className="shrink-0 text-right tabular-nums text-xs text-ink-muted"
+        style={columnStyle("size", widths)}
+      >
         {item.byteSize !== null ? formatBytes(item.byteSize) : ""}
       </span>
-      <span className="w-36 shrink-0 truncate tabular-nums text-xs text-ink-muted">
+      <span
+        className="shrink-0 truncate tabular-nums text-xs text-ink-muted"
+        style={columnStyle("date", widths)}
+      >
         {item.resolvedUtcMs !== null ? formatLocalMinute(item.resolvedUtcMs) : "—"}
       </span>
-      {/* dir="rtl" keeps the DEEP end of a long path visible — the part that
-          distinguishes two folders is the tail, not the shared root. */}
+      {/* EVERY copy's folder, sorted (Phase 33) — one row per merged binary,
+          so a single folder was an arbitrary pick. dir="rtl" keeps the deep
+          end visible — the tail distinguishes folders, not the shared root. */}
       <span
         dir="rtl"
-        className="w-56 shrink-0 truncate text-left text-xs text-ink-muted"
-        title={item.dirPath}
+        className="truncate text-left text-xs text-ink-muted"
+        style={columnStyle("folders", widths)}
+        title={item.dirPaths.join("\n")}
       >
-        {item.dirPath}
+        {item.dirPaths.join(" · ")}
       </span>
     </div>
   );
@@ -259,11 +357,25 @@ export default function Grid({
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
   const lane = layout === "list" ? "other" : "media";
-  const sortOrder = useItemsStore((s) =>
+  const sortChoice = useItemsStore((s) =>
     lane === "other" ? s.sortOrders.other : s.sortOrders.media,
   );
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
   const sortCatalogue = SORT_ORDERS[lane];
+
+  // Other-files column widths: persisted intent, applied immediately, saved
+  // debounced on change (the drag fires continuously).
+  const [columnWidths, setColumnWidthsRaw] = useState(() =>
+    columnWidthsFrom(useAppStore.getState().appData?.state?.otherColumnWidths),
+  );
+  const widthsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setColumnWidths = (widths: Record<SizedColumn, number>) => {
+    setColumnWidthsRaw(widths);
+    if (widthsSaveTimer.current !== null) clearTimeout(widthsSaveTimer.current);
+    widthsSaveTimer.current = setTimeout(() => {
+      void useAppStore.getState().patchState({ otherColumnWidths: widths });
+    }, 500);
+  };
 
   // The grid is ONE composite control: the scroll container is the single tab
   // stop (active-descendant style — selection state lives in the store, never
@@ -368,7 +480,7 @@ export default function Grid({
   // an empty composite is still reachable by Tab (composite-control rules).
   const emptyState =
     items.length === 0 ? (loading ? "Loading…" : "Nothing in this section") : null;
-  const sorted = emptyState === null ? sortItems(items, sortOrder) : [];
+  const sorted = emptyState === null ? sortItems(items, sortChoice) : [];
   const sortedKeys = sorted.map(itemKey);
   // Refs for the anchor effect, which must read current values without
   // re-running on every scroll.
@@ -456,7 +568,7 @@ export default function Grid({
         <select
           id="grid-sort"
           className="h-7 rounded-md border border-border bg-surface px-2 text-ink"
-          value={sortOrder}
+          value={sortChoice.order}
           onChange={(e) => setSortOrder(e.target.value as SortOrder)}
         >
           {(Object.keys(sortCatalogue.orders) as SortOrder[]).map((order) => (
@@ -465,11 +577,24 @@ export default function Grid({
             </option>
           ))}
         </select>
+        <button
+          className="h-7 rounded-md px-1.5 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+          title={sortChoice.desc ? "Descending — click for ascending" : "Ascending — click for descending"}
+          // Re-picking the active order toggles direction (the store's rule).
+          onClick={() => setSortOrder(sortChoice.order)}
+        >
+          {sortChoice.desc ? "▾" : "▴"}
+        </button>
       </div>
       {layout === "list" ? (
         // The table header lives OUTSIDE the scroll container, so the
         // virtualization geometry below never has to account for it.
-        <ListHeader sortOrder={sortOrder} onSort={setSortOrder} />
+        <ListHeader
+          sort={sortChoice}
+          onSort={setSortOrder}
+          widths={columnWidths}
+          onWidths={setColumnWidths}
+        />
       ) : null}
       <div
         ref={containerRef}
@@ -519,7 +644,12 @@ export default function Grid({
               className={layout === "list" ? "w-full" : undefined}
             >
               {layout === "list" ? (
-                <ListRow item={item} isSelected={isSelected} onSelect={onSelect} />
+                <ListRow
+                  item={item}
+                  isSelected={isSelected}
+                  onSelect={onSelect}
+                  widths={columnWidths}
+                />
               ) : (
                 <Tile item={item} isSelected={isSelected} onSelect={onSelect} />
               )}

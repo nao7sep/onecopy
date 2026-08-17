@@ -29,6 +29,7 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
     byteSize: pathId * 10,
     hasCompanions: false,
     durationMs: null,
+    dirPaths: ["/photos"],
     ...over,
   };
 }
@@ -88,7 +89,7 @@ beforeEach(() => {
     rangeOrigin: null,
     rangeBase: new Set(),
     detail: null,
-    sortOrders: { media: "time", other: "name" },
+    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
     message: null,
   });
 });
@@ -122,7 +123,7 @@ describe("Home and End", () => {
   it("jump to the ends of the DISPLAYED order", async () => {
     const { container } = renderGrid();
     // Sorted by size DESCENDING, so the display order reverses the fixtures.
-    await act(async () => useItemsStore.setState({ sortOrders: { media: "size", other: "name" } }));
+    await act(async () => useItemsStore.setState({ sortOrders: { media: { order: "size", desc: true }, other: { order: "name", desc: false } } }));
     await anchor("h4");
 
     press(container, "Home");
