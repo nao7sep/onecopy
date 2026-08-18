@@ -2,7 +2,7 @@
   "name": "onecopy",
   "private": true,
   "version": "0.1.0",
-  "author": "Yoshinao Inoguchi <nao7sep@gmail.com>",
+  "author": "Yoshinao Inoguchi <yoshinao@inoguchi.com>",
   "license": "MIT",
   "type": "module",
   "scripts": {

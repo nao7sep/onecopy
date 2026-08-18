@@ -34,4 +34,4 @@ MIT © 2026 Yoshinao Inoguchi
 
 ## Contact
 
-nao7sep@gmail.com
+yoshinao@inoguchi.com

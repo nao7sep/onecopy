@@ -2,7 +2,7 @@
 name = "onecopy"
 version = "0.1.0"
 description = "An inbox-zero dedup handler for photos, videos, and other files"
-authors = ["Yoshinao Inoguchi <nao7sep@gmail.com>"]
+authors = ["Yoshinao Inoguchi <yoshinao@inoguchi.com>"]
 license = "MIT"
 repository = "https://github.com/nao7sep/onecopy"
 edition = "2021"
