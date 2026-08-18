@@ -10,12 +10,16 @@ export default function ConfirmDialog({
   title,
   message,
   confirmLabel,
+  cancelLabel = "Cancel",
   onConfirm,
   onCancel,
 }: {
   title: string;
   message: string;
   confirmLabel: string;
+  /** The dismiss label. Override where a more specific word reads better than
+   *  the default — "Keep editing" beside a Discard, for example. */
+  cancelLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -24,7 +28,7 @@ export default function ConfirmDialog({
       title={title}
       onClose={onCancel}
       widthClass="w-[400px]"
-      closeLabel="Cancel"
+      closeLabel={cancelLabel}
       primaryAction={
         <button
           // Marks this surface as one whose primary action destroys data, so

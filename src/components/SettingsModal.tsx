@@ -10,6 +10,7 @@ import {
   priorityFromState,
 } from "../utils/screens";
 import ModalShell from "./ModalShell";
+import ConfirmDialog from "./ConfirmDialog";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
@@ -287,27 +288,17 @@ export default function SettingsModal() {
         </div>
       ) : null}
       {confirmDiscard ? (
-        <ModalShell
+        <ConfirmDialog
           title="Discard changes?"
-          onClose={() => setConfirmDiscard(false)}
-          widthClass="w-[360px]"
-          closeLabel="Keep editing"
-          primaryAction={
-            <button
-              className="rounded bg-danger px-3 py-1 text-sm text-ink-inverted"
-              onClick={() => {
-                setConfirmDiscard(false);
-                close();
-              }}
-            >
-              Discard
-            </button>
-          }
-        >
-          <p className="text-sm text-ink">
-            Settings has unsaved edits. Discard them?
-          </p>
-        </ModalShell>
+          message="Settings has unsaved edits. Discard them?"
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          onConfirm={() => {
+            setConfirmDiscard(false);
+            close();
+          }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
       ) : null}
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Directories
