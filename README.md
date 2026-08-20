@@ -6,7 +6,7 @@ It is built for one painful, common situation: a decade of camera rolls, camera-
 
 Similarity grouping and the best-shot ordering are deliberately best-effort — tuned for the "several spares of the same moment" pattern, good enough to be a game changer, and never a substitute for your eyes. Nothing is ever deleted automatically.
 
-0.x, pre-release, under active development. macOS and Windows.
+0.x, under active development. macOS and Windows.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ The trash is write-only by design: **the app never empties or prunes it on its o
 
 ## Download
 
-Grab the installer or portable build for your OS from [Releases](https://github.com/nao7sep/onecopy/releases). The builds are unsigned: on macOS, right-click the app and choose **Open** the first time; on Windows, SmartScreen → **More info** → **Run anyway**. First launch opens a three-step setup: pick the directories to clean up, confirm your default timezone, choose where the preview cache lives.
+Grab the installer or portable build for your OS from [Releases](https://github.com/nao7sep/onecopy/releases/latest). The builds are unsigned: on macOS, right-click the app and choose **Open** the first time; on Windows, SmartScreen → **More info** → **Run anyway**. First launch opens a three-step setup: pick the directories to clean up, confirm your default timezone, choose where the preview cache lives.
 
 ## Run from source
 
