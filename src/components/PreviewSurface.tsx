@@ -70,7 +70,7 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
           />
           {!playbackFailed ? (
             <button
-              className="absolute rounded-full bg-background/80 px-4 py-2 text-sm text-ink hover:bg-background"
+              className="absolute whitespace-nowrap rounded-full bg-background/80 px-4 py-2 text-sm text-ink hover:bg-background"
               onClick={() => setPlaying(true)}
             >
               <Play size={14} className="mr-1 inline-block align-[-0.15em]" /> Play
