@@ -375,7 +375,12 @@ fn extract_ffmpeg(archive_path: &Path, staged: &Path) -> Result<(), String> {
 
 /// Everything that must be true of the binary BEFORE it reaches `bin/`:
 /// native architecture (macOS), executable bit, quarantine attribute
-/// stripped (macOS best-effort).
+/// stripped (macOS best-effort). Paired per platform, the way `volume.rs`
+/// pairs `platform_identity`: on Windows every `#[cfg]` block inside the old
+/// single body vanished and took the only use of `staged` with it, so one
+/// shared signature could be kept only by underscoring a parameter that is
+/// genuinely used on the platforms this work belongs to.
+#[cfg(unix)]
 fn make_runnable(staged: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -392,7 +397,6 @@ fn make_runnable(staged: &Path) -> Result<(), String> {
             return Err("downloaded binary carries no native arm64 slice".to_string());
         }
     }
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
@@ -408,9 +412,17 @@ fn make_runnable(staged: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Windows has no executable bit and no quarantine attribute, and the
+/// download is already the architecture the OS runs — nothing to prepare.
+#[cfg(not(unix))]
+fn make_runnable(_staged: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 /// True when the Mach-O header carries an arm64 slice: a thin 64-bit binary
 /// with CPU_TYPE_ARM64, or a fat binary listing one. A header parse instead
 /// of shelling to `lipo`, so the gate needs no developer tooling installed.
+#[cfg(target_os = "macos")]
 fn macho_has_arm64(header: &[u8]) -> bool {
     const CPU_ARM64: u32 = 0x0100_000C;
     if header.len() < 8 {
@@ -681,6 +693,7 @@ pub fn state(root: &Path) -> DependencyState {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macho_arm64_detection_covers_thin_fat_and_foreign() {
         // Thin arm64: MH_MAGIC_64 little-endian + CPU_TYPE_ARM64.

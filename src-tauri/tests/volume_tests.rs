@@ -1,6 +1,9 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
+// The only test here is macOS-only, so the import follows it: on Windows
+// this file compiles to nothing at all.
+#[cfg(target_os = "macos")]
 use onecopy_lib::volume::volume_identity;
 
 #[cfg(target_os = "macos")]

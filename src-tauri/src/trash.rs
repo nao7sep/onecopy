@@ -384,7 +384,9 @@ fn path_is_under_volume(file: &Path, volume_root: &Path) -> bool {
 }
 
 // Walks up to the nearest existing ancestor, so a just-deleted sibling or a
-// not-yet-created leaf never breaks volume detection.
+// not-yet-created leaf never breaks volume detection. Unix-only: the Windows
+// `volume_root_of` reads the path prefix and never touches the filesystem.
+#[cfg(unix)]
 fn nearest_existing(path: &Path) -> PathBuf {
     let mut current = path.to_path_buf();
     while !current.exists() {

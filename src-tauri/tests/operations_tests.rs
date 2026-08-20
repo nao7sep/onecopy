@@ -571,6 +571,11 @@ fn companion_conflict_withholds_the_post_action() {
     assert!(f.root.join("x.arw").exists(), "the RAW must survive");
 }
 
+// Unix-only, gated at the ITEM so Windows is honestly MISSING this coverage
+// rather than running it vacuously green: the failure is staged with a chmod
+// 0o000 that Windows has no equivalent for, and every assertion below depends
+// on that staging.
+#[cfg(unix)]
 #[test]
 fn companion_copy_failure_withholds_the_post_action() {
     let f = fixture("companion-copy-fail");
@@ -584,7 +589,6 @@ fn companion_copy_failure_withholds_the_post_action() {
     // Make the source RAW unreadable so every copy attempt fails. This is the
     // ENOSPC shape: deliver_one returns not-ok having pushed NO conflict, so
     // it is the failure the outcome could not previously express at all.
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
@@ -613,19 +617,16 @@ fn companion_copy_failure_withholds_the_post_action() {
     )
     .unwrap();
 
-    #[cfg(unix)]
-    {
-        assert_eq!(
-            outcome.post_action.deleted_files, 0,
-            "nothing may be deleted while a companion could not be copied"
-        );
-        assert!(
-            !outcome.undelivered.is_empty(),
-            "an undeliverable companion must be reported, not silently dropped"
-        );
-        assert!(f.root.join("x.jpg").exists(), "primary must survive");
-        assert!(f.root.join("x.arw").exists(), "the RAW must survive");
-    }
+    assert_eq!(
+        outcome.post_action.deleted_files, 0,
+        "nothing may be deleted while a companion could not be copied"
+    );
+    assert!(
+        !outcome.undelivered.is_empty(),
+        "an undeliverable companion must be reported, not silently dropped"
+    );
+    assert!(f.root.join("x.jpg").exists(), "primary must survive");
+    assert!(f.root.join("x.arw").exists(), "the RAW must survive");
 }
 
 #[test]
