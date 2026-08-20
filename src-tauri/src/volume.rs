@@ -18,17 +18,27 @@ pub fn volume_identity(path: &Path) -> Option<String> {
     platform_identity(&root)
 }
 
+/// `diskutil info` normally answers in milliseconds; it talks to
+/// diskarbitrationd and stats the mount, so a failing external drive or a stale
+/// network mount can block it indefinitely — which is this app's expected input,
+/// not an exotic one. Bounded like the `-version` probe in `binaries_manager`,
+/// and for the same reason: a wedged probe must not hold a check open forever.
+#[cfg(target_os = "macos")]
+const DISKUTIL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[cfg(target_os = "macos")]
 fn platform_identity(root: &Path) -> Option<String> {
-    let output = std::process::Command::new("diskutil")
-        .args(["info", "-plist"])
-        .arg(root)
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    let mut command = std::process::Command::new("diskutil");
+    command.args(["info", "-plist"]).arg(root);
+    // No cancel flag reaches here — every caller is a synchronous gate, so the
+    // idle bound is the whole protection. A killed or failed probe is simply an
+    // unreadable identity, which this module already degrades to honestly.
+    let run =
+        crate::subprocess::run_bounded_idle(command, &|| false, DISKUTIL_IDLE_TIMEOUT).ok()?;
+    if !run.status_ok {
         return None;
     }
-    extract_plist_string(&String::from_utf8_lossy(&output.stdout), "VolumeUUID")
+    extract_plist_string(&String::from_utf8_lossy(&run.stdout), "VolumeUUID")
 }
 
 /// Pulls `<key>NAME</key><string>VALUE</string>` out of plist XML by string
