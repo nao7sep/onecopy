@@ -312,5 +312,18 @@ export function toolsChip(
       role: "warning",
     };
   }
+  // The permanent informational line (fleet decision, 2026-08-21, superseding the
+  // earlier all-silent tuning): a present ffmpeg whose currency is unknown shows in
+  // normal muted ink so the user always has one standing path to notice tools may
+  // be stale — never a warning tint, and quiet only when a check confirmed current.
+  // Absent OPTIONAL models stay off the chip: their features surface the need at
+  // point of use, and the modal lists them.
+  const ffmpeg = ffmpegEntry(entries);
+  if (ffmpeg?.status === "installed-unchecked") {
+    return {
+      text: ffmpeg.installedVersion === null ? "Tool version unreadable" : "Tools not checked",
+      role: "neutral",
+    };
+  }
   return null;
 }

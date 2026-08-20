@@ -1,10 +1,13 @@
 // What the footer's managed-tools chip says, and how loudly.
 //
-// The managed-runtime-dependencies conventions make "Up to date" a silent
-// default and warn against permanent benign FYIs. Two developer decisions
-// (2026-08-17) shape the rest: an absent ffmpeg is a WARNING, not an FYI —
-// without it every video and every HEIC is a placeholder — and the chip
-// speaks for the whole registry, never as if ffmpeg were the only tool.
+// "Up to date" stays silent, warnings always show, and — the fleet decision of
+// 2026-08-21, superseding the earlier all-silent informational tuning — a present
+// ffmpeg whose currency is unknown shows PERMANENTLY in normal muted ink, so one
+// standing path always says the tools may be stale. Two earlier decisions
+// (2026-08-17) still shape the rest: an absent ffmpeg is a WARNING, not an FYI —
+// without it every video and every HEIC is a placeholder — and the chip speaks
+// for the whole registry, never as if ffmpeg were the only tool. Absent OPTIONAL
+// models stay off the chip; their features surface the need at point of use.
 
 import { describe, expect, it } from "vitest";
 import { toolsChip, type DependencyState } from "../../src/state/binaries-store";
@@ -15,7 +18,9 @@ function entry(id: string, status: DependencyState["status"]): DependencyState {
     label: id,
     kind: id === "ffmpeg" ? "binary" : "model",
     status,
-    installedVersion: null,
+    // Read from the artifact: a present entry reports itself unless a test
+    // overrides it to model the unreadable case.
+    installedVersion: status === "not-installed" ? null : "9.0",
     facts: { latestKnownVersion: null, lastCheckedAtUtc: null },
     path: "",
     checkable: id === "ffmpeg",
@@ -28,10 +33,27 @@ describe("the footer's managed-tools chip", () => {
     expect(toolsChip(false, "", [entry("ffmpeg", "up-to-date")])).toBeNull();
   });
 
-  it("says nothing when installed but never checked", () => {
-    // Update checks default OFF, so this is where most installs sit forever —
-    // showing it permanently would be exactly the nagging the convention names.
-    expect(toolsChip(false, "", [entry("ffmpeg", "installed-unchecked")])).toBeNull();
+  it("shows a calm, normal-ink line when installed but never checked", () => {
+    // Update checks default OFF, so many installs sit here — the line is the one
+    // standing path to notice that, in neutral ink so it never nags as a warning.
+    expect(toolsChip(false, "", [entry("ffmpeg", "installed-unchecked")])).toEqual({
+      text: "Tools not checked",
+      role: "neutral",
+    });
+  });
+
+  it("names the unreadable case, which only re-acquiring can clear", () => {
+    const unreadable = { ...entry("ffmpeg", "installed-unchecked"), installedVersion: null };
+    expect(toolsChip(false, "", [unreadable])).toEqual({
+      text: "Tool version unreadable",
+      role: "neutral",
+    });
+  });
+
+  it("keeps absent optional models off the chip", () => {
+    expect(
+      toolsChip(false, "", [entry("ffmpeg", "up-to-date"), entry("whisper-large-v3-turbo", "not-installed")]),
+    ).toBeNull();
   });
 
   it("says nothing before the state has loaded", () => {
