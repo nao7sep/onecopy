@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
+    "check": "npm run typecheck && npm test && cargo test --manifest-path src-tauri/Cargo.toml",
     "test:watch": "vitest",
     "tauri": "tauri",
     "test:coverage": "vitest run --coverage",

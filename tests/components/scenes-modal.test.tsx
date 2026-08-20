@@ -27,6 +27,8 @@ function video(pathId: number): SectionItem {
     byteSize: 5000,
     hasCompanions: false,
     durationMs: 30000,
+    namesDiffer: false,
+    dirPaths: [`/Volumes/Media/clips`],
   };
 }
 

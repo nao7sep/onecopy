@@ -25,6 +25,9 @@ function item(pathId: number): SectionItem {
     byteSize: 1000,
     hasCompanions: false,
     durationMs: null,
+    namesDiffer: false,
+    // copyCount is 2, so two live directories.
+    dirPaths: [`/Volumes/A/photos`, `/Volumes/B/photos`],
   };
 }
 

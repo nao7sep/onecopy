@@ -10,7 +10,6 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  SLOT_KEYS,
   slotIndexForKey,
   useComparisonStore,
 } from "../../src/state/comparison-store";
@@ -49,21 +48,36 @@ describe("slot key resolution", () => {
 
 describe("keeper flags", () => {
   it("survive a zoom reset", () => {
-    // Twelve members so slot 9 ("0") exists and is a real photo.
-    const slots = Array.from({ length: 12 }, (_, i) => ({
+    // Twelve REAL members, all visible on one page, so slot 9 ("0") resolves to
+    // h9. Seeding the store properly is what gives this test teeth: with an
+    // empty member list `toggleKeep` early-returns and the assertion below
+    // passes however broken the guard is.
+    const members = Array.from({ length: 12 }, (_, i) => ({
       hash: `h${i}`,
-      slotKey: SLOT_KEYS[i] ?? "?",
-      sharpness: null,
       fileName: `IMG_${i}.jpg`,
+      width: 100,
+      height: 100,
+      byteSize: 1000,
+      sharpness: null,
+      faceScore: null,
+      copyCount: 1,
+      hasThumb: true,
     }));
     useComparisonStore.setState({
       open: true,
-      slots: slots as never,
-      queue: [],
+      members,
       kept: new Set(["h9"]),
+      page: 0,
+      shortlist: false,
+      shortlistPage: 0,
+      capacities: [members.length],
     });
 
-    // The user pressed Cmd+0 to reset zoom. Nothing about the keepers may move.
+    // The property itself: a modified "0" is a zoom reset, not slot ten.
+    expect(slotIndexFor({ key: "0", metaKey: true })).toBe(-1);
+
+    // And end to end — were the guard ever to hand back slot 9, this would
+    // un-keep h9 and the assertion would fail.
     const index = slotIndexFor({ key: "0", metaKey: true });
     if (index >= 0) useComparisonStore.getState().toggleKeep(index);
 

@@ -155,6 +155,8 @@ describe("finishing a family", () => {
       byteSize: 1000,
       hasCompanions: false,
       durationMs: null,
+      namesDiffer: false,
+      dirPaths: [`/Volumes/A/photos`],
       ...over,
     };
   }
