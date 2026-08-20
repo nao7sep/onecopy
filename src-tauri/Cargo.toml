@@ -39,7 +39,7 @@ tauri-plugin-dialog = "2.7"
 # Native message box for a startup halt: the app has no AppHandle yet when the Tauri
 # build fails, so the dialog plugin is unusable at exactly the moment a halt must be
 # reported. rfd is what that plugin uses underneath.
-rfd = "0.16"
+rfd = "0.17"
 tauri-plugin-single-instance = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
