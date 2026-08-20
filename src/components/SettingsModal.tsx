@@ -15,6 +15,7 @@ import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
 import { Plus } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 /** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
  * comparison). Persisted as app STATE, not part of the config draft — screen
@@ -106,7 +107,7 @@ function ScreensSection() {
               disabled={index === 0}
               onClick={() => move(index, -1)}
             >
-              ↑
+              <ChevronUp size={14} />
             </Button>
             <Button
               variant="ghost"
@@ -114,7 +115,7 @@ function ScreensSection() {
               disabled={index === ordered.length - 1}
               onClick={() => move(index, 1)}
             >
-              ↓
+              <ChevronDown size={14} />
             </Button>
           </span>
         </div>

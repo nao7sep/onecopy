@@ -51,7 +51,7 @@ import AboutModal from "./components/AboutModal";
 import ScenesModal from "./components/ScenesModal";
 import TrashModal from "./components/TrashModal";
 import ConfirmDialog from "./components/ConfirmDialog";
-import { Menu as MenuIcon } from "lucide-react";
+import { Menu as MenuIcon, X } from "lucide-react";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
@@ -829,7 +829,7 @@ export default function App() {
                 className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md bg-surface/80 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
                 onClick={() => usePreviewStore.getState().close()}
               >
-                ✕
+                <X size={14} />
               </button>
             </div>
           </>

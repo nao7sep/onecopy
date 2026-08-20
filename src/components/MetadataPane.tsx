@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { formatBytes, stripUrl, thumbUrl } from "../models/items";
@@ -113,7 +113,7 @@ function SimilarSection({ hash }: { hash: string }) {
                   });
               }}
             >
-              ✕
+              <X size={12} />
             </button>
           </span>
         ))}

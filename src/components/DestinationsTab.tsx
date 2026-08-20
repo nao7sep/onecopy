@@ -7,6 +7,7 @@ import {
 import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
 import ConfirmDialog from "./ConfirmDialog";
 import ModalShell from "./ModalShell";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -135,7 +136,7 @@ function DirNode({
           onClick={() => void toggleExpand(entry.path)}
           title={hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
         >
-          {hasChildren ? (isOpen ? "▾" : "▸") : "·"}
+          {hasChildren ? (isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />) : "\u00b7"}
         </button>
         <span
           className={`min-w-0 flex-1 truncate ${
@@ -189,7 +190,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
           className="w-4 shrink-0 pt-0.5 text-ink-muted"
           onClick={() => void toggleExpand(root)}
         >
-          {isOpen ? "▾" : "▸"}
+          {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </button>
         {/* Roots get TWO lines — name, then the full path in muted small
             text. Only here: a root is where truncation actually hurt (the

@@ -19,6 +19,7 @@ import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
 import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -250,7 +251,9 @@ function ListHeader({
               title={`Sort by ${column.label.toLowerCase()} (again to reverse)`}
             >
               {column.label}
-              {sort.order === column.order ? (sort.desc ? " ▾" : " ▴") : ""}
+              {sort.order === column.order ? (
+                sort.desc ? <ChevronDown size={12} className="ml-0.5 inline-block" /> : <ChevronUp size={12} className="ml-0.5 inline-block" />
+              ) : null}
             </button>
           ) : (
             <span className="min-w-0 flex-1 truncate text-left">{column.label}</span>
@@ -599,7 +602,7 @@ export default function Grid({
           // Re-picking the active order toggles direction (the store's rule).
           onClick={() => setSortOrder(sortChoice.order)}
         >
-          {sortChoice.desc ? "▾" : "▴"}
+          {sortChoice.desc ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
       </div>
       {layout === "list" ? (

@@ -20,6 +20,7 @@ import {
 } from "../models/items";
 import ZoomableImage from "./ZoomableImage";
 import type { ItemDetail } from "../state/items-store";
+import { Play } from "lucide-react";
 
 function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
   const [playing, setPlaying] = useState(false);
@@ -72,7 +73,7 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
               className="absolute rounded-full bg-background/80 px-4 py-2 text-sm text-ink hover:bg-background"
               onClick={() => setPlaying(true)}
             >
-              ▶ Play
+              <Play size={14} className="mr-1 inline-block align-[-0.15em]" /> Play
             </button>
           ) : null}
         </div>

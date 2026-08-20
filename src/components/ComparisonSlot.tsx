@@ -1,5 +1,6 @@
 import { factsLine, previewUrl } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
+import { Focus, Smile } from "lucide-react";
 
 // One comparison slot, shared by the main comparison surface and the
 // secondary per-monitor windows: preview image, the GLOBAL slot key, keeper
@@ -83,10 +84,14 @@ export default function ComparisonSlot({
                 (> 0) earns the badge; scored-faceless and unscored show
                 nothing, so face-free libraries never see the column. */}
             {member.faceScore !== null && member.faceScore > 0 ? (
-              <span title="Face score (advisory)">☺ {Math.round(member.faceScore * 100)}</span>
+              <span className="flex items-center gap-1" title="Face score (advisory)">
+                <Smile size={12} aria-hidden="true" /> {Math.round(member.faceScore * 100)}
+              </span>
             ) : null}
             {member.sharpness !== null ? (
-              <span title="Sharpness (advisory)">◐ {Math.round(member.sharpness)}</span>
+              <span className="flex items-center gap-1" title="Sharpness (advisory)">
+                <Focus size={12} aria-hidden="true" /> {Math.round(member.sharpness)}
+              </span>
             ) : null}
           </span>
         </span>
