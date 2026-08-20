@@ -5,31 +5,61 @@ use onecopy_lib::binaries::*;
 
 #[test]
 fn status_derivation_covers_all_four_states() {
-    let facts = |installed: Option<&str>, latest: Option<&str>| BinaryFacts {
-        installed_version: installed.map(String::from),
+    let facts = |latest: Option<&str>| BinaryFacts {
         latest_known_version: latest.map(String::from),
         last_checked_at_utc: None,
     };
     assert_eq!(
-        derive_status(false, &facts(Some("7.1"), Some("7.1"))),
+        derive_status(false, Some("7.1"), &facts(Some("7.1"))),
         BinaryStatus::NotInstalled
     );
     assert_eq!(
-        derive_status(true, &facts(Some("7.0"), Some("7.1"))),
+        derive_status(true, Some("7.0"), &facts(Some("7.1"))),
         BinaryStatus::UpdateAvailable
     );
     assert_eq!(
-        derive_status(true, &facts(Some("7.1"), Some("7.1"))),
+        derive_status(true, Some("7.1"), &facts(Some("7.1"))),
         BinaryStatus::UpToDate
     );
     assert_eq!(
-        derive_status(true, &facts(Some("7.1"), None)),
+        derive_status(true, Some("7.1"), &facts(None)),
+        BinaryStatus::InstalledUnchecked
+    );
+    // A present artifact whose version could not be read: nothing to compare,
+    // so it holds at installed-unchecked even with a latest in hand — it is
+    // never dressed up as up to date.
+    assert_eq!(
+        derive_status(true, None, &facts(Some("7.1"))),
         BinaryStatus::InstalledUnchecked
     );
     assert_eq!(
-        derive_status(true, &facts(None, None)),
+        derive_status(true, None, &facts(None)),
         BinaryStatus::InstalledUnchecked
     );
+}
+
+#[test]
+fn version_normalization_puts_both_sides_in_one_form() {
+    // martin-riedl appends its builder URL to ffmpeg's version; release tags
+    // carry a leading v the binary does not.
+    assert_eq!(normalize_version("8.1.2-https://www.martin-riedl.de"), "8.1.2");
+    assert_eq!(normalize_version("v9.0.1"), "9.0.1");
+    assert_eq!(normalize_version("  9.0.1  "), "9.0.1");
+    // A hyphenated build suffix that is NOT a URL is part of the version.
+    assert_eq!(normalize_version("7.0.1-tessus"), "7.0.1-tessus");
+}
+
+#[test]
+fn ffmpeg_banner_parsing_reads_the_real_output() {
+    let banner = "ffmpeg version 8.1.2-https://www.martin-riedl.de Copyright (c) 2000-2026 the FFmpeg developers\n\
+built with Apple clang version 14.0.0\n";
+    assert_eq!(parse_ffmpeg_version(banner).as_deref(), Some("8.1.2"));
+
+    // Unrecognized output yields None rather than becoming a version — a probe
+    // failure must never be reported as a version, let alone as up to date.
+    assert_eq!(parse_ffmpeg_version("ffprobe version 8.1.2 Copyright"), None);
+    assert_eq!(parse_ffmpeg_version("command not found"), None);
+    assert_eq!(parse_ffmpeg_version(""), None);
 }
 
 #[test]

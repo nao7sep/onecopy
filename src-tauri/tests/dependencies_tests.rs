@@ -66,12 +66,10 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
 fn entries_share_the_facts_file_without_sharing_fate() {
     let dir = home("fate");
     let ffmpeg = BinaryFacts {
-        installed_version: Some("9.0".into()),
         latest_known_version: Some("9.0".into()),
         last_checked_at_utc: Some("2026-08-01T00:00:00.000Z".into()),
     };
     let whisper = BinaryFacts {
-        installed_version: Some("1fc70f774d38".into()),
         latest_known_version: Some("1fc70f774d38".into()),
         last_checked_at_utc: Some("2026-08-02T00:00:00.000Z".into()),
     };
@@ -122,35 +120,42 @@ fn a_models_presence_check_is_size_exact() {
 
 #[test]
 #[serial_test::serial(backup_store)]
-fn a_repinned_model_surfaces_as_update_available_with_no_check_at_all() {
+fn a_models_state_is_read_off_the_file_and_needs_no_check_at_all() {
     // A model has no upstream to ask: "latest" is the pin compiled into this
-    // build. So `state_of` DERIVES it, an app update that re-pins shows
-    // update-available on its own, and `check_entry` refuses the entry
-    // outright rather than stamping a lookup that never happened.
-    let dir = home("repin");
+    // build, so `state_of` DERIVES it and `check_entry` refuses the entry
+    // outright rather than stamping a lookup that never happened. Its INSTALLED
+    // version comes from the file, by the same size-exact test that decides
+    // presence — bytes matching the pin ARE the pin — so the facts store cannot
+    // contradict what is on disk, however stale it is.
+    let dir = home("model-state");
     let spec = spec_of("whisper-large-v3-turbo").unwrap();
 
-    // Simulate an install under an OLDER pin — including a stale "latest",
-    // which the derivation must override rather than trust.
-    let old = BinaryFacts {
-        installed_version: Some("aaaaaaaaaaaa".into()),
+    // A facts file left behind by an older pin, whose stale "latest" the
+    // derivation must override rather than trust.
+    let stale = BinaryFacts {
         latest_known_version: Some("aaaaaaaaaaaa".into()),
         last_checked_at_utc: Some("2026-08-01T00:00:00.000Z".into()),
     };
-    save_facts_for(dir.path(), spec.id, &old).unwrap();
-    // Present on disk at the pinned size, so status derivation sees installed.
+    save_facts_for(dir.path(), spec.id, &stale).unwrap();
+    // Present on disk at the pinned size — this IS the pinned artifact.
     let target = installed_path(dir.path(), spec);
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     let file = std::fs::File::create(&target).unwrap();
     file.set_len(spec.pinned.as_ref().unwrap().bytes).unwrap();
 
+    let pin_digest = &spec.pinned.as_ref().unwrap().sha256[..12];
     let state = state_of(dir.path(), spec);
-    assert_eq!(state.status, BinaryStatus::UpdateAvailable, "no check needed");
+    assert_eq!(
+        state.installed_version.as_deref(),
+        Some(pin_digest),
+        "the file identifies itself; the stale record does not get a vote"
+    );
     assert_eq!(
         state.facts.latest_known_version.as_deref(),
-        Some(&spec.pinned.as_ref().unwrap().sha256[..12]),
+        Some(pin_digest),
         "latest is derived from the pin, not from stored facts"
     );
+    assert_eq!(state.status, BinaryStatus::UpToDate, "no check needed");
     assert!(!state.checkable, "a model has no upstream to ask");
     assert!(spec_of("ffmpeg").is_some_and(|_| state_of(dir.path(), spec_of("ffmpeg").unwrap()).checkable));
 
@@ -162,6 +167,34 @@ fn a_repinned_model_surfaces_as_update_available_with_no_check_at_all() {
         Some("2026-08-01T00:00:00.000Z"),
         "a refused check writes nothing"
     );
+}
+
+#[test]
+fn a_model_pinned_elsewhere_has_no_installed_version_to_report() {
+    // The file on disk is not the artifact this build pins, so presence is
+    // false — and with no artifact there is no version to read. The pair moves
+    // together; there is no way to be present without a version, or versioned
+    // without being present.
+    let dir = home("other-pin");
+    let spec = spec_of("whisper-large-v3-turbo").unwrap();
+    let target = installed_path(dir.path(), spec);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"a model from an older pin").unwrap();
+
+    let state = state_of(dir.path(), spec);
+    assert_eq!(state.status, BinaryStatus::NotInstalled);
+    assert_eq!(state.installed_version, None);
+}
+
+#[test]
+fn the_version_sidecar_is_a_stem_json_sibling_of_the_binary() {
+    // Where a binary cannot report a comparable version, the install records it
+    // beside the binary — `bin/ffmpeg.json`, stem plus role extension, never a
+    // suffix dot-appended to the full filename (`ffmpeg.exe.json`).
+    let dir = home("sidecar");
+    let sidecar = version_sidecar_path(dir.path());
+    assert_eq!(sidecar.parent(), ffmpeg_path(dir.path()).parent());
+    assert_eq!(sidecar.file_name().unwrap(), "ffmpeg.json");
 }
 
 #[test]

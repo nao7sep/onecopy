@@ -11,6 +11,25 @@
 //! update-available exactly like a new ffmpeg build does — and a model check
 //! needs no network at all, because the app itself is the source of "latest".
 //!
+//! The INSTALLED version of every entry is read from the artifact, never from
+//! the facts store (managed-runtime-dependencies-conventions): a fact about a
+//! file kept away from that file drifts the moment an install does not write
+//! the record, and a present artifact with no recorded version reads as
+//! "installed (not checked)" forever — never offering the update that exists.
+//! Three reads, one rule (whatever the artifact itself can be made to say):
+//!   ffmpeg, macOS    run it and parse its banner. martin-riedl builds a
+//!                    numbered upstream release and the binary names that same
+//!                    release, so one namespace covers both sides.
+//!   ffmpeg, Windows  read `bin/ffmpeg.json`, written beside the binary at
+//!                    install. BtbN ships rolling master builds (`N-119123-g…`)
+//!                    under a release named by build time — two namespaces, so
+//!                    probing would report a phantom update forever.
+//!   a model          the size-exact match against its pin, which is the SAME
+//!                    stat that establishes presence. A pinned artifact whose
+//!                    bytes match the pin IS that pin, so a sidecar would only
+//!                    restate what the stat already proved — and could then
+//!                    disagree with it, which is the drift being removed.
+//!
 //! Endpoint shapes verified live at build time:
 //!   macOS arm64  https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip
 //!                → 307 to /download/macos/arm64/<epoch>_<version>/ffmpeg.zip,
@@ -26,7 +45,7 @@ use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
 use crate::binaries::{self, BinaryFacts, BinaryStatus};
-use crate::{logging, nanoid, storage};
+use crate::{logging, nanoid, storage, subprocess};
 
 // Subpath names are owned by the one resolver module (storage-path
 // conventions); re-exported here so existing call sites keep their imports.
@@ -215,6 +234,94 @@ pub fn load_facts(root: &Path) -> BinaryFacts {
     load_facts_for(root, "ffmpeg")
 }
 
+// --- The installed version, read from the artifact ---
+
+/// `bin/ffmpeg.json` — the version sidecar beside `bin/ffmpeg[.exe]`. Stem
+/// plus the role extension, never a suffix dot-appended to the full filename
+/// (so it is `ffmpeg.json`, not `ffmpeg.exe.json`), per the derived-filename
+/// grammar.
+pub fn version_sidecar_path(root: &Path) -> PathBuf {
+    let name = ffmpeg_file_name();
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    root.join(BIN_DIR_NAME).join(format!("{stem}.json"))
+}
+
+/// Whether this platform's ffmpeg can report a version comparable with what
+/// its source calls "latest" (see the module header).
+fn ffmpeg_reports_its_own_version() -> bool {
+    !cfg!(windows)
+}
+
+/// Records a just-published binary's version beside it. Called only where the
+/// binary cannot report a comparable version, and only AFTER the binary itself
+/// has landed: a crash between the two leaves a present binary reading
+/// version-unknown, which offers a re-acquire — where writing the sidecar
+/// first would leave the OLD binary wearing the NEW version's label and
+/// reading as up to date.
+fn write_version_sidecar(root: &Path, version: &str) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "version": version,
+        "installedAt": logging::now_iso_millis(),
+    });
+    let mut text = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+    text.push('\n');
+    // not recorded: a sidecar colocated in the binary-bearing bin/ directory,
+    // describing the re-fetchable binary it sits beside — meaningless without that
+    // binary (itself excluded as a re-fetchable binary) and rewritten by the next
+    // install (data-backup conventions).
+    storage::write_atomic_unrecorded(&version_sidecar_path(root), text.as_bytes())
+}
+
+fn read_version_sidecar(root: &Path) -> Option<String> {
+    let bytes = std::fs::read(version_sidecar_path(root)).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let version = value.get("version")?.as_str()?.trim();
+    (!version.is_empty()).then(|| binaries::normalize_version(version))
+}
+
+/// Runs the installed ffmpeg and reads the version out of its banner. Bounded
+/// like every other subprocess in the app, so a wedged binary cannot hang the
+/// caller; a failure to run, a non-zero exit, or unrecognized output all yield
+/// None — present-but-unreadable, which is not the same as absent.
+fn probe_ffmpeg_version(root: &Path) -> Option<String> {
+    let mut command = std::process::Command::new(ffmpeg_path(root));
+    command.arg("-version");
+    let run = subprocess::run_bounded(command, &|| false).ok()?;
+    if !run.status_ok {
+        return None;
+    }
+    binaries::parse_ffmpeg_version(&String::from_utf8_lossy(&run.stdout))
+}
+
+/// The ffmpeg probe is a subprocess spawn, so its answer is held for the
+/// process and re-read only after an install replaces the binary — it must
+/// never run per render, and `state_of` is called on every status read.
+static INSTALLED_FFMPEG_VERSION: std::sync::LazyLock<
+    std::sync::Mutex<Option<Option<String>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+fn forget_installed_ffmpeg_version() {
+    *INSTALLED_FFMPEG_VERSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+fn installed_ffmpeg_version(root: &Path) -> Option<String> {
+    let mut cached = INSTALLED_FFMPEG_VERSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(known) = cached.as_ref() {
+        return known.clone();
+    }
+    let read = if ffmpeg_reports_its_own_version() {
+        probe_ffmpeg_version(root)
+    } else {
+        read_version_sidecar(root)
+    };
+    *cached = Some(read.clone());
+    read
+}
+
 // --- Resolution ---
 
 pub struct Resolved {
@@ -253,6 +360,7 @@ pub fn resolve_latest() -> Result<Resolved, String> {
             .map_err(|e| e.to_string())?;
         let final_uri = response.get_uri().to_string();
         let version = binaries::parse_martin_build_version(response.get_uri().path())
+            .map(|v| binaries::normalize_version(&v))
             .ok_or_else(|| format!("no <epoch>_<version> segment in {final_uri}"))?;
         Ok(Resolved {
             version,
@@ -272,11 +380,12 @@ pub fn resolve_latest() -> Result<Resolved, String> {
             .map_err(|e| e.to_string())?;
         let release: serde_json::Value =
             serde_json::from_str(&body).map_err(|e| e.to_string())?;
-        let version = release
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("latest")
-            .to_string();
+        // The release NAME, not the tag: BtbN's tag is the constant `latest`, a
+        // rolling pointer that would compare equal to itself forever and never
+        // offer an update. The name carries the build moment and does change.
+        let version = binaries::normalize_version(
+            release.get("name").and_then(|n| n.as_str()).unwrap_or("latest"),
+        );
         let asset_url = |name: &str| -> Option<String> {
             release.get("assets")?.as_array()?.iter().find_map(|a| {
                 (a.get("name")?.as_str()? == name)
@@ -519,10 +628,13 @@ pub fn install_entry(
                 // Replace-in-place over any previous model (same volume).
                 // not recorded: the model file is a re-downloadable artifact.
                 std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
-                let version = pin_version(pinned);
+                // Nothing about what is now installed is persisted: the model
+                // file's own size against the pin is what identifies it, read on
+                // every status. Only the latest is recorded — and for a model that
+                // is the pin compiled into this build, so the write exists purely
+                // to keep the facts file's shape uniform across entry kinds.
                 let facts = BinaryFacts {
-                    installed_version: Some(version.clone()),
-                    latest_known_version: Some(version),
+                    latest_known_version: Some(pin_version(pinned)),
                     last_checked_at_utc: Some(logging::now_iso_millis()),
                 };
                 save_facts_for(root, id, &facts)?;
@@ -578,8 +690,20 @@ pub fn install_or_update(
         // not recorded: the installed executable is a re-downloadable binary.
         std::fs::rename(&staged, &target).map_err(|e| e.to_string())?;
 
+        // The binary has landed. Where it cannot report a comparable version,
+        // record the resolved one beside it — AFTER the publish, so a failure
+        // here leaves a present binary reading version-unknown (which offers a
+        // re-acquire) rather than an old binary wearing the new version's label.
+        if !ffmpeg_reports_its_own_version() {
+            write_version_sidecar(root, &resolved.version)?;
+        }
+        // Drop the cached read: the artifact changed, and the next status must
+        // see it.
+        forget_installed_ffmpeg_version();
+
+        // Only the upstream fact is persisted. What is now installed is read back
+        // from the binary itself.
         let facts = BinaryFacts {
-            installed_version: Some(resolved.version.clone()),
             latest_known_version: Some(resolved.version.clone()),
             last_checked_at_utc: Some(logging::now_iso_millis()),
         };
@@ -633,6 +757,11 @@ pub struct DependencyState {
     pub label: String,
     pub kind: DependencyKind,
     pub status: BinaryStatus,
+    /// Read from the artifact on every status — the binary's own banner, the
+    /// sidecar beside it, or a model's size-exact match against its pin. None
+    /// on a present entry means the version could not be read: not absent, and
+    /// never dressed up as up to date.
+    pub installed_version: Option<String>,
     pub facts: BinaryFacts,
     pub path: String,
     /// True when this entry's "latest" is DISCOVERABLE — a binary resolved
@@ -667,12 +796,25 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
                 .unwrap_or(false)
         }
     };
+    // The installed version comes from the artifact, and only when there IS an
+    // artifact. For a model that is the very stat presence was decided by: bytes
+    // matching the pin ARE the pin, so presence and version cannot disagree. For
+    // the binary it is the cached probe (or sidecar) read.
+    let installed_version = if !present {
+        None
+    } else {
+        match spec.pinned.as_ref() {
+            Some(pinned) => Some(pin_version(pinned)),
+            None => installed_ffmpeg_version(root),
+        }
+    };
     DependencyState {
         id: spec.id.to_string(),
         label: spec.label.to_string(),
         kind: spec.kind,
-        status: binaries::derive_status(present, &facts),
+        status: binaries::derive_status(present, installed_version.as_deref(), &facts),
         path: path.to_string_lossy().to_string(),
+        installed_version,
         facts,
         checkable: matches!(spec.kind, DependencyKind::Binary),
         released: spec.pinned.as_ref().map(|p| p.released.to_string()),
@@ -748,7 +890,6 @@ mod tests {
             .tempdir()
             .unwrap();
         let facts = BinaryFacts {
-            installed_version: Some("9.0".into()),
             latest_known_version: Some("9.1".into()),
             last_checked_at_utc: Some("2026-08-08T12:00:00.000Z".into()),
         };
@@ -786,7 +927,7 @@ mod tests {
             eprintln!("[{phase}] {detail}");
         })
         .expect("live install should succeed");
-        assert!(facts.installed_version.is_some());
+        assert!(facts.latest_known_version.is_some());
 
         let path = ffmpeg_path(dir.path());
         assert!(path.is_file());
@@ -798,6 +939,13 @@ mod tests {
         let banner = String::from_utf8_lossy(&output.stdout);
         assert!(banner.starts_with("ffmpeg version"), "banner: {banner}");
 
-        assert_eq!(state(dir.path()).status, BinaryStatus::UpToDate);
+        // The installed version is READ BACK off the binary just published, and
+        // it is the version the resolve named — the whole point of the design.
+        let state = state(dir.path());
+        assert_eq!(
+            state.installed_version.as_deref(),
+            facts.latest_known_version.as_deref(),
+        );
+        assert_eq!(state.status, BinaryStatus::UpToDate);
     }
 }

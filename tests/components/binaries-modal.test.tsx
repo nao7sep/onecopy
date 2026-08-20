@@ -25,8 +25,10 @@ function entry(
     label: id,
     kind: isBinary ? "binary" : "model",
     status,
+    // Read from the artifact, not from facts — so it stands beside them, not
+    // inside them.
+    installedVersion: status === "not-installed" ? null : isBinary ? "9.0" : "1fc70f774d38",
     facts: {
-      installedVersion: status === "not-installed" ? null : isBinary ? "9.0" : "1fc70f774d38",
       latestKnownVersion: status === "not-installed" ? null : isBinary ? "9.0" : "1fc70f774d38",
       lastCheckedAtUtc: isBinary ? "2026-08-17T00:00:00.000Z" : null,
     },
@@ -101,6 +103,23 @@ describe("installing everything", () => {
       .filter((c) => c.command === "binaries_install")
       .map((c) => c.args.id);
     expect(installed.sort()).toEqual(["ffmpeg", "whisper-large-v3-turbo"]);
+  });
+});
+
+// The version is read off the artifact, so a present entry can now be one whose
+// artifact would not answer — the binary will not run, or its sidecar is gone.
+// That is not absent and is never dressed up as current: the row stays
+// installed-unchecked and offers the only move that fixes it.
+describe("an entry whose version could not be read", () => {
+  it("offers Update, which a merely-unchecked entry does not", () => {
+    seed([entry("ffmpeg", "installed-unchecked", { installedVersion: null })]);
+    render(<BinariesModal />);
+    expect(buttons("Update")).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("Up to date");
+
+    seed([entry("ffmpeg", "installed-unchecked")]);
+    render(<BinariesModal />);
+    expect(buttons("Update")).toHaveLength(0);
   });
 });
 

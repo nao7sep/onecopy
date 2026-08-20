@@ -40,7 +40,7 @@ function statusLabel(entry: DependencyState): string {
 function factLine(entry: DependencyState): string | null {
   const released = entry.released !== null ? `Released ${entry.released}` : null;
   if (entry.status === "not-installed") return released;
-  const installed = entry.facts.installedVersion;
+  const installed = entry.installedVersion;
   const latest = entry.facts.latestKnownVersion;
   const version =
     entry.status === "update-available" && installed !== null && latest !== null
@@ -63,10 +63,16 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const checkAll = useBinariesStore((s) => s.checkAll);
   const installing = progress !== undefined;
 
+  // Install when missing, Update when a newer version is known — and Update
+  // again when a present entry's own version could not be read, which is the
+  // only way out of that row: a check resolves the LATEST, so it can never
+  // clear an unreadable INSTALLED version, and re-acquiring is what replaces
+  // the copy that would not answer.
   const action =
     entry.status === "not-installed"
       ? "Install"
-      : entry.status === "update-available"
+      : entry.status === "update-available" ||
+          (entry.status === "installed-unchecked" && entry.installedVersion === null)
         ? "Update"
         : null;
   const fact = factLine(entry);

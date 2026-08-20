@@ -53,7 +53,7 @@ fn live_video_derive() {
     let root = dir.path();
     let facts = binaries_manager::install_or_update(root, |p, d| eprintln!("[{p}] {d}"))
         .expect("ffmpeg install");
-    eprintln!("ffmpeg {:?}", facts.installed_version);
+    eprintln!("ffmpeg {:?}", facts.latest_known_version);
     let ffmpeg = binaries_manager::ffmpeg_path(root);
 
     // Synthesize a 30 s test clip.

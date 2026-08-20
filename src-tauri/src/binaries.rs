@@ -8,21 +8,32 @@
 //!
 //! On-disk layout (the conventions' standard tree):
 //!   `<root>/bin/ffmpeg[.exe]`        the installed executable
+//!   `<root>/bin/ffmpeg.json`         its version sidecar, where the binary
+//!                                    cannot report a comparable version
 //!   `<root>/temp/…`                  download staging, wiped at launch
 //!   `<root>/dependencies.json`       recorded facts, its own store
 //!
-//! Facts persist only what cannot be re-derived: `installedVersion`,
-//! `latestKnownVersion`, `lastCheckedAtUtc`. Presence is re-scanned from disk;
-//! a FAILED check writes nothing (the honest-state rule), so "up to date"
-//! always means a check actually succeeded.
+//! Facts persist only what cannot be re-derived, and both survivors are
+//! NETWORK facts with no on-disk source: `latestKnownVersion` and
+//! `lastCheckedAtUtc`. Presence is re-scanned from disk, and so is the
+//! INSTALLED version — read from the artifact itself, never persisted beside
+//! a copy of it. `installedVersion` used to live in the facts store, one file
+//! away from the thing it described, where any install that failed to write
+//! the record stranded a present artifact as permanently unversioned; the
+//! derivation can only read that as "installed (not checked)", so the update
+//! that exists is never offered. A FAILED check still writes nothing (the
+//! honest-state rule), so "up to date" always means a check actually
+//! succeeded.
 
 use serde::{Deserialize, Serialize};
 
 /// Persisted facts for one managed binary (`dependencies.json` value shape).
+///
+/// An older file's `installedVersion` is simply not read here, so it drops on
+/// the next write (the app is pre-release; no migration code).
 #[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct BinaryFacts {
-    pub installed_version: Option<String>,
     pub latest_known_version: Option<String>,
     pub last_checked_at_utc: Option<String>,
 }
@@ -61,16 +72,57 @@ pub fn is_usable_binary(path: &std::path::Path) -> bool {
     }
 }
 
-/// Derives the display status from usable-presence plus the persisted facts.
-pub fn derive_status(present: bool, facts: &BinaryFacts) -> BinaryStatus {
+/// Derives the display status from usable-presence, the version read from the
+/// artifact, and the persisted latest.
+///
+/// `installed` is None when a present artifact's version could not be read —
+/// the binary would not run, or its sidecar is missing. That is NOT the same
+/// as absent and must never read as up to date: there is nothing to compare,
+/// so the row holds at InstalledUnchecked and the surface offers the
+/// re-acquire that fixes it.
+pub fn derive_status(
+    present: bool,
+    installed: Option<&str>,
+    facts: &BinaryFacts,
+) -> BinaryStatus {
     if !present {
         return BinaryStatus::NotInstalled;
     }
-    match (&facts.installed_version, &facts.latest_known_version) {
+    match (installed, facts.latest_known_version.as_deref()) {
         (Some(installed), Some(latest)) if installed != latest => BinaryStatus::UpdateAvailable,
         (Some(_), Some(_)) => BinaryStatus::UpToDate,
         _ => BinaryStatus::InstalledUnchecked,
     }
+}
+
+/// Strips vendor noise so the installed and latest versions are compared on
+/// the same form (the convention's "normalize before comparing"):
+/// martin-riedl appends `-https://www.martin-riedl.de` to ffmpeg's version,
+/// and release tags carry a leading `v`. Applied to BOTH sides, since the two
+/// now come from different sources and only agree once normalized.
+pub fn normalize_version(raw: &str) -> String {
+    let mut value = raw.trim();
+    if let Some(at) = value.find("-http") {
+        let (head, tail) = value.split_at(at);
+        if tail.starts_with("-http://") || tail.starts_with("-https://") {
+            value = head;
+        }
+    }
+    value = value.strip_prefix('v').unwrap_or(value);
+    value.trim().to_string()
+}
+
+/// Reads the version out of ffmpeg's own banner, whose first line is
+/// `ffmpeg version 8.1.2-https://www.martin-riedl.de Copyright (c) …`. The
+/// normalized result is the upstream release that the martin-riedl build id
+/// also names, so the two compare directly. Output that does not match yields
+/// None rather than becoming a version.
+pub fn parse_ffmpeg_version(stdout: &str) -> Option<String> {
+    let first = stdout.lines().find(|line| !line.trim().is_empty())?.trim();
+    let rest = first.strip_prefix("ffmpeg version ")?;
+    let token = rest.split_whitespace().next()?;
+    let version = normalize_version(token);
+    (!version.is_empty()).then_some(version)
 }
 
 /// Parses a martin-riedl.de macOS build URL's version. The download redirects

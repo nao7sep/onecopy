@@ -11,7 +11,7 @@
 //! - `logs/`             — per-session logs.                    not recorded (append-mode, by construction)
 //! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
 //! - `dependencies.json` — managed-binaries facts.              recorded via write_atomic (self-healing text; harmless in the store)
-//! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch)
+//! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
 //! - `trash/`            — the home-volume trash tree.          not recorded (the user's own moved files, never app text)
 //!
 //! Corrupt-config policy (storage-path conventions): a present-but-unreadable
@@ -406,6 +406,18 @@ fn atomic_write_json(target: &Path, value: &JsonValue) -> Result<(), String> {
 /// store. Strictly AFTER the rename lands, the exact bytes are recorded into the
 /// write-through backup store (the one managed-text choke point).
 pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic_inner(target, bytes, true)
+}
+
+/// The same atomic write, WITHOUT the backup record. For text that is excluded
+/// from the history by a design-time, per-write-site decision: today the version
+/// sidecar in the binary-bearing `bin/`, which describes the re-fetchable binary
+/// it sits beside and is rewritten by the next install (see the table above).
+pub fn write_atomic_unrecorded(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic_inner(target, bytes, false)
+}
+
+fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), String> {
     use std::io::Write;
     let parent = target
         .parent()
@@ -437,7 +449,9 @@ pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
         let _ = dir.sync_all();
     }
 
-    backup_store::record(target, bytes);
+    if record {
+        backup_store::record(target, bytes);
+    }
 
     Ok(())
 }

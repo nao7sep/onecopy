@@ -23,8 +23,14 @@ export interface DependencyState {
   label: string;
   kind: "binary" | "model";
   status: DependencyStatus;
+  /** Read from the artifact on every status — the binary's own banner, the
+   * sidecar beside it, or a model's size-exact match against its pin, never
+   * from the facts store. Null on a present entry means the version could not
+   * be read: not absent, and never dressed up as up to date. */
+  installedVersion: string | null;
+  /** What the app RECORDED, which is only ever network knowledge: nothing here
+   * describes the artifact on disk. */
   facts: {
-    installedVersion: string | null;
     latestKnownVersion: string | null;
     lastCheckedAtUtc: string | null;
   };
