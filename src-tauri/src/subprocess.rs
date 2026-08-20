@@ -59,9 +59,18 @@ impl Run {
 /// `cancelled` is polled rather than captured once so a quit mid-derive kills
 /// the child instead of waiting for it — the difference between an app that
 /// closes and one that appears to hang.
-pub fn run_bounded(
+pub fn run_bounded(command: Command, cancelled: &dyn Fn() -> bool) -> Result<Run, String> {
+    run_bounded_idle(command, cancelled, IDLE_TIMEOUT)
+}
+
+/// `run_bounded` with a caller-chosen idle bound, for work whose healthy runtime
+/// is far below the media default — a `-version` probe answers in milliseconds,
+/// and letting a wedged one hold a status read for the full 120s would look like
+/// a hang.
+pub fn run_bounded_idle(
     mut command: Command,
     cancelled: &dyn Fn() -> bool,
+    idle_timeout: Duration,
 ) -> Result<Run, String> {
     let mut child = command
         .stdin(Stdio::null())
@@ -125,12 +134,12 @@ pub fn run_bounded(
         }
         let idle_ms = started.elapsed().as_millis() as u64
             - last_output.load(Ordering::Relaxed);
-        if idle_ms > IDLE_TIMEOUT.as_millis() as u64 {
+        if idle_ms > idle_timeout.as_millis() as u64 {
             let _ = child.kill();
             let _ = child.wait();
             break Err(format!(
                 "no output for {}s — killed as stuck",
-                IDLE_TIMEOUT.as_secs()
+                idle_timeout.as_secs()
             ));
         }
         std::thread::sleep(POLL);

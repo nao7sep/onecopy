@@ -286,7 +286,12 @@ fn read_version_sidecar(root: &Path) -> Option<String> {
 fn probe_ffmpeg_version(root: &Path) -> Option<String> {
     let mut command = std::process::Command::new(ffmpeg_path(root));
     command.arg("-version");
-    let run = subprocess::run_bounded(command, &|| false).ok()?;
+    // A healthy -version answers in milliseconds; ten seconds covers a cold
+    // start off a spun-down disk without letting a wedged binary hold the
+    // status read for the media default of 120s.
+    let run =
+        subprocess::run_bounded_idle(command, &|| false, std::time::Duration::from_secs(10))
+            .ok()?;
     if !run.status_ok {
         return None;
     }
@@ -690,16 +695,20 @@ pub fn install_or_update(
         // not recorded: the installed executable is a re-downloadable binary.
         std::fs::rename(&staged, &target).map_err(|e| e.to_string())?;
 
-        // The binary has landed. Where it cannot report a comparable version,
-        // record the resolved one beside it — AFTER the publish, so a failure
-        // here leaves a present binary reading version-unknown (which offers a
-        // re-acquire) rather than an old binary wearing the new version's label.
+        // The binary has landed — drop the cached read FIRST, so even a failed
+        // sidecar write below cannot leave the pre-install answer cached; a
+        // fresh read sees whatever is actually on disk.
+        forget_installed_ffmpeg_version();
+        // Where the binary cannot report a comparable version, record the
+        // resolved one beside it — AFTER the publish, so a failure here leaves
+        // a present binary reading version-unknown (which offers a re-acquire)
+        // rather than an old binary wearing the new version's label.
         if !ffmpeg_reports_its_own_version() {
             write_version_sidecar(root, &resolved.version)?;
+            // The write changed what a read would see; drop again in case a
+            // concurrent status read cached between the two.
+            forget_installed_ffmpeg_version();
         }
-        // Drop the cached read: the artifact changed, and the next status must
-        // see it.
-        forget_installed_ffmpeg_version();
 
         // Only the upstream fact is persisted. What is now installed is read back
         // from the binary itself.

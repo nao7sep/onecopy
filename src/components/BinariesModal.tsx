@@ -36,7 +36,9 @@ function statusLabel(entry: DependencyState): string {
   return entry.status === "up-to-date" ? "Up to date" : "Installed";
 }
 
-/** The one line of version fact a row shows. */
+/** The one line of version fact a row shows. A present entry whose version could
+ * not be read says so — silence would leave an "Installed" row with an Update
+ * button and no explanation of why it is offered. */
 function factLine(entry: DependencyState): string | null {
   const released = entry.released !== null ? `Released ${entry.released}` : null;
   if (entry.status === "not-installed") return released;
@@ -49,7 +51,7 @@ function factLine(entry: DependencyState): string | null {
         : `Version ${installed} · this app version expects ${latest}`
       : installed !== null
         ? `Version ${installed}`
-        : null;
+        : "Version unreadable";
   return [version, released].filter((part) => part !== null).join(" · ") || null;
 }
 
