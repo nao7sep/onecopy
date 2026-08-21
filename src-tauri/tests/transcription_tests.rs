@@ -106,10 +106,10 @@ fn rendering_formats_timestamps_and_drops_empty_segments() {
 #[ignore]
 fn live_tiny_model_transcribes_the_canonical_sample() {
     const TINY_URL: &str =
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin";
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-tiny.bin";
     const TINY_SHA256: &str = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21";
     const SAMPLE_URL: &str =
-        "https://github.com/ggerganov/whisper.cpp/raw/master/samples/jfk.wav";
+        "https://raw.githubusercontent.com/ggerganov/whisper.cpp/45f1593fd326b3435c04392e3151dff65967e523/samples/jfk.wav";
 
     let dir = tempfile::Builder::new()
         .prefix("onecopy-transcribe-live-")

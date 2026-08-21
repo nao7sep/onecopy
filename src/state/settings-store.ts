@@ -80,6 +80,7 @@ interface SettingsState {
   saving: boolean;
   /** Non-null while a cache move runs — drives the blocking progress surface. */
   movingCache: { copiedBytes: number; totalBytes: number } | null;
+  cancellingCacheMove: boolean;
   message: string;
   openWith: (config: Record<string, unknown> | null) => void;
   close: () => void;
@@ -89,6 +90,7 @@ interface SettingsState {
   removeSourceDir: (path: string) => void;
   pickCacheDir: () => Promise<void>;
   clearCacheDir: () => void;
+  cancelCacheMove: () => Promise<void>;
   save: () => Promise<void>;
 }
 
@@ -99,6 +101,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   timezoneValid: true,
   saving: false,
   movingCache: null,
+  cancellingCacheMove: false,
   message: "",
 
   openWith: (config) =>
@@ -110,7 +113,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       message: "",
     }),
 
-  close: () => set({ open: false, draft: null, opened: null }),
+  close: () => {
+    if (get().saving) return;
+    set({ open: false, draft: null, opened: null });
+  },
 
   update: (patch) => {
     const draft = get().draft;
@@ -159,6 +165,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   clearCacheDir: () => get().update({ cacheDir: null }),
 
+  cancelCacheMove: async () => {
+    if (get().movingCache === null || get().cancellingCacheMove) return;
+    set({ cancellingCacheMove: true });
+    try {
+      const active = await invoke<boolean>("cancel_cache_move");
+      if (!active) set({ cancellingCacheMove: false });
+    } catch (error) {
+      set({ cancellingCacheMove: false });
+      log.error("cache move cancellation failed", toErrorFields(error));
+    }
+  },
+
   save: async () => {
     const { draft, opened, timezoneValid } = get();
     if (!draft || !timezoneValid) return;
@@ -170,7 +188,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // move keeps the old location live and aborts the whole save.
       if (draft.cacheDir !== (opened?.cacheDir ?? null)) {
         const { listen } = await import("@tauri-apps/api/event");
-        set({ movingCache: { copiedBytes: 0, totalBytes: 0 } });
+        set({ movingCache: { copiedBytes: 0, totalBytes: 0 }, cancellingCacheMove: false });
         const unlisten = await listen<{ copiedBytes: number; totalBytes: number }>(
           "cache-move://progress",
           (event) => set({ movingCache: event.payload }),
@@ -179,7 +197,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           await invoke("move_cache", { newDir: draft.cacheDir });
         } finally {
           unlisten();
-          set({ movingCache: null });
+          set({ movingCache: null, cancellingCacheMove: false });
         }
       }
       // A patch of exactly the draft's keys through the one config owner —
@@ -201,8 +219,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ open: false, draft: null, opened: null, saving: false });
       log.info("settings saved", { resolved });
     } catch (error) {
-      set({ saving: false, message: String(error) });
-      log.error("settings save failed", toErrorFields(error));
+      const message = String(error);
+      if (message.includes("cache move cancelled")) {
+        set({ saving: false, message: "Cache move cancelled." });
+        log.info("cache move cancelled", {});
+      } else {
+        set({ saving: false, message });
+        log.error("settings save failed", toErrorFields(error));
+      }
     }
   },
 }));

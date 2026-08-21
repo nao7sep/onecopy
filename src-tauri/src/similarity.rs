@@ -198,21 +198,6 @@ fn canonical_pair(a: &str, b: &str) -> (String, String) {
     }
 }
 
-/// Every excluded pair, canonical, for the rebuild to honour.
-fn load_exclusions(
-    conn: &Connection,
-) -> Result<std::collections::HashSet<(String, String)>, String> {
-    let mut stmt = conn
-        .prepare("SELECT hash_a, hash_b FROM similar_exclusions")
-        .map_err(|e| e.to_string())?;
-    let pairs = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(pairs)
-}
-
 /// Enforces the user's unlink verdicts on a finished group list: no group may
 /// contain an excluded pair. Applied AFTER both clustering stages rather than
 /// inside them, deliberately — an edge skipped during union-find still joins
@@ -260,7 +245,11 @@ pub fn split_by_exclusions(
 /// about the images, so it survives the wholesale group rebuilds), removes
 /// the membership row for immediate effect, and dissolves the group when
 /// fewer than two members remain. Returns how many exclusions were recorded.
-pub fn unlink_from_group(conn: &Connection, hash: &str) -> Result<u64, String> {
+pub fn unlink_from_group(
+    conn: &Connection,
+    root: &std::path::Path,
+    hash: &str,
+) -> Result<u64, String> {
     let group_id: Option<i64> = conn
         .query_row(
             "SELECT group_id FROM similar_group_members WHERE content_hash = ?1",
@@ -285,23 +274,15 @@ pub fn unlink_from_group(conn: &Connection, hash: &str) -> Result<u64, String> {
             .collect();
         rows
     };
-    let now = crate::logging::now_iso_millis();
-    let mut written = 0u64;
-    for other in &others {
-        let (a, b) = canonical_pair(hash, other);
-        written += conn
-            .execute(
-                "INSERT OR IGNORE INTO similar_exclusions (hash_a, hash_b, created_at_utc)                  VALUES (?1, ?2, ?3)",
-                rusqlite::params![a, b, now],
-            )
-            .map_err(|e| e.to_string())? as u64;
-    }
-    conn.execute(
-        "DELETE FROM similar_group_members WHERE group_id = ?1 AND content_hash = ?2",
-        rusqlite::params![group_id, hash],
-    )
-    .map_err(|e| e.to_string())?;
-    let remaining: i64 = conn
+    let written = crate::similar_exclusions::add_for_peers(root, hash, &others)?;
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM similar_group_members WHERE group_id = ?1 AND content_hash = ?2",
+            rusqlite::params![group_id, hash],
+        )
+        .map_err(|e| e.to_string())?;
+    let remaining: i64 = transaction
         .query_row(
             "SELECT COUNT(*) FROM similar_group_members WHERE group_id = ?1",
             [group_id],
@@ -309,14 +290,17 @@ pub fn unlink_from_group(conn: &Connection, hash: &str) -> Result<u64, String> {
         )
         .map_err(|e| e.to_string())?;
     if remaining < 2 {
-        conn.execute(
-            "DELETE FROM similar_group_members WHERE group_id = ?1",
-            [group_id],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM similar_groups WHERE id = ?1", [group_id])
+        transaction
+            .execute(
+                "DELETE FROM similar_group_members WHERE group_id = ?1",
+                [group_id],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction
+            .execute("DELETE FROM similar_groups WHERE id = ?1", [group_id])
             .map_err(|e| e.to_string())?;
     }
+    transaction.commit().map_err(|e| e.to_string())?;
     crate::logging::info(
         "similar unlink",
         serde_json::json!({ "hash": hash, "exclusions": written, "groupDissolved": remaining < 2 }),
@@ -324,9 +308,10 @@ pub fn unlink_from_group(conn: &Connection, hash: &str) -> Result<u64, String> {
     Ok(written)
 }
 
-pub fn rebuild_groups(
+fn rebuild_groups_with_exclusions(
     conn: &Connection,
     config: &SimilarityConfig,
+    exclusions: &std::collections::HashSet<(String, String)>,
 ) -> Result<GroupStats, String> {
     let mut stmt = conn
         .prepare(
@@ -435,7 +420,7 @@ pub fn rebuild_groups(
 
     // The user's unlink verdicts bind every rebuild, not just the session
     // they were made in.
-    let groups = split_by_exclusions(groups, &load_exclusions(conn)?);
+    let groups = split_by_exclusions(groups, exclusions);
 
     // Persist wholesale.
     conn.execute("DELETE FROM similar_group_members", [])
@@ -465,6 +450,18 @@ pub fn rebuild_groups(
     Ok(stats)
 }
 
+pub fn rebuild_groups(conn: &Connection, config: &SimilarityConfig) -> Result<GroupStats, String> {
+    rebuild_groups_with_exclusions(conn, config, &std::collections::HashSet::new())
+}
+
+pub fn rebuild_groups_for_root(
+    conn: &Connection,
+    config: &SimilarityConfig,
+    root: &std::path::Path,
+) -> Result<GroupStats, String> {
+    let exclusions = crate::similar_exclusions::pairs(root)?;
+    rebuild_groups_with_exclusions(conn, config, &exclusions)
+}
 
 /// One group's members, best-first: sharpness descending (the advisory
 /// machine guess), then time — never an auto-deletion criterion.

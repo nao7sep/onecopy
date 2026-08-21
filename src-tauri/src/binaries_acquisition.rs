@@ -26,7 +26,47 @@ const MIN_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const UNPINNED_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const MIN_TOLERATED_BYTES_PER_SEC: u64 = 32 * 1024;
-pub(crate) const CANCELLED_ERROR: &str = "dependency install cancelled";
+const POST_DOWNLOAD_BUDGET: Duration = Duration::from_secs(30 * 60);
+const CHECK_OPERATION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+pub(crate) const CANCELLED_ERROR: &str = "dependency operation cancelled";
+
+pub(crate) struct OperationDeadline {
+    started: std::time::Instant,
+    timeout: Duration,
+}
+
+impl OperationDeadline {
+    pub(crate) fn for_install(expected_bytes: Option<u64>) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            timeout: download_whole_timeout(expected_bytes).saturating_add(POST_DOWNLOAD_BUDGET),
+        }
+    }
+
+    pub(crate) fn for_check() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            timeout: CHECK_OPERATION_TIMEOUT,
+        }
+    }
+
+    pub(crate) fn check(&self, cancelled: &AtomicBool) -> Result<(), String> {
+        check_cancelled(cancelled)?;
+        if self.started.elapsed() >= self.timeout {
+            Err(format!(
+                "dependency operation timed out after {} seconds",
+                self.timeout.as_secs()
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn remaining(&self, cancelled: &AtomicBool) -> Result<Duration, String> {
+        self.check(cancelled)?;
+        Ok(self.timeout.saturating_sub(self.started.elapsed()))
+    }
+}
 
 pub(crate) struct Resolved {
     pub version: String,
@@ -148,11 +188,15 @@ fn assert_https(url: &str) -> Result<(), String> {
 
 /// Resolves the latest ffmpeg build for this platform. Errors on platforms
 /// with no managed build (Linux, Intel macs) — manual install applies there.
-pub(crate) fn resolve_latest(cancelled: &AtomicBool) -> Result<Resolved, String> {
+pub(crate) fn resolve_latest(
+    cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
+) -> Result<Resolved, String> {
+    deadline.check(cancelled)?;
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         // The GET follows the 307; the final URI carries <epoch>_<version>.
         // The body is dropped unread — resolution needs only the redirect.
-        let (final_url, _) = fetch_metadata(MARTIN_REDIRECT_URL, false, cancelled)?;
+        let (final_url, _) = fetch_metadata(MARTIN_REDIRECT_URL, false, cancelled, deadline)?;
         let final_uri = final_url.to_string();
         let version = binaries::parse_martin_build_version(final_url.path())
             .map(|v| binaries::normalize_version(&v))
@@ -164,7 +208,7 @@ pub(crate) fn resolve_latest(cancelled: &AtomicBool) -> Result<Resolved, String>
             download_url: final_uri,
         })
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        let (_, body) = fetch_metadata(BTBN_LATEST_API, true, cancelled)?;
+        let (_, body) = fetch_metadata(BTBN_LATEST_API, true, cancelled, deadline)?;
         let body = String::from_utf8(body).map_err(|e| e.to_string())?;
         let release: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
         // The release NAME, not the tag: BtbN's tag is the constant `latest`, a
@@ -204,13 +248,14 @@ pub(crate) fn download_to(
     url: &str,
     dest: &Path,
     cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
     expected_bytes: Option<u64>,
     mut on_progress: impl FnMut(u64),
 ) -> Result<u64, String> {
     assert_https(url)?;
     check_cancelled(cancelled)?;
     let ceiling = download_ceiling(expected_bytes);
-    let timeout = download_whole_timeout(expected_bytes);
+    let timeout = download_whole_timeout(expected_bytes).min(deadline.remaining(cancelled)?);
     block_on_network(cancellable_with_timeout(
         async {
             let mut response = download_client()?
@@ -278,6 +323,7 @@ fn fetch_metadata(
     url: &str,
     read_body: bool,
     cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
 ) -> Result<(reqwest::Url, Vec<u8>), String> {
     assert_https(url)?;
     check_cancelled(cancelled)?;
@@ -315,13 +361,17 @@ fn fetch_metadata(
             Ok((final_url, body))
         },
         cancelled,
-        METADATA_TIMEOUT,
+        METADATA_TIMEOUT.min(deadline.remaining(cancelled)?),
         "dependency metadata request",
     ))
 }
 
-pub(crate) fn fetch_text(url: &str, cancelled: &AtomicBool) -> Result<String, String> {
-    let (_, body) = fetch_metadata(url, true, cancelled)?;
+pub(crate) fn fetch_text(
+    url: &str,
+    cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
+) -> Result<String, String> {
+    let (_, body) = fetch_metadata(url, true, cancelled, deadline)?;
     String::from_utf8(body).map_err(|e| e.to_string())
 }
 
@@ -336,17 +386,31 @@ impl RemoveFilesOnDrop {
 impl Drop for RemoveFilesOnDrop {
     fn drop(&mut self) {
         for path in &self.0 {
-            let _ = std::fs::remove_file(path);
+            if let Err(error) = std::fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    crate::logging::warn(
+                        "dependency staging cleanup failed",
+                        serde_json::json!({
+                            "file": path.to_string_lossy(),
+                            "error": { "message": error.to_string() }
+                        }),
+                    );
+                }
+            }
         }
     }
 }
 
-pub(crate) fn file_sha256(path: &Path, cancelled: &AtomicBool) -> Result<String, String> {
+pub(crate) fn file_sha256(
+    path: &Path,
+    cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
+) -> Result<String, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1024 * 1024];
     loop {
-        check_cancelled(cancelled)?;
+        deadline.check(cancelled)?;
         let n = file.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
@@ -364,6 +428,7 @@ pub(crate) fn extract_ffmpeg(
     staged: &Path,
     wanted: &str,
     cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
 ) -> Result<(), String> {
     let file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -389,7 +454,7 @@ pub(crate) fn extract_ffmpeg(
     let mut buf = vec![0u8; 256 * 1024];
     let mut extracted = 0u64;
     loop {
-        check_cancelled(cancelled)?;
+        deadline.check(cancelled)?;
         let n = entry.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
@@ -449,7 +514,12 @@ pub(crate) fn publish_staged(staged: &Path, target: &Path) -> Result<(), String>
 /// Everything that must be true of the binary before publication: native
 /// architecture (macOS), executable bit, and quarantine removal (best-effort).
 #[cfg(unix)]
-pub(crate) fn make_runnable(staged: &Path, cancelled: &AtomicBool) -> Result<(), String> {
+pub(crate) fn make_runnable(
+    staged: &Path,
+    cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
+) -> Result<(), String> {
+    deadline.check(cancelled)?;
     #[cfg(target_os = "macos")]
     {
         let header = {
@@ -473,16 +543,20 @@ pub(crate) fn make_runnable(staged: &Path, cancelled: &AtomicBool) -> Result<(),
         command.args(["-d", "com.apple.quarantine"]).arg(staged);
         let _ = crate::subprocess::run_bounded_idle(
             command,
-            &|| cancelled.load(Ordering::Relaxed),
+            &|| deadline.check(cancelled).is_err(),
             Duration::from_secs(10),
         );
     }
-    Ok(())
+    deadline.check(cancelled)
 }
 
 #[cfg(not(unix))]
-pub(crate) fn make_runnable(_staged: &Path, _cancelled: &AtomicBool) -> Result<(), String> {
-    Ok(())
+pub(crate) fn make_runnable(
+    _staged: &Path,
+    cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
+) -> Result<(), String> {
+    deadline.check(cancelled)
 }
 
 #[cfg(target_os = "macos")]
@@ -600,6 +674,9 @@ mod tests {
         assert!(ensure_download_within_ceiling(bytes, Some(bytes)).is_ok());
         assert!(ensure_download_within_ceiling(bytes + 1, Some(bytes)).is_err());
         assert!(ensure_download_within_ceiling(UNPINNED_MAX_DOWNLOAD_BYTES + 1, None).is_err());
+
+        let operation = OperationDeadline::for_install(Some(bytes));
+        assert!(operation.timeout > timeout);
     }
 
     #[test]
@@ -635,7 +712,11 @@ mod tests {
         let file = dir.path().join("artifact.bin");
         std::fs::write(&file, vec![7u8; 2 * 1024 * 1024]).unwrap();
         let cancelled = AtomicBool::new(true);
-        assert_eq!(file_sha256(&file, &cancelled).unwrap_err(), CANCELLED_ERROR);
+        let deadline = OperationDeadline::for_install(Some(2 * 1024 * 1024));
+        assert_eq!(
+            file_sha256(&file, &cancelled, &deadline).unwrap_err(),
+            CANCELLED_ERROR
+        );
 
         let archive_path = dir.path().join("ffmpeg.zip");
         let archive_file = std::fs::File::create(&archive_path).unwrap();
@@ -648,9 +729,23 @@ mod tests {
 
         let staged = dir.path().join("ffmpeg.staged");
         assert_eq!(
-            extract_ffmpeg(&archive_path, &staged, "ffmpeg.exe", &cancelled).unwrap_err(),
+            extract_ffmpeg(&archive_path, &staged, "ffmpeg.exe", &cancelled, &deadline,)
+                .unwrap_err(),
             CANCELLED_ERROR
         );
+    }
+
+    #[test]
+    fn cumulative_deadline_expires_local_work_too() {
+        let deadline = OperationDeadline {
+            started: std::time::Instant::now() - Duration::from_secs(2),
+            timeout: Duration::from_secs(1),
+        };
+        let cancelled = AtomicBool::new(false);
+        assert!(deadline
+            .check(&cancelled)
+            .unwrap_err()
+            .contains("operation timed out"));
     }
 
     #[test]

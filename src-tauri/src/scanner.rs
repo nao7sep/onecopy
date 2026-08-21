@@ -65,6 +65,7 @@ pub struct ScanLists {
 /// typed defaults filling gaps — the store never validates, each consumer
 /// projects what it needs (config-seeding conventions).
 pub struct ScanSettings {
+    pub data_root: std::path::PathBuf,
     pub source_dirs: Vec<String>,
     pub lists: ScanLists,
     pub resolution: ResolutionConfig,
@@ -111,6 +112,7 @@ pub fn settings_from_config(
 
     let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
     ScanSettings {
+        data_root: data_root.to_path_buf(),
         source_dirs: string_list_preserving_case(config, "sourceDirs"),
         // Supported file types are specs, not user choices: the lists live in
         // extensions.rs only, and a stray legacy key in config.json is ignored.
@@ -598,7 +600,11 @@ pub fn run_pipeline_tail(
         },
     );
 
-    let group_stats = crate::similarity::rebuild_groups(conn, &settings.similarity)?;
+    let group_stats = crate::similarity::rebuild_groups_for_root(
+        conn,
+        &settings.similarity,
+        &settings.data_root,
+    )?;
     summary.similar_groups = group_stats.groups;
     progress(
         "group",

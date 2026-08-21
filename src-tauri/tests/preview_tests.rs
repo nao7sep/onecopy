@@ -237,9 +237,13 @@ fn cache_move_copies_subtrees_verifies_sizes_and_spares_bystanders() {
     std::fs::write(old_root.join("bystander.txt"), b"not ours").unwrap();
 
     let reports: std::cell::RefCell<Vec<(u64, u64)>> = std::cell::RefCell::new(Vec::new());
-    let moved =
-        move_cache_tree(&old_root, &new_root, &|c, t| reports.borrow_mut().push((c, t)))
-            .unwrap();
+    let moved = move_cache_tree(
+        &old_root,
+        &new_root,
+        &|c, t| reports.borrow_mut().push((c, t)),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
     assert_eq!(moved, 11 + 20 + 5);
     let reports = reports.into_inner();
     assert_eq!(reports.first(), Some(&(0, 36)));
@@ -289,13 +293,38 @@ fn a_cache_move_that_lands_a_short_file_is_reported_as_a_mismatch() {
     let dest = CachePaths::new(new_root.clone()).thumb("bb22");
     std::fs::create_dir_all(&dest).unwrap();
 
-    let result = move_cache_tree(&old_root, &new_root, &|_, _| {});
+    let result = move_cache_tree(
+        &old_root,
+        &new_root,
+        &|_, _| {},
+        &std::sync::atomic::AtomicBool::new(false),
+    );
     assert!(
         result.is_err(),
         "a destination that cannot receive the bytes must not report success"
     );
     // The old tree stays live on failure — the honest-relocation contract.
     assert!(source.exists(), "the original cache must survive a failed move");
+}
+
+#[test]
+fn a_cancelled_cache_move_never_switches_or_deletes_the_old_tree() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-cachemove-cancel-")
+        .tempdir()
+        .unwrap();
+    let old_root = dir.path().join("old");
+    let new_root = dir.path().join("new");
+    let source = CachePaths::new(old_root.clone()).thumb("cc33");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"cache bytes").unwrap();
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+
+    let result = move_cache_tree(&old_root, &new_root, &|_, _| {}, &cancelled);
+
+    assert_eq!(result.unwrap_err(), "cache move cancelled");
+    assert!(source.exists());
+    assert!(!CachePaths::new(new_root).thumb("cc33").exists());
 }
 
 #[test]

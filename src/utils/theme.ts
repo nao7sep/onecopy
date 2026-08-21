@@ -5,11 +5,15 @@
 // preview and comparison windows follow the same preference (they pick up an
 // in-session change on their next load; the main window re-applies live).
 
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { log, toErrorFields } from "../repositories";
+
 const prefersDark = () =>
   typeof window !== "undefined" &&
   window.matchMedia("(prefers-color-scheme: dark)").matches;
 
 let currentPref: unknown = "system";
+let nativeThemeUpdates = Promise.resolve();
 
 export function resolveDark(pref: unknown, systemDark: boolean): boolean {
   return pref === "dark" || (pref !== "light" && systemDark);
@@ -17,7 +21,17 @@ export function resolveDark(pref: unknown, systemDark: boolean): boolean {
 
 export function applyTheme(pref: unknown): void {
   currentPref = pref;
-  document.documentElement.classList.toggle("dark", resolveDark(pref, prefersDark()));
+  const dark = resolveDark(pref, prefersDark());
+  document.documentElement.classList.toggle("dark", dark);
+
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    const nativeTheme = pref === "light" || pref === "dark" ? pref : null;
+    nativeThemeUpdates = nativeThemeUpdates
+      .then(() => getCurrentWindow().setTheme(nativeTheme))
+      .catch((error) => {
+        log.warn("native window theme update failed", toErrorFields(error));
+      });
+  }
 }
 
 /** Applies the configured UI font by setting the one `--font-ui` variable —

@@ -87,9 +87,9 @@ fn store() -> &'static Mutex<StoreState> {
 /// never panics — startup is never blocked by a backup-store problem.
 ///
 /// WAL is what lets the tolerated two-instance case serialize safely without a
-/// cross-process lock; `busy_timeout` makes a contended write *wait* for
-/// SQLite's write lock (up to ~5s) rather than immediately failing with
-/// `SQLITE_BUSY` and dropping that record.
+/// cross-process lock; the short `busy_timeout` gives a concurrent writer one
+/// scheduling beat, then drops the best-effort record instead of making an
+/// ordinary app save visibly wait.
 pub fn init(store_file: PathBuf) {
     let mut state = lock();
     state.initialized = true;
@@ -116,11 +116,11 @@ fn open(store_file: &Path) -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let conn = Connection::open(store_file).map_err(|e| e.to_string())?;
-    // WAL for the tolerated two-instance case; busy_timeout so a contended write
-    // waits (~5s) instead of dropping the record with SQLITE_BUSY.
+    // WAL for the tolerated two-instance case; contention may delay a save by
+    // at most 100 ms before this best-effort record is dropped and warned.
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "busy_timeout", 5000)
+    conn.pragma_update(None, "busy_timeout", 100)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     Ok(conn)

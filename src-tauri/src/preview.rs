@@ -707,6 +707,7 @@ pub fn move_cache_tree(
     old_root: &Path,
     new_root: &Path,
     progress: &dyn Fn(u64, u64),
+    cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<u64, String> {
     let mut files: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
     let mut total = 0u64;
@@ -716,6 +717,9 @@ pub fn move_cache_tree(
             continue;
         }
         for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("cache move cancelled".to_string());
+            }
             let entry = entry.map_err(|e| e.to_string())?;
             if !entry.file_type().is_file() {
                 continue;
@@ -737,6 +741,9 @@ pub fn move_cache_tree(
     let mut copied = 0u64;
     progress(0, total);
     for (src, dst, size) in files {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("cache move cancelled".to_string());
+        }
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -749,6 +756,9 @@ pub fn move_cache_tree(
         }
         copied += size;
         progress(copied, total);
+    }
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("cache move cancelled".to_string());
     }
     Ok(copied)
 }

@@ -45,6 +45,8 @@ function seed(entries: DependencyState[]): void {
     installing: {},
     errors: {},
     checking: false,
+    checkingId: null,
+    checkCancelling: false,
     cooldownUntil: 0,
     lastCheckOutcome: null,
     entries,
@@ -225,6 +227,38 @@ describe("check feedback", () => {
       });
       expect(document.body.textContent).toContain("You're up to date");
       expect(buttons("Check for updates")[0]!.disabled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers cancellation while a manual network check is running", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectCheck: ((error: Error) => void) | undefined;
+      mockCommands({
+        binaries_check: () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectCheck = reject;
+          }),
+        binaries_cancel: () => {
+          rejectCheck?.(new Error("dependency operation cancelled"));
+          return true;
+        },
+      });
+      seed([entry("ffmpeg", "up-to-date")]);
+      render(<BinariesModal />);
+
+      await act(async () => buttons("Check for updates")[0]!.click());
+      await act(async () => buttons("Cancel check")[0]!.click());
+
+      expect(invokeCalls.filter((call) => call.command === "binaries_cancel")).toContainEqual({
+        command: "binaries_cancel",
+        args: { id: "ffmpeg" },
+      });
+      expect(document.body.textContent).toContain("Cancelling…");
+      await act(async () => vi.advanceTimersByTimeAsync(700));
+      expect(document.body.textContent).toContain("Check cancelled");
     } finally {
       vi.useRealTimers();
     }

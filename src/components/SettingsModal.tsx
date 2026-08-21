@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../state/settings-store";
 import { log, toErrorFields } from "../repositories";
@@ -11,6 +11,7 @@ import {
 } from "../utils/screens";
 import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
+import CacheMoveDialog from "./CacheMoveDialog";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
@@ -214,7 +215,70 @@ function CheckField({
   );
 }
 
+const SETTINGS_TABS = [
+  { id: "library", label: "Library" },
+  { id: "media", label: "Media" },
+  { id: "appearance", label: "Appearance" },
+  { id: "behavior", label: "Behavior" },
+] as const;
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
+
+function SettingsTabList({
+  active,
+  onChange,
+}: {
+  active: SettingsTab;
+  onChange: (tab: SettingsTab) => void;
+}) {
+  const moveFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const tabs = Array.from(
+      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role='tab']") ?? [],
+    );
+    const current = tabs.indexOf(event.currentTarget);
+    let next = current;
+    if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const tab = SETTINGS_TABS[next]?.id;
+    if (tab !== undefined) onChange(tab);
+    tabs[next]?.focus();
+  };
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Settings categories"
+      className="sticky top-0 z-10 mb-3 flex gap-1 border-b border-border bg-surface pb-2"
+    >
+      {SETTINGS_TABS.map((tab) => (
+        <button
+          key={tab.id}
+          id={`settings-tab-${tab.id}`}
+          role="tab"
+          aria-selected={active === tab.id}
+          aria-controls={`settings-panel-${tab.id}`}
+          tabIndex={active === tab.id ? 0 : -1}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
+            active === tab.id
+              ? "bg-primary-surface text-primary"
+              : "text-ink-muted hover:bg-surface-muted hover:text-ink"
+          }`}
+          onClick={() => onChange(tab.id)}
+          onKeyDown={moveFocus}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function SettingsModal() {
+  const [activeTab, setActiveTab] = useState<SettingsTab>("library");
   const open = useSettingsStore((s) => s.open);
   const draft = useSettingsStore((s) => s.draft);
   const opened = useSettingsStore((s) => s.opened);
@@ -230,6 +294,8 @@ export default function SettingsModal() {
   const clearCacheDir = useSettingsStore((s) => s.clearCacheDir);
   const save = useSettingsStore((s) => s.save);
   const movingCache = useSettingsStore((s) => s.movingCache);
+  const cancellingCacheMove = useSettingsStore((s) => s.cancellingCacheMove);
+  const cancelCacheMove = useSettingsStore((s) => s.cancelCacheMove);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   if (!open || draft === null) return null;
@@ -244,6 +310,8 @@ export default function SettingsModal() {
     <ModalShell
       title="Settings"
       onClose={requestClose}
+      closeLabel="Cancel"
+      closeDisabled={saving}
       widthClass="w-[520px]"
       footerStart={message}
       primaryAction={
@@ -257,36 +325,12 @@ export default function SettingsModal() {
       }
     >
       {movingCache !== null ? (
-        // "Moving cache" — a BLOCKING progress surface by design (the one
-        // deliberate no-dismiss case: interrupting a tree move mid-copy is
-        // what the modal exists to prevent); completable only.
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Moving cache"
-          className="fixed inset-0 z-40 flex items-center justify-center bg-background/80"
-        >
-          <div className="w-[380px] rounded border border-border bg-surface p-4">
-            <p className="mb-2 text-sm font-semibold text-ink-strong">Moving cache…</p>
-            <div className="h-2 w-full overflow-hidden rounded bg-surface-muted">
-              <div
-                className="h-full bg-primary transition-[width]"
-                style={{
-                  width: `${
-                    movingCache.totalBytes > 0
-                      ? Math.round((movingCache.copiedBytes / movingCache.totalBytes) * 100)
-                      : 0
-                  }%`,
-                }}
-              />
-            </div>
-            <p className="mt-2 text-xs text-ink-muted">
-              {(movingCache.copiedBytes / 1_048_576).toFixed(0)} MB of{" "}
-              {(movingCache.totalBytes / 1_048_576).toFixed(0)} MB — the old location is
-              kept until every file is verified.
-            </p>
-          </div>
-        </div>
+        <CacheMoveDialog
+          copiedBytes={movingCache.copiedBytes}
+          totalBytes={movingCache.totalBytes}
+          cancelling={cancellingCacheMove}
+          onCancel={() => void cancelCacheMove()}
+        />
       ) : null}
       {confirmDiscard ? (
         <ConfirmDialog
@@ -301,6 +345,13 @@ export default function SettingsModal() {
           onCancel={() => setConfirmDiscard(false)}
         />
       ) : null}
+      <SettingsTabList active={activeTab} onChange={setActiveTab} />
+      {activeTab === "library" ? (
+        <div
+          id="settings-panel-library"
+          role="tabpanel"
+          aria-labelledby="settings-tab-library"
+        >
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Directories
           </h2>
@@ -367,8 +418,12 @@ export default function SettingsModal() {
             onChange={(v) => update({ similarityDiameterMultiplier: Math.min(4, v) })}
           />
           <UnlinkedPairsRow />
+        </div>
+      ) : null}
 
-          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+      {activeTab === "media" ? (
+        <div id="settings-panel-media" role="tabpanel" aria-labelledby="settings-tab-media">
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Previews
           </h2>
           <NumberField
@@ -442,8 +497,16 @@ export default function SettingsModal() {
             min={1}
             onChange={(v) => update({ scenesGridRows: v })}
           />
+        </div>
+      ) : null}
 
-          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+      {activeTab === "appearance" ? (
+        <div
+          id="settings-panel-appearance"
+          role="tabpanel"
+          aria-labelledby="settings-tab-appearance"
+        >
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Appearance
           </h2>
           <Row
@@ -470,8 +533,16 @@ export default function SettingsModal() {
           </Row>
 
           <ScreensSection />
+        </div>
+      ) : null}
 
-          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+      {activeTab === "behavior" ? (
+        <div
+          id="settings-panel-behavior"
+          role="tabpanel"
+          aria-labelledby="settings-tab-behavior"
+        >
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Behavior
           </h2>
           <CheckField
@@ -499,6 +570,8 @@ export default function SettingsModal() {
             checked={draft.scoreFaces}
             onChange={(v) => update({ scoreFaces: v })}
           />
+        </div>
+      ) : null}
     </ModalShell>
   );
 }

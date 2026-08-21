@@ -24,6 +24,7 @@ pub mod queries;
 pub mod resolution;
 pub mod scanner;
 pub mod similarity;
+pub mod similar_exclusions;
 pub mod storage;
 pub mod subprocess;
 pub mod timestamps;
@@ -158,6 +159,8 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
 
 // One scan pipeline at a time; a second start is a no-op reported as `false`.
 static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+static CACHE_MOVE_RUNNING: AtomicBool = AtomicBool::new(false);
+static CACHE_MOVE_CANCEL: AtomicBool = AtomicBool::new(false);
 
 // The live scan worker, joined at exit so a quit interrupts the scan through
 // the cooperative cancel flag instead of killing it mid-write.
@@ -503,6 +506,18 @@ fn move_cache(app: AppHandle, new_dir: Option<String>) -> Result<Value, String> 
         "move_cache",
         json!({ "newDir": new_dir }),
         || {
+            if CACHE_MOVE_RUNNING.swap(true, Ordering::SeqCst) {
+                return Err("a cache move is already running".to_string());
+            }
+            struct CacheMoveGuard;
+            impl Drop for CacheMoveGuard {
+                fn drop(&mut self) {
+                    CACHE_MOVE_RUNNING.store(false, Ordering::SeqCst);
+                    CACHE_MOVE_CANCEL.store(false, Ordering::SeqCst);
+                }
+            }
+            let _guard = CacheMoveGuard;
+            CACHE_MOVE_CANCEL.store(false, Ordering::SeqCst);
             if scan_running() {
                 return Err("a scan is running — move the cache after it finishes".to_string());
             }
@@ -529,7 +544,12 @@ fn move_cache(app: AppHandle, new_dir: Option<String>) -> Result<Value, String> 
                     json!({ "copiedBytes": copied, "totalBytes": total }),
                 );
             };
-            match preview::move_cache_tree(&old_root, &new_root, &emit_progress) {
+            match preview::move_cache_tree(
+                &old_root,
+                &new_root,
+                &emit_progress,
+                &CACHE_MOVE_CANCEL,
+            ) {
                 Ok(moved) => {
                     storage::patch_config(&app, &json!({ "cacheDir": new_dir }))?;
                     set_cache_root(new_root);
@@ -546,6 +566,15 @@ fn move_cache(app: AppHandle, new_dir: Option<String>) -> Result<Value, String> 
         },
         |result| result.clone(),
     )
+}
+
+#[tauri::command(async)]
+fn cancel_cache_move() -> bool {
+    if !CACHE_MOVE_RUNNING.load(Ordering::SeqCst) {
+        return false;
+    }
+    CACHE_MOVE_CANCEL.store(true, Ordering::SeqCst);
+    true
 }
 
 // The volume-loss guard (the session gate's runtime counterpart): destructive
@@ -940,7 +969,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
                 &settings.resolution,
                 scanner::ResolveScope::All,
             )?;
-            similarity::rebuild_groups(&conn, &settings.similarity)?;
+            similarity::rebuild_groups_for_root(&conn, &settings.similarity, &data_root)?;
             Ok(stats.resolved)
         },
         |resolved| json!({ "resolved": resolved }),
@@ -1403,7 +1432,7 @@ fn similar_unlink(app: AppHandle, hash: String) -> Result<u64, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            similarity::unlink_from_group(&conn, &hash)
+            similarity::unlink_from_group(&conn, &data_root, &hash)
         },
         |written| json!({ "exclusions": written }),
     )
@@ -1419,12 +1448,7 @@ fn similar_exclusions_count(app: AppHandle) -> Result<u64, String> {
         json!({}),
         || {
             let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            conn.query_row("SELECT COUNT(*) FROM similar_exclusions", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .map(|n| n.max(0) as u64)
-            .map_err(|e| e.to_string())
+            similar_exclusions::count(&data_root)
         },
         |n| json!({ "count": n }),
     )
@@ -1437,10 +1461,7 @@ fn similar_exclusions_clear(app: AppHandle) -> Result<u64, String> {
         json!({}),
         || {
             let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            conn.execute("DELETE FROM similar_exclusions", [])
-                .map(|n| n as u64)
-                .map_err(|e| e.to_string())
+            similar_exclusions::clear(&data_root)
         },
         |n| json!({ "cleared": n }),
     )
@@ -1539,8 +1560,6 @@ pub fn run() {
                 .join(logging::session_filename());
             logging::init(&log_path, debug_enabled);
             install_panic_hook();
-            logging::prune_old_logs(&data_root.join(paths::LOGS_DIR_NAME), 30);
-
             // Open the write-through data-backup store once, best-effort, under the
             // same ONECOPY_HOME-aware root. If it cannot open, one warn is logged
             // and recording is disabled for the session — it never blocks startup.
@@ -1553,7 +1572,14 @@ pub fn run() {
             // Create/verify the index schema so a schema problem surfaces at
             // startup, not mid-scan. Phase 2 owns a long-lived connection; this
             // one closes on drop.
-            index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let index = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let imported_exclusions = similar_exclusions::migrate_legacy(&data_root, &index)?;
+            if imported_exclusions > 0 {
+                logging::info(
+                    "legacy similar exclusions imported",
+                    json!({ "pairs": imported_exclusions }),
+                );
+            }
 
             // Download staging is crash debris by definition: wipe at launch.
             binaries_manager::reset_temp_dir(&data_root);
@@ -1760,6 +1786,7 @@ pub fn run() {
             re_resolve_all,
             rescan_section,
             move_cache,
+            cancel_cache_move,
             get_issues,
             ensure_fullres,
             transcribe,

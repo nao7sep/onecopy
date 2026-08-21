@@ -294,7 +294,7 @@ fn an_unlinked_pair_never_regroups_however_similar_their_pixels_are() {
     // The persistence promise: groups are rebuilt WHOLESALE every scan, so an
     // unlink stored against the group would evaporate. Stored against the
     // pair, it must hold on every later rebuild.
-    let (_dir, conn) = seeded();
+    let (dir, conn) = seeded();
     seed_pairable(&conn, "keeper", 0b0001);
     seed_pairable(&conn, "bolt", 0b0011); // distance 1 — pairs on looks
 
@@ -305,7 +305,7 @@ fn an_unlinked_pair_never_regroups_however_similar_their_pixels_are() {
         .unwrap();
     assert_eq!(grouped, 2, "they pair before the verdict");
 
-    let written = unlink_from_group(&conn, "bolt").unwrap();
+    let written = unlink_from_group(&conn, dir.path(), "bolt").unwrap();
     assert_eq!(written, 1, "one exclusion per other member");
     // Immediate effect, no rescan needed: membership gone, and a group of one
     // is dissolved rather than left as a phantom ≈ badge.
@@ -316,29 +316,29 @@ fn an_unlinked_pair_never_regroups_however_similar_their_pixels_are() {
     assert_eq!((members, groups), (0, 0));
 
     // And the verdict binds every future rebuild.
-    rebuild_groups(&conn, &cfg).unwrap();
+    rebuild_groups_for_root(&conn, &cfg, dir.path()).unwrap();
     let regrouped: i64 = conn
         .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
         .unwrap();
     assert_eq!(regrouped, 0, "the pair must never re-form");
 
     // Unlinking something ungrouped is a quiet no-op, not an error.
-    assert_eq!(unlink_from_group(&conn, "keeper").unwrap(), 0);
+    assert_eq!(unlink_from_group(&conn, dir.path(), "keeper").unwrap(), 0);
 }
 
 #[test]
 fn an_unlinked_image_still_groups_with_a_genuine_twin() {
     // The exclusion is PAIRWISE, not a ban on the image: a real duplicate of
     // the unlinked photo arriving later must still pair with it.
-    let (_dir, conn) = seeded();
+    let (dir, conn) = seeded();
     seed_pairable(&conn, "bolt", 0b0011);
     seed_pairable(&conn, "family", 0b0001);
     let cfg = config();
     rebuild_groups(&conn, &cfg).unwrap();
-    unlink_from_group(&conn, "bolt").unwrap();
+    unlink_from_group(&conn, dir.path(), "bolt").unwrap();
 
     seed_pairable(&conn, "bolt-copy", 0b0010); // distance 1 from bolt
-    rebuild_groups(&conn, &cfg).unwrap();
+    rebuild_groups_for_root(&conn, &cfg, dir.path()).unwrap();
     let bolt_group: Option<i64> = conn
         .query_row(
             "SELECT group_id FROM similar_group_members WHERE content_hash = 'bolt'",

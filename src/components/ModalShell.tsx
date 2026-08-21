@@ -27,6 +27,7 @@ export default function ModalShell({
   onClose,
   widthClass = "w-[480px]",
   closeLabel = "Close",
+  closeDisabled = false,
   footerStart,
   primaryAction,
   children,
@@ -35,6 +36,8 @@ export default function ModalShell({
   onClose: () => void;
   widthClass?: string;
   closeLabel?: string;
+  /** True only while leaving would interrupt an operation at an unsafe edge. */
+  closeDisabled?: boolean;
   /** Left-aligned footer content (status/error text). */
   footerStart?: React.ReactNode;
   /** The primary action button(s), rendered to the right of the dismiss. */
@@ -45,7 +48,9 @@ export default function ModalShell({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const tokenRef = useRef<object>({});
   const onCloseRef = useRef(onClose);
+  const closeDisabledRef = useRef(closeDisabled);
   onCloseRef.current = onClose;
+  closeDisabledRef.current = closeDisabled;
 
   useEffect(() => {
     const token = tokenRef.current;
@@ -68,7 +73,7 @@ export default function ModalShell({
         if (isComposingEvent(event)) return;
         event.preventDefault();
         event.stopPropagation();
-        onCloseRef.current();
+        if (!closeDisabledRef.current) onCloseRef.current();
       } else if (event.key === "Tab") {
         const surface = surfaceRef.current;
         if (surface === null) return;
@@ -107,7 +112,8 @@ export default function ModalShell({
           <button
             data-modal-close
             aria-label="Close"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+            disabled={closeDisabled}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink disabled:cursor-default disabled:opacity-40"
             onClick={onClose}
           >
             <X size={15} />
@@ -116,7 +122,7 @@ export default function ModalShell({
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-1">{children}</div>
         <div className="flex shrink-0 items-center gap-2 px-5 pb-4 pt-4">
           <span className="min-w-0 flex-1 truncate text-xs text-danger">{footerStart}</span>
-          <Button data-modal-close onClick={onClose}>
+          <Button data-modal-close disabled={closeDisabled} onClick={onClose}>
             {closeLabel}
           </Button>
           {primaryAction}

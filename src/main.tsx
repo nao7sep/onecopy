@@ -21,7 +21,10 @@ void loadAppData()
     applyTheme(config?.theme);
     applyUiFont(config?.uiFontFamily);
   })
-  .catch(() => applyTheme("system"));
+  .catch((error) => {
+    log.warn("startup appearance load failed", toErrorFields(error));
+    applyTheme("system");
+  });
 
 // The webview's default context menu (Look Up, Translate, Search with
 // Google, Inspect Element…) belongs to a web page, not a desktop app —

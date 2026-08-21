@@ -92,3 +92,7 @@ opt-level = 2
 # (`static STORE` in backup_store.rs); unrelated tests still parallelize.
 serial_test = { version = "4", default-features = false }
 tempfile = "3.24"
+# The ignored live-model release gate downloads its two immutable ONNX pins.
+# Use the platform TLS stack already present in the graph; the default ureq
+# feature set would add a second TLS implementation only for this test.
+ureq = { version = "3.4.0", default-features = false, features = ["native-tls-no-default"] }

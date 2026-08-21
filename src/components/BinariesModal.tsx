@@ -59,11 +59,14 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const progress = useBinariesStore((s) => s.installing[entry.id]);
   const error = useBinariesStore((s) => s.errors[entry.id]);
   const checking = useBinariesStore((s) => s.checking);
+  const checkingId = useBinariesStore((s) => s.checkingId);
+  const checkCancelling = useBinariesStore((s) => s.checkCancelling);
   const cooldownUntil = useBinariesStore((s) => s.cooldownUntil);
   const lastCheckOutcome = useBinariesStore((s) => s.lastCheckOutcome);
   const install = useBinariesStore((s) => s.install);
   const cancel = useBinariesStore((s) => s.cancel);
   const checkAll = useBinariesStore((s) => s.checkAll);
+  const cancelCheck = useBinariesStore((s) => s.cancelCheck);
   const installing = progress !== undefined;
 
   // Install when missing, Update when a newer version is known — and Update
@@ -118,9 +121,23 @@ function EntryRow({ entry }: { entry: DependencyState }) {
           ) : null}
           {offersCheck ? (
             <>
-              <Button disabled={checking || coolingDown} onClick={() => void checkAll()}>
-                {checking ? "Checking…" : "Check for updates"}
-              </Button>
+              {checkingId === entry.id ? (
+                <>
+                  <span className="text-xs text-primary">
+                    {checkCancelling ? "Cancelling…" : "Checking…"}
+                  </span>
+                  <Button
+                    disabled={checkCancelling}
+                    onClick={() => void cancelCheck(entry.id)}
+                  >
+                    Cancel check
+                  </Button>
+                </>
+              ) : (
+                <Button disabled={checking || coolingDown} onClick={() => void checkAll()}>
+                  Check for updates
+                </Button>
+              )}
               {lastCheckOutcome !== null ? (
                 <span className="text-xs font-medium text-ink">{lastCheckOutcome}</span>
               ) : checked !== null ? (

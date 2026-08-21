@@ -180,8 +180,26 @@ pub fn ffmpeg_path(root: &Path) -> PathBuf {
 /// by definition. Called once at launch.
 pub fn reset_temp_dir(root: &Path) {
     let temp = root.join(TEMP_DIR_NAME);
-    let _ = std::fs::remove_dir_all(&temp);
-    let _ = std::fs::create_dir_all(&temp);
+    if let Err(error) = std::fs::remove_dir_all(&temp) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            logging::warn(
+                "dependency staging reset failed",
+                serde_json::json!({
+                    "directory": temp.to_string_lossy(),
+                    "error": { "message": error.to_string() }
+                }),
+            );
+        }
+    }
+    if let Err(error) = std::fs::create_dir_all(&temp) {
+        logging::warn(
+            "dependency staging recreation failed",
+            serde_json::json!({
+                "directory": temp.to_string_lossy(),
+                "error": { "message": error.to_string() }
+            }),
+        );
+    }
 }
 
 // --- The facts store: its own file, self-healing (missing OR corrupt →
@@ -384,14 +402,18 @@ static IN_FLIGHT: std::sync::LazyLock<
 struct BusyGuard {
     id: String,
     cancelled: Arc<AtomicBool>,
+    deadline: acquisition::OperationDeadline,
 }
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.id);
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.id);
     }
 }
 
-fn claim(id: &str) -> Result<BusyGuard, String> {
+fn claim(id: &str, deadline: acquisition::OperationDeadline) -> Result<BusyGuard, String> {
     let mut in_flight = IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
     if in_flight.contains_key(id) {
         return Err(format!("{id} is already being worked on"));
@@ -401,6 +423,7 @@ fn claim(id: &str) -> Result<BusyGuard, String> {
     Ok(BusyGuard {
         id: id.to_string(),
         cancelled,
+        deadline,
     })
 }
 
@@ -434,8 +457,9 @@ pub fn install_entry(
 pub struct StartedInstall(BusyGuard);
 
 pub fn begin_install(id: &str) -> Result<StartedInstall, String> {
-    spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
-    claim(id).map(StartedInstall)
+    let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    let expected = spec.pinned.as_ref().map(|pin| pin.bytes);
+    claim(id, acquisition::OperationDeadline::for_install(expected)).map(StartedInstall)
 }
 
 pub fn install_entry_started(
@@ -463,6 +487,7 @@ pub fn install_entry_started(
                     pinned.url,
                     &partial,
                     &guard.cancelled,
+                    &guard.deadline,
                     Some(pinned.bytes),
                     |done| {
                         on_progress(
@@ -472,7 +497,7 @@ pub fn install_entry_started(
                     },
                 )?;
                 on_progress("verify", "checking integrity".to_string());
-                let actual = acquisition::file_sha256(&partial, &guard.cancelled)?;
+                let actual = acquisition::file_sha256(&partial, &guard.cancelled, &guard.deadline)?;
                 if actual != pinned.sha256 {
                     return Err(format!(
                         "checksum mismatch for {id}: expected {}, got {actual}",
@@ -486,6 +511,7 @@ pub fn install_entry_started(
                 // if publication or the new identity write fails, state stays
                 // installed-unchecked instead of assigning either digest.
                 invalidate_model_identity(root, spec)?;
+                guard.deadline.check(&guard.cancelled)?;
                 // Replace-in-place over any previous model (same volume).
                 // not recorded: the model file is a re-downloadable artifact.
                 acquisition::publish_staged(&partial, &target)?;
@@ -516,15 +542,15 @@ fn install_ffmpeg_started(
     let temp = root.join(TEMP_DIR_NAME);
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
 
-    acquisition::check_cancelled(&guard.cancelled)?;
+    guard.deadline.check(&guard.cancelled)?;
     on_progress("resolve", "finding the latest build".to_string());
-    let resolved = acquisition::resolve_latest(&guard.cancelled)?;
+    let resolved = acquisition::resolve_latest(&guard.cancelled, &guard.deadline)?;
 
     let partial = temp.join(format!("ffmpeg-{}.partial", nanoid::generate()));
     let staged = temp.join(format!("ffmpeg-{}.staged", nanoid::generate()));
     let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]);
     let result = (|| -> Result<BinaryFacts, String> {
-        acquisition::check_cancelled(&guard.cancelled)?;
+        guard.deadline.check(&guard.cancelled)?;
         on_progress(
             "download",
             format!("v{} from {}", resolved.version, resolved.download_url),
@@ -533,20 +559,21 @@ fn install_ffmpeg_started(
             &resolved.download_url,
             &partial,
             &guard.cancelled,
+            &guard.deadline,
             None,
             |done| {
                 on_progress("download", format!("{} MB", done / 1_048_576));
             },
         )?;
-        acquisition::check_cancelled(&guard.cancelled)?;
+        guard.deadline.check(&guard.cancelled)?;
         on_progress("verify", format!("{bytes} bytes downloaded"));
         let expected = binaries::parse_sums(
-            &acquisition::fetch_text(&resolved.sums_url, &guard.cancelled)?,
+            &acquisition::fetch_text(&resolved.sums_url, &guard.cancelled, &guard.deadline)?,
             &resolved.sums_asset,
         )
         .ok_or_else(|| format!("{} not in the checksum file", resolved.sums_asset))?;
-        acquisition::check_cancelled(&guard.cancelled)?;
-        let actual = acquisition::file_sha256(&partial, &guard.cancelled)?;
+        guard.deadline.check(&guard.cancelled)?;
+        let actual = acquisition::file_sha256(&partial, &guard.cancelled, &guard.deadline)?;
         if actual != expected {
             return Err(format!(
                 "checksum mismatch for {}: expected {expected}, got {actual}",
@@ -555,12 +582,18 @@ fn install_ffmpeg_started(
         }
 
         on_progress("install", "extracting".to_string());
-        acquisition::extract_ffmpeg(&partial, &staged, ffmpeg_file_name(), &guard.cancelled)?;
-        acquisition::make_runnable(&staged, &guard.cancelled)?;
+        acquisition::extract_ffmpeg(
+            &partial,
+            &staged,
+            ffmpeg_file_name(),
+            &guard.cancelled,
+            &guard.deadline,
+        )?;
+        acquisition::make_runnable(&staged, &guard.cancelled, &guard.deadline)?;
 
         let target = ffmpeg_path(root);
         std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
-        acquisition::check_cancelled(&guard.cancelled)?;
+        guard.deadline.check(&guard.cancelled)?;
         // Replace-in-place: rename over any previous install (same volume).
         // not recorded: the installed executable is a re-downloadable binary.
         acquisition::publish_staged(&staged, &target)?;
@@ -603,11 +636,11 @@ fn install_ffmpeg_started(
 /// a re-pin shipped in an app update shows up on its own.
 pub fn check_entry(root: &Path, id: &str) -> Result<BinaryFacts, String> {
     let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
-    let guard = claim(id)?;
+    let guard = claim(id, acquisition::OperationDeadline::for_check())?;
     let mut facts = load_facts_for(root, id);
     match spec.kind {
         DependencyKind::Binary => {
-            let resolved = acquisition::resolve_latest(&guard.cancelled)?;
+            let resolved = acquisition::resolve_latest(&guard.cancelled, &guard.deadline)?;
             facts.latest_known_version = Some(resolved.version);
         }
         // Refused rather than faked: a model has no upstream to ask. Its

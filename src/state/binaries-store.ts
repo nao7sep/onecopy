@@ -68,6 +68,8 @@ interface BinariesState {
   errors: Record<string, string>;
   /** True while the registry-wide check runs (the button narrates it). */
   checking: boolean;
+  checkingId: string | null;
+  checkCancelling: boolean;
   /** Epoch ms until which re-checking is pointless (fresh-check cooldown —
    * kind to upstream APIs, and honest: nothing can have changed in a
    * minute). */
@@ -86,6 +88,7 @@ interface BinariesState {
    * sequential over the installed CHECKABLE entries — models have no
    * upstream to ask — refreshing state at the end. */
   checkAll: () => Promise<void>;
+  cancelCheck: (id: string) => Promise<void>;
   setModalOpen: (open: boolean) => void;
 }
 
@@ -94,6 +97,8 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   installing: {},
   errors: {},
   checking: false,
+  checkingId: null,
+  checkCancelling: false,
   cooldownUntil: 0,
   lastCheckOutcome: null,
   modalOpen: false,
@@ -164,7 +169,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     const { entries, installing, checking } = get();
     if (checking) return;
     const started = Date.now();
-    set({ checking: true, lastCheckOutcome: null });
+    set({ checking: true, checkingId: null, checkCancelling: false, lastCheckOutcome: null });
     const installed = entries.filter(
       (entry) =>
         entry.checkable &&
@@ -172,7 +177,9 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         installing[entry.id] === undefined,
     );
     let failures = 0;
+    let cancelled = false;
     for (const entry of installed) {
+      set({ checkingId: entry.id });
       try {
         await invoke("binaries_check", { id: entry.id });
         set((s) => {
@@ -181,12 +188,17 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           return { errors };
         });
       } catch (error) {
+        const message = messageOf(error);
+        if (message.includes("dependency operation cancelled")) {
+          cancelled = true;
+          break;
+        }
         // A failed check writes nothing core-side (the honest-state rule) —
         // but silence here read as "the button does nothing", so the row
         // carries the reason.
         failures += 1;
         set((s) => ({
-          errors: { ...s.errors, [entry.id]: `Check failed — ${messageOf(error)}` },
+          errors: { ...s.errors, [entry.id]: `Check failed — ${message}` },
         }));
         log.error("binaries check failed", { id: entry.id, ...toErrorFields(error) });
       }
@@ -210,21 +222,42 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       entries: installed.length,
       failures,
       updates,
+      cancelled,
     });
     const outcome =
-      failures > 0
+      cancelled
+        ? "Check cancelled"
+        : failures > 0
         ? `${failures} check${failures === 1 ? "" : "s"} failed — see below`
         : updates > 0
           ? `${updates} update${updates === 1 ? "" : "s"} available`
           : "You're up to date";
     set({
       checking: false,
-      cooldownUntil: Date.now() + COOLDOWN_MS,
+      checkingId: null,
+      checkCancelling: false,
+      cooldownUntil: cancelled ? 0 : Date.now() + COOLDOWN_MS,
       lastCheckOutcome: outcome,
     });
     setTimeout(() => {
-      useBinariesStore.setState({ cooldownUntil: 0, lastCheckOutcome: null });
-    }, COOLDOWN_MS);
+      useBinariesStore.setState((state) =>
+        state.lastCheckOutcome === outcome && !state.checking
+          ? { cooldownUntil: 0, lastCheckOutcome: null }
+          : state,
+      );
+    }, cancelled ? MIN_CHECKING_MS : COOLDOWN_MS);
+  },
+
+  cancelCheck: async (id) => {
+    if (get().checkingId !== id || get().checkCancelling) return;
+    set({ checkCancelling: true });
+    try {
+      const active = await invoke<boolean>("binaries_cancel", { id });
+      if (!active) set({ checkCancelling: false });
+    } catch (error) {
+      set({ checkCancelling: false });
+      log.error("binaries check cancellation failed", { id, ...toErrorFields(error) });
+    }
   },
 
   setModalOpen: (open) => set({ modalOpen: open }),
