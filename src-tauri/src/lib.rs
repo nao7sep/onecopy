@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, Manager};
 pub mod backup_store;
 pub mod backfill;
 pub mod binaries;
+mod binaries_acquisition;
 pub mod binaries_manager;
 pub mod extensions;
 pub mod hashing;
@@ -1254,10 +1255,11 @@ fn binaries_state(app: AppHandle) -> Result<Vec<binaries_manager::DependencyStat
 
 // Installs or updates ONE registry entry on a worker thread; progress arrives
 // as `binaries://progress` (id in the payload), completion as
-// `binaries://done` / `binaries://error`.
+// `binaries://done` / `binaries://cancelled` / `binaries://error`.
 #[tauri::command(async)]
 fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
+    let started = binaries_manager::begin_install(&id)?;
     let handle = app.clone();
     std::thread::spawn(move || {
         let progress_id = id.clone();
@@ -1269,8 +1271,11 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
             );
         };
         let is_ffmpeg = id == "ffmpeg";
-        match binaries_manager::install_entry(&data_root, &id, emit) {
-            Ok(facts) => {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            binaries_manager::install_entry_started(&data_root, started, emit)
+        }));
+        match outcome {
+            Ok(Ok(facts)) => {
                 let _ = handle.emit("binaries://done", json!({ "id": id, "facts": facts }));
                 if !is_ffmpeg {
                     return;
@@ -1303,16 +1308,37 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
                     }
                 }
             }
-            Err(err) => {
+            Ok(Err(err)) => {
+                if binaries_manager::is_cancelled_error(&err) {
+                    logging::info("dependency install cancelled", json!({ "id": id }));
+                    let _ = handle.emit("binaries://cancelled", json!({ "id": id }));
+                    return;
+                }
                 logging::warn(
                     "dependency install failed",
                     json!({ "id": id, "error": { "message": err.clone() } }),
                 );
                 let _ = handle.emit("binaries://error", json!({ "id": id, "message": err }));
             }
+            Err(_) => {
+                let message = "dependency install stopped unexpectedly";
+                logging::error(
+                    "dependency install panicked",
+                    json!({ "id": id, "error": { "message": message } }),
+                );
+                let _ = handle.emit(
+                    "binaries://error",
+                    json!({ "id": id, "message": message }),
+                );
+            }
         }
     });
     Ok(())
+}
+
+#[tauri::command(async)]
+fn binaries_cancel(id: String) -> bool {
+    binaries_manager::cancel_entry(&id)
 }
 
 // Version check for one entry — never installs; a failure writes nothing.
@@ -1611,7 +1637,7 @@ pub fn run() {
             // The one update switch (managed-runtime-dependencies): when ON,
             // an INSTALLED tool is checked at launch, throttled to ~daily so
             // launches never hammer the endpoints. Default off; a failed
-            // check writes nothing (check_for_updates' own contract).
+            // check writes nothing (`check_entry`'s own contract).
             let check_at_launch = setup_config
                 .as_ref()
                 .and_then(|c| c.get("checkUpdatesAtLaunch"))
@@ -1745,6 +1771,7 @@ pub fn run() {
             dismiss_all_issues,
             binaries_state,
             binaries_install,
+            binaries_cancel,
             binaries_check,
             validate_timezone,
             check_source_dirs,

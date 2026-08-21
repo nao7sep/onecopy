@@ -1,9 +1,10 @@
-//! Orchestration half of the managed-dependencies mechanism (the pure half
-//! lives in `binaries.rs`): a REGISTRY of N entries of two kinds — binaries
+//! Registry and orchestration for managed dependencies (`binaries.rs` owns
+//! pure status decisions; `binaries_acquisition.rs` owns acquisition): N
+//! entries of two kinds — binaries
 //! (resolved live per platform) and model files (pinned artifacts) — each
 //! downloading to `temp/` staging, verifying, then publishing with a
-//! same-volume rename. One install/check at a time across the registry; a
-//! failed check writes nothing (the honest-state rule).
+//! same-volume rename. One install/check at a time per entry, with different
+//! entries allowed in parallel; a failed check writes nothing.
 //!
 //! Model entries pin their canonical artifact IN CODE: URL, sha256 (taken
 //! from the upstream's own LFS metadata), and byte size. A model's "version"
@@ -24,11 +25,11 @@
 //!                    install. BtbN ships rolling master builds (`N-119123-g…`)
 //!                    under a release named by build time — two namespaces, so
 //!                    probing would report a phantom update forever.
-//!   a model          the size-exact match against its pin, which is the SAME
-//!                    stat that establishes presence. A pinned artifact whose
-//!                    bytes match the pin IS that pin, so a sidecar would only
-//!                    restate what the stat already proved — and could then
-//!                    disagree with it, which is the drift being removed.
+//!   a model          read a verified-install identity beside the model. File
+//!                    size establishes usable presence, while the identity
+//!                    records which digest was verified before publication.
+//!                    A missing identity stays installed-unchecked; an older
+//!                    digest remains update-available even at the same size.
 //!
 //! Endpoint shapes verified live at build time:
 //!   macOS arm64  https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip
@@ -38,22 +39,17 @@
 //!                `ffmpeg-master-latest-win64-gpl.zip` asset plus a
 //!                `checksums.sha256` asset; the release name is the version.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-
-use sha2::{Digest, Sha256};
-use ureq::ResponseExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::binaries::{self, BinaryFacts, BinaryStatus};
+use crate::binaries_acquisition as acquisition;
 use crate::{logging, nanoid, storage, subprocess};
 
 // Subpath names are owned by the one resolver module (storage-path
 // conventions); re-exported here so existing call sites keep their imports.
 pub use crate::paths::{BIN_DIR_NAME, DEPENDENCIES_FILE_NAME, MODELS_DIR_NAME, TEMP_DIR_NAME};
-
-const MARTIN_REDIRECT_URL: &str =
-    "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip";
-const BTBN_LATEST_API: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -103,9 +99,9 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         kind: DependencyKind::Model,
         file_name: "ggml-large-v3-turbo.bin",
         pinned: Some(PinnedModel {
-            // Canonical whisper.cpp model repository; sha256 from its LFS
-            // pointer (probed live 2026-08-16).
-            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+            // Canonical whisper.cpp model repository, fixed to the verified
+            // commit that added this file; sha256 matches its Xet metadata.
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-large-v3-turbo.bin",
             sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
             bytes: 1_624_555_275,
             released: "2024-10-01",
@@ -118,11 +114,12 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         file_name: "ultraface-rfb640.onnx",
         pinned: Some(PinnedModel {
             // Official ONNX model zoo (repo Apache-2.0; the Ultraface upstream
-            // is MIT); sha256 computed from the downloaded artifact 2026-08-17.
+            // is MIT), fixed to the file's immutable commit; sha256 verified
+            // against the bytes at that revision 2026-08-22.
             // The 640 variant over the 320: same family and licence, double the
             // input resolution, so a face that is small in the frame — the
             // common case in family photos — is still found.
-            url: "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/version-RFB-640.onnx",
+            url: "https://media.githubusercontent.com/media/onnx/models/4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177/validated/vision/body_analysis/ultraface/models/version-RFB-640.onnx",
             sha256: "8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430",
             bytes: 1_588_012,
             released: "2020-12-17",
@@ -137,10 +134,11 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             // HSEmotion's AffectNet-trained EfficientNet-B2, from the project's
             // current home (sb-ai-lab/EmotiEffLib, Apache-2.0 — the old
             // av-savchenko repo redirects here); sha256 computed from the
-            // downloaded artifact 2026-08-17. Replaces FER+, which was trained
+            // immutable file commit and verified against its bytes 2026-08-22.
+            // Replaces FER+, which was trained
             // on 2016-era FER data and is five years older. Face scoring needs
             // BOTH this and the detector — either alone stays inert.
-            url: "https://github.com/sb-ai-lab/EmotiEffLib/raw/main/models/affectnet_emotions/onnx/enet_b2_8.onnx",
+            url: "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/af833487321c3efdcb1768a91a6c656a1986fdf6/models/affectnet_emotions/onnx/enet_b2_8.onnx",
             sha256: "180a9d4845b59393de4511598a0d1d34b705034691ea32959ce5009db7cf52b7",
             bytes: 30_779_724,
             released: "2022-11-09",
@@ -229,11 +227,6 @@ pub fn save_facts_for(root: &Path, id: &str, facts: &BinaryFacts) -> Result<(), 
     storage::write_atomic(&root.join(DEPENDENCIES_FILE_NAME), text.as_bytes())
 }
 
-/// Back-compat readers used by the scan settings and launch check.
-pub fn load_facts(root: &Path) -> BinaryFacts {
-    load_facts_for(root, "ffmpeg")
-}
-
 // --- The installed version, read from the artifact ---
 
 /// `bin/ffmpeg.json` — the version sidecar beside `bin/ffmpeg[.exe]`. Stem
@@ -277,6 +270,53 @@ fn read_version_sidecar(root: &Path) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let version = value.get("version")?.as_str()?.trim();
     (!version.is_empty()).then(|| binaries::normalize_version(version))
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelIdentity {
+    sha256: String,
+    bytes: u64,
+}
+
+fn model_identity_path(root: &Path, spec: &DependencySpec) -> PathBuf {
+    installed_path(root, spec).with_extension("json")
+}
+
+fn read_model_identity(root: &Path, spec: &DependencySpec, bytes: u64) -> Option<String> {
+    let raw = std::fs::read(model_identity_path(root, spec)).ok()?;
+    let identity: ModelIdentity = serde_json::from_slice(&raw).ok()?;
+    if identity.bytes != bytes
+        || identity.sha256.len() != 64
+        || !identity.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(identity.sha256[..12].to_ascii_lowercase())
+}
+
+fn write_model_identity(
+    root: &Path,
+    spec: &DependencySpec,
+    pinned: &PinnedModel,
+) -> Result<(), String> {
+    let identity = ModelIdentity {
+        sha256: pinned.sha256.to_string(),
+        bytes: pinned.bytes,
+    };
+    let mut text = serde_json::to_string_pretty(&identity).map_err(|e| e.to_string())?;
+    text.push('\n');
+    // not recorded: identity for a re-downloadable model, colocated with and
+    // meaningless without that model. It is invalidated before replacement.
+    storage::write_atomic_unrecorded(&model_identity_path(root, spec), text.as_bytes())
+}
+
+fn invalidate_model_identity(root: &Path, spec: &DependencySpec) -> Result<(), String> {
+    match std::fs::remove_file(model_identity_path(root, spec)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Runs the installed ffmpeg and reads the version out of its banner. Bounded
@@ -329,253 +369,21 @@ fn installed_ffmpeg_version(root: &Path) -> Option<String> {
 
 // --- Resolution ---
 
-pub struct Resolved {
-    pub version: String,
-    pub download_url: String,
-    pub sums_url: String,
-    pub sums_asset: String,
-}
-
-fn agent(timeout_secs: u64) -> ureq::Agent {
-    ureq::Agent::new_with_config(
-        ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)))
-            .save_redirect_history(true)
-            .build(),
-    )
-}
-
-fn assert_https(url: &str) -> Result<(), String> {
-    if url.starts_with("https://") {
-        Ok(())
-    } else {
-        Err(format!("refusing non-https download url: {url}"))
-    }
-}
-
-/// Resolves the latest ffmpeg build for this platform. Errors on platforms
-/// with no managed build (Linux, Intel macs) — manual install applies there.
-pub fn resolve_latest() -> Result<Resolved, String> {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        // The GET follows the 307; the final URI carries <epoch>_<version>.
-        // The body is dropped unread — resolution needs only the redirect.
-        let response = agent(60)
-            .get(MARTIN_REDIRECT_URL)
-            .call()
-            .map_err(|e| e.to_string())?;
-        let final_uri = response.get_uri().to_string();
-        let version = binaries::parse_martin_build_version(response.get_uri().path())
-            .map(|v| binaries::normalize_version(&v))
-            .ok_or_else(|| format!("no <epoch>_<version> segment in {final_uri}"))?;
-        Ok(Resolved {
-            version,
-            sums_url: format!("{final_uri}.sha256"),
-            sums_asset: "ffmpeg.zip".to_string(),
-            download_url: final_uri,
-        })
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        let mut response = agent(60)
-            .get(BTBN_LATEST_API)
-            .header("User-Agent", "onecopy")
-            .call()
-            .map_err(|e| e.to_string())?;
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| e.to_string())?;
-        let release: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| e.to_string())?;
-        // The release NAME, not the tag: BtbN's tag is the constant `latest`, a
-        // rolling pointer that would compare equal to itself forever and never
-        // offer an update. The name carries the build moment and does change.
-        let version = binaries::normalize_version(
-            release.get("name").and_then(|n| n.as_str()).unwrap_or("latest"),
-        );
-        let asset_url = |name: &str| -> Option<String> {
-            release.get("assets")?.as_array()?.iter().find_map(|a| {
-                (a.get("name")?.as_str()? == name)
-                    .then(|| a.get("browser_download_url")?.as_str().map(String::from))?
-            })
-        };
-        Ok(Resolved {
-            version,
-            download_url: asset_url(binaries::BTBN_WIN64_ASSET)
-                .ok_or_else(|| format!("release has no {}", binaries::BTBN_WIN64_ASSET))?,
-            sums_url: asset_url("checksums.sha256")
-                .ok_or_else(|| "release has no checksums.sha256".to_string())?,
-            sums_asset: binaries::BTBN_WIN64_ASSET.to_string(),
-        })
-    } else {
-        Err("no managed ffmpeg build for this platform; install ffmpeg manually".to_string())
-    }
-}
-
-// --- Download / verify / extract / publish ---
-
-// not recorded: download staging — binary bytes into temp/, verified then
-// published by rename; outside the managed-text backup path by design.
-fn download_to(url: &str, dest: &Path, mut on_progress: impl FnMut(u64)) -> Result<u64, String> {
-    assert_https(url)?;
-    let mut response = agent(900).get(url).call().map_err(|e| e.to_string())?;
-    let mut reader = response.body_mut().as_reader();
-    let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; 256 * 1024];
-    let mut total = 0u64;
-    loop {
-        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        total += n as u64;
-        on_progress(total);
-    }
-    file.sync_all().map_err(|e| e.to_string())?;
-    Ok(total)
-}
-
-fn fetch_text(url: &str) -> Result<String, String> {
-    assert_https(url)?;
-    agent(60)
-        .get(url)
-        .header("User-Agent", "onecopy")
-        .call()
-        .map_err(|e| e.to_string())?
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| e.to_string())
-}
-
-fn file_sha256(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1024 * 1024];
-    loop {
-        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hex::encode(hasher.finalize()))
-}
-
-/// Pulls the ffmpeg entry out of the archive: an exact-basename match, unique
-/// across the archive (ambiguity is an error — a multi-match archive means the
-/// upstream layout changed, and guessing which binary to install is not safe).
-fn extract_ffmpeg(archive_path: &Path, staged: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    let wanted = ffmpeg_file_name();
-    let matches: Vec<String> = archive
-        .file_names()
-        .filter(|name| {
-            name.rsplit(['/', '\\']).next() == Some(wanted) && !name.ends_with('/')
-        })
-        .map(String::from)
-        .collect();
-    let inner = match matches.as_slice() {
-        [one] => one.clone(),
-        [] => return Err(format!("archive holds no {wanted}")),
-        many => return Err(format!("archive holds {} candidates for {wanted}", many.len())),
-    };
-    let mut entry = archive.by_name(&inner).map_err(|e| e.to_string())?;
-    // not recorded: staged binary extraction (temp/), published by rename below.
-    let mut out = std::fs::File::create(staged).map_err(|e| e.to_string())?;
-    std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-    out.sync_all().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Everything that must be true of the binary BEFORE it reaches `bin/`:
-/// native architecture (macOS), executable bit, quarantine attribute
-/// stripped (macOS best-effort). Paired per platform, the way `volume.rs`
-/// pairs `platform_identity`: on Windows every `#[cfg]` block inside the old
-/// single body vanished and took the only use of `staged` with it, so one
-/// shared signature could be kept only by underscoring a parameter that is
-/// genuinely used on the platforms this work belongs to.
-#[cfg(unix)]
-fn make_runnable(staged: &Path) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        // The conventions' arch gate applied to bytes the app didn't build:
-        // an x86_64-only download must fail HERE, not as Rosetta jank later.
-        let header = {
-            use std::io::Read;
-            let mut file = std::fs::File::open(staged).map_err(|e| e.to_string())?;
-            let mut buf = [0u8; 4096];
-            let n = file.read(&mut buf).map_err(|e| e.to_string())?;
-            buf[..n].to_vec()
-        };
-        if !macho_has_arm64(&header) {
-            return Err("downloaded binary carries no native arm64 slice".to_string());
-        }
-    }
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("xattr")
-            .args(["-d", "com.apple.quarantine"])
-            .arg(staged)
-            .status();
-    }
-    Ok(())
-}
-
-/// Windows has no executable bit and no quarantine attribute, and the
-/// download is already the architecture the OS runs — nothing to prepare.
-#[cfg(not(unix))]
-fn make_runnable(_staged: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-/// True when the Mach-O header carries an arm64 slice: a thin 64-bit binary
-/// with CPU_TYPE_ARM64, or a fat binary listing one. A header parse instead
-/// of shelling to `lipo`, so the gate needs no developer tooling installed.
-#[cfg(target_os = "macos")]
-fn macho_has_arm64(header: &[u8]) -> bool {
-    const CPU_ARM64: u32 = 0x0100_000C;
-    if header.len() < 8 {
-        return false;
-    }
-    let magic_be = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
-    // Thin 64-bit Mach-O, stored little-endian on disk: MH_MAGIC_64.
-    if u32::from_le_bytes([header[0], header[1], header[2], header[3]]) == 0xFEED_FACF {
-        return u32::from_le_bytes([header[4], header[5], header[6], header[7]]) == CPU_ARM64;
-    }
-    // Fat/universal binary: big-endian header listing per-arch entries
-    // (FAT_MAGIC; FAT_MAGIC_64 entries are 32 bytes instead of 20).
-    if magic_be == 0xCAFE_BABE || magic_be == 0xCAFE_BABF {
-        let entry_size = if magic_be == 0xCAFE_BABF { 32 } else { 20 };
-        let count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]) as usize;
-        for i in 0..count.min(64) {
-            let at = 8 + i * entry_size;
-            if at + 4 > header.len() {
-                return false;
-            }
-            let cputype =
-                u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]);
-            if cputype == CPU_ARM64 {
-                return true;
-            }
-        }
-    }
-    false
+pub fn is_cancelled_error(error: &str) -> bool {
+    error == acquisition::CANCELLED_ERROR
 }
 
 /// In-flight operations by entry id. PER-ID, deliberately (developer,
 /// 2026-08-17): several dependencies may download AT ONCE — only a second
 /// operation on the SAME entry is refused. The facts-file RMW no longer
 /// rides this claim; it has its own lock below.
-static IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+static IN_FLIGHT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 struct BusyGuard {
     id: String,
+    cancelled: Arc<AtomicBool>,
 }
 impl Drop for BusyGuard {
     fn drop(&mut self) {
@@ -585,10 +393,27 @@ impl Drop for BusyGuard {
 
 fn claim(id: &str) -> Result<BusyGuard, String> {
     let mut in_flight = IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
-    if !in_flight.insert(id.to_string()) {
+    if in_flight.contains_key(id) {
         return Err(format!("{id} is already being worked on"));
     }
-    Ok(BusyGuard { id: id.to_string() })
+    let cancelled = Arc::new(AtomicBool::new(false));
+    in_flight.insert(id.to_string(), cancelled.clone());
+    Ok(BusyGuard {
+        id: id.to_string(),
+        cancelled,
+    })
+}
+
+/// Requests cancellation of the current operation for one registry entry.
+/// Network futures race this flag directly, so cancellation does not wait for
+/// a connect, TLS handshake, metadata response, or stalled body read.
+pub fn cancel_entry(id: &str) -> bool {
+    let in_flight = IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(cancelled) = in_flight.get(id) else {
+        return false;
+    };
+    cancelled.store(true, Ordering::Relaxed);
+    true
 }
 
 /// The full install/update for any registry entry. Binaries: resolve →
@@ -598,30 +423,56 @@ fn claim(id: &str) -> Result<BusyGuard, String> {
 pub fn install_entry(
     root: &Path,
     id: &str,
+    on_progress: impl FnMut(&str, String),
+) -> Result<BinaryFacts, String> {
+    let started = begin_install(id)?;
+    install_entry_started(root, started, on_progress)
+}
+
+/// A claim acquired before the detached worker starts, so a Cancel click can
+/// never race ahead of the operation's registration on a slow machine.
+pub struct StartedInstall(BusyGuard);
+
+pub fn begin_install(id: &str) -> Result<StartedInstall, String> {
+    spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    claim(id).map(StartedInstall)
+}
+
+pub fn install_entry_started(
+    root: &Path,
+    started: StartedInstall,
     mut on_progress: impl FnMut(&str, String),
 ) -> Result<BinaryFacts, String> {
-    let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    let id = started.0.id.clone();
+    let spec = spec_of(&id).ok_or_else(|| format!("unknown dependency: {id}"))?;
     match spec.kind {
-        DependencyKind::Binary => install_or_update(root, on_progress),
+        DependencyKind::Binary => install_ffmpeg_started(root, started.0, on_progress),
         DependencyKind::Model => {
-            let _guard = claim(id)?;
+            let guard = started.0;
             let pinned = spec.pinned.as_ref().ok_or("model entry carries no pin")?;
             let temp = root.join(TEMP_DIR_NAME);
             std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
             let partial = temp.join(format!("{id}-{}.partial", nanoid::generate()));
+            let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone()]);
             let result = (|| -> Result<BinaryFacts, String> {
                 on_progress(
                     "download",
                     format!("{} ({} MB)", spec.label, pinned.bytes / 1_048_576),
                 );
-                download_to(pinned.url, &partial, |done| {
-                    on_progress(
-                        "download",
-                        format!("{} / {} MB", done / 1_048_576, pinned.bytes / 1_048_576),
-                    );
-                })?;
+                acquisition::download_to(
+                    pinned.url,
+                    &partial,
+                    &guard.cancelled,
+                    Some(pinned.bytes),
+                    |done| {
+                        on_progress(
+                            "download",
+                            format!("{} / {} MB", done / 1_048_576, pinned.bytes / 1_048_576),
+                        );
+                    },
+                )?;
                 on_progress("verify", "checking integrity".to_string());
-                let actual = file_sha256(&partial)?;
+                let actual = acquisition::file_sha256(&partial, &guard.cancelled)?;
                 if actual != pinned.sha256 {
                     return Err(format!(
                         "checksum mismatch for {id}: expected {}, got {actual}",
@@ -630,53 +481,72 @@ pub fn install_entry(
                 }
                 let target = installed_path(root, spec);
                 std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+                acquisition::check_cancelled(&guard.cancelled)?;
+                // An old identity must never survive a replacement attempt:
+                // if publication or the new identity write fails, state stays
+                // installed-unchecked instead of assigning either digest.
+                invalidate_model_identity(root, spec)?;
                 // Replace-in-place over any previous model (same volume).
                 // not recorded: the model file is a re-downloadable artifact.
-                std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
-                // Nothing about what is now installed is persisted: the model
-                // file's own size against the pin is what identifies it, read on
-                // every status. Only the latest is recorded — and for a model that
-                // is the pin compiled into this build, so the write exists purely
-                // to keep the facts file's shape uniform across entry kinds.
+                acquisition::publish_staged(&partial, &target)?;
+                write_model_identity(root, spec, pinned)?;
+                // The facts store remains untouched: latest is the pin compiled
+                // into this app, while installed identity belongs beside the
+                // verified artifact rather than in network facts.
                 let facts = BinaryFacts {
                     latest_known_version: Some(pin_version(pinned)),
-                    last_checked_at_utc: Some(logging::now_iso_millis()),
+                    last_checked_at_utc: None,
                 };
-                save_facts_for(root, id, &facts)?;
                 logging::info(
                     "model installed",
                     serde_json::json!({ "id": id, "path": target.to_string_lossy() }),
                 );
                 Ok(facts)
             })();
-            let _ = std::fs::remove_file(&partial);
             result
         }
     }
 }
 
-/// The ffmpeg install/update (the registry's one binary entry).
-pub fn install_or_update(
+fn install_ffmpeg_started(
     root: &Path,
+    guard: BusyGuard,
     mut on_progress: impl FnMut(&str, String),
 ) -> Result<BinaryFacts, String> {
-    let _guard = claim("ffmpeg")?;
     let temp = root.join(TEMP_DIR_NAME);
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
 
+    acquisition::check_cancelled(&guard.cancelled)?;
     on_progress("resolve", "finding the latest build".to_string());
-    let resolved = resolve_latest()?;
+    let resolved = acquisition::resolve_latest(&guard.cancelled)?;
 
     let partial = temp.join(format!("ffmpeg-{}.partial", nanoid::generate()));
+    let staged = temp.join(format!("ffmpeg-{}.staged", nanoid::generate()));
+    let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]);
     let result = (|| -> Result<BinaryFacts, String> {
-        on_progress("download", format!("v{} from {}", resolved.version, resolved.download_url));
-        let bytes = download_to(&resolved.download_url, &partial, |done| {
-            on_progress("download", format!("{} MB", done / 1_048_576));
-        })?;
+        acquisition::check_cancelled(&guard.cancelled)?;
+        on_progress(
+            "download",
+            format!("v{} from {}", resolved.version, resolved.download_url),
+        );
+        let bytes = acquisition::download_to(
+            &resolved.download_url,
+            &partial,
+            &guard.cancelled,
+            None,
+            |done| {
+                on_progress("download", format!("{} MB", done / 1_048_576));
+            },
+        )?;
+        acquisition::check_cancelled(&guard.cancelled)?;
         on_progress("verify", format!("{bytes} bytes downloaded"));
-        let expected = binaries::parse_sums(&fetch_text(&resolved.sums_url)?, &resolved.sums_asset)
-            .ok_or_else(|| format!("{} not in the checksum file", resolved.sums_asset))?;
-        let actual = file_sha256(&partial)?;
+        let expected = binaries::parse_sums(
+            &acquisition::fetch_text(&resolved.sums_url, &guard.cancelled)?,
+            &resolved.sums_asset,
+        )
+        .ok_or_else(|| format!("{} not in the checksum file", resolved.sums_asset))?;
+        acquisition::check_cancelled(&guard.cancelled)?;
+        let actual = acquisition::file_sha256(&partial, &guard.cancelled)?;
         if actual != expected {
             return Err(format!(
                 "checksum mismatch for {}: expected {expected}, got {actual}",
@@ -685,15 +555,15 @@ pub fn install_or_update(
         }
 
         on_progress("install", "extracting".to_string());
-        let staged = temp.join(format!("ffmpeg-{}.staged", nanoid::generate()));
-        extract_ffmpeg(&partial, &staged)?;
-        make_runnable(&staged)?;
+        acquisition::extract_ffmpeg(&partial, &staged, ffmpeg_file_name(), &guard.cancelled)?;
+        acquisition::make_runnable(&staged, &guard.cancelled)?;
 
         let target = ffmpeg_path(root);
         std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+        acquisition::check_cancelled(&guard.cancelled)?;
         // Replace-in-place: rename over any previous install (same volume).
         // not recorded: the installed executable is a re-downloadable binary.
-        std::fs::rename(&staged, &target).map_err(|e| e.to_string())?;
+        acquisition::publish_staged(&staged, &target)?;
 
         // The binary has landed — drop the cached read FIRST, so even a failed
         // sidecar write below cannot leave the pre-install answer cached; a
@@ -723,7 +593,6 @@ pub fn install_or_update(
         );
         Ok(facts)
     })();
-    let _ = std::fs::remove_file(&partial);
     result
 }
 
@@ -734,29 +603,24 @@ pub fn install_or_update(
 /// a re-pin shipped in an app update shows up on its own.
 pub fn check_entry(root: &Path, id: &str) -> Result<BinaryFacts, String> {
     let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
-    let _guard = claim(id)?;
+    let guard = claim(id)?;
     let mut facts = load_facts_for(root, id);
     match spec.kind {
         DependencyKind::Binary => {
-            let resolved = resolve_latest()?;
+            let resolved = acquisition::resolve_latest(&guard.cancelled)?;
             facts.latest_known_version = Some(resolved.version);
         }
         // Refused rather than faked: a model has no upstream to ask. Its
-        // version ships with the app, and `state_of` already derives it.
+        // selected version belongs to this app build, and `state_of` derives it.
         DependencyKind::Model => {
             return Err(format!(
-                "{id} ships with the app — there is no update to check for"
+                "{id} is selected by this app build — there is no update to check for"
             ));
         }
     }
     facts.last_checked_at_utc = Some(logging::now_iso_millis());
     save_facts_for(root, id, &facts)?;
     Ok(facts)
-}
-
-/// Back-compat: the ffmpeg check.
-pub fn check_for_updates(root: &Path) -> Result<BinaryFacts, String> {
-    check_entry(root, "ffmpeg")
 }
 
 #[derive(serde::Serialize)]
@@ -767,15 +631,15 @@ pub struct DependencyState {
     pub kind: DependencyKind,
     pub status: BinaryStatus,
     /// Read from the artifact on every status — the binary's own banner, the
-    /// sidecar beside it, or a model's size-exact match against its pin. None
-    /// on a present entry means the version could not be read: not absent, and
-    /// never dressed up as up to date.
+    /// sidecar beside it, or a model's verified-install identity. None on a
+    /// present entry means the version could not be read: not absent, and never
+    /// dressed up as up to date.
     pub installed_version: Option<String>,
     pub facts: BinaryFacts,
     pub path: String,
     /// True when this entry's "latest" is DISCOVERABLE — a binary resolved
-    /// live from upstream. A model's latest is a constant compiled into the
-    /// app, so there is nothing to look up and nothing to check.
+    /// live from upstream. A model's latest is selected by the app build, so
+    /// there is nothing to look up and nothing to check.
     pub checkable: bool,
     /// A pinned artifact's upstream publication date — how old this model
     /// actually is. None for binaries, whose live version is the answer.
@@ -784,7 +648,8 @@ pub struct DependencyState {
 
 /// One entry's live state; presence re-scanned from disk, never persisted.
 /// A model's presence check is size-exact — a truncated download that somehow
-/// reached the models dir must read not-installed, not installed-broken.
+/// reached the models dir reads not-installed. Identity is separate: a full-
+/// sized file without a verified-install identity is installed-unchecked.
 pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
     let path = installed_path(root, spec);
     let mut facts = load_facts_for(root, spec.id);
@@ -805,15 +670,16 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
                 .unwrap_or(false)
         }
     };
-    // The installed version comes from the artifact, and only when there IS an
-    // artifact. For a model that is the very stat presence was decided by: bytes
-    // matching the pin ARE the pin, so presence and version cannot disagree. For
-    // the binary it is the cached probe (or sidecar) read.
+    // Presence and identity stay separate: exact size rejects truncation, while
+    // the colocated verified-install record says which digest was published.
+    // Missing or malformed identity remains honestly unreadable.
     let installed_version = if !present {
         None
     } else {
         match spec.pinned.as_ref() {
-            Some(pinned) => Some(pin_version(pinned)),
+            Some(_) => std::fs::metadata(&path)
+                .ok()
+                .and_then(|metadata| read_model_identity(root, spec, metadata.len())),
             None => installed_ffmpeg_version(root),
         }
     };
@@ -835,47 +701,83 @@ pub fn states(root: &Path) -> Vec<DependencyState> {
     DEPENDENCIES.iter().map(|spec| state_of(root, spec)).collect()
 }
 
-/// Back-compat: the ffmpeg state (the scan settings and chip read it).
-pub fn state(root: &Path) -> DependencyState {
-    state_of(root, spec_of("ffmpeg").expect("ffmpeg is registered"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn macho_arm64_detection_covers_thin_fat_and_foreign() {
-        // Thin arm64: MH_MAGIC_64 little-endian + CPU_TYPE_ARM64.
-        let mut thin_arm = vec![0xCF, 0xFA, 0xED, 0xFE];
-        thin_arm.extend_from_slice(&0x0100_000Cu32.to_le_bytes());
-        assert!(macho_has_arm64(&thin_arm));
+    fn cancellation_is_visible_to_chunked_work_and_released_with_the_claim() {
+        let id = "whisper-large-v3-turbo";
+        let started = begin_install(id).unwrap();
+        assert!(cancel_entry(id));
+        assert!(is_cancelled_error(
+            &acquisition::check_cancelled(&started.0.cancelled).unwrap_err()
+        ));
+        drop(started);
+        assert!(!cancel_entry(id));
+    }
 
-        // Thin x86_64: same magic, CPU_TYPE_X86_64 — rejected.
-        let mut thin_x86 = vec![0xCF, 0xFA, 0xED, 0xFE];
-        thin_x86.extend_from_slice(&0x0100_0007u32.to_le_bytes());
-        assert!(!macho_has_arm64(&thin_x86));
+    #[test]
+    fn installed_model_status_needs_no_persisted_facts() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-binmgr-model-state-")
+            .tempdir()
+            .unwrap();
+        let spec = spec_of("ultraface-rfb640").unwrap();
+        let pinned = spec.pinned.as_ref().unwrap();
+        let target = installed_path(dir.path(), spec);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::File::create(&target)
+            .unwrap()
+            .set_len(pinned.bytes)
+            .unwrap();
+        write_model_identity(dir.path(), spec, pinned).unwrap();
+        let expected_version = pin_version(pinned);
 
-        // Fat binary with x86_64 then arm64 slices — accepted.
-        let mut fat = Vec::new();
-        fat.extend_from_slice(&0xCAFE_BABEu32.to_be_bytes());
-        fat.extend_from_slice(&2u32.to_be_bytes());
-        fat.extend_from_slice(&0x0100_0007u32.to_be_bytes()); // x86_64 entry
-        fat.extend_from_slice(&[0u8; 16]); // rest of the 20-byte fat_arch
-        fat.extend_from_slice(&0x0100_000Cu32.to_be_bytes()); // arm64 entry
-        fat.extend_from_slice(&[0u8; 16]);
-        assert!(macho_has_arm64(&fat));
+        let model = state_of(dir.path(), spec);
 
-        // Fat with only x86_64 — rejected; garbage — rejected.
-        let mut fat_x86 = Vec::new();
-        fat_x86.extend_from_slice(&0xCAFE_BABEu32.to_be_bytes());
-        fat_x86.extend_from_slice(&1u32.to_be_bytes());
-        fat_x86.extend_from_slice(&0x0100_0007u32.to_be_bytes());
-        fat_x86.extend_from_slice(&[0u8; 16]);
-        assert!(!macho_has_arm64(&fat_x86));
-        assert!(!macho_has_arm64(b"#!/bin/sh\n"));
-        assert!(!macho_has_arm64(&[]));
+        assert_eq!(model.status, BinaryStatus::UpToDate);
+        assert_eq!(
+            model.installed_version.as_deref(),
+            Some(expected_version.as_str())
+        );
+        assert_eq!(model.facts.last_checked_at_utc, None);
+        assert!(!dir.path().join(DEPENDENCIES_FILE_NAME).exists());
+        assert!(model_identity_path(dir.path(), spec).is_file());
+    }
+
+    #[test]
+    fn a_same_size_older_model_remains_update_available() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-binmgr-old-model-")
+            .tempdir()
+            .unwrap();
+        let spec = spec_of("ultraface-rfb640").unwrap();
+        let pinned = spec.pinned.as_ref().unwrap();
+        let target = installed_path(dir.path(), spec);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::File::create(&target)
+            .unwrap()
+            .set_len(pinned.bytes)
+            .unwrap();
+        let older = ModelIdentity {
+            sha256: "a".repeat(64),
+            bytes: pinned.bytes,
+        };
+        std::fs::write(
+            model_identity_path(dir.path(), spec),
+            serde_json::to_vec(&older).unwrap(),
+        )
+        .unwrap();
+
+        let model = state_of(dir.path(), spec);
+
+        assert_eq!(model.status, BinaryStatus::UpdateAvailable);
+        assert_eq!(model.installed_version.as_deref(), Some("aaaaaaaaaaaa"));
+        assert_eq!(
+            model.facts.latest_known_version.as_deref(),
+            Some(pin_version(pinned).as_str())
+        );
     }
 
     #[test]
@@ -885,10 +787,10 @@ mod tests {
             .tempdir()
             .unwrap();
         // Missing → defaults.
-        assert_eq!(load_facts(dir.path()), BinaryFacts::default());
+        assert_eq!(load_facts_for(dir.path(), "ffmpeg"), BinaryFacts::default());
         // Corrupt → defaults, no quarantine (re-derivable facts).
         std::fs::write(dir.path().join(DEPENDENCIES_FILE_NAME), b"{ not json").unwrap();
-        assert_eq!(load_facts(dir.path()), BinaryFacts::default());
+        assert_eq!(load_facts_for(dir.path(), "ffmpeg"), BinaryFacts::default());
     }
 
     #[test]
@@ -903,7 +805,7 @@ mod tests {
             last_checked_at_utc: Some("2026-08-08T12:00:00.000Z".into()),
         };
         save_facts_for(dir.path(), "ffmpeg", &facts).unwrap();
-        assert_eq!(load_facts(dir.path()), facts);
+        assert_eq!(load_facts_for(dir.path(), "ffmpeg"), facts);
     }
 
     #[test]
@@ -932,7 +834,7 @@ mod tests {
             .prefix("onecopy-binmgr-live-")
             .tempdir()
             .unwrap();
-        let facts = install_or_update(dir.path(), |phase, detail| {
+        let facts = install_entry(dir.path(), "ffmpeg", |phase, detail| {
             eprintln!("[{phase}] {detail}");
         })
         .expect("live install should succeed");
@@ -950,7 +852,7 @@ mod tests {
 
         // The installed version is READ BACK off the binary just published, and
         // it is the version the resolve named — the whole point of the design.
-        let state = state(dir.path());
+        let state = state_of(dir.path(), spec_of("ffmpeg").unwrap());
         assert_eq!(
             state.installed_version.as_deref(),
             facts.latest_known_version.as_deref(),

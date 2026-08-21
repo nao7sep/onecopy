@@ -51,7 +51,7 @@ fn live_video_derive() {
         .tempdir()
         .unwrap();
     let root = dir.path();
-    let facts = binaries_manager::install_or_update(root, |p, d| eprintln!("[{p}] {d}"))
+    let facts = binaries_manager::install_entry(root, "ffmpeg", |p, d| eprintln!("[{p}] {d}"))
         .expect("ffmpeg install");
     eprintln!("ffmpeg {:?}", facts.latest_known_version);
     let ffmpeg = binaries_manager::ffmpeg_path(root);

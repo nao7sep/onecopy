@@ -2,9 +2,7 @@
 //
 // The contract that matters: N entries share one facts file WITHOUT sharing
 // fate — one entry's install, check, or corruption can never touch another's
-// facts — and a model's presence check is size-exact, so a truncated download
-// that somehow reached the models directory reads not-installed rather than
-// installed-broken.
+// facts — and model presence remains separate from verified installed identity.
 
 use onecopy_lib::binaries::{BinaryFacts, BinaryStatus};
 use onecopy_lib::binaries_manager::*;
@@ -52,10 +50,16 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     // answer to "how old is this?", and the thing that made these two face
     // models' age visible enough to act on.
     for spec in DEPENDENCIES.iter().filter(|d| d.pinned.is_some()) {
-        let released = spec.pinned.as_ref().unwrap().released;
+        let pin = spec.pinned.as_ref().unwrap();
+        let released = pin.released;
         assert!(
             released.len() == 10 && released.starts_with("20"),
             "{} carries an ISO release date, got {released:?}",
+            spec.id
+        );
+        assert!(
+            !pin.url.contains("/main/") && !pin.url.contains("/master/"),
+            "{} must download from an immutable upstream revision",
             spec.id
         );
     }
@@ -88,8 +92,7 @@ fn entries_share_the_facts_file_without_sharing_fate() {
     save_facts_for(dir.path(), "ffmpeg", &newer).unwrap();
     assert_eq!(load_facts_for(dir.path(), "whisper-large-v3-turbo"), whisper);
 
-    // The historical `{"ffmpeg": …}` reader still answers.
-    assert_eq!(load_facts(dir.path()), newer);
+    assert_eq!(load_facts_for(dir.path(), "ffmpeg"), newer);
 }
 
 #[test]
@@ -120,13 +123,12 @@ fn a_models_presence_check_is_size_exact() {
 
 #[test]
 #[serial_test::serial(backup_store)]
-fn a_models_state_is_read_off_the_file_and_needs_no_check_at_all() {
+fn an_unidentified_model_stays_unchecked_and_needs_no_network_check() {
     // A model has no upstream to ask: "latest" is the pin compiled into this
     // build, so `state_of` DERIVES it and `check_entry` refuses the entry
-    // outright rather than stamping a lookup that never happened. Its INSTALLED
-    // version comes from the file, by the same size-exact test that decides
-    // presence — bytes matching the pin ARE the pin — so the facts store cannot
-    // contradict what is on disk, however stale it is.
+    // outright rather than stamping a lookup that never happened. Exact size
+    // proves only presence: without a verified-install identity, the installed
+    // version stays unreadable instead of inheriting this build's pin.
     let dir = home("model-state");
     let spec = spec_of("whisper-large-v3-turbo").unwrap();
 
@@ -137,7 +139,7 @@ fn a_models_state_is_read_off_the_file_and_needs_no_check_at_all() {
         last_checked_at_utc: Some("2026-08-01T00:00:00.000Z".into()),
     };
     save_facts_for(dir.path(), spec.id, &stale).unwrap();
-    // Present on disk at the pinned size — this IS the pinned artifact.
+    // Present on disk at the pinned size, but with no verified identity.
     let target = installed_path(dir.path(), spec);
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     let file = std::fs::File::create(&target).unwrap();
@@ -145,22 +147,18 @@ fn a_models_state_is_read_off_the_file_and_needs_no_check_at_all() {
 
     let pin_digest = &spec.pinned.as_ref().unwrap().sha256[..12];
     let state = state_of(dir.path(), spec);
-    assert_eq!(
-        state.installed_version.as_deref(),
-        Some(pin_digest),
-        "the file identifies itself; the stale record does not get a vote"
-    );
+    assert_eq!(state.installed_version, None);
     assert_eq!(
         state.facts.latest_known_version.as_deref(),
         Some(pin_digest),
         "latest is derived from the pin, not from stored facts"
     );
-    assert_eq!(state.status, BinaryStatus::UpToDate, "no check needed");
+    assert_eq!(state.status, BinaryStatus::InstalledUnchecked);
     assert!(!state.checkable, "a model has no upstream to ask");
     assert!(spec_of("ffmpeg").is_some_and(|_| state_of(dir.path(), spec_of("ffmpeg").unwrap()).checkable));
 
     let refused = check_entry(dir.path(), spec.id).expect_err("models cannot be checked");
-    assert!(refused.contains("ships with the app"), "honest refusal, got: {refused}");
+    assert!(refused.contains("selected by this app build"), "honest refusal, got: {refused}");
     // And nothing was written: no fake "checked at" stamp appeared.
     assert_eq!(
         load_facts_for(dir.path(), spec.id).last_checked_at_utc.as_deref(),

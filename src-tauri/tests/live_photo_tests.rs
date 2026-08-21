@@ -102,7 +102,7 @@ fn live_content_identifier_round_trip() {
         .prefix("onecopy-livephoto-")
         .tempdir()
         .unwrap();
-    binaries_manager::install_or_update(dir.path(), |p, d| eprintln!("[{p}] {d}"))
+    binaries_manager::install_entry(dir.path(), "ffmpeg", |p, d| eprintln!("[{p}] {d}"))
         .expect("ffmpeg install");
     let ffmpeg = binaries_manager::ffmpeg_path(dir.path());
 

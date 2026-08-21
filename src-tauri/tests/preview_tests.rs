@@ -507,7 +507,7 @@ fn live_still_decode_through_ffmpeg() {
         .tempdir()
         .unwrap();
     let root = dir.path();
-    binaries_manager::install_or_update(root, |_, _| {}).expect("ffmpeg install");
+    binaries_manager::install_entry(root, "ffmpeg", |_, _| {}).expect("ffmpeg install");
     let ffmpeg = binaries_manager::ffmpeg_path(root);
 
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -590,7 +590,7 @@ fn live_avif_decode_through_ffmpeg() {
         .tempdir()
         .unwrap();
     let root = dir.path();
-    binaries_manager::install_or_update(root, |_, _| {}).expect("ffmpeg install");
+    binaries_manager::install_entry(root, "ffmpeg", |_, _| {}).expect("ffmpeg install");
     let ffmpeg = binaries_manager::ffmpeg_path(root);
 
     let src = gradient_jpeg(root, "seed.jpg", 240, 160);

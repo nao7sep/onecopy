@@ -12,6 +12,7 @@ Similarity grouping and the best-shot ordering are deliberately best-effort — 
 
 - To run: macOS (Apple silicon) or Windows 10/11. Extra monitors are optional but make the similar-photos comparison view considerably better.
 - Video thumbnails, snapshot strips and durations use ffmpeg, which the app downloads and manages itself (free; one click in *Managed tools*). So do photos in HEIC, HEIF and AVIF; JPEG, PNG and the other everyday formats need nothing. That makes it effectively required for any library containing video, not only a phone library. Files waiting on ffmpeg show placeholders and start working the moment you install it — you are never asked to rescan. Playing a video does not need it: playback runs in the app wherever the system supports the codec, with *Open in player* as the fallback.
+- Transcription and optional face scoring use models that OneCopy downloads only when you explicitly install them in *Managed tools*: Whisper large-v3-turbo (about 1.51 GiB, from the whisper.cpp model repository), UltraFace RFB-640 (about 1.5 MiB, from the ONNX Model Zoo), and HSEmotion EfficientNet-B2 (about 29 MiB, from EmotiEffLib). OneCopy pins and verifies the selected bytes; model updates arrive only when an app update selects a new pin. The launch-time update check applies to ffmpeg, not these app-selected models.
 - To build from source: Node.js (LTS), stable Rust, and cmake (the linked-in whisper.cpp transcription engine builds through it). `company/scripts/setup` installs all of it on either OS.
 
 ## Trash

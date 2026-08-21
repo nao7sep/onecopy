@@ -56,6 +56,7 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     binaries_install: () => null,
+    binaries_cancel: () => true,
     binaries_check: () => null,
     binaries_state: () => [],
   });
@@ -81,6 +82,33 @@ describe("parallel installs", () => {
     expect(install).toHaveLength(1); // ffmpeg's — the model row shows progress
     expect(install[0]!.disabled).toBe(false);
     expect(document.body.textContent).toContain("Downloading — 100 / 1207 MB");
+  });
+
+  it("offers cancellation on the running row and sends that entry id", async () => {
+    useBinariesStore.setState({
+      installing: { "whisper-large-v3-turbo": "Downloading — 100 / 1207 MB" },
+    });
+    render(<BinariesModal />);
+
+    await act(async () => buttons("Cancel")[0]!.click());
+
+    expect(invokeCalls.filter((call) => call.command === "binaries_cancel")).toEqual([
+      { command: "binaries_cancel", args: { id: "whisper-large-v3-turbo" } },
+    ]);
+    expect(document.body.textContent).toContain("Cancelling…");
+  });
+
+  it("does not leave stale cancellation progress when the worker already ended", async () => {
+    mockCommands({ binaries_cancel: () => false });
+    useBinariesStore.setState({
+      installing: { "whisper-large-v3-turbo": "Downloading — 100 / 1207 MB" },
+    });
+    render(<BinariesModal />);
+
+    await act(async () => buttons("Cancel")[0]!.click());
+
+    expect(useBinariesStore.getState().installing["whisper-large-v3-turbo"]).toBeUndefined();
+    expect(document.body.textContent).not.toContain("Cancelling…");
   });
 });
 
@@ -136,7 +164,10 @@ describe("the two lifecycles", () => {
     expect(document.body.textContent).toContain("Released 2024-10-01");
     // No check is offered for it — there is nothing to ask.
     expect(buttons("Check for updates")).toHaveLength(0);
-    expect(document.body.textContent).toContain("Included with OneCopy");
+    expect(document.body.textContent).toContain("Models selected by OneCopy");
+    expect(document.body.textContent).toContain(
+      "These models are downloaded only when you install them here.",
+    );
   });
 
   it("offers the check only on the entry that has an upstream", () => {

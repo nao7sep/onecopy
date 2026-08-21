@@ -10,20 +10,19 @@
 //!   `<root>/bin/ffmpeg[.exe]`        the installed executable
 //!   `<root>/bin/ffmpeg.json`         its version sidecar, where the binary
 //!                                    cannot report a comparable version
+//!   `<root>/models/<model>.json`      verified identity beside each model
 //!   `<root>/temp/…`                  download staging, wiped at launch
 //!   `<root>/dependencies.json`       recorded facts, its own store
 //!
 //! Facts persist only what cannot be re-derived, and both survivors are
 //! NETWORK facts with no on-disk source: `latestKnownVersion` and
 //! `lastCheckedAtUtc`. Presence is re-scanned from disk, and so is the
-//! INSTALLED version — read from the artifact itself, never persisted beside
-//! a copy of it. `installedVersion` used to live in the facts store, one file
-//! away from the thing it described, where any install that failed to write
-//! the record stranded a present artifact as permanently unversioned; the
-//! derivation can only read that as "installed (not checked)", so the update
-//! that exists is never offered. A FAILED check still writes nothing (the
-//! honest-state rule), so "up to date" always means a check actually
-//! succeeded.
+//! INSTALLED version — read from the executable or its colocated identity,
+//! never from network facts. `installedVersion` used to live in the shared
+//! facts store, away from the thing it described, where any install that
+//! failed to write the record stranded a present artifact as permanently
+//! unversioned. A FAILED check still writes nothing (the honest-state rule),
+//! so "up to date" always means the available identity was compared.
 
 use serde::{Deserialize, Serialize};
 

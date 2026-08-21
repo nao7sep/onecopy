@@ -24,9 +24,9 @@ export interface DependencyState {
   kind: "binary" | "model";
   status: DependencyStatus;
   /** Read from the artifact on every status — the binary's own banner, the
-   * sidecar beside it, or a model's size-exact match against its pin, never
-   * from the facts store. Null on a present entry means the version could not
-   * be read: not absent, and never dressed up as up to date. */
+   * sidecar beside it, or a model's verified-install identity, never from the
+   * facts store. Null on a present entry means the version could not be read:
+   * not absent, and never dressed up as up to date. */
   installedVersion: string | null;
   /** What the app RECORDED, which is only ever network knowledge: nothing here
    * describes the artifact on disk. */
@@ -36,8 +36,8 @@ export interface DependencyState {
   };
   path: string;
   /** True when this entry's "latest" is DISCOVERABLE — a binary resolved
-   * live from upstream. A model's latest is a constant compiled into the
-   * app, so there is nothing to look up and nothing to check. */
+   * live from upstream. A model's latest is selected by the app build, so
+   * there is nothing to look up and nothing to check. */
   checkable: boolean;
   /** A pinned artifact's upstream publication date — how old the model
    * actually is; null for binaries, whose live version answers that. */
@@ -78,6 +78,7 @@ interface BinariesState {
   modalOpen: boolean;
   load: () => Promise<void>;
   install: (id: string) => Promise<void>;
+  cancel: (id: string) => Promise<void>;
   /** Installs every entry that needs anything — missing or updatable — all
    * at once. */
   installAll: () => Promise<void>;
@@ -121,6 +122,31 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         return { installing, errors: { ...s.errors, [id]: messageOf(error) } };
       });
       log.error("binaries install start failed", { id, ...toErrorFields(error) });
+    }
+  },
+
+  cancel: async (id) => {
+    const previous = get().installing[id];
+    set((s) => ({ installing: { ...s.installing, [id]: "Cancelling…" } }));
+    try {
+      const active = await invoke<boolean>("binaries_cancel", { id });
+      if (!active) {
+        set((s) => {
+          if (s.installing[id] !== "Cancelling…") return s;
+          const installing = { ...s.installing };
+          delete installing[id];
+          return { installing };
+        });
+      }
+    } catch (error) {
+      log.error("binaries install cancellation failed", { id, ...toErrorFields(error) });
+      set((s) => {
+        if (s.installing[id] !== "Cancelling…") return s;
+        const installing = { ...s.installing };
+        if (previous === undefined) delete installing[id];
+        else installing[id] = previous;
+        return { installing };
+      });
     }
   },
 
@@ -252,6 +278,16 @@ void (async () => {
         const installing = { ...s.installing };
         delete installing[event.payload.id];
         return { installing };
+      });
+      void useBinariesStore.getState().load();
+    });
+    await listen<{ id: string }>("binaries://cancelled", (event) => {
+      useBinariesStore.setState((s) => {
+        const installing = { ...s.installing };
+        const errors = { ...s.errors };
+        delete installing[event.payload.id];
+        delete errors[event.payload.id];
+        return { installing, errors };
       });
       void useBinariesStore.getState().load();
     });

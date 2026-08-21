@@ -62,6 +62,7 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const cooldownUntil = useBinariesStore((s) => s.cooldownUntil);
   const lastCheckOutcome = useBinariesStore((s) => s.lastCheckOutcome);
   const install = useBinariesStore((s) => s.install);
+  const cancel = useBinariesStore((s) => s.cancel);
   const checkAll = useBinariesStore((s) => s.checkAll);
   const installing = progress !== undefined;
 
@@ -99,7 +100,15 @@ function EntryRow({ entry }: { entry: DependencyState }) {
         <p className="mt-1 text-xs text-danger">{error}</p>
       ) : null}
       {installing ? (
-        <p className="mt-2 text-xs text-primary">{progress}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <p className="text-xs text-primary">{progress}</p>
+          <Button
+            disabled={progress === "Cancelling…"}
+            onClick={() => void cancel(entry.id)}
+          >
+            {progress === "Cancelling…" ? "Cancelling…" : "Cancel"}
+          </Button>
+        </div>
       ) : action !== null || offersCheck ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {action !== null ? (
@@ -142,7 +151,7 @@ export default function BinariesModal() {
       installing[entry.id] === undefined,
   ).length;
   const upstream = entries.filter((entry) => entry.checkable);
-  const bundled = entries.filter((entry) => !entry.checkable);
+  const appSelected = entries.filter((entry) => !entry.checkable);
 
   return (
     <ModalShell title="Managed tools" onClose={() => setModalOpen(false)}>
@@ -164,15 +173,16 @@ export default function BinariesModal() {
         ))}
       </div>
 
-      {bundled.length > 0 ? (
+      {appSelected.length > 0 ? (
         <section className="mt-5">
-          <h3 className="text-sm font-semibold text-ink-strong">Included with OneCopy</h3>
+          <h3 className="text-sm font-semibold text-ink-strong">Models selected by OneCopy</h3>
           <p className="mb-2 text-xs text-ink-muted">
-            OneCopy picks these versions, so they change only when the app
-            itself updates — there is nothing to check for.
+            These models are downloaded only when you install them here.
+            OneCopy selects the versions, so they change only when the app
+            updates — there is nothing to check for.
           </p>
           <div className="space-y-2">
-            {bundled.map((entry) => (
+            {appSelected.map((entry) => (
               <EntryRow key={entry.id} entry={entry} />
             ))}
           </div>

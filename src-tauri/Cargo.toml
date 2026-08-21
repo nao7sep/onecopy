@@ -65,13 +65,20 @@ chrono-tz = "0.10.4"
 image = "0.25.10"
 webp = "0.3.1"
 keepawake = "0.6.0"
-ureq = "3.3.0"
+# Streaming managed-artifact downloads need separate per-read idleness and a
+# size-scaled whole-operation deadline; the previous ureq path exposed only a
+# whole-body timeout.
+reqwest = { version = "0.13.4", default-features = false, features = ["native-tls"] }
+tokio = { version = "1.53.1", features = ["rt", "time", "net", "macros", "fs", "io-util"] }
 zip = "8.6.0"
 notify = "8.2.0"
 whisper-rs = "0.16.0"
 ort = "2.0.0-rc.13"
 ndarray = "0.17.2"
 libloading = "0.9.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 # Dependencies must not run at opt-level 0 in dev builds: libwebp's C (built by
 # cc, which inherits OPT_LEVEL) and the image crate become ~18x slower there,

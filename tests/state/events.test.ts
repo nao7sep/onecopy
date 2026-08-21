@@ -118,6 +118,17 @@ describe("binaries events", () => {
     expect(binaries.getState().errors["ffmpeg"]).toBe("checksum mismatch");
   });
 
+  it("clears progress without inventing an error when an install is cancelled", async () => {
+    binaries.setState({
+      installing: { ffmpeg: "Cancelling…" },
+      errors: { ffmpeg: "old failure" },
+    });
+
+    fireEvent("binaries://cancelled", { id: "ffmpeg" });
+    expect(binaries.getState().installing.ffmpeg).toBeUndefined();
+    expect(binaries.getState().errors.ffmpeg).toBeUndefined();
+  });
+
   it("narrates SEVERAL installs at once, each in words", async () => {
     // Installs are parallel per entry (developer, 2026-08-17): the map keeps
     // one humanized line per id — "download" never reaches the user raw.
