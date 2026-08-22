@@ -53,29 +53,77 @@ pub fn trash_file(
     app_root: &Path,
     content_hash: Option<&str>,
 ) -> Result<TrashedRecord, String> {
-    trash_file_inner(file, app_root, content_hash, |_| {})
+    trash_file_with_hooks(file, app_root, content_hash, |_| {}, |_| {})
 }
 
-fn trash_file_inner(
+pub(crate) fn trash_file_with_before_claim(
     file: &Path,
     app_root: &Path,
     content_hash: Option<&str>,
+    before_claim: impl FnOnce(&Path),
+) -> Result<TrashedRecord, String> {
+    trash_file_with_hooks(file, app_root, content_hash, before_claim, |_| {})
+}
+
+fn trash_file_with_hooks(
+    file: &Path,
+    app_root: &Path,
+    content_hash: Option<&str>,
+    before_claim: impl FnOnce(&Path),
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, String> {
     if !file.is_absolute() {
         return Err(format!("trash requires an absolute path: {}", file.display()));
     }
-    let source_type = std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref())
-        .map_err(|e| e.to_string())?
-        .file_type();
-    if !source_type.is_file() {
-        return Err(format!(
-            "trash source is not a regular file: {}",
-            file.display()
-        ));
+    let (_descriptor, identity) = crate::file_identity::open_regular_nofollow(file)
+        .map_err(|error| format!("trash source is not a stable regular file: {error}"))?;
+    // Provenance becomes durable while the indexed source is still at its
+    // public name. The later private claim is therefore reversible without
+    // recreating the old manifest-before-move loss window.
+    let plan = prepare_trash(file, app_root, content_hash)?;
+    before_claim(file);
+    let claimed = crate::file_identity::claim_private(file, identity)
+        .map_err(|error| format!("source changed before Trash: {error}"))?;
+    let result = commit_trash_claim(&claimed, file, plan, identity, before_move);
+    let record = match result {
+        Ok(record) => record,
+        Err(error) => {
+            let restore = crate::file_identity::restore_private_claim(&claimed, file, identity);
+            return Err(match restore {
+                Ok(()) => format!("{error}; source restored"),
+                Err(restore_error) => {
+                    format!("{error}; source recovery also failed: {restore_error}")
+                }
+            });
+        }
+    };
+    match std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref()) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(record),
+        Ok(_) => Err(format!(
+            "source was replaced during Trash; replacement preserved and index row retained: {}",
+            file.display(),
+        )),
+        Err(error) => Err(format!(
+            "could not revalidate trashed source {}; index row retained: {error}",
+            file.display(),
+        )),
     }
+}
 
-    let volume_root = volume_root_of(file)?;
+struct TrashPlan {
+    record: TrashedRecord,
+    stored: PathBuf,
+    day_dir: PathBuf,
+    #[cfg(windows)]
+    trash_root: PathBuf,
+}
+
+fn prepare_trash(
+    original: &Path,
+    app_root: &Path,
+    content_hash: Option<&str>,
+) -> Result<TrashPlan, String> {
+    let volume_root = volume_root_of(original)?;
     let trash_root = trash_root_for(&volume_root, app_root)?;
     // Day folders use the FILENAME timestamp form (`yyyymmdd-utc`), never a
     // slice of the serialized ISO form — the timestamp conventions' date-only
@@ -92,23 +140,23 @@ fn trash_file_inner(
     //
     // Still verified as being under its own volume root: the whole point of a
     // per-volume trash is that the move stays a same-volume rename.
-    if !path_is_under_volume(file, &volume_root) {
+    if !path_is_under_volume(original, &volume_root) {
         return Err(format!(
             "{} is not under its own volume root {}",
-            file.display(),
+            original.display(),
             volume_root.display()
         ));
     }
-    let name = file
+    let name = original
         .file_name()
-        .ok_or_else(|| format!("{} has no file name", file.display()))?;
+        .ok_or_else(|| format!("{} has no file name", original.display()))?;
     let target = day_dir.join(name);
     std::fs::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
 
     let stored = available_stored_path(&target)?;
 
     let record = TrashedRecord {
-        original_path: file.to_string_lossy().to_string(),
+        original_path: original.to_string_lossy().to_string(),
         stored_path: stored.to_string_lossy().to_string(),
         content_hash: content_hash.map(|h| h.to_string()),
         deleted_at_utc: logging::now_iso_millis(),
@@ -119,19 +167,39 @@ fn trash_file_inner(
     // an untracked file whose original location was lost.
     append_manifest(&day_dir, &record)?;
     crate::fs_publish::sync_directory(&day_dir).map_err(|e| e.to_string())?;
-    before_move(&stored);
-    crate::fs_publish::rename_no_replace(file, &stored).map_err(|e| {
+
+    Ok(TrashPlan {
+        record,
+        stored,
+        day_dir,
+        #[cfg(windows)]
+        trash_root,
+    })
+}
+
+fn commit_trash_claim(
+    claimed: &Path,
+    original: &Path,
+    plan: TrashPlan,
+    identity: crate::file_identity::FileIdentity,
+    before_move: impl FnOnce(&Path),
+) -> Result<TrashedRecord, String> {
+    if !crate::file_identity::path_names(claimed, identity) {
+        return Err(format!("private Trash claim was replaced: {}", claimed.display()));
+    }
+    before_move(&plan.stored);
+    crate::fs_publish::rename_no_replace(claimed, &plan.stored).map_err(|e| {
         format!(
-            "trash move failed for {} (source remains in place): {e}",
-            file.display()
+            "trash move failed for {} (private source claim remains recoverable): {e}",
+            original.display()
         )
     })?;
-    let _ = crate::fs_publish::sync_directory(&day_dir);
+    let _ = crate::fs_publish::sync_directory(&plan.day_dir);
 
     #[cfg(windows)]
-    hide_windows(&trash_root);
+    hide_windows(&plan.trash_root);
 
-    Ok(record)
+    Ok(plan.record)
 }
 
 /// Selects `target`, falling back to `stem-2.ext`, `stem-3.ext`, … when the
@@ -206,9 +274,13 @@ mod transaction_tests {
         let source = source_dir.join("photo.jpg");
         std::fs::write(&source, b"source").unwrap();
 
-        let result = trash_file_inner(&source, &app_root, None, |target| {
-            std::fs::write(target, b"winner").unwrap();
-        });
+        let result = trash_file_with_hooks(
+            &source,
+            &app_root,
+            None,
+            |_| {},
+            |target| std::fs::write(target, b"winner").unwrap(),
+        );
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"source");
@@ -219,6 +291,34 @@ mod transaction_tests {
             .unwrap()
             .path();
         assert_eq!(std::fs::read(day.join("photo.jpg")).unwrap(), b"winner");
+    }
+
+    #[test]
+    fn replacement_before_source_claim_is_preserved_and_not_trashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_root = dir.path().join("app");
+        let source_dir = dir.path().join("source");
+        std::fs::create_dir_all(&app_root).unwrap();
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("photo.jpg");
+        let held = source_dir.join("held.jpg");
+        std::fs::write(&source, b"original").unwrap();
+
+        let result = trash_file_with_before_claim(&source, &app_root, None, |path| {
+            std::fs::rename(path, &held).unwrap();
+            std::fs::write(path, b"replacement").unwrap();
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"replacement");
+        assert_eq!(std::fs::read(&held).unwrap(), b"original");
+        let trash_files: Vec<_> = walkdir::WalkDir::new(app_root.join("trash"))
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry.file_type().is_file())
+            .collect();
+        assert_eq!(trash_files.len(), 1, "only the durable manifest may exist");
+        assert_eq!(trash_files[0].file_name(), MANIFEST_FILE_NAME);
     }
 }
 

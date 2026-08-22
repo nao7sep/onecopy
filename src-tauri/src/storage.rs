@@ -16,8 +16,9 @@
 //! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
 //! - `trash/`            — the home-volume trash tree.          not recorded (the user's own moved files, never app text)
 //!
-//! Corrupt-config policy (storage-path conventions): a present-but-unreadable
-//! JSON store is quarantined aside to `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`
+//! Invalid-config policy (storage-path conventions): malformed JSON or a
+//! non-object config envelope is quarantined aside to
+//! `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`
 //! and defaults are recreated — never silently overwritten. The quarantine
 //! rename runs OUTSIDE the parse-failure handling: a failed rename propagates as
 //! an error instead of falling through to a default-reset that would clobber the
@@ -39,8 +40,9 @@ pub const CACHE_DIR_NAME: &str = "cache";
 /// Durable user settings — the single canonical defaults definition. Serialized
 /// through the same save path the app uses (never a hand-written JSON literal)
 /// to materialize `config.json` on first run. The store never validates a
-/// loaded config; each feature validates what it consumes (config-seeding
-/// conventions).
+/// loaded feature values; each feature validates what it consumes
+/// (config-seeding conventions). The storage boundary validates only that the
+/// config document itself has the required object envelope.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DefaultConfig {
@@ -189,27 +191,27 @@ pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
 /// before any reporting surface exists, so its record is parked for the
 /// frontend's `load_from_root` to publish.
 pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
+    let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
     if let Some(record) = read.quarantined {
         PENDING_QUARANTINES
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(record);
         materialize_config_if_missing(root)?;
-        return Ok(read_json_optional(&root.join(CONFIG_FILE_NAME))?.value);
+        return Ok(read_config_optional(&root.join(CONFIG_FILE_NAME))?.value);
     }
     Ok(read.value)
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     let mut quarantines = take_pending_quarantines();
-    let config_read = read_json_optional(&root.join(CONFIG_FILE_NAME))?;
+    let config_read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
     let state_read = read_json_optional(&root.join(STATE_FILE_NAME))?;
     let mut config = config_read.value;
     if let Some(record) = config_read.quarantined {
         quarantines.push(record);
         materialize_config_if_missing(root)?;
-        config = read_json_optional(&root.join(CONFIG_FILE_NAME))?.value;
+        config = read_config_optional(&root.join(CONFIG_FILE_NAME))?.value;
     }
     if let Some(record) = state_read.quarantined {
         quarantines.push(record);
@@ -285,14 +287,18 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let read = read_json_optional(target)?;
+    let read = if target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
+        read_config_optional(target)?
+    } else {
+        read_json_optional(target)?
+    };
     let quarantined = read.quarantined;
     let mut current = read.value;
     if quarantined.is_some() && target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
         if let Some(root) = target.parent() {
             materialize_config_if_missing(root)?;
         }
-        current = read_json_optional(target)?.value;
+        current = read_config_optional(target)?.value;
     }
     let mut current = current.unwrap_or_else(|| serde_json::json!({}));
     if !current.is_object() {
@@ -333,10 +339,22 @@ struct JsonRead {
     quarantined: Option<QuarantineRecord>,
 }
 
-/// Reads an optional JSON store; a corrupt file is quarantined aside and the
-/// record returned. The rename failure propagates before any caller can write
-/// defaults.
+/// Reads an optional JSON store; invalid content is quarantined aside and the
+/// record returned. Config additionally requires an object root, which is an
+/// envelope invariant rather than feature-level value validation. The rename
+/// failure propagates before any caller can write defaults.
 fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
+    read_json_optional_with_envelope(path, false)
+}
+
+fn read_config_optional(path: &Path) -> Result<JsonRead, String> {
+    read_json_optional_with_envelope(path, true)
+}
+
+fn read_json_optional_with_envelope(
+    path: &Path,
+    require_object_root: bool,
+) -> Result<JsonRead, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -348,40 +366,43 @@ fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
         Err(err) => return Err(err.to_string()),
     };
     match serde_json::from_slice::<JsonValue>(&bytes) {
-        Ok(value) => Ok(JsonRead {
+        Ok(value) if !require_object_root || value.is_object() => Ok(JsonRead {
             value: Some(value),
             quarantined: None,
         }),
-        Err(parse_err) => {
-            let quarantined = quarantine_name(path);
-            // not recorded: an invalid quarantine preserves the original raw
-            // bytes rather than creating new managed user text.
-            std::fs::rename(path, &quarantined).map_err(|rename_err| {
-                format!(
-                    "could not quarantine corrupt {}: {rename_err} (parse error: {parse_err})",
-                    path.display()
-                )
-            })?;
-            logging::warn(
-                "corrupt JSON store quarantined; recreating defaults",
-                serde_json::json!({
-                    "file": path.to_string_lossy(),
-                    "quarantinedTo": quarantined.to_string_lossy(),
-                    "error": { "message": parse_err.to_string() },
-                }),
-            );
-            Ok(JsonRead {
-                value: None,
-                quarantined: Some(QuarantineRecord {
-                    file: path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.to_string_lossy().into_owned()),
-                    quarantined_to: quarantined.to_string_lossy().into_owned(),
-                }),
-            })
-        }
+        Ok(_) => quarantine_invalid_store(path, "config root must be a JSON object"),
+        Err(parse_error) => quarantine_invalid_store(path, &format!("parse error: {parse_error}")),
     }
+}
+
+fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, String> {
+    let quarantined = quarantine_name(path);
+    // not recorded: an invalid quarantine preserves the original raw bytes
+    // rather than creating new managed user text.
+    std::fs::rename(path, &quarantined).map_err(|rename_error| {
+        format!(
+            "could not quarantine invalid {}: {rename_error} ({reason})",
+            path.display()
+        )
+    })?;
+    logging::warn(
+        "invalid JSON store quarantined; recreating defaults",
+        serde_json::json!({
+            "file": path.to_string_lossy(),
+            "quarantinedTo": quarantined.to_string_lossy(),
+            "error": { "message": reason },
+        }),
+    );
+    Ok(JsonRead {
+        value: None,
+        quarantined: Some(QuarantineRecord {
+            file: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+            quarantined_to: quarantined.to_string_lossy().into_owned(),
+        }),
+    })
 }
 
 /// `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`, sibling to the target — the

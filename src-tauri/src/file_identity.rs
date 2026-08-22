@@ -4,7 +4,7 @@
 //! cleanup and commit verification bind to the filesystem identity returned by
 //! that handle so an external replacement is never mistaken for ours.
 
-use std::fs::{File, Metadata};
+use std::fs::{File, Metadata, OpenOptions};
 use std::io;
 use std::path::Path;
 
@@ -62,6 +62,42 @@ impl FileIdentity {
     }
 }
 
+/// Opens one existing regular file without following a final symlink/reparse
+/// point, then captures the physical identity of that exact descriptor.
+pub fn open_regular_nofollow(path: &Path) -> io::Result<(File, FileIdentity)> {
+    let fs_path = crate::winpath::for_fs(path);
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(
+            windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+        );
+    }
+    let file = options.open(fs_path.as_ref())?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a no-follow regular file: {}", path.display()),
+        ));
+    }
+    let identity = FileIdentity::from_metadata(&metadata)?;
+    if !path_names(path, identity) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("file was replaced while opening: {}", path.display()),
+        ));
+    }
+    Ok((file, identity))
+}
+
 pub fn path_names(path: &Path, expected: FileIdentity) -> bool {
     FileIdentity::from_path(path).is_ok_and(|actual| actual == expected)
 }
@@ -112,6 +148,38 @@ pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
     }
 }
 
+/// Restores an owned private claim to its original public name without ever
+/// replacing an occupant. Failure leaves the claim recoverable at `claimed`.
+pub fn restore_private_claim(
+    claimed: &Path,
+    original: &Path,
+    expected: FileIdentity,
+) -> io::Result<()> {
+    if !path_names(claimed, expected) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("private claim was replaced: {}", claimed.display()),
+        ));
+    }
+    crate::fs_publish::rename_no_replace(claimed, original).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "could not restore {} to {}; recoverable claim remains: {error}",
+                claimed.display(),
+                original.display(),
+            ),
+        )
+    })?;
+    if !path_names(original, expected) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("restored source was replaced: {}", original.display()),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +213,18 @@ mod tests {
         assert!(claim_private(&path, identity).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"winner");
         assert_eq!(std::fs::read(&ours).unwrap(), b"ours");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nofollow_regular_open_rejects_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.bin");
+        let link = dir.path().join("link.bin");
+        std::fs::write(&real, b"bytes").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(open_regular_nofollow(&link).is_err());
+        assert_eq!(std::fs::read(&real).unwrap(), b"bytes");
     }
 }

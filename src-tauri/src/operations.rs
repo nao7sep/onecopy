@@ -59,6 +59,17 @@ pub fn delete_item(
     item: ItemRef,
     mode: DeleteMode,
 ) -> Result<DeleteOutcome, String> {
+    delete_item_inner(conn, app_root, cache, item, mode, |_, _| {})
+}
+
+fn delete_item_inner(
+    conn: &Connection,
+    app_root: &Path,
+    cache: &CachePaths,
+    item: ItemRef,
+    mode: DeleteMode,
+    mut before_source_claim: impl FnMut(DeleteMode, &Path),
+) -> Result<DeleteOutcome, String> {
     // Target rows: the item's own copies…
     let targets: Vec<(i64, String, Option<String>)> = match &item {
         ItemRef::Hash(hash) => collect(
@@ -101,16 +112,16 @@ pub fn delete_item(
     for (path_id, abs_path, content_hash) in targets {
         let file = Path::new(&abs_path);
         let result = match mode {
-            DeleteMode::Trash => {
-                trash::trash_file(file, app_root, content_hash.as_deref()).map(|_| ())
-            }
-            DeleteMode::Permanent => match std::fs::remove_file(crate::winpath::for_fs(file).as_ref()) {
-                Ok(()) => Ok(()),
-                // Already gone from disk: the index intent (drop the row)
-                // still applies; the walk would have marked it missing anyway.
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(err.to_string()),
-            },
+            DeleteMode::Trash => trash::trash_file_with_before_claim(
+                file,
+                app_root,
+                content_hash.as_deref(),
+                |path| before_source_claim(mode, path),
+            )
+            .map(|_| ()),
+            DeleteMode::Permanent => permanently_delete_file(file, |path| {
+                before_source_claim(mode, path)
+            }),
         };
 
         match result {
@@ -178,6 +189,46 @@ pub fn delete_item(
     );
 
     Ok(outcome)
+}
+
+fn permanently_delete_file(
+    file: &Path,
+    before_claim: impl FnOnce(&Path),
+) -> Result<(), String> {
+    let (_descriptor, identity) = match crate::file_identity::open_regular_nofollow(file) {
+        Ok(opened) => opened,
+        // Already gone from disk: the index intent still applies; the walk
+        // would have marked it missing anyway.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    before_claim(file);
+    let claimed = crate::file_identity::claim_private(file, identity)
+        .map_err(|error| format!("source changed before permanent deletion: {error}"))?;
+    if let Err(error) = std::fs::remove_file(crate::winpath::for_fs(&claimed).as_ref()) {
+        let restore = crate::file_identity::restore_private_claim(&claimed, file, identity);
+        return Err(match restore {
+            Ok(()) => format!("permanent deletion failed; source restored: {error}"),
+            Err(restore_error) => format!(
+                "permanent deletion failed: {error}; source recovery also failed: {restore_error}"
+            ),
+        });
+    }
+    require_original_name_clear(file)
+}
+
+fn require_original_name_clear(file: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref()) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(format!(
+            "source was replaced during deletion; replacement preserved and index row retained: {}",
+            file.display(),
+        )),
+        Err(error) => Err(format!(
+            "could not revalidate deleted source {}; index row retained: {error}",
+            file.display(),
+        )),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -275,6 +326,7 @@ pub fn move_out(
         &dest_dir.join(&primary_name),
         &mut outcome,
     )?;
+    let mut existing_target_proofs = Vec::new();
     let mut promoted_to: Option<String> = None;
     if provisional && delivery.ok {
         if let (Some(stored), Some(real)) = (expected_hash.as_deref(), &delivery.real_hash) {
@@ -285,6 +337,9 @@ pub fn move_out(
     if !delivery.ok {
         // Conflict (or every copy failed): report and leave the world alone.
         return Ok(outcome);
+    }
+    if let Some(proof) = delivery.existing_target {
+        existing_target_proofs.push(proof);
     }
 
     // Companions, grouped by file name (each group's members are copies of
@@ -333,6 +388,9 @@ pub fn move_out(
                 outcome.undelivered.push(target.to_string_lossy().to_string());
             }
         }
+        if let Some(proof) = companion.existing_target {
+            existing_target_proofs.push(proof);
+        }
     }
 
     // The item and its companions move as ONE unit, so an undelivered
@@ -342,6 +400,20 @@ pub fn move_out(
     // row — the loss would be invisible in the UI and unrecoverable under
     // MoveDeleteRest.
     if !outcome.conflicts.is_empty() || !outcome.undelivered.is_empty() {
+        return Ok(outcome);
+    }
+
+    // An identical file that was already present is only delivery authority
+    // while its public name still identifies the exact descriptor we hashed.
+    // Revalidate every such proof immediately before any source post-action.
+    for proof in &existing_target_proofs {
+        if !proof.revalidate() {
+            outcome
+                .conflicts
+                .push(proof.path.to_string_lossy().into_owned());
+        }
+    }
+    if !outcome.conflicts.is_empty() {
         return Ok(outcome);
     }
 
@@ -387,6 +459,18 @@ pub fn move_out(
 struct Delivery {
     ok: bool,
     real_hash: Option<String>,
+    existing_target: Option<ExistingTargetProof>,
+}
+
+struct ExistingTargetProof {
+    path: std::path::PathBuf,
+    identity: crate::file_identity::FileIdentity,
+}
+
+impl ExistingTargetProof {
+    fn revalidate(&self) -> bool {
+        crate::file_identity::path_names(&self.path, self.identity)
+    }
 }
 
 /// Delivers one file (trying each listed copy in order) to `target`.
@@ -397,31 +481,46 @@ fn deliver_one(
     target: &Path,
     outcome: &mut MoveOutOutcome,
 ) -> Result<Delivery, String> {
-    if target.exists() {
-        let existing = crate::hashing::full_hash(target).map_err(|e| e.to_string())?;
-        let matches = match expected_hash {
-            Some(expected) => existing == expected,
-            // Unhashed item: compare against the first copy's actual bytes.
-            None => match copies.first() {
-                Some((_, path, _)) => {
-                    crate::hashing::full_hash(Path::new(path)).map_err(|e| e.to_string())?
-                        == existing
-                }
-                None => false,
-            },
-        };
-        if matches {
-            outcome.skipped_identical += 1;
+    match inspect_existing_target(target, |_| {}) {
+        Ok(Some(existing)) => {
+            let matches = match expected_hash {
+                Some(expected) => existing.hash == expected,
+                // Unhashed item: compare against the first copy's actual bytes.
+                None => match copies.first() {
+                    Some((_, path, _)) => {
+                        crate::hashing::full_hash(Path::new(path)).map_err(|e| e.to_string())?
+                            == existing.hash
+                    }
+                    None => false,
+                },
+            };
+            if matches {
+                outcome.skipped_identical += 1;
+                return Ok(Delivery {
+                    ok: true,
+                    real_hash: Some(existing.hash),
+                    existing_target: Some(existing.proof),
+                }); // already delivered
+            }
+            outcome.conflicts.push(target.to_string_lossy().to_string());
             return Ok(Delivery {
-                ok: true,
-                real_hash: Some(existing),
-            }); // already delivered
+                ok: false,
+                real_hash: None,
+                existing_target: None,
+            });
         }
-        outcome.conflicts.push(target.to_string_lossy().to_string());
-        return Ok(Delivery {
-            ok: false,
-            real_hash: None,
-        });
+        Ok(None) => {}
+        Err(_) => {
+            // A symlink, non-regular occupant, unreadable file, or replacement
+            // during descriptor hashing is a conflict, never proof that a
+            // destructive post-action is safe.
+            outcome.conflicts.push(target.to_string_lossy().to_string());
+            return Ok(Delivery {
+                ok: false,
+                real_hash: None,
+                existing_target: None,
+            });
+        }
     }
 
     for (_, source_path, _) in copies {
@@ -450,6 +549,7 @@ fn deliver_one(
                         return Ok(Delivery {
                             ok: false,
                             real_hash: None,
+                            existing_target: None,
                         });
                     }
                 };
@@ -464,6 +564,7 @@ fn deliver_one(
                             return Ok(Delivery {
                                 ok: false,
                                 real_hash: None,
+                                existing_target: None,
                             });
                         }
                         if let Some(parent) = target.parent() {
@@ -477,6 +578,7 @@ fn deliver_one(
                         return Ok(Delivery {
                             ok: false,
                             real_hash: None,
+                            existing_target: None,
                         });
                     }
                     Err(err) => {
@@ -498,6 +600,7 @@ fn deliver_one(
                 return Ok(Delivery {
                     ok: true,
                     real_hash: Some(streamed_hash),
+                    existing_target: None,
                 });
             }
             Err(err) => {
@@ -521,7 +624,39 @@ fn deliver_one(
     Ok(Delivery {
         ok: false,
         real_hash: None,
+        existing_target: None,
     })
+}
+
+struct ExistingTarget {
+    hash: String,
+    proof: ExistingTargetProof,
+}
+
+fn inspect_existing_target(
+    target: &Path,
+    after_hash: impl FnOnce(&Path),
+) -> std::io::Result<Option<ExistingTarget>> {
+    let (mut file, identity) = match crate::file_identity::open_regular_nofollow(target) {
+        Ok(opened) => opened,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let hash = crate::hashing::full_hash_file(&mut file)?;
+    after_hash(target);
+    if !crate::file_identity::path_names(target, identity) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "destination was replaced while being verified",
+        ));
+    }
+    Ok(Some(ExistingTarget {
+        hash,
+        proof: ExistingTargetProof {
+            path: target.to_path_buf(),
+            identity,
+        },
+    }))
 }
 
 fn output_stage_path(target: &Path) -> std::path::PathBuf {
@@ -563,4 +698,123 @@ fn collect(
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    // EXCEPTION to tests-folder conventions: these callbacks are private
+    // exact-boundary seams and must not widen the shipped command API.
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_destination_symlink_is_never_proof_of_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.jpg");
+        let link = dir.path().join("link.jpg");
+        std::fs::write(&real, b"identical").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(inspect_existing_target(&link, |_| {}).is_err());
+        assert_eq!(std::fs::read(&real).unwrap(), b"identical");
+    }
+
+    #[test]
+    fn existing_destination_replacement_at_hash_boundary_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.jpg");
+        let held = dir.path().join("held.jpg");
+        std::fs::write(&target, b"identical").unwrap();
+
+        let result = inspect_existing_target(&target, |path| {
+            std::fs::rename(path, &held).unwrap();
+            std::fs::write(path, b"replacement").unwrap();
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&held).unwrap(), b"identical");
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn existing_destination_replacement_before_post_action_revokes_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.jpg");
+        let held = dir.path().join("held.jpg");
+        std::fs::write(&target, b"identical").unwrap();
+
+        let existing = inspect_existing_target(&target, |_| {})
+            .unwrap()
+            .expect("existing regular target");
+        std::fs::rename(&target, &held).unwrap();
+        std::fs::write(&target, b"replacement").unwrap();
+
+        assert!(!existing.proof.revalidate());
+        assert_eq!(std::fs::read(&held).unwrap(), b"identical");
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn permanent_delete_replacement_keeps_the_index_row() {
+        replacement_during_source_claim_keeps_the_row(DeleteMode::Permanent);
+    }
+
+    #[test]
+    fn trash_delete_replacement_keeps_the_index_row() {
+        replacement_during_source_claim_keeps_the_row(DeleteMode::Trash);
+    }
+
+    fn replacement_during_source_claim_keeps_the_row(mode: DeleteMode) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let app_root = dir.path().join("app");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&app_root).unwrap();
+        let source = root.join("photo.jpg");
+        let held = root.join("held.jpg");
+        std::fs::write(&source, b"original").unwrap();
+        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let lists = crate::scanner::ScanLists {
+            images: crate::extensions::IMAGE_EXTENSIONS
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
+            videos: crate::extensions::VIDEO_EXTENSIONS
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
+            companions: crate::extensions::COMPANION_EXTENSIONS
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
+        };
+        let cache = CachePaths::new(dir.path().join("cache"));
+        crate::scanner::walk_root(&conn, &root, &lists).unwrap();
+        crate::scanner::hash_pending(&conn, &cache).unwrap();
+        let hash: String = conn
+            .query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+
+        let outcome = delete_item_inner(
+            &conn,
+            &app_root,
+            &cache,
+            ItemRef::Hash(&hash),
+            mode,
+            |_, path| {
+                std::fs::rename(path, &held).unwrap();
+                std::fs::write(path, b"replacement").unwrap();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome.deleted_files, 0);
+        assert_eq!(outcome.failed_files, 1);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM paths", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "mismatched source keeps its live index row");
+        assert_eq!(std::fs::read(&source).unwrap(), b"replacement");
+        assert_eq!(std::fs::read(&held).unwrap(), b"original");
+    }
 }

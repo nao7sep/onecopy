@@ -123,6 +123,27 @@ fn patching_corrupt_config_reseeds_before_merging() {
     assert!(record.quarantined_to.ends_with(".invalid"));
 }
 
+#[test]
+#[serial(backup_store)]
+fn patching_non_object_config_preserves_it_before_seeding_and_merging() {
+    let dir = temp_dir("patch-wrong-envelope-config");
+    let target = dir.join(CONFIG_FILE_NAME);
+    std::fs::write(&target, b"[\"preserve\", 7]\n").unwrap();
+
+    let outcome = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
+
+    assert_eq!(outcome.merged["theme"], "dark");
+    assert_eq!(outcome.merged["goodRangeStartYear"], 1995);
+    let record = outcome
+        .quarantined
+        .expect("the invalid envelope is reported by the save path");
+    assert_eq!(
+        std::fs::read(&record.quarantined_to).unwrap(),
+        b"[\"preserve\", 7]\n",
+        "the valid JSON with the wrong envelope is preserved verbatim"
+    );
+}
+
 
 #[test]
 #[serial(backup_store)]

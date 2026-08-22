@@ -79,9 +79,9 @@ libloading = "0.9.0"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# macOS's exclusive rename is the atomic no-clobber publication primitive for
-# verified user output and same-volume Trash moves.
+[target.'cfg(unix)'.dependencies]
+# O_NOFOLLOW binds destructive reads to regular-file descriptors; on macOS,
+# renamex_np is also the atomic no-clobber publication primitive.
 libc = "0.2"
 
 # Dependencies must not run at opt-level 0 in dev builds: libwebp's C (built by

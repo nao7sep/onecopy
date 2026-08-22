@@ -43,7 +43,12 @@ pub fn prehash(path: &Path) -> std::io::Result<String> {
 
 /// Full streaming blake3 of the file's bytes.
 pub fn full_hash(path: &Path) -> std::io::Result<String> {
-    let file = File::open(crate::winpath::for_fs(path).as_ref())?;
+    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
+    full_hash_file(&mut file)
+}
+
+pub(crate) fn full_hash_file(file: &mut File) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(file)?;
     Ok(hasher.finalize().to_hex().to_string())
