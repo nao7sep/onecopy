@@ -153,7 +153,7 @@ export default function ComparisonView() {
             {!shortlist && unseen > 0 ? ` · ${unseen} page${unseen === 1 ? "" : "s"} unseen` : ""}
           </span>
           <span>
-            Keys keep · Shift+key not similar · ←/→ pages · S shortlist ·
+            Keys keep · Shift+key not similar · Left/Right pages · S shortlist ·
             Enter {unseen > 0 && !shortlist ? "next page" : "commits (Shift = permanent)"} ·
             Escape leaves
           </span>

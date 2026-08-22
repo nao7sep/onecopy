@@ -51,7 +51,7 @@ import AboutModal from "./components/AboutModal";
 import ScenesModal from "./components/ScenesModal";
 import TrashModal from "./components/TrashModal";
 import ConfirmDialog from "./components/ConfirmDialog";
-import { Menu as MenuIcon, X } from "lucide-react";
+import { Menu as MenuIcon, Minus, Plus, X } from "lucide-react";
 import { useWizardStore } from "./state/wizard-store";
 import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
@@ -65,6 +65,14 @@ import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
 import { installActivityPings, useBackfillStore } from "./state/backfill-store";
 import PreviewSurface from "./components/PreviewSurface";
 import { log, reportWindowCall, toErrorFields } from "./repositories";
+
+function ZoomOutIcon() {
+  return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
+}
+
+function ZoomInIcon() {
+  return <Plus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
+}
 
 // The main-window shell: the sidebar listbox, the thumbnail grid for the
 // selected section, the tabbed right pane, and the scan lifecycle in the
@@ -717,21 +725,21 @@ export default function App() {
                 <span>Zoom</span>
                 <span className="flex items-center gap-1">
                   <button
-                    className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
+                    className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
                     aria-label="Zoom out"
                     onClick={() => applyZoom(stepZoomOut(zoomRef.current))}
                   >
-                    −
+                    <ZoomOutIcon />
                   </button>
                   <span className="w-10 text-center font-mono text-xs text-ink-muted">
                     {Math.round(zoomLevel * 100)}%
                   </span>
                   <button
-                    className="h-5 w-5 rounded border border-border text-xs hover:bg-surface-muted"
+                    className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
                     aria-label="Zoom in"
                     onClick={() => applyZoom(stepZoomIn(zoomRef.current))}
                   >
-                    +
+                    <ZoomInIcon />
                   </button>
                 </span>
               </div>

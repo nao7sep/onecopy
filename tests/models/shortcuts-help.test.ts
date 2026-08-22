@@ -110,4 +110,10 @@ describe("keys the app handles but the sheet forgot", () => {
     const actions = rows.map((r) => r.action.toLowerCase());
     expect(actions.some((a) => a.includes("follows-selection"))).toBe(false);
   });
+
+  it("spells the comparison paging keys as words", () => {
+    const comparisonView = SOURCES[3];
+    expect(comparisonView).toContain("Left/Right pages");
+    expect(comparisonView).not.toContain("←/→ pages");
+  });
 });

@@ -12,7 +12,7 @@
 // band, which is what stops the footer being overlapped at the smallest size.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, cleanup, act } from "@testing-library/react";
+import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import App from "../../src/App";
 import { useAppStore } from "../../src/state/app-store";
 import { computeMinWindowHeight, HEADER_HEIGHT } from "../../src/utils/windowSizing";
@@ -41,6 +41,17 @@ describe("the title band", () => {
     expect(header?.textContent).toContain("OneCopy");
     // The trigger must live INSIDE the band, not merely somewhere in the app.
     expect(header?.querySelector('[aria-label="Open menu"]')).not.toBeNull();
+  });
+
+  it("draws the zoom marks without changing their accessible names", () => {
+    const view = render(<App />);
+    fireEvent.click(view.getByRole("button", { name: "Open menu" }));
+
+    for (const name of ["Zoom out", "Zoom in"]) {
+      const button = view.getByRole("button", { name });
+      expect(button.querySelector("svg")).not.toBeNull();
+      expect(button.textContent).toBe("");
+    }
   });
 
   it("leaves the footer to standing state alone", () => {
