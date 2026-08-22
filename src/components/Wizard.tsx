@@ -4,9 +4,9 @@ import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Plus } from "lucide-react";
 
-const WIZARD_STEPS = 3;
+const WIZARD_STEPS = 2;
 
-// The Setup surface: three steps, blocking by design. There is deliberately
+// The Setup surface: two steps, blocking by design. There is deliberately
 // NO install page (developer, 2026-08-17): Managed tools is the app's one
 // install surface, and the warning-tinted footer chip funnels there the
 // moment the scan meets a video or HEIC it cannot decode — a second install
@@ -18,18 +18,16 @@ const WIZARD_STEPS = 3;
 // offers Cancel, which writes nothing (every step edits store state, and
 // `finish` is the sole writer).
 
-export default function Wizard({ dataRoot }: { dataRoot: string }) {
+export default function Wizard() {
   const step = useWizardStore((s) => s.step);
   const dirs = useWizardStore((s) => s.dirs);
   const timezone = useWizardStore((s) => s.timezone);
   const timezoneValid = useWizardStore((s) => s.timezoneValid);
-  const cacheDir = useWizardStore((s) => s.cacheDir);
   const reconfigure = useWizardStore((s) => s.reconfigure);
   const addDirs = useWizardStore((s) => s.addDirs);
   const removeDir = useWizardStore((s) => s.removeDir);
   const setStep = useWizardStore((s) => s.setStep);
   const setTimezone = useWizardStore((s) => s.setTimezone);
-  const pickCacheDir = useWizardStore((s) => s.pickCacheDir);
   const finish = useWizardStore((s) => s.finish);
   const cancel = useWizardStore((s) => s.cancel);
 
@@ -113,35 +111,14 @@ export default function Wizard({ dataRoot }: { dataRoot: string }) {
               <Button
                 variant="primary"
                 disabled={!timezoneValid || timezone.trim() === ""}
-                onClick={() => setStep(3)}
+                onClick={() => void finish()}
               >
-                Next
-              </Button>
-            </div>
-          </section>
-        ) : null}
-
-        {step === 3 ? (
-          <section>
-            <h2 className="mb-1 text-sm font-semibold text-ink-strong">Cache location</h2>
-            <p className="mb-3 text-sm text-ink-muted">
-              Thumbnails and fast previews live here — put it on your fastest
-              disk. It rebuilds itself if you ever delete it.
-            </p>
-            <p className="mb-4 break-all rounded-lg border border-border bg-surface-muted/40 px-3 py-2 text-sm leading-relaxed text-ink">
-              {cacheDir ?? `${dataRoot}/cache (default)`}
-            </p>
-            <Button className="mb-6" onClick={() => void pickCacheDir()}>
-              Change
-            </Button>
-            <div className="flex items-center justify-between">
-              {leading}
-              <Button variant="primary" onClick={() => void finish()}>
                 Finish and scan
               </Button>
             </div>
           </section>
         ) : null}
+
       </div>
     </div>
   );

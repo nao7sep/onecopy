@@ -24,12 +24,26 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["pairingEnabled"], serde_json::json!(true));
     assert_eq!(value["verifyAfterCopy"], serde_json::json!(true));
     assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));
-    assert!(value["cacheDir"].is_null());
+    assert!(value.get("cacheDir").is_none());
     // Spec, not configuration: extension lists (and the other dead keys)
     // are never materialized into the user-editable file.
     for absent in ["imageExtensions", "videoExtensions", "companionExtensions", "filenamePatterns", "screenPriority"] {
         assert!(value.get(absent).is_none(), "{absent} must not be seeded");
     }
+}
+
+#[test]
+fn cache_is_always_managed_under_the_app_root_and_legacy_external_data_is_untouched() {
+    let root = temp_dir("fixed-cache");
+    let external = temp_dir("legacy-external-cache");
+    let marker = external.join("keep-me.webp");
+    std::fs::write(&marker, b"old cache bytes").unwrap();
+    let config = serde_json::json!({ "cacheDir": external });
+
+    let settings = onecopy_lib::scanner::settings_from_config(Some(&config), &root, 0);
+
+    assert_eq!(settings.cache_root, root.join(CACHE_DIR_NAME));
+    assert_eq!(std::fs::read(marker).unwrap(), b"old cache bytes");
 }
 
 #[test]

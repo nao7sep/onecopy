@@ -179,6 +179,7 @@ pub fn ffmpeg_path(root: &Path) -> PathBuf {
 /// Wipes and recreates the staging dir — crash debris in `temp/` is worthless
 /// by definition. Called once at launch.
 pub fn reset_temp_dir(root: &Path) {
+    // not recorded: temp/ contains disposable dependency download staging.
     let temp = root.join(TEMP_DIR_NAME);
     if let Err(error) = std::fs::remove_dir_all(&temp) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -233,16 +234,14 @@ static FACTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn save_facts_for(root: &Path, id: &str, facts: &BinaryFacts) -> Result<(), String> {
     let _lock = FACTS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    // records: dependencies.json rides write_atomic's backup hook. The facts
-    // are re-derivable, so recording is not REQUIRED — but tiny self-healing
-    // text in the store is harmless, and a separate unrecorded write path
-    // would cost more than it saves (accounted in storage.rs's table).
+    // not recorded: dependencies.json contains re-derivable dependency and
+    // update facts, not user-authored data.
     let mut map = load_facts_map(root);
     map.insert(id.to_string(), serde_json::to_value(facts).map_err(|e| e.to_string())?);
     let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(map))
         .map_err(|e| e.to_string())?;
     text.push('\n');
-    storage::write_atomic(&root.join(DEPENDENCIES_FILE_NAME), text.as_bytes())
+    storage::write_atomic_unrecorded(&root.join(DEPENDENCIES_FILE_NAME), text.as_bytes())
 }
 
 // --- The installed version, read from the artifact ---

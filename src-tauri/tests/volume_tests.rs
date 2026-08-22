@@ -21,7 +21,7 @@ fn same_volume_paths_share_one_nonempty_identity() {
 // The Windows counterpart, and the only automated cover the
 // GetVolumeInformationW FFI has. Agreement is half the contract: the identity
 // is compared at the session gate and before every destructive operation, and
-// it is PERSISTED in source_volumes, so its stored SHAPE is load-bearing too.
+// it is persisted in source-volumes.json, so its stored shape is load-bearing too.
 // A serial that started rendering in another form would read as a substituted
 // drive and block work on a volume nothing is wrong with.
 #[cfg(windows)]

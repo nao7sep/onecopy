@@ -159,36 +159,20 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
 
 // One scan pipeline at a time; a second start is a no-op reported as `false`.
 static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
-static CACHE_MOVE_RUNNING: AtomicBool = AtomicBool::new(false);
-static CACHE_MOVE_CANCEL: AtomicBool = AtomicBool::new(false);
 
 // The live scan worker, joined at exit so a quit interrupts the scan through
 // the cooperative cancel flag instead of killing it mid-write.
 static SCAN_THREAD: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
     std::sync::Mutex::new(None);
 
-// The cache root, resolved at setup (config `cacheDir` or `<root>/cache`) and
-// read by the mediacache protocol handler. RwLock, not OnceLock: a cache move
-// swaps the root mid-session (the storage-path conventions' honest-relocation
-// contract — no restart, no redirect-only trap).
-static CACHE_ROOT: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
-
-fn cache_root_or(data_root: &std::path::Path) -> std::path::PathBuf {
-    CACHE_ROOT
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME))
-}
-
-fn set_cache_root(path: std::path::PathBuf) {
-    if let Ok(mut guard) = CACHE_ROOT.write() {
-        *guard = Some(path);
-    }
-}
-
 // The storage root, for the mediafile protocol's hash→path lookups.
 pub(crate) static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+fn cache_root() -> Option<std::path::PathBuf> {
+    DATA_ROOT
+        .get()
+        .map(|root| root.join(storage::CACHE_DIR_NAME))
+}
 
 // Serves ORIGINAL files by content hash (`mediafile://localhost/<hash>`) with
 // single-range support — what makes <video> seeking and the 100% zoom view
@@ -312,7 +296,7 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
             .body(Vec::new())
             .expect("static response")
     };
-    let Some(root) = CACHE_ROOT.read().ok().and_then(|guard| guard.clone()) else {
+    let Some(root) = cache_root() else {
         return not_found();
     };
     let cache = preview::CachePaths::new(root);
@@ -494,89 +478,6 @@ fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
     }
 }
 
-// Moves the cache tree to a new root (None = the default `<root>/cache`):
-// copy → verify → swap the live root and config → delete the old subtrees.
-// The developer's decided contract: a REAL move behind a blocking progress
-// modal, no restart, never a redirect that orphans tens of GB. Refused while
-// a scan runs (derive writes into the cache mid-move). On failure the copied
-// partial is removed and the old location stays live.
-#[tauri::command(async)]
-fn move_cache(app: AppHandle, new_dir: Option<String>) -> Result<Value, String> {
-    logging::boundary(
-        "move_cache",
-        json!({ "newDir": new_dir }),
-        || {
-            if CACHE_MOVE_RUNNING.swap(true, Ordering::SeqCst) {
-                return Err("a cache move is already running".to_string());
-            }
-            struct CacheMoveGuard;
-            impl Drop for CacheMoveGuard {
-                fn drop(&mut self) {
-                    CACHE_MOVE_RUNNING.store(false, Ordering::SeqCst);
-                    CACHE_MOVE_CANCEL.store(false, Ordering::SeqCst);
-                }
-            }
-            let _guard = CacheMoveGuard;
-            CACHE_MOVE_CANCEL.store(false, Ordering::SeqCst);
-            if scan_running() {
-                return Err("a scan is running — move the cache after it finishes".to_string());
-            }
-            let data_root = paths::data_root(&app)?;
-            let old_root = cache_root_or(&data_root);
-            let new_root = new_dir
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| data_root.join(storage::CACHE_DIR_NAME));
-            if new_root == old_root {
-                return Ok(json!({ "movedBytes": 0, "unchanged": true }));
-            }
-            if new_root.starts_with(&old_root) || old_root.starts_with(&new_root) {
-                return Err("the new cache location cannot nest with the old one".to_string());
-            }
-            std::fs::create_dir_all(&new_root).map_err(|e| e.to_string())?;
-
-            let handle = app.clone();
-            let emit_progress = |copied: u64, total: u64| {
-                let _ = handle.emit(
-                    "cache-move://progress",
-                    json!({ "copiedBytes": copied, "totalBytes": total }),
-                );
-            };
-            match preview::move_cache_tree(
-                &old_root,
-                &new_root,
-                &emit_progress,
-                &CACHE_MOVE_CANCEL,
-            ) {
-                Ok(moved) => {
-                    storage::patch_config(&app, &json!({ "cacheDir": new_dir }))?;
-                    set_cache_root(new_root);
-                    // Only the cache's own subtrees — either root may be a
-                    // user-picked folder holding unrelated content.
-                    preview::remove_cache_subtrees(&old_root);
-                    Ok(json!({ "movedBytes": moved }))
-                }
-                Err(err) => {
-                    preview::remove_cache_subtrees(&new_root);
-                    Err(err)
-                }
-            }
-        },
-        |result| result.clone(),
-    )
-}
-
-#[tauri::command(async)]
-fn cancel_cache_move() -> bool {
-    if !CACHE_MOVE_RUNNING.load(Ordering::SeqCst) {
-        return false;
-    }
-    CACHE_MOVE_CANCEL.store(true, Ordering::SeqCst);
-    true
-}
-
 // The volume-loss guard (the session gate's runtime counterpart): destructive
 // operations refuse to run while any configured source directory is absent —
 // a vanished volume must block deletes, not let them half-apply.
@@ -618,8 +519,6 @@ fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
     let data_root = paths::data_root(app)?;
     let config = storage::read_config_for_setup(&data_root)?;
     let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
-    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-
     let mut status = SourceDirsStatus::default();
     for dir in &settings.source_dirs {
         let path = std::path::Path::new(dir);
@@ -634,7 +533,7 @@ fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
             );
             continue;
         };
-        match volume::check_identity(&conn, dir, &current)? {
+        match volume::check_identity(&data_root, dir, &current)? {
             volume::IdentityCheck::FirstSight => logging::info(
                 "source volume identity recorded",
                 json!({ "dir": dir, "identity": current }),
@@ -651,7 +550,7 @@ fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
     }
 
     // Identities for directories no longer configured are stale — prune.
-    volume::prune_identities(&conn, &settings.source_dirs)?;
+    volume::prune_identities(&data_root, &settings.source_dirs)?;
 
     Ok(status)
 }
@@ -675,8 +574,7 @@ fn delete_item(
             ensure_sources_present(&app)?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache_root = cache_root_or(&data_root);
-            let cache = preview::CachePaths::new(cache_root);
+            let cache = preview::CachePaths::new(data_root.join(storage::CACHE_DIR_NAME));
             let item = match (&hash, path_id) {
                 (Some(hash), _) => operations::ItemRef::Hash(hash),
                 (None, Some(id)) => operations::ItemRef::PathId(id),
@@ -753,8 +651,7 @@ fn move_item_out(
             }
 
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache_root = cache_root_or(&data_root);
-            let cache = preview::CachePaths::new(cache_root);
+            let cache = preview::CachePaths::new(data_root.join(storage::CACHE_DIR_NAME));
             let item = match (&hash, path_id) {
                 (Some(hash), _) => operations::ItemRef::Hash(hash),
                 (None, Some(id)) => operations::ItemRef::PathId(id),
@@ -1070,11 +967,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache_root = CACHE_ROOT
-                .read()
-                .ok()
-                .and_then(|guard| guard.clone())
-                .ok_or("cache root unset")?;
+            let cache_root = cache_root().ok_or("data root unset")?;
             let cache = preview::CachePaths::new(cache_root);
             // Presence decides availability, same rule as the scan settings.
             let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
@@ -1093,11 +986,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
-    let cache_root = CACHE_ROOT
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .ok_or("cache root unset")?;
+    let cache_root = cache_root().ok_or("data root unset")?;
     let handle = app.clone();
     std::thread::spawn(move || {
         let result = (|| -> Result<String, String> {
@@ -1152,11 +1041,7 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
 // The cached transcript, or null when none exists yet.
 #[tauri::command(async)]
 fn transcript_get(hash: String) -> Result<Option<String>, String> {
-    let cache_root = CACHE_ROOT
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .ok_or("cache root unset")?;
+    let cache_root = cache_root().ok_or("data root unset")?;
     let cache = preview::CachePaths::new(cache_root);
     Ok(std::fs::read_to_string(cache.transcript(&hash)).ok())
 }
@@ -1612,16 +1497,11 @@ pub fn run() {
                 }
             }
 
-            // Resolve the cache root once for the mediacache protocol, then
-            // sweep crash leftovers (hash-orphaned entries, stranded temps).
-            // Setup reads config for the cache root only, through the setup
-            // reader — a quarantine this early has no reporting surface yet,
-            // so the reader parks the record for the frontend's later load to
-            // publish (storage-path conventions: both branches report).
+            // The cache always lives under the managed data root. Existing
+            // external cache trees from older builds are deliberately left
+            // untouched; they are reconstructible and no longer referenced.
             let setup_config = storage::read_config_for_setup(&data_root)?;
-            let cache_root = scanner::settings_from_config(setup_config.as_ref(), &data_root, 0)
-                .cache_root;
-            set_cache_root(cache_root.clone());
+            let cache_root = data_root.join(storage::CACHE_DIR_NAME);
             let _ = DATA_ROOT.set(data_root.clone());
             // The idle backfill (Phase 33): strips, transcripts, faces fill
             // in whenever tools exist and the user is away.
@@ -1785,8 +1665,6 @@ pub fn run() {
             ensure_preview,
             re_resolve_all,
             rescan_section,
-            move_cache,
-            cancel_cache_move,
             get_issues,
             ensure_fullres,
             transcribe,

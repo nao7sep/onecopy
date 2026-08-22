@@ -622,7 +622,7 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col bg-background text-ink">
       {wizardOpen && appData !== null ? (
-        <Wizard dataRoot={appData.dataRoot} />
+        <Wizard />
       ) : gateOpen ? (
         <PresenceGate missing={missingDirs} substituted={substitutedDirs} />
       ) : null}

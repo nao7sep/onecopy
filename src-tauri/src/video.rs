@@ -224,6 +224,8 @@ pub fn derive_strips_pending(
     stop: &dyn Fn() -> bool,
     progress: &dyn Fn(u64, u64),
 ) -> Result<u64, String> {
+    // not recorded: ffmpeg strip-frame staging lives in temp/ and produces
+    // reconstructible binary cache entries.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(

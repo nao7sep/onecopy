@@ -98,7 +98,7 @@ beforeEach(() => {
     start_scan: () => true,
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
-  useWizardStore.setState({ open: false, dirs: [], timezone: "UTC", timezoneValid: true, cacheDir: null });
+  useWizardStore.setState({ open: false, dirs: [], timezone: "UTC", timezoneValid: true });
   useSectionsStore.setState({ counts: null, scanning: false, progress: "", rescanNeeded: false });
   useItemsStore.setState({
     selected: null,

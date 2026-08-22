@@ -207,6 +207,7 @@ fn open_writer(file_path: &Path) -> Option<File> {
             return None;
         }
     }
+    // not recorded: session logs are append-mode diagnostic output.
     // Exclusive create: a session file is always fresh, never appended into.
     // Two launches landing on the same millisecond stamp are the one case this
     // can legitimately fail on live filesystems; the second one loses the race

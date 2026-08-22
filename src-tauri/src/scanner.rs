@@ -104,12 +104,6 @@ pub fn settings_from_config(
         .or_else(|| defaults.default_timezone.parse().ok())
         .unwrap_or(chrono_tz::UTC);
 
-    let cache_root = get("cacheDir")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| data_root.join(crate::storage::CACHE_DIR_NAME));
-
     let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
     ScanSettings {
         data_root: data_root.to_path_buf(),
@@ -177,7 +171,7 @@ pub fn settings_from_config(
         keep_awake: get("keepAwakeDuringIndexing")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.keep_awake_during_indexing),
-        cache_root,
+        cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),
     }
 }
 

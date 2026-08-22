@@ -52,27 +52,25 @@ describe("the setup wizard", () => {
     useWizardStore.setState({ step: 1, dirs: [], timezone: "UTC" });
   });
 
-  it("is exactly three steps, ending in Finish and scan — no install page", () => {
+  it("is exactly two steps, ending in Finish and scan — no install page", () => {
     // The offer page is deliberately GONE (developer, 2026-08-17): Managed
     // tools is the one install surface, funnelled to by the warning chip. A
     // wizard install row would be a second UI drifting from it.
-    const view = render(<Wizard dataRoot="/tmp/onecopy" />);
-    expect(view.container.textContent).toContain("Step 1 of 3");
+    const view = render(<Wizard />);
+    expect(view.container.textContent).toContain("Step 1 of 2");
 
-    for (const step of [2, 3] as const) {
-      act(() => useWizardStore.setState({ step }));
-      expect(view.container.textContent).toContain(`Step ${step} of 3`);
-    }
+    act(() => useWizardStore.setState({ step: 2 }));
+    expect(view.container.textContent).toContain("Step 2 of 2");
     expect(view.container.textContent).toContain("Finish and scan");
     expect(view.container.textContent).not.toContain("ffmpeg");
   });
 
   it("offers Cancel on every page of a re-run, and never on a first run", () => {
-    // Being three pages deep is no reason to walk back out first (developer,
+    // Being deep in the wizard is no reason to walk back out first (developer,
     // 2026-08-17). A FIRST run stays completable-only: nothing exists behind
     // it to cancel back to.
-    const view = render(<Wizard dataRoot="/tmp/onecopy" />);
-    for (const step of [1, 2, 3] as const) {
+    const view = render(<Wizard />);
+    for (const step of [1, 2] as const) {
       act(() => useWizardStore.setState({ step, reconfigure: true }));
       expect(view.container.textContent).toContain("Cancel");
       act(() => useWizardStore.setState({ step, reconfigure: false }));
@@ -82,12 +80,12 @@ describe("the setup wizard", () => {
 
   it("silences the command layer while it is open", () => {
     expect(hasOpenModal()).toBe(false);
-    render(<Wizard dataRoot="/tmp/onecopy" />);
+    render(<Wizard />);
     expect(hasOpenModal()).toBe(true);
   });
 
   it("releases the command layer once it closes", () => {
-    const view = render(<Wizard dataRoot="/tmp/onecopy" />);
+    const view = render(<Wizard />);
     view.unmount();
     expect(hasOpenModal()).toBe(false);
   });

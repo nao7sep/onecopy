@@ -26,15 +26,6 @@ CREATE TABLE IF NOT EXISTS volumes (
   last_seen_at_utc TEXT
 );
 
--- Per-source-directory volume identity, recorded at first sight and verified
--- at the session gate and before destructive operations: a substituted drive
--- with an identical directory tree must be caught, not just an absent one.
-CREATE TABLE IF NOT EXISTS source_volumes (
-  dir              TEXT PRIMARY KEY,
-  identity         TEXT NOT NULL,
-  recorded_at_utc  TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS contents (
   hash            TEXT PRIMARY KEY,
   byte_size       INTEGER NOT NULL,
@@ -140,6 +131,7 @@ CREATE TABLE IF NOT EXISTS scan_dirs (
 /// WAL so the scanner writes while the UI reads, and a busy timeout so a
 /// contended write waits rather than failing with SQLITE_BUSY.
 pub fn open(db_file: &Path) -> Result<Connection, String> {
+    // not recorded: index.sqlite3 is a binary, reconstructible scan cache.
     if let Some(parent) = db_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -225,10 +217,7 @@ mod tests {
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
-        // Set EQUALITY, not a subset: the previous list silently omitted
-        // source_volumes, so that table could have been dropped while this
-        // test still passed and verify_source_dirs only failed at runtime.
-        // Equality also forces a NEW table to be declared here deliberately.
+        // Set EQUALITY, not a subset, so any table change is deliberate.
         let mut expected = vec![
             "contents",
             "evidence",
@@ -237,7 +226,6 @@ mod tests {
             "scan_dirs",
             "similar_group_members",
             "similar_groups",
-            "source_volumes",
             "volumes",
         ];
         expected.sort_unstable();

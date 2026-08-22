@@ -11,7 +11,6 @@ import {
 } from "../utils/screens";
 import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
-import CacheMoveDialog from "./CacheMoveDialog";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
@@ -291,12 +290,7 @@ export default function SettingsModal() {
   const validateTimezone = useSettingsStore((s) => s.validateTimezone);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
-  const pickCacheDir = useSettingsStore((s) => s.pickCacheDir);
-  const clearCacheDir = useSettingsStore((s) => s.clearCacheDir);
   const save = useSettingsStore((s) => s.save);
-  const movingCache = useSettingsStore((s) => s.movingCache);
-  const cancellingCacheMove = useSettingsStore((s) => s.cancellingCacheMove);
-  const cancelCacheMove = useSettingsStore((s) => s.cancelCacheMove);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   if (!open || draft === null) return null;
@@ -325,14 +319,6 @@ export default function SettingsModal() {
         </Button>
       }
     >
-      {movingCache !== null ? (
-        <CacheMoveDialog
-          copiedBytes={movingCache.copiedBytes}
-          totalBytes={movingCache.totalBytes}
-          cancelling={cancellingCacheMove}
-          onCancel={() => void cancelCacheMove()}
-        />
-      ) : null}
       {confirmDiscard ? (
         <ConfirmDialog
           title="Discard changes?"
@@ -442,32 +428,6 @@ export default function SettingsModal() {
             min={96}
             onChange={(v) => update({ thumbnailEdgePx: v })}
           />
-          <div className="flex items-center justify-between gap-2 py-0.5 text-sm text-ink">
-            <span>Cache location</span>
-            <span className="flex items-center gap-1">
-              <span
-                className="max-w-48 truncate text-xs text-ink-muted"
-                title={draft.cacheDir ?? "default"}
-              >
-                {draft.cacheDir ?? "default"}
-              </span>
-              <button
-                className="rounded border border-border px-1 text-xs text-primary"
-                onClick={() => void pickCacheDir()}
-              >
-                Change…
-              </button>
-              {draft.cacheDir !== null ? (
-                <button
-                  className="rounded border border-border px-1 text-xs text-ink"
-                  onClick={clearCacheDir}
-                >
-                  Default
-                </button>
-              ) : null}
-            </span>
-          </div>
-
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Videos
           </h2>

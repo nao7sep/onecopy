@@ -159,7 +159,8 @@ pub fn transcribe_to_cache(
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    // Atomic like every cache write; deliberately unrecorded (reconstructible).
+    // not recorded: a transcript is a re-derivable cache artifact colocated
+    // with binary preview media.
     let tmp = target.with_extension(format!("{}.tmp", crate::nanoid::generate()));
     std::fs::write(&tmp, text.as_bytes()).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);

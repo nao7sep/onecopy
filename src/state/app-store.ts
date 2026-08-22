@@ -98,7 +98,7 @@ export const useAppStore = create<AppState>((set) => ({
         hasState: data.state !== null,
       });
       const { useWizardStore } = await import("./wizard-store");
-      await useWizardStore.getState().init(data.config, data.dataRoot);
+      await useWizardStore.getState().init(data.config);
       const { useDestinationsStore } = await import("./destinations-store");
       useDestinationsStore.getState().init(data.config);
     } catch (error) {

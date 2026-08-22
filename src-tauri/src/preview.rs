@@ -4,7 +4,7 @@
 //! the whole tree is reconstructible, so it is never backed up and may be
 //! deleted freely.
 //!
-//! Layout under the cache root (config `cacheDir`, default `<root>/cache`):
+//! Layout under `<root>/cache`:
 //! `thumbs/<h2>/<hash>.webp` and `previews/<h2>/<hash>.webp`, sharded by the
 //! hash's first two characters so no directory grows unbounded.
 //!
@@ -417,6 +417,8 @@ pub fn ensure_fullres(
             |r| r.get(0),
         )
         .map_err(|_| "no live copy of this photo".to_string())?;
+    // not recorded: full-resolution conversion is a reconstructible binary
+    // cache entry, staged beside its final path.
     // ffmpeg applies the container's display transforms itself, so the
     // decode is already upright (one decode route, Phase 33).
     let src = Path::new(&path);
@@ -689,87 +691,6 @@ pub fn derive_images_pending(
     }
 
     Ok(stats)
-}
-
-/// The cache's own subtrees under a root — the ONLY directories a cache move
-/// copies or deletes. The root itself may be a user-picked folder holding
-/// unrelated content, so tree-wide operations never touch anything else.
-pub const CACHE_SUBTREES: [&str; 5] =
-    ["thumbs", "previews", "strips", "fullres", "transcripts"];
-
-/// Copies every cache entry from `old_root` to `new_root` (same layout),
-/// reporting (copied_bytes, total_bytes) as it goes, and size-verifying each
-/// copy. Verification is size-equality: the tree is reconstructible (a
-/// corrupt entry re-derives on its next miss), so a byte-hash read-back
-/// would double the IO to protect data that self-heals anyway. Stranded
-/// `.tmp` staging files are not carried over.
-pub fn move_cache_tree(
-    old_root: &Path,
-    new_root: &Path,
-    progress: &dyn Fn(u64, u64),
-    cancelled: &std::sync::atomic::AtomicBool,
-) -> Result<u64, String> {
-    let mut files: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
-    let mut total = 0u64;
-    for sub in CACHE_SUBTREES {
-        let tree = old_root.join(sub);
-        if !tree.exists() {
-            continue;
-        }
-        for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err("cache move cancelled".to_string());
-            }
-            let entry = entry.map_err(|e| e.to_string())?;
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            if entry.file_name().to_string_lossy().ends_with(".tmp") {
-                continue;
-            }
-            let rel = entry
-                .path()
-                .strip_prefix(old_root)
-                .map_err(|e| e.to_string())?
-                .to_path_buf();
-            let size = entry.metadata().map_err(|e| e.to_string())?.len();
-            total += size;
-            files.push((entry.path().to_path_buf(), new_root.join(rel), size));
-        }
-    }
-
-    let mut copied = 0u64;
-    progress(0, total);
-    for (src, dst, size) in files {
-        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err("cache move cancelled".to_string());
-        }
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let written = std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
-        if written != size {
-            return Err(format!(
-                "size mismatch copying {} ({written} of {size} bytes)",
-                src.display()
-            ));
-        }
-        copied += size;
-        progress(copied, total);
-    }
-    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err("cache move cancelled".to_string());
-    }
-    Ok(copied)
-}
-
-/// Removes the cache subtrees under `root` (and the root itself when that
-/// leaves it empty) — never anything else that may live beside them.
-pub fn remove_cache_subtrees(root: &Path) {
-    for sub in CACHE_SUBTREES {
-        let _ = std::fs::remove_dir_all(root.join(sub));
-    }
-    let _ = std::fs::remove_dir(root);
 }
 
 /// Best-effort removal of one hash's cache entries — the synchronous half of

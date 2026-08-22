@@ -10,7 +10,13 @@
 //! and presence remains the only verification (honest degradation for
 //! filesystems without a stable identity, e.g. some network mounts).
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{logging, paths, storage};
 
 /// The identity of the volume containing `path`, when the platform can say.
 pub fn volume_identity(path: &Path) -> Option<String> {
@@ -111,31 +117,69 @@ pub enum IdentityCheck {
     /// A DIFFERENT volume is mounted here. The record is deliberately left
     /// alone: overwriting it would launder the substitution into the new
     /// normal, and the developer must resolve it.
-    Substituted { recorded: String },
+    Substituted {
+        recorded: String,
+    },
 }
 
-pub fn check_identity(
-    conn: &rusqlite::Connection,
-    dir: &str,
-    current: &str,
-) -> Result<IdentityCheck, String> {
-    use rusqlite::OptionalExtension;
-    let stored: Option<String> = conn
-        .query_row(
-            "SELECT identity FROM source_volumes WHERE dir = ?1",
-            [dir],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    match stored {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceVolume {
+    dir: String,
+    identity: String,
+    recorded_at_utc: String,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceVolumeStore {
+    sources: Vec<SourceVolume>,
+}
+
+fn store_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn load_unlocked(root: &Path) -> Result<BTreeMap<String, SourceVolume>, String> {
+    let file = root.join(paths::SOURCE_VOLUMES_FILE_NAME);
+    let bytes = match std::fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", file.display())),
+    };
+    let store: SourceVolumeStore = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+    Ok(store
+        .sources
+        .into_iter()
+        .map(|source| (source.dir.clone(), source))
+        .collect())
+}
+
+fn save_unlocked(root: &Path, sources: BTreeMap<String, SourceVolume>) -> Result<(), String> {
+    let store = SourceVolumeStore {
+        sources: sources.into_values().collect(),
+    };
+    let mut text = serde_json::to_string_pretty(&store).map_err(|error| error.to_string())?;
+    text.push('\n');
+    storage::write_atomic(&root.join(paths::SOURCE_VOLUMES_FILE_NAME), text.as_bytes())
+}
+
+pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityCheck, String> {
+    let _guard = store_lock();
+    let mut sources = load_unlocked(root)?;
+    match sources.get(dir).map(|source| source.identity.clone()) {
         None => {
-            conn.execute(
-                "INSERT INTO source_volumes (dir, identity, recorded_at_utc) \
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![dir, current, crate::logging::now_iso_millis()],
-            )
-            .map_err(|e| e.to_string())?;
+            sources.insert(
+                dir.to_string(),
+                SourceVolume {
+                    dir: dir.to_string(),
+                    identity: current.to_string(),
+                    recorded_at_utc: logging::now_iso_millis(),
+                },
+            );
+            save_unlocked(root, sources)?;
             Ok(IdentityCheck::FirstSight)
         }
         Some(recorded) if recorded != current => Ok(IdentityCheck::Substituted { recorded }),
@@ -146,28 +190,16 @@ pub fn check_identity(
 /// Drops recorded identities for directories that are no longer configured,
 /// so removing a source root does not leave a record that would later flag a
 /// re-added path as substituted.
-pub fn prune_identities(
-    conn: &rusqlite::Connection,
-    configured: &[String],
-) -> Result<u64, String> {
-    let mut stmt = conn
-        .prepare("SELECT dir FROM source_volumes")
-        .map_err(|e| e.to_string())?;
-    let recorded: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-    let mut pruned = 0;
-    for dir in recorded {
-        if !configured.contains(&dir) {
-            conn.execute("DELETE FROM source_volumes WHERE dir = ?1", [&dir])
-                .map_err(|e| e.to_string())?;
-            pruned += 1;
-        }
+pub fn prune_identities(root: &Path, configured: &[String]) -> Result<u64, String> {
+    let _guard = store_lock();
+    let mut sources = load_unlocked(root)?;
+    let before = sources.len();
+    sources.retain(|dir, _| configured.contains(dir));
+    let pruned = before - sources.len();
+    if pruned > 0 {
+        save_unlocked(root, sources)?;
     }
-    Ok(pruned)
+    Ok(pruned as u64)
 }
 
 #[cfg(test)]

@@ -7,10 +7,12 @@
 //! - `config.json`       — durable user settings.               RECORDED (managed text)
 //! - `state.json`        — volatile UI/session state.           RECORDED (managed text)
 //! - `index.sqlite3`     — the scan index (facts/cache).        not recorded (binary, reconstructible)
+//! - `source-volumes.json` — destructive-operation trust baselines. RECORDED (managed safety text)
 //! - `backups.sqlite3`   — the write-through backup store.      not recorded (the store itself)
 //! - `logs/`             — per-session logs.                    not recorded (append-mode, by construction)
 //! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
-//! - `dependencies.json` — managed-binaries facts.              recorded via write_atomic (self-healing text; harmless in the store)
+//! - `dependencies.json` — managed-binaries facts.              not recorded (re-derivable dependency/update facts)
+//! - `similar-exclusions.json` — durable user verdicts.         RECORDED (managed authored text)
 //! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
 //! - `trash/`            — the home-volume trash tree.          not recorded (the user's own moved files, never app text)
 //!
@@ -85,8 +87,6 @@ pub struct DefaultConfig {
     /// The managed-runtime-dependencies conventions' one update switch:
     /// check installed tools for updates at launch (throttled to ~daily).
     pub check_updates_at_launch: bool,
-    /// Cache directory override; null means `<root>/cache`.
-    pub cache_dir: Option<String>,
     pub keep_awake_during_indexing: bool,
     /// Read-back verification of every copy/move-out against the indexed hash.
     pub verify_after_copy: bool,
@@ -131,7 +131,6 @@ impl Default for DefaultConfig {
                 "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif"
                     .to_string(),
             check_updates_at_launch: false,
-            cache_dir: None,
             keep_awake_during_indexing: true,
             verify_after_copy: true,
             score_faces: false,
@@ -272,8 +271,7 @@ pub struct PatchOutcome {
 
 /// Shallow merge: each top-level key in `patch` replaces the stored value
 /// wholesale (arrays and objects included — `sourceDirs` is a list you set,
-/// not a list you splice). Keys are never deleted; `null` stores as null,
-/// which is a meaningful value here (`cacheDir: null` = the default).
+/// not a list you splice). Keys are never deleted; `null` stores as null.
 pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome, String> {
     // Serialized: this is a read-modify-write, and both `patch_config` and
     // `patch_state` are Tauri commands dispatched on a thread pool, so two
@@ -356,6 +354,8 @@ fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
         }),
         Err(parse_err) => {
             let quarantined = quarantine_name(path);
+            // not recorded: an invalid quarantine preserves the original raw
+            // bytes rather than creating new managed user text.
             std::fs::rename(path, &quarantined).map_err(|rename_err| {
                 format!(
                     "could not quarantine corrupt {}: {rename_err} (parse error: {parse_err})",

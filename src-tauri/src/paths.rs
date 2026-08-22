@@ -29,6 +29,7 @@ pub const MODELS_DIR_NAME: &str = "models";
 pub const TEMP_DIR_NAME: &str = "temp";
 pub const TRASH_DIR_NAME: &str = "trash";
 pub const DEPENDENCIES_FILE_NAME: &str = "dependencies.json";
+pub const SOURCE_VOLUMES_FILE_NAME: &str = "source-volumes.json";
 
 // Resolves the absolute storage root and ensures it exists. Returns a clear
 // error (and the caller stops) if the home directory is unknown or the root

@@ -85,7 +85,7 @@ fn save_unlocked(
     };
     let mut text = serde_json::to_string_pretty(&store).map_err(|error| error.to_string())?;
     text.push('\n');
-    storage::write_atomic_unrecorded(&root.join(FILE_NAME), text.as_bytes())
+    storage::write_atomic(&root.join(FILE_NAME), text.as_bytes())
 }
 
 pub fn pairs(root: &Path) -> Result<HashSet<(String, String)>, String> {

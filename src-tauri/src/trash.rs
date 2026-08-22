@@ -109,6 +109,8 @@ fn rename_with_suffix_loop(src: &Path, target: &Path) -> Result<PathBuf, String>
     let mut candidate = target.to_path_buf();
     let mut counter = 2u32;
     loop {
+        // not recorded: this claim and rename move the user's binary/media
+        // file into trash; the append-only manifest below accounts for text.
         // Exclusive create claims the name; the rename then replaces the
         // zero-byte claim with the real file (same directory, atomic).
         match std::fs::OpenOptions::new()

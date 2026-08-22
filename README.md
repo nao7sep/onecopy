@@ -23,7 +23,7 @@ The trash is write-only by design: **the app never empties or prunes it on its o
 
 ## Download
 
-Grab the installer or portable build for your OS from [Releases](https://github.com/nao7sep/onecopy/releases/latest). The builds are unsigned: on macOS, right-click the app and choose **Open** the first time; on Windows, SmartScreen → **More info** → **Run anyway**. First launch opens a three-step setup: pick the directories to clean up, confirm your default timezone, choose where the preview cache lives.
+Grab the installer or portable build for your OS from [Releases](https://github.com/nao7sep/onecopy/releases/latest). The builds are unsigned: on macOS, right-click the app and choose **Open** the first time; on Windows, SmartScreen → **More info** → **Run anyway**. First launch opens a two-step setup: pick the directories to clean up and confirm your default timezone.
 
 ## Run from source
 
