@@ -440,20 +440,6 @@ fn deliver_one(
                         continue; // the redundant copies pay off: try the next
                     }
                 }
-                // Read-back verifies the exact completed staging file, not a
-                // pathname another writer can replace between copy and verify.
-                let read_back = crate::hashing::full_hash(&staged).map_err(|e| {
-                    crate::file_identity::remove_private_if_owned(&staged, staged_id);
-                    e.to_string()
-                })?;
-                if read_back != streamed_hash {
-                    crate::file_identity::remove_private_if_owned(&staged, staged_id);
-                    return Err(format!(
-                        "staged destination read-back mismatch for {} (failing storage?)",
-                        target.display(),
-                    ));
-                }
-
                 match crate::fs_publish::rename_no_replace(&staged, target) {
                     Ok(()) => {
                         // A successful syscall committed this exact inode. Verify

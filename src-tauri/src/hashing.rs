@@ -87,8 +87,20 @@ pub fn hash_while_copying(
     src: &Path,
     dst: &Path,
 ) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
+    hash_while_copying_with_after_sync(src, dst, |_| {})
+}
+
+fn hash_while_copying_with_after_sync(
+    src: &Path,
+    dst: &Path,
+    after_sync: impl FnOnce(&Path),
+) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
     let mut reader = File::open(crate::winpath::for_fs(src).as_ref())?;
-    let mut writer = File::create_new(dst)?;
+    let mut writer = File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
     let identity = crate::file_identity::FileIdentity::from_file(&writer)?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
@@ -105,7 +117,26 @@ pub fn hash_while_copying(
             total += n as u64;
         }
         writer.sync_all()?;
-        Ok((hasher.finalize().to_hex().to_string(), total))
+        after_sync(dst);
+        let streamed_hash = hasher.finalize().to_hex().to_string();
+
+        // Verify through the same descriptor that received the bytes. Reopening
+        // `dst` would make a pathname replacement the object being verified.
+        writer.seek(SeekFrom::Start(0))?;
+        let mut read_back = blake3::Hasher::new();
+        loop {
+            let n = writer.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            read_back.update(&buf[..n]);
+        }
+        if read_back.finalize().to_hex().as_str() != streamed_hash {
+            return Err(std::io::Error::other(
+                "staged destination read-back did not match the copied bytes",
+            ));
+        }
+        Ok((streamed_hash, total))
     })();
     drop(writer);
 
@@ -115,6 +146,37 @@ pub fn hash_while_copying(
             crate::file_identity::remove_private_if_owned(dst, identity);
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    // EXCEPTION to tests-folder conventions: the callback is a private
+    // exact-boundary seam that keeps descriptor ownership out of the public API.
+    use super::*;
+
+    #[test]
+    fn read_back_stays_bound_to_the_writer_when_its_path_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.bin");
+        let staged = dir.path().join("stage.tmp");
+        let held = dir.path().join("held.tmp");
+        std::fs::write(&source, b"copied bytes").unwrap();
+
+        let (hash, bytes, identity) = hash_while_copying_with_after_sync(
+            &source,
+            &staged,
+            |path| {
+                std::fs::rename(path, &held).unwrap();
+                std::fs::write(path, b"replacement").unwrap();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(hash, blake3::hash(b"copied bytes").to_hex().to_string());
+        assert_eq!(bytes, 12);
+        assert!(crate::file_identity::path_names(&held, identity));
+        assert_eq!(std::fs::read(&staged).unwrap(), b"replacement");
     }
 }
 
