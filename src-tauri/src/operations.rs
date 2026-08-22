@@ -440,7 +440,20 @@ fn deliver_one(
                         continue; // the redundant copies pay off: try the next
                     }
                 }
-                match crate::fs_publish::rename_no_replace(&staged, target) {
+                // Move the private name once more and verify what actually
+                // moved before it is eligible for public publication. This
+                // closes the replace-between-verification-and-rename edge.
+                let claimed = match crate::file_identity::claim_private(&staged, staged_id) {
+                    Ok(claimed) => claimed,
+                    Err(_) => {
+                        outcome.conflicts.push(target.to_string_lossy().to_string());
+                        return Ok(Delivery {
+                            ok: false,
+                            real_hash: None,
+                        });
+                    }
+                };
+                match crate::fs_publish::rename_no_replace(&claimed, target) {
                     Ok(()) => {
                         // A successful syscall committed this exact inode. Verify
                         // the name still identifies it before authorizing the
@@ -459,7 +472,7 @@ fn deliver_one(
                         }
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                        crate::file_identity::remove_private_if_owned(&staged, staged_id);
+                        crate::file_identity::remove_private_if_owned(&claimed, staged_id);
                         outcome.conflicts.push(target.to_string_lossy().to_string());
                         return Ok(Delivery {
                             ok: false,
@@ -467,7 +480,7 @@ fn deliver_one(
                         });
                     }
                     Err(err) => {
-                        crate::file_identity::remove_private_if_owned(&staged, staged_id);
+                        crate::file_identity::remove_private_if_owned(&claimed, staged_id);
                         logging::warn(
                             "copy-out publication failed for one source",
                             json!({ "path": source_path, "target": target.to_string_lossy(), "error": { "message": err.to_string() } }),

@@ -66,31 +66,49 @@ pub fn path_names(path: &Path, expected: FileIdentity) -> bool {
     FileIdentity::from_path(path).is_ok_and(|actual| actual == expected)
 }
 
-/// Best-effort cleanup of a private staging pathname. Cleanup first moves the
-/// name to another private no-clobber hold, then inspects what actually moved.
-/// A replacement is restored (or retained in the hold if its old name was
-/// occupied again), never unlinked. Callers never use this for a public target.
-pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
+/// Moves a private staging pathname into a fresh private hold and verifies the
+/// physical file that actually moved. This is the operation-owned claim used
+/// by both publication and cleanup. A replacement is restored (or retained in
+/// the hold if its old name was occupied again), never treated as ours.
+pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::path::PathBuf> {
     let Some(parent) = path.parent() else {
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private staging path has no parent",
+        ));
     };
     for _ in 0..4 {
-        let hold = parent.join(format!(".onecopy-cleanup-{}.tmp", crate::nanoid::generate()));
+        let hold = parent.join(format!(".onecopy-claim-{}.tmp", crate::nanoid::generate()));
         match crate::fs_publish::rename_no_replace(path, &hold) {
             Ok(()) => {
                 if path_names(&hold, expected) {
-                    let _ = std::fs::remove_file(&hold);
+                    return Ok(hold);
                 } else {
                     // The pathname was replaced before our claim. Put that
                     // file back when possible; otherwise leave it recoverable
                     // under the private hold rather than deleting a winner.
                     let _ = crate::fs_publish::rename_no_replace(&hold, path);
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "private staging pathname was replaced",
+                    ));
                 }
-                return;
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return,
+            Err(error) => return Err(error),
         }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve a private physical-claim pathname",
+    ))
+}
+
+/// Best-effort cleanup of a private staging pathname. Callers never use this
+/// for a public committed target; public targets are never unlinked as rollback.
+pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
+    if let Ok(hold) = claim_private(path, expected) {
+        let _ = std::fs::remove_file(hold);
     }
 }
 
@@ -112,5 +130,20 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"winner");
         assert_eq!(std::fs::read(&held).unwrap(), b"ours");
+    }
+
+    #[test]
+    fn physical_claim_rejects_and_restores_a_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stage.tmp");
+        let ours = dir.path().join("ours.tmp");
+        std::fs::write(&path, b"ours").unwrap();
+        let identity = FileIdentity::from_path(&path).unwrap();
+        std::fs::rename(&path, &ours).unwrap();
+        std::fs::write(&path, b"winner").unwrap();
+
+        assert!(claim_private(&path, identity).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"winner");
+        assert_eq!(std::fs::read(&ours).unwrap(), b"ours");
     }
 }
