@@ -145,13 +145,60 @@ fn load_unlocked(root: &Path) -> Result<BTreeMap<String, SourceVolume>, String> 
     let file = root.join(paths::SOURCE_VOLUMES_FILE_NAME);
     let bytes = match std::fs::read(&file) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let sources = load_legacy_unlocked(root)?;
+            if !sources.is_empty() {
+                save_unlocked(root, sources.clone())?;
+            }
+            return Ok(sources);
+        }
         Err(error) => return Err(format!("could not read {}: {error}", file.display())),
     };
     let store: SourceVolumeStore = serde_json::from_slice(&bytes)
         .map_err(|error| format!("could not read {}: {error}", file.display()))?;
     Ok(store
         .sources
+        .into_iter()
+        .map(|source| (source.dir.clone(), source))
+        .collect())
+}
+
+fn load_legacy_unlocked(root: &Path) -> Result<BTreeMap<String, SourceVolume>, String> {
+    let file = root.join(storage::INDEX_DB_FILE_NAME);
+    if !file
+        .try_exists()
+        .map_err(|error| format!("could not inspect {}: {error}", file.display()))?
+    {
+        return Ok(BTreeMap::new());
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(&file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_volumes')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+    if !has_table {
+        return Ok(BTreeMap::new());
+    }
+    let mut statement = conn
+        .prepare("SELECT dir, identity, recorded_at_utc FROM source_volumes ORDER BY dir")
+        .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+    let sources = statement
+        .query_map([], |row| {
+            Ok(SourceVolume {
+                dir: row.get(0)?,
+                identity: row.get(1)?,
+                recorded_at_utc: row.get(2)?,
+            })
+        })
+        .map_err(|error| format!("could not read {}: {error}", file.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+    Ok(sources
         .into_iter()
         .map(|source| (source.dir.clone(), source))
         .collect())
