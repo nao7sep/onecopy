@@ -412,40 +412,100 @@ fn deliver_one(
         };
         if matches {
             outcome.skipped_identical += 1;
-            return Ok(Delivery { ok: true, real_hash: Some(existing) }); // already delivered
+            return Ok(Delivery {
+                ok: true,
+                real_hash: Some(existing),
+            }); // already delivered
         }
-        outcome
-            .conflicts
-            .push(target.to_string_lossy().to_string());
-        return Ok(Delivery { ok: false, real_hash: None });
+        outcome.conflicts.push(target.to_string_lossy().to_string());
+        return Ok(Delivery {
+            ok: false,
+            real_hash: None,
+        });
     }
 
     for (_, source_path, _) in copies {
         let source = Path::new(source_path);
-        match crate::hashing::hash_while_copying(source, target) {
-            Ok((streamed_hash, _bytes)) => {
+        // Complete and verify beside the target under a unique private name.
+        // Only the final exclusive rename makes bytes public, so a crash cannot
+        // leave a partial file masquerading as the requested output.
+        let staged = output_stage_path(target);
+        match crate::hashing::hash_while_copying(source, &staged) {
+            Ok((streamed_hash, _bytes, staged_id)) => {
                 // Source verification is free: the tee hashed what was read.
                 if let Some(expected) = expected_hash {
                     if streamed_hash != expected {
-                        let _ = std::fs::remove_file(target);
+                        crate::file_identity::remove_private_if_owned(&staged, staged_id);
                         record_rot_issue(conn, source_path, expected, &streamed_hash)?;
                         continue; // the redundant copies pay off: try the next
                     }
                 }
-                // Read-back verify of the destination.
-                let read_back = crate::hashing::full_hash(target).map_err(|e| e.to_string())?;
+                // Read-back verifies the exact completed staging file, not a
+                // pathname another writer can replace between copy and verify.
+                let read_back = crate::hashing::full_hash(&staged).map_err(|e| {
+                    crate::file_identity::remove_private_if_owned(&staged, staged_id);
+                    e.to_string()
+                })?;
                 if read_back != streamed_hash {
-                    let _ = std::fs::remove_file(target);
+                    crate::file_identity::remove_private_if_owned(&staged, staged_id);
                     return Err(format!(
-                        "destination read-back mismatch at {} (failing storage?)",
-                        target.display()
+                        "staged destination read-back mismatch for {} (failing storage?)",
+                        target.display(),
                     ));
                 }
+
+                match crate::fs_publish::rename_no_replace(&staged, target) {
+                    Ok(()) => {
+                        // A successful syscall committed this exact inode. Verify
+                        // the name still identifies it before authorizing the
+                        // destructive post-action; a later external winner is
+                        // preserved and reported as a collision.
+                        if !crate::file_identity::path_names(target, staged_id) {
+                            outcome.conflicts.push(target.to_string_lossy().to_string());
+                            return Ok(Delivery {
+                                ok: false,
+                                real_hash: None,
+                            });
+                        }
+                        if let Some(parent) = target.parent() {
+                            crate::fs_publish::sync_directory(parent)
+                                .map_err(|e| format!("could not durably publish {}: {e}", target.display()))?;
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        crate::file_identity::remove_private_if_owned(&staged, staged_id);
+                        outcome.conflicts.push(target.to_string_lossy().to_string());
+                        return Ok(Delivery {
+                            ok: false,
+                            real_hash: None,
+                        });
+                    }
+                    Err(err) => {
+                        crate::file_identity::remove_private_if_owned(&staged, staged_id);
+                        logging::warn(
+                            "copy-out publication failed for one source",
+                            json!({ "path": source_path, "target": target.to_string_lossy(), "error": { "message": err.to_string() } }),
+                        );
+                        crate::index_store::upsert_issue(
+                            conn,
+                            Some(source_path),
+                            "copy-error",
+                            &err.to_string(),
+                        )?;
+                        continue;
+                    }
+                }
                 outcome.exported += 1;
-                return Ok(Delivery { ok: true, real_hash: Some(streamed_hash) });
+                return Ok(Delivery {
+                    ok: true,
+                    real_hash: Some(streamed_hash),
+                });
             }
             Err(err) => {
-                let _ = std::fs::remove_file(target);
+                // The copy helper removes only a private stage whose physical
+                // identity it captured. If identity capture itself failed, its
+                // nanoid name is safe crash debris; never unlink an unowned
+                // pathname merely because this attempt failed.
                 logging::warn(
                     "copy-out failed for one source",
                     json!({ "path": source_path, "error": { "message": err.to_string() } }),
@@ -459,7 +519,18 @@ fn deliver_one(
             }
         }
     }
-    Ok(Delivery { ok: false, real_hash: None })
+    Ok(Delivery {
+        ok: false,
+        real_hash: None,
+    })
+}
+
+fn output_stage_path(target: &Path) -> std::path::PathBuf {
+    let stem = target
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("output");
+    target.with_file_name(format!("{stem}-{}.tmp", crate::nanoid::generate()))
 }
 
 fn record_rot_issue(

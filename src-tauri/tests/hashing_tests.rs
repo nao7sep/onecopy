@@ -89,8 +89,9 @@ fn hash_while_copying_copies_exactly_and_hashes_the_stream() {
         .unwrap();
     let dst = dst_dir.path().join("out.bin");
 
-    let (hash, total) = hash_while_copying(&src, &dst).unwrap();
+    let (hash, total, identity) = hash_while_copying(&src, &dst).unwrap();
     assert_eq!(total, bytes.len() as u64);
+    assert!(onecopy_lib::file_identity::path_names(&dst, identity));
     assert_eq!(hash, blake3::hash(&bytes).to_hex().to_string());
     assert_eq!(std::fs::read(&dst).unwrap(), bytes);
 }

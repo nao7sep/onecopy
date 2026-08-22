@@ -17,9 +17,9 @@
 //! `/` — still a same-volume rename, just rooted where the app may write.
 //!
 //! A stored-name collision (same file re-created and re-trashed the same day)
-//! is resolved by an exclusive-create suffix loop (`image1-2.jpg`, …); the
-//! manifest line records both the original path and the actual stored name, so
-//! restore mapping stays exact even in the suffixed case.
+//! is resolved by a suffix loop plus an atomic exclusive rename
+//! (`image1-2.jpg`, …); the manifest line records both the original path and
+//! the actual stored name, so restore mapping stays exact in the suffixed case.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -53,8 +53,26 @@ pub fn trash_file(
     app_root: &Path,
     content_hash: Option<&str>,
 ) -> Result<TrashedRecord, String> {
+    trash_file_inner(file, app_root, content_hash, |_| {})
+}
+
+fn trash_file_inner(
+    file: &Path,
+    app_root: &Path,
+    content_hash: Option<&str>,
+    before_move: impl FnOnce(&Path),
+) -> Result<TrashedRecord, String> {
     if !file.is_absolute() {
         return Err(format!("trash requires an absolute path: {}", file.display()));
+    }
+    let source_type = std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref())
+        .map_err(|e| e.to_string())?
+        .file_type();
+    if !source_type.is_file() {
+        return Err(format!(
+            "trash source is not a regular file: {}",
+            file.display()
+        ));
     }
 
     let volume_root = volume_root_of(file)?;
@@ -87,7 +105,7 @@ pub fn trash_file(
     let target = day_dir.join(name);
     std::fs::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
 
-    let stored = rename_with_suffix_loop(file, &target)?;
+    let stored = available_stored_path(&target)?;
 
     let record = TrashedRecord {
         original_path: file.to_string_lossy().to_string(),
@@ -95,7 +113,20 @@ pub fn trash_file(
         content_hash: content_hash.map(|h| h.to_string()),
         deleted_at_utc: logging::now_iso_millis(),
     };
+    // Provenance commits FIRST. If append/fsync fails, the indexed source has
+    // not moved and remains authoritative. A crash or an exact-boundary target
+    // collision after this point can leave a harmless stale audit line, never
+    // an untracked file whose original location was lost.
     append_manifest(&day_dir, &record)?;
+    crate::fs_publish::sync_directory(&day_dir).map_err(|e| e.to_string())?;
+    before_move(&stored);
+    crate::fs_publish::rename_no_replace(file, &stored).map_err(|e| {
+        format!(
+            "trash move failed for {} (source remains in place): {e}",
+            file.display()
+        )
+    })?;
+    let _ = crate::fs_publish::sync_directory(&day_dir);
 
     #[cfg(windows)]
     hide_windows(&trash_root);
@@ -103,43 +134,28 @@ pub fn trash_file(
     Ok(record)
 }
 
-/// Renames `src` over `target`, falling back to `stem.2.ext`, `stem.3.ext`, …
-/// under exclusive create when the name is taken. Returns the stored path.
-fn rename_with_suffix_loop(src: &Path, target: &Path) -> Result<PathBuf, String> {
+/// Selects `target`, falling back to `stem-2.ext`, `stem-3.ext`, … when the
+/// name is occupied. Final authority is the later atomic exclusive rename: an
+/// external exact-boundary winner is preserved and the source stays put.
+fn available_stored_path(target: &Path) -> Result<PathBuf, String> {
     let mut candidate = target.to_path_buf();
     let mut counter = 2u32;
     loop {
-        // not recorded: this claim and rename move the user's binary/media
-        // file into trash; the append-only manifest below accounts for text.
-        // Exclusive create claims the name; the rename then replaces the
-        // zero-byte claim with the real file (same directory, atomic).
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(_) => {
-                std::fs::rename(crate::winpath::for_fs(src).as_ref(), crate::winpath::for_fs(&candidate).as_ref()).map_err(|e| {
-                    let _ = std::fs::remove_file(&candidate);
-                    format!("trash rename failed for {}: {e}", src.display())
-                })?;
-                return Ok(candidate);
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                // A runaway guard, not a design limit: a hyphen and a number
-                // stay short even at a million, and real collisions are rare
-                // (phone filenames carry their own timestamp).
-                if counter > 1_000_000 {
-                    return Err(format!(
-                        "could not find a free trash name for {}",
-                        src.display()
-                    ));
-                }
-                candidate = suffixed_name(target, counter);
-                counter += 1;
-            }
+        match std::fs::symlink_metadata(&candidate) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(_) => {}
             Err(err) => return Err(err.to_string()),
         }
+        // A runaway guard, not a design limit: a hyphen and a number stay
+        // short even at a million, and real collisions are rare.
+        if counter > 1_000_000 {
+            return Err(format!(
+                "could not find a free trash name for {}",
+                target.display()
+            ));
+        }
+        candidate = suffixed_name(target, counter);
+        counter += 1;
     }
 }
 
@@ -170,7 +186,40 @@ fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String>
     // not recorded: the manifest is trash-side audit data, append-mode by
     // construction, never managed text.
     file.write_all(format!("{line}\n").as_bytes())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    // EXCEPTION to tests-folder conventions: the callback is a private
+    // exact-boundary seam and must not widen the shipped Trash API.
+    use super::*;
+
+    #[test]
+    fn exact_boundary_winner_survives_and_source_remains_authoritative() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_root = dir.path().join("app");
+        let source_dir = dir.path().join("source");
+        std::fs::create_dir_all(&app_root).unwrap();
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("photo.jpg");
+        std::fs::write(&source, b"source").unwrap();
+
+        let result = trash_file_inner(&source, &app_root, None, |target| {
+            std::fs::write(target, b"winner").unwrap();
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"source");
+        let day = std::fs::read_dir(app_root.join("trash"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(day.join("photo.jpg")).unwrap(), b"winner");
+    }
 }
 
 /// The trash root for a volume: `<volume root>/.onecopy-trash`, except the
@@ -191,7 +240,6 @@ pub fn trash_root_for(volume_root: &Path, app_root: &Path) -> Result<PathBuf, St
         Ok(volume_root.join(TRASH_DIR_NAME))
     }
 }
-
 
 /// One trash root's standing facts for the Trash surface: where it is, how
 /// much it holds. Sizes are computed on demand — the surface opens rarely and

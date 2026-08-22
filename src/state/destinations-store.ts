@@ -8,6 +8,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
+import { stringArrayField } from "../utils/configProjection";
 
 export interface DirEntry {
   name: string;
@@ -117,9 +118,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   cancelPendingDeleteRest: () => set({ pendingDeleteRest: null }),
 
   init: (config) => {
-    const roots = Array.isArray(config?.destinationRoots)
-      ? (config.destinationRoots as string[])
-      : [];
+    const roots = stringArrayField(config, "destinationRoots");
     set({ roots });
   },
 

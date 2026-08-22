@@ -186,6 +186,19 @@ fn relative_paths_are_rejected() {
     assert!(trash_file(Path::new("relative.jpg"), &f.app_root, None).is_err());
 }
 
+#[test]
+fn manifest_failure_leaves_the_indexed_source_authoritative() {
+    let f = fixture("manifest-failure");
+    let file = f.source.join("kept.jpg");
+    std::fs::write(&file, b"source-bytes").unwrap();
+    let day = chrono::Utc::now().format("%Y%m%d-utc").to_string();
+    let manifest_path = f.app_root.join("trash").join(day).join("manifest.jsonl");
+    std::fs::create_dir_all(&manifest_path).unwrap();
+
+    assert!(trash_file(&file, &f.app_root, None).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"source-bytes");
+}
+
 #[cfg(unix)]
 #[test]
 fn volume_root_of_temp_paths_resolves_to_a_real_ancestor() {

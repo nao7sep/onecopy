@@ -74,6 +74,16 @@ beforeEach(() => {
   selectAll(["h1", "h2", "h3"]);
 });
 
+describe("loaded destination projection", () => {
+  it("filters wrong-shape roots before path rendering or IPC use", () => {
+    useDestinationsStore.getState().init({
+      destinationRoots: [123, null, "/valid", { path: "/wrong" }],
+    });
+
+    expect(useDestinationsStore.getState().roots).toEqual(["/valid"]);
+  });
+});
+
 describe("staging a permanent move", () => {
   it("asks before moving anything", async () => {
     await useDestinationsStore

@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
+import { stringArrayField } from "../utils/configProjection";
 
 export interface SettingsDraft {
   defaultTimezone: string;
@@ -87,7 +88,7 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     confirmTrashDelete: config?.confirmTrashDelete === true,
     // Opt-in (Phase 33): absence means OFF.
     scoreFaces: config?.scoreFaces === true,
-    sourceDirs: Array.isArray(config?.sourceDirs) ? (config.sourceDirs as string[]) : [],
+    sourceDirs: stringArrayField(config, "sourceDirs"),
   };
 }
 

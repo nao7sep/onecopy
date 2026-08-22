@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
+import { stringArrayField } from "../utils/configProjection";
 
 export interface WizardDir {
   path: string;
@@ -48,9 +49,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   substitutedDirs: [],
 
   init: async (config) => {
-    const sourceDirs = Array.isArray(config?.sourceDirs)
-      ? (config.sourceDirs as string[])
-      : [];
+    const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
     if (sourceDirs.length === 0) {
@@ -62,9 +61,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   },
 
   reopen: (config) => {
-    const sourceDirs = Array.isArray(config?.sourceDirs)
-      ? (config.sourceDirs as string[])
-      : [];
+    const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
     set({

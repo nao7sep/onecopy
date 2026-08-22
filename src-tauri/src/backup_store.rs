@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -86,8 +86,8 @@ fn store() -> &'static Mutex<StoreState> {
 /// failure it logs ONE `warn`, leaves recording disabled for the session, and
 /// never panics — startup is never blocked by a backup-store problem.
 ///
-/// WAL is what lets the tolerated two-instance case serialize safely without a
-/// cross-process lock; the short `busy_timeout` gives a concurrent writer one
+/// WAL lets an overlapping process/version serialize safely; the short
+/// `busy_timeout` gives a concurrent writer one
 /// scheduling beat, then drops the best-effort record instead of making an
 /// ordinary app save visibly wait.
 pub fn init(store_file: PathBuf) {
@@ -116,7 +116,7 @@ fn open(store_file: &Path) -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let conn = Connection::open(store_file).map_err(|e| e.to_string())?;
-    // WAL for the tolerated two-instance case; contention may delay a save by
+    // WAL for cross-process overlap; contention may delay a save by
     // at most 100 ms before this best-effort record is dropped and warned.
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| e.to_string())?;
@@ -147,8 +147,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// `warn` (file + reason), and swallowed. It never panics, never crashes the app,
 /// and never breaks the save.
 pub fn record(absolute_path: &Path, bytes: &[u8]) {
-    let state = lock();
-    let Some(conn) = state.conn.as_ref() else {
+    let mut state = lock();
+    let Some(conn) = state.conn.as_mut() else {
         // Store never opened (open failed at startup, or init hasn't run under a
         // test that doesn't exercise it): disabled for the session, already warned
         // once if it was an open failure. No-op.
@@ -165,12 +165,25 @@ pub fn record(absolute_path: &Path, bytes: &[u8]) {
 
 /// The fallible core of `record`, factored out so the one `warn` site in `record`
 /// catches every failure path uniformly.
-fn try_record(conn: &Connection, path: &str, bytes: &[u8]) -> Result<(), rusqlite::Error> {
+fn try_record(conn: &mut Connection, path: &str, bytes: &[u8]) -> Result<(), rusqlite::Error> {
+    try_record_with_after_latest(conn, path, bytes, || {})
+}
+
+fn try_record_with_after_latest(
+    conn: &mut Connection,
+    path: &str,
+    bytes: &[u8],
+    after_latest: impl FnOnce(),
+) -> Result<(), rusqlite::Error> {
     let hash = sha256_hex(bytes);
+    // Acquire SQLite's cross-process writer reservation BEFORE reading the
+    // predecessor. WAL serializes statements, not a read/decision/write unit;
+    // BEGIN IMMEDIATE makes two connections observe one ordered latest row.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Compare against the latest row for this same path only — a cheap,
     // append-only check with no full-history scan (served by the (path, id)
     // index). No prior row (QueryReturnedNoRows) means never captured -> record.
-    let latest: Option<String> = match conn.query_row(
+    let latest: Option<String> = match tx.query_row(
         "SELECT content_sha256 FROM backups WHERE path = ?1 ORDER BY id DESC LIMIT 1",
         [path],
         |row| row.get::<_, String>(0),
@@ -179,14 +192,23 @@ fn try_record(conn: &Connection, path: &str, bytes: &[u8]) -> Result<(), rusqlit
         Err(rusqlite::Error::QueryReturnedNoRows) => None,
         Err(other) => return Err(other),
     };
+    after_latest();
     if latest.as_deref() == Some(hash.as_str()) {
+        tx.commit()?;
         return Ok(()); // unchanged since the last recorded version — dedup skip
     }
-    conn.execute(
+    tx.execute(
         "INSERT INTO backups (path, content, content_sha256, byte_size, written_at_utc) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![path, bytes, hash, bytes.len() as i64, logging::now_iso_millis()],
+        rusqlite::params![
+            path,
+            bytes,
+            hash,
+            bytes.len() as i64,
+            logging::now_iso_millis()
+        ],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -391,5 +413,35 @@ mod tests {
         record(Path::new("/abs/whatever.json"), b"data"); // silent no-op, no panic
         close_for_test();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_connections_serialize_the_latest_decision_before_insert() {
+        let file = unique_store_file("cross-connection-dedup");
+        let setup = open(&file).unwrap();
+        drop(setup);
+        let path = "/abs/concurrent.json";
+
+        let file_a = file.clone();
+        let first = std::thread::spawn(move || {
+            let mut conn = open(&file_a).unwrap();
+            try_record_with_after_latest(&mut conn, path, b"same", || {
+                // Keep the write reservation across the decision edge so the
+                // second connection has to read AFTER this commit. Removing or
+                // delaying BEGIN IMMEDIATE makes it read the same predecessor.
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            })
+            .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let file_b = file.clone();
+        let second = std::thread::spawn(move || {
+            let mut conn = open(&file_b).unwrap();
+            try_record(&mut conn, path, b"same").unwrap();
+        });
+        first.join().unwrap();
+        second.join().unwrap();
+
+        assert_eq!(rows_for(&file, path).len(), 1);
     }
 }

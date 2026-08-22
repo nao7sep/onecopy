@@ -9,9 +9,12 @@ pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;
 pub mod extensions;
+pub mod file_identity;
+pub mod fs_publish;
 pub mod hashing;
 pub mod face;
 pub mod index_store;
+mod instance_owner;
 pub mod live_photo;
 pub mod logging;
 pub mod media_protocol;
@@ -19,6 +22,7 @@ pub mod metadata;
 mod nanoid;
 pub mod operations;
 pub mod paths;
+pub mod path_identity;
 pub mod preview;
 pub mod queries;
 pub mod resolution;
@@ -642,7 +646,7 @@ fn move_item_out(
             let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
             let dest = std::path::Path::new(&dest_dir);
             for source in &settings.source_dirs {
-                if dest.starts_with(source) {
+                if path_identity::directory_is_within(dest, std::path::Path::new(source))? {
                     return Err(format!(
                         "destination {dest_dir} lies inside the scanned directory {source}; \
                          move-out targets must be outside every source directory"
@@ -1419,14 +1423,10 @@ pub fn run() {
             .unwrap_or(false);
 
     let app = tauri::Builder::default()
-        // Single instance first: destructive operations over a shared index DB
-        // from two processes is asking for trouble; a second launch focuses the
-        // first window instead.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_focus();
-            }
-        }))
+        // Process ownership is the FIRST plugin setup. Its OS file lock is the
+        // atomic authority; a secondary routes activation to the owner and exits
+        // before logs, stores, the index, watchers, or destructive commands start.
+        .plugin(instance_owner::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .register_uri_scheme_protocol("mediacache", |_ctx, request| serve_mediacache(&request))

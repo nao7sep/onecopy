@@ -40,7 +40,6 @@ tauri-plugin-dialog = "2.7"
 # build fails, so the dialog plugin is unusable at exactly the moment a halt must be
 # reported. rfd is what that plugin uses underneath.
 rfd = "0.17"
-tauri-plugin-single-instance = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # System IANA timezone name, used once to seed config.json's defaultTimezone on
@@ -79,6 +78,11 @@ libloading = "0.9.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS's exclusive rename is the atomic no-clobber publication primitive for
+# verified user output and same-volume Trash moves.
+libc = "0.2"
 
 # Dependencies must not run at opt-level 0 in dev builds: libwebp's C (built by
 # cc, which inherits OPT_LEVEL) and the image crate become ~18x slower there,

@@ -83,25 +83,39 @@ pub fn full_hash_cancellable(
 /// The destination is created fresh (never clobbering an existing file: the
 /// collision policy upstream decides skips/conflicts before this runs) and
 /// fsynced before return; renaming/staging discipline belongs to the caller.
-pub fn hash_while_copying(src: &Path, dst: &Path) -> std::io::Result<(String, u64)> {
+pub fn hash_while_copying(
+    src: &Path,
+    dst: &Path,
+) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
     let mut reader = File::open(crate::winpath::for_fs(src).as_ref())?;
     let mut writer = File::create_new(dst)?;
+    let identity = crate::file_identity::FileIdentity::from_file(&writer)?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
     let mut total: u64 = 0;
 
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
+    let copied = (|| -> std::io::Result<(String, u64)> {
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            writer.write_all(&buf[..n])?;
+            total += n as u64;
         }
-        hasher.update(&buf[..n]);
-        writer.write_all(&buf[..n])?;
-        total += n as u64;
-    }
-    writer.sync_all()?;
+        writer.sync_all()?;
+        Ok((hasher.finalize().to_hex().to_string(), total))
+    })();
+    drop(writer);
 
-    Ok((hasher.finalize().to_hex().to_string(), total))
+    match copied {
+        Ok((hash, bytes)) => Ok((hash, bytes, identity)),
+        Err(error) => {
+            crate::file_identity::remove_private_if_owned(dst, identity);
+            Err(error)
+        }
+    }
 }
 
 fn copy_exact_into(
