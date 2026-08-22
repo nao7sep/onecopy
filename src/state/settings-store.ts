@@ -33,6 +33,19 @@ export interface SettingsDraft {
   sourceDirs: string[];
 }
 
+const SIMILAR_PHOTO_DEFAULTS = {
+  similarityMaxGapSeconds: 90,
+  similarityPhashMaxDistance: 3,
+  similarityPhashMaxDistanceBurst: 10,
+  similarityDiameterMultiplier: 2,
+} as const satisfies Pick<
+  SettingsDraft,
+  | "similarityMaxGapSeconds"
+  | "similarityPhashMaxDistance"
+  | "similarityPhashMaxDistanceBurst"
+  | "similarityDiameterMultiplier"
+>;
+
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -42,10 +55,22 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     defaultTimezone:
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC",
     goodRangeStartYear: numberOr(config?.goodRangeStartYear, 1995),
-    similarityMaxGapSeconds: numberOr(config?.similarityMaxGapSeconds, 90),
-    similarityPhashMaxDistance: numberOr(config?.similarityPhashMaxDistance, 3),
-    similarityPhashMaxDistanceBurst: numberOr(config?.similarityPhashMaxDistanceBurst, 10),
-    similarityDiameterMultiplier: numberOr(config?.similarityDiameterMultiplier, 2),
+    similarityMaxGapSeconds: numberOr(
+      config?.similarityMaxGapSeconds,
+      SIMILAR_PHOTO_DEFAULTS.similarityMaxGapSeconds,
+    ),
+    similarityPhashMaxDistance: numberOr(
+      config?.similarityPhashMaxDistance,
+      SIMILAR_PHOTO_DEFAULTS.similarityPhashMaxDistance,
+    ),
+    similarityPhashMaxDistanceBurst: numberOr(
+      config?.similarityPhashMaxDistanceBurst,
+      SIMILAR_PHOTO_DEFAULTS.similarityPhashMaxDistanceBurst,
+    ),
+    similarityDiameterMultiplier: numberOr(
+      config?.similarityDiameterMultiplier,
+      SIMILAR_PHOTO_DEFAULTS.similarityDiameterMultiplier,
+    ),
     previewLongEdgePx: numberOr(config?.previewLongEdgePx, 1600),
     thumbnailEdgePx: numberOr(config?.thumbnailEdgePx, 320),
     videoStripSecondsPerFrame: numberOr(config?.videoStripSecondsPerFrame, 20),
@@ -85,6 +110,7 @@ interface SettingsState {
   openWith: (config: Record<string, unknown> | null) => void;
   close: () => void;
   update: (patch: Partial<SettingsDraft>) => void;
+  resetSimilarPhotoSettings: () => void;
   validateTimezone: (name: string) => Promise<void>;
   addSourceDir: () => Promise<void>;
   removeSourceDir: (path: string) => void;
@@ -122,6 +148,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const draft = get().draft;
     if (draft) set({ draft: { ...draft, ...patch } });
   },
+
+  resetSimilarPhotoSettings: () => get().update(SIMILAR_PHOTO_DEFAULTS),
 
   validateTimezone: async (name) => {
     get().update({ defaultTimezone: name });

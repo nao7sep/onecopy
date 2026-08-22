@@ -287,6 +287,7 @@ export default function SettingsModal() {
   const message = useSettingsStore((s) => s.message);
   const close = useSettingsStore((s) => s.close);
   const update = useSettingsStore((s) => s.update);
+  const resetSimilarPhotoSettings = useSettingsStore((s) => s.resetSimilarPhotoSettings);
   const validateTimezone = useSettingsStore((s) => s.validateTimezone);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
@@ -417,6 +418,9 @@ export default function SettingsModal() {
             min={1}
             onChange={(v) => update({ similarityDiameterMultiplier: Math.min(4, v) })}
           />
+          <div className="mt-3 flex justify-end">
+            <Button onClick={resetSimilarPhotoSettings}>Reset similar photo settings</Button>
+          </div>
           <UnlinkedPairsRow />
         </div>
       ) : null}

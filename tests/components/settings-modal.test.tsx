@@ -48,6 +48,31 @@ describe("Settings categories", () => {
     expect(screen.getByText("Previews")).toBeTruthy();
     expect(screen.queryByText("Directories")).toBeNull();
   });
+
+  it("resets only the four optimized similar-photo settings", () => {
+    useSettingsStore.getState().openWith({
+      ...config,
+      goodRangeStartYear: 2007,
+      similarityMaxGapSeconds: 12,
+      similarityPhashMaxDistance: 19,
+      similarityPhashMaxDistanceBurst: 27,
+      similarityDiameterMultiplier: 4,
+      previewLongEdgePx: 2048,
+      confirmTrashDelete: true,
+    });
+    const before = useSettingsStore.getState().draft;
+    render(<SettingsModal />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset similar photo settings" }));
+
+    expect(useSettingsStore.getState().draft).toEqual({
+      ...before,
+      similarityMaxGapSeconds: 90,
+      similarityPhashMaxDistance: 3,
+      similarityPhashMaxDistanceBurst: 10,
+      similarityDiameterMultiplier: 2,
+    });
+  });
 });
 
 describe("cache relocation", () => {
