@@ -406,7 +406,7 @@ pub fn move_out(
     // An identical file that was already present is only delivery authority
     // while its public name still identifies the exact descriptor we hashed.
     // Revalidate every such proof immediately before any source post-action.
-    for proof in &existing_target_proofs {
+    for proof in &mut existing_target_proofs {
         if !proof.revalidate() {
             outcome
                 .conflicts
@@ -465,11 +465,18 @@ struct Delivery {
 struct ExistingTargetProof {
     path: std::path::PathBuf,
     identity: crate::file_identity::FileIdentity,
+    file: std::fs::File,
+    verified_hash: String,
 }
 
 impl ExistingTargetProof {
-    fn revalidate(&self) -> bool {
-        crate::file_identity::path_names(&self.path, self.identity)
+    fn revalidate(&mut self) -> bool {
+        if !crate::file_identity::path_names(&self.path, self.identity) {
+            return false;
+        }
+        let unchanged = crate::hashing::full_hash_file(&mut self.file)
+            .is_ok_and(|hash| hash == self.verified_hash);
+        unchanged && crate::file_identity::path_names(&self.path, self.identity)
     }
 }
 
@@ -484,12 +491,12 @@ fn deliver_one(
     match inspect_existing_target(target, |_| {}) {
         Ok(Some(existing)) => {
             let matches = match expected_hash {
-                Some(expected) => existing.hash == expected,
+                Some(expected) => existing.proof.verified_hash == expected,
                 // Unhashed item: compare against the first copy's actual bytes.
                 None => match copies.first() {
                     Some((_, path, _)) => {
                         crate::hashing::full_hash(Path::new(path)).map_err(|e| e.to_string())?
-                            == existing.hash
+                            == existing.proof.verified_hash
                     }
                     None => false,
                 },
@@ -498,7 +505,7 @@ fn deliver_one(
                 outcome.skipped_identical += 1;
                 return Ok(Delivery {
                     ok: true,
-                    real_hash: Some(existing.hash),
+                    real_hash: Some(existing.proof.verified_hash.clone()),
                     existing_target: Some(existing.proof),
                 }); // already delivered
             }
@@ -629,7 +636,6 @@ fn deliver_one(
 }
 
 struct ExistingTarget {
-    hash: String,
     proof: ExistingTargetProof,
 }
 
@@ -651,10 +657,11 @@ fn inspect_existing_target(
         ));
     }
     Ok(Some(ExistingTarget {
-        hash,
         proof: ExistingTargetProof {
             path: target.to_path_buf(),
             identity,
+            file,
+            verified_hash: hash,
         },
     }))
 }
@@ -743,7 +750,7 @@ mod boundary_tests {
         let held = dir.path().join("held.jpg");
         std::fs::write(&target, b"identical").unwrap();
 
-        let existing = inspect_existing_target(&target, |_| {})
+        let mut existing = inspect_existing_target(&target, |_| {})
             .unwrap()
             .expect("existing regular target");
         std::fs::rename(&target, &held).unwrap();
@@ -752,6 +759,26 @@ mod boundary_tests {
         assert!(!existing.proof.revalidate());
         assert_eq!(std::fs::read(&held).unwrap(), b"identical");
         assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn existing_destination_same_inode_rewrite_before_post_action_revokes_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.jpg");
+        std::fs::write(&target, b"identical").unwrap();
+
+        let mut existing = inspect_existing_target(&target, |_| {})
+            .unwrap()
+            .expect("existing regular target");
+        let identity = existing.proof.identity;
+        std::fs::write(&target, b"rewritten").unwrap();
+
+        assert!(
+            crate::file_identity::path_names(&target, identity),
+            "the mutation keeps the same public physical file"
+        );
+        assert!(!existing.proof.revalidate());
+        assert_eq!(std::fs::read(&target).unwrap(), b"rewritten");
     }
 
     #[test]
