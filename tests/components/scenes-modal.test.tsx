@@ -9,6 +9,7 @@ import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import ScenesModal from "../../src/components/ScenesModal";
 import { useItemsStore } from "../../src/state/items-store";
+import { useBinariesStore } from "../../src/state/binaries-store";
 import type { SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
@@ -82,10 +83,28 @@ beforeEach(() => {
     get_section_items: () => [],
     get_section_counts: () => [],
   });
+  useBinariesStore.setState({
+    entries: [
+      {
+        id: "whisper-large-v3-turbo",
+        label: "Transcription model",
+        kind: "model",
+        status: "up-to-date",
+        installedVersion: "installed",
+        facts: { latestKnownVersion: null, lastCheckedAtUtc: null },
+        path: "C:\\models\\ggml-large-v3-turbo.bin",
+        checkable: false,
+        released: "2024-10-01",
+      },
+    ],
+  });
   seedMultiSelection();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  useBinariesStore.setState({ entries: [] });
+  cleanup();
+});
 
 describe("permanent delete", () => {
   it("asks before bypassing the trash", async () => {
@@ -129,5 +148,21 @@ describe("trash delete", () => {
     expect(deleted).toHaveLength(1);
     expect(deleted[0]?.args.hash).toBe("h2");
     expect(deleted[0]?.args.permanent).toBe(false);
+  });
+});
+
+describe("transcription start", () => {
+  it("surfaces a backend single-flight refusal", async () => {
+    mockCommands({
+      transcribe: () => {
+        throw new Error("a transcription is already running");
+      },
+    });
+    render(<ScenesModal hash="h2" onClose={() => {}} />);
+
+    (await screen.findByRole("button", { name: "Transcribe" })).click();
+
+    expect(await screen.findByText(/a transcription is already running/i)).toBeTruthy();
+    expect(screen.queryByText(/Transcribing/)).toBeNull();
   });
 });

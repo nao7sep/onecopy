@@ -981,12 +981,13 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 // On-demand transcription (Design: Video handling): runs on its own thread —
 // minutes-long and memory-heavy (~2–2.5 GB while running, released after) —
 // with progress/done/error events; the transcript lands in the cache and
-// `transcript_get` serves it thereafter. One at a time by the engine's own
-// claim; cancel via `transcribe_cancel`.
+// `transcript_get` serves it thereafter. The process-wide claim prevents a
+// manual run and idle backfill from loading two models; cancel is immediate.
 #[tauri::command(async)]
 fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
+    let claim = transcription::claim()?;
     let handle = app.clone();
     std::thread::spawn(move || {
         let result = (|| -> Result<String, String> {
@@ -1008,7 +1009,8 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
             let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
             let progress_handle = handle.clone();
             let progress_hash = hash.clone();
-            transcription::transcribe_to_cache(
+            transcription::transcribe_to_cache_claimed(
+                &claim,
                 &cache,
                 model.as_deref(),
                 ffmpeg.as_deref(),
@@ -1077,8 +1079,8 @@ fn note_user_activity() {
 }
 
 #[tauri::command]
-fn transcribe_cancel() {
-    transcription::TRANSCRIBE_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+fn transcribe_cancel() -> bool {
+    transcription::request_cancel()
 }
 
 // The Trash surface: standing sizes per trash root// The Trash surface: standing sizes per trash root, and the one deliberately

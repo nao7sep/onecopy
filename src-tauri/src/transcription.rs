@@ -1,7 +1,7 @@
 //! On-demand transcription (Design: Video handling) — whisper.cpp linked into
 //! the app via `whisper-rs`, the large-v3-turbo model provisioned by the
-//! managed-dependency registry. Nothing here runs unless the user asks: the
-//! scenes modal's Transcribe control is the only trigger.
+//! managed-dependency registry. Work starts either from the scenes modal's
+//! Transcribe control or from the idle backfill scheduler.
 //!
 //! The transcript is DERIVED data keyed by content hash, cached in the
 //! `transcripts/` subtree like every other derived entry — reconstructible,
@@ -10,13 +10,65 @@
 //! exists only while a transcription runs.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::preview::CachePaths;
 
-/// Cancel flag for the one transcription in flight (one at a time — the
-/// engine is memory-heavy and the surface is a single modal).
-pub static TRANSCRIBE_CANCEL: AtomicBool = AtomicBool::new(false);
+pub const TRANSCRIPTION_BUSY: &str = "a transcription is already running";
+
+#[derive(Default)]
+struct TranscriptionState {
+    running: bool,
+    cancelled: bool,
+}
+
+fn state() -> MutexGuard<'static, TranscriptionState> {
+    static STATE: Mutex<TranscriptionState> = Mutex::new(TranscriptionState {
+        running: false,
+        cancelled: false,
+    });
+    STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Ownership of the one process-wide Whisper slot. Dropping the claim resets
+/// cancellation for the next run; rejected contenders never touch either.
+#[derive(Debug)]
+pub struct TranscriptionClaim {
+    _private: (),
+}
+
+impl Drop for TranscriptionClaim {
+    fn drop(&mut self) {
+        let mut state = state();
+        state.running = false;
+        state.cancelled = false;
+    }
+}
+
+pub fn claim() -> Result<TranscriptionClaim, String> {
+    let mut state = state();
+    if state.running {
+        return Err(TRANSCRIPTION_BUSY.to_string());
+    }
+    state.running = true;
+    state.cancelled = false;
+    Ok(TranscriptionClaim { _private: () })
+}
+
+pub fn request_cancel() -> bool {
+    let mut state = state();
+    if !state.running {
+        return false;
+    }
+    state.cancelled = true;
+    true
+}
+
+pub fn is_cancelled() -> bool {
+    state().cancelled
+}
 
 /// 16 kHz mono f32 — the one input whisper accepts.
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -42,9 +94,7 @@ pub fn extract_pcm(ffmpeg: &Path, video: &Path) -> Result<Vec<f32>, String> {
         "f32le",
         "-",
     ]);
-    let run = crate::subprocess::run_bounded(command, &|| {
-        TRANSCRIBE_CANCEL.load(Ordering::SeqCst)
-    })?;
+    let run = crate::subprocess::run_bounded(command, &is_cancelled)?;
     if !run.status_ok {
         return Err(format!("audio extraction failed: {}", run.stderr_tail()));
     }
@@ -87,7 +137,7 @@ pub fn run_whisper(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_progress_callback_safe(move |progress: i32| on_progress(progress));
-    params.set_abort_callback_safe(|| TRANSCRIBE_CANCEL.load(Ordering::SeqCst));
+    params.set_abort_callback_safe(is_cancelled);
 
     state
         .full(params, pcm)
@@ -143,6 +193,23 @@ pub fn transcribe_to_cache(
     if let Ok(existing) = std::fs::read_to_string(&target) {
         return Ok(existing);
     }
+    let claim = claim()?;
+    transcribe_to_cache_claimed(&claim, cache, model, ffmpeg, video, hash, on_progress)
+}
+
+pub(crate) fn transcribe_to_cache_claimed(
+    _claim: &TranscriptionClaim,
+    cache: &CachePaths,
+    model: Option<&Path>,
+    ffmpeg: Option<&Path>,
+    video: &Path,
+    hash: &str,
+    on_progress: impl FnMut(i32) + 'static,
+) -> Result<String, String> {
+    let target = cache.transcript(hash);
+    if let Ok(existing) = std::fs::read_to_string(&target) {
+        return Ok(existing);
+    }
     let Some(model) = model else {
         return Err(
             "the transcription model is not installed — install it from Managed tools"
@@ -152,7 +219,6 @@ pub fn transcribe_to_cache(
     let Some(ffmpeg) = ffmpeg else {
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
-    TRANSCRIBE_CANCEL.store(false, Ordering::SeqCst);
     let pcm = extract_pcm(ffmpeg, video)?;
     let segments = run_whisper(model, &pcm, on_progress)?;
     let text = render(&segments);

@@ -196,6 +196,7 @@ function TranscriptSection({ hash }: { hash: string }) {
               setPercent(0);
               void invoke("transcribe", { hash }).catch((err) => {
                 setRunning(false);
+                setError(String(err));
                 log.error("transcribe start failed", toErrorFields(err));
               });
             }}

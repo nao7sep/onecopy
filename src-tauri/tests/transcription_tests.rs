@@ -8,6 +8,7 @@ use std::path::Path;
 
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::transcription::*;
+use serial_test::serial;
 
 fn cache(label: &str) -> (tempfile::TempDir, CachePaths) {
     let dir = tempfile::Builder::new()
@@ -19,6 +20,7 @@ fn cache(label: &str) -> (tempfile::TempDir, CachePaths) {
 }
 
 #[test]
+#[serial(transcription)]
 fn an_absent_model_names_the_remedy() {
     let (_dir, cache) = cache("no-model");
     let err = transcribe_to_cache(
@@ -34,6 +36,7 @@ fn an_absent_model_names_the_remedy() {
 }
 
 #[test]
+#[serial(transcription)]
 fn an_absent_ffmpeg_names_the_remedy_too() {
     let (_dir, cache) = cache("no-ffmpeg");
     let err = transcribe_to_cache(
@@ -71,6 +74,7 @@ fn an_existing_transcript_short_circuits_without_touching_the_engine() {
 }
 
 #[test]
+#[serial(transcription)]
 fn a_failed_run_leaves_no_partial_cache_entry() {
     // Write-once-at-the-end is the design; a bogus ffmpeg fails extraction
     // long before any write, and the cache tree must stay empty.
@@ -85,6 +89,38 @@ fn a_failed_run_leaves_no_partial_cache_entry() {
     );
     assert!(err.is_err());
     assert!(!cache.transcript("h3").exists());
+}
+
+#[test]
+#[serial(transcription)]
+fn one_claim_blocks_every_contender_without_cross_cancelling() {
+    let active = claim().unwrap();
+    assert!(request_cancel(), "an active run accepts cancellation");
+    assert!(is_cancelled());
+
+    assert_eq!(claim().unwrap_err(), TRANSCRIPTION_BUSY);
+    assert!(
+        is_cancelled(),
+        "a rejected contender never resets the active run's cancellation"
+    );
+
+    let (_dir, cache) = cache("single-flight");
+    let error = transcribe_to_cache(
+        &cache,
+        Some(Path::new("/nonexistent/model.bin")),
+        Some(Path::new("/nonexistent/ffmpeg")),
+        Path::new("/nonexistent/video.mov"),
+        "busy",
+        |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(error, TRANSCRIPTION_BUSY);
+    assert!(is_cancelled());
+
+    drop(active);
+    assert!(!is_cancelled(), "the owner clears cancellation on release");
+    assert!(!request_cancel(), "there is no later run to cross-cancel");
+    drop(claim().unwrap());
 }
 
 #[test]
@@ -104,6 +140,7 @@ fn rendering_formats_timestamps_and_drops_empty_segments() {
 // phrase. Run: cargo test --test transcription_tests -- --ignored --nocapture
 #[test]
 #[ignore]
+#[serial(transcription)]
 fn live_tiny_model_transcribes_the_canonical_sample() {
     const TINY_URL: &str =
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-tiny.bin";
@@ -115,8 +152,17 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
         .prefix("onecopy-transcribe-live-")
         .tempdir()
         .unwrap();
+    let agent = ureq::config::Config::builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
     let fetch = |url: &str, dest: &Path| {
-        let mut response = ureq::get(url).call().expect("download");
+        let mut response = agent.get(url).call().expect("download");
         let mut file = std::fs::File::create(dest).unwrap();
         std::io::copy(&mut response.body_mut().as_reader(), &mut file).unwrap();
     };
@@ -128,8 +174,16 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
         hasher.update(std::fs::read(&model).unwrap());
         assert_eq!(hex::encode(hasher.finalize()), TINY_SHA256, "model integrity");
     }
+    eprintln!(
+        "model: {TINY_URL} ({} bytes, sha256 {TINY_SHA256})",
+        std::fs::metadata(&model).unwrap().len()
+    );
     let sample = dir.path().join("jfk.wav");
     fetch(SAMPLE_URL, &sample);
+    eprintln!(
+        "sample: {SAMPLE_URL} ({} bytes)",
+        std::fs::metadata(&sample).unwrap().len()
+    );
 
     // 16 kHz mono s16 WAV → f32 PCM: skip the 44-byte header, scale.
     let bytes = std::fs::read(&sample).unwrap();

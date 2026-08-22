@@ -207,6 +207,11 @@ fn transcribe_next(
         if !is_idle() {
             return Ok(false);
         }
+        let claim = match crate::transcription::claim() {
+            Ok(claim) => claim,
+            Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => return Ok(false),
+            Err(error) => return Err(error),
+        };
         let _ = app.emit(
             "backfill://progress",
             json!({ "class": "transcripts", "hash": hash }),
@@ -215,20 +220,23 @@ fn transcribe_next(
         // callback — the same flag the scenes modal's Cancel sets. A
         // cancelled run writes no cache entry, so the file simply stays
         // pending for the next idle stretch.
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let watch = std::thread::spawn({
+            let finished = std::sync::Arc::clone(&finished);
             let flag_check = std::time::Duration::from_millis(500);
             move || loop {
-                if crate::transcription::TRANSCRIBE_CANCEL.load(Ordering::SeqCst) {
-                    return; // a run ended or the user cancelled; stand down
+                if finished.load(Ordering::SeqCst) {
+                    return;
                 }
                 if !is_idle() {
-                    crate::transcription::TRANSCRIBE_CANCEL.store(true, Ordering::SeqCst);
+                    crate::transcription::request_cancel();
                     return;
                 }
                 std::thread::sleep(flag_check);
             }
         });
-        let result = crate::transcription::transcribe_to_cache(
+        let result = crate::transcription::transcribe_to_cache_claimed(
+            &claim,
             cache,
             Some(model),
             Some(ffmpeg),
@@ -236,10 +244,11 @@ fn transcribe_next(
             &hash,
             |_| {},
         );
-        // Whatever happened, release the watcher for the next run.
-        crate::transcription::TRANSCRIBE_CANCEL.store(true, Ordering::SeqCst);
+        // Whatever happened, release the watcher before the claim. Keeping
+        // those lifetimes nested prevents this watcher touching a later run.
+        finished.store(true, Ordering::SeqCst);
         let _ = watch.join();
-        crate::transcription::TRANSCRIBE_CANCEL.store(false, Ordering::SeqCst);
+        drop(claim);
         match result {
             Ok(text) => {
                 let _ = app.emit(
