@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useDestinationsStore,
   type DirEntry,
@@ -53,6 +53,25 @@ export function nodeHasChildren(
 function useDropHandlers(path: string) {
   const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
   const [dropReady, setDropReady] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetDrop = () => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    resetTimer.current = null;
+    setDropReady(false);
+  };
+  const renewDrop = () => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    setDropReady(true);
+    // An internal HTML drag can still lose its terminal event when the webview
+    // blurs. Repeated dragover renews this lease; silence clears the row.
+    resetTimer.current = setTimeout(resetDrop, 750);
+  };
+  useEffect(
+    () => () => {
+      if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
   return {
     dropReady,
     handlers: {
@@ -63,14 +82,17 @@ function useDropHandlers(path: string) {
           // the ONLY drop affordance (tapebox's rule).
           event.stopPropagation();
           event.dataTransfer.dropEffect = "move";
-          setDropReady(true);
+          renewDrop();
         }
       },
-      onDragLeave: () => setDropReady(false),
+      onDragLeave: (event: React.DragEvent) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        resetDrop();
+      },
       onDrop: (event: React.DragEvent) => {
         event.preventDefault();
         event.stopPropagation();
-        setDropReady(false);
+        resetDrop();
         // The choice is ASKED, never inferred from modifier keys held at
         // drop time (Phase 33) — with one exception kept deliberately:
         // Cmd/Ctrl-drop still means copy, the OS-wide drag convention.
@@ -449,15 +471,15 @@ export default function DestinationsTab() {
   // cannot accept anything. Rows stopPropagation, so this never sees them.
   useEffect(() => {
     const deny = (event: DragEvent) => {
+      // OneCopy has no external import target. Own every renderer drop boundary
+      // so a file, image, text, or URL can never replace the webview.
+      event.preventDefault();
       if (event.dataTransfer?.types.includes("application/x-onecopy-drag")) {
-        event.preventDefault();
         event.dataTransfer.dropEffect = "none";
       }
     };
     const swallow = (event: DragEvent) => {
-      if (event.dataTransfer?.types.includes("application/x-onecopy-drag")) {
-        event.preventDefault();
-      }
+      event.preventDefault();
     };
     window.addEventListener("dragover", deny);
     window.addEventListener("drop", swallow);

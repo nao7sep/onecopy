@@ -52,8 +52,12 @@ function dragProps(item: SectionItem) {
       // pointer roams over elements with their own cursors otherwise.
       document.body.classList.add("dragging");
     },
-    onDragEnd: () => document.body.classList.remove("dragging"),
+    onDragEnd: clearGridDragCursor,
   };
+}
+
+export function clearGridDragCursor() {
+  document.body.classList.remove("dragging");
 }
 
 function Thumb({ item }: { item: SectionItem }) {
@@ -370,6 +374,21 @@ export default function Grid({
    * grid behind them must not quietly take the keyboard. */
   mayClaimFocus: boolean;
 }) {
+  useEffect(() => {
+    const clearOnVisibilityLoss = () => {
+      if (document.hidden) clearGridDragCursor();
+    };
+    window.addEventListener("blur", clearGridDragCursor);
+    window.addEventListener("dragend", clearGridDragCursor);
+    document.addEventListener("visibilitychange", clearOnVisibilityLoss);
+    return () => {
+      window.removeEventListener("blur", clearGridDragCursor);
+      window.removeEventListener("dragend", clearGridDragCursor);
+      document.removeEventListener("visibilitychange", clearOnVisibilityLoss);
+      clearGridDragCursor();
+    };
+  }, []);
+
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
   const selectItem = useItemsStore((s) => s.selectItem);
