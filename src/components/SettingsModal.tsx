@@ -1,0 +1,541 @@
+import { useEffect, useState, type KeyboardEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useSettingsStore } from "../state/settings-store";
+import { log, toErrorFields } from "../repositories";
+import { useAppStore } from "../state/app-store";
+import {
+  describePosition,
+  monitorKey,
+  orderMonitors,
+  priorityFromState,
+} from "../utils/screens";
+import ModalShell from "./ModalShell";
+import ConfirmDialog from "./ConfirmDialog";
+import DirectoryRow from "./DirectoryRow";
+import Button from "./ui/Button";
+import { Row, Select, TextInput, Toggle } from "./ui/Field";
+import { Plus } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
+
+/** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
+ * comparison). Persisted as app STATE, not part of the config draft — screen
+ * identifiers are machine-specific and reordering applies immediately, like
+ * a pane width. Meaningful only with two or more monitors. */
+function ScreensSection() {
+  const [monitors, setMonitors] = useState<
+    {
+      name: string | null;
+      position: { x: number; y: number };
+      size: { width: number; height: number };
+      scaleFactor?: number;
+    }[]
+  >([]);
+  const priority = priorityFromState(useAppStore((s) => s.appData?.state) ?? null);
+  useEffect(() => {
+    void import("@tauri-apps/api/window").then(async ({ availableMonitors }) => {
+      setMonitors(await availableMonitors().catch(() => []));
+    });
+  }, []);
+  if (monitors.length < 2) return null;
+
+  const ordered = orderMonitors(monitors, priority);
+  const move = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= ordered.length) return;
+    const keys = ordered.map(monitorKey);
+    [keys[index], keys[target]] = [keys[target], keys[index]];
+    void useAppStore.getState().patchState({ screenPriority: keys });
+  };
+  const role = (index: number) =>
+    index === 0 ? "main" : index === 1 ? "preview" : "comparison";
+
+  return (
+    <>
+      <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">Screens</h2>
+      <p className="mb-1 text-xs text-ink-muted">
+        Order decides the role: 1 = main window, 2 = preview, the rest join
+        the comparison spread. Applies immediately.
+      </p>
+      <Button
+        className="mb-2"
+        onClick={() => {
+          // One self-closing flash per monitor, showing its ordinal — the
+          // only way to tell a matched pair apart beyond "left"/"right".
+          void import("@tauri-apps/api/webviewWindow").then(({ WebviewWindow }) => {
+            ordered.forEach((monitor, index) => {
+              const scale = monitor.scaleFactor || 1;
+              new WebviewWindow(`identify-${index + 1}`, {
+                url: `index.html?view=identify&slice=${index + 1}`,
+                title: "OneCopy",
+                x: monitor.position.x / scale + monitor.size.width / scale / 2 - 110,
+                y: monitor.position.y / scale + monitor.size.height / scale / 2 - 110,
+                width: 220,
+                height: 220,
+                decorations: false,
+                alwaysOnTop: true,
+                skipTaskbar: true,
+                resizable: false,
+                focus: false,
+              });
+            });
+          });
+        }}
+      >
+        Identify screens
+      </Button>
+      {ordered.map((monitor, index) => (
+        <div
+          key={monitorKey(monitor)}
+          className="mb-1 flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm"
+        >
+          <span className="min-w-0 flex-1">
+            {/* The POSITION leads, because a matched pair reports the same
+                name and the same resolution — where it sits is the only fact
+                that maps onto the desk. */}
+            <span className="text-ink">
+              {index + 1}. {describePosition(monitor, ordered) || "Display"}
+            </span>
+            <span className="block truncate text-xs text-ink-muted">
+              {monitor.name ?? "Display"} · {monitor.size.width}×{monitor.size.height} ·{" "}
+              {role(index)}
+            </span>
+          </span>
+          <span className="flex gap-1">
+            <Button
+              variant="ghost"
+              aria-label="Move up"
+              disabled={index === 0}
+              onClick={() => move(index, -1)}
+            >
+              <ChevronUp size={14} />
+            </Button>
+            <Button
+              variant="ghost"
+              aria-label="Move down"
+              disabled={index === ordered.length - 1}
+              onClick={() => move(index, 1)}
+            >
+              <ChevronDown size={14} />
+            </Button>
+          </span>
+        </div>
+      ))}
+    </>
+  );
+}
+
+// The named Settings modal over the config tunables. Field-level checks only —
+// the store never validates semantics (config-seeding conventions); Save
+// persists, re-resolves the index from evidence, and refreshes the views.
+// Save requires a dirty AND valid draft; closing with unsaved edits stacks a
+// discard confirmation instead of silently dropping them.
+
+// The field never reformats mid-edit (select-all + retype must not snap to
+// the minimum under the caret); parsing and clamping happen on blur only.
+function NumberField({
+  label,
+  hint,
+  value,
+  min,
+  onChange,
+}: {
+  label: string;
+  /** What the number MEANS, for the knobs whose effect is not obvious from
+   * their name — a similarity threshold is a judgement call, so the row says
+   * which direction is stricter. */
+  hint?: string;
+  value: number;
+  min: number;
+  onChange: (value: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  return (
+    <Row label={label} hint={hint}>
+      <TextInput
+        type="number"
+        className="w-24 text-right"
+        value={text ?? String(value)}
+        min={min}
+        onFocus={() => setText(String(value))}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          const parsed = Number.parseInt(text ?? "", 10);
+          onChange(Number.isFinite(parsed) ? Math.max(min, parsed) : value);
+          setText(null);
+        }}
+      />
+    </Row>
+  );
+}
+
+/** The unlink store's one surface: how many "not the same subject" verdicts
+ * exist, and the way to take them all back. Without the count the exclusions
+ * would be an invisible permanent store; with only the count there would be
+ * no recovery from an accidental unlink. */
+function UnlinkedPairsRow() {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    void invoke<number>("similar_exclusions_count")
+      .then(setCount)
+      .catch((error) => log.warn("exclusions count failed", toErrorFields(error)));
+  }, []);
+  if (count === null || count === 0) return null;
+  return (
+    <Row
+      label={`Unlinked pairs (${count})`}
+      hint="Photos you marked as not similar. Forgetting lets them group again on the next scan."
+    >
+      <Button
+        onClick={() => {
+          void invoke("similar_exclusions_clear")
+            .then(() => setCount(0))
+            .catch((error) => log.warn("exclusions clear failed", toErrorFields(error)));
+        }}
+      >
+        Forget all
+      </Button>
+    </Row>
+  );
+}
+
+function CheckField({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <Row label={label}>
+      <Toggle checked={checked} onChange={onChange} />
+    </Row>
+  );
+}
+
+const SETTINGS_TABS = [
+  { id: "library", label: "Library" },
+  { id: "media", label: "Media" },
+  { id: "appearance", label: "Appearance" },
+  { id: "behavior", label: "Behavior" },
+] as const;
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
+
+function SettingsTabList({
+  active,
+  onChange,
+}: {
+  active: SettingsTab;
+  onChange: (tab: SettingsTab) => void;
+}) {
+  const moveFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const tabs = Array.from(
+      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role='tab']") ?? [],
+    );
+    const current = tabs.indexOf(event.currentTarget);
+    let next = current;
+    if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const tab = SETTINGS_TABS[next]?.id;
+    if (tab !== undefined) onChange(tab);
+    tabs[next]?.focus();
+  };
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Settings categories"
+      className="sticky top-0 z-10 mb-3 flex gap-1 border-b border-border bg-surface pb-2"
+    >
+      {SETTINGS_TABS.map((tab) => (
+        <button
+          key={tab.id}
+          id={`settings-tab-${tab.id}`}
+          role="tab"
+          aria-selected={active === tab.id}
+          aria-controls={`settings-panel-${tab.id}`}
+          tabIndex={active === tab.id ? 0 : -1}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
+            active === tab.id
+              ? "bg-primary-surface text-primary"
+              : "text-ink-muted hover:bg-surface-muted hover:text-ink"
+          }`}
+          onClick={() => onChange(tab.id)}
+          onKeyDown={moveFocus}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export default function SettingsModal() {
+  const [activeTab, setActiveTab] = useState<SettingsTab>("library");
+  const open = useSettingsStore((s) => s.open);
+  const draft = useSettingsStore((s) => s.draft);
+  const opened = useSettingsStore((s) => s.opened);
+  const timezoneValid = useSettingsStore((s) => s.timezoneValid);
+  const saving = useSettingsStore((s) => s.saving);
+  const message = useSettingsStore((s) => s.message);
+  const close = useSettingsStore((s) => s.close);
+  const update = useSettingsStore((s) => s.update);
+  const resetSimilarPhotoSettings = useSettingsStore((s) => s.resetSimilarPhotoSettings);
+  const validateTimezone = useSettingsStore((s) => s.validateTimezone);
+  const addSourceDir = useSettingsStore((s) => s.addSourceDir);
+  const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
+  const save = useSettingsStore((s) => s.save);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+
+  if (!open || draft === null) return null;
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
+  const requestClose = () => {
+    if (dirty) setConfirmDiscard(true);
+    else close();
+  };
+
+  return (
+    <ModalShell
+      title="Settings"
+      onClose={requestClose}
+      closeLabel="Cancel"
+      closeDisabled={saving}
+      widthClass="w-[520px]"
+      footerStart={message}
+      primaryAction={
+        <Button
+          variant="primary"
+          disabled={saving || !dirty || !timezoneValid}
+          onClick={() => void save()}
+        >
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      }
+    >
+      {confirmDiscard ? (
+        <ConfirmDialog
+          title="Discard changes?"
+          message="Settings has unsaved edits. Discard them?"
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          onConfirm={() => {
+            setConfirmDiscard(false);
+            close();
+          }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      ) : null}
+      <SettingsTabList active={activeTab} onChange={setActiveTab} />
+      {activeTab === "library" ? (
+        <div
+          id="settings-panel-library"
+          role="tabpanel"
+          aria-labelledby="settings-tab-library"
+        >
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Directories
+          </h2>
+          {/* The same rows the wizard shows — one shared component, so the two
+              lists cannot drift apart. */}
+          <ul className="mb-3 space-y-1.5">
+            {draft.sourceDirs.map((dir) => (
+              <li key={dir}>
+                <DirectoryRow path={dir} onRemove={() => removeSourceDir(dir)} />
+              </li>
+            ))}
+          </ul>
+          <Button onClick={() => void addSourceDir()}>
+            <Plus size={14} />
+            Add directory
+          </Button>
+
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Timestamps
+          </h2>
+          <Row label="Default timezone" hint="IANA name, e.g. Asia/Tokyo">
+            <TextInput
+              className="w-48"
+              invalid={!timezoneValid}
+              value={draft.defaultTimezone}
+              onChange={(e) => void validateTimezone(e.target.value)}
+            />
+          </Row>
+          <NumberField
+            label="Good range starts (year)"
+            value={draft.goodRangeStartYear}
+            min={1900}
+            onChange={(v) => update({ goodRangeStartYear: v })}
+          />
+
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Similar photos
+          </h2>
+          <NumberField
+            label="Max gap between spares (seconds)"
+            value={draft.similarityMaxGapSeconds}
+            min={1}
+            onChange={(v) => update({ similarityMaxGapSeconds: v })}
+          />
+          <NumberField
+            label="Visual distance limit (0–64)"
+            hint="How different two photos may look and still pair. Lower is stricter; flat graphics crowd together, so a corpus of icons wants a lower number than photos do."
+            value={draft.similarityPhashMaxDistance}
+            min={0}
+            onChange={(v) => update({ similarityPhashMaxDistance: v })}
+          />
+          <NumberField
+            label="Burst visual distance (0–64)"
+            hint="The relaxed limit for photos taken within the burst gap of each other. Real bursts differ more than the strict limit tolerates — a hand shifts, a child turns — and close capture times vouch for them."
+            value={draft.similarityPhashMaxDistanceBurst}
+            min={0}
+            onChange={(v) => update({ similarityPhashMaxDistanceBurst: v })}
+          />
+          <NumberField
+            label="Family width (× the limits above)"
+            hint="How far one family may spread. 1 means every photo must resemble the family's first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family."
+            value={draft.similarityDiameterMultiplier}
+            min={1}
+            onChange={(v) => update({ similarityDiameterMultiplier: Math.min(4, v) })}
+          />
+          <div className="mt-3 flex justify-end">
+            <Button onClick={resetSimilarPhotoSettings}>Reset similar photo settings</Button>
+          </div>
+          <UnlinkedPairsRow />
+        </div>
+      ) : null}
+
+      {activeTab === "media" ? (
+        <div id="settings-panel-media" role="tabpanel" aria-labelledby="settings-tab-media">
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Previews
+          </h2>
+          <NumberField
+            label="Preview long edge (px)"
+            value={draft.previewLongEdgePx}
+            min={480}
+            onChange={(v) => update({ previewLongEdgePx: v })}
+          />
+          <NumberField
+            label="Thumbnail edge (px)"
+            value={draft.thumbnailEdgePx}
+            min={96}
+            onChange={(v) => update({ thumbnailEdgePx: v })}
+          />
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Videos
+          </h2>
+          <NumberField
+            label="Seconds per snapshot frame"
+            value={draft.videoStripSecondsPerFrame}
+            min={1}
+            onChange={(v) => update({ videoStripSecondsPerFrame: v })}
+          />
+          <NumberField
+            label="Snapshot frames (min)"
+            value={draft.videoStripMinFrames}
+            min={1}
+            onChange={(v) => update({ videoStripMinFrames: v })}
+          />
+          <NumberField
+            label="Snapshot frames (max)"
+            value={draft.videoStripMaxFrames}
+            min={1}
+            onChange={(v) => update({ videoStripMaxFrames: v })}
+          />
+          <NumberField
+            label="Scenes grid columns"
+            value={draft.scenesGridColumns}
+            min={1}
+            onChange={(v) => update({ scenesGridColumns: v })}
+          />
+          <NumberField
+            label="Scenes grid rows"
+            value={draft.scenesGridRows}
+            min={1}
+            onChange={(v) => update({ scenesGridRows: v })}
+          />
+        </div>
+      ) : null}
+
+      {activeTab === "appearance" ? (
+        <div
+          id="settings-panel-appearance"
+          role="tabpanel"
+          aria-labelledby="settings-tab-appearance"
+        >
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Appearance
+          </h2>
+          <Row
+            label="UI font"
+            hint="A CSS font-family list, resolved by the webview"
+          >
+            <TextInput
+              className="w-64"
+              value={draft.uiFontFamily}
+              onChange={(e) => update({ uiFontFamily: e.target.value })}
+            />
+          </Row>
+          <Row label="Theme">
+            <Select
+              value={draft.theme}
+              onChange={(e) =>
+                update({ theme: e.target.value as "system" | "light" | "dark" })
+              }
+            >
+              <option value="system">Follow the system</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </Select>
+          </Row>
+
+          <ScreensSection />
+        </div>
+      ) : null}
+
+      {activeTab === "behavior" ? (
+        <div
+          id="settings-panel-behavior"
+          role="tabpanel"
+          aria-labelledby="settings-tab-behavior"
+        >
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Behavior
+          </h2>
+          <CheckField
+            label="Pair companion files (RAW, sidecars)"
+            checked={draft.pairingEnabled}
+            onChange={(v) => update({ pairingEnabled: v })}
+          />
+          <CheckField
+            label="Keep the system awake while indexing"
+            checked={draft.keepAwakeDuringIndexing}
+            onChange={(v) => update({ keepAwakeDuringIndexing: v })}
+          />
+          <CheckField
+            label="Read-back verify every copy out"
+            checked={draft.verifyAfterCopy}
+            onChange={(v) => update({ verifyAfterCopy: v })}
+          />
+          <CheckField
+            label="Confirm before moving items to trash"
+            checked={draft.confirmTrashDelete}
+            onChange={(v) => update({ confirmTrashDelete: v })}
+          />
+          <CheckField
+            label="Score faces for photo ordering (background, needs the face models)"
+            checked={draft.scoreFaces}
+            onChange={(v) => update({ scoreFaces: v })}
+          />
+        </div>
+      ) : null}
+    </ModalShell>
+  );
+}

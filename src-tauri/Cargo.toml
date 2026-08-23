@@ -1,0 +1,103 @@
+[package]
+name = "onecopy"
+version = "0.1.0"
+description = "An inbox-zero dedup handler for photos, videos, and other files"
+authors = ["Yoshinao Inoguchi <yoshinao@inoguchi.com>"]
+license = "MIT"
+repository = "https://github.com/nao7sep/onecopy"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# Warnings are errors, on EVERY platform the app ships to — the gate this table exists for.
+# It lives in the manifest rather than in CI or a RUSTFLAGS export so that one declaration
+# covers `cargo check`, `cargo test`, `cargo build`, the local `npm run check`, and CI alike;
+# a gate only CI enforces is one every developer meets late, and a `cfg(windows)` warning is
+# invisible to a macOS-only gate because that code is never compiled there.
+[lints.rust]
+warnings = "deny"
+# The one exception, and it must be explicit or the gate fails every Windows build forever:
+# the MSVC linker prints an informational note (localized — in Japanese on a ja_JP machine)
+# saying it created an import library. That is the toolchain narrating, not a defect in this
+# code, and nothing here can silence it at the source.
+linker_messages = "allow"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "onecopy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+tauri-plugin-opener = "2.5"
+tauri-plugin-dialog = "2.7"
+# Native message box for a startup halt: the app has no AppHandle yet when the Tauri
+# build fails, so the dialog plugin is unusable at exactly the moment a halt must be
+# reported. rfd is what that plugin uses underneath.
+rfd = "0.17"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# System IANA timezone name, used once to seed config.json's defaultTimezone on
+# first run (the wizard then owns the value).
+iana-time-zone = "0.1"
+sha2 = "0.11"
+hex = "0.4"
+getrandom = "0.4"
+# The index database and the write-through data-backup store. `bundled` compiles
+# SQLite from source into the binary, so no system libsqlite3 is needed and
+# packaging stays churn-free (the lowest-friction SQLite binding for the Rust
+# core, per the data-backup conventions' "built-in or lowest-friction binding"
+# rule).
+rusqlite = { version = "0.40", features = ["bundled"] }
+kamadak-exif = "0.6.1"
+nom-exif = "3.6.2"
+blake3 = "1.8.6"
+rayon = "1.12.0"
+walkdir = "2.5.0"
+chrono = "0.4.45"
+chrono-tz = "0.10.4"
+image = "0.25.10"
+webp = "0.3.1"
+keepawake = "0.6.0"
+# Streaming managed-artifact downloads need separate per-read idleness and a
+# size-scaled whole-operation deadline; the previous ureq path exposed only a
+# whole-body timeout.
+reqwest = { version = "0.13.4", default-features = false, features = ["native-tls"] }
+tokio = { version = "1.53.1", features = ["rt", "time", "net", "macros", "fs", "io-util"] }
+zip = "8.6.0"
+notify = "8.2.0"
+whisper-rs = "0.16.0"
+ort = "2.0.0-rc.13"
+ndarray = "0.17.2"
+libloading = "0.9.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+# O_NOFOLLOW binds destructive reads to regular-file descriptors; on macOS,
+# renamex_np is also the atomic no-clobber publication primitive.
+libc = "0.2"
+
+# Dependencies must not run at opt-level 0 in dev builds: libwebp's C (built by
+# cc, which inherits OPT_LEVEL) and the image crate become ~18x slower there,
+# turning the derive stage into quarter-hour hangs on ordinary asset sets.
+# Optimizing only dependencies keeps the app crate itself fast to recompile.
+[profile.dev.package."*"]
+opt-level = 2
+
+[dev-dependencies]
+# Serializes the tests that share the process-global backup-store singleton
+# (`static STORE` in backup_store.rs); unrelated tests still parallelize.
+serial_test = { version = "4", default-features = false }
+tempfile = "3.24"
+# The ignored live test downloads pinned whisper.cpp tiny GGML and WAV files.
+# Use the platform TLS stack already present in the graph; the test configures
+# that provider explicitly, and default ureq features would add Rustls and
+# compression only for this test.
+ureq = { version = "3.4.0", default-features = false, features = ["native-tls"] }

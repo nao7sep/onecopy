@@ -1,0 +1,7 @@
+# Declares this app's Rust toolchain as a dependency: rustup fetches the pinned
+# channel automatically, and the llvm-tools-preview component ships the
+# version-matched llvm-cov/llvm-profdata so `cargo llvm-cov` works out of the box
+# with no LLVM_COV/LLVM_PROFDATA wiring.
+[toolchain]
+channel = "stable"
+components = ["llvm-tools-preview"]

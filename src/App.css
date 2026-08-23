@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+body {
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Chrome is not selectable text: clicking a button's label must never
+     select the word under the cursor (a webview default no desktop app
+     keeps). Genuinely selectable content — form fields, and anything marked
+     select-text such as the metadata pane's paths — opts back in below. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Native form controls follow the app's own accent rather than the OS blue,
+   so a checkbox does not read as a foreign object dropped into the UI. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--primary);
+}
+
+/* The webview hand on every live clickable (cursor conventions). Tailwind v4's
+   Preflight no longer sets the button pointer, so the app owns it here — and a
+   disabled button shows the plain arrow, never the hand or not-allowed: a dead
+   button must not invite a click. Unlayered, to beat utilities. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+}
+
+/* While an HTML5 drag is in flight the pointer roams over other elements, each
+   with its own cursor — force the closed hand window-wide for the duration
+   (Grid toggles the class in dragstart/dragend). */
+body.dragging * {
+  cursor: grabbing !important;
+}
+
+/* Same principle for a pane-divider drag: the resize cursor holds window-wide
+   until mouseup (App toggles the class). */
+body.col-resizing * {
+  cursor: col-resize !important;
+}
+body.row-resizing * {
+  cursor: row-resize !important;
+}
+
+/* ── Semantic color tokens ────────────────────────────────────────────────
+   Single source of truth for every color in the app. Light values alias
+   Tailwind's default palette; the `.dark` block overrides the same variables,
+   so components never reference raw palette shades. Utilities are generated
+   via `@theme inline` (bg-surface, text-ink-muted, …) and reference var(--…)
+   directly, so the `.dark` overrides take effect at runtime. */
+:root {
+  color-scheme: light;
+
+  /* The UI font, set explicitly (app-chrome-conventions: nothing about
+     typography is left to the toolkit's default, and the engine-hosted
+     default is a system-ui-led stack). Without it the webview picked its own
+     face at its own weight, which is much of what made the app look
+     undesigned. One variable, so a future font setting has one knob to turn.
+     Not themed, so it stays out of the `.dark` block below. */
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  /* Neutral chrome — surfaces & borders */
+  --background: var(--color-slate-50);
+  --surface: var(--color-white);
+  --surface-muted: var(--color-slate-100);
+  --border: var(--color-slate-200);
+  --border-strong: var(--color-slate-300);
+
+  /* Neutral chrome — text ("ink") scale, strongest → faintest */
+  --ink-strong: var(--color-slate-800);
+  --ink: var(--color-slate-700);
+  --ink-muted: var(--color-slate-500);
+  --ink-inverted: var(--color-white);
+
+  /* Primary — actions, focus, selection */
+  --primary: var(--color-sky-600);
+  --primary-hover: var(--color-sky-700);
+  --primary-ring: var(--color-sky-400);
+  --primary-surface: var(--color-sky-100);
+
+  /* Danger — this is a destructive app; the delete surfaces lean on these */
+  --danger: var(--color-red-600);
+  --danger-solid: var(--color-red-600);
+  --danger-solid-hover: var(--color-red-700);
+  --danger-surface: var(--color-red-50);
+
+  /* Warning — attention without alarm (an available update, a stale check) */
+  --warning: var(--color-amber-600);
+  --warning-surface: var(--color-amber-50);
+
+  /* Scrollbar thumb, themed per mode and brightened on hover */
+  --scrollbar-thumb: var(--color-slate-300);
+  --scrollbar-thumb-hover: var(--color-slate-400);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: var(--color-slate-950);
+  --surface: var(--color-slate-900);
+  --surface-muted: var(--color-slate-800);
+  --border: var(--color-slate-700);
+  --border-strong: var(--color-slate-600);
+
+  --ink-strong: var(--color-slate-100);
+  --ink: var(--color-slate-200);
+  --ink-muted: var(--color-slate-400);
+  --ink-inverted: var(--color-slate-950);
+
+  --primary: var(--color-sky-400);
+  --primary-hover: var(--color-sky-300);
+  --primary-ring: var(--color-sky-500);
+  --primary-surface: var(--color-sky-900);
+
+  --danger: var(--color-red-400);
+  --danger-solid: var(--color-red-600);
+  --danger-solid-hover: var(--color-red-500);
+  --danger-surface: var(--color-red-900);
+
+  --warning: var(--color-amber-400);
+  --warning-surface: var(--color-amber-900);
+
+  --scrollbar-thumb: var(--color-slate-600);
+  --scrollbar-thumb-hover: var(--color-slate-500);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-ink-strong: var(--ink-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-inverted: var(--ink-inverted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-ring: var(--primary-ring);
+  --color-primary-surface: var(--primary-surface);
+  --color-danger: var(--danger);
+  --color-danger-solid: var(--danger-solid);
+  --color-danger-solid-hover: var(--danger-solid-hover);
+  --color-danger-surface: var(--danger-surface);
+  --color-warning: var(--warning);
+  --color-warning-surface: var(--warning-surface);
+}
+
+/* App-chrome conventions: thin gutter, inset pill thumb that brightens on
+   hover, transparent track and corner. `scrollbar-color` must accompany
+   `scrollbar-width` — a Chromium webview with only the width set IGNORES the
+   ::-webkit-scrollbar rules and falls back to the UA default bar. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 6px;
+  /* Inset pill: a transparent border clipped out of the fill keeps the thumb
+     off the gutter edges. */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

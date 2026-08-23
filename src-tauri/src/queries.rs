@@ -1,0 +1,906 @@
+//! Read-model queries for the UI. The unit everywhere is the LOGICAL file:
+//! hashed rows collapse by content hash (a logical item's display time is the
+//! earliest resolved time among its copies), and unhashed rows (unique-size
+//! other-files, which by construction have no duplicates) each stand alone.
+//! Companions never appear — they ride with their primary.
+//!
+//! Month bucketing happens in Rust under the given display timezone, not in
+//! SQL's UTC strftime: for a JST user, photos taken before 09:00 on the 1st
+//! belong to the new month, and SQL's UTC month would misfile them.
+
+use std::collections::HashMap;
+
+use chrono::TimeZone;
+use chrono_tz::Tz;
+use rusqlite::{Connection, OptionalExtension};
+use serde::Serialize;
+
+#[derive(Serialize, Debug, PartialEq, Eq, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthSection {
+    /// `"2016-03"`, or `"undated"` for the trailing section.
+    pub month: String,
+    pub count: u64,
+}
+
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionCounts {
+    pub images: Vec<MonthSection>,
+    pub videos: Vec<MonthSection>,
+    pub others: Vec<MonthSection>,
+}
+
+/// Logical items per kind per month (oldest month first, Undated last).
+pub fn section_counts(conn: &Connection, display_tz: Tz) -> Result<SectionCounts, String> {
+    // Hashed logical items: one row per content hash, earliest resolved time.
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.kind, MIN(p.resolved_utc_ms), \
+             SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END) \
+             FROM contents c JOIN paths p ON p.content_hash = c.hash \
+             WHERE p.missing = 0 AND p.companion_of IS NULL \
+             GROUP BY c.hash",
+        )
+        .map_err(|e| e.to_string())?;
+    let hashed: Vec<(String, Option<i64>, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    // Unhashed logical items: unique-size other-files, one row each.
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, resolved_utc_ms FROM paths \
+             WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL \
+               AND kind NOT IN ('image', 'video')",
+        )
+        .map_err(|e| e.to_string())?;
+    let unhashed: Vec<(String, Option<i64>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    let mut images: HashMap<String, u64> = HashMap::new();
+    let mut videos: HashMap<String, u64> = HashMap::new();
+    let mut others: HashMap<String, u64> = HashMap::new();
+
+    let mut bucket = |kind: &str, month: String| {
+        let map = match kind {
+            "image" => &mut images,
+            "video" => &mut videos,
+            _ => &mut others,
+        };
+        *map.entry(month).or_insert(0) += 1;
+    };
+
+    for (kind, min_ms, resolved_count) in hashed {
+        let month = match min_ms {
+            Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
+            _ => "undated".to_string(),
+        };
+        bucket(&kind, month);
+    }
+    for (kind, ms) in unhashed {
+        let month = match ms {
+            Some(ms) => month_key(ms, display_tz),
+            None => "undated".to_string(),
+        };
+        bucket(&kind, month);
+    }
+
+    Ok(SectionCounts {
+        images: sorted_sections(images),
+        videos: sorted_sections(videos),
+        others: sorted_sections(others),
+    })
+}
+
+/// One grid row: a logical file within a section. `hash` is None for
+/// unhashed unique-size other-files (their identity is the representative
+/// path itself).
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionItem {
+    pub hash: Option<String>,
+    pub path_id: i64,
+    pub file_name: String,
+    pub resolved_utc_ms: Option<i64>,
+    pub copy_count: u64,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub has_thumb: bool,
+    pub similar_group_id: Option<i64>,
+    pub sharpness: Option<f64>,
+    pub byte_size: Option<i64>,
+    pub has_companions: bool,
+    pub duration_ms: Option<i64>,
+    /// This binary exists under MORE THAN ONE file name across its copies
+    /// (case-insensitive). Move and copy are blocked for such items — which
+    /// name lands cannot be a surprise — so every list badges them.
+    pub names_differ: bool,
+    /// EVERY live copy's directory, deduped, sorted, display-stripped
+    /// (`for_display`, like copy_paths). The other-files table shows them
+    /// all in one Folders column — copies merge into one row, so a single
+    /// representative folder was an arbitrary MIN and sorting by it was
+    /// meaningless (Phase 33 dropped folder sort with it).
+    pub dir_paths: Vec<String>,
+}
+
+/// Items of one (kind, month) section, oldest first; `month` is the same key
+/// `section_counts` emits (`"2016-03"` or `"undated"`), bucketed under the
+/// same display timezone so the two always agree.
+pub fn section_items(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+) -> Result<Vec<SectionItem>, String> {
+    let mut items: Vec<SectionItem> = Vec::new();
+
+    // hash -> every live copy's directory (deduped, display form). One pass,
+    // one map — GROUP_CONCAT cannot carry DISTINCT with a safe separator, and
+    // directories may contain commas.
+    let mut dirs_by_hash: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut names_by_hash: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content_hash, dir_path, file_name FROM paths \
+                 WHERE content_hash IS NOT NULL AND missing = 0 AND companion_of IS NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok());
+        for (hash, dir, name) in rows {
+            let display = crate::winpath::for_display(&dir).into_owned();
+            let entry = dirs_by_hash.entry(hash.clone()).or_default();
+            if !entry.contains(&display) {
+                entry.push(display);
+            }
+            names_by_hash.entry(hash).or_default().insert(name.to_lowercase());
+        }
+        for dirs in dirs_by_hash.values_mut() {
+            dirs.sort();
+        }
+    }
+    let names_differ = |hash: &str| names_by_hash.get(hash).is_some_and(|n| n.len() > 1);
+
+    if kind == "image" || kind == "video" {
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), \
+                 (SELECT COUNT(*) FROM paths cp \
+                  WHERE cp.content_hash = c.hash AND cp.missing = 0), \
+                 c.width, c.height, \
+                 (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
+                  AND c.derived_at_utc != 'needs-ffmpeg'), \
+                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
+                 (SELECT m.group_id FROM similar_group_members m WHERE m.content_hash = c.hash), \
+                 c.sharpness, c.byte_size, \
+                 EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
+                         WHERE pri.content_hash = c.hash AND comp.missing = 0 \
+                           AND pri.missing = 0), \
+                 c.duration_ms \
+                 FROM contents c JOIN paths p ON p.content_hash = c.hash \
+                 WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
+                 GROUP BY c.hash",
+            )
+            .map_err(|e| e.to_string())?;
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            String,
+            i64,
+            String,
+            Option<i64>,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            bool,
+            i64,
+            Option<i64>,
+            Option<f64>,
+            Option<i64>,
+            bool,
+            Option<i64>,
+        )> = stmt
+            .query_map([kind], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                    r.get(12)?,
+                    r.get(13)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for (
+            hash,
+            path_id,
+            file_name,
+            min_ms,
+            copies,
+            w,
+            h,
+            has_thumb,
+            resolved_count,
+            group,
+            sharpness,
+            byte_size,
+            has_companions,
+            duration_ms,
+        ) in rows
+        {
+            let item_month = match min_ms {
+                Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
+                _ => "undated".to_string(),
+            };
+            if item_month == month {
+                let dir_paths = dirs_by_hash.get(&hash).cloned().unwrap_or_default();
+                let differs = names_differ(&hash);
+                items.push(SectionItem {
+                    hash: Some(hash),
+                    path_id,
+                    file_name,
+                    resolved_utc_ms: min_ms,
+                    copy_count: copies.max(0) as u64,
+                    width: w,
+                    height: h,
+                    has_thumb,
+                    similar_group_id: group,
+                    sharpness,
+                    byte_size,
+                    has_companions,
+                    duration_ms,
+                    names_differ: differs,
+                    dir_paths,
+                });
+            }
+        }
+    } else {
+        // Other files: hashed groups plus unhashed singletons in one pass.
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.content_hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), \
+                 CASE WHEN p.content_hash IS NULL THEN 1 ELSE \
+                   (SELECT COUNT(*) FROM paths cp \
+                    WHERE cp.content_hash = p.content_hash AND cp.missing = 0) END, \
+                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
+                 MIN(p.size), MIN(p.dir_path) \
+                 FROM paths p \
+                 WHERE p.missing = 0 AND p.companion_of IS NULL \
+                   AND p.kind NOT IN ('image', 'video') \
+                 GROUP BY COALESCE(p.content_hash, 'path:' || p.id)",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(Option<String>, i64, String, Option<i64>, i64, i64, Option<i64>, String)> =
+            stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for (hash, path_id, file_name, min_ms, copies, resolved_count, byte_size, dir_path) in
+            rows
+        {
+            let item_month = match min_ms {
+                Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
+                _ => "undated".to_string(),
+            };
+            if item_month == month {
+                let dir_paths = hash
+                    .as_ref()
+                    .and_then(|h| dirs_by_hash.get(h).cloned())
+                    .unwrap_or_else(|| {
+                        vec![crate::winpath::for_display(&dir_path).into_owned()]
+                    });
+                let differs = hash.as_deref().is_some_and(names_differ);
+                items.push(SectionItem {
+                    hash,
+                    path_id,
+                    file_name,
+                    resolved_utc_ms: min_ms,
+                    copy_count: copies.max(0) as u64,
+                    width: None,
+                    height: None,
+                    has_thumb: false,
+                    similar_group_id: None,
+                    sharpness: None,
+                    byte_size,
+                    has_companions: false,
+                    duration_ms: None,
+                    names_differ: differs,
+                    dir_paths,
+                });
+            }
+        }
+    }
+
+    items.sort_by_key(|i| (i.resolved_utc_ms, i.path_id));
+    Ok(items)
+}
+
+/// One comparison-view member: enough to render a preview tile, ORDER the
+/// group best-first, and tell two versions of the same picture apart.
+///
+/// `byte_size` and the dimensions carry that last job. A group is very often
+/// one shot at three qualities — the camera original, an export, and a
+/// downscaled copy for the web — and at slot size they are the same image. The
+/// keep-one-delete-the-rest flow is undecidable without the numbers.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMember {
+    pub hash: String,
+    pub file_name: String,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub byte_size: Option<i64>,
+    pub sharpness: Option<f64>,
+    pub face_score: Option<f64>,
+    pub copy_count: u64,
+    pub has_thumb: bool,
+}
+
+/// Every member of the similar group containing `hash`, best-first: face
+/// score, then sharpness (both advisory machine guesses); empty when the item
+/// is ungrouped. COALESCE makes NULL and scored-faceless order identically,
+/// so a group with no faces — or no face models — orders exactly by
+/// sharpness, as before the models existed.
+pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember>, String> {
+    let group_id: Option<i64> = conn
+        .query_row(
+            "SELECT group_id FROM similar_group_members WHERE content_hash = ?1",
+            [hash],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(group_id) = group_id else {
+        return Ok(Vec::new());
+    };
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.hash, \
+             (SELECT MIN(p.file_name) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
+             c.width, c.height, c.byte_size, c.sharpness, c.face_score, \
+             (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
+             (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
+              AND c.derived_at_utc != 'needs-ffmpeg') \
+             FROM similar_group_members m JOIN contents c ON c.hash = m.content_hash \
+             WHERE m.group_id = ?1 \
+             ORDER BY COALESCE(c.face_score, 0) DESC, c.sharpness DESC NULLS LAST, c.hash",
+        )
+        .map_err(|e| e.to_string())?;
+    let members: Vec<GroupMember> = stmt
+        .query_map([group_id], |r| {
+            Ok(GroupMember {
+                hash: r.get(0)?,
+                file_name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                width: r.get(2)?,
+                height: r.get(3)?,
+                byte_size: r.get(4)?,
+                sharpness: r.get(5)?,
+                face_score: r.get(6)?,
+                copy_count: r.get::<_, i64>(7)?.max(0) as u64,
+                has_thumb: r.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .filter(|m| m.copy_count > 0)
+        .collect();
+    Ok(members)
+}
+
+/// The metadata pane's view of one logical item: content facts plus every
+/// copy path (the copy list doubles as the user's backup health check) and any
+/// companions riding along.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemDetail {
+    pub file_name: String,
+    pub kind: String,
+    pub byte_size: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub resolved_utc_ms: Option<i64>,
+    pub resolved_source: Option<String>,
+    pub date_only: bool,
+    pub copy_paths: Vec<String>,
+    pub companion_paths: Vec<String>,
+    pub strip_frames: Option<i64>,
+}
+
+pub fn item_detail(
+    conn: &Connection,
+    hash: Option<&str>,
+    path_id: Option<i64>,
+) -> Result<ItemDetail, String> {
+    let copies: Vec<(i64, String, String, String, Option<i64>, Option<i64>, Option<String>, i64)> =
+        match (hash, path_id) {
+            (Some(hash), _) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
+                         p.resolved_utc_ms, p.resolved_source, p.date_only \
+                         FROM paths p WHERE p.content_hash = ?1 AND p.missing = 0 \
+                         ORDER BY p.resolved_utc_ms, p.id",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([hash], row_to_copy)
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, Some(id)) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
+                         p.resolved_utc_ms, p.resolved_source, p.date_only \
+                         FROM paths p WHERE p.id = ?1 AND p.missing = 0",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([id], row_to_copy)
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, None) => return Err("item_detail needs a hash or a pathId".to_string()),
+        };
+
+    let Some(first) = copies.first() else {
+        return Err("item not found".to_string());
+    };
+
+    let (width, height, duration_ms, byte_size, strip_frames) = match hash {
+        Some(hash) => conn
+            .query_row(
+                "SELECT width, height, duration_ms, byte_size, strip_frames \
+                 FROM contents WHERE hash = ?1",
+                [hash],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap_or((None, None, None, first.4, None)),
+        None => (None, None, None, first.4, None),
+    };
+
+    let id_list = copies
+        .iter()
+        .map(|c| c.0.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT abs_path FROM paths WHERE companion_of IN ({id_list}) AND missing = 0 \
+             ORDER BY abs_path"
+        ))
+        .map_err(|e| e.to_string())?;
+    let companion_paths: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .map(|path| crate::winpath::for_display(&path).into_owned())
+        .collect();
+    drop(stmt);
+
+    Ok(ItemDetail {
+        file_name: first.2.clone(),
+        kind: first.3.clone(),
+        byte_size,
+        width,
+        height,
+        duration_ms,
+        resolved_utc_ms: first.5,
+        resolved_source: first.6.clone(),
+        date_only: first.7 != 0,
+        // Keep the verbatim spelling in SQLite for filesystem work, but never
+        // make the Windows implementation detail part of a user-facing path.
+        copy_paths: copies
+            .iter()
+            .map(|c| crate::winpath::for_display(&c.1).into_owned())
+            .collect(),
+        companion_paths,
+        strip_frames,
+    })
+}
+
+/// The directories that contributed files to one (kind, month) section — the
+/// scoped-rescan unit: re-stat exactly these, never the whole roots.
+pub fn section_dirs(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+) -> Result<Vec<String>, String> {
+    let kind_filter = if kind == "other" {
+        "p.kind NOT IN ('image', 'video')".to_string()
+    } else {
+        format!("p.kind = '{kind}'")
+    };
+    let (sql, range): (String, Option<(i64, i64)>) = if month == "undated" {
+        (
+            format!(
+                "SELECT DISTINCT p.dir_path FROM paths p \
+                 WHERE p.missing = 0 AND {kind_filter} AND p.resolved_source = 'undated'"
+            ),
+            None,
+        )
+    } else {
+        let (year, mon) = month
+            .split_once('-')
+            .and_then(|(y, m)| Some((y.parse::<i32>().ok()?, m.parse::<u32>().ok()?)))
+            .ok_or_else(|| format!("bad month key: {month}"))?;
+        let start = display_tz
+            .with_ymd_and_hms(year, mon, 1, 0, 0, 0)
+            .earliest()
+            .ok_or_else(|| format!("bad month start: {month}"))?
+            .timestamp_millis();
+        let (next_year, next_mon) = if mon == 12 { (year + 1, 1) } else { (year, mon + 1) };
+        let end = display_tz
+            .with_ymd_and_hms(next_year, next_mon, 1, 0, 0, 0)
+            .earliest()
+            .ok_or_else(|| format!("bad month end: {month}"))?
+            .timestamp_millis();
+        (
+            format!(
+                "SELECT DISTINCT p.dir_path FROM paths p \
+                 WHERE p.missing = 0 AND {kind_filter} \
+                   AND p.resolved_utc_ms >= ?1 AND p.resolved_utc_ms < ?2"
+            ),
+            Some((start, end)),
+        )
+    };
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows: Vec<String> = match range {
+        Some((start, end)) => stmt
+            .query_map(rusqlite::params![start, end], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect(),
+        None => stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect(),
+    };
+    Ok(rows)
+}
+
+/// One issues row for the issues modal. `path` is None when the row has no
+/// file anchor (stored as '' for the (kind, path) identity).
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueRow {
+    pub id: i64,
+    pub path: Option<String>,
+    pub kind: String,
+    pub message: Option<String>,
+    pub first_seen_utc: String,
+    pub last_seen_utc: String,
+}
+
+/// OLDEST first (the developer's call — the longest-standing condition leads),
+/// capped; the count comes with it for the status-bar element.
+pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), String> {
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, path, kind, message, first_seen_utc, last_seen_utc FROM issues \
+             ORDER BY first_seen_utc ASC, id ASC LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<IssueRow> = stmt
+        .query_map([limit], |r| {
+            let path: String = r.get(1)?;
+            // Issue rows are written straight from `abs_path`, and on Windows
+            // EVERY indexed path is stored verbatim (`for_fs` is unconditional
+            // there, not length-gated) — so without this the issues list shows
+            // `\\?\C:\…` for every file, not just deep ones. The stored
+            // spelling stays verbatim: issue identity is (kind, path), and
+            // `clear_issues` matches on what the pipeline wrote.
+            Ok(IssueRow {
+                id: r.get(0)?,
+                path: if path.is_empty() {
+                    None
+                } else {
+                    Some(crate::winpath::for_display(&path).into_owned())
+                },
+                kind: r.get(2)?,
+                message: r.get(3)?,
+                first_seen_utc: r.get(4)?,
+                last_seen_utc: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok((total.max(0) as u64, rows))
+}
+
+#[allow(clippy::type_complexity)]
+fn row_to_copy(
+    r: &rusqlite::Row,
+) -> rusqlite::Result<(i64, String, String, String, Option<i64>, Option<i64>, Option<String>, i64)> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+    ))
+}
+
+fn month_key(unix_ms: i64, tz: Tz) -> String {
+    use chrono::Datelike;
+    match tz.timestamp_millis_opt(unix_ms) {
+        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+            format!("{:04}-{:02}", dt.year(), dt.month())
+        }
+        chrono::LocalResult::None => "undated".to_string(),
+    }
+}
+
+/// Oldest month first; Undated last.
+fn sorted_sections(map: HashMap<String, u64>) -> Vec<MonthSection> {
+    let mut sections: Vec<MonthSection> = map
+        .into_iter()
+        .map(|(month, count)| MonthSection { month, count })
+        .collect();
+    sections.sort_by(|a, b| match (a.month.as_str(), b.month.as_str()) {
+        ("undated", "undated") => std::cmp::Ordering::Equal,
+        ("undated", _) => std::cmp::Ordering::Greater,
+        (_, "undated") => std::cmp::Ordering::Less,
+        (a, b) => a.cmp(b),
+    });
+    sections
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index_store;
+
+    fn seeded() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-queries-")
+            .tempdir()
+            .unwrap();
+        let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        (dir, conn)
+    }
+
+    fn utc_ms(y: i32, mo: u32, d: u32, h: u32) -> i64 {
+        chrono::NaiveDate::from_ymd_opt(y, mo, d)
+            .unwrap()
+            .and_hms_opt(h, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis()
+    }
+
+    #[test]
+    fn copies_collapse_to_one_logical_item_with_the_earliest_time() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(&format!(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 1, 'image');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/a/x.jpg', '/a', 'x.jpg', 'image', 'h1', {t1}, 'metadata');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/b/x.jpg', '/b', 'x.jpg', 'image', 'h1', {t2}, 'filesystem');",
+            t1 = utc_ms(2016, 3, 5, 3),
+            t2 = utc_ms(2020, 1, 1, 0),
+        ))
+        .unwrap();
+
+        let counts = section_counts(&conn, chrono_tz::UTC).unwrap();
+        assert_eq!(
+            counts.images,
+            vec![MonthSection {
+                month: "2016-03".into(),
+                count: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn display_timezone_decides_the_month_boundary() {
+        let (_d, conn) = seeded();
+        // 2016-03-31T22:00:00Z is already April 1st in JST (+09:00).
+        conn.execute_batch(&format!(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 1, 'image');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/a/y.jpg', '/a', 'y.jpg', 'image', 'h1', {t}, 'metadata');",
+            t = utc_ms(2016, 3, 31, 22),
+        ))
+        .unwrap();
+
+        let utc = section_counts(&conn, chrono_tz::UTC).unwrap();
+        assert_eq!(utc.images[0].month, "2016-03");
+        let jst = section_counts(&conn, chrono_tz::Asia::Tokyo).unwrap();
+        assert_eq!(jst.images[0].month, "2016-04");
+    }
+
+    #[test]
+    fn unhashed_other_files_count_individually_and_companions_never_appear() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(&format!(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, resolved_utc_ms, resolved_source)
+               VALUES ('/a/doc.pdf', '/a', 'doc.pdf', 'other', {t}, 'filesystem');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, resolved_utc_ms, resolved_source)
+               VALUES ('/a/undatable.bin', '/a', 'undatable.bin', 'other', NULL, 'undated');
+             INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 1, 'video');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/a/clip.mp4', '/a', 'clip.mp4', 'video', 'v1', {t}, 'metadata');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, companion_of, resolved_utc_ms, resolved_source)
+               VALUES ('/a/clip.thm', '/a', 'clip.thm', 'companion', 3, {t}, 'filesystem');",
+            t = utc_ms(2019, 7, 10, 12),
+        ))
+        .unwrap();
+
+        let counts = section_counts(&conn, chrono_tz::UTC).unwrap();
+        assert_eq!(counts.videos, vec![MonthSection { month: "2019-07".into(), count: 1 }]);
+        assert_eq!(
+            counts.others,
+            vec![
+                MonthSection { month: "2019-07".into(), count: 1 },
+                MonthSection { month: "undated".into(), count: 1 },
+            ]
+        );
+        assert!(counts.images.is_empty());
+    }
+
+    #[test]
+    fn section_items_filters_by_month_and_reports_copies_and_thumbs() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(&format!(
+            "INSERT INTO contents (hash, byte_size, kind, width, height, derived_at_utc)
+               VALUES ('march', 1, 'image', 4000, 3000, '2026-08-08T00:00:00.000Z');
+             INSERT INTO contents (hash, byte_size, kind) VALUES ('april', 1, 'image');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/a/m.jpg', '/a', 'm.jpg', 'image', 'march', {mar}, 'metadata');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/b/m.jpg', '/b', 'm.jpg', 'image', 'march', {mar2}, 'filesystem');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/a/a.jpg', '/a', 'a.jpg', 'image', 'april', {apr}, 'metadata');",
+            mar = utc_ms(2016, 3, 5, 3),
+            mar2 = utc_ms(2016, 3, 6, 3),
+            apr = utc_ms(2016, 4, 2, 3),
+        ))
+        .unwrap();
+
+        let march = section_items(&conn, "image", "2016-03", chrono_tz::UTC).unwrap();
+        assert_eq!(march.len(), 1);
+        assert_eq!(march[0].hash.as_deref(), Some("march"));
+        assert_eq!(march[0].copy_count, 2);
+        assert!(march[0].has_thumb);
+        assert_eq!(march[0].resolved_utc_ms, Some(utc_ms(2016, 3, 5, 3)));
+
+        let april = section_items(&conn, "image", "2016-04", chrono_tz::UTC).unwrap();
+        assert_eq!(april.len(), 1);
+        assert!(!april[0].has_thumb);
+
+        assert!(section_items(&conn, "image", "2016-05", chrono_tz::UTC)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn item_detail_lists_copies_and_companions() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(&format!(
+            "INSERT INTO contents (hash, byte_size, kind, width, height) VALUES ('h1', 42, 'image', 4000, 3000);
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/a/x.jpg', '/a', 'x.jpg', 'image', 'h1', {t}, 'metadata');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+               VALUES ('/b/x.jpg', '/b', 'x.jpg', 'image', 'h1', {t}, 'metadata');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, companion_of, resolved_utc_ms, resolved_source)
+               VALUES ('/a/x.arw', '/a', 'x.arw', 'companion', 1, {t}, 'filesystem');",
+            t = utc_ms(2016, 3, 5, 3),
+        ))
+        .unwrap();
+
+        let detail = item_detail(&conn, Some("h1"), None).unwrap();
+        assert_eq!(detail.file_name, "x.jpg");
+        assert_eq!(detail.byte_size, Some(42));
+        assert_eq!(detail.width, Some(4000));
+        assert_eq!(detail.copy_paths, vec!["/a/x.jpg", "/b/x.jpg"]);
+        assert_eq!(detail.companion_paths, vec!["/a/x.arw"]);
+        assert_eq!(detail.resolved_source.as_deref(), Some("metadata"));
+    }
+
+    #[test]
+    fn item_detail_hides_windows_verbatim_prefixes() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 42, 'image');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+             VALUES (?1, ?2, 'x.jpg', 'image', 'h1')",
+            [r"\\?\C:\photos\x.jpg", r"\\?\C:\photos"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, companion_of) \
+             VALUES (?1, ?2, 'x.xmp', 'companion', 1)",
+            [r"\\?\C:\photos\x.xmp", r"\\?\C:\photos"],
+        )
+        .unwrap();
+
+        let detail = item_detail(&conn, Some("h1"), None).unwrap();
+        assert_eq!(detail.copy_paths, vec![r"C:\photos\x.jpg"]);
+        assert_eq!(detail.companion_paths, vec![r"C:\photos\x.xmp"]);
+    }
+
+    #[test]
+    fn undated_sorts_last_and_months_sort_oldest_first() {
+        let (_d, conn) = seeded();
+        conn.execute_batch(&format!(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, resolved_utc_ms, resolved_source)
+               VALUES ('/a/new.bin', '/a', 'new.bin', 'other', {new}, 'filesystem');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, resolved_utc_ms, resolved_source)
+               VALUES ('/a/old.bin', '/a', 'old.bin', 'other', {old}, 'filesystem');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, resolved_utc_ms, resolved_source)
+               VALUES ('/a/none.bin', '/a', 'none.bin', 'other', NULL, 'undated');",
+            new = utc_ms(2024, 12, 1, 0),
+            old = utc_ms(2009, 1, 1, 0),
+        ))
+        .unwrap();
+
+        let counts = section_counts(&conn, chrono_tz::UTC).unwrap();
+        let months: Vec<&str> = counts.others.iter().map(|s| s.month.as_str()).collect();
+        assert_eq!(months, vec!["2009-01", "2024-12", "undated"]);
+    }
+}

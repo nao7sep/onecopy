@@ -1,0 +1,40 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the app windows (main, preview, comparison)",
+  "windows": [
+    "main",
+    "preview",
+    "comparison-*",
+    "identify-*"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "opener:allow-reveal-item-in-dir",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "core:window:allow-destroy",
+    "core:window:allow-close",
+    "core:window:allow-set-title",
+    "core:window:allow-set-theme",
+    "core:window:allow-set-min-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-size",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-outer-position",
+    "core:window:allow-inner-size",
+    "core:window:allow-is-maximized",
+    "core:window:allow-maximize",
+    "core:window:allow-available-monitors",
+    "core:window:allow-current-monitor",
+    "core:webview:allow-create-webview-window",
+    "core:webview:allow-set-webview-zoom"
+  ]
+}
