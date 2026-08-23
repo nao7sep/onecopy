@@ -446,7 +446,11 @@ pub fn run_full_scan(
 /// forever while whole directories remain unread.
 pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
     for root in roots {
-        let fs_root = crate::winpath::for_fs(Path::new(root));
+        // `walk_root` checkpoints the settled root, not the literal configured
+        // spelling. Resolve through that same authority so case and symlink aliases
+        // find the completed row; the config string itself remains untouched.
+        let settled = settled_root(conn, Path::new(root))?;
+        let fs_root = crate::winpath::for_fs(&settled);
         let complete: Option<bool> = conn
             .query_row(
                 "SELECT last_completed_at_utc IS NOT NULL AND dirty = 0 \

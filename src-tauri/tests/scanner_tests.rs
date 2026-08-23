@@ -518,7 +518,10 @@ fn replacing_a_provisionally_identified_file_resets_its_content_facts() {
 fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
     let f = fixture("walk-owed");
     let configured_root = f.root.to_string_lossy().to_string();
-    let recorded_root = onecopy_lib::winpath::for_fs(&f.root)
+    // Match run_full_scan: the walk and its checkpoint both use the settled
+    // physical-root spelling, while configuration retains the literal bytes.
+    let settled = settled_root(&f.conn, &f.root).unwrap();
+    let recorded_root = onecopy_lib::winpath::for_fs(&settled)
         .to_string_lossy()
         .to_string();
     let roots = vec![configured_root];
@@ -529,7 +532,7 @@ fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
     for name in ["a.jpg", "b.jpg", "c.jpg"] {
         std::fs::write(f.root.join(name), name.as_bytes()).unwrap();
     }
-    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    walk_root(&f.conn, &settled, &lists()).unwrap();
     assert!(
         !walk_owed(&f.conn, &roots).unwrap(),
         "a completed walk settles the debt"
@@ -560,10 +563,52 @@ fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
     );
 
     // Only a completed walk clears it.
-    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    walk_root(&f.conn, &settled, &lists()).unwrap();
     assert!(
         !walk_owed(&f.conn, &roots).unwrap(),
         "re-walking settles it again"
+    );
+}
+
+#[test]
+fn completed_walk_checkpoint_uses_the_settled_case_identity() {
+    let f = fixture("walk-owed-case");
+    let configured = std::fs::canonicalize(&f.root).unwrap();
+    let recorded = onecopy_lib::winpath::for_fs(std::path::Path::new(
+        &configured.to_string_lossy().to_uppercase(),
+    ))
+    .to_string_lossy()
+    .to_string();
+    f.conn
+        .execute(
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, 'done', 0)",
+            rusqlite::params![recorded],
+        )
+        .unwrap();
+
+    let roots = vec![configured.to_string_lossy().to_string()];
+    assert!(
+        !walk_owed(&f.conn, &roots).unwrap(),
+        "the previously settled case spelling owns the completion checkpoint"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn completed_walk_checkpoint_uses_the_settled_symlink_identity() {
+    let f = fixture("walk-owed-symlink");
+    let photos = f.root.join("Photos");
+    let alias = f.root.join("ConfiguredAlias");
+    std::fs::create_dir_all(&photos).unwrap();
+    std::os::unix::fs::symlink(&photos, &alias).unwrap();
+
+    let settled = settled_root(&f.conn, &alias).unwrap();
+    walk_root(&f.conn, &settled, &lists()).unwrap();
+
+    let roots = vec![alias.to_string_lossy().to_string()];
+    assert!(
+        !walk_owed(&f.conn, &roots).unwrap(),
+        "the configured alias resolves to the completed physical-root checkpoint"
     );
 }
 
