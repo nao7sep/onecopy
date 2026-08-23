@@ -4,7 +4,9 @@
 //! cleanup and commit verification bind to the filesystem identity returned by
 //! that handle so an external replacement is never mistaken for ours.
 
-use std::fs::{File, Metadata, OpenOptions};
+#[cfg(not(windows))]
+use std::fs::Metadata;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
 
@@ -22,15 +24,38 @@ pub struct FileIdentity {
 
 impl FileIdentity {
     pub fn from_file(file: &File) -> io::Result<Self> {
-        Self::from_metadata(&file.metadata()?)
+        #[cfg(windows)]
+        {
+            return from_windows_file(file);
+        }
+        #[cfg(not(windows))]
+        {
+            Self::from_metadata(&file.metadata()?)
+        }
     }
 
     pub fn from_path(path: &Path) -> io::Result<Self> {
-        // Do not follow a replacement symlink: the directory entry itself is
-        // not the regular file this operation created.
-        Self::from_metadata(&std::fs::symlink_metadata(path)?)
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            let fs_path = crate::winpath::for_fs(path);
+            let mut options = OpenOptions::new();
+            options.read(true).custom_flags(
+                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
+                    | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+            );
+            return Self::from_file(&options.open(fs_path.as_ref())?);
+        }
+        #[cfg(not(windows))]
+        {
+            // Do not follow a replacement symlink: the directory entry itself is
+            // not the regular file this operation created.
+            Self::from_metadata(&std::fs::symlink_metadata(path)?)
+        }
     }
 
+    #[cfg(not(windows))]
     fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
         #[cfg(unix)]
         {
@@ -39,17 +64,6 @@ impl FileIdentity {
                 device: metadata.dev(),
                 inode: metadata.ino(),
             })
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            let volume = metadata.volume_serial_number().ok_or_else(|| {
-                io::Error::other("filesystem did not report a volume serial number")
-            })?;
-            let index = metadata
-                .file_index()
-                .ok_or_else(|| io::Error::other("filesystem did not report a file index"))?;
-            Ok(Self { volume, index })
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -60,6 +74,32 @@ impl FileIdentity {
             ))
         }
     }
+}
+
+#[cfg(windows)]
+fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: `file` owns a valid handle for this call, and `information` points
+    // to writable storage for exactly the structure Windows initializes.
+    let succeeded =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a nonzero result guarantees the structure was initialized.
+    let information = unsafe { information.assume_init() };
+    let index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    Ok(FileIdentity {
+        volume: information.dwVolumeSerialNumber,
+        index,
+    })
 }
 
 /// Opens one existing regular file without following a final symlink/reparse
@@ -76,9 +116,7 @@ pub fn open_regular_nofollow(path: &Path) -> io::Result<(File, FileIdentity)> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(
-            windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
-        );
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options.open(fs_path.as_ref())?;
     let metadata = file.metadata()?;
@@ -88,7 +126,7 @@ pub fn open_regular_nofollow(path: &Path) -> io::Result<(File, FileIdentity)> {
             format!("not a no-follow regular file: {}", path.display()),
         ));
     }
-    let identity = FileIdentity::from_metadata(&metadata)?;
+    let identity = FileIdentity::from_file(&file)?;
     if !path_names(path, identity) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,

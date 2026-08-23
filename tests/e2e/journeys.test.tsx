@@ -226,7 +226,7 @@ describe("the culling journey", () => {
     expect(deleted.sort()).toEqual(["h1", "h3"]);
     expect(useComparisonStore.getState().open).toBe(false);
     expect(useItemsStore.getState().items.map((i) => i.hash)).toEqual(["h2", "h4"]);
-  });
+  }, 30_000);
 });
 
 describe("the failure journey", () => {

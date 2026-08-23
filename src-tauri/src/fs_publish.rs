@@ -1,9 +1,10 @@
 //! Atomic no-clobber publication for a completed same-volume file.
 //!
 //! macOS and Windows are OneCopy's shipped platforms. macOS exposes
-//! `renamex_np(RENAME_EXCL)`; Windows rename is already no-replace. Both move
-//! the exact staged file into the final directory entry in one atomic commit,
-//! so a crash cannot expose partial bytes and an existing winner is untouched.
+//! `renamex_np(RENAME_EXCL)`; Windows exposes `MoveFileExW` without
+//! `MOVEFILE_REPLACE_EXISTING`. Both move the exact staged file into the final
+//! directory entry in one atomic commit, so a crash cannot expose partial bytes
+//! and an existing winner is untouched.
 
 use std::io;
 use std::path::Path;
@@ -42,12 +43,28 @@ pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
-    // Unlike Unix rename(2), MoveFileEx without REPLACE_EXISTING fails when
-    // the destination is occupied. std::fs::rename uses that no-clobber form.
-    std::fs::rename(
-        crate::winpath::for_fs(source).as_ref(),
-        crate::winpath::for_fs(target).as_ref(),
-    )
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    let source: Vec<u16> = crate::winpath::for_fs(source)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let target: Vec<u16> = crate::winpath::for_fs(target)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: both path buffers are NUL-terminated and remain alive for the
+    // call. Zero flags deliberately omit MOVEFILE_REPLACE_EXISTING, so an
+    // exact-boundary winner is preserved instead of overwritten.
+    let succeeded = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) };
+    if succeeded == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]

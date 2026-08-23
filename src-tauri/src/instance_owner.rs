@@ -4,20 +4,22 @@
 //! permits two simultaneous cold starts to both pass its initial probe; the bind
 //! loser logs and continues. OneCopy cannot tolerate that over its shared index
 //! and destructive filesystem commands. This small app-owned plug-in instead
-//! takes an OS file lock before any stateful setup. The owner publishes a
-//! loopback activation endpoint in the locked file; a loser can therefore focus
-//! the established owner and exit before any shared store opens. The kernel
-//! releases both lock and endpoint on a crash.
+//! takes an OS file lock before any stateful setup. While holding that lock, the
+//! owner publishes a loopback activation endpoint in a retry-safe sidecar; a
+//! loser can therefore focus the established owner and exit before any shared
+//! store opens. The kernel releases the authoritative lock on a crash, and the
+//! next owner clears any stale endpoint before publishing its own.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tauri::{Manager, Runtime};
 
 const LOCK_FILE_NAME: &str = "instance.lock";
+const ENDPOINT_FILE_NAME: &str = "instance.endpoint";
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(2);
 const RETRY_DELAY: Duration = Duration::from_millis(20);
 
@@ -30,12 +32,13 @@ struct Owner {
 
 enum Claim {
     Primary { lock: File, listener: TcpListener },
-    Secondary { lock_file: File },
+    Secondary { endpoint_path: PathBuf },
 }
 
 fn claim(root: &Path) -> Result<Claim, String> {
     let path = root.join(LOCK_FILE_NAME);
-    let mut lock_file = OpenOptions::new()
+    let endpoint_path = root.join(ENDPOINT_FILE_NAME);
+    let lock_file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
@@ -49,6 +52,15 @@ fn claim(root: &Path) -> Result<Claim, String> {
 
     match lock_file.try_lock() {
         Ok(()) => {
+            // Truncate stale endpoint bytes immediately after winning the lock,
+            // before another launch can observe ownership and consume a port
+            // left by the previous process generation.
+            let mut endpoint_file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&endpoint_path)
+                .map_err(|e| e.to_string())?;
             let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
                 .map_err(|e| format!("could not open process activation endpoint: {e}"))?;
             listener
@@ -58,18 +70,18 @@ fn claim(root: &Path) -> Result<Claim, String> {
                 .local_addr()
                 .map_err(|e| format!("could not inspect process activation endpoint: {e}"))?
                 .port();
-            lock_file.set_len(0).map_err(|e| e.to_string())?;
-            lock_file
-                .seek(SeekFrom::Start(0))
-                .map_err(|e| e.to_string())?;
-            write!(lock_file, "{port}\n").map_err(|e| e.to_string())?;
-            lock_file.sync_all().map_err(|e| e.to_string())?;
+            // Windows byte-range locks are mandatory, so a secondary cannot
+            // read endpoint bytes from the locked handle as it can on macOS.
+            // Publish a retry-safe sidecar while this process owns the lock;
+            // the lock remains the only process-ownership authority.
+            write!(endpoint_file, "{port}\n").map_err(|e| e.to_string())?;
+            endpoint_file.sync_all().map_err(|e| e.to_string())?;
             Ok(Claim::Primary {
                 lock: lock_file,
                 listener,
             })
         }
-        Err(TryLockError::WouldBlock) => Ok(Claim::Secondary { lock_file }),
+        Err(TryLockError::WouldBlock) => Ok(Claim::Secondary { endpoint_path }),
         Err(TryLockError::Error(err)) => Err(format!(
             "could not acquire process ownership file {}: {err}",
             path.display()
@@ -77,20 +89,15 @@ fn claim(root: &Path) -> Result<Claim, String> {
     }
 }
 
-fn notify_primary(mut lock_file: File) -> Result<(), String> {
+fn notify_primary(endpoint_path: &Path) -> Result<(), String> {
     let started = Instant::now();
     loop {
-        let mut text = String::new();
-        lock_file
-            .seek(SeekFrom::Start(0))
-            .map_err(|e| e.to_string())?;
-        lock_file
-            .read_to_string(&mut text)
-            .map_err(|e| e.to_string())?;
-        if let Ok(port) = text.trim().parse::<u16>() {
-            if let Ok(mut stream) = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)) {
-                stream.write_all(b"activate").map_err(|e| e.to_string())?;
-                return Ok(());
+        if let Ok(text) = std::fs::read_to_string(endpoint_path) {
+            if let Ok(port) = text.trim().parse::<u16>() {
+                if let Ok(mut stream) = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)) {
+                    stream.write_all(b"activate").map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
             }
         }
         if started.elapsed() >= NOTIFY_TIMEOUT {
@@ -130,8 +137,8 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                     app.manage(Owner { _lock: lock });
                     Ok(())
                 }
-                Claim::Secondary { lock_file } => {
-                    let _ = notify_primary(lock_file);
+                Claim::Secondary { endpoint_path } => {
+                    let _ = notify_primary(&endpoint_path);
                     std::process::exit(0);
                 }
             }
@@ -203,7 +210,7 @@ mod tests {
             panic!("first claim must own the root");
         };
         listener.set_nonblocking(false).unwrap();
-        let Claim::Secondary { lock_file } = claim(dir.path()).unwrap() else {
+        let Claim::Secondary { endpoint_path } = claim(dir.path()).unwrap() else {
             panic!("second claim must be secondary");
         };
 
@@ -213,7 +220,7 @@ mod tests {
             stream.read_to_string(&mut request).unwrap();
             request
         });
-        notify_primary(lock_file).unwrap();
+        notify_primary(&endpoint_path).unwrap();
         assert_eq!(receiver.join().unwrap(), "activate");
     }
 }

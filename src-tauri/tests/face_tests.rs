@@ -156,10 +156,19 @@ fn live_face_models_find_nothing_in_a_face_free_image() {
     use sha2::Digest;
 
     let dir = tempfile::Builder::new().prefix("onecopy-face-live-").tempdir().unwrap();
+    let agent = ureq::config::Config::builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
     let fetch = |id: &str, name: &str| {
         let pin = spec_of(id).unwrap().pinned.as_ref().unwrap();
         let path = dir.path().join(name);
-        let mut response = ureq::get(pin.url).call().expect("download");
+        let mut response = agent.get(pin.url).call().expect("download");
         let mut file = std::fs::File::create(&path).unwrap();
         std::io::copy(&mut response.body_mut().as_reader(), &mut file).unwrap();
         let mut hasher = sha2::Sha256::new();
