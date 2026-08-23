@@ -22,13 +22,15 @@ permissions:
   contents: write
 
 jobs:
-  # Gate: `npm run typecheck`, the frontend test suite (vitest — includes the
-  # version-consistency check across the four manifests, tests/version.test.ts),
-  # and `cargo test` for the Rust core. Platform-independent, so it runs once and
-  # both build jobs depend on it — a failure blocks the release before anything
-  # is built.
+  # Gate on both supported platforms: `npm run typecheck`, the frontend test
+  # suite (vitest — including tests/version.test.ts), and `cargo test` for the
+  # Rust core. Both build jobs depend on every matrix leg.
   test:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
