@@ -28,8 +28,8 @@ APP="$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)"
 [ -f "$DMG" ] && [ -d "$APP" ] || { echo "tauri build did not produce the expected .dmg/.app" >&2; exit 1; }
 
 cp "$DMG" "artifacts/$APP_NAME-$VERSION.dmg"
-# Portable: a zip of the .app (ditto preserves symlinks + the ad-hoc signature).
-ditto -c -k --keepParent "$APP" "artifacts/$APP_NAME-$VERSION-mac.zip"
+# Portable: a zip of the .app without AppleDouble resource-fork sidecars.
+ditto -c -k --norsrc --keepParent "$APP" "artifacts/$APP_NAME-$VERSION-mac.zip"
 
 echo "macOS artifacts in artifacts/:"
 ls -la artifacts/
