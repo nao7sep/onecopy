@@ -510,7 +510,7 @@ export default function SettingsModal() {
             Behavior
           </h2>
           <CheckField
-            label="Pair companion files (RAW, sidecars)"
+            label="Pair companion files (Live Photos, RAW, sidecars)"
             checked={draft.pairingEnabled}
             onChange={(v) => update({ pairingEnabled: v })}
           />

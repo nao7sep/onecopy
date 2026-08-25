@@ -47,6 +47,17 @@ fn cache_is_always_managed_under_the_app_root_and_legacy_external_data_is_untouc
 }
 
 #[test]
+fn scanner_projects_the_pairing_switch() {
+    let root = temp_dir("pairing-switch");
+    let disabled = serde_json::json!({ "pairingEnabled": false });
+    let enabled = serde_json::json!({ "pairingEnabled": true });
+
+    assert!(!onecopy_lib::scanner::settings_from_config(Some(&disabled), &root, 0).pairing_enabled);
+    assert!(onecopy_lib::scanner::settings_from_config(Some(&enabled), &root, 0).pairing_enabled);
+    assert!(onecopy_lib::scanner::settings_from_config(None, &root, 0).pairing_enabled);
+}
+
+#[test]
 #[serial(backup_store)]
 fn patch_merges_shallow_and_survives_interleaved_writers() {
     let dir = temp_dir("patch");

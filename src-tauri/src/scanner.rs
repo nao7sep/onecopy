@@ -73,6 +73,7 @@ pub struct ScanSettings {
     pub strip: crate::video::StripConfig,
     pub thumb_edge: u32,
     pub preview_long_edge: u32,
+    pub pairing_enabled: bool,
     pub keep_awake: bool,
     pub cache_root: std::path::PathBuf,
     /// The managed ffmpeg when present on disk; None leaves videos underived.
@@ -168,6 +169,9 @@ pub fn settings_from_config(
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
         preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
+        pairing_enabled: get("pairingEnabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.pairing_enabled),
         keep_awake: get("keepAwakeDuringIndexing")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.keep_awake_during_indexing),
@@ -479,6 +483,18 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     )? {
         return Ok(true);
     }
+    // A build that learns a new metadata fact must backfill an already-complete
+    // pre-release index once. The NULL raw row is still evidence: it means the
+    // file was checked and carries no Live Photo identifier.
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM paths p \
+         WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
+           AND NOT EXISTS (SELECT 1 FROM evidence e \
+                           WHERE e.path_id = p.id \
+                             AND e.source = 'live-photo-identifier'))",
+    )? {
+        return Ok(true);
+    }
     // Every contents probe requires a LIVE path. A row whose only copies are
     // missing can never be derived, so reporting it as pending fires a no-op
     // resume scan on every launch — and that scan rebuilds all similarity
@@ -549,7 +565,7 @@ pub fn run_pipeline_tail(
         format!("{} resolved, {} undated", resolve_stats.resolved, resolve_stats.undated),
     );
 
-    let pair_stats = pair_companions(conn)?;
+    let pair_stats = pair_companions(conn, settings.pairing_enabled)?;
     summary.paired = pair_stats.paired;
     progress("pair", format!("{} companions", pair_stats.paired));
 
@@ -1220,6 +1236,14 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
                 )
                 .map_err(|e| e.to_string())?;
             }
+            if kind == "image" || kind == "video" {
+                conn.execute(
+                    "INSERT INTO evidence (path_id, source, raw, offset_known) \
+                     VALUES (?1, 'live-photo-identifier', ?2, 0)",
+                    params![id, meta.live_photo_identifier.as_deref()],
+                )
+                .map_err(|e| e.to_string())?;
+            }
         }
 
         if let Some(token) = timestamps::from_filename(&file_name) {
@@ -1239,6 +1263,44 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
         conn.execute(
             "UPDATE paths SET indexed_at_utc = ?2 WHERE id = ?1",
             params![id, logging::now_iso_millis()],
+        )
+        .map_err(|e| e.to_string())?;
+        stats.extracted += 1;
+    }
+
+    // Existing pre-release indexes already have `indexed_at_utc` checkpoints
+    // but no Live Photo evidence. Backfill exactly those media rows once into
+    // the existing evidence store; a NULL raw value is the durable "checked,
+    // absent" result, so later scans do not reopen every family photo.
+    let pending_live_photo: Vec<(i64, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id, p.abs_path, p.kind FROM paths p \
+                 WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
+                   AND NOT EXISTS (SELECT 1 FROM evidence e \
+                                   WHERE e.path_id = p.id \
+                                     AND e.source = 'live-photo-identifier')",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        rows
+    };
+    for (id, abs, kind) in pending_live_photo {
+        check_cancel()?;
+        let path = Path::new(&abs);
+        let identifier = match kind.as_str() {
+            "image" => crate::live_photo::still_content_identifier(path),
+            "video" => crate::live_photo::quicktime_content_identifier(path),
+            _ => None,
+        };
+        conn.execute(
+            "INSERT INTO evidence (path_id, source, raw, offset_known) \
+             VALUES (?1, 'live-photo-identifier', ?2, 0)",
+            params![id, identifier],
         )
         .map_err(|e| e.to_string())?;
         stats.extracted += 1;
@@ -1346,29 +1408,19 @@ pub struct PairStats {
     pub paired: u64,
 }
 
-/// Same-directory pairing: a companion attaches to the primary (image or
-/// video) sharing its lowercased stem in the same directory — never across
-/// directories, which is what makes rotating-name false links (GoPro)
-/// structurally impossible. Deterministic: the lowest-id primary wins if
-/// several share a stem. A companion with no primary stays unattached and
-/// behaves as an other-file.
-pub fn pair_companions(conn: &Connection) -> Result<PairStats, String> {
-    // Unpair first. `companion_of` was previously assigned once and never
-    // reconsidered, so moving a JPEG out of the folder in Finder — the app's
-    // own supported out-of-app-changes path — left the RAW pointing at a row
-    // marked missing. Every read model filters `companion_of IS NULL`, so that
-    // RAW then appeared in NO section, no count and no issue row, and neither
-    // a delete nor a move-out of the new JPEG picked it up. A full rescan did
-    // not fix it, because nothing ever cleared the column.
-    conn.execute(
-        "UPDATE paths SET companion_of = NULL \
-         WHERE companion_of IS NOT NULL \
-           AND NOT EXISTS (SELECT 1 FROM paths pri \
-                           WHERE pri.id = paths.companion_of AND pri.missing = 0)",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    let updated = conn
+/// Rebuilds every enabled companion relationship. RAW/sidecar companions use
+/// same-directory + lowercased stem. Live Photo MOVs use same-directory +
+/// exact Apple content identifier and may have unrelated stems. The lowest-id
+/// primary wins any ambiguous match. Disabled pairing leaves every row
+/// independent.
+pub fn pair_companions(conn: &Connection, enabled: bool) -> Result<PairStats, String> {
+    conn.execute("UPDATE paths SET companion_of = NULL WHERE companion_of IS NOT NULL", [])
+        .map_err(|e| e.to_string())?;
+    if !enabled {
+        return Ok(PairStats::default());
+    }
+
+    let mut updated = conn
         .execute(
             "UPDATE paths SET companion_of = (
                 SELECT p.id FROM paths p
@@ -1380,6 +1432,38 @@ pub fn pair_companions(conn: &Connection) -> Result<PairStats, String> {
                 SELECT 1 FROM paths p
                 WHERE p.dir_path = paths.dir_path AND p.stem = paths.stem
                   AND p.kind IN ('image', 'video') AND p.missing = 0)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+
+    updated += conn
+        .execute(
+            "UPDATE paths SET companion_of = (
+               SELECT image.id
+               FROM evidence video_id
+               JOIN evidence image_id
+                 ON image_id.source = 'live-photo-identifier'
+                AND image_id.raw = video_id.raw
+               JOIN paths image ON image.id = image_id.path_id
+               WHERE video_id.path_id = paths.id
+                 AND video_id.source = 'live-photo-identifier'
+                 AND video_id.raw IS NOT NULL
+                 AND image.kind = 'image' AND image.missing = 0
+                 AND image.dir_path = paths.dir_path
+               ORDER BY image.id LIMIT 1)
+             WHERE kind = 'video' AND missing = 0 AND companion_of IS NULL
+               AND EXISTS (
+                 SELECT 1
+                 FROM evidence video_id
+                 JOIN evidence image_id
+                   ON image_id.source = 'live-photo-identifier'
+                  AND image_id.raw = video_id.raw
+                 JOIN paths image ON image.id = image_id.path_id
+                 WHERE video_id.path_id = paths.id
+                   AND video_id.source = 'live-photo-identifier'
+                   AND video_id.raw IS NOT NULL
+                   AND image.kind = 'image' AND image.missing = 0
+                   AND image.dir_path = paths.dir_path)",
             [],
         )
         .map_err(|e| e.to_string())?;

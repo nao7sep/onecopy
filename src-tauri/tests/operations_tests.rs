@@ -48,7 +48,7 @@ fn lists() -> ScanLists {
 fn scan(f: &Fixture) {
     scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
     scanner::hash_pending(&f.conn, &f.cache).unwrap();
-    scanner::pair_companions(&f.conn).unwrap();
+    scanner::pair_companions(&f.conn, true).unwrap();
 }
 
 #[test]

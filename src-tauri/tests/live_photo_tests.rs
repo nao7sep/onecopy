@@ -3,6 +3,15 @@
 
 use onecopy_lib::live_photo::*;
 
+fn fixture(parts: &[&str]) -> std::path::PathBuf {
+    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests/fixtures/live-photo");
+    for part in parts {
+        path.push(part);
+    }
+    path
+}
+
 // Builders for synthetic box trees, so the parser is tested against the
 // documented grammar rather than only itself.
 fn boxed(box_type: &[u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -88,6 +97,45 @@ fn malformed_boxes_never_panic() {
     let mut truncated = moov_with(&[CONTENT_IDENTIFIER_KEY], &[(1, "u")], false);
     truncated.truncate(truncated.len() / 2);
     let _ = moov_content_identifier(&truncated); // no panic is the assertion
+}
+
+#[test]
+fn corpus_jpeg_and_heic_identifiers_match_their_movies() {
+    let jpeg_id = "76635768-20C5-4CF1-8DB0-000000000001";
+    let heic_id = "76635768-20C5-4CF1-8DB0-000000000002";
+
+    assert_eq!(
+        still_content_identifier(&fixture(&["jpeg-pair", "key-photo.jpg"])).as_deref(),
+        Some(jpeg_id)
+    );
+    assert_eq!(
+        quicktime_content_identifier(&fixture(&["jpeg-pair", "paired-video.mov"])).as_deref(),
+        Some(jpeg_id)
+    );
+    assert_eq!(
+        still_content_identifier(&fixture(&["heic-pair", "key-photo.heic"])).as_deref(),
+        Some(heic_id)
+    );
+    assert_eq!(
+        quicktime_content_identifier(&fixture(&["heic-pair", "paired-video.mov"])).as_deref(),
+        Some(heic_id)
+    );
+    assert_eq!(
+        quicktime_content_identifier(&fixture(&[
+            "unpaired",
+            "video-without-live-metadata.mov"
+        ])),
+        None
+    );
+}
+
+#[test]
+fn malformed_apple_maker_notes_never_pair() {
+    assert_eq!(apple_maker_note_content_identifier(&[]), None);
+    assert_eq!(apple_maker_note_content_identifier(b"Apple iOS\0"), None);
+    let mut truncated = std::fs::read(fixture(&["jpeg-pair", "key-photo.jpg"])).unwrap();
+    truncated.truncate(32);
+    assert_eq!(apple_maker_note_content_identifier(&truncated), None);
 }
 
 // Round-trip against a REAL file: ffmpeg (the managed install) writes the

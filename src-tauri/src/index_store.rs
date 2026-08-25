@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_content ON evidence (content_hash);
 CREATE INDEX IF NOT EXISTS idx_evidence_path ON evidence (path_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_source_raw ON evidence (source, raw);
 
 CREATE TABLE IF NOT EXISTS similar_groups (
   id             INTEGER PRIMARY KEY,

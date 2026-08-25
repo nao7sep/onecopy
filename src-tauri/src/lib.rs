@@ -870,6 +870,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
                 &settings.resolution,
                 scanner::ResolveScope::All,
             )?;
+            scanner::pair_companions(&conn, settings.pairing_enabled)?;
             similarity::rebuild_groups_for_root(&conn, &settings.similarity, &data_root)?;
             Ok(stats.resolved)
         },
