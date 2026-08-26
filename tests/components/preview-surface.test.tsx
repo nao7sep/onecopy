@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PreviewSurface from "../../src/components/PreviewSurface";
 import { useAppStore } from "../../src/state/app-store";
@@ -89,5 +89,84 @@ describe("shared video presentation", () => {
 
     fireEvent.keyDown(window, { key: " " });
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
+  });
+
+  it("pauses a playing video during held inspection and resumes it on release", () => {
+    vi.useFakeTimers();
+    const view = render(<PreviewSurface hash="video-hash" detail={DETAIL} />);
+    const video = view.container.querySelector("video")!;
+    let paused = false;
+    Object.defineProperty(video, "paused", { configurable: true, get: () => paused });
+    const pause = vi.spyOn(video, "pause").mockImplementation(() => {
+      paused = true;
+    });
+    const play = vi.spyOn(video, "play").mockImplementation(() => {
+      paused = false;
+      return Promise.resolve();
+    });
+    const viewport = screen.getByTitle("Press and hold the picture for original pixels");
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 8,
+      button: 0,
+      isPrimary: true,
+      clientX: 20,
+      clientY: 20,
+    });
+    act(() => vi.advanceTimersByTime(135));
+
+    expect(pause).toHaveBeenCalledOnce();
+    expect(video.controls).toBe(false);
+
+    fireEvent.pointerUp(window, { pointerId: 8, clientX: 40, clientY: 30 });
+
+    expect(play).toHaveBeenCalledOnce();
+    expect(video.controls).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("cancels delayed autoplay when inspection starts first", () => {
+    vi.useFakeTimers();
+    useAppStore.setState((state) => ({
+      appData: state.appData === null
+        ? null
+        : {
+            ...state.appData,
+            config: { ...state.appData.config, videoAutoplayOnShow: true },
+          },
+    }));
+    render(<PreviewSurface hash="video-hash" detail={DETAIL} />);
+    const viewport = screen.getByTitle("Press and hold the picture for original pixels");
+
+    fireEvent.pointerDown(viewport, { pointerId: 9, button: 0, isPrimary: true });
+    act(() => vi.advanceTimersByTime(135));
+    act(() => vi.advanceTimersByTime(500));
+
+    expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+    fireEvent.pointerUp(window, { pointerId: 9 });
+    expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("defers snapshot playback until a held frame is released", () => {
+    vi.useFakeTimers();
+    const view = render(
+      <PreviewSurface hash="video-hash" detail={DETAIL} seekMs={12_000} />,
+    );
+    const video = view.container.querySelector("video")!;
+    Object.defineProperty(video, "readyState", {
+      configurable: true,
+      value: HTMLMediaElement.HAVE_NOTHING,
+    });
+    const viewport = screen.getByTitle("Press and hold the picture for original pixels");
+    fireEvent.pointerDown(viewport, { pointerId: 10, button: 0, isPrimary: true });
+    act(() => vi.advanceTimersByTime(135));
+
+    fireEvent(video, new Event("loadedmetadata"));
+    expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(window, { pointerId: 10 });
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce();
+    vi.useRealTimers();
   });
 });

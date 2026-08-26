@@ -1,6 +1,7 @@
-import { factsLine, previewUrl } from "../models/items";
+import { factsLine } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
 import { Focus, Smile } from "lucide-react";
+import InspectableImage from "./InspectableImage";
 
 // One comparison slot, shared by the main comparison surface and the
 // secondary per-monitor windows: preview image, the GLOBAL slot key, keeper
@@ -43,11 +44,7 @@ export default function ComparisonSlot({
       title="Click or double-click: toggle keep"
     >
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
-        <img
-          src={previewUrl(member.hash)}
-          alt={member.fileName}
-          className="h-full w-full object-contain"
-        />
+        <InspectableImage hash={member.hash} fileName={member.fileName} />
       </div>
       <span
         className={`absolute left-2 top-2 flex h-8 w-8 items-center justify-center rounded text-lg font-bold ${

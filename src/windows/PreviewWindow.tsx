@@ -131,7 +131,7 @@ export default function PreviewWindow() {
         <span className="truncate" title={message.detail?.fileName ?? ""}>
           {message.detail?.fileName ?? "…"}
         </span>
-        <span>Z: 100% · F: fullscreen · Escape: close</span>
+        <span>Hold: original pixels · F: fullscreen · Escape: close</span>
       </footer>
     </div>
   );

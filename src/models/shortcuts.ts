@@ -47,7 +47,6 @@ export function shortcutGroups(): ShortcutGroup[] {
       rows: [
         { chord: "Space", action: "Open Quick View (play/pause when its video has focus)" },
         { chord: "Enter", action: "Compare similar photos (≈ badge)" },
-        { chord: "Z", action: "100% view of the original (in the preview)" },
         { chord: "F", action: "Fullscreen (in the preview window)" },
         { chord: "Escape", action: "Close Quick View, leave fullscreen, or close the preview window" },
       ],

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-import { fireEvent, render } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import ComparisonSlot from "../../src/components/ComparisonSlot";
 
 const MEMBER = {
@@ -16,6 +16,11 @@ const MEMBER = {
   hasThumb: true,
 };
 
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
 describe("comparison pointer decisions", () => {
   it("single- and double-click both toggle exactly once", () => {
     const toggle = vi.fn();
@@ -29,5 +34,19 @@ describe("comparison pointer decisions", () => {
     fireEvent.doubleClick(slot, { detail: 2 });
 
     expect(toggle).toHaveBeenCalledOnce();
+  });
+
+  it("does not toggle when a hold inspects the original", () => {
+    vi.useFakeTimers();
+    const toggle = vi.fn();
+    render(<ComparisonSlot member={MEMBER} slotKey="1" kept={false} onToggle={toggle} />);
+    const image = screen.getByTitle("Press and hold for original pixels");
+
+    fireEvent.pointerDown(image, { pointerId: 4, button: 0, isPrimary: true });
+    act(() => vi.advanceTimersByTime(135));
+    fireEvent.pointerUp(window, { pointerId: 4 });
+    fireEvent.click(image, { detail: 1 });
+
+    expect(toggle).not.toHaveBeenCalled();
   });
 });

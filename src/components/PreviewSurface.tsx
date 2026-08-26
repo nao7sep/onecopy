@@ -1,12 +1,12 @@
 // ONE preview surface, two placements: the second-monitor preview window and
 // the main window's split pane both render this. Images show the cached
-// preview at fit (Z/click for the true 100% view); videos share one player,
+// preview at fit (press and hold for original pixels); videos share one player,
 // scene rail, and transcript layout. Playback is delayed briefly so keyboard
 // selection can settle without starting every video crossed along the way.
 // Detail arrives as a prop (the anchor owner fetched it once); the surface
 // itself fetches nothing.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
 import { isEditableTarget } from "../utils/shortcuts";
@@ -19,7 +19,12 @@ import {
   stripUrl,
   timestampLabel,
 } from "../models/items";
-import ZoomableImage from "./ZoomableImage";
+import InspectableImage, {
+  inspectPosition,
+  intrinsicOffset,
+  type InspectPosition,
+} from "./InspectableImage";
+import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
 import type { ItemDetail } from "../state/items-store";
 import { ExternalLink } from "lucide-react";
 import TranscriptBlock from "./TranscriptBlock";
@@ -41,8 +46,18 @@ function VideoSurface({
   autoplayImmediately?: boolean;
 }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [inspectPositionState, setInspectPositionState] = useState<InspectPosition>({
+    x: 0.5,
+    y: 0.5,
+    width: 0,
+    height: 0,
+  });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const resumeAfterInspectRef = useRef(false);
+  const inspectingRef = useRef(false);
+  const autoplayTimerRef = useRef<number | null>(null);
   const autoplayOnShow = useAppStore(
     (state) => state.appData?.config?.videoAutoplayOnShow !== false,
   );
@@ -50,6 +65,30 @@ function VideoSurface({
     (state) => state.appData?.config?.videoAutoplayAfterSnapshot !== false,
   );
   const sceneCount = Math.max(0, detail.stripFrames ?? 0);
+  const updateInspectPosition = (point: PointerPoint) => {
+    setInspectPositionState(inspectPosition(viewportRef.current, point));
+  };
+  const hold = useHoldInspect({
+    onStart: (point) => {
+      const video = videoRef.current;
+      inspectingRef.current = true;
+      if (autoplayTimerRef.current !== null) {
+        window.clearTimeout(autoplayTimerRef.current);
+        autoplayTimerRef.current = null;
+      }
+      resumeAfterInspectRef.current = video !== null && !video.paused;
+      video?.pause();
+      updateInspectPosition(point);
+    },
+    onMove: updateInspectPosition,
+    onEnd: () => {
+      inspectingRef.current = false;
+      if (resumeAfterInspectRef.current) {
+        void videoRef.current?.play().catch(() => undefined);
+      }
+      resumeAfterInspectRef.current = false;
+    },
+  });
 
   useEffect(() => {
     if (keyboardActive) surfaceRef.current?.focus({ preventScroll: true });
@@ -69,17 +108,27 @@ function VideoSurface({
       void video.play().catch(() => undefined);
       return;
     }
-    const timer = setTimeout(() => {
+    autoplayTimerRef.current = window.setTimeout(() => {
+      autoplayTimerRef.current = null;
       void video.play().catch(() => undefined);
     }, 250);
-    return () => clearTimeout(timer);
+    return () => {
+      if (autoplayTimerRef.current !== null) {
+        window.clearTimeout(autoplayTimerRef.current);
+        autoplayTimerRef.current = null;
+      }
+    };
   }, [autoplayImmediately, autoplayOnShow, hash, seekMs]);
 
   useEffect(() => {
     if (seekMs === undefined) return;
     const video = videoRef.current;
     if (video === null) return;
-    const apply = () => seek(seekMs, playAfterSeek ?? autoplayAfterSnapshot);
+    const apply = () => {
+      const shouldPlay = playAfterSeek ?? autoplayAfterSnapshot;
+      if (inspectingRef.current && shouldPlay) resumeAfterInspectRef.current = true;
+      seek(seekMs, shouldPlay && !inspectingRef.current);
+    };
     if (video.readyState >= HTMLMediaElement.HAVE_METADATA) apply();
     else video.addEventListener("loadedmetadata", apply, { once: true });
     return () => video.removeEventListener("loadedmetadata", apply);
@@ -91,6 +140,7 @@ function VideoSurface({
       if (event.key !== " " || event.metaKey || event.ctrlKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
       if (!surfaceRef.current?.contains(document.activeElement)) return;
+      if (inspectingRef.current) return;
       event.preventDefault();
       const video = videoRef.current;
       if (video === null) return;
@@ -110,35 +160,50 @@ function VideoSurface({
       aria-label={keyboardActive ? "Video Quick View" : undefined}
       className="flex h-full min-h-0 w-full flex-col gap-2 outline-none"
     >
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg bg-background">
+      <div
+        ref={viewportRef}
+        className={`relative min-h-0 flex-1 overflow-hidden rounded-lg bg-background ${
+          hold.inspecting ? "cursor-crosshair" : ""
+        }`}
+        title={playbackFailed ? undefined : "Press and hold the picture for original pixels"}
+        onPointerDown={playbackFailed ? undefined : hold.onPointerDown}
+        onClickCapture={playbackFailed ? undefined : hold.onClickCapture}
+      >
         {playbackFailed ? (
-          <img
-            src={previewUrl(hash)}
-            alt={detail.fileName}
-            className="h-full w-full object-contain"
-          />
+          <InspectableImage hash={hash} fileName={detail.fileName} />
         ) : (
           <video
             ref={videoRef}
-            controls
+            controls={!hold.inspecting}
             playsInline
             poster={previewUrl(hash)}
             src={originalUrl(hash)}
-            className="h-full w-full object-contain"
+            className={
+              hold.inspecting
+                ? "pointer-events-none absolute max-h-none max-w-none"
+                : "h-full w-full object-contain"
+            }
+            style={
+              hold.inspecting
+                ? videoInspectStyle(videoRef.current, detail, inspectPositionState)
+                : undefined
+            }
             onError={() => setPlaybackFailed(true)}
           />
         )}
-        <button
-          className="absolute right-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
-          onClick={() => {
-            void invoke("open_item_externally", { hash }).catch((error) =>
-              log.warn("open in player failed", toErrorFields(error)),
-            );
-          }}
-        >
-          <ExternalLink size={13} /> Open in player
-        </button>
-        {sceneCount > 0 ? (
+        {!hold.inspecting ? (
+          <button
+            className="absolute right-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
+            onClick={() => {
+              void invoke("open_item_externally", { hash }).catch((error) =>
+                log.warn("open in player failed", toErrorFields(error)),
+              );
+            }}
+          >
+            <ExternalLink size={13} /> Open in player
+          </button>
+        ) : null}
+        {!hold.inspecting && sceneCount > 0 ? (
           <div className="absolute inset-x-2 bottom-10 flex gap-1 overflow-x-auto rounded-lg bg-background/75 p-1.5 backdrop-blur-sm">
             {Array.from({ length: sceneCount }, (_, index) => {
               const atMs = stripTimestampMs(detail.durationMs ?? 0, sceneCount, index);
@@ -177,6 +242,24 @@ function VideoSurface({
   );
 }
 
+function videoInspectStyle(
+  video: HTMLVideoElement | null,
+  detail: ItemDetail,
+  position: InspectPosition,
+): CSSProperties {
+  const width = video?.videoWidth || detail.width || 0;
+  const height = video?.videoHeight || detail.height || 0;
+  if (width <= 0 || height <= 0 || position.width <= 0 || position.height <= 0) {
+    return { visibility: "hidden" };
+  }
+  return {
+    width: `${width}px`,
+    height: `${height}px`,
+    left: `${intrinsicOffset(width, position.width, position.x)}px`,
+    top: `${intrinsicOffset(height, position.height, position.y)}px`,
+  };
+}
+
 /** An image whose missing/undecodable preview reads as words, never as the
  * webview's broken-image icon (a file the scan hasn't reached yet; a HEIC or
  * AVIF still waiting on the ffmpeg install that decodes it). */
@@ -204,7 +287,7 @@ function ImageSurface({
     return <p className="text-sm text-ink-muted">{phase.reason}</p>;
   }
   return (
-    <ZoomableImage
+    <InspectableImage
       key={`${phase.cacheHash}-${phase.attempt}`}
       hash={phase.cacheHash}
       fileName={fileName}
