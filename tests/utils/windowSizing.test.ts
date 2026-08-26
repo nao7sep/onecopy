@@ -4,13 +4,14 @@ import {
   FOOTER_HEIGHT,
   GRID_MIN_WIDTH,
   HEADER_HEIGHT,
+  PREVIEW_PANE_DEFAULT_RATIO,
   PREVIEW_PANE_MIN_WIDTH,
   RIGHT_PANE_MIN_WIDTH,
   SIDEBAR_MIN_WIDTH,
   SPLITTER_WIDTH,
-  clampPaneWidths,
   computeMinWindowHeight,
   computeMinWindowWidth,
+  derivePaneWidths,
 } from "../../src/utils/windowSizing";
 
 describe("window minimums are derived, never hand-typed", () => {
@@ -40,18 +41,17 @@ describe("window minimums are derived, never hand-typed", () => {
   });
 });
 
-describe("pane clamping derives display from intent", () => {
-  it("passes both intents through when they fit", () => {
-    // Wide container: intents display as dragged (preview closed → 0).
-    expect(clampPaneWidths(300, 350, 2000)).toEqual({ left: 300, right: 350, preview: 0 });
+describe("pane display derives from fixed utility intent and one peer ratio", () => {
+  it("passes utility intents through when they fit", () => {
+    expect(derivePaneWidths(300, 350, 2000)).toEqual({ left: 300, right: 350, preview: 0 });
   });
 
   it("shrinks proportionally to headroom when they do not fit", () => {
-    // Deliberately ASYMMETRIC. The previous input was clampPaneWidths(400,
+    // Deliberately ASYMMETRIC. The previous input used equal 400px intents,
     // 400, 1000), where a proportional split and an equal split produce
     // identical numbers — so the word "proportionally" was unverifiable and
     // every assertion was a one-sided inequality that an equal split passes.
-    const { left, right } = clampPaneWidths(600, 250, 1000);
+    const { left, right } = derivePaneWidths(600, 250, 1000);
     expect(left + right).toBeLessThanOrEqual(1000 - GRID_MIN_WIDTH - 2 * SPLITTER_WIDTH);
     expect(left).toBeGreaterThanOrEqual(SIDEBAR_MIN_WIDTH);
     expect(right).toBeGreaterThanOrEqual(RIGHT_PANE_MIN_WIDTH);
@@ -60,42 +60,57 @@ describe("pane clamping derives display from intent", () => {
   });
 
   it("bottoms out at both minimums and never below", () => {
-    const { left, right } = clampPaneWidths(9999, 9999, computeMinWindowWidth());
+    const { left, right } = derivePaneWidths(9999, 9999, computeMinWindowWidth());
     expect(left).toBe(SIDEBAR_MIN_WIDTH);
     expect(right).toBe(RIGHT_PANE_MIN_WIDTH);
     // Even in an impossibly narrow container the minimums hold (the window
     // minimum prevents the container from actually going this small).
-    const floor = clampPaneWidths(500, 500, 100);
+    const floor = derivePaneWidths(500, 500, 100);
     expect(floor.left).toBe(SIDEBAR_MIN_WIDTH);
     expect(floor.right).toBe(RIGHT_PANE_MIN_WIDTH);
   });
 
   it("sub-minimum intents display at the minimum", () => {
-    expect(clampPaneWidths(10, 10, 2000)).toEqual({
+    expect(derivePaneWidths(10, 10, 2000)).toEqual({
       left: SIDEBAR_MIN_WIDTH,
       right: RIGHT_PANE_MIN_WIDTH,
       preview: 0,
     });
   });
 
-  it("clamps the preview as a third pane when it is open", () => {
-    // Everything fits: intents pass through.
-    expect(clampPaneWidths(256, 288, 2000, 480)).toEqual({
+  it("splits the center peer area by ratio when both minimums fit", () => {
+    const widths = derivePaneWidths(256, 288, 2000, PREVIEW_PANE_DEFAULT_RATIO);
+    const peerWidth = 2000 - 256 - 288 - 3 * SPLITTER_WIDTH;
+    expect(widths).toEqual({
       left: 256,
       right: 288,
-      preview: 480,
+      preview: Math.round(peerWidth / 2),
     });
-    // Too narrow: every pane shrinks toward its own minimum, the grid keeps
-    // its fill minimum, and nothing goes below its floor.
-    const tight = clampPaneWidths(400, 400, 1400, 600);
+  });
+
+  it("clamps a remembered ratio without changing what a wide window restores", () => {
+    const ratio = 0.7;
+    const tight = derivePaneWidths(400, 400, computeMinWindowWidth(true), ratio);
     expect(tight.left).toBeGreaterThanOrEqual(SIDEBAR_MIN_WIDTH);
     expect(tight.right).toBeGreaterThanOrEqual(RIGHT_PANE_MIN_WIDTH);
     expect(tight.preview).toBeGreaterThanOrEqual(PREVIEW_PANE_MIN_WIDTH);
-    expect(tight.left + tight.right + tight.preview).toBeLessThanOrEqual(
-      1400 - GRID_MIN_WIDTH - 3 * SPLITTER_WIDTH,
+    const tightGrid =
+      computeMinWindowWidth(true) -
+      tight.left -
+      tight.right -
+      tight.preview -
+      3 * SPLITTER_WIDTH;
+    expect(tightGrid).toBeGreaterThanOrEqual(GRID_MIN_WIDTH);
+
+    const wide = derivePaneWidths(400, 400, 2400, ratio);
+    const widePeer = 2400 - wide.left - wide.right - 3 * SPLITTER_WIDTH;
+    expect(wide.preview / widePeer).toBeCloseTo(ratio, 3);
+  });
+
+  it("uses the equal default for an invalid restored ratio", () => {
+    expect(derivePaneWidths(256, 288, 2000, Number.NaN)).toEqual(
+      derivePaneWidths(256, 288, 2000, PREVIEW_PANE_DEFAULT_RATIO),
     );
-    // The pane with the most headroom gives up the most.
-    expect(600 - tight.preview).toBeGreaterThanOrEqual(400 - tight.left);
   });
 
   it("raises the window minimum only while the preview pane is open", () => {

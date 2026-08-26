@@ -6,10 +6,10 @@
 // The layout (App) is a vertical stack: a content row of
 // [sections sidebar | divider | grid | divider | (preview pane | divider)? |
 // right pane] over the status footer — the preview joins the row side-by-side
-// when open, because screens are wide. Every adjustable pane persists the
-// user's INTENT in pixels (written only on a drag); the displayed width is
-// the intent clamped against what fits right now, and a window resize
-// re-derives without ever rewriting the intent.
+// when open, because screens are wide. The utility panes persist pixel intent;
+// the grid and Preview persist one ratio of their shared center area. Displayed
+// widths derive from those intents and the live container, so a small window
+// clamps without overwriting what a later large window should restore.
 
 // Sections sidebar: default and minimum (month labels stop truncating
 // usefully below the minimum).
@@ -20,10 +20,14 @@ export const SIDEBAR_MIN_WIDTH = 180;
 export const RIGHT_PANE_DEFAULT_WIDTH = 288;
 export const RIGHT_PANE_MIN_WIDTH = 220;
 
-// In-window preview pane (only when open): wide enough by default that a
-// landscape photo reads, floored where it stops being a preview at all.
-export const PREVIEW_PANE_DEFAULT_WIDTH = 480;
+// In-window preview pane (only when open): floored where it stops being a
+// preview at all.
 export const PREVIEW_PANE_MIN_WIDTH = 260;
+
+// Equal peer intent. At a narrow window the unequal grid/Preview minimums can
+// make the rendered split look unequal; maximizing restores this ratio because
+// only a divider drag may change it.
+export const PREVIEW_PANE_DEFAULT_RATIO = 0.5;
 
 // Grid (fill pane) minimum width: two 160px tiles plus gaps/padding — below
 // this the grid is a single column and comparison entry points get cramped.
@@ -51,7 +55,7 @@ export const HEADER_HEIGHT = 48;
 // Status footer height (one text row: py-1 + text-xs ≈ 24px).
 export const FOOTER_HEIGHT = 24;
 
-/** The preview pane, when open, is REAL fixed content like the others, so it
+/** The preview pane, when open, is REAL reserved content like the others, so it
  * raises the window minimum for exactly as long as it is on screen — App
  * re-applies setMinSize when it opens or closes. */
 export function computeMinWindowWidth(previewOpen = false): number {
@@ -73,52 +77,57 @@ export function computeMinWindowHeight(): number {
   return CONTENT_MIN_HEIGHT + FOOTER_HEIGHT;
 }
 
-/** Clamps the adjustable panes' INTENTS against the live container width.
- * When everything fits beside the grid's minimum the intents pass through;
- * when not, every pane shrinks toward its minimum proportionally to its
- * headroom above it (several adjustable panes, so a one-sided clamp cannot
- * work). The intents are never modified — only the display derives.
- * `previewIntent` null means the preview pane is closed and takes nothing. */
-export function clampPaneWidths(
+/** Derives rendered widths from durable layout intent.
+ *
+ * Left and right are fixed utility-pane pixel intents. They yield toward their
+ * minimums, proportionally to headroom, only when the center pair needs room.
+ * Preview receives its persisted share of the remaining grid/Preview peer
+ * area, then both center panes enforce their own minimum. None of these live
+ * clamps writes back to intent. `previewRatio` null means Preview is closed. */
+export function derivePaneWidths(
   leftIntent: number,
   rightIntent: number,
   containerWidth: number,
-  previewIntent: number | null = null,
+  previewRatio: number | null = null,
 ): { left: number; right: number; preview: number } {
-  const mins = [
-    SIDEBAR_MIN_WIDTH,
-    RIGHT_PANE_MIN_WIDTH,
-    ...(previewIntent !== null ? [PREVIEW_PANE_MIN_WIDTH] : []),
-  ];
+  const previewOpen = previewRatio !== null;
+  const splitters = previewOpen ? 3 : 2;
+  const centerMinimum = GRID_MIN_WIDTH + (previewOpen ? PREVIEW_PANE_MIN_WIDTH : 0);
+  const utilityMinimum = SIDEBAR_MIN_WIDTH + RIGHT_PANE_MIN_WIDTH;
+  const utilityAvailable = Math.max(
+    utilityMinimum,
+    containerWidth - splitters * SPLITTER_WIDTH - centerMinimum,
+  );
   const wants = [
     Math.max(SIDEBAR_MIN_WIDTH, leftIntent),
     Math.max(RIGHT_PANE_MIN_WIDTH, rightIntent),
-    ...(previewIntent !== null ? [Math.max(PREVIEW_PANE_MIN_WIDTH, previewIntent)] : []),
   ];
-  const splitters = previewIntent !== null ? 3 : 2;
-  const available = containerWidth - GRID_MIN_WIDTH - splitters * SPLITTER_WIDTH;
-  const wanted = wants.reduce((a, b) => a + b, 0);
-  const result = (values: number[]) => ({
-    left: values[0],
-    right: values[1],
-    preview: values[2] ?? 0,
-  });
-  if (wanted <= available) {
-    return result(wants);
+  const wanted = wants[0] + wants[1];
+  let [left, right] = wants;
+  if (wanted > utilityAvailable) {
+    const rooms = [left - SIDEBAR_MIN_WIDTH, right - RIGHT_PANE_MIN_WIDTH];
+    const room = rooms[0] + rooms[1];
+    const overflow = Math.min(wanted - utilityAvailable, room);
+    if (room > 0) {
+      const leftShrink = Math.min(rooms[0], Math.round((overflow * rooms[0]) / room));
+      const rightShrink = Math.min(rooms[1], overflow - leftShrink);
+      left -= leftShrink;
+      right -= rightShrink;
+    }
   }
-  const overflow = wanted - Math.max(available, mins.reduce((a, b) => a + b, 0));
-  const rooms = wants.map((w, i) => w - mins[i]);
-  const room = rooms.reduce((a, b) => a + b, 0);
-  if (room <= 0) {
-    return result(mins);
-  }
-  // Proportional-to-headroom, sequential so rounding never busts a minimum.
-  let remaining = overflow;
-  const values = wants.map((want, i) => {
-    const shrink = Math.min(rooms[i], Math.round((overflow * rooms[i]) / room));
-    const taken = Math.min(shrink, remaining);
-    remaining -= taken;
-    return Math.max(mins[i], want - taken);
-  });
-  return result(values);
+  if (!previewOpen) return { left, right, preview: 0 };
+
+  const peerWidth = Math.max(
+    GRID_MIN_WIDTH + PREVIEW_PANE_MIN_WIDTH,
+    containerWidth - splitters * SPLITTER_WIDTH - left - right,
+  );
+  const ratio =
+    Number.isFinite(previewRatio) && previewRatio > 0 && previewRatio < 1
+      ? previewRatio
+      : PREVIEW_PANE_DEFAULT_RATIO;
+  const preview = Math.min(
+    peerWidth - GRID_MIN_WIDTH,
+    Math.max(PREVIEW_PANE_MIN_WIDTH, Math.round(peerWidth * ratio)),
+  );
+  return { left, right, preview };
 }
