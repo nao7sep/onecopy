@@ -735,6 +735,13 @@ fn transcribe_next(
             Err(error) => return Err(error),
         };
         emit_progress(app, WorkClass::Transcripts, None);
+        // Audio extraction and model loading happen before Whisper's first
+        // percentage callback; publish ownership now so an open video never
+        // looks pending while its expensive work is already underway.
+        let _ = app.emit(
+            "transcribe://progress",
+            json!({ "hash": hash, "percent": 0 }),
+        );
         let finished = std::sync::Arc::new(AtomicBool::new(false));
         let watch = std::thread::spawn({
             let finished = std::sync::Arc::clone(&finished);
@@ -756,10 +763,28 @@ fn transcribe_next(
             Some(ffmpeg),
             Path::new(&path),
             &hash,
-            |_| {},
+            {
+                let progress_handle = app.clone();
+                let progress_hash = hash.clone();
+                move |percent| {
+                    let percent = percent.clamp(0, 100);
+                    crate::background_work::progress(
+                        &progress_handle,
+                        WorkClass::Transcripts,
+                        Some((percent as u64, 100)),
+                    );
+                    let _ = progress_handle.emit(
+                        "transcribe://progress",
+                        json!({ "hash": progress_hash, "percent": percent }),
+                    );
+                }
+            },
         );
         finished.store(true, Ordering::SeqCst);
         let _ = watch.join();
+        // The claim resets cancellation when dropped, so classify this run
+        // while it still owns the Whisper slot.
+        let was_cancelled = crate::transcription::is_cancelled();
         drop(claim);
         match result {
             Ok(text) => {
@@ -773,17 +798,22 @@ fn transcribe_next(
                 return Ok(true);
             }
             Err(error) => {
-                if error == crate::scanner::CANCELLED || crate::transcription::is_cancelled() {
+                if error == crate::scanner::CANCELLED || was_cancelled {
                     logging::debug(
                         "derived transcription stopped",
                         json!({ "hash": hash, "reason": "cancelled" }),
                     );
+                    let _ = app.emit("transcribe://cancelled", json!({ "hash": hash }));
                     return Ok(false);
                 }
                 crate::derived_state::record_transcript_failure(conn, &hash, &path, &error)?;
                 logging::debug(
                     "derived transcription failed",
                     json!({ "hash": hash, "error": { "message": error } }),
+                );
+                let _ = app.emit(
+                    "transcribe://error",
+                    json!({ "hash": hash, "message": error }),
                 );
                 return Ok(true);
             }

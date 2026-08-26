@@ -22,6 +22,8 @@ export interface SettingsDraft {
   videoStripSecondsPerFrame: number;
   videoStripMinFrames: number;
   videoStripMaxFrames: number;
+  videoAutoplayOnShow: boolean;
+  videoAutoplayAfterSnapshot: boolean;
   scenesGridColumns: number;
   scenesGridRows: number;
   pairingEnabled: boolean;
@@ -77,6 +79,8 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     videoStripSecondsPerFrame: numberOr(config?.videoStripSecondsPerFrame, 20),
     videoStripMinFrames: numberOr(config?.videoStripMinFrames, 5),
     videoStripMaxFrames: numberOr(config?.videoStripMaxFrames, 40),
+    videoAutoplayOnShow: config?.videoAutoplayOnShow !== false,
+    videoAutoplayAfterSnapshot: config?.videoAutoplayAfterSnapshot !== false,
     scenesGridColumns: numberOr(config?.scenesGridColumns, 6),
     scenesGridRows: numberOr(config?.scenesGridRows, 4),
     pairingEnabled: config?.pairingEnabled !== false,

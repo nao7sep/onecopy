@@ -124,3 +124,22 @@ describe("clearing the surface", () => {
     expect(emitCalls.filter((c) => c.event === "preview://show")).toHaveLength(0);
   });
 });
+
+describe("scene navigation intent", () => {
+  it("carries one exact seek into the preview and clears it on the next anchor", async () => {
+    await usePreviewStore
+      .getState()
+      .open(ITEM_A, detailFor("clip.mov"), { seekMs: 12_345, playAfterSeek: true });
+
+    expect(usePreviewStore.getState().current).toMatchObject({
+      hash: "ha",
+      seekMs: 12_345,
+      playAfterSeek: true,
+    });
+
+    vi.advanceTimersByTime(200);
+    usePreviewStore.getState().anchorChanged(ITEM_B, null);
+    expect(usePreviewStore.getState().current?.seekMs).toBeUndefined();
+    expect(usePreviewStore.getState().current?.playAfterSeek).toBeUndefined();
+  });
+});

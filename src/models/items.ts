@@ -23,6 +23,17 @@ export interface SectionItem {
   dirPaths: string[];
 }
 
+/** Matches the backend's evenly spaced interior scene timestamps exactly. */
+export function stripTimestampMs(durationMs: number, count: number, index: number): number {
+  if (count <= 0) return 0;
+  return Math.floor((Math.max(0, durationMs) * (index + 1)) / (count + 1));
+}
+
+export function timestampLabel(milliseconds: number): string {
+  const seconds = Math.floor(Math.max(0, milliseconds) / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 /** Replaces one derived logical row without re-reading its whole section.
  * Identity promotion may collapse into a canonical row already present, so
  * both keys are removed before the one current row is inserted. */

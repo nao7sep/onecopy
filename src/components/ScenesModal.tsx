@@ -9,16 +9,12 @@
 // grid/tree act.
 
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
-import Button from "./ui/Button";
 import { stripUrl } from "../models/items";
 import { useItemsStore } from "../state/items-store";
 import { useAppStore } from "../state/app-store";
-import { useBinariesStore } from "../state/binaries-store";
-import { log, toErrorFields } from "../repositories";
+import TranscriptBlock from "./TranscriptBlock";
 
 export default function ScenesModal({
   hash,
@@ -72,7 +68,9 @@ export default function ScenesModal({
       }
     >
       <ScenesGrid hash={hash} frames={frames} />
-      <TranscriptSection hash={hash} />
+      <div className="mt-4">
+        <TranscriptBlock hash={hash} />
+      </div>
       {confirmPermanent ? (
         <ConfirmDialog
           title="Delete permanently?"
@@ -115,135 +113,6 @@ function ScenesGrid({ hash, frames }: { hash: string; frames: number }) {
           className="w-full rounded-lg border border-border object-cover"
         />
       ))}
-    </div>
-  );
-}
-
-/** The transcript block under the scenes. States, in order of appearance:
- * cached text (instant) → a Transcribe control → live progress → the text.
- * With the model absent the control is replaced by the honest remedy: what to
- * install and the one click that opens Managed tools. */
-interface TranscriptResult {
-  status: "pending" | "ready" | "failed";
-  text: string | null;
-  message: string | null;
-}
-
-function TranscriptSection({ hash }: { hash: string }) {
-  const [text, setText] = useState<string | null>(null);
-  const [status, setStatus] = useState<"loading" | "pending" | "running" | "ready" | "failed">(
-    "loading",
-  );
-  const [percent, setPercent] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const modelInstalled = useBinariesStore((s) =>
-    s.entries.some(
-      (entry) => entry.id === "whisper-large-v3-turbo" && entry.status !== "not-installed",
-    ),
-  );
-
-  useEffect(() => {
-    let stale = false;
-    setText(null);
-    setError(null);
-    setStatus("loading");
-    void invoke<TranscriptResult>("transcript_get", { hash })
-      .then((result) => {
-        if (stale) return;
-        setStatus(result.status);
-        setText(result.text);
-        setError(result.status === "failed" ? (result.message ?? "Transcription failed.") : null);
-      })
-      .catch((err) => log.warn("transcript load failed", toErrorFields(err)));
-
-    const disposers: Array<() => void> = [];
-    void listen<{ hash: string; percent: number }>("transcribe://progress", (event) => {
-      if (event.payload.hash === hash && !stale) {
-        setStatus("running");
-        setPercent(event.payload.percent);
-      }
-    }).then((fn) => disposers.push(fn));
-    void listen<{ hash: string; text: string }>("transcribe://done", (event) => {
-      if (event.payload.hash === hash && !stale) {
-        setStatus("ready");
-        setText(event.payload.text);
-      }
-    }).then((fn) => disposers.push(fn));
-    void listen<{ hash: string; message: string }>("transcribe://error", (event) => {
-      if (event.payload.hash === hash && !stale) {
-        setStatus("failed");
-        setError(event.payload.message);
-      }
-    }).then((fn) => disposers.push(fn));
-    return () => {
-      stale = true;
-      for (const dispose of disposers) dispose();
-    };
-  }, [hash]);
-
-  return (
-    <div className="mt-4 border-t border-border pt-3">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-          Transcript
-        </h2>
-        {status === "running" ? (
-          <span className="flex items-center gap-2 text-xs text-primary">
-            Transcribing… {percent}%
-            <Button
-              variant="ghost"
-              onClick={() => {
-                void invoke("transcribe_cancel");
-              }}
-            >
-              Cancel
-            </Button>
-          </span>
-        ) : status !== "loading" && text === null && modelInstalled ? (
-          <Button
-            onClick={() => {
-              setError(null);
-              setStatus("running");
-              setPercent(0);
-              void invoke("transcribe", { hash }).catch((err) => {
-                setStatus("failed");
-                setError(String(err));
-                log.error("transcribe start failed", toErrorFields(err));
-              });
-            }}
-          >
-            {status === "failed" ? "Retry" : "Transcribe"}
-          </Button>
-        ) : null}
-      </div>
-      {status === "loading" ? (
-        <p className="text-xs text-ink-muted">Loading transcript…</p>
-      ) : error !== null ? (
-        <p className="text-xs text-danger">{error}</p>
-      ) : text !== null ? (
-        text.trim() === "" ? (
-          <p className="text-xs text-ink-muted">No speech found in this video.</p>
-        ) : (
-          <pre className="max-h-48 select-text overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink">
-            {text}
-          </pre>
-        )
-      ) : status === "running" ? null : modelInstalled ? (
-        <p className="text-xs text-ink-muted">
-          Not transcribed yet — the transcript is created once and kept.
-        </p>
-      ) : (
-        <p className="text-xs text-ink-muted">
-          Transcription needs the Whisper model.{" "}
-          <button
-            className="text-primary hover:underline"
-            onClick={() => useBinariesStore.getState().setModalOpen(true)}
-          >
-            Install it from Managed tools
-          </button>
-          .
-        </p>
-      )}
     </div>
   );
 }

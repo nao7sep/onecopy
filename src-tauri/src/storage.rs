@@ -75,6 +75,10 @@ pub struct DefaultConfig {
     pub video_strip_seconds_per_frame: u32,
     pub video_strip_min_frames: u32,
     pub video_strip_max_frames: u32,
+    /// Selection-follow playback and scene-click playback are separate user
+    /// intents; both default on, but neither should force the other on.
+    pub video_autoplay_on_show: bool,
+    pub video_autoplay_after_snapshot: bool,
     /// Scenes modal grid (columns × rows of strip frames).
     pub scenes_grid_columns: u32,
     pub scenes_grid_rows: u32,
@@ -125,6 +129,8 @@ impl Default for DefaultConfig {
             video_strip_min_frames: 5,
             // The ceiling must cover the scenes grid (default 6×4 = 24).
             video_strip_max_frames: 40,
+            video_autoplay_on_show: true,
+            video_autoplay_after_snapshot: true,
             scenes_grid_columns: 6,
             scenes_grid_rows: 4,
             pairing_enabled: true,

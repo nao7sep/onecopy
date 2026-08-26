@@ -1021,10 +1021,11 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 std::path::Path::new(&video),
                 &hash,
                 move |percent| {
+                    let percent = percent.clamp(0, 100);
                     background_work::report_manual_progress(
                         &progress_handle,
                         "transcripts",
-                        percent.clamp(0, 100) as u64,
+                        percent as u64,
                         100,
                     );
                     let _ = progress_handle.emit(
@@ -1046,7 +1047,9 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 Err(error)
                     if error == scanner::CANCELLED || transcription::is_cancelled() =>
                 {
-                    Err(error)
+                    // Preserve a typed cancellation after the claim resets its
+                    // process-wide flag at the end of this worker.
+                    Err(scanner::CANCELLED.to_string())
                 }
                 Err(error) if !tools_available => Err(error),
                 Err(error) => {
@@ -1058,6 +1061,9 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
         match result {
             Ok(text) => {
                 let _ = handle.emit("transcribe://done", json!({ "hash": hash, "text": text }));
+            }
+            Err(err) if err == scanner::CANCELLED => {
+                let _ = handle.emit("transcribe://cancelled", json!({ "hash": hash }));
             }
             Err(err) => {
                 logging::warn(

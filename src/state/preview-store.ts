@@ -37,7 +37,14 @@ export interface PreviewShowMessage extends PreviewPayload {
   /** Enter's "inspect": open the surface already at 100%. Space's "look"
    * never sets it, and anchor moves while following always clear it. */
   zoom?: boolean;
+  seekMs?: number;
+  playAfterSeek?: boolean;
 }
+
+export type PreviewIntent = Pick<
+  PreviewShowMessage,
+  "zoom" | "seekMs" | "playAfterSeek"
+>;
 
 /** Where the user wants the preview; `null` means never chosen, which is the
  * in-window pane. Purely the user's statement — monitor counting left this
@@ -59,9 +66,14 @@ interface PreviewState {
   placementPreference: PlacementPreference;
   /** What the side pane renders (the window renders from events). */
   current: PreviewShowMessage | null;
-  /** Opens the surface for the payload and turns follow on; `zoom` starts
-   * the image at 100% (Enter's inspect). */
-  open: (payload: PreviewPayload, detail: ItemDetail | null, zoom?: boolean) => Promise<void>;
+  /** Opens the surface for the payload and turns follow on. Presentation
+   * intent is one named object so adding another medium-specific action does
+   * not grow a positional-argument protocol. */
+  open: (
+    payload: PreviewPayload,
+    detail: ItemDetail | null,
+    intent?: PreviewIntent,
+  ) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
   close: () => void;
   /** Space and the chrome toggle: show the preview, or hide it. */
@@ -246,12 +258,13 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   placementPreference: null,
   current: null,
 
-  open: async (payload, detail, zoom = false) => {
+  open: async (payload, detail, intent = {}) => {
     try {
       const placement = resolvePlacement(get().placementPreference);
       // State FIRST: the side pane renders `current` the moment this lands,
       // which is what makes the image appear immediately on activation.
-      set({ follow: true, placement, current: { ...payload, detail, zoom } });
+      const message = { ...payload, detail, ...intent };
+      set({ follow: true, placement, current: message });
       persistFollow(true);
       if (placement === "window") {
         await ensurePreviewWindow();
@@ -259,7 +272,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         // A freshly created webview misses this emit (still booting) — its
         // ready announcement fetches the current state instead; an already
         // -open window hears it directly.
-        void emit("preview://show", { ...payload, detail, zoom });
+        void emit("preview://show", message);
       }
     } catch (error) {
       log.error("preview open failed", toErrorFields(error));
@@ -390,5 +403,7 @@ export function handleSpaceLook(event: { preventDefault: () => void }): boolean 
  * deeper" — Space peeks at fit, Enter inspects pixels). */
 export async function showPreview(payload: PreviewPayload, zoom = false): Promise<void> {
   const { useItemsStore } = await import("./items-store");
-  await usePreviewStore.getState().open(payload, useItemsStore.getState().detail, zoom);
+  await usePreviewStore
+    .getState()
+    .open(payload, useItemsStore.getState().detail, { zoom });
 }

@@ -46,3 +46,24 @@ describe("settings timezone validation", () => {
     );
   });
 });
+
+describe("video playback preferences", () => {
+  it("defaults both independent autoplay choices on", () => {
+    expect(useSettingsStore.getState().draft).toMatchObject({
+      videoAutoplayOnShow: true,
+      videoAutoplayAfterSnapshot: true,
+    });
+  });
+
+  it("preserves explicit off choices", () => {
+    useSettingsStore.getState().openWith({
+      ...config,
+      videoAutoplayOnShow: false,
+      videoAutoplayAfterSnapshot: false,
+    });
+    expect(useSettingsStore.getState().draft).toMatchObject({
+      videoAutoplayOnShow: false,
+      videoAutoplayAfterSnapshot: false,
+    });
+  });
+});

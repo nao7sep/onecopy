@@ -167,23 +167,16 @@ export default function App() {
     return installActivityPings(window);
   }, []);
 
-  // A newly opened preview window asks for the current selection; answer
-  // with the payload AND the already-fetched detail (the window queries
-  // nothing itself).
+  // A newly opened preview window asks for the exact message already owned
+  // by the preview store. Rebuilding it from selection would lose one-shot
+  // presentation intent such as image zoom or a video snapshot seek.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void import("@tauri-apps/api/event").then(async ({ listen, emit }) => {
       const fn = await listen("preview://ready", () => {
-        const { items, selectedItem, detail } = useItemsStore.getState();
-        const item = items.find((i) => itemKey(i) === selectedItem);
-        if (item) {
-          void emit("preview://show", {
-            hash: item.hash,
-            pathId: item.hash === null ? item.pathId : null,
-            detail,
-          });
-        }
+        const current = usePreviewStore.getState().current;
+        if (current !== null) void emit("preview://show", current);
       });
       if (disposed) fn();
       else unlisten = fn;
@@ -838,6 +831,8 @@ export default function App() {
                 detail={previewCurrent?.detail ?? null}
                 pathId={previewCurrent?.pathId ?? null}
                 zoom={previewCurrent?.zoom === true}
+                seekMs={previewCurrent?.seekMs}
+                playAfterSeek={previewCurrent?.playAfterSeek}
               />
               <button
                 aria-label="Close preview"

@@ -21,6 +21,11 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["goodRangeStartYear"], serde_json::json!(1995));
     assert_eq!(value["similarityMaxGapSeconds"], serde_json::json!(90));
     assert_eq!(value["previewLongEdgePx"], serde_json::json!(1600));
+    assert_eq!(value["videoAutoplayOnShow"], serde_json::json!(true));
+    assert_eq!(
+        value["videoAutoplayAfterSnapshot"],
+        serde_json::json!(true)
+    );
     assert_eq!(value["pairingEnabled"], serde_json::json!(true));
     assert_eq!(value["verifyAfterCopy"], serde_json::json!(true));
     assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));

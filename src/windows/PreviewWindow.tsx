@@ -124,6 +124,8 @@ export default function PreviewWindow() {
           detail={message.detail}
           pathId={message.pathId}
           zoom={message.zoom === true}
+          seekMs={message.seekMs}
+          playAfterSeek={message.playAfterSeek}
         />
       </div>
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">

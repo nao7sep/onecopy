@@ -1,8 +1,8 @@
 // ONE preview surface, two placements: the second-monitor preview window and
 // the main window's split pane both render this. Images show the cached
-// preview at fit (Z/click for the true 100% view); videos show the poster and
-// strip with playback as an EXPLICIT act — auto-mounting <video> while the
-// selection scrubs would read a 1 MiB original head-chunk per keystroke.
+// preview at fit (Z/click for the true 100% view); videos share one player,
+// scene rail, and transcript layout. Playback is delayed briefly so keyboard
+// selection can settle without starting every video crossed along the way.
 // Detail arrives as a prop (the anchor owner fetched it once); the surface
 // itself fetches nothing.
 
@@ -16,33 +16,74 @@ import {
   originalUrl,
   originalUrlByPath,
   previewUrl,
+  stripTimestampMs,
   stripUrl,
+  timestampLabel,
 } from "../models/items";
 import ZoomableImage from "./ZoomableImage";
 import type { ItemDetail } from "../state/items-store";
-import { Play } from "lucide-react";
+import { ExternalLink } from "lucide-react";
+import TranscriptBlock from "./TranscriptBlock";
+import { useAppStore } from "../state/app-store";
 
-function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
-  const [playing, setPlaying] = useState(false);
+function VideoSurface({
+  hash,
+  detail,
+  seekMs,
+  playAfterSeek,
+}: {
+  hash: string;
+  detail: ItemDetail;
+  seekMs?: number;
+  playAfterSeek?: boolean;
+}) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const autoplayOnShow = useAppStore(
+    (state) => state.appData?.config?.videoAutoplayOnShow !== false,
+  );
+  const autoplayAfterSnapshot = useAppStore(
+    (state) => state.appData?.config?.videoAutoplayAfterSnapshot !== false,
+  );
+  const sceneCount = Math.max(0, detail.stripFrames ?? 0);
 
-  // The one exception in "Space = look": with a video loaded here, Space
-  // plays/pauses it (the media convention) instead of closing the preview.
-  // The store's shared Space rule DECLINES the key in that state, so this
-  // listener is the only claimant left standing.
+  const seek = (atMs: number, play: boolean) => {
+    const video = videoRef.current;
+    if (video === null) return;
+    video.currentTime = atMs / 1000;
+    if (play) void video.play().catch(() => undefined);
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null) return;
+    const timer = setTimeout(() => {
+      if (autoplayOnShow && seekMs === undefined) {
+        void video.play().catch(() => undefined);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [autoplayOnShow, hash, seekMs]);
+
+  useEffect(() => {
+    if (seekMs === undefined) return;
+    const video = videoRef.current;
+    if (video === null) return;
+    const apply = () => seek(seekMs, playAfterSeek ?? autoplayAfterSnapshot);
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) apply();
+    else video.addEventListener("loadedmetadata", apply, { once: true });
+    return () => video.removeEventListener("loadedmetadata", apply);
+  }, [autoplayAfterSnapshot, playAfterSeek, seekMs]);
+
+  // A focused player owns Space; the main look/close rule stands down here.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== " " || event.metaKey || event.ctrlKey || event.altKey) return;
-      if (hasOpenModal()) return;
-      if (isEditableTarget(event.target)) return;
+      if (hasOpenModal() || isEditableTarget(event.target)) return;
       event.preventDefault();
       const video = videoRef.current;
-      if (video === null) {
-        setPlaying(true);
-        return;
-      }
-      if (video.paused) void video.play();
+      if (video === null) return;
+      if (video.paused) void video.play().catch(() => undefined);
       else video.pause();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -50,63 +91,70 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
   }, []);
 
   return (
-    <div className="flex h-full w-full flex-col items-center gap-2 overflow-y-auto">
-      {playing && !playbackFailed ? (
-        <video
-          ref={videoRef}
-          controls
-          autoPlay
-          poster={previewUrl(hash)}
-          src={originalUrl(hash)}
-          className="max-h-[70%] max-w-full"
-          onError={() => setPlaybackFailed(true)}
-        />
-      ) : (
-        <div className="relative flex max-h-[70%] items-center justify-center">
+    <div className="flex h-full min-h-0 w-full flex-col gap-2">
+      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg bg-background">
+        {playbackFailed ? (
           <img
             src={previewUrl(hash)}
             alt={detail.fileName}
-            className="max-h-full max-w-full object-contain"
+            className="h-full w-full object-contain"
           />
-          {!playbackFailed ? (
-            <button
-              className="absolute whitespace-nowrap rounded-full bg-background/80 px-4 py-2 text-sm text-ink hover:bg-background"
-              onClick={() => setPlaying(true)}
-            >
-              <Play size={14} className="mr-1 inline-block align-[-0.15em]" /> Play
-            </button>
-          ) : null}
-        </div>
-      )}
-      <div className="flex flex-wrap justify-center gap-1">
-        {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => (
-          <img
-            key={i}
-            src={stripUrl(hash, i)}
-            alt={`snapshot ${i + 1}`}
-            loading="lazy"
-            className="h-24 rounded-lg border border-border"
+        ) : (
+          <video
+            ref={videoRef}
+            controls
+            playsInline
+            poster={previewUrl(hash)}
+            src={originalUrl(hash)}
+            className="h-full w-full object-contain"
+            onError={() => setPlaybackFailed(true)}
           />
-        ))}
+        )}
+        <button
+          className="absolute right-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
+          onClick={() => {
+            void invoke("open_item_externally", { hash }).catch((error) =>
+              log.warn("open in player failed", toErrorFields(error)),
+            );
+          }}
+        >
+          <ExternalLink size={13} /> Open in player
+        </button>
+        {sceneCount > 0 ? (
+          <div className="absolute inset-x-2 bottom-10 flex gap-1 overflow-x-auto rounded-lg bg-background/75 p-1.5 backdrop-blur-sm">
+            {Array.from({ length: sceneCount }, (_, index) => {
+              const atMs = stripTimestampMs(detail.durationMs ?? 0, sceneCount, index);
+              return (
+                <button
+                  key={index}
+                  className="relative h-16 w-24 shrink-0 overflow-hidden rounded border border-border hover:border-primary-ring"
+                  title={`Play from ${timestampLabel(atMs)}`}
+                  aria-label={`Play from ${timestampLabel(atMs)}`}
+                  onClick={() => seek(atMs, autoplayAfterSnapshot)}
+                >
+                  <img
+                    src={stripUrl(hash, index)}
+                    alt={`snapshot at ${timestampLabel(atMs)}`}
+                    loading="lazy"
+                    className="h-full w-full object-cover"
+                  />
+                  <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[10px] text-ink">
+                    {timestampLabel(atMs)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
       {playbackFailed ? (
-        <p className="text-xs text-ink-muted">
-          This codec does not play in the app's webview.
+        <p className="shrink-0 text-xs text-ink-muted">
+          This codec does not play in the app. Open it in your player instead.
         </p>
       ) : null}
-      <button
-        className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-3 text-sm font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
-        onClick={() => {
-          // The core resolves the hash to a live copy itself — the JS opener
-          // route was scope-rejected into a silent no-op, so this button did
-          // nothing for the exact user it exists for (unplayable codec).
-          void invoke("open_item_externally", { hash }).catch((error) =>
-            log.warn("open in player failed", toErrorFields(error)),
-          );
-        }}
-      >
-        Open in player
-      </button>
+      <div className="max-h-[35%] shrink-0 overflow-hidden">
+        <TranscriptBlock hash={hash} />
+      </div>
     </div>
   );
 }
@@ -192,6 +240,8 @@ export default function PreviewSurface({
   detail,
   pathId = null,
   zoom = false,
+  seekMs,
+  playAfterSeek,
 }: {
   hash: string | null;
   detail: ItemDetail | null;
@@ -199,6 +249,10 @@ export default function PreviewSurface({
   pathId?: number | null;
   /** Enter's inspect: the image mounts at 100%. */
   zoom?: boolean;
+  /** A scene rail can open the player at this exact point. */
+  seekMs?: number;
+  /** Overrides the snapshot autoplay preference for this one navigation. */
+  playAfterSeek?: boolean;
 }) {
   if (detail !== null && isAudioFile(detail.fileName)) {
     const src =
@@ -225,7 +279,13 @@ export default function PreviewSurface({
     <div className="flex h-full min-h-0 items-center justify-center overflow-hidden p-2">
       {detail?.kind === "video" ? (
         // Keyed by hash so playback state never carries across files.
-        <VideoSurface key={hash} hash={hash} detail={detail} />
+        <VideoSurface
+          key={hash}
+          hash={hash}
+          detail={detail}
+          seekMs={seekMs}
+          playAfterSeek={playAfterSeek}
+        />
       ) : (
         <ImageSurface
           key={hash}

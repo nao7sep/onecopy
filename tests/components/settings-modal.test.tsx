@@ -70,6 +70,20 @@ describe("Settings categories", () => {
       similarityDiameterMultiplier: 2,
     });
   });
+
+  it("puts video playback choices together and face scoring before trash behavior", () => {
+    render(<SettingsModal />);
+    fireEvent.click(screen.getByRole("tab", { name: "Media" }));
+    expect(screen.getByLabelText("Play videos automatically when shown")).toBeTruthy();
+    expect(screen.getByLabelText("Play after choosing a snapshot")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
+    const labels = Array.from(screen.getByRole("tabpanel").querySelectorAll("label")).map(
+      (label) => label.textContent,
+    );
+    expect(labels.indexOf("Score faces for photo ordering (background, needs the face models)"))
+      .toBeLessThan(labels.indexOf("Confirm before moving items to trash"));
+  });
 });
 
 describe("settings save state", () => {

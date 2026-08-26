@@ -6,12 +6,18 @@
 // so they are asserted through the real component and a real keydown.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, act } from "@testing-library/react";
 import ScenesModal from "../../src/components/ScenesModal";
 import { useItemsStore } from "../../src/state/items-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
+import { useTranscriptStore } from "../../src/state/transcript-store";
 import type { SectionItem } from "../../src/models/items";
-import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  fireEvent,
+  invokeCalls,
+  mockCommands,
+  resetTauriMocks,
+} from "../mocks/tauri";
 
 function video(pathId: number): SectionItem {
   return {
@@ -74,7 +80,8 @@ function deleteInvokes() {
 }
 
 beforeEach(() => {
-  resetTauriMocks();
+  resetTauriMocks({ keepListeners: true });
+  fireEvent("transcribe://cancelled", { hash: "h2" });
   mockCommands({
     transcript_get: () => ({ status: "pending", text: null, message: null }),
     patch_state: () => ({}),
@@ -85,6 +92,17 @@ beforeEach(() => {
   });
   useBinariesStore.setState({
     entries: [
+      {
+        id: "ffmpeg",
+        label: "ffmpeg",
+        kind: "binary",
+        status: "up-to-date",
+        installedVersion: "8.0",
+        facts: { latestKnownVersion: "8.0", lastCheckedAtUtc: null },
+        path: "/tools/ffmpeg",
+        checkable: true,
+        released: null,
+      },
       {
         id: "whisper-large-v3-turbo",
         label: "Transcription model",
@@ -98,11 +116,13 @@ beforeEach(() => {
       },
     ],
   });
+  useTranscriptStore.setState({ rows: {} });
   seedMultiSelection();
 });
 
 afterEach(() => {
   useBinariesStore.setState({ entries: [] });
+  useTranscriptStore.setState({ rows: {} });
   cleanup();
 });
 
@@ -185,5 +205,37 @@ describe("transcription start", () => {
     render(<ScenesModal hash="h2" onClose={() => {}} />);
     expect(await screen.findByText(/No speech found/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Transcribe" })).toBeNull();
+  });
+
+  it("shows automatic progress and returns cancellation to pending", async () => {
+    render(<ScenesModal hash="h2" onClose={() => {}} />);
+    expect(await screen.findByText("Not transcribed yet.")).toBeTruthy();
+
+    act(() => fireEvent("transcribe://progress", { hash: "h2", percent: 42 }));
+    expect(screen.getByText("Transcribing — 42%")).toBeTruthy();
+
+    act(() => fireEvent("transcribe://cancelled", { hash: "h2" }));
+    expect(screen.getByText("Not transcribed yet.")).toBeTruthy();
+    expect(screen.queryByText(/failed/i)).toBeNull();
+  });
+
+  it("does not let a slow pending receipt erase newer automatic progress", async () => {
+    let settle: ((value: { status: "pending"; text: null; message: null }) => void) | undefined;
+    mockCommands({
+      transcript_get: () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    });
+    render(<ScenesModal hash="h2" onClose={() => {}} />);
+    expect(screen.getByText("Loading transcript…")).toBeTruthy();
+
+    act(() => fireEvent("transcribe://progress", { hash: "h2", percent: 7 }));
+    expect(screen.getByText("Transcribing — 7%")).toBeTruthy();
+
+    await act(async () => {
+      settle?.({ status: "pending", text: null, message: null });
+    });
+    expect(screen.getByText("Transcribing — 7%")).toBeTruthy();
   });
 });

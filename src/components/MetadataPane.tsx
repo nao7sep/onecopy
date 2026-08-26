@@ -2,13 +2,22 @@ import { useEffect, useState } from "react";
 import { FolderOpen, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { formatBytes, stripUrl, thumbUrl } from "../models/items";
+import {
+  formatBytes,
+  stripTimestampMs,
+  stripUrl,
+  thumbUrl,
+  timestampLabel,
+} from "../models/items";
 import { itemKey, useItemsStore, type ItemDetail } from "../state/items-store";
 import { useComparisonStore, type GroupMember } from "../state/comparison-store";
 import { formatLocalMinute } from "../utils/displayTime";
 import { fileManagerWord } from "../utils/shortcuts";
 import { log, toErrorFields } from "../repositories";
 import Button from "./ui/Button";
+import TranscriptBlock from "./TranscriptBlock";
+import { usePreviewStore } from "../state/preview-store";
+import { useAppStore } from "../state/app-store";
 
 // The right pane's metadata tab: content facts, the resolved capture time
 // with its source, and the full copy-path list — the live health check (1 copy
@@ -71,13 +80,18 @@ function SimilarSection({ hash }: { hash: string }) {
   if (members.length < 2) return null;
   return (
     <div className="mb-1 mt-3">
-      <dt className="text-xs text-ink-muted">Similar ({members.length})</dt>
-      <dd className="mt-1 flex flex-wrap gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <dt className="text-xs text-ink-muted">Similar ({members.length})</dt>
+        <Button onClick={() => void useComparisonStore.getState().openGroup(hash)}>
+          Compare
+        </Button>
+      </div>
+      <dd className="mt-1 flex gap-1 overflow-x-auto pb-1">
         {members.map((member) => (
-          <span key={member.hash} className="group/similar relative">
+          <span key={member.hash} className="group/similar relative shrink-0">
             <button
               title={member.fileName}
-              className={`h-12 w-12 overflow-hidden rounded-md border transition-colors ${
+              className={`h-20 w-20 shrink-0 overflow-hidden rounded-md border bg-background transition-colors ${
                 member.hash === hash
                   ? "border-primary-ring ring-1 ring-primary-ring"
                   : "border-border hover:border-border-strong"
@@ -94,7 +108,7 @@ function SimilarSection({ hash }: { hash: string }) {
                 src={thumbUrl(member.hash)}
                 alt={member.fileName}
                 loading="lazy"
-                className="h-full w-full object-cover"
+                className="h-full w-full object-contain"
               />
             </button>
             {/* The unlink where intruders are usually SPOTTED. Non-destructive
@@ -117,11 +131,6 @@ function SimilarSection({ hash }: { hash: string }) {
             </button>
           </span>
         ))}
-      </dd>
-      <dd className="mt-1.5">
-        <Button onClick={() => void useComparisonStore.getState().openGroup(hash)}>
-          Compare
-        </Button>
       </dd>
     </div>
   );
@@ -151,6 +160,9 @@ export default function MetadataPane({
   detail: ItemDetail | null;
   hash: string | null;
 }) {
+  const playAfterSnapshot = useAppStore(
+    (state) => state.appData?.config?.videoAutoplayAfterSnapshot !== false,
+  );
   if (detail === null) {
     return <p className="p-3 text-sm text-ink-muted">No selection</p>;
   }
@@ -167,18 +179,46 @@ export default function MetadataPane({
       {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
         <div className="mb-2">
           <dt className="text-xs text-ink-muted">Snapshots</dt>
-          <dd className="mt-1 flex flex-col gap-1">
-            {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => (
-              <img
-                key={i}
-                src={stripUrl(hash, i)}
-                alt={`snapshot ${i + 1}`}
-                loading="lazy"
-                className="w-full rounded border border-border"
-              />
-            ))}
+          <dd className="mt-1 flex gap-1 overflow-x-auto pb-1">
+            {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => {
+              const atMs = stripTimestampMs(
+                detail.durationMs ?? 0,
+                detail.stripFrames ?? 0,
+                i,
+              );
+              return (
+                <button
+                  key={i}
+                  className="relative h-20 w-20 shrink-0 overflow-hidden rounded border border-border bg-background hover:border-border-strong"
+                  title={`Show video at ${timestampLabel(atMs)}`}
+                  aria-label={`Show video at ${timestampLabel(atMs)}`}
+                  onClick={() =>
+                    void usePreviewStore
+                      .getState()
+                      .open(
+                        { hash, pathId: null },
+                        detail,
+                        { seekMs: atMs, playAfterSeek: playAfterSnapshot },
+                      )
+                  }
+                >
+                  <img
+                    src={stripUrl(hash, i)}
+                    alt={`snapshot at ${timestampLabel(atMs)}`}
+                    loading="lazy"
+                    className="h-full w-full object-contain"
+                  />
+                  <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[10px] text-ink">
+                    {timestampLabel(atMs)}
+                  </span>
+                </button>
+              );
+            })}
           </dd>
         </div>
+      ) : null}
+      {detail.kind === "video" && hash !== null ? (
+        <TranscriptBlock hash={hash} variant="compact" />
       ) : null}
       {detail.width !== null && detail.height !== null ? (
         <Row label="Dimensions" value={`${detail.width} × ${detail.height}`} />

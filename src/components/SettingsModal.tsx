@@ -441,6 +441,16 @@ export default function SettingsModal() {
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Videos
           </h2>
+          <CheckField
+            label="Play videos automatically when shown"
+            checked={draft.videoAutoplayOnShow}
+            onChange={(v) => update({ videoAutoplayOnShow: v })}
+          />
+          <CheckField
+            label="Play after choosing a snapshot"
+            checked={draft.videoAutoplayAfterSnapshot}
+            onChange={(v) => update({ videoAutoplayAfterSnapshot: v })}
+          />
           <NumberField
             label="Seconds per snapshot frame"
             value={draft.videoStripSecondsPerFrame}
@@ -535,14 +545,14 @@ export default function SettingsModal() {
             onChange={(v) => update({ verifyAfterCopy: v })}
           />
           <CheckField
-            label="Confirm before moving items to trash"
-            checked={draft.confirmTrashDelete}
-            onChange={(v) => update({ confirmTrashDelete: v })}
-          />
-          <CheckField
             label="Score faces for photo ordering (background, needs the face models)"
             checked={draft.scoreFaces}
             onChange={(v) => update({ scoreFaces: v })}
+          />
+          <CheckField
+            label="Confirm before moving items to trash"
+            checked={draft.confirmTrashDelete}
+            onChange={(v) => update({ confirmTrashDelete: v })}
           />
         </div>
       ) : null}
