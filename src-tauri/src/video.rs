@@ -79,7 +79,7 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
     // carries the stream banner we parse.
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-i"]).arg(src);
-    let run = crate::subprocess::run_bounded(cmd, &crate::derived_work::cancelled)?;
+    let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
     parse_duration_ms(&run.stderr)
         .ok_or_else(|| format!("no Duration in ffmpeg output for {}", src.display()))
 }
@@ -95,7 +95,7 @@ fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Re
         .arg(src)
         .args(["-frames:v", "1", "-q:v", "3", "-update", "1", "-y"])
         .arg(staged_jpg);
-    let run = crate::subprocess::run_bounded(cmd, &crate::derived_work::cancelled)?;
+    let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
     if !run.status_ok {
         return Err(format!("frame extraction failed at {seconds}s for {}", src.display()));
     }

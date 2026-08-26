@@ -5,6 +5,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
 pub mod background_work;
+pub mod derived_runtime;
 pub mod derived_work;
 pub mod derived_state;
 pub mod binaries;
@@ -965,7 +966,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
         "ensure_fullres",
         json!({ "hash": hash }),
         || {
-            let _work = derived_work::begin_manual(&app, "previews")?;
+            let _work = derived_runtime::begin_manual(&app, "previews")?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let cache_root = cache_root().ok_or("data root unset")?;
@@ -988,7 +989,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
-    let work = derived_work::begin_manual(&app, "transcripts")?;
+    let work = derived_runtime::begin_manual(&app, "transcripts")?;
     let claim = transcription::claim()?;
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -1022,7 +1023,7 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 &hash,
                 move |percent| {
                     let percent = percent.clamp(0, 100);
-                    derived_work::report_manual_progress(
+                    derived_runtime::report_manual_progress(
                         &progress_handle,
                         "transcripts",
                         percent as u64,
@@ -1126,7 +1127,11 @@ fn background_work_snapshot(
     let data_root = paths::data_root(&app)?;
     background_work::snapshot(
         &data_root,
-        derived_work::runtime_snapshot()?,
+        derived_runtime::snapshot(derived_runtime::RuntimeConditions {
+            busy: !derived_work::available(),
+            idle: derived_work::is_idle(),
+            similarity_dirty: derived_work::similarity_dirty(),
+        })?,
         derived_work::work_capabilities(&data_root)?,
     )
 }
@@ -1137,7 +1142,9 @@ fn background_work_set_paused(
     class_id: Option<String>,
     paused: bool,
 ) -> Result<(), String> {
-    derived_work::set_paused(&app, class_id.as_deref(), paused)
+    derived_runtime::set_paused(&app, class_id.as_deref(), paused)?;
+    derived_work::wake(false);
+    Ok(())
 }
 
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output

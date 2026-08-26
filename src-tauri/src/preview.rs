@@ -157,7 +157,7 @@ fn decode_via_ffmpeg_bounded(
         cmd.args(["-vf", &format!("scale='min({edge},iw)':-2")]);
     }
     cmd.args(["-f", "image2pipe", "-c:v", "bmp", "-"]);
-    let run = crate::subprocess::run_bounded(cmd, &crate::derived_work::cancelled)?;
+    let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
     if !run.status_ok || run.stdout.is_empty() {
         // The recent-output tail, bounded — the whole point is diagnosing
         // this one file, not carrying an ffmpeg essay into a DB column.
@@ -638,7 +638,7 @@ fn derive_images_pending_limit(
     let mut done = 0u64;
 
     for (hash, path) in rows {
-        if crate::derived_work::cancelled() {
+        if crate::derived_runtime::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
 

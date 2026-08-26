@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::derived_state::{WorkCapabilities, WorkClass};
-use crate::derived_work::RuntimeSnapshot;
+use crate::derived_runtime::RuntimeSnapshot;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

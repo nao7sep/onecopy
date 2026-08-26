@@ -83,7 +83,14 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
     let value = serde_json::to_value(
         snapshot(
             dir.path(),
-            onecopy_lib::derived_work::runtime_snapshot().unwrap(),
+            onecopy_lib::derived_runtime::snapshot(
+                onecopy_lib::derived_runtime::RuntimeConditions {
+                    busy: false,
+                    idle: true,
+                    similarity_dirty: false,
+                },
+            )
+            .unwrap(),
             onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
         )
         .unwrap(),
@@ -117,7 +124,14 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
     let value = serde_json::to_value(
         snapshot(
             dir.path(),
-            onecopy_lib::derived_work::runtime_snapshot().unwrap(),
+            onecopy_lib::derived_runtime::snapshot(
+                onecopy_lib::derived_runtime::RuntimeConditions {
+                    busy: false,
+                    idle: true,
+                    similarity_dirty: false,
+                },
+            )
+            .unwrap(),
             onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
         )
         .unwrap(),
