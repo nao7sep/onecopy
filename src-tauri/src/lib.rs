@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -30,6 +28,7 @@ pub mod preview;
 pub mod queries;
 pub mod resolution;
 pub mod scanner;
+pub mod scan_runtime;
 pub mod similarity;
 pub mod similar_exclusions;
 pub mod storage;
@@ -41,12 +40,6 @@ pub mod video;
 pub mod volume;
 pub mod watcher;
 pub mod winpath;
-
-/// Whether the full scan pipeline is currently running (the watcher defers to
-/// it — the scan's own walk covers whatever changed).
-pub fn scan_running() -> bool {
-    SCAN_RUNNING.load(Ordering::SeqCst)
-}
 
 // Records the panic payload, location, and (when RUST_BACKTRACE is set) the
 // backtrace, flushes, then defers to the previous hook so the process still
@@ -170,14 +163,6 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
     )
 }
 
-// One scan pipeline at a time; a second start is a no-op reported as `false`.
-static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
-
-// The live scan worker, joined at exit so a quit interrupts the scan through
-// the cooperative cancel flag instead of killing it mid-write.
-static SCAN_THREAD: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
-    std::sync::Mutex::new(None);
-
 // The storage root, for the mediafile protocol's hash→path lookups.
 pub(crate) static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
@@ -193,131 +178,7 @@ fn cache_root() -> Option<std::path::PathBuf> {
 // false when a scan is already running.
 #[tauri::command(async)]
 fn start_scan(app: AppHandle) -> Result<bool, String> {
-    spawn_scan(app, true)
-}
-
-// The one scan spawner: `include_walk` distinguishes the full scan (walk +
-// tail) from the startup resume, which runs only the pipeline tail over the
-// checkpointed pending rows. A cancelled run (app exit) reports as
-// `scan://done { cancelled: true }`, never as an error — the pending rows are
-// the resume point, and the next launch picks them up.
-/// `(resume_wanted, needs_walk)`. A root whose walk was interrupted must be
-/// RE-WALKED, not just tailed: `pending_index_work_exists` probes rows, and a
-/// cancelled walk leaves whole directories with no rows at all, so once the
-/// tail drains what the partial walk created it reports clean forever while
-/// months stay silently empty.
-fn resume_plan(data_root: &std::path::Path) -> (bool, bool) {
-    let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) else {
-        return (false, false);
-    };
-    let roots = match storage::load_config_source_dirs(data_root) {
-        Ok(roots) => roots,
-        Err(err) => {
-            logging::warn(
-                "source dirs unreadable for resume",
-                json!({ "error": { "message": err } }),
-            );
-            Vec::new()
-        }
-    };
-    let needs_walk = !roots.is_empty()
-        && match scanner::walk_owed(&conn, &roots) {
-            Ok(owed) => owed,
-            Err(err) => {
-                logging::warn(
-                    "walk-owed probe failed",
-                    json!({ "error": { "message": err } }),
-                );
-                false
-            }
-        };
-    if needs_walk {
-        return (true, true);
-    }
-    match scanner::pending_index_work_exists(&conn) {
-        Ok(pending) => (pending, false),
-        Err(err) => {
-            logging::warn(
-                "pending-work probe failed",
-                json!({ "error": { "message": err } }),
-            );
-            (false, false)
-        }
-    }
-}
-
-fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
-    if SCAN_RUNNING.swap(true, Ordering::SeqCst) {
-        return Ok(false);
-    }
-    scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
-    let prepared = (|| -> Result<(), String> {
-        let data_root = paths::data_root(&app)?;
-        let config = storage::read_config_for_setup(&data_root)?;
-        let settings = scanner::settings_from_config(
-            config.as_ref(),
-            &data_root,
-            chrono::Utc::now().timestamp_millis(),
-        );
-        let db_file = data_root.join(storage::INDEX_DB_FILE_NAME);
-        let handle = app.clone();
-
-        let worker = std::thread::spawn(move || {
-            // Sleep inhibition for the day-scale first index (config-gated).
-            // Display sleep stays allowed; only system sleep is held off.
-            let _awake = settings.keep_awake.then(|| {
-                keepawake::Builder::default()
-                    .idle(true)
-                    .sleep(true)
-                    .reason("Indexing media")
-                    .app_name("OneCopy")
-                    .create()
-                    .ok()
-            });
-
-            let emit_progress = |phase: &str, detail: String| {
-                let _ = handle.emit("scan://progress", json!({ "phase": phase, "detail": detail }));
-            };
-
-            let outcome = index_store::open(&db_file).and_then(|conn| {
-                if include_walk {
-                    scanner::run_full_scan(&conn, &settings, &emit_progress)
-                } else {
-                    let mut summary = scanner::ScanSummary::default();
-                    scanner::run_index_tail(&conn, &settings, &emit_progress, &mut summary)
-                        .map(|()| summary)
-                }
-            });
-            match outcome {
-                Ok(summary) => {
-                    logging::info("scan complete", json!({ "summary": summary }));
-                    let _ = handle.emit("scan://done", json!({ "summary": summary }));
-                    derived_work::wake(true);
-                }
-                Err(err) if err == scanner::CANCELLED => {
-                    logging::info("scan cancelled", json!({ "resumesAtNextLaunch": true }));
-                    let _ = handle.emit("scan://done", json!({ "cancelled": true }));
-                }
-                Err(err) => {
-                    logging::error("scan failed", json!({ "error": { "message": err.clone() } }));
-                    let _ = handle.emit("scan://error", json!({ "message": err }));
-                }
-            }
-            SCAN_RUNNING.store(false, Ordering::SeqCst);
-        });
-        if let Ok(mut slot) = SCAN_THREAD.lock() {
-            *slot = Some(worker);
-        }
-        Ok(())
-    })();
-
-    match prepared {
-        Ok(()) => Ok(true),
-        Err(err) => {
-            SCAN_RUNNING.store(false, Ordering::SeqCst);
-            Err(err)
-        }
-    }
+    scan_runtime::start(app, true)
 }
 
 // The volume-loss guard (the session gate's runtime counterpart): destructive
@@ -1559,13 +1420,13 @@ pub fn run() {
             let configured = storage::load_config_source_dirs(&data_root).unwrap_or_default();
             if !configured.is_empty() {
                 logging::info("scan started at launch", json!({ "roots": configured.len() }));
-                let _ = spawn_scan(app.handle().clone(), true);
+                let _ = scan_runtime::start(app.handle().clone(), true);
             } else {
                 // No roots yet (first run): only finish work already begun.
-                let (resume, needs_walk) = resume_plan(&data_root);
+                let (resume, needs_walk) = scan_runtime::resume_plan(&data_root);
                 if resume {
                     logging::info("scan resumed at startup", json!({ "walk": needs_walk }));
-                    let _ = spawn_scan(app.handle().clone(), needs_walk);
+                    let _ = scan_runtime::start(app.handle().clone(), needs_walk);
                 }
             }
 
@@ -1664,13 +1525,11 @@ pub fn run() {
         // the worker starts winding down, then join it at Exit — bounded by
         // the per-item cancel checks — so no SQLite write is killed halfway.
         tauri::RunEvent::ExitRequested { .. } => {
-            scanner::SCAN_CANCEL.store(true, Ordering::Relaxed);
+            scan_runtime::request_cancel();
         }
         tauri::RunEvent::Exit => {
-            scanner::SCAN_CANCEL.store(true, Ordering::Relaxed);
-            if let Some(worker) = SCAN_THREAD.lock().ok().and_then(|mut slot| slot.take()) {
-                let _ = worker.join();
-            }
+            scan_runtime::request_cancel();
+            scan_runtime::join();
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
         _ => {}

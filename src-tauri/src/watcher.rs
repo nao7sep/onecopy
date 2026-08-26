@@ -193,7 +193,7 @@ pub fn collect(
 /// Re-stats the dirty directories and runs the pending index tail. Waits
 /// out an in-flight full scan (its walk covers the changes anyway).
 fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
-    if crate::scan_running() {
+    if crate::scan_runtime::running() {
         return Ok(0);
     }
     let data_root = crate::paths::data_root(app)?;

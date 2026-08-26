@@ -181,11 +181,11 @@ fn now_ms() -> i64 {
 pub fn is_idle() -> bool {
     now_ms() - LAST_ACTIVITY_MS.load(Ordering::SeqCst) >= IDLE_AFTER_MS
         && HEAVY_OPS.load(Ordering::SeqCst) == 0
-        && !crate::scan_running()
+        && !crate::scan_runtime::running()
 }
 
 pub(crate) fn available() -> bool {
-    HEAVY_OPS.load(Ordering::SeqCst) == 0 && !crate::scan_running()
+    HEAVY_OPS.load(Ordering::SeqCst) == 0 && !crate::scan_runtime::running()
 }
 
 pub(crate) fn similarity_dirty() -> bool {
