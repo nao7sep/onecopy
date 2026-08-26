@@ -27,6 +27,7 @@ import {
   setCurrentMonitor,
   setMonitors,
   setWindowCreatedHook,
+  WebviewWindow,
 } from "../mocks/tauri";
 
 function member(hash: string, width = 4000, height = 3000): GroupMember {
@@ -73,6 +74,26 @@ beforeEach(() => {
 });
 
 describe("opening a group across screens", () => {
+  it("does not hide Preview until a live comparison session exists", async () => {
+    const preview = new WebviewWindow("preview");
+    mockCommands({
+      get_similar_group: () => [member("only")],
+      patch_state: () => ({}),
+    });
+
+    expect(await useComparisonStore.getState().openGroup("only")).toBe(false);
+    expect(preview.hide).not.toHaveBeenCalled();
+
+    mockCommands({ get_similar_group: () => [member("a"), member("b")] });
+    let openWhenHidden = false;
+    preview.hide.mockImplementation(async () => {
+      openWhenHidden = useComparisonStore.getState().open;
+    });
+    expect(await useComparisonStore.getState().openGroup("a")).toBe(true);
+    expect(preview.hide).toHaveBeenCalledOnce();
+    expect(openWhenHidden).toBe(true);
+  });
+
   it("publishes the session before any window can ask for it", async () => {
     setMonitors(TWO_SCREENS);
     // Six landscape members: past one screen's four slots, so the spread is

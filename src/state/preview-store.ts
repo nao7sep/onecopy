@@ -159,19 +159,6 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
   }
 }
 
-/** The comparison session owns every screen it claims — a preview window
- * left up can sit exactly where a spread window's slot renders and read as a
- * giant extra photo (seen in the developer's 5-member walk). Hidden at open,
- * restored at close IF it was the active placement. */
-export async function hidePreviewForComparison(): Promise<void> {
-  const { follow, placement } = usePreviewStore.getState();
-  if (!follow || placement !== "window") return;
-  const existing = await WebviewWindow.getByLabel("preview").catch(() => null);
-  if (existing !== null) {
-    await existing.hide().catch(reportWindowCall("preview hide"));
-  }
-}
-
 export async function restorePreviewAfterComparison(): Promise<void> {
   const { follow, placement } = usePreviewStore.getState();
   if (!follow || placement !== "window") return;

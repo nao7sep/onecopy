@@ -15,10 +15,7 @@ import {
 } from "../state/comparison-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
-import {
-  hidePreviewForComparison,
-  restorePreviewAfterComparison,
-} from "../state/preview-store";
+import { restorePreviewAfterComparison } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 import { hasOpenModal } from "../utils/modalStack";
 
@@ -54,12 +51,7 @@ async function applyCommitResult(
 }
 
 export async function openComparison(hash: string): Promise<boolean> {
-  await hidePreviewForComparison();
-  const opened = await useComparisonStore.getState().openGroup(hash, appState());
-  if (!opened && !useComparisonStore.getState().open) {
-    await restorePreviewAfterComparison();
-  }
-  return opened;
+  return await useComparisonStore.getState().openGroup(hash, appState());
 }
 
 export async function closeComparison(): Promise<void> {

@@ -427,6 +427,16 @@ async function openSpread(
   }
 }
 
+/** A valid comparison claims the screens its spread will use. Hide an
+ * existing Preview window only after the session is published, immediately
+ * before spread creation; an invalid/stale group must never flicker Preview. */
+async function hidePreviewWindowForComparison(): Promise<void> {
+  const preview = await WebviewWindow.getByLabel("preview").catch(() => null);
+  if (preview !== null) {
+    await preview.hide().catch(reportWindowCall("preview hide"));
+  }
+}
+
 function recoverSingleWindowComparison(): void {
   const state = useComparisonStore.getState();
   if (!state.open || state.spreadCount === 0) return;
@@ -571,6 +581,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
           commitFailure: null,
         });
         broadcastComparison();
+        await hidePreviewWindowForComparison();
         const spreadOpened = await openSpread(others);
         if (!spreadOpened) {
           set({ capacities: [SLOT_KEYS.length], spreadCount: 0 });
