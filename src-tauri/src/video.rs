@@ -111,6 +111,7 @@ pub struct VideoDeriveStats {
     pub derived: u64,
     pub failed: u64,
     pub skipped_no_ffmpeg: bool,
+    pub changed_hashes: Vec<String>,
 }
 
 /// The video half of the SCAN derive pass: duration + poster only (through
@@ -270,6 +271,7 @@ fn derive_videos_pending_limit(
                     &path,
                     &[crate::derived_state::VIDEO_POSTER_ERROR],
                 )?;
+                stats.changed_hashes.push(hash);
             }
             Err(err) => {
                 stats.failed += 1;

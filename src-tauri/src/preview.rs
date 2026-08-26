@@ -451,6 +451,10 @@ pub struct DeriveStats {
     /// Rows left for a later pass because their format needs the managed
     /// ffmpeg and it is not installed — waiting, not broken.
     pub blocked_no_ffmpeg: u64,
+    /// Successful identity changes, `(previous, canonical)`, for incremental
+    /// UI projection. Most pairs contain the same hash; provisional content
+    /// records the promotion explicitly.
+    pub changes: Vec<(String, String)>,
 }
 
 /// The pending pass: derive cache entries for image contents not yet derived.
@@ -737,6 +741,7 @@ fn derive_images_pending_limit(
                 };
                 stats.derived += 1;
                 record_derive_success(conn, &key, &path, &facts)?;
+                stats.changes.push((hash, key));
             }
             Err(err) if err == NEEDS_FFMPEG => {
                 // Waiting on a tool, not a bad file: no issue row. The marker

@@ -153,6 +153,31 @@ pub fn section_items(
     Ok(items)
 }
 
+/// One logical row after a derived output changes. The coordinator publishes
+/// this directly so the open grid patches one item instead of re-reading a
+/// section that may contain millions of rows.
+pub fn item_by_hash(conn: &Connection, hash: &str) -> Result<Option<SectionItem>, String> {
+    let sql = format!("{HASHED_SECTION_SELECT} WHERE c.hash = ?1");
+    let mut item = conn
+        .query_row(&sql, [hash], section_item_from_row)
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some(item) = &mut item {
+        let mut statement = conn
+            .prepare(
+                "SELECT DISTINCT dir_path FROM paths
+                 WHERE content_hash = ?1 AND missing = 0 ORDER BY dir_path",
+            )
+            .map_err(|error| error.to_string())?;
+        item.dir_paths = statement
+            .query_map([hash], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(item)
+}
+
 const HASHED_SECTION_SELECT: &str =
     "SELECT c.hash, l.representative_path_id, rp.file_name, l.resolved_utc_ms, \
             l.live_copy_count, c.width, c.height, \

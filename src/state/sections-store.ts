@@ -10,6 +10,7 @@ import { log, toErrorFields } from "../repositories";
 import { progressLine } from "../models/scan";
 import { requestSeq } from "./request-seq";
 import type { SectionCounts } from "../models/sections";
+import type { SectionItem } from "../models/items";
 
 interface SectionsState {
   counts: SectionCounts | null;
@@ -59,22 +60,15 @@ export const useSectionsStore = create<SectionsState>((set) => ({
 // Event wiring, installed once at module load. Fire-and-forget: a listen
 // failure logs and leaves the store on manual refresh only.
 // The sidebar refreshes on every index phase transition, not only at the end,
-// so resolved dates become visible before a long index finishes. Derived work
-// has a separate throttled notification below.
+// so resolved dates become visible before a long index finishes. Derived
+// media patches one logical row at a time below.
 let lastScanPhase: string | null = null;
-let derivedRefresh: ReturnType<typeof setTimeout> | null = null;
+let derivedIssuesRefresh: ReturnType<typeof setTimeout> | null = null;
 
-function refreshAfterDerivedWork(): void {
-  if (derivedRefresh !== null) return;
-  // Identity promotion changes provisional hashes while a long preview pass
-  // is running. Throttle (do not debounce) the per-item notifications so a
-  // continuous pass refreshes current cache URLs without an IPC storm.
-  derivedRefresh = setTimeout(() => {
-    derivedRefresh = null;
-    void useSectionsStore.getState().loadCounts();
-    void import("./items-store").then(({ useItemsStore }) =>
-      useItemsStore.getState().refresh(),
-    );
+function refreshDerivedIssues(): void {
+  if (derivedIssuesRefresh !== null) return;
+  derivedIssuesRefresh = setTimeout(() => {
+    derivedIssuesRefresh = null;
     void import("./issues-store").then(({ useIssuesStore }) =>
       useIssuesStore.getState().load(),
     );
@@ -132,7 +126,25 @@ void (async () => {
         useIssuesStore.getState().load(),
       );
     });
-    await listen("derived://updated", refreshAfterDerivedWork);
+    await listen<{ previousHash: string; item: SectionItem }>(
+      "derived://item",
+      (event) => {
+        void import("./items-store").then(({ useItemsStore }) =>
+          useItemsStore
+            .getState()
+            .applyDerivedItem(event.payload.previousHash, event.payload.item),
+        );
+      },
+    );
+    await listen("derived://issues", refreshDerivedIssues);
+    // Similarity is still a wholesale rebuild. It completes once per dirty
+    // cohort, so one section refresh updates group membership without the
+    // per-preview refresh storm this event previously caused.
+    await listen("derived://similarity-updated", () => {
+      void import("./items-store").then(({ useItemsStore }) =>
+        useItemsStore.getState().refresh(),
+      );
+    });
     await listen("watch://rescan-needed", () => {
       useSectionsStore.setState({ rescanNeeded: true });
     });

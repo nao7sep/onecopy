@@ -23,6 +23,29 @@ export interface SectionItem {
   dirPaths: string[];
 }
 
+/** Replaces one derived logical row without re-reading its whole section.
+ * Identity promotion may collapse into a canonical row already present, so
+ * both keys are removed before the one current row is inserted. */
+export function replaceDerivedItem(
+  items: SectionItem[],
+  previousHash: string,
+  item: SectionItem,
+): SectionItem[] {
+  if (item.hash === null) return items;
+  const affected = items
+    .map((candidate, index) =>
+      candidate.hash === previousHash || candidate.hash === item.hash ? index : -1,
+    )
+    .filter((index) => index >= 0);
+  if (affected.length === 0) return items;
+  const insertion = Math.min(...affected);
+  const next = items.filter(
+    (candidate) => candidate.hash !== previousHash && candidate.hash !== item.hash,
+  );
+  next.splice(Math.min(insertion, next.length), 0, item);
+  return next;
+}
+
 export type SortOrder = "time" | "name" | "size" | "resolution" | "ext";
 
 export interface SortChoice {

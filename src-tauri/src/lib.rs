@@ -943,7 +943,9 @@ fn ensure_preview(app: AppHandle, hash: String) -> Result<String, String> {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
             let canonical = derived_work::ensure_preview(&data_root, config.as_ref(), &hash)?;
-            let _ = app.emit("derived://updated", json!({ "class": "previews" }));
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            derived_work::notify_item_update(&app, &conn, "previews", &hash, &canonical);
+            let _ = app.emit("derived://issues", json!({}));
             Ok(canonical)
         },
         |canonical| json!({ "canonicalHash": canonical }),

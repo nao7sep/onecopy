@@ -121,6 +121,24 @@ fn copy_count_counts_every_live_path_for_one_content() {
 }
 
 #[test]
+fn one_derived_item_can_be_projected_without_reading_its_section() {
+    let conn = db();
+    seed_image(&conn, "single", Some("2026-01-02T03:04:05.000Z"), "one.jpg");
+    conn.execute(
+        "UPDATE contents SET width = 4000, height = 3000, sharpness = 9.0
+         WHERE hash = 'single'",
+        [],
+    )
+    .unwrap();
+
+    let item = queries::item_by_hash(&conn, "single").unwrap().unwrap();
+    assert_eq!(item.hash.as_deref(), Some("single"));
+    assert_eq!((item.width, item.height), (Some(4000), Some(3000)));
+    assert_eq!(item.dir_paths, ["/root"]);
+    assert!(queries::item_by_hash(&conn, "missing").unwrap().is_none());
+}
+
+#[test]
 fn a_missing_copy_does_not_count_toward_the_badge() {
     let conn = db();
     seed_image(&conn, "hgone", Some("2026-01-02T03:04:05.000Z"), "a.jpg");

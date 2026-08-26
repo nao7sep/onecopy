@@ -4,7 +4,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
-import { sortItems } from "../models/items";
+import { replaceDerivedItem, sortItems } from "../models/items";
 import { DEFAULT_DESC, SORT_ORDERS, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
 
 export interface SelectedSection {
@@ -78,6 +78,7 @@ interface ItemsState {
   deleteKeys: (keys: Set<string>, permanent: boolean) => Promise<void>;
   rescanSection: () => Promise<void>;
   refresh: () => Promise<void>;
+  applyDerivedItem: (previousHash: string, item: SectionItem) => void;
   /** After a similar-family is fully decided, land the anchor on the first
    * item PAST the family (in the shown order), so Enter chains straight into
    * the next group. Past the KEEPERS, deliberately: Enter on a keeper would
@@ -360,6 +361,27 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   refresh: async () => {
     const { selected, select } = get();
     if (selected) await select(selected);
+  },
+
+  applyDerivedItem: (previousHash, item) => {
+    const state = get();
+    const items = replaceDerivedItem(state.items, previousHash, item);
+    if (items === state.items || item.hash === null) return;
+    const current = item.hash;
+    const remap = (key: string | null): string | null =>
+      key === previousHash ? current : key;
+    const remapKey = (key: string): string => (key === previousHash ? current : key);
+    const remapSet = (keys: Set<string>): Set<string> =>
+      new Set([...keys].map(remapKey));
+    const selectedItem = remap(state.selectedItem);
+    set({
+      items,
+      selectedItem,
+      selectedKeys: remapSet(state.selectedKeys),
+      rangeOrigin: remap(state.rangeOrigin),
+      rangeBase: remapSet(state.rangeBase),
+    });
+    if (selectedItem === current) notifyAnchor(current);
   },
 }));
 

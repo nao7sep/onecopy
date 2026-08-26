@@ -297,7 +297,8 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                 SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
             }
             emit_progress(app, "previews", None);
-            let _ = app.emit("derived://updated", json!({ "class": "previews" }));
+            notify_image_changes(app, &conn, &image.changes);
+            let _ = app.emit("derived://issues", json!({}));
             priority_done += 1;
         } else {
             let video = {
@@ -316,7 +317,8 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
             };
             if video.derived + video.failed > 0 {
                 emit_progress(app, "video-posters", None);
-                let _ = app.emit("derived://updated", json!({ "class": "video-posters" }));
+                notify_video_changes(app, &conn, &video.changed_hashes);
+                let _ = app.emit("derived://issues", json!({}));
                 priority_done += 1;
             }
         }
@@ -349,7 +351,8 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
             SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
         }
         emit_progress(app, "previews", None);
-        let _ = app.emit("derived://updated", json!({ "class": "previews" }));
+        notify_image_changes(app, &conn, &image.changes);
+        let _ = app.emit("derived://issues", json!({}));
         if index + 1 == IMAGE_BATCH {
             image_budget_full = true;
         }
@@ -377,7 +380,8 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
             break;
         }
         emit_progress(app, "video-posters", None);
-        let _ = app.emit("derived://updated", json!({ "class": "video-posters" }));
+        notify_video_changes(app, &conn, &video.changed_hashes);
+        let _ = app.emit("derived://issues", json!({}));
         if index + 1 == VIDEO_BATCH {
             video_budget_full = true;
         }
@@ -396,7 +400,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
         match result {
             Ok(stats) => {
                 emit_progress(app, "similarity", None);
-                let _ = app.emit("derived://updated", json!({ "class": "similarity" }));
+                let _ = app.emit("derived://similarity-updated", json!({}));
                 logging::info(
                     "similarity rebuilt",
                     json!({ "groups": stats.groups, "items": stats.grouped_items }),
@@ -604,6 +608,40 @@ fn emit_progress(app: &AppHandle, class: &str, counts: Option<(u64, u64)>) {
         "derived://progress",
         json!({ "class": class, "done": done, "total": total }),
     );
+}
+
+pub fn notify_item_update(
+    app: &AppHandle,
+    conn: &Connection,
+    class: &str,
+    previous_hash: &str,
+    hash: &str,
+) {
+    match crate::queries::item_by_hash(conn, hash) {
+        Ok(Some(item)) => {
+            let _ = app.emit(
+                "derived://item",
+                json!({ "class": class, "previousHash": previous_hash, "item": item }),
+            );
+        }
+        Ok(None) => {}
+        Err(error) => logging::warn(
+            "derived item notification failed",
+            json!({ "hash": hash, "error": { "message": error } }),
+        ),
+    }
+}
+
+fn notify_image_changes(app: &AppHandle, conn: &Connection, changes: &[(String, String)]) {
+    for (previous, current) in changes {
+        notify_item_update(app, conn, "previews", previous, current);
+    }
+}
+
+fn notify_video_changes(app: &AppHandle, conn: &Connection, hashes: &[String]) {
+    for hash in hashes {
+        notify_item_update(app, conn, "video-posters", hash, hash);
+    }
 }
 
 fn progress<'a>(app: &'a AppHandle, class: &'a str) -> impl Fn(u64, u64) + 'a {

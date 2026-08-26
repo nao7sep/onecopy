@@ -5,7 +5,7 @@
 // footer permanently claiming work is in flight. Nothing exercised them.
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
 
@@ -20,7 +20,16 @@ async function settle() {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
 }
 
-beforeAll(settle);
+async function settleUntil(predicate: () => boolean) {
+  for (let i = 0; i < 50 && !predicate(); i += 1) await Promise.resolve();
+}
+
+beforeAll(async () => {
+  for (let i = 0; i < 20 && listenerCount("derived://item") === 0; i += 1) {
+    await Promise.resolve();
+  }
+  expect(listenerCount("derived://item")).toBe(1);
+});
 
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
@@ -88,6 +97,44 @@ describe("watcher events", () => {
 
     await sections.getState().startScan();
     expect(sections.getState().rescanNeeded).toBe(false);
+  });
+});
+
+describe("derived media events", () => {
+  it("patches one item without re-reading the open section or its counts", async () => {
+    const { useItemsStore } = await import("../../src/state/items-store");
+    useItemsStore.setState({
+      selected: { kind: "image", month: "2026-01" },
+      items: [
+        {
+          hash: "h1",
+          pathId: 1,
+          fileName: "one.jpg",
+          resolvedUtcMs: 1,
+          copyCount: 1,
+          width: null,
+          height: null,
+          hasThumb: false,
+          similarGroupId: null,
+          sharpness: null,
+          byteSize: 1,
+          hasCompanions: false,
+          durationMs: null,
+          namesDiffer: false,
+          dirPaths: ["/photos"],
+        },
+      ],
+    });
+
+    fireEvent("derived://item", {
+      previousHash: "h1",
+      item: { ...useItemsStore.getState().items[0], width: 4000, hasThumb: true },
+    });
+    await settleUntil(() => useItemsStore.getState().items[0]?.width === 4000);
+
+    expect(useItemsStore.getState().items[0]).toMatchObject({ width: 4000, hasThumb: true });
+    expect(invokeCalls.some((call) => call.command === "get_section_items")).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "get_section_counts")).toBe(false);
   });
 });
 
