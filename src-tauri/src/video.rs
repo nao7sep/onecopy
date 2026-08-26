@@ -14,9 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
-use crate::logging;
 use crate::preview::{self, CachePaths};
 
 pub struct StripConfig {
@@ -113,8 +112,6 @@ pub struct VideoDeriveStats {
     pub skipped_no_ffmpeg: bool,
     pub changed_hashes: Vec<String>,
 }
-
-pub const STRIP_CANDIDATE_PAGE_SIZE: usize = 32;
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct StripDeriveStats {
@@ -213,33 +210,9 @@ fn derive_videos_pending_limit(
     // results land through preview.rs's own unrecorded cache writes.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
 
-    // A row stamped with an older DERIVE_VERSION is pending again, so bumping
-    // the constant re-derives posters and strips without touching a user file.
-    let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT c.hash, (SELECT p.abs_path FROM paths p \
-             WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-             FROM contents c WHERE c.kind = 'video' \
-             AND (c.derived_at_utc IS NULL \
-                  OR (c.derived_version < {} AND c.derived_at_utc != 'failed')) \
-             AND EXISTS (SELECT 1 FROM paths p \
-                         WHERE p.content_hash = c.hash AND p.missing = 0) \
-             AND (?1 IS NULL OR c.hash = ?1) \
-             ORDER BY c.hash{}",
-            crate::preview::DERIVE_VERSION,
-            limit_clause
-        ))
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, Option<String>)> = stmt
-        .query_map([only_hash], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
+    let rows = crate::derived_state::video_candidates(conn, true, limit, only_hash)?;
 
     for (hash, path) in rows {
-        let Some(path) = path else { continue };
         let src = Path::new(&path);
         let result = (|| -> Result<u64, String> {
             let duration_ms = probe_duration_ms(ffmpeg, src)?;
@@ -268,22 +241,11 @@ fn derive_videos_pending_limit(
         match result {
             Ok(duration_ms) => {
                 stats.derived += 1;
-                conn.execute(
-                    &format!(
-                        "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
-                         derived_at_utc = ?3, \
-                         derived_version = {} WHERE hash = ?1",
-                        crate::preview::DERIVE_VERSION
-                    ),
-                    params![hash, duration_ms as i64, logging::now_iso_millis()],
-                )
-                .map_err(|e| e.to_string())?;
-                // Current-state issues: a derive that now succeeds retires the
-                // failure it recorded on an earlier pass.
-                crate::index_store::clear_issues(
+                crate::derived_state::record_poster_success(
                     conn,
+                    &hash,
                     &path,
-                    &[crate::derived_state::VIDEO_POSTER_ERROR],
+                    duration_ms,
                 )?;
                 stats.changed_hashes.push(hash);
             }
@@ -292,17 +254,7 @@ fn derive_videos_pending_limit(
             }
             Err(err) => {
                 stats.failed += 1;
-                crate::index_store::upsert_issue(
-                    conn,
-                    Some(&path),
-                    crate::derived_state::VIDEO_POSTER_ERROR,
-                    &err,
-                )?;
-                conn.execute(
-                    "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
-                    [&hash],
-                )
-                .map_err(|e| e.to_string())?;
+                crate::derived_state::record_poster_failure(conn, &hash, &path, &err)?;
             }
         }
     }
@@ -327,7 +279,11 @@ pub fn derive_strips_pending(
     // not recorded: ffmpeg strip-frame staging lives in temp/ and produces
     // reconstructible binary cache entries.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
-    let rows = strip_candidates(conn, after_hash, STRIP_CANDIDATE_PAGE_SIZE)?;
+    let rows = crate::derived_state::strip_candidates(
+        conn,
+        after_hash,
+        crate::derived_state::SNAPSHOT_CANDIDATE_PAGE_SIZE,
+    )?;
     let mut stats = StripDeriveStats {
         candidates_found: !rows.is_empty(),
         ..StripDeriveStats::default()
@@ -357,16 +313,7 @@ pub fn derive_strips_pending(
         })();
         match result {
             Ok(()) => {
-                conn.execute(
-                    "UPDATE contents SET strip_frames = ?2 WHERE hash = ?1",
-                    params![hash, count as i64],
-                )
-                .map_err(|e| e.to_string())?;
-                crate::index_store::clear_issues(
-                    conn,
-                    &path,
-                    &[crate::derived_state::VIDEO_STRIP_ERROR],
-                )?;
+                crate::derived_state::record_strip_success(conn, &hash, &path, count)?;
                 stats.completed += 1;
                 progress(stats.attempted, total);
             }
@@ -383,54 +330,11 @@ pub fn derive_strips_pending(
                 // tick could eat whole minutes per pass). A rescan after a
                 // DERIVE_VERSION bump re-derives; the issue row carries the
                 // reason meanwhile.
-                conn.execute(
-                    "UPDATE contents SET strip_frames = -1 WHERE hash = ?1",
-                    params![hash],
-                )
-                .map_err(|e| e.to_string())?;
-                crate::index_store::upsert_issue(
-                    conn,
-                    Some(&path),
-                    crate::derived_state::VIDEO_STRIP_ERROR,
-                    &err,
-                )?;
+                crate::derived_state::record_strip_failure(conn, &hash, &path, &err)?;
                 stats.failed += 1;
                 progress(stats.attempted, total);
             }
         }
     }
     Ok(stats)
-}
-
-/// One ordered, fixed-size page of snapshot work. `logical_contents` already
-/// owns the live representative path, so candidate selection never groups or
-/// materializes the whole physical-path table.
-pub fn strip_candidates(
-    conn: &Connection,
-    after_hash: Option<&str>,
-    limit: usize,
-) -> Result<Vec<(String, i64, String)>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.hash, c.duration_ms, p.abs_path \
-             FROM logical_contents l \
-             JOIN contents c ON c.hash = l.content_hash \
-             JOIN paths p ON p.id = l.representative_path_id \
-             WHERE l.kind = 'video' AND c.strip_frames IS NULL \
-               AND c.duration_ms IS NOT NULL \
-               AND c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
-               AND l.content_hash > ?1 \
-               AND p.missing = 0 \
-             ORDER BY l.content_hash \
-             LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params![after_hash.unwrap_or(""), limit as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    Ok(rows)
 }

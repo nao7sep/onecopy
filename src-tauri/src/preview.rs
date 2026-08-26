@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 
 use image::DynamicImage;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::logging;
 use crate::nanoid;
@@ -87,11 +87,6 @@ pub struct DerivedFacts {
     pub phash: u64,
 }
 
-/// Marks an image row whose format needs the managed ffmpeg while ffmpeg is
-/// absent. Distinct from `failed`: the file is fine and nothing about it has
-/// to change — installing ffmpeg is enough for the next pass to derive it.
-pub const NEEDS_FFMPEG: &str = "needs-ffmpeg";
-
 /// The derive pipeline's output version. Bump it when a change makes existing
 /// cache entries wrong (a different thumbnail geometry, a corrected
 /// orientation rule, a new phash) — every row stamped with an older version
@@ -103,7 +98,7 @@ pub const NEEDS_FFMPEG: &str = "needs-ffmpeg";
 /// every stored phash for an alpha-bearing image is wrong until re-derived.
 /// 3: rows gained the CLIP embedding; re-deriving lets the embed pass find
 /// every image pending once the similarity model is installed.
-pub const DERIVE_VERSION: i64 = 3;
+pub use crate::derived_state::{DERIVE_VERSION, NEEDS_FFMPEG};
 
 /// Extensions the `image` crate cannot decode, which route through the
 /// managed ffmpeg instead. Measured against image 0.25 and ffmpeg 9.0
@@ -473,39 +468,6 @@ pub struct DeriveStats {
 /// once made a healthy pass exhaust memory and made progress appear frozen
 /// until the slowest decode in the batch completed. `progress` reports after
 /// each durable result, and cancellation leaves only the current item undone.
-/// The one success write-back for a derived image — the bulk pass and the
-/// on-demand single-item derive both land here, so the checkpoint semantics
-/// (facts, version stamp, retired decode-error issue) cannot drift between
-/// the two routes.
-fn record_derive_success(
-    conn: &Connection,
-    hash: &str,
-    path: &str,
-    facts: &DerivedFacts,
-) -> Result<(), String> {
-    conn.execute(
-        &format!(
-            "UPDATE contents SET width = COALESCE(width, ?2), \
-             height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
-             derived_at_utc = ?6, derived_version = {DERIVE_VERSION} \
-             WHERE hash = ?1"
-        ),
-        params![
-            hash,
-            facts.width,
-            facts.height,
-            facts.sharpness,
-            facts.phash as i64,
-            logging::now_iso_millis()
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    // Current-state issues: a decode that now succeeds retires
-    // the failure it recorded on an earlier pass.
-    crate::index_store::clear_issues(conn, path, &[crate::derived_state::PREVIEW_ERROR])?;
-    Ok(())
-}
-
 /// Derives ONE item's thumb + preview on demand — the user clicked a photo
 /// the scan's bulk pass has not reached yet (it runs walk-order, and on a
 /// slow machine the tail is hours away). Idempotent: an already-derived hash
@@ -546,39 +508,47 @@ pub fn derive_one(
             ffmpeg,
         )
         .map_err(|err| {
-            let _ = crate::index_store::upsert_issue(
+            let _ = crate::derived_state::record_preview_failure(
                 conn,
-                Some(&path),
-                crate::derived_state::PREVIEW_ERROR,
+                hash,
+                &path,
                 &err,
-            );
-            let _ = conn.execute(
-                "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
-                [hash],
             );
             err
         })?;
         crate::scanner::promote_identity(conn, cache, hash, &real)?;
-        record_derive_success(conn, &real, &path, &facts)?;
+        crate::derived_state::record_preview_success(
+            conn,
+            &real,
+            &path,
+            facts.width,
+            facts.height,
+            facts.sharpness,
+            facts.phash,
+        )?;
         return Ok(real);
     }
     let facts = generate_for_image(src, hash, cache, thumb_edge, preview_long_edge, ffmpeg)
         .map_err(|err| {
             // The same honesty as the bulk pass: a broken file is recorded,
             // not silently retried on every click.
-            let _ = crate::index_store::upsert_issue(
+            let _ = crate::derived_state::record_preview_failure(
                 conn,
-                Some(&path),
-                crate::derived_state::PREVIEW_ERROR,
+                hash,
+                &path,
                 &err,
-            );
-            let _ = conn.execute(
-                "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
-                [hash],
             );
             err
         })?;
-    record_derive_success(conn, hash, &path, &facts)?;
+    crate::derived_state::record_preview_success(
+        conn,
+        hash,
+        &path,
+        facts.width,
+        facts.height,
+        facts.sharpness,
+        facts.phash,
+    )?;
     Ok(hash.to_string())
 }
 
@@ -656,44 +626,13 @@ fn derive_images_pending_limit(
     limit: Option<usize>,
     only_hash: Option<&str>,
 ) -> Result<DeriveStats, String> {
-
     let mut stats = DeriveStats::default();
-
-    // With ffmpeg present the rows it previously blocked come back into the
-    // pass; without it they are left alone rather than re-marked every scan.
-    // Stale means "produced by an older pipeline", which is a different thing
-    // from failed (the FILE is broken — retrying it every scan is the churn the
-    // sentinel exists to stop) and from needs-ffmpeg (blocked, and owned by the
-    // ffmpeg branch below; without ffmpeg it must stay blocked, not be retried
-    // into a failure).
-    let stale = format!(
-        "c.derived_version < {DERIVE_VERSION} \
-         AND c.derived_at_utc NOT IN ('failed', '{NEEDS_FFMPEG}')"
-    );
-    let pending_clause = if ffmpeg.is_some() {
-        format!("(c.derived_at_utc IS NULL OR c.derived_at_utc = '{NEEDS_FFMPEG}' OR ({stale}))")
-    } else {
-        format!("(c.derived_at_utc IS NULL OR ({stale}))")
-    };
-    let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT c.hash, (SELECT p.abs_path FROM paths p \
-             WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-             FROM contents c WHERE c.kind = 'image' AND {pending_clause} \
-             AND EXISTS (SELECT 1 FROM paths p \
-                         WHERE p.content_hash = c.hash AND p.missing = 0) \
-             AND (?1 IS NULL OR c.hash = ?1) \
-             ORDER BY c.hash{limit_clause}"
-        ))
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String)> = stmt
-        .query_map([only_hash], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .filter_map(|(hash, path)| path.map(|p| (hash, p)))
-        .collect();
-    drop(stmt);
+    let rows = crate::derived_state::image_candidates(
+        conn,
+        ffmpeg.is_some(),
+        limit,
+        only_hash,
+    )?;
 
     let total = rows.len() as u64;
     let mut done = 0u64;
@@ -740,35 +679,29 @@ fn derive_images_pending_limit(
                     None => hash.clone(),
                 };
                 stats.derived += 1;
-                record_derive_success(conn, &key, &path, &facts)?;
+                crate::derived_state::record_preview_success(
+                    conn,
+                    &key,
+                    &path,
+                    facts.width,
+                    facts.height,
+                    facts.sharpness,
+                    facts.phash,
+                )?;
                 stats.changes.push((hash, key));
             }
             Err(err) if err == NEEDS_FFMPEG => {
                 // Waiting on a tool, not a bad file: no issue row. The marker
                 // keeps it inert until ffmpeg arrives and wakes the owner.
                 stats.blocked_no_ffmpeg += 1;
-                conn.execute(
-                    "UPDATE contents SET derived_at_utc = ?2 WHERE hash = ?1",
-                    params![hash, NEEDS_FFMPEG],
-                )
-                .map_err(|e| e.to_string())?;
+                crate::derived_state::record_preview_blocked(conn, &hash)?;
             }
             Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
                 return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) => {
                 stats.failed += 1;
-                crate::index_store::upsert_issue(
-                    conn,
-                    Some(&path),
-                    crate::derived_state::PREVIEW_ERROR,
-                    &err,
-                )?;
-                conn.execute(
-                    "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
-                    [&hash],
-                )
-                .map_err(|e| e.to_string())?;
+                crate::derived_state::record_preview_failure(conn, &hash, &path, &err)?;
             }
         }
 

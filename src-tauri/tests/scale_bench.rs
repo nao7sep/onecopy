@@ -9,7 +9,7 @@ use std::time::Instant;
 use onecopy_lib::index_store;
 use onecopy_lib::queries;
 use onecopy_lib::scanner;
-use onecopy_lib::{derived_work, face, video};
+use onecopy_lib::derived_state;
 use onecopy_lib::similarity::{rebuild_groups, SimilarityConfig};
 use rusqlite::params;
 
@@ -108,10 +108,10 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
     let mut strip_after = None;
     let mut strip_total = 0usize;
     loop {
-        let rows = video::strip_candidates(
+        let rows = derived_state::strip_candidates(
             &conn,
             strip_after.as_deref(),
-            video::STRIP_CANDIDATE_PAGE_SIZE,
+            derived_state::SNAPSHOT_CANDIDATE_PAGE_SIZE,
         )
         .unwrap();
         if rows.is_empty() {
@@ -124,10 +124,10 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
     let mut face_after = None;
     let mut face_total = 0usize;
     loop {
-        let rows = face::face_candidates(
+        let rows = derived_state::face_candidates(
             &conn,
             face_after.as_deref(),
-            face::FACE_CANDIDATE_PAGE_SIZE,
+            derived_state::FACE_CANDIDATE_PAGE_SIZE,
         )
         .unwrap();
         if rows.is_empty() {
@@ -140,10 +140,10 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
     let mut transcript_after = None;
     let mut transcript_total = 0usize;
     loop {
-        let rows = derived_work::transcript_candidates(
+        let rows = derived_state::transcript_candidates(
             &conn,
             transcript_after.as_deref(),
-            derived_work::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+            derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
         )
         .unwrap();
         if rows.is_empty() {

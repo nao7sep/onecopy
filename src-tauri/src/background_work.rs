@@ -7,51 +7,11 @@ use std::path::Path;
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::Duration;
 
-use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WorkClass {
-    Previews,
-    Snapshots,
-    Similarity,
-    Faces,
-    Transcripts,
-}
-
-impl WorkClass {
-    const ALL: [Self; 5] = [
-        Self::Previews,
-        Self::Snapshots,
-        Self::Similarity,
-        Self::Faces,
-        Self::Transcripts,
-    ];
-
-    pub(crate) fn id(self) -> &'static str {
-        match self {
-            Self::Previews => "previews",
-            Self::Snapshots => "snapshots",
-            Self::Similarity => "similarity",
-            Self::Faces => "faces",
-            Self::Transcripts => "transcripts",
-        }
-    }
-
-    fn bit(self) -> u8 {
-        1 << (self as u8)
-    }
-
-    fn parse(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|class| class.id() == id)
-    }
-
-    fn idle_only(self) -> bool {
-        matches!(self, Self::Snapshots | Self::Faces | Self::Transcripts)
-    }
-}
+use crate::derived_state::{WorkCapabilities, WorkClass};
 
 #[derive(Clone, Copy)]
 struct ActiveWork {
@@ -325,46 +285,6 @@ struct BackgroundClassSnapshot {
     reason: Option<&'static str>,
 }
 
-#[derive(Default)]
-struct WorkDebt {
-    runnable: u64,
-    blocked: u64,
-    reason: Option<&'static str>,
-    disabled: bool,
-}
-
-fn count(conn: &Connection, sql: &str) -> Result<u64, String> {
-    conn.query_row(sql, [], |row| row.get::<_, i64>(0))
-        .map(|value| value.max(0) as u64)
-        .map_err(|error| error.to_string())
-}
-
-fn failed_count(conn: &Connection, class: WorkClass) -> Result<u64, String> {
-    let sql = match class {
-        WorkClass::Previews => {
-            "SELECT COUNT(*) FROM contents c WHERE c.kind IN ('image', 'video') \
-             AND c.derived_at_utc = 'failed' AND EXISTS \
-             (SELECT 1 FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0)"
-        }
-        WorkClass::Snapshots => {
-            "SELECT COUNT(*) FROM contents c WHERE c.kind = 'video' AND c.strip_frames < 0 \
-             AND EXISTS (SELECT 1 FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0)"
-        }
-        WorkClass::Faces => {
-            "SELECT COUNT(*) FROM analysis_receipts r JOIN contents c ON c.hash = r.content_hash \
-             WHERE r.face_state = 'failed' AND EXISTS \
-             (SELECT 1 FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0)"
-        }
-        WorkClass::Transcripts => {
-            "SELECT COUNT(*) FROM analysis_receipts r JOIN contents c ON c.hash = r.content_hash \
-             WHERE r.transcript_state = 'failed' AND EXISTS \
-             (SELECT 1 FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0)"
-        }
-        WorkClass::Similarity => return Ok(0),
-    };
-    count(conn, sql)
-}
-
 fn whisper_available(data_root: &Path) -> bool {
     crate::binaries_manager::spec_of("whisper-large-v3-turbo")
         .map(|spec| {
@@ -372,154 +292,6 @@ fn whisper_available(data_root: &Path) -> bool {
                 != crate::binaries::BinaryStatus::NotInstalled
         })
         .unwrap_or(false)
-}
-
-fn work_debt(
-    conn: &Connection,
-    settings: &crate::derived_work::Settings,
-    class: WorkClass,
-    similarity_dirty: bool,
-) -> Result<WorkDebt, String> {
-    let live = "EXISTS (SELECT 1 FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0)";
-    let stale = format!(
-        "c.derived_version < {} AND c.derived_at_utc NOT IN ('failed', '{}')",
-        crate::preview::DERIVE_VERSION,
-        crate::preview::NEEDS_FFMPEG,
-    );
-    match class {
-        WorkClass::Previews => {
-            let image_pending = if settings.ffmpeg.is_some() {
-                format!(
-                    "(c.derived_at_utc IS NULL OR c.derived_at_utc = '{}' OR ({stale}))",
-                    crate::preview::NEEDS_FFMPEG,
-                )
-            } else {
-                format!("(c.derived_at_utc IS NULL OR ({stale}))")
-            };
-            let images = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind = 'image' \
-                     AND {image_pending} AND {live}"
-                ),
-            )?;
-            let videos = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind = 'video' \
-                     AND (c.derived_at_utc IS NULL OR ({stale})) AND {live}"
-                ),
-            )?;
-            let waiting_images = if settings.ffmpeg.is_none() {
-                count(
-                    conn,
-                    &format!(
-                        "SELECT COUNT(*) FROM contents c WHERE c.kind = 'image' \
-                         AND c.derived_at_utc = '{}' AND {live}",
-                        crate::preview::NEEDS_FFMPEG,
-                    ),
-                )?
-            } else {
-                0
-            };
-            Ok(if settings.ffmpeg.is_some() {
-                WorkDebt {
-                    runnable: images + videos,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    runnable: images,
-                    blocked: videos + waiting_images,
-                    reason: (videos + waiting_images > 0).then_some("Waiting for ffmpeg"),
-                    disabled: false,
-                }
-            })
-        }
-        WorkClass::Snapshots => {
-            let pending = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind = 'video' \
-                     AND c.strip_frames IS NULL AND c.duration_ms IS NOT NULL \
-                     AND c.derived_at_utc NOT IN ('failed', '{}') AND {live}",
-                    crate::preview::NEEDS_FFMPEG,
-                ),
-            )?;
-            Ok(if settings.ffmpeg.is_some() {
-                WorkDebt {
-                    runnable: pending,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    blocked: pending,
-                    reason: (pending > 0).then_some("Waiting for ffmpeg"),
-                    ..WorkDebt::default()
-                }
-            })
-        }
-        WorkClass::Similarity => Ok(WorkDebt {
-            runnable: u64::from(similarity_dirty),
-            ..WorkDebt::default()
-        }),
-        WorkClass::Faces => {
-            if !settings.face_enabled {
-                return Ok(WorkDebt {
-                    disabled: true,
-                    reason: Some("Turn on face scoring in Settings"),
-                    ..WorkDebt::default()
-                });
-            }
-            let pending = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c \
-                     LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-                     WHERE c.kind = 'image' AND r.face_state IS NULL \
-                       AND c.derived_at_utc IS NOT NULL \
-                       AND c.derived_at_utc NOT IN ('failed', '{}') AND {live}",
-                    crate::preview::NEEDS_FFMPEG,
-                ),
-            )?;
-            Ok(if settings.face_models.is_some() {
-                WorkDebt {
-                    runnable: pending,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    blocked: pending,
-                    reason: (pending > 0).then_some("Waiting for face models"),
-                    ..WorkDebt::default()
-                }
-            })
-        }
-        WorkClass::Transcripts => {
-            let pending = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c \
-                     LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-                     WHERE c.kind = 'video' AND c.duration_ms IS NOT NULL \
-                       AND r.transcript_state IS NULL AND {live}"
-                ),
-            )?;
-            let available = settings.ffmpeg.is_some() && whisper_available(&settings.data_root);
-            Ok(if available {
-                WorkDebt {
-                    runnable: pending,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    blocked: pending,
-                    reason: (pending > 0).then_some("Waiting for ffmpeg and transcription model"),
-                    ..WorkDebt::default()
-                }
-            })
-        }
-    }
 }
 
 pub fn snapshot(
@@ -543,10 +315,20 @@ pub fn snapshot(
         .map_err(|_| "background-work state is unavailable".to_string())?;
     let busy = !crate::derived_work::available();
     let idle = crate::derived_work::is_idle();
+    let capabilities = WorkCapabilities {
+        ffmpeg: settings.ffmpeg.is_some(),
+        face_enabled: settings.face_enabled,
+        face_models: settings.face_models.is_some(),
+        transcripts: settings.ffmpeg.is_some() && whisper_available(&settings.data_root),
+    };
     let mut classes = Vec::with_capacity(WorkClass::ALL.len());
     for class in WorkClass::ALL {
-        let debt = work_debt(&conn, &settings, class, similarity_dirty)?;
-        let failed = failed_count(&conn, class)?;
+        let debt = crate::derived_state::work_debt(
+            &conn,
+            class,
+            capabilities,
+            similarity_dirty,
+        )?;
         let paused = master_paused || paused_classes & class.bit() != 0;
         let is_active = active.map(|value| value.class) == Some(class);
         let active_progress = active.filter(|value| value.class == class);
@@ -561,7 +343,7 @@ pub fn snapshot(
             ("disabled", debt.reason)
         } else if debt.runnable == 0 && debt.blocked > 0 {
             ("unavailable", debt.reason)
-        } else if debt.runnable == 0 && failed > 0 {
+        } else if debt.runnable == 0 && debt.failed > 0 {
             ("failed", Some("Open Issues to retry failed work"))
         } else if debt.runnable > 0 && busy {
             ("waiting", Some("Waiting for indexing or a file operation"))
@@ -576,7 +358,7 @@ pub fn snapshot(
             id: class.id(),
             state,
             queued,
-            failed,
+            failed: debt.failed,
             done: active_progress.and_then(|value| value.done),
             total: active_progress.and_then(|value| value.total),
             reason,

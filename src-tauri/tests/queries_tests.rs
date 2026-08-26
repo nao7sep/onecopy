@@ -82,14 +82,6 @@ fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
 }
 
 #[test]
-fn the_needs_ffmpeg_sentinel_matches_the_literal_the_queries_use() {
-    // queries.rs spells the sentinel inline inside its SQL, so a rename of the
-    // constant would silently stop excluding it and bring the broken tiles
-    // back. This is the pin that makes that a test failure instead.
-    assert_eq!(preview::NEEDS_FFMPEG, "needs-ffmpeg");
-}
-
-#[test]
 fn copy_count_counts_every_live_path_for_one_content() {
     let conn = db();
     seed_image(&conn, "hshared", Some("2026-01-02T03:04:05.000Z"), "a.jpg");

@@ -157,7 +157,7 @@ pub fn section_items(
 /// this directly so the open grid patches one item instead of re-reading a
 /// section that may contain millions of rows.
 pub fn item_by_hash(conn: &Connection, hash: &str) -> Result<Option<SectionItem>, String> {
-    let sql = format!("{HASHED_SECTION_SELECT} WHERE c.hash = ?1");
+    let sql = format!("{} WHERE c.hash = ?1", hashed_section_select());
     let mut item = conn
         .query_row(&sql, [hash], section_item_from_row)
         .optional()
@@ -178,11 +178,12 @@ pub fn item_by_hash(conn: &Connection, hash: &str) -> Result<Option<SectionItem>
     Ok(item)
 }
 
-const HASHED_SECTION_SELECT: &str =
-    "SELECT c.hash, l.representative_path_id, rp.file_name, l.resolved_utc_ms, \
+fn hashed_section_select() -> String {
+    let preview_available = crate::derived_state::preview_available_predicate("c");
+    format!(
+        "SELECT c.hash, l.representative_path_id, rp.file_name, l.resolved_utc_ms, \
             l.live_copy_count, c.width, c.height, \
-            (l.kind IN ('image', 'video') AND c.derived_at_utc IS NOT NULL \
-             AND c.derived_at_utc != 'failed' AND c.derived_at_utc != 'needs-ffmpeg'), \
+            (l.kind IN ('image', 'video') AND {preview_available}), \
             (SELECT m.group_id FROM similar_group_members m \
              WHERE m.content_hash = c.hash LIMIT 1), \
             c.sharpness, c.byte_size, \
@@ -192,7 +193,9 @@ const HASHED_SECTION_SELECT: &str =
             c.duration_ms, l.names_differ \
      FROM logical_contents l \
      JOIN contents c ON c.hash = l.content_hash \
-     JOIN paths rp ON rp.id = l.representative_path_id ";
+     JOIN paths rp ON rp.id = l.representative_path_id "
+    )
+}
 
 fn hashed_section_items(
     conn: &Connection,
@@ -223,8 +226,9 @@ fn hashed_section_sql(has_bounds: bool) -> String {
         "AND l.resolved_utc_ms IS NULL"
     };
     format!(
-        "{HASHED_SECTION_SELECT} WHERE l.kind = ?1 {time_clause} \
-         ORDER BY l.resolved_utc_ms, l.representative_path_id"
+        "{} WHERE l.kind = ?1 {time_clause} \
+         ORDER BY l.resolved_utc_ms, l.representative_path_id",
+        hashed_section_select()
     )
 }
 
@@ -386,18 +390,18 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
         return Ok(Vec::new());
     };
 
+    let preview_available = crate::derived_state::preview_available_predicate("c");
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT c.hash, \
              (SELECT MIN(p.file_name) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
              c.width, c.height, c.byte_size, c.sharpness, c.face_score, \
              (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
-             (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
-              AND c.derived_at_utc != 'needs-ffmpeg') \
+             {preview_available} \
              FROM similar_group_members m JOIN contents c ON c.hash = m.content_hash \
              WHERE m.group_id = ?1 \
-             ORDER BY COALESCE(c.face_score, 0) DESC, c.sharpness DESC NULLS LAST, c.hash",
-        )
+             ORDER BY COALESCE(c.face_score, 0) DESC, c.sharpness DESC NULLS LAST, c.hash"
+        ))
         .map_err(|e| e.to_string())?;
     let members: Vec<GroupMember> = stmt
         .query_map([group_id], |r| {

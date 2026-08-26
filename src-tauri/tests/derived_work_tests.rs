@@ -1,10 +1,8 @@
 // Tests exercising the crate's public API from outside shipped source.
 
 use onecopy_lib::background_work::snapshot;
-use onecopy_lib::derived_work::{
-    priority_candidates, settings_from_config, transcript_candidates, SectionPriority,
-};
-use onecopy_lib::{face, video};
+use onecopy_lib::derived_state;
+use onecopy_lib::derived_work::{priority_candidates, settings_from_config, SectionPriority};
 use onecopy_lib::index_store;
 use rusqlite::params;
 
@@ -127,9 +125,9 @@ fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
         }
     }
 
-    let strips = video::strip_candidates(&conn, None, 7).unwrap();
-    let faces = face::face_candidates(&conn, None, 9).unwrap();
-    let transcripts = transcript_candidates(&conn, None, 11).unwrap();
+    let strips = derived_state::strip_candidates(&conn, None, 7).unwrap();
+    let faces = derived_state::face_candidates(&conn, None, 9).unwrap();
+    let transcripts = derived_state::transcript_candidates(&conn, None, 11).unwrap();
 
     assert_eq!(strips.len(), 7);
     assert_eq!(faces.len(), 9);
@@ -138,10 +136,13 @@ fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
     assert_eq!(faces[0].0, "image-000");
     assert_eq!(transcripts[0].0, "video-000");
 
-    let next_strips = video::strip_candidates(&conn, Some(&strips.last().unwrap().0), 7).unwrap();
-    let next_faces = face::face_candidates(&conn, Some(&faces.last().unwrap().0), 9).unwrap();
+    let next_strips =
+        derived_state::strip_candidates(&conn, Some(&strips.last().unwrap().0), 7).unwrap();
+    let next_faces =
+        derived_state::face_candidates(&conn, Some(&faces.last().unwrap().0), 9).unwrap();
     let next_transcripts =
-        transcript_candidates(&conn, Some(&transcripts.last().unwrap().0), 11).unwrap();
+        derived_state::transcript_candidates(&conn, Some(&transcripts.last().unwrap().0), 11)
+            .unwrap();
     assert_eq!(next_strips[0].0, "video-007");
     assert_eq!(next_faces[0].0, "image-009");
     assert_eq!(next_transcripts[0].0, "video-011");

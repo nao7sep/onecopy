@@ -17,7 +17,8 @@ use rusqlite::{params_from_iter, Connection};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
-use crate::background_work::{cancelled, is_paused as class_paused, with_active, WorkClass};
+use crate::background_work::{cancelled, is_paused as class_paused, with_active};
+use crate::derived_state::WorkClass;
 use crate::logging;
 use crate::preview::CachePaths;
 
@@ -36,8 +37,6 @@ const IMAGE_BATCH: usize = 64;
 const VIDEO_BATCH: usize = 8;
 const PRIORITY_BATCH: usize = 64;
 const SECTION_HINT_LIMIT: usize = 256;
-pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
-
 #[derive(Clone, Default)]
 struct PriorityHints {
     selected: Option<String>,
@@ -575,28 +574,8 @@ pub fn priority_candidates(
         return Ok(hashes);
     }
 
-    let stale = format!(
-        "c.derived_version < {} AND c.derived_at_utc NOT IN ('failed', '{}')",
-        crate::preview::DERIVE_VERSION,
-        crate::preview::NEEDS_FFMPEG,
-    );
-    let image_pending = if settings.ffmpeg.is_some() {
-        format!(
-            "(c.derived_at_utc IS NULL OR c.derived_at_utc = '{}' OR ({stale}))",
-            crate::preview::NEEDS_FFMPEG,
-        )
-    } else {
-        format!("(c.derived_at_utc IS NULL OR ({stale}))")
-    };
-    let video_pending = if settings.ffmpeg.is_some() {
-        format!(
-            "(c.derived_at_utc IS NULL OR \
-             (c.derived_version < {} AND c.derived_at_utc != 'failed'))",
-            crate::preview::DERIVE_VERSION,
-        )
-    } else {
-        "0".to_string()
-    };
+    let (image_pending, video_pending) =
+        crate::derived_state::preview_pending_predicates(settings.ffmpeg.is_some());
     let time_clause = if section.start_ms.is_some() {
         "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
     } else {
@@ -646,28 +625,8 @@ fn pending_hint_hashes(
         .map(|index| format!("(?{index}, {})", index - 1))
         .collect::<Vec<_>>()
         .join(", ");
-    let stale = format!(
-        "c.derived_version < {} AND c.derived_at_utc NOT IN ('failed', '{}')",
-        crate::preview::DERIVE_VERSION,
-        crate::preview::NEEDS_FFMPEG,
-    );
-    let image_pending = if settings.ffmpeg.is_some() {
-        format!(
-            "(c.derived_at_utc IS NULL OR c.derived_at_utc = '{}' OR ({stale}))",
-            crate::preview::NEEDS_FFMPEG,
-        )
-    } else {
-        format!("(c.derived_at_utc IS NULL OR ({stale}))")
-    };
-    let video_pending = if settings.ffmpeg.is_some() {
-        format!(
-            "(c.derived_at_utc IS NULL OR \
-             (c.derived_version < {} AND c.derived_at_utc != 'failed'))",
-            crate::preview::DERIVE_VERSION,
-        )
-    } else {
-        "0".to_string()
-    };
+    let (image_pending, video_pending) =
+        crate::derived_state::preview_pending_predicates(settings.ffmpeg.is_some());
     let sql = format!(
         "WITH hinted(hash, priority) AS (VALUES {values}) \
          SELECT h.hash FROM hinted h \
@@ -751,7 +710,11 @@ fn transcribe_next(
     app: &AppHandle,
     after_hash: Option<&str>,
 ) -> Result<TranscriptStep, String> {
-    let rows = transcript_candidates(conn, after_hash, TRANSCRIPT_CANDIDATE_PAGE_SIZE)?;
+    let rows = crate::derived_state::transcript_candidates(
+        conn,
+        after_hash,
+        crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+    )?;
     if rows.is_empty() {
         return Ok(TranscriptStep {
             exhausted: true,
@@ -870,37 +833,4 @@ fn transcribe_next(
         }
     }
     Ok(TranscriptStep::default())
-}
-
-/// One ordered page of videos whose transcript receipt is absent. Existing
-/// cache files are adopted by `transcribe_next`, so a legacy receipt gap is
-/// repaired instead of being selected and skipped forever.
-pub fn transcript_candidates(
-    conn: &Connection,
-    after_hash: Option<&str>,
-    limit: usize,
-) -> Result<Vec<(String, String)>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.hash, p.abs_path \
-             FROM logical_contents l \
-             JOIN contents c ON c.hash = l.content_hash \
-             JOIN paths p ON p.id = l.representative_path_id \
-             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-             WHERE l.kind = 'video' AND c.duration_ms IS NOT NULL \
-               AND r.transcript_state IS NULL AND p.missing = 0 \
-               AND l.content_hash > ?1 \
-             ORDER BY l.content_hash \
-             LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(
-            rusqlite::params![after_hash.unwrap_or(""), limit as i64],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    Ok(rows)
 }
