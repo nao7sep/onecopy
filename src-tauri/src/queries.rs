@@ -540,6 +540,7 @@ pub struct IssueRow {
     pub message: Option<String>,
     pub first_seen_utc: String,
     pub last_seen_utc: String,
+    pub recovery: Option<crate::derived_state::IssueRecovery>,
 }
 
 /// OLDEST first (the developer's call — the longest-standing condition leads),
@@ -554,7 +555,7 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
              ORDER BY first_seen_utc ASC, id ASC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
-    let rows: Vec<IssueRow> = stmt
+    let mut rows: Vec<IssueRow> = stmt
         .query_map([limit], |r| {
             let path: String = r.get(1)?;
             // Issue rows are written straight from `abs_path`, and on Windows
@@ -574,11 +575,15 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
                 message: r.get(3)?,
                 first_seen_utc: r.get(4)?,
                 last_seen_utc: r.get(5)?,
+                recovery: None,
             })
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+    for row in &mut rows {
+        row.recovery = crate::derived_state::issue_recovery(conn, row.id)?;
+    }
     Ok((total.max(0) as u64, rows))
 }
 

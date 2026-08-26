@@ -434,7 +434,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
     let whisper = whisper_model(&data_root);
     if let (Some(model), Some(ffmpeg)) = (whisper.as_deref(), settings.ffmpeg.as_deref()) {
         if transcribe_next(&conn, &cache, model, ffmpeg, app)? {
-            return Ok(false);
+            return Ok(true);
         }
     }
 
@@ -630,8 +630,9 @@ fn transcribe_next(
             "SELECT c.hash, (SELECT p.abs_path FROM paths p \
              WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
              FROM contents c JOIN paths p2 ON p2.content_hash = c.hash \
+             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
              WHERE c.kind = 'video' AND c.duration_ms IS NOT NULL \
-               AND p2.missing = 0 \
+               AND p2.missing = 0 AND r.transcript_state IS NULL \
              GROUP BY c.hash \
              ORDER BY MIN(p2.resolved_utc_ms) DESC",
         )
@@ -685,15 +686,29 @@ fn transcribe_next(
         drop(claim);
         match result {
             Ok(text) => {
+                crate::derived_state::record_transcript_success(
+                    conn,
+                    &hash,
+                    &path,
+                    !text.trim().is_empty(),
+                )?;
                 let _ = app.emit("transcribe://done", json!({ "hash": hash, "text": text }));
                 return Ok(true);
             }
             Err(error) => {
+                if error == crate::scanner::CANCELLED || crate::transcription::is_cancelled() {
+                    logging::debug(
+                        "derived transcription stopped",
+                        json!({ "hash": hash, "reason": "cancelled" }),
+                    );
+                    return Ok(false);
+                }
+                crate::derived_state::record_transcript_failure(conn, &hash, &path, &error)?;
                 logging::debug(
-                    "derived transcription stopped",
+                    "derived transcription failed",
                     json!({ "hash": hash, "error": { "message": error } }),
                 );
-                return Ok(false);
+                return Ok(true);
             }
         }
     }

@@ -20,6 +20,7 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
     message: "could not decode",
     firstSeenUtc: `2026-08-0${id}T00:00:00.000Z`,
     lastSeenUtc: "2026-08-16T00:00:00.000Z",
+    recovery: null,
     ...over,
   };
 }
@@ -89,5 +90,61 @@ describe("the issues modal", () => {
     await act(async () => all!.click());
 
     expect(document.body.textContent).toContain("No issues");
+  });
+
+  it("retries only backend-authorized rows and leaves them visible as queued", async () => {
+    let rows = [
+      row(1, { recovery: { label: "Retry", status: "available" } }),
+      row(2, { kind: "delete-error" }),
+    ];
+    mockCommands({
+      get_issues: () => ({ total: rows.length, rows }),
+      retry_issue: (args) => {
+        rows = rows.map((item) =>
+          item.id === args.id
+            ? { ...item, recovery: { label: "Retry", status: "queued" as const } }
+            : item,
+        );
+        return true;
+      },
+    });
+    render(<IssuesModal />);
+    await act(async () => useIssuesStore.getState().setOpen(true));
+
+    const retry = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Retry",
+    );
+    await act(async () => retry!.click());
+
+    expect(invokeCalls.some((call) => call.command === "retry_issue")).toBe(true);
+    expect(document.body.textContent).toContain("Queued");
+    expect(document.querySelectorAll("li")).toHaveLength(2);
+  });
+
+  it("offers retry all only while at least one safe retry is available", async () => {
+    let rows = [
+      row(1, { recovery: { label: "Retry", status: "available" } }),
+      row(2, { recovery: { label: "Retry", status: "queued" } }),
+    ];
+    mockCommands({
+      get_issues: () => ({ total: rows.length, rows }),
+      retry_all_issues: () => {
+        rows = rows.map((item) => ({
+          ...item,
+          recovery: { label: "Retry", status: "queued" as const },
+        }));
+        return 1;
+      },
+    });
+    render(<IssuesModal />);
+    await act(async () => useIssuesStore.getState().setOpen(true));
+
+    const retryAll = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Retry all",
+    );
+    await act(async () => retryAll!.click());
+
+    expect(invokeCalls.some((call) => call.command === "retry_all_issues")).toBe(true);
+    expect(document.body.textContent).not.toContain("Retry all");
   });
 });

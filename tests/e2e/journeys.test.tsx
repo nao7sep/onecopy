@@ -263,6 +263,7 @@ describe("the failure journey", () => {
           message: "read-only volume",
           firstSeenUtc: "2026-01-01T00:00:00.000Z",
           lastSeenUtc: "2026-01-01T00:00:00.000Z",
+          recovery: null,
         },
       ],
       total: 1,

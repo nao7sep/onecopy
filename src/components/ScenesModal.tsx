@@ -123,9 +123,17 @@ function ScenesGrid({ hash, frames }: { hash: string; frames: number }) {
  * cached text (instant) → a Transcribe control → live progress → the text.
  * With the model absent the control is replaced by the honest remedy: what to
  * install and the one click that opens Managed tools. */
+interface TranscriptResult {
+  status: "pending" | "ready" | "failed";
+  text: string | null;
+  message: string | null;
+}
+
 function TranscriptSection({ hash }: { hash: string }) {
   const [text, setText] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  const [status, setStatus] = useState<"loading" | "pending" | "running" | "ready" | "failed">(
+    "loading",
+  );
   const [percent, setPercent] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const modelInstalled = useBinariesStore((s) =>
@@ -138,29 +146,32 @@ function TranscriptSection({ hash }: { hash: string }) {
     let stale = false;
     setText(null);
     setError(null);
-    setRunning(false);
-    void invoke<string | null>("transcript_get", { hash })
-      .then((cached) => {
-        if (!stale) setText(cached);
+    setStatus("loading");
+    void invoke<TranscriptResult>("transcript_get", { hash })
+      .then((result) => {
+        if (stale) return;
+        setStatus(result.status);
+        setText(result.text);
+        setError(result.status === "failed" ? (result.message ?? "Transcription failed.") : null);
       })
       .catch((err) => log.warn("transcript load failed", toErrorFields(err)));
 
     const disposers: Array<() => void> = [];
     void listen<{ hash: string; percent: number }>("transcribe://progress", (event) => {
       if (event.payload.hash === hash && !stale) {
-        setRunning(true);
+        setStatus("running");
         setPercent(event.payload.percent);
       }
     }).then((fn) => disposers.push(fn));
     void listen<{ hash: string; text: string }>("transcribe://done", (event) => {
       if (event.payload.hash === hash && !stale) {
-        setRunning(false);
+        setStatus("ready");
         setText(event.payload.text);
       }
     }).then((fn) => disposers.push(fn));
     void listen<{ hash: string; message: string }>("transcribe://error", (event) => {
       if (event.payload.hash === hash && !stale) {
-        setRunning(false);
+        setStatus("failed");
         setError(event.payload.message);
       }
     }).then((fn) => disposers.push(fn));
@@ -176,7 +187,7 @@ function TranscriptSection({ hash }: { hash: string }) {
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
           Transcript
         </h2>
-        {running ? (
+        {status === "running" ? (
           <span className="flex items-center gap-2 text-xs text-primary">
             Transcribing… {percent}%
             <Button
@@ -188,24 +199,26 @@ function TranscriptSection({ hash }: { hash: string }) {
               Cancel
             </Button>
           </span>
-        ) : text === null && modelInstalled ? (
+        ) : status !== "loading" && text === null && modelInstalled ? (
           <Button
             onClick={() => {
               setError(null);
-              setRunning(true);
+              setStatus("running");
               setPercent(0);
               void invoke("transcribe", { hash }).catch((err) => {
-                setRunning(false);
+                setStatus("failed");
                 setError(String(err));
                 log.error("transcribe start failed", toErrorFields(err));
               });
             }}
           >
-            Transcribe
+            {status === "failed" ? "Retry" : "Transcribe"}
           </Button>
         ) : null}
       </div>
-      {error !== null ? (
+      {status === "loading" ? (
+        <p className="text-xs text-ink-muted">Loading transcript…</p>
+      ) : error !== null ? (
         <p className="text-xs text-danger">{error}</p>
       ) : text !== null ? (
         text.trim() === "" ? (
@@ -215,7 +228,7 @@ function TranscriptSection({ hash }: { hash: string }) {
             {text}
           </pre>
         )
-      ) : running ? null : modelInstalled ? (
+      ) : status === "running" ? null : modelInstalled ? (
         <p className="text-xs text-ink-muted">
           Not transcribed yet — the transcript is created once and kept.
         </p>

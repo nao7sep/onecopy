@@ -345,7 +345,7 @@ fn issue_rows_never_carry_the_verbatim_prefix() {
     let conn = db();
     index_store::upsert_issue(&conn, Some(r"\\?\C:\photos\broken.heic"), "decode-error", "x")
         .unwrap();
-    index_store::upsert_issue(&conn, Some(r"\\?\UNC\nas\media\clip.mov"), "video-derive-error", "y")
+    index_store::upsert_issue(&conn, Some(r"\\?\UNC\nas\media\clip.mov"), "video-poster-error", "y")
         .unwrap();
     // A rootless issue keeps its empty path as None, which the prefix strip
     // must not disturb.

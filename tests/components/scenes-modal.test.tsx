@@ -76,7 +76,7 @@ function deleteInvokes() {
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
-    transcript_get: () => null,
+    transcript_get: () => ({ status: "pending", text: null, message: null }),
     patch_state: () => ({}),
     get_item_detail: () => null,
     delete_item: () => ({ deletedFiles: 1, failedFiles: 0, removedRows: 1 }),
@@ -164,5 +164,26 @@ describe("transcription start", () => {
 
     expect(await screen.findByText(/a transcription is already running/i)).toBeTruthy();
     expect(screen.queryByText(/Transcribing/)).toBeNull();
+  });
+
+  it("renders durable failed and checked-no-speech results without guessing from absence", async () => {
+    mockCommands({
+      transcript_get: () => ({
+        status: "failed",
+        text: null,
+        message: "decoder ran out of memory",
+      }),
+    });
+    const failed = render(<ScenesModal hash="h2" onClose={() => {}} />);
+    expect(await screen.findByText(/decoder ran out of memory/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    failed.unmount();
+
+    mockCommands({
+      transcript_get: () => ({ status: "ready", text: "", message: null }),
+    });
+    render(<ScenesModal hash="h2" onClose={() => {}} />);
+    expect(await screen.findByText(/No speech found/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Transcribe" })).toBeNull();
   });
 });

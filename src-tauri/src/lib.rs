@@ -5,6 +5,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
 pub mod derived_work;
+pub mod derived_state;
 pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;
@@ -1002,9 +1003,10 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 .then(|| binaries_manager::installed_path(&data_root, model_spec));
             let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
             let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
+            let tools_available = model.is_some() && ffmpeg.is_some();
             let progress_handle = handle.clone();
             let progress_hash = hash.clone();
-            transcription::transcribe_to_cache_claimed(
+            let text = transcription::transcribe_to_cache_claimed(
                 &claim,
                 &cache,
                 model.as_deref(),
@@ -1017,7 +1019,28 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                         json!({ "hash": progress_hash, "percent": percent }),
                     );
                 },
-            )
+            );
+            match text {
+                Ok(text) => {
+                    derived_state::record_transcript_success(
+                        &conn,
+                        &hash,
+                        &video,
+                        !text.trim().is_empty(),
+                    )?;
+                    Ok(text)
+                }
+                Err(error)
+                    if error == scanner::CANCELLED || transcription::is_cancelled() =>
+                {
+                    Err(error)
+                }
+                Err(error) if !tools_available => Err(error),
+                Err(error) => {
+                    derived_state::record_transcript_failure(&conn, &hash, &video, &error)?;
+                    Err(error)
+                }
+            }
         })();
         match result {
             Ok(text) => {
@@ -1035,12 +1058,16 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     Ok(())
 }
 
-// The cached transcript, or null when none exists yet.
+// The transcript's explicit output state. A missing cache entry behind a
+// ready receipt is repaired back to pending here rather than displayed as a
+// false success.
 #[tauri::command(async)]
-fn transcript_get(hash: String) -> Result<Option<String>, String> {
+fn transcript_get(app: AppHandle, hash: String) -> Result<derived_state::TranscriptResult, String> {
+    let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
     let cache = preview::CachePaths::new(cache_root);
-    Ok(std::fs::read_to_string(cache.transcript(&hash)).ok())
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+    derived_state::transcript_result(&conn, &cache, &hash)
 }
 
 // Comparison-mode fullscreen for the spread windows (Phase 33). macOS only:
@@ -1177,6 +1204,42 @@ fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
             Ok(())
         },
         |_| json!({}),
+    )
+}
+
+#[tauri::command(async)]
+fn retry_issue(app: AppHandle, id: i64) -> Result<bool, String> {
+    logging::boundary(
+        "retry_issue",
+        json!({ "id": id }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let retried = derived_state::retry_issue(&conn, id)?;
+            if retried {
+                derived_work::wake(false);
+            }
+            Ok(retried)
+        },
+        |retried| json!({ "retried": retried }),
+    )
+}
+
+#[tauri::command(async)]
+fn retry_all_issues(app: AppHandle) -> Result<u64, String> {
+    logging::boundary(
+        "retry_all_issues",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let retried = derived_state::retry_all(&conn)?;
+            if retried > 0 {
+                derived_work::wake(false);
+            }
+            Ok(retried)
+        },
+        |retried| json!({ "retried": retried }),
     )
 }
 
@@ -1669,6 +1732,8 @@ pub fn run() {
             trash_empty,
             dismiss_issue,
             dismiss_all_issues,
+            retry_issue,
+            retry_all_issues,
             binaries_state,
             binaries_install,
             binaries_cancel,

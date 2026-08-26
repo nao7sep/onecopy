@@ -75,7 +75,8 @@ pub const SAMPLE_RATE: u32 = 16_000;
 
 /// Extracts a video's audio track as 16 kHz mono f32 PCM through the managed
 /// ffmpeg (bounded, cancellable — the same subprocess rules every ffmpeg call
-/// obeys). ~3.8 MB per minute of audio in memory, transient.
+/// obeys). ~3.8 MB per minute of audio in memory, transient. An empty result
+/// is a successful no-audio finding, not a failure to retry forever.
 pub fn extract_pcm(ffmpeg: &Path, video: &Path) -> Result<Vec<f32>, String> {
     let mut command = std::process::Command::new(ffmpeg);
     command.args([
@@ -85,6 +86,8 @@ pub fn extract_pcm(ffmpeg: &Path, video: &Path) -> Result<Vec<f32>, String> {
     ]);
     command.arg(video);
     command.args([
+        "-map",
+        "0:a:0",
         "-vn",
         "-ar",
         "16000",
@@ -96,16 +99,23 @@ pub fn extract_pcm(ffmpeg: &Path, video: &Path) -> Result<Vec<f32>, String> {
     ]);
     let run = crate::subprocess::run_bounded(command, &is_cancelled)?;
     if !run.status_ok {
+        if no_audio_output(&run.stderr) {
+            return Ok(Vec::new());
+        }
         return Err(format!("audio extraction failed: {}", run.stderr_tail()));
     }
     let mut pcm = Vec::with_capacity(run.stdout.len() / 4);
     for chunk in run.stdout.chunks_exact(4) {
         pcm.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
-    if pcm.is_empty() {
-        return Err("the video carries no audio track".to_string());
-    }
     Ok(pcm)
+}
+
+/// The narrow ffmpeg result that means a valid video simply has no audio.
+/// Other extraction failures remain failures; this never guesses from an
+/// empty output alone after a non-zero exit.
+pub fn no_audio_output(stderr: &str) -> bool {
+    stderr.contains("matches no streams") || stderr.contains("does not contain any stream")
 }
 
 /// One transcribed segment, ready for display.
@@ -124,6 +134,10 @@ pub fn run_whisper(
 ) -> Result<Vec<Segment>, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+    // whisper.cpp otherwise writes its internal decoder trace directly to
+    // stderr. The app owns useful progress and errors; the repeated token
+    // dumps are neither and made run-dev unreadable.
+    whisper_rs::install_logging_hooks();
     let context = WhisperContext::new_with_params(model, WhisperContextParameters::default())
         .map_err(|e| format!("model load failed: {e}"))?;
     let mut state = context
@@ -220,8 +234,11 @@ pub(crate) fn transcribe_to_cache_claimed(
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
     let pcm = extract_pcm(ffmpeg, video)?;
-    let segments = run_whisper(model, &pcm, on_progress)?;
-    let text = render(&segments);
+    let text = if pcm.is_empty() {
+        String::new()
+    } else {
+        render(&run_whisper(model, &pcm, on_progress)?)
+    };
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

@@ -202,6 +202,25 @@ CREATE TABLE IF NOT EXISTS issues (
   UNIQUE (kind, path)
 );
 
+-- Fixed-class output receipts, never jobs. NULL means the class is pending;
+-- ready and failed are durable results, while running/paused/waiting belong
+-- to the coordinator's ephemeral snapshot.
+CREATE TABLE IF NOT EXISTS analysis_receipts (
+  content_hash              TEXT PRIMARY KEY REFERENCES contents(hash),
+  face_state                TEXT CHECK (face_state IN ('ready', 'failed')),
+  face_updated_at_utc       TEXT,
+  transcript_state          TEXT CHECK (
+                              transcript_state IN
+                                ('ready-text', 'ready-empty', 'failed')
+                            ),
+  transcript_updated_at_utc TEXT
+);
+CREATE TRIGGER IF NOT EXISTS contents_analysis_after_delete
+AFTER DELETE ON contents
+BEGIN
+  DELETE FROM analysis_receipts WHERE content_hash = OLD.hash;
+END;
+
 CREATE TABLE IF NOT EXISTS scan_dirs (
   id                    INTEGER PRIMARY KEY,
   root                  TEXT NOT NULL UNIQUE,
@@ -348,6 +367,7 @@ mod tests {
             .collect();
         // Set EQUALITY, not a subset, so any table change is deliberate.
         let mut expected = vec![
+            "analysis_receipts",
             "contents",
             "evidence",
             "issues",

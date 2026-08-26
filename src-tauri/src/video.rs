@@ -265,11 +265,20 @@ fn derive_videos_pending_limit(
                 .map_err(|e| e.to_string())?;
                 // Current-state issues: a derive that now succeeds retires the
                 // failure it recorded on an earlier pass.
-                crate::index_store::clear_issues(conn, &path, &["video-derive-error"])?;
+                crate::index_store::clear_issues(
+                    conn,
+                    &path,
+                    &[crate::derived_state::VIDEO_POSTER_ERROR],
+                )?;
             }
             Err(err) => {
                 stats.failed += 1;
-                crate::index_store::upsert_issue(conn, Some(&path), "video-derive-error", &err)?;
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(&path),
+                    crate::derived_state::VIDEO_POSTER_ERROR,
+                    &err,
+                )?;
                 conn.execute(
                     "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
                     [&hash],
@@ -348,7 +357,11 @@ pub fn derive_strips_pending(
                     params![hash, count as i64],
                 )
                 .map_err(|e| e.to_string())?;
-                crate::index_store::clear_issues(conn, &path, &["video-derive-error"])?;
+                crate::index_store::clear_issues(
+                    conn,
+                    &path,
+                    &[crate::derived_state::VIDEO_STRIP_ERROR],
+                )?;
                 done += 1;
                 progress(done, total);
             }
@@ -364,7 +377,12 @@ pub fn derive_strips_pending(
                     params![hash],
                 )
                 .map_err(|e| e.to_string())?;
-                crate::index_store::upsert_issue(conn, Some(&path), "video-derive-error", &err)?;
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(&path),
+                    crate::derived_state::VIDEO_STRIP_ERROR,
+                    &err,
+                )?;
                 progress(done, total);
             }
         }

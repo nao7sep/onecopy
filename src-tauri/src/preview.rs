@@ -498,7 +498,7 @@ fn record_derive_success(
     .map_err(|e| e.to_string())?;
     // Current-state issues: a decode that now succeeds retires
     // the failure it recorded on an earlier pass.
-    crate::index_store::clear_issues(conn, path, &["decode-error"])?;
+    crate::index_store::clear_issues(conn, path, &[crate::derived_state::PREVIEW_ERROR])?;
     Ok(())
 }
 
@@ -542,7 +542,12 @@ pub fn derive_one(
             ffmpeg,
         )
         .map_err(|err| {
-            let _ = crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err);
+            let _ = crate::index_store::upsert_issue(
+                conn,
+                Some(&path),
+                crate::derived_state::PREVIEW_ERROR,
+                &err,
+            );
             let _ = conn.execute(
                 "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
                 [hash],
@@ -557,7 +562,12 @@ pub fn derive_one(
         .map_err(|err| {
             // The same honesty as the bulk pass: a broken file is recorded,
             // not silently retried on every click.
-            let _ = crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err);
+            let _ = crate::index_store::upsert_issue(
+                conn,
+                Some(&path),
+                crate::derived_state::PREVIEW_ERROR,
+                &err,
+            );
             let _ = conn.execute(
                 "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
                 [hash],
@@ -740,7 +750,12 @@ fn derive_images_pending_limit(
             }
             Err(err) => {
                 stats.failed += 1;
-                crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err)?;
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(&path),
+                    crate::derived_state::PREVIEW_ERROR,
+                    &err,
+                )?;
                 conn.execute(
                     "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
                     [&hash],

@@ -1,7 +1,8 @@
 // Issues are CURRENT-STATE diagnostics, not a log — everything the pipeline
 // could not do lands here, one row per (kind, path). Scan-derived rows clear
-// themselves when a scan finds the condition resolved; operation records wait
-// for the user's Dismiss. The count lives in the status bar (nothing at zero),
+// themselves when a scan finds the condition resolved; safe derived failures
+// may be retried, while operation records wait for the user's Dismiss. The
+// count lives in the status bar (nothing at zero),
 // and there are deliberately NO toasts anywhere: the design case is a
 // multi-day unattended scan, where anything transient would be missed.
 
@@ -17,6 +18,7 @@ export interface IssueRow {
   message: string | null;
   firstSeenUtc: string;
   lastSeenUtc: string;
+  recovery: { label: string; status: "available" | "queued" } | null;
 }
 
 interface IssuesState {
@@ -29,6 +31,8 @@ interface IssuesState {
   setOpen: (open: boolean) => void;
   dismiss: (id: number) => Promise<void>;
   dismissAll: () => Promise<void>;
+  retry: (id: number) => Promise<void>;
+  retryAll: () => Promise<void>;
 }
 
 const issuesLoad = requestSeq();
@@ -68,6 +72,24 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       await get().load();
     } catch (error) {
       log.error("dismiss all failed", toErrorFields(error));
+    }
+  },
+
+  retry: async (id) => {
+    try {
+      await invoke("retry_issue", { id });
+      await get().load();
+    } catch (error) {
+      log.error("issue retry failed", toErrorFields(error));
+    }
+  },
+
+  retryAll: async () => {
+    try {
+      await invoke("retry_all_issues");
+      await get().load();
+    } catch (error) {
+      log.error("retry all issues failed", toErrorFields(error));
     }
   },
 }));
