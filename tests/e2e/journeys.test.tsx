@@ -14,6 +14,7 @@ import { useWizardStore } from "../../src/state/wizard-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { usePreviewStore } from "../../src/state/preview-store";
+import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import type { SectionItem } from "../../src/models/items";
 import {
@@ -94,6 +95,7 @@ beforeEach(() => {
     patch_config: (args) => args.patch ?? {},
     log_event: () => null,
     logging_debug_enabled: () => false,
+    background_work_snapshot: () => ({ masterPaused: false, classes: [] }),
     get_item_detail: () => null,
     start_scan: () => true,
   });
@@ -110,6 +112,7 @@ beforeEach(() => {
     message: null,
   });
   usePreviewStore.setState({ follow: false, current: null });
+  useQuickViewStore.setState({ open: false });
   useComparisonStore.setState({ open: false, members: [], kept: new Set() });
 });
 
@@ -180,12 +183,16 @@ describe("the culling journey", () => {
     });
     expect(useItemsStore.getState().selectedItem).toBe("h2");
 
-    // ---- Space = look: the preview follows the anchor ----
+    // ---- Space opens transient Quick View without changing Preview ----
     await act(async () => {
       grid.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
     });
     await settle();
-    expect(usePreviewStore.getState().follow).toBe(true);
+    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(usePreviewStore.getState().follow).toBe(false);
+    await act(async () => pressWindow("Escape"));
+    await settle();
+    expect(useQuickViewStore.getState().open).toBe(false);
 
     // ---- Enter on a ≈ item opens the comparison over the whole scene ----
     mockCommand("get_similar_group", () => [

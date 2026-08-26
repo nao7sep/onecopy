@@ -92,7 +92,7 @@ describe("the maximized main window (the developer's normal state)", () => {
 
   it("defers the min-size constraint instead of applying it", async () => {
     // On Windows the min-size call knocks a maximized window back to normal
-    // — pressing Space (which re-derives the minimum for the split pane)
+    // — showing the split Preview (which re-derives the minimum)
     // un-maximized the developer's window. A maximized window cannot go
     // below any minimum, so the constraint must WAIT.
     isMaximized.mockResolvedValue(true);

@@ -48,7 +48,7 @@ import { hasOpenModal } from "./utils/modalStack";
 import { isComposingEvent } from "./hooks/useComposing";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
-import ScenesModal from "./components/ScenesModal";
+import QuickView from "./components/QuickView";
 import TrashModal from "./components/TrashModal";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { Menu as MenuIcon, Minus, Plus, X } from "lucide-react";
@@ -61,7 +61,9 @@ import {
 } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
 import { DEFAULT_DESC, type SortChoice, type SortOrder } from "./models/items";
-import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
+import { comparisonHashForEnter } from "./models/interactions";
+import { usePreviewStore } from "./state/preview-store";
+import { handleSpaceQuickView, useQuickViewStore } from "./state/quick-view-store";
 import {
   backgroundWorkLine,
   installActivityPings,
@@ -123,8 +125,8 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
-  /** Enter on an anchor video opens the scenes modal for this hash. */
-  const [scenesFor, setScenesFor] = useState<string | null>(null);
+  /** Transient media inspection lives in the main webview. */
+  const quickViewOpen = useQuickViewStore((state) => state.open);
   /** Pending permanent deletion awaiting confirmation (item count shown). */
   const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
   /** Pending TRASH deletion awaiting confirmation — exists only when the
@@ -482,46 +484,34 @@ export default function App() {
           void useItemsStore.getState().deleteSelected(false);
         }
       } else if (
-        (event.key === " " || event.key.toLowerCase() === "p") &&
+        event.key === " " &&
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey
       ) {
-        // Space = LOOK, with P as its alias; the chrome control is the third
-        // entry — all through the store's one rule so they cannot drift. A
-        // video loaded in the preview owns Space (play/pause), which is why
-        // the rule may decline to claim the event.
-        handleSpaceLook(event);
+        // Space owns the transient Quick View. Persistent Preview visibility
+        // belongs to its chrome control; a focused video player keeps Space
+        // for play/pause.
+        handleSpaceQuickView(event);
       } else if (event.key === "Enter") {
         const { items, selectedItem } = useItemsStore.getState();
         const item = items.find((i) => itemKey(i) === selectedItem);
         if (!item) return;
         event.preventDefault();
-        if (item.hash && item.durationMs !== null) {
-          // Enter goes deeper on the anchor: a video opens the scenes modal
-          // (selection-based culling — videos never group).
-          setScenesFor(item.hash);
-        } else if (item.hash && item.similarGroupId !== null) {
+        const comparisonHash = comparisonHashForEnter(item);
+        if (comparisonHash !== null) {
           // Similar photos exist: Enter means "show them all at once". A
           // group with no other live members says so instead of surprising
           // the user with a different surface.
           void useComparisonStore
             .getState()
-            .openGroup(item.hash)
+            .openGroup(comparisonHash)
             .then((opened) => {
               if (opened) return;
               useItemsStore.setState({
                 message: "No similar photos left in this group",
               });
             });
-        } else {
-          // No similars: Enter says so and does nothing else (developer,
-          // 2026-08-17). It used to open the 100% view — but Enter is the
-          // trained "open the similar set" reflex, pressed without checking
-          // the ≈ badge first, and a surprise mode-switch punishes exactly
-          // that habit. Inspection stays where it belongs: Space to peek,
-          // Z or a click for 100%.
-          useItemsStore.setState({ message: "No similar photos for this image" });
         }
       }
     };
@@ -639,9 +629,7 @@ export default function App() {
       <BackgroundWorkModal />
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      {scenesFor !== null ? (
-        <ScenesModal hash={scenesFor} onClose={() => setScenesFor(null)} />
-      ) : null}
+      {quickViewOpen ? <QuickView /> : null}
       {confirmPermanent !== null ? (
         <ConfirmDialog
           title="Delete permanently?"
@@ -830,7 +818,6 @@ export default function App() {
                 hash={previewCurrent?.hash ?? null}
                 detail={previewCurrent?.detail ?? null}
                 pathId={previewCurrent?.pathId ?? null}
-                zoom={previewCurrent?.zoom === true}
                 seekMs={previewCurrent?.seekMs}
                 playAfterSeek={previewCurrent?.playAfterSeek}
               />

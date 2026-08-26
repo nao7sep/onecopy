@@ -6,12 +6,13 @@
 // action.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, cleanup, act } from "@testing-library/react";
+import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import Grid from "../../src/components/Grid";
 import { popModal, pushModal } from "../../src/utils/modalStack";
 import { useItemsStore } from "../../src/state/items-store";
 import type { SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
+import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
@@ -81,6 +82,7 @@ beforeEach(() => {
     placementPreference: null,
     current: null,
   });
+  useQuickViewStore.setState({ open: false });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: ITEMS,
@@ -137,21 +139,23 @@ describe("Home and End", () => {
 });
 
 describe("Space", () => {
-  it("is Quick Look: it shows the preview and leaves the selection alone", async () => {
+  it("opens Quick View without changing persistent Preview or selection", async () => {
     // It used to toggle the anchor in and out of the multi-selection, which
     // nobody found and which made Space a way to silently DESELECT the photo
-    // about to be deleted. Selection stays put now; Space only previews.
+    // about to be deleted. Selection stays put now; Space only opens Quick View.
     const { container } = renderGrid();
     await anchor("h3");
 
     await act(async () => press(container, " "));
 
-    expect(usePreviewStore.getState().follow).toBe(true);
+    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(usePreviewStore.getState().follow).toBe(false);
     expect(useItemsStore.getState().selectedKeys.has("h3")).toBe(true);
     expect(useItemsStore.getState().selectedItem).toBe("h3");
 
-    // And again hides it — one key, both directions.
+    // A second Space is not a hidden Preview toggle.
     await act(async () => press(container, " "));
+    expect(useQuickViewStore.getState().open).toBe(true);
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
@@ -162,6 +166,29 @@ describe("Space", () => {
     await act(async () => press(container, " "));
 
     expect(invokeCalls.some((c) => c.command === "delete_item")).toBe(false);
+  });
+});
+
+describe("pointer selection", () => {
+  it("ordinary clicks toggle immediately", () => {
+    const { view } = renderGrid();
+    const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
+
+    fireEvent.click(tile, { detail: 1 });
+    expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
+    fireEvent.click(tile, { detail: 1 });
+    expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(false);
+  });
+
+  it("a double-click makes the toggle decision once", () => {
+    const { view } = renderGrid();
+    const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
+
+    fireEvent.click(tile, { detail: 1 });
+    fireEvent.click(tile, { detail: 2 });
+    fireEvent.doubleClick(tile, { detail: 2 });
+
+    expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
   });
 });
 

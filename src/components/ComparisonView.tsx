@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import ComparisonSlot from "./ComparisonSlot";
-import ZoomableImage from "./ZoomableImage";
 import {
   slotIndexForKey,
   slotIndexForShiftedCode,
@@ -37,7 +36,6 @@ export default function ComparisonView() {
   const toggleKeep = useComparisonStore((s) => s.toggleKeep);
   const commitTurn = useComparisonStore((s) => s.commitTurn);
   const close = useComparisonStore((s) => s.close);
-  const [enlarged, setEnlarged] = useState<{ hash: string; name: string } | null>(null);
   const pendingPermanentCommit = useComparisonStore((s) => s.pendingPermanentCommit);
   const pendingCommitState = useComparisonStore((s) => s.pendingCommit);
 
@@ -47,15 +45,6 @@ export default function ComparisonView() {
       // A modal above the comparison (help, settings) owns the keyboard:
       // its Escape must close only itself, never tear down the session.
       if (hasOpenModal()) return;
-      if (enlarged !== null) {
-        // The enlarged overlay owns the keyboard: Escape returns to the
-        // slots; Z falls through to the zoom toggle.
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setEnlarged(null);
-        }
-        return;
-      }
       const unlinkIndex = slotIndexForShiftedCode(event);
       if (unlinkIndex >= 0) {
         event.preventDefault();
@@ -87,11 +76,7 @@ export default function ComparisonView() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, enlarged, toggleKeep, commitTurn, close]);
-
-  useEffect(() => {
-    if (!open) setEnlarged(null);
-  }, [open]);
+  }, [open, toggleKeep, commitTurn, close]);
 
   if (!open) return null;
 
@@ -181,9 +166,6 @@ export default function ComparisonView() {
               kept={slot.kept}
               onToggle={() => toggleKeep(index)}
               onUnlink={() => void useComparisonStore.getState().unlinkSlot(index)}
-              onEnlarge={() =>
-                setEnlarged({ hash: slot.member!.hash, name: slot.member!.fileName })
-              }
             />
           ) : (
             <EmptySlot key={`empty-${slot.slotKey}`} slotKey={slot.slotKey} />
@@ -197,16 +179,6 @@ export default function ComparisonView() {
         <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
           Working…
         </footer>
-      ) : null}
-      {enlarged !== null ? (
-        <div className="absolute inset-0 z-10 flex flex-col bg-background">
-          <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
-            <ZoomableImage hash={enlarged.hash} fileName={enlarged.name} />
-          </div>
-          <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-            {enlarged.name} · Z: 100% · Escape: back to the slots
-          </footer>
-        </div>
       ) : null}
     </div>
   );

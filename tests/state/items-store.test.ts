@@ -187,6 +187,31 @@ describe("rangeSelect", () => {
     seed(keys.map((_k, i) => item({ pathId: i + 1 })));
   });
 
+  it("clears details whenever the anchor changes", () => {
+    const staleDetail = {
+      fileName: "old.jpg",
+      kind: "image",
+      byteSize: 10,
+      width: 100,
+      height: 100,
+      durationMs: null,
+      resolvedUtcMs: 0,
+      resolvedSource: "metadata",
+      dateOnly: false,
+      copyPaths: ["/photos/old.jpg"],
+      companionPaths: [],
+      stripFrames: null,
+    };
+    useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]), detail: staleDetail });
+
+    useItemsStore.getState().toggleItem("h2");
+    expect(useItemsStore.getState().detail).toBeNull();
+
+    useItemsStore.setState({ detail: staleDetail });
+    useItemsStore.getState().setAnchor("h3");
+    expect(useItemsStore.getState().detail).toBeNull();
+  });
+
   it("selects the span between the anchor and the target", () => {
     useItemsStore.getState().selectItem("h2");
     useItemsStore.getState().rangeSelect(keys, "h5");

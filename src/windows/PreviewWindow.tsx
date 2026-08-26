@@ -123,7 +123,6 @@ export default function PreviewWindow() {
           hash={message.hash}
           detail={message.detail}
           pathId={message.pathId}
-          zoom={message.zoom === true}
           seekMs={message.seekMs}
           playAfterSeek={message.playAfterSeek}
         />

@@ -8,7 +8,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { hasOpenModal } from "../utils/modalStack";
 import { log, toErrorFields } from "../repositories";
 import { isEditableTarget } from "../utils/shortcuts";
 import {
@@ -31,14 +30,19 @@ function VideoSurface({
   detail,
   seekMs,
   playAfterSeek,
+  keyboardActive,
+  autoplayImmediately,
 }: {
   hash: string;
   detail: ItemDetail;
   seekMs?: number;
   playAfterSeek?: boolean;
+  keyboardActive?: boolean;
+  autoplayImmediately?: boolean;
 }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const autoplayOnShow = useAppStore(
     (state) => state.appData?.config?.videoAutoplayOnShow !== false,
   );
@@ -46,6 +50,10 @@ function VideoSurface({
     (state) => state.appData?.config?.videoAutoplayAfterSnapshot !== false,
   );
   const sceneCount = Math.max(0, detail.stripFrames ?? 0);
+
+  useEffect(() => {
+    if (keyboardActive) surfaceRef.current?.focus({ preventScroll: true });
+  }, [keyboardActive]);
 
   const seek = (atMs: number, play: boolean) => {
     const video = videoRef.current;
@@ -56,14 +64,16 @@ function VideoSurface({
 
   useEffect(() => {
     const video = videoRef.current;
-    if (video === null) return;
+    if (video === null || !autoplayOnShow || seekMs !== undefined) return;
+    if (autoplayImmediately) {
+      void video.play().catch(() => undefined);
+      return;
+    }
     const timer = setTimeout(() => {
-      if (autoplayOnShow && seekMs === undefined) {
-        void video.play().catch(() => undefined);
-      }
+      void video.play().catch(() => undefined);
     }, 250);
     return () => clearTimeout(timer);
-  }, [autoplayOnShow, hash, seekMs]);
+  }, [autoplayImmediately, autoplayOnShow, hash, seekMs]);
 
   useEffect(() => {
     if (seekMs === undefined) return;
@@ -75,11 +85,12 @@ function VideoSurface({
     return () => video.removeEventListener("loadedmetadata", apply);
   }, [autoplayAfterSnapshot, playAfterSeek, seekMs]);
 
-  // A focused player owns Space; the main look/close rule stands down here.
+  // A focused player owns Space; Quick View routing stands down here.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== " " || event.metaKey || event.ctrlKey || event.altKey) return;
-      if (hasOpenModal() || isEditableTarget(event.target)) return;
+      if (isEditableTarget(event.target)) return;
+      if (!surfaceRef.current?.contains(document.activeElement)) return;
       event.preventDefault();
       const video = videoRef.current;
       if (video === null) return;
@@ -88,10 +99,17 @@ function VideoSurface({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [keyboardActive]);
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col gap-2">
+    <div
+      ref={surfaceRef}
+      data-video-surface
+      tabIndex={keyboardActive ? 0 : -1}
+      role={keyboardActive ? "group" : undefined}
+      aria-label={keyboardActive ? "Video Quick View" : undefined}
+      className="flex h-full min-h-0 w-full flex-col gap-2 outline-none"
+    >
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg bg-background">
         {playbackFailed ? (
           <img
@@ -165,11 +183,9 @@ function VideoSurface({
 function ImageSurface({
   hash,
   fileName,
-  startZoomed = false,
 }: {
   hash: string;
   fileName: string;
-  startZoomed?: boolean;
 }) {
   // A missing cache entry is USUALLY just a photo the scan's bulk pass has
   // not reached (it runs walk-order; on a slow machine the tail is hours
@@ -192,7 +208,6 @@ function ImageSurface({
       key={`${phase.cacheHash}-${phase.attempt}`}
       hash={phase.cacheHash}
       fileName={fileName}
-      startZoomed={startZoomed}
       onError={() => {
         if (phase.attempt > 0) {
           setPhase({
@@ -239,20 +254,23 @@ export default function PreviewSurface({
   hash,
   detail,
   pathId = null,
-  zoom = false,
   seekMs,
   playAfterSeek,
+  keyboardActive = false,
+  autoplayImmediately = false,
 }: {
   hash: string | null;
   detail: ItemDetail | null;
   /** The unhashed route: identifies the file when no hash exists yet. */
   pathId?: number | null;
-  /** Enter's inspect: the image mounts at 100%. */
-  zoom?: boolean;
   /** A scene rail can open the player at this exact point. */
   seekMs?: number;
   /** Overrides the snapshot autoplay preference for this one navigation. */
   playAfterSeek?: boolean;
+  /** A transient owning layer can give its player the media keys. */
+  keyboardActive?: boolean;
+  /** Explicit views may play now; selection-follow Preview stays debounced. */
+  autoplayImmediately?: boolean;
 }) {
   if (detail !== null && isAudioFile(detail.fileName)) {
     const src =
@@ -285,13 +303,14 @@ export default function PreviewSurface({
           detail={detail}
           seekMs={seekMs}
           playAfterSeek={playAfterSeek}
+          keyboardActive={keyboardActive}
+          autoplayImmediately={autoplayImmediately}
         />
       ) : (
         <ImageSurface
           key={hash}
           hash={hash}
           fileName={detail?.fileName ?? ""}
-          startZoomed={zoom}
         />
       )}
     </div>

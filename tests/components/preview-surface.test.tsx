@@ -55,8 +55,27 @@ afterEach(() => {
 });
 
 describe("shared video presentation", () => {
+  it("starts an explicit view immediately while selection-follow autoplay stays delayed", () => {
+    useAppStore.setState((state) => ({
+      appData: state.appData === null
+        ? null
+        : {
+            ...state.appData,
+            config: { ...state.appData.config, videoAutoplayOnShow: true },
+          },
+    }));
+
+    render(
+      <PreviewSurface hash="video-hash" detail={DETAIL} autoplayImmediately />,
+    );
+
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce();
+  });
+
   it("overlays timestamped snapshots, seeks and plays, and keeps transcript below", async () => {
-    const view = render(<PreviewSurface hash="video-hash" detail={DETAIL} />);
+    const view = render(
+      <PreviewSurface hash="video-hash" detail={DETAIL} keyboardActive />,
+    );
     const video = view.container.querySelector("video");
     expect(video).not.toBeNull();
     expect(await screen.findByText("[0:01] hello")).toBeTruthy();
@@ -67,5 +86,8 @@ describe("shared video presentation", () => {
     expect(video?.currentTime).toBe(12);
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: /Open in player/i })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: " " });
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
   });
 });

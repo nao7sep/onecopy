@@ -194,7 +194,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   // Moves the anchor only. The range origin deliberately stays put, so a
   // Shift+arrow run can reverse and shrink instead of only growing.
   setAnchor: (key) => {
-    set({ selectedItem: key });
+    set({ selectedItem: key, detail: null });
     notifyAnchor(key);
   },
 
@@ -216,6 +216,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       selectedItem: anchor,
       rangeOrigin: key,
       rangeBase: new Set(next),
+      detail: null,
     });
     notifyAnchor(anchor);
   },
@@ -251,10 +252,8 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     await deleteKeys(keys, permanent);
   },
 
-  // Deletes an explicit set. Surfaces that act on ONE item — the scenes modal
-  // opens on the anchor and its footer promises it acts on that video — call
-  // this rather than deleteSelected, whose target is whatever is selected in
-  // the grid behind them.
+  // Deletes an explicit set. A surface scoped to ONE item calls this rather
+  // than deleteSelected, whose target is whatever is selected in the grid.
   deleteKeys: async (keys, permanent) => {
     const { items, selectedItem, refresh } = get();
     if (keys.size === 0) return;

@@ -19,6 +19,7 @@ import { shortcutGroups } from "../../src/models/shortcuts";
 const SOURCES = [
   "src/App.tsx",
   "src/components/Grid.tsx",
+  "src/state/quick-view-store.ts",
   "src/components/DestinationsTab.tsx",
   "src/components/ComparisonView.tsx",
   "src/components/ZoomableImage.tsx",
@@ -48,10 +49,9 @@ const EVIDENCE: Record<string, () => boolean> = {
   "Home / End": () => handles('"Home"') && handles('"End"'),
   "Page Up / Page Down": () => handles('"PageUp"') && handles('"PageDown"'),
   "Shift+Arrows": () => handles("event.shiftKey"),
-  Click: () => handles("metaKey || event.ctrlKey", "event.metaKey"),
+  Click: () => handles("event.detail"),
   "Shift+Click": () => handles("rangeSelect"),
   Space: () => handles('event.key === " "'),
-  P: () => handles('toLowerCase() === "p"'),
   Enter: () => handles('"Enter"'),
   Z: () => handles('toLowerCase() === "z"'),
   F: () => handles('toLowerCase() === "f"'),
@@ -62,7 +62,6 @@ const EVIDENCE: Record<string, () => boolean> = {
   S: () => handles("toggleShortlist"),
   "Shift+1–9/0/A–F": () => handles("slotIndexForShiftedCode"),
   "Shift+Enter": () => handles("shiftKey"),
-  "Double-click": () => handles("onDoubleClick", "onEnlarge"),
   Escape: () => handles('"Escape"'),
   Comma: () => handles("isSettingsShortcut"),
   "Slash / Question": () => handles("isHelpShortcut"),
@@ -87,7 +86,7 @@ describe("every chord the help sheet prints", () => {
 describe("keys the app handles but the sheet forgot", () => {
   const printed = new Set(rows.map((r) => evidenceKey(r.chord)));
 
-  it("lists Space, now that it is Quick Look rather than a selection toggle", () => {
+  it("lists Space as Quick View rather than a selection or Preview toggle", () => {
     expect(printed.has("Space")).toBe(true);
   });
 
@@ -105,14 +104,15 @@ describe("keys the app handles but the sheet forgot", () => {
   });
 
   it("does not print a chord for anything removed", () => {
-    // The old sheet described P as "toggle preview-follows-selection", which
-    // named an internal flag rather than what the user sees.
+    // Persistent Preview has no settled keyboard shortcut; its visibility is
+    // controlled by chrome while Space belongs to transient Quick View.
     const actions = rows.map((r) => r.action.toLowerCase());
     expect(actions.some((a) => a.includes("follows-selection"))).toBe(false);
+    expect(rows.some((r) => r.chord === "P")).toBe(false);
   });
 
   it("spells the comparison paging keys as words", () => {
-    const comparisonView = SOURCES[3];
+    const comparisonView = readFileSync("src/components/ComparisonView.tsx", "utf8");
     expect(comparisonView).toContain("Left/Right pages");
     expect(comparisonView).not.toContain("←/→ pages");
   });

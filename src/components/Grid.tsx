@@ -15,7 +15,7 @@ import {
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useAppStore } from "../state/app-store";
-import { handleSpaceLook } from "../state/preview-store";
+import { handleSpaceQuickView } from "../state/quick-view-store";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
 import { hasOpenModal } from "../utils/modalStack";
@@ -555,11 +555,11 @@ export default function Grid({
   }, [selectedHash, selectedSection?.kind, selectedSection?.month, visibleHashSignature]);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
-    // Space = LOOK (the agreed model): toggle the preview, through the one
-    // shared rule — with a video loaded in the preview the video surface owns
-    // the key instead (play/pause), so the rule must not claim it here.
+    // Space opens the transient Quick View. Persistent Preview visibility is
+    // chrome-only; a focused video player may decline this route and keep the
+    // key for play/pause.
     if (event.key === " ") {
-      handleSpaceLook(event);
+      handleSpaceQuickView(event);
       return;
     }
     // PageUp/PageDown jump by roughly a viewport of rows.
@@ -684,12 +684,14 @@ export default function Grid({
           const isSelected = selectedKeys.has(key);
           const onSelect = (event: React.MouseEvent) => {
             containerRef.current?.focus();
-            if (event.metaKey || event.ctrlKey) {
-              toggleItem(key);
-            } else if (event.shiftKey) {
+            // Browser double-click dispatch is click, click, dblclick. Acting
+            // only on the first click keeps both a single and a double click
+            // as one immediate logical toggle.
+            if (event.detail > 1) return;
+            if (event.shiftKey) {
               rangeSelect(sortedKeys, key);
             } else {
-              selectItem(key);
+              toggleItem(key);
             }
           };
           return (

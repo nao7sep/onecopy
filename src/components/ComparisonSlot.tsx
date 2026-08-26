@@ -12,7 +12,6 @@ export default function ComparisonSlot({
   kept,
   onToggle,
   onUnlink,
-  onEnlarge,
 }: {
   member: GroupMember;
   slotKey: string;
@@ -22,7 +21,6 @@ export default function ComparisonSlot({
    * permanently and non-destructively. Absent in surfaces that cannot
    * mutate the session (the secondary windows forward keys instead). */
   onUnlink?: () => void;
-  onEnlarge?: () => void;
 }) {
   const facts = factsLine(member);
   return (
@@ -39,9 +37,10 @@ export default function ComparisonSlot({
       className={`group/slot relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
         kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
       }`}
-      onClick={onToggle}
-      onDoubleClick={onEnlarge}
-      title="Click: keep · double-click: enlarge"
+      onClick={(event) => {
+        if (event.detail === 1) onToggle();
+      }}
+      title="Click or double-click: toggle keep"
     >
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         <img
