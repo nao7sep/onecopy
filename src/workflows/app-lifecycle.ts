@@ -11,11 +11,15 @@ import { useWizardStore } from "../state/wizard-store";
 import { installScanEventWiring } from "./scan-events";
 import { installItemWorkflow } from "./items";
 import { installPreviewPersistence } from "./preview";
+import { installComparisonEventWiring } from "./comparison";
 
 export async function bootstrapApplication(): Promise<void> {
   installItemWorkflow();
   installPreviewPersistence();
-  await installScanEventWiring();
+  await Promise.all([
+    installScanEventWiring(),
+    installComparisonEventWiring(),
+  ]);
   const [data] = await Promise.all([
     useAppStore.getState().reload(),
     useSectionsStore.getState().loadCounts(),

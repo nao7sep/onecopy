@@ -76,6 +76,7 @@ import { bootstrapApplication } from "./workflows/app-lifecycle";
 import { deleteSelectedItems } from "./workflows/items";
 import { closePreview } from "./workflows/preview";
 import { handleSpaceQuickView } from "./workflows/quick-view";
+import { openComparison } from "./workflows/comparison";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -506,9 +507,7 @@ export default function App() {
           // Similar photos exist: Enter means "show them all at once". A
           // group with no other live members says so instead of surprising
           // the user with a different surface.
-          void useComparisonStore
-            .getState()
-            .openGroup(comparisonHash)
+          void openComparison(comparisonHash)
             .then((opened) => {
               if (opened) return;
               useItemsStore.setState({

@@ -13,6 +13,12 @@ import {
 } from "../state/comparison-store";
 import { hasOpenModal } from "../utils/modalStack";
 import ConfirmDialog from "./ConfirmDialog";
+import {
+  closeComparison,
+  commitComparison,
+  confirmComparisonCommit,
+  confirmPermanentComparisonCommit,
+} from "../workflows/comparison";
 
 // The similar-photos comparison surface in the main window. With extra
 // monitors the slot list spreads: this surface shows chunk 0 and the
@@ -34,8 +40,6 @@ export default function ComparisonView() {
   const spreadCount = useComparisonStore((s) => s.spreadCount);
   const capacities = useComparisonStore((s) => s.capacities);
   const toggleKeep = useComparisonStore((s) => s.toggleKeep);
-  const commitTurn = useComparisonStore((s) => s.commitTurn);
-  const close = useComparisonStore((s) => s.close);
   const pendingPermanentCommit = useComparisonStore((s) => s.pendingPermanentCommit);
   const pendingCommitState = useComparisonStore((s) => s.pendingCommit);
   const commitFailure = useComparisonStore((s) => s.commitFailure);
@@ -60,10 +64,10 @@ export default function ComparisonView() {
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        void commitTurn(event.shiftKey);
+        void commitComparison(event.shiftKey);
       } else if (event.key === "Escape") {
         event.preventDefault();
-        close();
+        void closeComparison();
       } else if (event.key === "ArrowRight" || event.key === "PageDown") {
         event.preventDefault();
         useComparisonStore.getState().nextPage();
@@ -77,7 +81,7 @@ export default function ComparisonView() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, toggleKeep, commitTurn, close]);
+  }, [open, toggleKeep]);
 
   if (!open) return null;
 
@@ -110,7 +114,7 @@ export default function ComparisonView() {
                 }?`
           }
           confirmLabel={pendingCommitState.keepCount === 0 ? "Trash all" : "Commit"}
-          onConfirm={() => void useComparisonStore.getState().confirmPendingCommit()}
+          onConfirm={() => void confirmComparisonCommit()}
           onCancel={() => useComparisonStore.getState().cancelPendingCommit()}
         />
       ) : null}
@@ -119,7 +123,7 @@ export default function ComparisonView() {
           title="Delete permanently this session?"
           message="Shift+Enter commits will PERMANENTLY delete the non-kept photos, bypassing the trash. Confirm once for this comparison session — every later Shift+Enter here acts without asking again."
           confirmLabel="Delete permanently"
-          onConfirm={() => void useComparisonStore.getState().confirmPermanentCommit()}
+          onConfirm={() => void confirmPermanentComparisonCommit()}
           onCancel={() => useComparisonStore.getState().cancelPermanentCommit()}
         />
       ) : null}
@@ -145,7 +149,7 @@ export default function ComparisonView() {
           </span>
           <button
             className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"
-            onClick={close}
+            onClick={() => void closeComparison()}
           >
             Close
           </button>
@@ -186,7 +190,7 @@ export default function ComparisonView() {
           <span>{commitFailure.message}</span>
           <button
             className="rounded border border-danger/40 px-2 py-0.5 hover:bg-danger/10"
-            onClick={() => void commitTurn(commitFailure.permanent)}
+            onClick={() => void commitComparison(commitFailure.permanent)}
           >
             Retry remaining
           </button>

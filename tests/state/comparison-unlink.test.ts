@@ -17,6 +17,7 @@ import {
 import { useItemsStore } from "../../src/state/items-store";
 import type { SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { commitComparison } from "../../src/workflows/comparison";
 
 function member(i: number) {
   return {
@@ -129,7 +130,7 @@ describe("unlinking a slot", () => {
     await useComparisonStore.getState().unlinkSlot(2); // h2 is not family
     useComparisonStore.getState().toggleKeep(0); // keep h0
 
-    await useComparisonStore.getState().commitTurn(false);
+    await commitComparison(false);
 
     const deleted = invokeCalls
       .filter((c) => c.command === "delete_item")
@@ -170,7 +171,7 @@ describe("finishing a family", () => {
     openSession(3); // h0..h2, no queue — this commit finishes the family
     useComparisonStore.getState().toggleKeep(0);
 
-    await useComparisonStore.getState().commitTurn(false);
+    await commitComparison(false);
 
     expect(useComparisonStore.getState().open).toBe(false);
     // Past the keeper — Enter on h0 would reopen the family just decided.
@@ -183,7 +184,7 @@ describe("finishing a family", () => {
     openSession(3);
     useComparisonStore.getState().toggleKeep(0);
 
-    await useComparisonStore.getState().commitTurn(false);
+    await commitComparison(false);
 
     expect(useItemsStore.getState().selectedItem).toBe("h0");
   });

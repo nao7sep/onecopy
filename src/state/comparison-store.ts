@@ -10,7 +10,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import {
   getCurrentWindow,
   availableMonitors,
@@ -20,7 +20,6 @@ import {
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
-import { hasOpenModal } from "../utils/modalStack";
 import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
 
 export interface GroupMember {
@@ -134,9 +133,11 @@ interface ComparisonState {
    * multi-page group, or the confirmTrashDelete config. Single-page commits
    * with at least one mark stay two keystrokes with no dialog. */
   pendingCommit: { keepCount: number; trashCount: number; permanent: boolean } | null;
-  confirmPendingCommit: () => Promise<void>;
+  confirmPendingCommit: () => Promise<ComparisonCommitResult | null>;
   cancelPendingCommit: () => void;
-  confirmPermanentCommit: () => Promise<void>;
+  confirmPermanentCommit: (
+    configConfirms?: boolean,
+  ) => Promise<ComparisonCommitResult | null>;
   cancelPermanentCommit: () => void;
   /** Secondary comparison windows currently open (monitors beyond the first). */
   spreadCount: number;
@@ -148,7 +149,10 @@ interface ComparisonState {
   /** Every original member hash still in the family — what the finish
    * advances past. Unlinking removes the image here too. */
   sessionMembers: string[];
-  openGroup: (hash: string) => Promise<boolean>;
+  openGroup: (
+    hash: string,
+    screenState?: Record<string, unknown>,
+  ) => Promise<boolean>;
   /** Toggles the keep mark of a slot ON THE VISIBLE PAGE. */
   toggleKeep: (slotIndex: number) => void;
   /** The unlink: this visible slot's image is NOT the same subject.
@@ -160,9 +164,16 @@ interface ComparisonState {
   /** Enter: advance to the next unseen page, or — once every page has been
    * seen — commit the whole group (keep the marked, trash the rest),
    * confirming by the policy above. */
-  commitTurn: (permanent: boolean) => Promise<void>;
-  close: () => void;
+  commitTurn: (
+    permanent: boolean,
+    configConfirms?: boolean,
+  ) => Promise<ComparisonCommitResult | null>;
+  close: () => Promise<void>;
 }
+
+export type ComparisonCommitResult =
+  | { kind: "failed" }
+  | { kind: "completed"; family: string[] };
 
 /** The page geometry: fixed windows of `pageSize` over the member list. */
 export function pageCountOf(memberCount: number, pageSize: number): number {
@@ -225,7 +236,7 @@ export function turnSize(capacities: number[]): number {
   return Math.min(SLOT_KEYS.length, Math.max(1, sum));
 }
 
-function broadcast(): void {
+export function broadcastComparison(): void {
   const state = useComparisonStore.getState();
   const visible = visibleSlots(state);
   const size = turnSize(state.capacities);
@@ -300,6 +311,7 @@ export function screensNeeded(
 async function resolveSpread(
   perScreen: number,
   memberCount: number,
+  screenState: Record<string, unknown>,
 ): Promise<{ others: Awaited<ReturnType<typeof availableMonitors>>; capacities: number[] }> {
   try {
     // `others` is every monitor EXCEPT the one hosting the main window —
@@ -310,10 +322,9 @@ async function resolveSpread(
     // and buried its slots — the developer never saw keys 1–4. The main
     // window's own screen hosts chunk 0 by construction now; priority still
     // orders which of the OTHER monitors join first.
-    const { useAppStore } = await import("./app-store");
     const monitors = orderMonitors(
       await availableMonitors(),
-      priorityFromState(useAppStore.getState().appData?.state ?? null),
+      priorityFromState(screenState),
     );
     const hosting = await currentMonitor().catch(() => null);
     const hostKey = hosting !== null ? monitorKey(hosting) : null;
@@ -421,7 +432,7 @@ function recoverSingleWindowComparison(): void {
   if (!state.open || state.spreadCount === 0) return;
   const spreadCount = state.spreadCount;
   useComparisonStore.setState({ capacities: [SLOT_KEYS.length], spreadCount: 0 });
-  broadcast();
+  broadcastComparison();
   void queueComparisonLifecycle(async () => {
     await closeSpread(spreadCount);
     await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
@@ -474,16 +485,7 @@ function queueComparisonLifecycle(action: () => Promise<void>): Promise<void> {
 
 async function teardownComparison(spreadCount: number): Promise<void> {
   await closeSpread(spreadCount);
-  const { restorePreviewAfterComparison } = await import("./preview-store");
-  await restorePreviewAfterComparison();
   await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
-}
-
-async function refreshAfterChange(): Promise<void> {
-  const { useItemsStore } = await import("./items-store");
-  await useItemsStore.getState().refresh();
-  const { useSectionsStore } = await import("./sections-store");
-  await useSectionsStore.getState().loadCounts();
 }
 
 const groupLoad = requestSeq();
@@ -506,23 +508,23 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   capacities: [SLOT_KEYS.length],
   portraitDominant: false,
 
-  confirmPermanentCommit: async () => {
+  confirmPermanentCommit: async (configConfirms = false) => {
     set({ permanentArmed: true, pendingPermanentCommit: false });
-    await get().commitTurn(true);
+    return await get().commitTurn(true, configConfirms);
   },
 
   cancelPermanentCommit: () => set({ pendingPermanentCommit: false }),
 
   confirmPendingCommit: async () => {
     const pending = get().pendingCommit;
-    if (pending === null) return;
+    if (pending === null) return null;
     set({ pendingCommit: null });
-    await doCommit(set, get, pending.permanent);
+    return await doCommit(set, get, pending.permanent);
   },
 
   cancelPendingCommit: () => set({ pendingCommit: null }),
 
-  openGroup: async (hash) => {
+  openGroup: async (hash, screenState = {}) => {
     // get_similar_group is an async command: two quick Enters on different
     // anchors race, and the OLDER group's continuation must not publish state
     // or open windows over the newer one's (request-seq.ts).
@@ -543,7 +545,11 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // publish the state, and only THEN create the windows — a window that
       // announces itself must find a session already open to be answered.
       const perScreen = perScreenCapacity(members);
-      const { others, capacities } = await resolveSpread(perScreen, members.length);
+      const { others, capacities } = await resolveSpread(
+        perScreen,
+        members.length,
+        screenState,
+      );
       await queueComparisonLifecycle(async () => {
         if (!fresh()) return;
         set({
@@ -564,13 +570,11 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
           pendingCommit: null,
           commitFailure: null,
         });
-        broadcast();
-        const { hidePreviewForComparison } = await import("./preview-store");
-        await hidePreviewForComparison();
+        broadcastComparison();
         const spreadOpened = await openSpread(others);
         if (!spreadOpened) {
           set({ capacities: [SLOT_KEYS.length], spreadCount: 0 });
-          broadcast();
+          broadcastComparison();
           await closeSpread(others.length);
         }
         await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
@@ -592,7 +596,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       next.add(member.hash);
     }
     set({ kept: next });
-    broadcast();
+    broadcastComparison();
   },
 
   unlinkSlot: async (slotIndex) => {
@@ -616,7 +620,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // natural way to meet the intruder again and decide its own fate.
       sessionMembers: sessionMembers.filter((h) => h !== member.hash),
     });
-    broadcast();
+    broadcastComparison();
   },
 
   nextPage: () => movePage(set, get, 1),
@@ -624,12 +628,12 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
 
   toggleShortlist: () => {
     set({ shortlist: !get().shortlist, shortlistPage: 0 });
-    broadcast();
+    broadcastComparison();
   },
 
-  commitTurn: async (permanent) => {
+  commitTurn: async (permanent, configConfirms = false) => {
     const state = get();
-    if (state.busy) return;
+    if (state.busy) return null;
     const retrying = state.commitFailure !== null;
     const commitPermanent = state.commitFailure?.permanent ?? permanent;
     const size = turnSize(state.capacities);
@@ -644,18 +648,17 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
           page: unseen,
           visited: new Set(state.visited).add(unseen),
         });
-        broadcast();
-        return;
+        broadcastComparison();
+        return null;
       }
     } else if (state.visited.size < pages) {
       // Committing FROM the shortlist still requires every page seen.
       set({ shortlist: false });
-      get().commitTurn(permanent) as unknown;
-      return;
+      return await get().commitTurn(permanent, configConfirms);
     }
     if (commitPermanent && !state.permanentArmed) {
       set({ pendingPermanentCommit: true });
-      return;
+      return null;
     }
     const live = state.members.filter((m): m is GroupMember => m !== null);
     const trashCount = live.filter((m) => !state.kept.has(m.hash)).length;
@@ -664,9 +667,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     // count dialog appears for zero marks (trash ALL — the gesture that was
     // impossible before), for multi-page trashing, and under the opt-in
     // confirmTrashDelete config. Nothing-to-trash commits are free.
-    const { useAppStore } = await import("./app-store");
-    const configConfirms =
-      useAppStore.getState().appData?.config?.confirmTrashDelete === true;
     const needsConfirm =
       !retrying &&
       trashCount > 0 &&
@@ -679,17 +679,16 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
           permanent: commitPermanent,
         },
       });
-      return;
+      return null;
     }
-    await doCommit(set, get, commitPermanent);
+    return await doCommit(set, get, commitPermanent);
   },
 
-  close: () => {
+  close: async () => {
     if (!get().open) return;
     const spreadCount = get().spreadCount;
     set(closedComparisonState());
-    void queueComparisonLifecycle(() => teardownComparison(spreadCount));
-    void refreshAfterChange();
+    await queueComparisonLifecycle(() => teardownComparison(spreadCount));
   },
 }));
 
@@ -721,7 +720,7 @@ function movePage(
     const next = Math.min(pages - 1, Math.max(0, state.shortlistPage + delta));
     if (next !== state.shortlistPage) {
       set({ shortlistPage: next });
-      broadcast();
+      broadcastComparison();
     }
     return;
   }
@@ -729,7 +728,7 @@ function movePage(
   const next = Math.min(pages - 1, Math.max(0, state.page + delta));
   if (next !== state.page) {
     set({ page: next, visited: new Set(state.visited).add(next) });
-    broadcast();
+    broadcastComparison();
   }
 }
 
@@ -739,7 +738,7 @@ async function doCommit(
   set: (partial: Partial<ComparisonState>) => void,
   get: () => ComparisonState,
   permanent: boolean,
-): Promise<void> {
+): Promise<ComparisonCommitResult> {
   const state = get();
   set({ busy: true, commitFailure: null });
   const live = state.members.filter((m): m is GroupMember => m !== null);
@@ -765,7 +764,7 @@ async function doCommit(
           candidate !== null && candidate.hash === member.hash ? null : candidate,
         ),
       });
-      broadcast();
+      broadcastComparison();
     } catch (error) {
       failedItems += 1;
       log.error("comparison item commit failed", {
@@ -785,20 +784,13 @@ async function doCommit(
         permanent,
       },
     });
-    await refreshAfterChange();
-    const { useIssuesStore } = await import("./issues-store");
-    await useIssuesStore.getState().load();
-    return;
+    return { kind: "failed" };
   }
   const family = state.sessionMembers;
   const spreadCount = get().spreadCount;
   set(closedComparisonState());
   await queueComparisonLifecycle(() => teardownComparison(spreadCount));
-  await refreshAfterChange();
-  // Land the anchor on the next photo PAST this family, so Enter chains
-  // straight into the next group (the developer's cull rhythm).
-  const { useItemsStore } = await import("./items-store");
-  useItemsStore.getState().selectAfterFamily(family);
+  return { kind: "completed", family };
 }
 
 function closedComparisonState(): Partial<ComparisonState> {
@@ -819,50 +811,3 @@ function closedComparisonState(): Partial<ComparisonState> {
     spreadCount: 0,
   };
 }
-
-// Main-window-only wiring: secondary comparison windows forward their keys and
-// ask for the current state on load; the main window owns all mutations.
-void (async () => {
-  try {
-    if (getCurrentWindow().label !== "main") return;
-    await listen<{
-      key: string;
-      code?: string;
-      shiftKey: boolean;
-      metaKey?: boolean;
-      ctrlKey?: boolean;
-      altKey?: boolean;
-    }>("comparison://key", (event) => {
-      const store = useComparisonStore.getState();
-      if (!store.open) return;
-      // A modal open in the main window owns the keyboard for forwarded
-      // keys too — a secondary screen's Escape must not tear the session
-      // down from under an open dialog.
-      if (hasOpenModal()) return;
-      const unlinkIndex = slotIndexForShiftedCode(event.payload);
-      if (unlinkIndex >= 0) {
-        void store.unlinkSlot(unlinkIndex);
-        return;
-      }
-      const slotIndex = slotIndexForKey(event.payload);
-      if (slotIndex >= 0) {
-        store.toggleKeep(slotIndex);
-      } else if (event.payload.key === "Enter") {
-        void store.commitTurn(event.payload.shiftKey);
-      } else if (event.payload.key === "Escape") {
-        store.close();
-      } else if (event.payload.key === "ArrowRight" || event.payload.key === "PageDown") {
-        store.nextPage();
-      } else if (event.payload.key === "ArrowLeft" || event.payload.key === "PageUp") {
-        store.prevPage();
-      } else if (event.payload.key.toLowerCase() === "s") {
-        store.toggleShortlist();
-      }
-    });
-    await listen("comparison://ready", () => {
-      if (useComparisonStore.getState().open) broadcast();
-    });
-  } catch (error) {
-    log.warn("comparison spread wiring failed", toErrorFields(error));
-  }
-})();

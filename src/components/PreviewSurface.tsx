@@ -25,7 +25,7 @@ import InspectableImage, {
   type InspectPosition,
 } from "./InspectableImage";
 import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
-import type { ItemDetail } from "../state/items-store";
+import type { ItemDetail } from "../models/items";
 import { ExternalLink } from "lucide-react";
 import TranscriptBlock from "./TranscriptBlock";
 import { useAppStore } from "../state/app-store";

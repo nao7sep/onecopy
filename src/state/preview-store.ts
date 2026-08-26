@@ -25,7 +25,7 @@ import { parseSavedBounds, restorableBounds } from "../utils/windowBounds";
 import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
 import { orderMonitors, priorityFromState } from "../utils/screens";
-import type { ItemDetail } from "./items-store";
+import type { ItemDetail } from "../models/items";
 
 export interface PreviewPayload {
   hash: string | null;

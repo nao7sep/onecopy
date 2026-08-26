@@ -23,6 +23,22 @@ export interface SectionItem {
   dirPaths: string[];
 }
 
+/** Mirrors queries::ItemDetail on the Rust side. */
+export interface ItemDetail {
+  fileName: string;
+  kind: string;
+  byteSize: number | null;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  resolvedUtcMs: number | null;
+  resolvedSource: string | null;
+  dateOnly: boolean;
+  copyPaths: string[];
+  companionPaths: string[];
+  stripFrames: number | null;
+}
+
 /** Matches the backend's evenly spaced interior scene timestamps exactly. */
 export function stripTimestampMs(durationMs: number, count: number, index: number): number {
   if (count <= 0) return 0;

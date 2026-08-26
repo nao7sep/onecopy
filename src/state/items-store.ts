@@ -5,27 +5,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
 import { replaceDerivedItem, sortItems } from "../models/items";
-import { DEFAULT_DESC, SORT_ORDERS, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
+import { DEFAULT_DESC, SORT_ORDERS, type ItemDetail, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
 
 export interface SelectedSection {
   kind: "image" | "video" | "other";
   month: string;
-}
-
-// Mirrors queries::ItemDetail.
-export interface ItemDetail {
-  fileName: string;
-  kind: string;
-  byteSize: number | null;
-  width: number | null;
-  height: number | null;
-  durationMs: number | null;
-  resolvedUtcMs: number | null;
-  resolvedSource: string | null;
-  dateOnly: boolean;
-  copyPaths: string[];
-  companionPaths: string[];
-  stripFrames: number | null;
 }
 
 /** The grid's stable identity for a logical item. */

@@ -9,14 +9,16 @@ import {
   thumbUrl,
   timestampLabel,
 } from "../models/items";
-import { itemKey, useItemsStore, type ItemDetail } from "../state/items-store";
-import { useComparisonStore, type GroupMember } from "../state/comparison-store";
+import { itemKey, useItemsStore } from "../state/items-store";
+import type { ItemDetail } from "../models/items";
+import type { GroupMember } from "../state/comparison-store";
 import { formatLocalMinute } from "../utils/displayTime";
 import { fileManagerWord } from "../utils/shortcuts";
 import { log, toErrorFields } from "../repositories";
 import Button from "./ui/Button";
 import TranscriptBlock from "./TranscriptBlock";
 import { openPreview } from "../workflows/preview";
+import { openComparison } from "../workflows/comparison";
 import { useAppStore } from "../state/app-store";
 
 // The right pane's metadata tab: content facts, the resolved capture time
@@ -82,7 +84,7 @@ function SimilarSection({ hash }: { hash: string }) {
     <div className="mb-1 mt-3">
       <div className="flex items-center justify-between gap-2">
         <dt className="text-xs text-ink-muted">Similar ({members.length})</dt>
-        <Button onClick={() => void useComparisonStore.getState().openGroup(hash)}>
+        <Button onClick={() => void openComparison(hash)}>
           Compare
         </Button>
       </div>
