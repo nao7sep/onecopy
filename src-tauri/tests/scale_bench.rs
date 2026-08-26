@@ -9,6 +9,7 @@ use std::time::Instant;
 use onecopy_lib::index_store;
 use onecopy_lib::queries;
 use onecopy_lib::scanner;
+use onecopy_lib::{derived_work, face, video};
 use onecopy_lib::similarity::{rebuild_groups, SimilarityConfig};
 use rusqlite::params;
 
@@ -61,6 +62,54 @@ fn six_item_section_in_a_million_row_index() {
         started.elapsed()
     );
     assert_eq!(items.len(), 6);
+}
+
+#[test]
+#[ignore]
+fn fixed_class_candidate_pages_stay_bounded_at_one_million_pending_items() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-derived-pages-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, kind, missing)
+         VALUES (1, '/representative', '/', 'representative', 'other', 0);
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO contents
+           (hash, byte_size, kind, duration_ms, derived_at_utc)
+         SELECT printf('pending-%07d', n), 1,
+                CASE WHEN n % 2 = 0 THEN 'video' ELSE 'image' END,
+                CASE WHEN n % 2 = 0 THEN 30000 ELSE NULL END,
+                'ready'
+         FROM seq;
+         INSERT INTO logical_contents
+           (content_hash, kind, resolved_utc_ms, representative_path_id,
+            live_copy_count, names_differ)
+         SELECT hash, kind, CAST(substr(hash, 9) AS INTEGER), 1, 1, 0
+         FROM contents;
+         COMMIT;",
+    )
+    .unwrap();
+
+    let strips = video::strip_candidates(&conn, video::STRIP_CANDIDATE_PAGE_SIZE).unwrap();
+    let faces = face::face_candidates(&conn, face::FACE_CANDIDATE_PAGE_SIZE).unwrap();
+    let transcripts = derived_work::transcript_candidates(
+        &conn,
+        derived_work::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+    )
+    .unwrap();
+
+    assert_eq!(strips.len(), video::STRIP_CANDIDATE_PAGE_SIZE);
+    assert_eq!(faces.len(), face::FACE_CANDIDATE_PAGE_SIZE);
+    assert_eq!(
+        transcripts.len(),
+        derived_work::TRANSCRIPT_CANDIDATE_PAGE_SIZE
+    );
 }
 
 #[test]

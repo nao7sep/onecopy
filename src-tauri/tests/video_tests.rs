@@ -108,7 +108,7 @@ fn live_video_derive() {
         &|_, _| {},
     )
     .unwrap();
-    assert_eq!(done, 1);
+    assert_eq!(done.completed, 1);
     // 30 s at 1/20 s clamps to min 5 frames.
     for i in 0..5 {
         assert!(strip_path(&cache, "vid01", i).exists(), "strip frame {i}");

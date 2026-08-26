@@ -4,6 +4,7 @@
 use rusqlite::Connection;
 use onecopy_lib::extensions;
 use onecopy_lib::resolution::ResolutionConfig;
+use onecopy_lib::scanner;
 use onecopy_lib::scanner::*;
 use onecopy_lib::index_store;
 
@@ -494,6 +495,32 @@ fn a_preexisting_index_backfills_live_photo_evidence_once() {
         1
     );
     assert_eq!(extract_pending(&f.conn).unwrap().extracted, 0);
+}
+
+#[test]
+fn live_photo_repair_candidates_are_a_stable_bounded_page() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-live-photo-repair-page-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    for index in 0..(scanner::LIVE_PHOTO_REPAIR_PAGE_SIZE + 5) {
+        conn.execute(
+            "INSERT INTO paths
+               (abs_path, dir_path, file_name, kind, indexed_at_utc)
+             VALUES (?1, '/', ?2, 'image', 'ready')",
+            rusqlite::params![format!("/repair-{index}"), format!("repair-{index}")],
+        )
+        .unwrap();
+    }
+
+    let rows = scanner::live_photo_repair_candidates(
+        &conn,
+        scanner::LIVE_PHOTO_REPAIR_PAGE_SIZE,
+    )
+    .unwrap();
+    assert_eq!(rows.len(), scanner::LIVE_PHOTO_REPAIR_PAGE_SIZE);
+    assert!(rows.windows(2).all(|pair| pair[0].0 < pair[1].0));
 }
 
 #[test]

@@ -80,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
 CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
 CREATE INDEX IF NOT EXISTS idx_paths_resolved ON paths (kind, resolved_utc_ms);
 CREATE INDEX IF NOT EXISTS idx_paths_companion ON paths (companion_of);
+CREATE INDEX IF NOT EXISTS idx_paths_media_repair ON paths (missing, kind, id);
 
 -- The UI reads logical items, not physical paths. Keeping this one-row summary
 -- beside the source tables lets opening a small month seek that month instead

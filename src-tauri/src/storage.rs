@@ -79,9 +79,6 @@ pub struct DefaultConfig {
     /// intents; both default on, but neither should force the other on.
     pub video_autoplay_on_show: bool,
     pub video_autoplay_after_snapshot: bool,
-    /// Scenes modal grid (columns × rows of strip frames).
-    pub scenes_grid_columns: u32,
-    pub scenes_grid_rows: u32,
     /// The one global companion-pairing toggle (all kinds together).
     pub pairing_enabled: bool,
     /// UI theme: "system" (follow the OS), "light", or "dark".
@@ -127,12 +124,9 @@ impl Default for DefaultConfig {
             thumbnail_edge_px: 320,
             video_strip_seconds_per_frame: 20,
             video_strip_min_frames: 5,
-            // The ceiling must cover the scenes grid (default 6×4 = 24).
             video_strip_max_frames: 40,
             video_autoplay_on_show: true,
             video_autoplay_after_snapshot: true,
-            scenes_grid_columns: 6,
-            scenes_grid_rows: 4,
             pairing_enabled: true,
             theme: "system".to_string(),
             ui_font_family:

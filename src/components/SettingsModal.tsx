@@ -469,18 +469,6 @@ export default function SettingsModal() {
             min={1}
             onChange={(v) => update({ videoStripMaxFrames: v })}
           />
-          <NumberField
-            label="Scenes grid columns"
-            value={draft.scenesGridColumns}
-            min={1}
-            onChange={(v) => update({ scenesGridColumns: v })}
-          />
-          <NumberField
-            label="Scenes grid rows"
-            value={draft.scenesGridRows}
-            min={1}
-            onChange={(v) => update({ scenesGridRows: v })}
-          />
         </div>
       ) : null}
 

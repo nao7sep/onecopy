@@ -36,6 +36,7 @@ const IMAGE_BATCH: usize = 64;
 const VIDEO_BATCH: usize = 8;
 const PRIORITY_BATCH: usize = 64;
 const SECTION_HINT_LIMIT: usize = 256;
+pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
 
 #[derive(Clone, Default)]
 struct PriorityHints {
@@ -445,7 +446,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
 
     let stop = || !is_idle() || cancelled();
     if !class_paused(WorkClass::Snapshots) {
-        let ran = if let Some(ffmpeg) = settings.ffmpeg.as_deref() {
+        let stats = if let Some(ffmpeg) = settings.ffmpeg.as_deref() {
             with_active(app, WorkClass::Snapshots, || {
                 crate::video::derive_strips_pending(
                     &conn,
@@ -457,12 +458,12 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                     &progress(app, WorkClass::Snapshots),
                 )
             })?
-            .unwrap_or(0)
+            .unwrap_or_default()
         } else {
-            0
+            crate::video::StripDeriveStats::default()
         };
-        if ran > 0 {
-            return Ok(false);
+        if stats.attempted > 0 {
+            return Ok(stats.page_full);
         }
     }
 
@@ -491,8 +492,8 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                 )
             })?
             .unwrap_or_default();
-            if stats.scored > 0 || stats.failed > 0 {
-                return Ok(false);
+            if stats.attempted > 0 {
+                return Ok(stats.page_full);
             }
         }
     }
@@ -702,29 +703,13 @@ fn transcribe_next(
     ffmpeg: &Path,
     app: &AppHandle,
 ) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.hash, (SELECT p.abs_path FROM paths p \
-             WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-             FROM contents c JOIN paths p2 ON p2.content_hash = c.hash \
-             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-             WHERE c.kind = 'video' AND c.duration_ms IS NOT NULL \
-               AND p2.missing = 0 AND r.transcript_state IS NULL \
-             GROUP BY c.hash \
-             ORDER BY MIN(p2.resolved_utc_ms) DESC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, Option<String>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|row| row.ok())
-        .collect();
-    drop(stmt);
+    let rows = transcript_candidates(conn, TRANSCRIPT_CANDIDATE_PAGE_SIZE)?;
 
     for (hash, path) in rows {
-        let Some(path) = path else { continue };
-        if cache.transcript(&hash).exists() {
-            continue;
+        if crate::derived_state::transcript_result(conn, cache, &hash)?.status
+            == crate::derived_state::READY
+        {
+            return Ok(true);
         }
         if !is_idle() {
             return Ok(false);
@@ -820,4 +805,32 @@ fn transcribe_next(
         }
     }
     Ok(false)
+}
+
+/// One ordered page of videos whose transcript receipt is absent. Existing
+/// cache files are adopted by `transcribe_next`, so a legacy receipt gap is
+/// repaired instead of being selected and skipped forever.
+pub fn transcript_candidates(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.hash, p.abs_path \
+             FROM logical_contents l \
+             JOIN contents c ON c.hash = l.content_hash \
+             JOIN paths p ON p.id = l.representative_path_id \
+             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+             WHERE l.kind = 'video' AND c.duration_ms IS NOT NULL \
+               AND r.transcript_state IS NULL AND p.missing = 0 \
+             ORDER BY l.resolved_utc_ms DESC, l.content_hash \
+             LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }

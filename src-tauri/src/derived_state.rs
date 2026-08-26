@@ -279,28 +279,47 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let mut statement = transaction
-        .prepare("SELECT id FROM issues WHERE kind IN (?1, ?2, ?3, ?4, ?5) ORDER BY id")
-        .map_err(|error| error.to_string())?;
-    let ids: Vec<i64> = statement
-        .query_map(
-            params![
-                PREVIEW_ERROR,
-                VIDEO_POSTER_ERROR,
-                VIDEO_STRIP_ERROR,
-                FACE_ERROR,
-                TRANSCRIPT_ERROR
-            ],
-            |row| row.get(0),
+    let mut retried = transaction
+        .execute(
+            "UPDATE contents SET derived_at_utc = NULL \
+             WHERE derived_at_utc IS NOT NULL \
+               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+                           WHERE p.content_hash = contents.hash AND p.missing = 0 \
+                             AND i.kind IN (?1, ?2))",
+            params![PREVIEW_ERROR, VIDEO_POSTER_ERROR],
         )
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-    drop(statement);
-    let mut retried = 0u64;
-    for id in ids {
-        retried += u64::from(retry_issue(&transaction, id)?);
-    }
+        .map_err(|error| error.to_string())? as u64;
+    retried += transaction
+        .execute(
+            "UPDATE contents SET strip_frames = NULL \
+             WHERE strip_frames IS NOT NULL \
+               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+                           WHERE p.content_hash = contents.hash AND p.missing = 0 \
+                             AND i.kind = ?1)",
+            [VIDEO_STRIP_ERROR],
+        )
+        .map_err(|error| error.to_string())? as u64;
+    retried += transaction
+        .execute(
+            "UPDATE analysis_receipts SET face_state = NULL, face_updated_at_utc = NULL \
+             WHERE face_state IS NOT NULL \
+               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+                           WHERE p.content_hash = analysis_receipts.content_hash \
+                             AND p.missing = 0 AND i.kind = ?1)",
+            [FACE_ERROR],
+        )
+        .map_err(|error| error.to_string())? as u64;
+    retried += transaction
+        .execute(
+            "UPDATE analysis_receipts \
+             SET transcript_state = NULL, transcript_updated_at_utc = NULL \
+             WHERE transcript_state IS NOT NULL \
+               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+                           WHERE p.content_hash = analysis_receipts.content_hash \
+                             AND p.missing = 0 AND i.kind = ?1)",
+            [TRANSCRIPT_ERROR],
+        )
+        .map_err(|error| error.to_string())? as u64;
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(retried)
 }

@@ -283,7 +283,11 @@ pub fn softmax(logits: &[f32]) -> Vec<f32> {
 pub struct FaceStats {
     pub scored: u64,
     pub failed: u64,
+    pub attempted: u64,
+    pub page_full: bool,
 }
+
+pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;
 
 /// The face pass over the index — the embed pass's exact shape: images with a
 /// derived preview and no score yet, read FROM THE CACHE, scored serially
@@ -301,32 +305,11 @@ pub fn face_scores_pending(
     let Some((detector_model, emotion_model)) = models else {
         return Ok(stats);
     };
-    let pending: Vec<(String, String)> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.hash, (SELECT p.abs_path FROM paths p \
-                                 WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-                 FROM contents c \
-                 LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-                 WHERE c.kind = 'image' AND r.face_state IS NULL \
-                   AND c.derived_at_utc IS NOT NULL \
-                   AND c.derived_at_utc NOT IN ('failed', ?1) \
-                   AND EXISTS (SELECT 1 FROM paths p \
-                               WHERE p.content_hash = c.hash AND p.missing = 0)",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([crate::preview::NEEDS_FFMPEG], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        rows
-    };
+    let pending = face_candidates(conn, FACE_CANDIDATE_PAGE_SIZE)?;
     if pending.is_empty() {
         return Ok(stats);
     }
+    stats.page_full = pending.len() == FACE_CANDIDATE_PAGE_SIZE;
 
     let mut scorer = FaceScorer::load(detector_model, emotion_model)?;
     let total = pending.len() as u64;
@@ -339,6 +322,7 @@ pub fn face_scores_pending(
         if stop() {
             break;
         }
+        stats.attempted += 1;
         let preview = cache.preview(&hash);
         let outcome = std::fs::read(&preview)
             .map_err(|e| e.to_string())
@@ -358,7 +342,40 @@ pub fn face_scores_pending(
                 stats.failed += 1;
             }
         }
-        on_progress(stats.scored + stats.failed, total);
+        on_progress(stats.attempted, total);
     }
     Ok(stats)
+}
+
+/// One ordered page of face-score debt. The logical projection supplies one
+/// current path per item, keeping both the query result and the work batch
+/// independent of total library size.
+pub fn face_candidates(
+    conn: &rusqlite::Connection,
+    limit: usize,
+) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.hash, p.abs_path \
+             FROM logical_contents l \
+             JOIN contents c ON c.hash = l.content_hash \
+             JOIN paths p ON p.id = l.representative_path_id \
+             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+             WHERE l.kind = 'image' AND r.face_state IS NULL \
+               AND c.derived_at_utc IS NOT NULL \
+               AND c.derived_at_utc NOT IN ('failed', ?1) \
+               AND p.missing = 0 \
+             ORDER BY l.resolved_utc_ms DESC, l.content_hash \
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![crate::preview::NEEDS_FFMPEG, limit as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }

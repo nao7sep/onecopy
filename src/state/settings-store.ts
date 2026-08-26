@@ -24,8 +24,6 @@ export interface SettingsDraft {
   videoStripMaxFrames: number;
   videoAutoplayOnShow: boolean;
   videoAutoplayAfterSnapshot: boolean;
-  scenesGridColumns: number;
-  scenesGridRows: number;
   pairingEnabled: boolean;
   theme: "system" | "light" | "dark";
   uiFontFamily: string;
@@ -81,8 +79,6 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     videoStripMaxFrames: numberOr(config?.videoStripMaxFrames, 40),
     videoAutoplayOnShow: config?.videoAutoplayOnShow !== false,
     videoAutoplayAfterSnapshot: config?.videoAutoplayAfterSnapshot !== false,
-    scenesGridColumns: numberOr(config?.scenesGridColumns, 6),
-    scenesGridRows: numberOr(config?.scenesGridRows, 4),
     pairingEnabled: config?.pairingEnabled !== false,
     theme:
       config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",

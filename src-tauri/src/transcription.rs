@@ -1,6 +1,6 @@
 //! On-demand transcription (Design: Video handling) — whisper.cpp linked into
 //! the app via `whisper-rs`, the large-v3-turbo model provisioned by the
-//! managed-dependency registry. Work starts either from the scenes modal's
+//! managed-dependency registry. Work starts either from the shared media surface's
 //! Transcribe control or from the derived-work coordinator.
 //!
 //! The transcript is DERIVED data keyed by content hash, cached in the
@@ -174,7 +174,7 @@ pub fn run_whisper(
 }
 
 /// Renders segments as the cached transcript: one `[m:ss] text` line each —
-/// the timestamps are what let a reader jump the scenes grid to the moment.
+/// the timestamps are what let a reader jump the scene strip to the moment.
 pub fn render(segments: &[Segment]) -> String {
     let mut out = String::new();
     for segment in segments {

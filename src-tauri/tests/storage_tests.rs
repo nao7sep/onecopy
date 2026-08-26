@@ -32,7 +32,15 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert!(value.get("cacheDir").is_none());
     // Spec, not configuration: extension lists (and the other dead keys)
     // are never materialized into the user-editable file.
-    for absent in ["imageExtensions", "videoExtensions", "companionExtensions", "filenamePatterns", "screenPriority"] {
+    for absent in [
+        "imageExtensions",
+        "videoExtensions",
+        "companionExtensions",
+        "filenamePatterns",
+        "screenPriority",
+        "scenesGridColumns",
+        "scenesGridRows",
+    ] {
         assert!(value.get(absent).is_none(), "{absent} must not be seeded");
     }
 }

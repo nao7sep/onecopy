@@ -221,7 +221,7 @@ function VideoSurface({
                     loading="lazy"
                     className="h-full w-full object-cover"
                   />
-                  <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[10px] text-ink">
+                  <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[11px] text-ink">
                     {timestampLabel(atMs)}
                   </span>
                 </button>

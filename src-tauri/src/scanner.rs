@@ -1041,6 +1041,8 @@ pub struct ExtractStats {
     pub extracted: u64,
 }
 
+pub const LIVE_PHOTO_REPAIR_PAGE_SIZE: usize = 64;
+
 /// The evidence pass: reads in-file metadata (per kind) and runs the filename
 /// tokenizer for rows not yet extracted, persisting each finding as a
 /// serialized evidence row. This is the ONLY place resolution inputs touch a
@@ -1121,41 +1123,58 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
     // but no Live Photo evidence. Backfill exactly those media rows once into
     // the existing evidence store; a NULL raw value is the durable "checked,
     // absent" result, so later scans do not reopen every family photo.
-    let pending_live_photo: Vec<(i64, String, String)> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT p.id, p.abs_path, p.kind FROM paths p \
-                 WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
-                   AND NOT EXISTS (SELECT 1 FROM evidence e \
-                                   WHERE e.path_id = p.id \
-                                     AND e.source = 'live-photo-identifier')",
+    loop {
+        let pending_live_photo =
+            live_photo_repair_candidates(conn, LIVE_PHOTO_REPAIR_PAGE_SIZE)?;
+        if pending_live_photo.is_empty() {
+            break;
+        }
+        for (id, abs, kind) in pending_live_photo {
+            check_cancel()?;
+            let path = Path::new(&abs);
+            let identifier = match kind.as_str() {
+                "image" => crate::live_photo::still_content_identifier(path),
+                "video" => crate::live_photo::quicktime_content_identifier(path),
+                _ => None,
+            };
+            conn.execute(
+                "INSERT INTO evidence (path_id, source, raw, offset_known) \
+                 VALUES (?1, 'live-photo-identifier', ?2, 0)",
+                params![id, identifier],
             )
             .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .collect();
-        rows
-    };
-    for (id, abs, kind) in pending_live_photo {
-        check_cancel()?;
-        let path = Path::new(&abs);
-        let identifier = match kind.as_str() {
-            "image" => crate::live_photo::still_content_identifier(path),
-            "video" => crate::live_photo::quicktime_content_identifier(path),
-            _ => None,
-        };
-        conn.execute(
-            "INSERT INTO evidence (path_id, source, raw, offset_known) \
-             VALUES (?1, 'live-photo-identifier', ?2, 0)",
-            params![id, identifier],
-        )
-        .map_err(|e| e.to_string())?;
-        stats.extracted += 1;
+            stats.extracted += 1;
+        }
     }
 
     Ok(stats)
+}
+
+/// One stable page of legacy media rows missing the durable Live Photo
+/// evidence receipt. Each completed page disappears from this query, so the
+/// repair resumes naturally after cancellation without an in-memory ledger.
+pub fn live_photo_repair_candidates(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(i64, String, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.abs_path, p.kind FROM paths p \
+             WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
+               AND NOT EXISTS (SELECT 1 FROM evidence e \
+                               WHERE e.path_id = p.id \
+                                 AND e.source = 'live-photo-identifier') \
+             ORDER BY p.id LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -53,7 +53,7 @@ fn an_absent_ffmpeg_names_the_remedy_too() {
 
 #[test]
 fn an_existing_transcript_short_circuits_without_touching_the_engine() {
-    // The cache is the contract: once transcribed, opening the scenes modal
+    // The cache is the contract: once transcribed, opening the media surface
     // must never load the model again — proven by passing paths that would
     // explode if anything tried to use them.
     let (_dir, cache) = cache("cached");

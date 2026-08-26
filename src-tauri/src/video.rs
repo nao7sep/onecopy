@@ -114,6 +114,16 @@ pub struct VideoDeriveStats {
     pub changed_hashes: Vec<String>,
 }
 
+pub const STRIP_CANDIDATE_PAGE_SIZE: usize = 32;
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct StripDeriveStats {
+    pub completed: u64,
+    pub failed: u64,
+    pub attempted: u64,
+    pub page_full: bool,
+}
+
 /// The video half of the SCAN derive pass: duration + poster only (through
 /// the image pipeline, so thumb/preview land in the shared cache). Scene
 /// strips deliberately do NOT happen here (Phase 33): a grid without posters
@@ -302,7 +312,7 @@ fn derive_videos_pending_limit(
 /// The idle derived-work half: scene strips for videos the poster pass already
 /// postered, found through their NULL `strip_frames`. Runs only while the app
 /// is idle — `stop` is consulted between videos, so the user's return waits
-/// at most one video's strip extraction. Returns how many videos got strips.
+/// at most one video's strip extraction. Returns one page's work statistics.
 pub fn derive_strips_pending(
     conn: &Connection,
     cache: &CachePaths,
@@ -311,37 +321,21 @@ pub fn derive_strips_pending(
     strip: &StripConfig,
     stop: &dyn Fn() -> bool,
     progress: &dyn Fn(u64, u64),
-) -> Result<u64, String> {
+) -> Result<StripDeriveStats, String> {
     // not recorded: ffmpeg strip-frame staging lives in temp/ and produces
     // reconstructible binary cache entries.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.hash, c.duration_ms, (SELECT p.abs_path FROM paths p \
-             WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-             FROM contents c JOIN paths p2 ON p2.content_hash = c.hash \
-             WHERE c.kind = 'video' AND c.strip_frames IS NULL \
-               AND c.duration_ms IS NOT NULL \
-               AND c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
-               AND p2.missing = 0 \
-             GROUP BY c.hash \
-             ORDER BY MIN(p2.resolved_utc_ms) DESC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, i64, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-
+    let rows = strip_candidates(conn, STRIP_CANDIDATE_PAGE_SIZE)?;
+    let mut stats = StripDeriveStats {
+        page_full: rows.len() == STRIP_CANDIDATE_PAGE_SIZE,
+        ..StripDeriveStats::default()
+    };
     let total = rows.len() as u64;
-    let mut done = 0u64;
     for (hash, duration_ms, path) in rows {
         if stop() {
             break;
         }
-        let Some(path) = path else { continue };
+        stats.attempted += 1;
         let src = Path::new(&path);
         let duration_ms = duration_ms.max(0) as u64;
         let count = strip_frame_count(duration_ms, strip);
@@ -370,8 +364,8 @@ pub fn derive_strips_pending(
                     &path,
                     &[crate::derived_state::VIDEO_STRIP_ERROR],
                 )?;
-                done += 1;
-                progress(done, total);
+                stats.completed += 1;
+                progress(stats.attempted, total);
             }
             Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
                 for index in 0..count {
@@ -397,9 +391,41 @@ pub fn derive_strips_pending(
                     crate::derived_state::VIDEO_STRIP_ERROR,
                     &err,
                 )?;
-                progress(done, total);
+                stats.failed += 1;
+                progress(stats.attempted, total);
             }
         }
     }
-    Ok(done)
+    Ok(stats)
+}
+
+/// One ordered, fixed-size page of snapshot work. `logical_contents` already
+/// owns the live representative path, so candidate selection never groups or
+/// materializes the whole physical-path table.
+pub fn strip_candidates(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(String, i64, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.hash, c.duration_ms, p.abs_path \
+             FROM logical_contents l \
+             JOIN contents c ON c.hash = l.content_hash \
+             JOIN paths p ON p.id = l.representative_path_id \
+             WHERE l.kind = 'video' AND c.strip_frames IS NULL \
+               AND c.duration_ms IS NOT NULL \
+               AND c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
+               AND p.missing = 0 \
+             ORDER BY l.resolved_utc_ms DESC, l.content_hash \
+             LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }
