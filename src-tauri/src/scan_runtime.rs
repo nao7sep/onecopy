@@ -12,6 +12,14 @@ use tauri::{AppHandle, Emitter};
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
+struct RunningClaim<'a>(&'a AtomicBool);
+
+impl Drop for RunningClaim<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 pub fn running() -> bool {
     RUNNING.load(Ordering::SeqCst)
 }
@@ -79,6 +87,9 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
         let handle = app.clone();
 
         let worker = std::thread::spawn(move || {
+            // A worker-thread panic does not terminate the app. The claim must
+            // therefore release on unwind as well as every ordinary outcome.
+            let _running = RunningClaim(&RUNNING);
             let _awake = settings.keep_awake.then(|| {
                 keepawake::Builder::default()
                     .idle(true)
@@ -129,7 +140,6 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
                     let _ = handle.emit("scan://error", json!({ "message": error }));
                 }
             }
-            RUNNING.store(false, Ordering::SeqCst);
         });
         if let Ok(mut slot) = WORKER.lock() {
             *slot = Some(worker);
@@ -142,6 +152,22 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
             RUNNING.store(false, Ordering::SeqCst);
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunningClaim;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn running_claim_releases_during_unwind() {
+        let running = AtomicBool::new(true);
+        let _ = std::panic::catch_unwind(|| {
+            let _claim = RunningClaim(&running);
+            panic!("worker stopped unexpectedly");
+        });
+        assert!(!running.load(Ordering::SeqCst));
     }
 }
 
