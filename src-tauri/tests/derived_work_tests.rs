@@ -80,7 +80,15 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
     )
     .unwrap();
 
-    let value = serde_json::to_value(snapshot(dir.path(), false).unwrap()).unwrap();
+    let value = serde_json::to_value(
+        snapshot(
+            dir.path(),
+            onecopy_lib::derived_work::runtime_snapshot().unwrap(),
+            onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let rows = value["classes"].as_array().unwrap();
     let previews = rows.iter().find(|row| row["id"] == "previews").unwrap();
     let faces = rows.iter().find(|row| row["id"] == "faces").unwrap();
@@ -106,7 +114,15 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
     )
     .unwrap();
 
-    let value = serde_json::to_value(snapshot(dir.path(), false).unwrap()).unwrap();
+    let value = serde_json::to_value(
+        snapshot(
+            dir.path(),
+            onecopy_lib::derived_work::runtime_snapshot().unwrap(),
+            onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let previews = value["classes"]
         .as_array()
         .unwrap()

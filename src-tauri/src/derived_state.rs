@@ -50,7 +50,7 @@ impl WorkClass {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct WorkCapabilities {
+pub struct WorkCapabilities {
     pub ffmpeg: bool,
     pub face_enabled: bool,
     pub face_models: bool,

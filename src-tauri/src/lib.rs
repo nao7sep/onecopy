@@ -965,7 +965,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
         "ensure_fullres",
         json!({ "hash": hash }),
         || {
-            let _work = background_work::begin_manual(&app, "previews")?;
+            let _work = derived_work::begin_manual(&app, "previews")?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let cache_root = cache_root().ok_or("data root unset")?;
@@ -988,7 +988,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
-    let work = background_work::begin_manual(&app, "transcripts")?;
+    let work = derived_work::begin_manual(&app, "transcripts")?;
     let claim = transcription::claim()?;
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -1022,7 +1022,7 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 &hash,
                 move |percent| {
                     let percent = percent.clamp(0, 100);
-                    background_work::report_manual_progress(
+                    derived_work::report_manual_progress(
                         &progress_handle,
                         "transcripts",
                         percent as u64,
@@ -1126,7 +1126,8 @@ fn background_work_snapshot(
     let data_root = paths::data_root(&app)?;
     background_work::snapshot(
         &data_root,
-        derived_work::similarity_dirty(),
+        derived_work::runtime_snapshot()?,
+        derived_work::work_capabilities(&data_root)?,
     )
 }
 
@@ -1136,7 +1137,7 @@ fn background_work_set_paused(
     class_id: Option<String>,
     paused: bool,
 ) -> Result<(), String> {
-    background_work::set_paused(&app, class_id.as_deref(), paused)
+    derived_work::set_paused(&app, class_id.as_deref(), paused)
 }
 
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output

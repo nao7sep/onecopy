@@ -12,12 +12,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
+use std::time::Duration;
 
 use rusqlite::{params_from_iter, Connection};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
-use crate::background_work::{cancelled, is_paused as class_paused, with_active};
 use crate::derived_state::WorkClass;
 use crate::logging;
 use crate::preview::CachePaths;
@@ -37,6 +37,295 @@ const IMAGE_BATCH: usize = 64;
 const VIDEO_BATCH: usize = 8;
 const PRIORITY_BATCH: usize = 64;
 const SECTION_HINT_LIMIT: usize = 256;
+
+#[derive(Clone, Copy)]
+pub struct ActiveWorkSnapshot {
+    pub(crate) class: WorkClass,
+    manual: bool,
+    pub(crate) done: Option<u64>,
+    pub(crate) total: Option<u64>,
+}
+
+#[derive(Default)]
+struct RuntimeState {
+    master_paused: bool,
+    paused_classes: u8,
+    active: Option<ActiveWorkSnapshot>,
+    preempt_requested: bool,
+}
+
+impl RuntimeState {
+    fn paused(&self, class: WorkClass) -> bool {
+        self.master_paused || self.paused_classes & class.bit() != 0
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RuntimeSnapshot {
+    pub(crate) master_paused: bool,
+    pub(crate) paused_classes: u8,
+    pub(crate) active: Option<ActiveWorkSnapshot>,
+    pub(crate) preempt_requested: bool,
+    pub(crate) busy: bool,
+    pub(crate) idle: bool,
+    pub(crate) similarity_dirty: bool,
+}
+
+static RUNTIME: LazyLock<(Mutex<RuntimeState>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(RuntimeState::default()), Condvar::new()));
+
+struct ActiveGuard {
+    app: AppHandle,
+    class: WorkClass,
+}
+
+impl ActiveGuard {
+    fn begin(app: &AppHandle, class: WorkClass) -> Option<Self> {
+        let mut runtime = RUNTIME.0.lock().ok()?;
+        if runtime.paused(class) || runtime.active.is_some() {
+            return None;
+        }
+        runtime.active = Some(ActiveWorkSnapshot {
+            class,
+            manual: false,
+            done: None,
+            total: None,
+        });
+        drop(runtime);
+        emit_state_changed(app);
+        Some(Self {
+            app: app.clone(),
+            class,
+        })
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        if let Ok(mut runtime) = RUNTIME.0.lock() {
+            if runtime.active.map(|active| active.class) == Some(self.class) {
+                runtime.active = None;
+                runtime.preempt_requested = false;
+                RUNTIME.1.notify_all();
+            }
+        }
+        emit_state_changed(&self.app);
+    }
+}
+
+fn with_active<T>(
+    app: &AppHandle,
+    class: WorkClass,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let Some(_active) = ActiveGuard::begin(app, class) else {
+        return Ok(None);
+    };
+    work().map(Some)
+}
+
+pub struct ManualWorkGuard {
+    _guard: ActiveGuard,
+}
+
+pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, String> {
+    let class =
+        WorkClass::parse(class).ok_or_else(|| format!("unknown background-work class: {class}"))?;
+    let mut runtime = RUNTIME
+        .0
+        .lock()
+        .map_err(|_| "background-work state is unavailable".to_string())?;
+    if runtime.paused(class) {
+        return Err(paused_message(class));
+    }
+    if runtime.active.map(|active| active.manual).unwrap_or(false) {
+        return Err("Another requested media task is already running.".to_string());
+    }
+    if let Some(active) = runtime.active {
+        runtime.preempt_requested = true;
+        drop(runtime);
+        if active.class == WorkClass::Transcripts {
+            crate::transcription::request_cancel();
+        }
+        emit_state_changed(app);
+        runtime = RUNTIME
+            .0
+            .lock()
+            .map_err(|_| "background-work state is unavailable".to_string())?;
+        let (next, waited) = RUNTIME
+            .1
+            .wait_timeout_while(runtime, Duration::from_secs(10), |state| {
+                state.active.is_some()
+            })
+            .map_err(|_| "background-work state is unavailable".to_string())?;
+        runtime = next;
+        if waited.timed_out() && runtime.active.is_some() {
+            return Err("Background work is still stopping. Try again shortly.".to_string());
+        }
+        if runtime.paused(class) {
+            return Err(paused_message(class));
+        }
+    }
+    runtime.active = Some(ActiveWorkSnapshot {
+        class,
+        manual: true,
+        done: None,
+        total: None,
+    });
+    runtime.preempt_requested = false;
+    drop(runtime);
+    emit_state_changed(app);
+    Ok(ManualWorkGuard {
+        _guard: ActiveGuard {
+            app: app.clone(),
+            class,
+        },
+    })
+}
+
+fn paused_message(class: WorkClass) -> String {
+    format!(
+        "{} work is paused. Resume it from Background work.",
+        class.id()
+    )
+}
+
+fn class_paused(class: WorkClass) -> bool {
+    RUNTIME
+        .0
+        .lock()
+        .map(|runtime| runtime.paused(class))
+        .unwrap_or(true)
+}
+
+/// Shared by every owned ffmpeg process. A pause kills its child within the
+/// subprocess poll interval; in-process work stops at the next safe item edge.
+pub fn cancelled() -> bool {
+    if crate::scanner::cancelled() {
+        return true;
+    }
+    RUNTIME
+        .0
+        .lock()
+        .ok()
+        .map(|runtime| {
+            runtime.preempt_requested
+                || runtime
+                    .active
+                    .map(|active| runtime.paused(active.class))
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<(), String> {
+    let active = {
+        let mut runtime = RUNTIME
+            .0
+            .lock()
+            .map_err(|_| "background-work state is unavailable".to_string())?;
+        match class {
+            None => runtime.master_paused = paused,
+            Some(id) => {
+                let class = WorkClass::parse(id)
+                    .ok_or_else(|| format!("unknown background-work class: {id}"))?;
+                if paused {
+                    runtime.paused_classes |= class.bit();
+                } else {
+                    runtime.paused_classes &= !class.bit();
+                }
+            }
+        }
+        runtime.active
+    };
+
+    if paused
+        && active
+            .map(|active| class.is_none() || class == Some(active.class.id()))
+            .unwrap_or(false)
+        && active.map(|active| active.class) == Some(WorkClass::Transcripts)
+    {
+        crate::transcription::request_cancel();
+    }
+    emit_state_changed(app);
+    wake(false);
+    Ok(())
+}
+
+fn record_progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) {
+    let (done, total) = counts.map_or((None, None), |(done, total)| (Some(done), Some(total)));
+    if let Ok(mut runtime) = RUNTIME.0.lock() {
+        if let Some(active) = runtime
+            .active
+            .as_mut()
+            .filter(|active| active.class == class)
+        {
+            active.done = done;
+            active.total = total;
+        }
+    }
+    let _ = app.emit(
+        "derived://progress",
+        json!({ "class": class.id(), "done": done, "total": total }),
+    );
+    emit_state_changed(app);
+}
+
+pub fn report_manual_progress(app: &AppHandle, class: &str, done: u64, total: u64) {
+    if let Some(class) = WorkClass::parse(class) {
+        record_progress(app, class, Some((done, total)));
+    }
+}
+
+fn emit_state_changed(app: &AppHandle) {
+    let payload = RUNTIME
+        .0
+        .lock()
+        .map(|runtime| {
+            let paused_classes = WorkClass::ALL
+                .into_iter()
+                .filter(|class| runtime.paused_classes & class.bit() != 0)
+                .map(WorkClass::id)
+                .collect::<Vec<_>>();
+            json!({
+                "masterPaused": runtime.master_paused,
+                "pausedClasses": paused_classes,
+                "active": runtime.active.map(|active| json!({
+                    "id": active.class.id(),
+                    "done": active.done,
+                    "total": active.total,
+                    "stopping": runtime.preempt_requested || runtime.paused(active.class),
+                })),
+            })
+        })
+        .unwrap_or_else(|_| json!({}));
+    let _ = app.emit("derived://state-changed", payload);
+}
+
+pub fn runtime_snapshot() -> Result<RuntimeSnapshot, String> {
+    let (master_paused, paused_classes, active, preempt_requested) = {
+        let runtime = RUNTIME
+            .0
+            .lock()
+            .map_err(|_| "background-work state is unavailable".to_string())?;
+        (
+            runtime.master_paused,
+            runtime.paused_classes,
+            runtime.active,
+            runtime.preempt_requested,
+        )
+    };
+    Ok(RuntimeSnapshot {
+        master_paused,
+        paused_classes,
+        active,
+        preempt_requested,
+        busy: !available(),
+        idle: is_idle(),
+        similarity_dirty: SIMILARITY_DIRTY.load(Ordering::SeqCst),
+    })
+}
+
 #[derive(Clone, Default)]
 struct PriorityHints {
     selected: Option<String>,
@@ -138,6 +427,17 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
     }
 }
 
+pub fn work_capabilities(data_root: &Path) -> Result<crate::derived_state::WorkCapabilities, String> {
+    let config = crate::storage::read_config_for_setup(data_root)?;
+    let settings = settings_from_config(config.as_ref(), data_root);
+    Ok(crate::derived_state::WorkCapabilities {
+        ffmpeg: settings.ffmpeg.is_some(),
+        face_enabled: settings.face_enabled,
+        face_models: settings.face_models.is_some(),
+        transcripts: settings.ffmpeg.is_some() && whisper_model(data_root).is_some(),
+    })
+}
+
 pub fn note_activity() {
     LAST_ACTIVITY_MS.store(now_ms(), Ordering::SeqCst);
 }
@@ -184,10 +484,6 @@ pub fn wake(index_changed: bool) {
         *value = value.wrapping_add(1);
         ready.notify_one();
     }
-}
-
-pub(crate) fn similarity_dirty() -> bool {
-    SIMILARITY_DIRTY.load(Ordering::SeqCst)
 }
 
 /// Replaces the current UI priority hints. They are deliberately ephemeral:
@@ -266,7 +562,7 @@ pub fn ensure_preview(
     config: Option<&serde_json::Value>,
     hash: &str,
 ) -> Result<String, String> {
-    let _active = crate::background_work::begin_manual(app, WorkClass::Previews.id())?;
+    let _active = begin_manual(app, WorkClass::Previews.id())?;
     let _claim = MEDIA_WORK
         .lock()
         .map_err(|_| "derived media owner is unavailable".to_string())?;
@@ -539,7 +835,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
     }
 
     let _ = app.emit("derived://quiet", json!({}));
-    crate::background_work::emit_state_changed(app);
+    emit_state_changed(app);
     Ok(false)
 }
 
@@ -647,7 +943,7 @@ fn pending_hint_hashes(
 }
 
 fn emit_progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) {
-    crate::background_work::progress(app, class, counts);
+    record_progress(app, class, counts);
 }
 
 pub fn notify_item_update(
@@ -775,7 +1071,7 @@ fn transcribe_next(
                 let progress_hash = hash.clone();
                 move |percent| {
                     let percent = percent.clamp(0, 100);
-                    crate::background_work::progress(
+                    record_progress(
                         &progress_handle,
                         WorkClass::Transcripts,
                         Some((percent as u64, 100)),
