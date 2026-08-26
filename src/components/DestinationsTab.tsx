@@ -2,12 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import {
   useDestinationsStore,
   type DirEntry,
-  type MoveMode,
 } from "../state/destinations-store";
 import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
 import ConfirmDialog from "./ConfirmDialog";
 import ModalShell from "./ModalShell";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import {
+  addDestinationRoot,
+  confirmDestinationDeleteRest,
+  moveSelectionTo,
+  removeDestinationRoot,
+  type MoveMode,
+} from "../workflows/destinations";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -51,7 +57,6 @@ export function nodeHasChildren(
 }
 
 function useDropHandlers(path: string) {
-  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
   const [dropReady, setDropReady] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetDrop = () => {
@@ -271,10 +276,8 @@ function ActionBar() {
   const activePath = useDestinationsStore((s) => s.activePath);
   const roots = useDestinationsStore((s) => s.roots);
   const emptiness = useDestinationsStore((s) => s.emptiness);
-  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
   const createFolder = useDestinationsStore((s) => s.createFolder);
   const deleteFolder = useDestinationsStore((s) => s.deleteFolder);
-  const removeRoot = useDestinationsStore((s) => s.removeRoot);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const { composingRef, handlers: composingHandlers } = useComposing();
@@ -371,7 +374,7 @@ function ActionBar() {
           <button
             className={`${button} text-ink-muted hover:bg-surface-muted hover:text-ink`}
             title="Remove this root from the list (the folder itself is untouched)"
-            onClick={() => void removeRoot(activePath)}
+            onClick={() => void removeDestinationRoot(activePath)}
           >
             Remove root
           </button>
@@ -386,11 +389,9 @@ export default function DestinationsTab() {
   const expanded = useDestinationsStore((s) => s.expanded);
   const children = useDestinationsStore((s) => s.children);
   const message = useDestinationsStore((s) => s.message);
-  const addRoot = useDestinationsStore((s) => s.addRoot);
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
-  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
 
   // Folders created OUTSIDE the app (Finder, Explorer) appear when the pane
   // mounts and whenever the app window regains focus — the exact moment a
@@ -504,7 +505,7 @@ export default function DestinationsTab() {
             pendingDeleteRest.count === 1 ? "" : "s"
           } here and PERMANENTLY delete the remaining copies? The deleted copies bypass the trash and cannot be recovered.`}
           confirmLabel="Move and delete permanently"
-          onConfirm={() => void useDestinationsStore.getState().confirmPendingDeleteRest()}
+          onConfirm={() => void confirmDestinationDeleteRest()}
           onCancel={() => useDestinationsStore.getState().cancelPendingDeleteRest()}
         />
       ) : null}
@@ -512,7 +513,7 @@ export default function DestinationsTab() {
         <h2 className="text-sm font-semibold text-ink-strong">Destinations</h2>
         <button
           className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
-          onClick={() => void addRoot()}
+          onClick={() => void addDestinationRoot()}
         >
           Add root…
         </button>
@@ -554,7 +555,6 @@ export default function DestinationsTab() {
  * mouse button down. The permanent variant is deliberately absent here: it
  * stays behind the keyboard chord and its own confirmation. */
 function DropChoiceModal({ path, onClose }: { path: string; onClose: () => void }) {
-  const moveSelectionTo = useDestinationsStore((s) => s.moveSelectionTo);
   const button =
     "inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring";
   return (

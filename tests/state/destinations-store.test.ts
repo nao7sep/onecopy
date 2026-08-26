@@ -9,6 +9,10 @@ import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
 import type { SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  confirmDestinationDeleteRest,
+  moveSelectionTo,
+} from "../../src/workflows/destinations";
 
 function item(pathId: number): SectionItem {
   return {
@@ -86,9 +90,7 @@ describe("loaded destination projection", () => {
 
 describe("staging a permanent move", () => {
   it("asks before moving anything", async () => {
-    await useDestinationsStore
-      .getState()
-      .moveSelectionTo("/dest", "move-delete-rest");
+    await moveSelectionTo("/dest", "move-delete-rest");
 
     expect(movedHashes()).toHaveLength(0);
     const pending = useDestinationsStore.getState().pendingDeleteRest;
@@ -98,15 +100,13 @@ describe("staging a permanent move", () => {
   });
 
   it("acts on the selection it QUOTED, not the one selected later", async () => {
-    await useDestinationsStore
-      .getState()
-      .moveSelectionTo("/dest", "move-delete-rest");
+    await moveSelectionTo("/dest", "move-delete-rest");
     expect(useDestinationsStore.getState().pendingDeleteRest?.count).toBe(3);
 
     // The grid selection changes while the dialog is open — a click behind it,
     // or a watcher refresh landing on a different anchor.
     selectAll(["h4"]);
-    await useDestinationsStore.getState().confirmPendingDeleteRest();
+    await confirmDestinationDeleteRest();
 
     // The dialog counted three specific items. Permanently destroying a
     // different one is the failure this freeze exists to prevent.
@@ -126,16 +126,14 @@ describe("staging a permanent move", () => {
 
 describe("the non-permanent modes", () => {
   it("move-trash-rest runs immediately over the whole selection", async () => {
-    await useDestinationsStore
-      .getState()
-      .moveSelectionTo("/dest", "move-trash-rest");
+    await moveSelectionTo("/dest", "move-trash-rest");
 
     expect(movedHashes().sort()).toEqual(["h1", "h2", "h3"]);
     expect(useDestinationsStore.getState().pendingDeleteRest).toBeNull();
   });
 
   it("copy leaves the originals alone", async () => {
-    await useDestinationsStore.getState().moveSelectionTo("/dest", "copy");
+    await moveSelectionTo("/dest", "copy");
 
     const modes = invokeCalls
       .filter((c) => c.command === "move_item_out")
@@ -156,7 +154,7 @@ describe("outcome reporting", () => {
     });
     selectAll(["h1"]);
 
-    await useDestinationsStore.getState().moveSelectionTo("/dest", "copy");
+    await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().message).toMatch(/CONFLICT/);
     expect(useDestinationsStore.getState().message).toContain("IMG_1.jpg");
@@ -173,7 +171,7 @@ describe("outcome reporting", () => {
     });
     selectAll(["h1"]);
 
-    await useDestinationsStore.getState().moveSelectionTo("/dest", "copy");
+    await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().message).toMatch(/FAILED/);
     expect(useDestinationsStore.getState().message).toContain("IMG_1.arw");
@@ -182,7 +180,7 @@ describe("outcome reporting", () => {
   it("says so plainly when nothing is selected", async () => {
     useItemsStore.setState({ selectedKeys: new Set(), selectedItem: null });
 
-    await useDestinationsStore.getState().moveSelectionTo("/dest", "copy");
+    await moveSelectionTo("/dest", "copy");
 
     expect(movedHashes()).toHaveLength(0);
     expect(useDestinationsStore.getState().message).toMatch(/select an item/i);
