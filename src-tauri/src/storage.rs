@@ -94,7 +94,7 @@ pub struct DefaultConfig {
     pub verify_after_copy: bool,
     /// Face scoring for comparison-group ordering: OPT-IN (Phase 33). Off
     /// means the models are not even downloaded by any automatic path, and
-    /// the backfill never runs the pass; ordering falls back to sharpness.
+    /// the coordinator never runs the pass; ordering falls back to sharpness.
     pub score_faces: bool,
     /// Confirm ordinary Delete/Backspace trash-deletes in the grid. OFF by
     /// default (developer, 2026-08-17): the trash is the net, and a dialog on

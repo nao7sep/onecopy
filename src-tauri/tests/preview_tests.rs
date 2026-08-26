@@ -211,7 +211,7 @@ fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
 }
 
 #[test]
-fn derive_tees_the_real_hash_out_of_a_provisional_image() {
+fn on_demand_derive_returns_the_promoted_hash_for_a_provisional_image() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-derive-tee-")
         .tempdir()
@@ -230,12 +230,12 @@ fn derive_tees_the_real_hash_out_of_a_provisional_image() {
     ))
     .unwrap();
 
-    let stats = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
-    assert_eq!((stats.derived, stats.failed), (1, 0));
+    let canonical = derive_one(&conn, &cache, 320, 1600, None, "p1").unwrap();
 
     // The decode's read teed the REAL hash: identity promoted, cache
     // written under the real key, provisional gone everywhere.
     let real = blake3::hash(&std::fs::read(&src).unwrap()).to_hex().to_string();
+    assert_eq!(canonical, real);
     let stored: String = conn
         .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
         .unwrap();

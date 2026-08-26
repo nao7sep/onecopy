@@ -56,11 +56,11 @@ fn fixture(label: &str) -> Fixture {
 }
 
 #[test]
-fn pending_work_probe_tracks_unhashed_media_and_underived_contents() {
+fn pending_index_probe_ignores_derived_media_debt() {
     let fx = fixture("pending-probe");
 
     // Empty index: nothing pending.
-    assert!(!pending_work_exists(&fx.conn, true).unwrap());
+    assert!(!pending_index_work_exists(&fx.conn).unwrap());
 
     // A media path without a content hash is pending work.
     fx.conn
@@ -70,36 +70,34 @@ fn pending_work_probe_tracks_unhashed_media_and_underived_contents() {
             [],
         )
         .unwrap();
-    assert!(pending_work_exists(&fx.conn, false).unwrap());
+    assert!(pending_index_work_exists(&fx.conn).unwrap());
 
-    // Hashed but underived image content: still pending.
+    // Hashing alone leaves metadata evidence pending.
     fx.conn
         .execute_batch(
             "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 1, 'image');
              UPDATE paths SET content_hash = 'h1';",
         )
         .unwrap();
-    assert!(pending_work_exists(&fx.conn, false).unwrap());
+    assert!(pending_index_work_exists(&fx.conn).unwrap());
 
-    // Derived image: clean. An underived video counts only when ffmpeg
-    // is present — a resume that could do nothing must not fire.
-    // The video needs a LIVE path of its own: a contents row nothing on disk
-    // points at can never be derived, and reporting it pending would fire a
-    // no-op resume on every launch.
+    // Once index evidence is complete, underived image and video contents do
+    // not restart indexing. They belong exclusively to derived_work.
     fx.conn
         .execute_batch(
-            "UPDATE contents SET derived_at_utc = 'done';
-             INSERT INTO evidence (path_id, source, raw) \
+            "INSERT INTO evidence (path_id, source, raw) \
                SELECT id, 'live-photo-identifier', NULL FROM paths;
+             UPDATE paths SET indexed_at_utc = 'done', resolved_source = 'undated';
              INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 1, 'video');
              INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing)
                VALUES ('/a/v.mov', '/a', 'v.mov', 'video', 'v1', 0);
              INSERT INTO evidence (path_id, source, raw) \
-               SELECT id, 'live-photo-identifier', NULL FROM paths WHERE content_hash = 'v1';",
+               SELECT id, 'live-photo-identifier', NULL FROM paths WHERE content_hash = 'v1';
+             UPDATE paths SET indexed_at_utc = 'done', resolved_source = 'undated' \
+               WHERE content_hash = 'v1';",
         )
         .unwrap();
-    assert!(!pending_work_exists(&fx.conn, false).unwrap());
-    assert!(pending_work_exists(&fx.conn, true).unwrap());
+    assert!(!pending_index_work_exists(&fx.conn).unwrap());
 }
 
 fn test_cache(f: &Fixture) -> onecopy_lib::preview::CachePaths {
@@ -486,7 +484,7 @@ fn a_preexisting_index_backfills_live_photo_evidence_once() {
              UPDATE paths SET indexed_at_utc = 'already-indexed', content_hash = 'old-hash';",
         )
         .unwrap();
-    assert!(pending_work_exists(&f.conn, false).unwrap());
+    assert!(pending_index_work_exists(&f.conn).unwrap());
     assert_eq!(extract_pending(&f.conn).unwrap().extracted, 1);
     assert_eq!(
         count(
@@ -736,10 +734,7 @@ fn completed_walk_checkpoint_uses_the_settled_symlink_identity() {
 }
 
 #[test]
-fn blocked_stills_become_pending_only_once_ffmpeg_is_present() {
-    // The gate binaries_install relies on: a HEIC blocked on ffmpeg is inert
-    // while ffmpeg is absent (so the startup resume cannot fire on work it
-    // could never do) and pending the moment it lands.
+fn ffmpeg_blocked_stills_never_create_index_debt() {
     let f = fixture("blocked-stills");
     f.conn
         .execute(
@@ -750,8 +745,9 @@ fn blocked_stills_become_pending_only_once_ffmpeg_is_present() {
         .unwrap();
     f.conn
         .execute(
-            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) \
-             VALUES ('/root/a.heic', '/root', 'a.heic', 'image', 'h1', 0)",
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing, \
+                                indexed_at_utc, resolved_source) \
+             VALUES ('/root/a.heic', '/root', 'a.heic', 'image', 'h1', 0, 'done', 'undated')",
             [],
         )
         .unwrap();
@@ -763,14 +759,7 @@ fn blocked_stills_become_pending_only_once_ffmpeg_is_present() {
         )
         .unwrap();
 
-    assert!(
-        !pending_work_exists(&f.conn, false).unwrap(),
-        "inert while ffmpeg is absent"
-    );
-    assert!(
-        pending_work_exists(&f.conn, true).unwrap(),
-        "pending the moment ffmpeg lands"
-    );
+    assert!(!pending_index_work_exists(&f.conn).unwrap());
 }
 
 #[test]
@@ -794,7 +783,7 @@ fn contents_without_a_live_path_are_not_pending_work() {
         .unwrap();
 
     assert!(
-        !pending_work_exists(&f.conn, true).unwrap(),
+        !pending_index_work_exists(&f.conn).unwrap(),
         "an underivable row must not keep the resume firing forever"
     );
 }

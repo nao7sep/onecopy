@@ -117,7 +117,7 @@ pub struct VideoDeriveStats {
 /// the image pipeline, so thumb/preview land in the shared cache). Scene
 /// strips deliberately do NOT happen here (Phase 33): a grid without posters
 /// reads as broken, so posters block the scan, but strips are many frames per
-/// video and belong to the idle backfill — `derive_strips_pending` finds them
+/// video and belong to idle derived work — `derive_strips_pending` finds them
 /// through the NULL `strip_frames` this pass leaves behind.
 pub fn derive_videos_pending(
     conn: &Connection,
@@ -126,6 +126,46 @@ pub fn derive_videos_pending(
     temp_dir: &Path,
     thumb_edge: u32,
     preview_long_edge: u32,
+) -> Result<VideoDeriveStats, String> {
+    derive_videos_pending_limit(
+        conn,
+        cache,
+        ffmpeg,
+        temp_dir,
+        thumb_edge,
+        preview_long_edge,
+        None,
+    )
+}
+
+/// Runs at most one video-poster job for the derived-work coordinator.
+pub(crate) fn derive_next_video(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: Option<&Path>,
+    temp_dir: &Path,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+) -> Result<VideoDeriveStats, String> {
+    derive_videos_pending_limit(
+        conn,
+        cache,
+        ffmpeg,
+        temp_dir,
+        thumb_edge,
+        preview_long_edge,
+        Some(1),
+    )
+}
+
+fn derive_videos_pending_limit(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: Option<&Path>,
+    temp_dir: &Path,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    limit: Option<usize>,
 ) -> Result<VideoDeriveStats, String> {
     let mut stats = VideoDeriveStats::default();
     let Some(ffmpeg) = ffmpeg else {
@@ -138,14 +178,19 @@ pub fn derive_videos_pending(
 
     // A row stamped with an older DERIVE_VERSION is pending again, so bumping
     // the constant re-derives posters and strips without touching a user file.
+    let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     let mut stmt = conn
         .prepare(&format!(
             "SELECT c.hash, (SELECT p.abs_path FROM paths p \
              WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
              FROM contents c WHERE c.kind = 'video' \
              AND (c.derived_at_utc IS NULL \
-                  OR (c.derived_version < {} AND c.derived_at_utc != 'failed'))",
-            crate::preview::DERIVE_VERSION
+                  OR (c.derived_version < {} AND c.derived_at_utc != 'failed')) \
+             AND EXISTS (SELECT 1 FROM paths p \
+                         WHERE p.content_hash = c.hash AND p.missing = 0) \
+             ORDER BY c.hash{}",
+            crate::preview::DERIVE_VERSION,
+            limit_clause
         ))
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, Option<String>)> = stmt
@@ -211,7 +256,7 @@ pub fn derive_videos_pending(
     Ok(stats)
 }
 
-/// The backfill half (Phase 33): scene strips for videos the scan already
+/// The idle derived-work half: scene strips for videos the poster pass already
 /// postered, found through their NULL `strip_frames`. Runs only while the app
 /// is idle — `stop` is consulted between videos, so the user's return waits
 /// at most one video's strip extraction. Returns how many videos got strips.
@@ -300,4 +345,3 @@ pub fn derive_strips_pending(
     }
     Ok(done)
 }
-

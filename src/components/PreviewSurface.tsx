@@ -129,8 +129,10 @@ function ImageSurface({
   // retries once. Only when that also fails does the surface settle on words
   // — the core's own reason, which knows "install ffmpeg" from "broken file".
   const [phase, setPhase] = useState<
-    { kind: "showing"; attempt: number } | { kind: "converting" } | { kind: "failed"; reason: string }
-  >({ kind: "showing", attempt: 0 });
+    { kind: "showing"; attempt: number; cacheHash: string }
+    | { kind: "converting" }
+    | { kind: "failed"; reason: string }
+  >({ kind: "showing", attempt: 0, cacheHash: hash });
   if (phase.kind === "converting") {
     return <p className="text-sm text-ink-muted">Converting…</p>;
   }
@@ -139,8 +141,8 @@ function ImageSurface({
   }
   return (
     <ZoomableImage
-      key={`${hash}-${phase.attempt}`}
-      hash={hash}
+      key={`${phase.cacheHash}-${phase.attempt}`}
+      hash={phase.cacheHash}
       fileName={fileName}
       startZoomed={startZoomed}
       onError={() => {
@@ -152,8 +154,8 @@ function ImageSurface({
           return;
         }
         setPhase({ kind: "converting" });
-        invoke("ensure_preview", { hash })
-          .then(() => setPhase({ kind: "showing", attempt: 1 }))
+        invoke<string>("ensure_preview", { hash })
+          .then((cacheHash) => setPhase({ kind: "showing", attempt: 1, cacheHash }))
           .catch((error) => {
             log.warn("on-demand preview derive failed", toErrorFields(error));
             setPhase({ kind: "failed", reason: String(error) });

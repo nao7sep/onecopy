@@ -1,32 +1,28 @@
-// The idle backfill's two frontend duties (Phase 33): tell the core when the
-// user is here, and narrate what fills in while they are not.
-//
-// The activity ping is the scheduler's WHOLE view of the user — input events,
-// throttled hard, because the signal only needs minute-level resolution (the
-// core's idle threshold is 60 s) and a ping per keystroke would be an IPC
-// storm in the exact keystroke-paced flow the scheduler exists to protect.
+// The derived-work coordinator's frontend duties: report recent user input
+// for idle-only classes, and narrate the fixed work classes in the status bar.
 
-import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 
 const PING_EVERY_MS = 10_000;
 
-interface BackfillState {
-  /** The status-bar chip line; null hides the chip. */
+interface DerivedWorkState {
+  /** The status-bar line; null hides it. */
   line: string | null;
 }
 
-export const useBackfillStore = create<BackfillState>(() => ({ line: null }));
+export const useDerivedWorkStore = create<DerivedWorkState>(() => ({ line: null }));
 
 const CLASS_LABELS: Record<string, string> = {
+  previews: "previews",
+  "video-posters": "video posters",
+  similarity: "similar photos",
   strips: "video snapshots",
   transcripts: "transcripts",
   faces: "face scores",
 };
-
-// ---- wiring, installed once at module load --------------------------------
 
 let lastPing = 0;
 function ping(): void {
@@ -48,20 +44,20 @@ export function installActivityPings(target: Window): void {
 void (async () => {
   try {
     await listen<{ class: string; done?: number; total?: number }>(
-      "backfill://progress",
+      "derived://progress",
       (event) => {
         const label = CLASS_LABELS[event.payload.class] ?? event.payload.class;
         const counts =
           typeof event.payload.done === "number" && typeof event.payload.total === "number"
             ? ` ${event.payload.done}/${event.payload.total}`
             : "…";
-        useBackfillStore.setState({ line: `Filling in: ${label}${counts}` });
+        useDerivedWorkStore.setState({ line: `Filling in: ${label}${counts}` });
       },
     );
-    await listen("backfill://quiet", () => {
-      useBackfillStore.setState({ line: null });
+    await listen("derived://quiet", () => {
+      useDerivedWorkStore.setState({ line: null });
     });
   } catch (error) {
-    log.warn("backfill event wiring failed", toErrorFields(error));
+    log.warn("derived-work event wiring failed", toErrorFields(error));
   }
 })();

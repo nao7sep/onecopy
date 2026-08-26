@@ -58,14 +58,28 @@ export const useSectionsStore = create<SectionsState>((set) => ({
 
 // Event wiring, installed once at module load. Fire-and-forget: a listen
 // failure logs and leaves the store on manual refresh only.
-// The sidebar refreshes on every scan PHASE TRANSITION, not only at the end.
-// The pipeline is walk → hash → extract → resolve → pair → derive, and the
-// derive tail (thumbnails + embeddings) can run for HOURS on a big library —
-// during which resolve has long since dated every file, yet the counts still
-// showed the pre-resolve world: the developer's 8000-photo scan sat on a
-// wall of "Undated" until an app restart. Six aggregate queries per scan is
-// the entire cost of telling the truth as each stage lands.
+// The sidebar refreshes on every index phase transition, not only at the end,
+// so resolved dates become visible before a long index finishes. Derived work
+// has a separate throttled notification below.
 let lastScanPhase: string | null = null;
+let derivedRefresh: ReturnType<typeof setTimeout> | null = null;
+
+function refreshAfterDerivedWork(): void {
+  if (derivedRefresh !== null) return;
+  // Identity promotion changes provisional hashes while a long preview pass
+  // is running. Throttle (do not debounce) the per-item notifications so a
+  // continuous pass refreshes current cache URLs without an IPC storm.
+  derivedRefresh = setTimeout(() => {
+    derivedRefresh = null;
+    void useSectionsStore.getState().loadCounts();
+    void import("./items-store").then(({ useItemsStore }) =>
+      useItemsStore.getState().refresh(),
+    );
+    void import("./issues-store").then(({ useIssuesStore }) =>
+      useIssuesStore.getState().load(),
+    );
+  }, 500);
+}
 
 void (async () => {
   try {
@@ -118,6 +132,7 @@ void (async () => {
         useIssuesStore.getState().load(),
       );
     });
+    await listen("derived://updated", refreshAfterDerivedWork);
     await listen("watch://rescan-needed", () => {
       useSectionsStore.setState({ rescanNeeded: true });
     });

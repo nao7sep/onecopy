@@ -329,7 +329,7 @@ pub fn face_scores_pending(
         if crate::scanner::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
-        // Backfill politeness (Phase 33): the user's return stops the pass
+        // Coordinator politeness: the user's return stops the pass
         // between images; what is scored stays scored.
         if stop() {
             break;

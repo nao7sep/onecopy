@@ -190,7 +190,7 @@ pub fn collect(
     }
 }
 
-/// Re-stats the dirty directories and runs the pending pipeline tail. Waits
+/// Re-stats the dirty directories and runs the pending index tail. Waits
 /// out an in-flight full scan (its walk covers the changes anyway).
 fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
     if crate::scan_running() {
@@ -210,10 +210,11 @@ fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String
         changed += restat_dir(&conn, dir, &settings.lists)?;
     }
     if changed > 0 {
-        // The shared pipeline tail (hash → … → group), so the watcher can
-        // never drift from the scan and rescan paths on what a pass covers.
+        // The shared index tail, so watcher, scan, and section rescan cannot
+        // drift on which durable file facts a pass covers.
         let mut summary = scanner::ScanSummary::default();
-        scanner::run_pipeline_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
+        scanner::run_index_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
+        crate::derived_work::wake(true);
         logging::info("watcher pass", json!({ "dirs": dirs.len(), "changed": changed }));
     }
     Ok(changed)

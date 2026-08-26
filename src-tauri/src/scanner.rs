@@ -65,23 +65,12 @@ pub struct ScanLists {
 /// typed defaults filling gaps — the store never validates, each consumer
 /// projects what it needs (config-seeding conventions).
 pub struct ScanSettings {
-    pub data_root: std::path::PathBuf,
     pub source_dirs: Vec<String>,
     pub lists: ScanLists,
     pub resolution: ResolutionConfig,
-    pub similarity: crate::similarity::SimilarityConfig,
-    pub strip: crate::video::StripConfig,
-    pub thumb_edge: u32,
-    pub preview_long_edge: u32,
     pub pairing_enabled: bool,
     pub keep_awake: bool,
     pub cache_root: std::path::PathBuf,
-    /// The managed ffmpeg when present on disk; None leaves videos underived.
-    pub ffmpeg: Option<std::path::PathBuf>,
-    /// Both face models, or None — the pair is all-or-nothing because the
-    /// score needs detection AND expression.
-    pub face_models: Option<(std::path::PathBuf, std::path::PathBuf)>,
-    pub temp_dir: std::path::PathBuf,
 }
 
 pub fn settings_from_config(
@@ -92,13 +81,6 @@ pub fn settings_from_config(
     let defaults = crate::storage::DefaultConfig::default();
     let get = |key: &str| config.and_then(|c| c.get(key));
 
-    let u32_of = |key: &str, fallback: u32| -> u32 {
-        get(key)
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(fallback)
-    };
-
     let tz: chrono_tz::Tz = get("defaultTimezone")
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse().ok())
@@ -107,7 +89,6 @@ pub fn settings_from_config(
 
     let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
     ScanSettings {
-        data_root: data_root.to_path_buf(),
         source_dirs: string_list_preserving_case(config, "sourceDirs"),
         // Supported file types are specs, not user choices: the lists live in
         // extensions.rs only, and a stray legacy key in config.json is ignored.
@@ -124,51 +105,6 @@ pub fn settings_from_config(
                 .unwrap_or(defaults.good_range_start_year),
             now_ms,
         },
-        similarity: crate::similarity::SimilarityConfig {
-            max_gap_seconds: u32_of("similarityMaxGapSeconds", defaults.similarity_max_gap_seconds),
-            phash_max_distance: u32_of(
-                "similarityPhashMaxDistance",
-                defaults.similarity_phash_max_distance,
-            ),
-            phash_max_distance_burst: u32_of(
-                "similarityPhashMaxDistanceBurst",
-                defaults.similarity_phash_max_distance_burst,
-            ),
-            diameter_multiplier: u32_of(
-                "similarityDiameterMultiplier",
-                defaults.similarity_diameter_multiplier,
-            ),
-        },
-        strip: crate::video::StripConfig {
-            seconds_per_frame: u32_of(
-                "videoStripSecondsPerFrame",
-                defaults.video_strip_seconds_per_frame,
-            ),
-            min_frames: u32_of("videoStripMinFrames", defaults.video_strip_min_frames),
-            max_frames: u32_of("videoStripMaxFrames", defaults.video_strip_max_frames),
-        },
-        ffmpeg: {
-            let path = crate::binaries_manager::ffmpeg_path(data_root);
-            path.is_file().then_some(path)
-        },
-        face_models: {
-            // Opt-in (Phase 33): with scoring disabled the models are
-            // invisible to every pass even when a file happens to exist.
-            let enabled = get("scoreFaces").and_then(|v| v.as_bool()).unwrap_or(false);
-            let installed = |id: &str| {
-                crate::binaries_manager::spec_of(id).and_then(|spec| {
-                    let state = crate::binaries_manager::state_of(data_root, spec);
-                    (state.status != crate::binaries::BinaryStatus::NotInstalled)
-                        .then(|| crate::binaries_manager::installed_path(data_root, spec))
-                })
-            };
-            enabled
-                .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
-                .flatten()
-        },
-        temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
-        thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
-        preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
         pairing_enabled: get("pairingEnabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.pairing_enabled),
@@ -204,10 +140,6 @@ pub struct ScanSummary {
     pub resolved: u64,
     pub undated: u64,
     pub paired: u64,
-    pub derived: u64,
-    pub derive_failed: u64,
-    pub videos_derived: u64,
-    pub similar_groups: u64,
 }
 
 /// Escapes LIKE wildcards in a path prefix. `_` is common in real paths and
@@ -406,8 +338,9 @@ pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, Str
     Ok(canonical)
 }
 
-/// One full pipeline run over every configured root: walk → hash → extract →
-/// resolve → pair → derive, reporting a progress line after each stage.
+/// One full index run over every configured root: walk → hash → extract →
+/// resolve → pair, reporting a progress line after each stage. Derived media
+/// is deliberately owned by `derived_work`, which wakes after this returns.
 pub fn run_full_scan(
     conn: &Connection,
     settings: &ScanSettings,
@@ -434,18 +367,13 @@ pub fn run_full_scan(
         progress("walk", walk_progress_line(root, stats.seen, stats.added));
     }
 
-    run_pipeline_tail(conn, settings, progress, &mut summary)?;
+    run_index_tail(conn, settings, progress, &mut summary)?;
     Ok(summary)
 }
 
-/// True when checkpointed work from an interrupted run is still waiting: media
-/// rows never hashed, or image/video contents never derived. Videos count only
-/// while ffmpeg is present — without it the video stage would skip them again,
-/// and a resume that can do nothing must not fire on every launch. Cheap
-/// (three indexed EXISTS probes), so callers may use it as a gate.
 /// Whether any configured root still owes a full walk — it has never been
 /// walked to completion, or a walk over it was interrupted. This is the one
-/// thing `pending_work_exists` cannot see: its probes are all row-level, so
+/// thing `pending_index_work_exists` cannot see: its probes are row-level, so
 /// once the tail drains the rows a partial walk created, it reports clean
 /// forever while whole directories remain unread.
 pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
@@ -471,7 +399,7 @@ pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
     Ok(false)
 }
 
-pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bool, String> {
+pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     let probe = |sql: &str| -> Result<bool, String> {
         conn.query_row(sql, [], |r| r.get::<_, i64>(0))
             .map(|n| n != 0)
@@ -480,6 +408,18 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     if probe(
         "SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 AND content_hash IS NULL \
          AND kind IN ('image', 'video'))",
+    )? {
+        return Ok(true);
+    }
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM paths \
+         WHERE missing = 0 AND indexed_at_utc IS NULL)",
+    )? {
+        return Ok(true);
+    }
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 \
+         AND indexed_at_utc IS NOT NULL AND resolved_source IS NULL)",
     )? {
         return Ok(true);
     }
@@ -495,45 +435,13 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     )? {
         return Ok(true);
     }
-    // Every contents probe requires a LIVE path. A row whose only copies are
-    // missing can never be derived, so reporting it as pending fires a no-op
-    // resume scan on every launch — and that scan rebuilds all similarity
-    // groups each time, for work it cannot do.
-    const LIVE: &str = "EXISTS (SELECT 1 FROM paths p \
-                        WHERE p.content_hash = contents.hash AND p.missing = 0)";
-    if probe(&format!(
-        "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
-         AND derived_at_utc IS NULL AND {LIVE})"
-    ))? {
-        return Ok(true);
-    }
-    // Stills blocked on ffmpeg become derivable the moment it lands, so they
-    // are pending work then and inert before — the same gate the videos use.
-    if ffmpeg_present
-        && probe(&format!(
-            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
-             AND derived_at_utc = '{}' AND {LIVE})",
-            crate::preview::NEEDS_FFMPEG
-        ))?
-    {
-        return Ok(true);
-    }
-    if ffmpeg_present
-        && probe(&format!(
-            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'video' \
-             AND derived_at_utc IS NULL AND {LIVE})"
-        ))?
-    {
-        return Ok(true);
-    }
     Ok(false)
 }
 
-/// The pipeline minus the walk: hash → extract → resolve → pair → derive →
-/// video → group, over whatever the checkpoints left pending. Shared by the
-/// full scan, the startup resume, and the scoped section rescan, so every
-/// recovery path runs the same (and the whole) tail.
-pub fn run_pipeline_tail(
+/// The index pipeline minus the walk: hash → extract → resolve → pair, over
+/// whatever the checkpoints left pending. Shared by the full scan, startup
+/// resume, watcher, and scoped section rescan.
+pub fn run_index_tail(
     conn: &Connection,
     settings: &ScanSettings,
     progress: &dyn Fn(&str, String),
@@ -568,65 +476,6 @@ pub fn run_pipeline_tail(
     let pair_stats = pair_companions(conn, settings.pairing_enabled)?;
     summary.paired = pair_stats.paired;
     progress("pair", format!("{} companions", pair_stats.paired));
-
-    let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
-    let per_item = |done: u64, total: u64| progress("derive", format!("{done}/{total}"));
-    let derive_stats = crate::preview::derive_images_pending(
-        conn,
-        &cache,
-        settings.thumb_edge,
-        settings.preview_long_edge,
-        settings.ffmpeg.as_deref(),
-        Some(&per_item),
-    )?;
-    summary.derived = derive_stats.derived;
-    summary.derive_failed = derive_stats.failed;
-    progress(
-        "derive",
-        if derive_stats.blocked_no_ffmpeg > 0 {
-            format!(
-                "{} previews, {} failures, {} waiting for ffmpeg",
-                derive_stats.derived, derive_stats.failed, derive_stats.blocked_no_ffmpeg
-            )
-        } else {
-            format!("{} previews, {} failures", derive_stats.derived, derive_stats.failed)
-        },
-    );
-
-    let video_stats = crate::video::derive_videos_pending(
-        conn,
-        &cache,
-        settings.ffmpeg.as_deref(),
-        &settings.temp_dir,
-        settings.thumb_edge,
-        settings.preview_long_edge,
-    )?;
-    summary.videos_derived = video_stats.derived;
-    progress(
-        "video",
-        if video_stats.skipped_no_ffmpeg {
-            "ffmpeg not installed — videos left for a later scan".to_string()
-        } else {
-            format!(
-                "{} posters+strips, {} failures",
-                video_stats.derived, video_stats.failed
-            )
-        },
-    );
-
-    let group_stats = crate::similarity::rebuild_groups_for_root(
-        conn,
-        &settings.similarity,
-        &settings.data_root,
-    )?;
-    summary.similar_groups = group_stats.groups;
-    progress(
-        "group",
-        format!(
-            "{} similar groups over {} photos",
-            group_stats.groups, group_stats.grouped_items
-        ),
-    );
 
     Ok(())
 }

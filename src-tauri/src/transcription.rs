@@ -1,7 +1,7 @@
 //! On-demand transcription (Design: Video handling) — whisper.cpp linked into
 //! the app via `whisper-rs`, the large-v3-turbo model provisioned by the
 //! managed-dependency registry. Work starts either from the scenes modal's
-//! Transcribe control or from the idle backfill scheduler.
+//! Transcribe control or from the derived-work coordinator.
 //!
 //! The transcript is DERIVED data keyed by content hash, cached in the
 //! `transcripts/` subtree like every other derived entry — reconstructible,

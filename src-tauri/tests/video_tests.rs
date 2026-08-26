@@ -92,7 +92,7 @@ fn live_video_derive() {
     assert!(cache.thumb("vid01").exists(), "poster thumb");
     assert!(cache.preview("vid01").exists(), "poster preview");
     // The scan half leaves strips PENDING (Phase 33: they are the idle
-    // backfill's job) — strip_frames stays NULL until that pass runs.
+    // coordinator's idle job) — strip_frames stays NULL until that pass runs.
     let pending: Option<i64> = conn
         .query_row("SELECT strip_frames FROM contents WHERE hash = 'vid01'", [], |r| r.get(0))
         .unwrap();

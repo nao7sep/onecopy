@@ -3487,7 +3487,6 @@ dependencies = [
  "nom-exif",
  "notify",
  "ort",
- "rayon",
  "reqwest",
  "rfd 0.17.2",
  "rusqlite",

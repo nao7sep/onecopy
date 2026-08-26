@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use chrono_tz::Tz;
 use onecopy_lib::operations::{delete_item, move_out, DeleteMode, ItemRef, MoveOutMode};
 use onecopy_lib::preview::CachePaths;
-use onecopy_lib::{index_store, queries, scanner, trash};
+use onecopy_lib::{derived_work, index_store, preview, queries, scanner, similarity, trash};
 use rusqlite::Connection;
 
 /// A deterministic JPEG "photo": a gradient with a per-shot brightness lift,
@@ -85,6 +85,23 @@ fn scan(conn: &Connection, world: &World) -> Result<scanner::ScanSummary, String
     scanner::run_full_scan(conn, &settings(world), &|_, _| {})
 }
 
+fn derive_all(conn: &Connection, world: &World) {
+    let config = serde_json::json!({});
+    let settings = derived_work::settings_from_config(Some(&config), &world.home);
+    let cache = CachePaths::new(settings.cache_root.clone());
+    let stats = preview::derive_images_pending(
+        conn,
+        &cache,
+        settings.thumb_edge,
+        settings.preview_long_edge,
+        settings.ffmpeg.as_deref(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(stats.derived, 4);
+    similarity::rebuild_groups_for_root(conn, &settings.similarity, &world.home).unwrap();
+}
+
 fn live_files(corpus: &Path) -> Vec<String> {
     let mut names: Vec<String> = walkdir(corpus)
         .into_iter()
@@ -115,9 +132,32 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     let conn = index_store::open(&w.home.join("index.sqlite3")).unwrap();
     let cache = CachePaths::new(w.home.join("cache"));
 
-    // ---- Scan: walk → hash → extract → resolve → derive → group ----
-    let summary = scan(&conn, &w).expect("the scan completes");
+    // ---- Index: walk → hash → extract → resolve → pair, then stop ----
+    let phases = std::sync::Mutex::new(Vec::<String>::new());
+    let summary = scanner::run_full_scan(&conn, &settings(&w), &|phase, _| {
+        let mut phases = phases.lock().unwrap();
+        if phases.last().is_none_or(|last| last != phase) {
+            phases.push(phase.to_string());
+        }
+    })
+    .expect("the scan completes");
     assert_eq!(summary.seen, 5, "five physical files walked");
+    assert_eq!(
+        phases.into_inner().unwrap(),
+        ["walk", "hash", "extract", "resolve", "pair"],
+        "scan progress exposes index phases only",
+    );
+    let underived: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contents WHERE derived_at_utc IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(underived, 4, "index completion never hides derived work");
+
+    // ---- Derived owner: previews and similarity complete independently ----
+    derive_all(&conn, &w);
 
     // Four logical contents (the duplicate shares its hash), all derived.
     let hashes: Vec<String> = {
@@ -265,7 +305,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 
 #[test]
 #[serial_test::serial(scan_cancel)]
-fn a_cancelled_scan_resumes_to_the_same_index_an_uninterrupted_run_builds() {
+fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
     let interrupted = world("resume");
     let control = World {
         home: interrupted._dir.path().join("control-home"),
@@ -274,7 +314,7 @@ fn a_cancelled_scan_resumes_to_the_same_index_an_uninterrupted_run_builds() {
     };
     std::fs::create_dir_all(&control.home).unwrap();
 
-    // ---- Interrupt mid-derive: real work exists on both sides of the cut ----
+    // ---- Interrupt between hash and metadata extraction ----
     scanner::SCAN_CANCEL.store(false, Ordering::Relaxed);
     let conn = index_store::open(&interrupted.home.join("index.sqlite3")).unwrap();
     let interrupted_settings = settings(&interrupted);
@@ -300,22 +340,17 @@ fn a_cancelled_scan_resumes_to_the_same_index_an_uninterrupted_run_builds() {
         let mut contents = Vec::new();
         let mut stmt = conn
             .prepare(
-                "SELECT hash, byte_size, kind, phash, width, height, sharpness, derived_version \
+                "SELECT hash, byte_size, kind \
                  FROM contents ORDER BY hash",
             )
             .unwrap();
         let mut rows = stmt.query([]).unwrap();
         while let Some(row) = rows.next().unwrap() {
             contents.push(format!(
-                "{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{}",
+                "{}|{}|{}",
                 row.get::<_, String>(0).unwrap(),
                 row.get::<_, i64>(1).unwrap(),
                 row.get::<_, String>(2).unwrap(),
-                row.get::<_, Option<i64>>(3).unwrap(),
-                row.get::<_, Option<i64>>(4).unwrap(),
-                row.get::<_, Option<i64>>(5).unwrap(),
-                row.get::<_, Option<f64>>(6).unwrap(),
-                row.get::<_, i64>(7).unwrap(),
             ));
         }
         let mut paths = Vec::new();
@@ -343,10 +378,13 @@ fn a_cancelled_scan_resumes_to_the_same_index_an_uninterrupted_run_builds() {
     assert_eq!(resumed_contents, control_contents, "contents identical after resume");
     assert_eq!(resumed_paths, control_paths, "paths identical after resume");
 
-    // And the grouping the user sees is the same grouping.
-    let groups = |conn: &Connection| -> i64 {
-        conn.query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
-            .unwrap()
+    let derived = |conn: &Connection| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM contents WHERE derived_at_utc IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
     };
-    assert_eq!(groups(&conn), groups(&control_conn));
+    assert_eq!((derived(&conn), derived(&control_conn)), (0, 0));
 }

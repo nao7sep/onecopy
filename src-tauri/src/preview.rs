@@ -464,11 +464,11 @@ pub struct DeriveStats {
 /// with the file — and this pass picks those rows back up as soon as ffmpeg
 /// is present, which is what makes the wizard's skippable offer honest.
 ///
-/// The decode/encode work runs on rayon across chunks (SQLite writes stay on
-/// this thread), `progress` — when given — reports (done, total) after each
-/// chunk so a long pass is visibly alive, and the scan cancel flag is honored
-/// between chunks: derived rows keep their checkpoint, undone rows resume on
-/// the next pass.
+/// Work is deliberately serial and checkpointed after every item. A preview
+/// decode can consume hundreds of megabytes for a large source; running 32 at
+/// once made a healthy pass exhaust memory and made progress appear frozen
+/// until the slowest decode in the batch completed. `progress` reports after
+/// each durable result, and cancellation leaves only the current item undone.
 /// The one success write-back for a derived image — the bulk pass and the
 /// on-demand single-item derive both land here, so the checkpoint semantics
 /// (facts, version stamp, retired decode-error issue) cannot drift between
@@ -515,12 +515,9 @@ pub fn derive_one(
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
     hash: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if cache.thumb(hash).exists() && cache.preview(hash).exists() {
-        return Ok(());
-    }
-    if crate::scanner::is_provisional(hash) {
-        return Err("still being indexed — the scan will reach this photo".to_string());
+        return Ok(hash.to_string());
     }
     let path: String = conn
         .query_row(
@@ -536,6 +533,26 @@ pub fn derive_one(
                 .to_string(),
         );
     }
+    if crate::scanner::is_provisional(hash) {
+        let (real, facts) = generate_for_image_teeing(
+            src,
+            cache,
+            thumb_edge,
+            preview_long_edge,
+            ffmpeg,
+        )
+        .map_err(|err| {
+            let _ = crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err);
+            let _ = conn.execute(
+                "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
+                [hash],
+            );
+            err
+        })?;
+        crate::scanner::promote_identity(conn, cache, hash, &real)?;
+        record_derive_success(conn, &real, &path, &facts)?;
+        return Ok(real);
+    }
     let facts = generate_for_image(src, hash, cache, thumb_edge, preview_long_edge, ffmpeg)
         .map_err(|err| {
             // The same honesty as the bulk pass: a broken file is recorded,
@@ -547,7 +564,8 @@ pub fn derive_one(
             );
             err
         })?;
-    record_derive_success(conn, hash, &path, &facts)
+    record_derive_success(conn, hash, &path, &facts)?;
+    Ok(hash.to_string())
 }
 
 pub fn derive_images_pending(
@@ -558,7 +576,47 @@ pub fn derive_images_pending(
     ffmpeg: Option<&Path>,
     progress: Option<&dyn Fn(u64, u64)>,
 ) -> Result<DeriveStats, String> {
-    use rayon::prelude::*;
+    derive_images_pending_limit(
+        conn,
+        cache,
+        thumb_edge,
+        preview_long_edge,
+        ffmpeg,
+        progress,
+        None,
+    )
+}
+
+/// Runs at most one image for the derived-work coordinator. Keeping the
+/// bounded entry point here means the bulk test helper and the live scheduler
+/// share every checkpoint and failure rule.
+pub(crate) fn derive_next_image(
+    conn: &Connection,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
+) -> Result<DeriveStats, String> {
+    derive_images_pending_limit(
+        conn,
+        cache,
+        thumb_edge,
+        preview_long_edge,
+        ffmpeg,
+        None,
+        Some(1),
+    )
+}
+
+fn derive_images_pending_limit(
+    conn: &Connection,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
+    progress: Option<&dyn Fn(u64, u64)>,
+    limit: Option<usize>,
+) -> Result<DeriveStats, String> {
 
     let mut stats = DeriveStats::default();
 
@@ -578,11 +636,15 @@ pub fn derive_images_pending(
     } else {
         format!("(c.derived_at_utc IS NULL OR ({stale}))")
     };
+    let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     let mut stmt = conn
         .prepare(&format!(
             "SELECT c.hash, (SELECT p.abs_path FROM paths p \
              WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
-             FROM contents c WHERE c.kind = 'image' AND {pending_clause}"
+             FROM contents c WHERE c.kind = 'image' AND {pending_clause} \
+             AND EXISTS (SELECT 1 FROM paths p \
+                         WHERE p.content_hash = c.hash AND p.missing = 0) \
+             ORDER BY c.hash{limit_clause}"
         ))
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, String)> = stmt
@@ -596,95 +658,72 @@ pub fn derive_images_pending(
     let total = rows.len() as u64;
     let mut done = 0u64;
 
-    for chunk in rows.chunks(32) {
+    for (hash, path) in rows {
         if crate::scanner::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
 
         type DeriveOutcome = Result<(Option<String>, DerivedFacts), String>;
-        let results: Vec<(&String, &String, DeriveOutcome)> = chunk
-            .par_iter()
-            .map(|(hash, path)| {
-                if crate::scanner::cancelled() {
-                    (hash, path, Err(crate::scanner::CANCELLED.to_string()))
-                } else if ffmpeg.is_none() && needs_ffmpeg_decode(Path::new(path)) {
-                    (hash, path, Err(NEEDS_FFMPEG.to_string()))
-                } else if crate::scanner::is_provisional(hash) {
-                    // The decode reads every byte anyway — tee the REAL hash
-                    // out of the same read and derive under it; the writer
-                    // below promotes the identity.
-                    (
-                        hash,
-                        path,
-                        generate_for_image_teeing(
-                            Path::new(path),
-                            cache,
-                            thumb_edge,
-                            preview_long_edge,
-                            ffmpeg,
-                        )
-                        .map(|(real, facts)| (Some(real), facts)),
-                    )
-                } else {
-                    (
-                        hash,
-                        path,
-                        generate_for_image(
-                            Path::new(path),
-                            hash,
-                            cache,
-                            thumb_edge,
-                            preview_long_edge,
-                            ffmpeg,
-                        )
-                        .map(|facts| (None, facts)),
-                    )
-                }
-            })
-            .collect();
+        let outcome: DeriveOutcome = if ffmpeg.is_none() && needs_ffmpeg_decode(Path::new(&path)) {
+            Err(NEEDS_FFMPEG.to_string())
+        } else if crate::scanner::is_provisional(&hash) {
+            // The decode reads every byte anyway — tee the REAL hash out of
+            // the same read and derive under it; the writer then promotes the
+            // identity before checkpointing the derived facts.
+            generate_for_image_teeing(
+                Path::new(&path),
+                cache,
+                thumb_edge,
+                preview_long_edge,
+                ffmpeg,
+            )
+            .map(|(real, facts)| (Some(real), facts))
+        } else {
+            generate_for_image(
+                Path::new(&path),
+                &hash,
+                cache,
+                thumb_edge,
+                preview_long_edge,
+                ffmpeg,
+            )
+            .map(|facts| (None, facts))
+        };
 
-        for (hash, path, outcome) in results {
-            match outcome {
-                Ok((promoted, facts)) => {
-                    let key = match promoted {
-                        Some(real) => {
-                            crate::scanner::promote_identity(conn, cache, hash, &real)?;
-                            real
-                        }
-                        None => hash.clone(),
-                    };
-                    stats.derived += 1;
-                    record_derive_success(conn, &key, path, &facts)?;
-                }
-                Err(err) if err == crate::scanner::CANCELLED => {
-                    // Skipped by the cancel — no checkpoint, no issue; the
-                    // row stays pending for the next pass.
-                }
-                Err(err) if err == NEEDS_FFMPEG => {
-                    // Waiting on a tool, not a bad file: no issue row, and
-                    // the marker keeps it out of every pass until ffmpeg
-                    // arrives (without it the startup resume would fire on
-                    // work it cannot do, every launch).
-                    stats.blocked_no_ffmpeg += 1;
-                    conn.execute(
-                        "UPDATE contents SET derived_at_utc = ?2 WHERE hash = ?1",
-                        params![hash, NEEDS_FFMPEG],
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-                Err(err) => {
-                    stats.failed += 1;
-                    crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err)?;
-                    conn.execute(
-                        "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
-                        [hash],
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
+        match outcome {
+            Ok((promoted, facts)) => {
+                let key = match promoted {
+                    Some(real) => {
+                        crate::scanner::promote_identity(conn, cache, &hash, &real)?;
+                        real
+                    }
+                    None => hash.clone(),
+                };
+                stats.derived += 1;
+                record_derive_success(conn, &key, &path, &facts)?;
+            }
+            Err(err) if err == NEEDS_FFMPEG => {
+                // Waiting on a tool, not a bad file: no issue row. The marker
+                // keeps it inert until ffmpeg arrives and wakes the owner.
+                stats.blocked_no_ffmpeg += 1;
+                conn.execute(
+                    "UPDATE contents SET derived_at_utc = ?2 WHERE hash = ?1",
+                    params![hash, NEEDS_FFMPEG],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Err(err) => {
+                stats.failed += 1;
+                crate::index_store::upsert_issue(conn, Some(&path), "decode-error", &err)?;
+                conn.execute(
+                    "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
+                    [&hash],
+                )
+                .map_err(|e| e.to_string())?;
             }
         }
 
-        done += chunk.len() as u64;
+        done += 1;
         if let Some(report) = progress {
             report(done.min(total), total);
         }
