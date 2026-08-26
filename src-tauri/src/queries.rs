@@ -598,7 +598,7 @@ fn row_to_copy(
     ))
 }
 
-fn month_bounds(month: &str, display_tz: Tz) -> Result<Option<(i64, i64)>, String> {
+pub(crate) fn month_bounds(month: &str, display_tz: Tz) -> Result<Option<(i64, i64)>, String> {
     if month == "undated" {
         return Ok(None);
     }

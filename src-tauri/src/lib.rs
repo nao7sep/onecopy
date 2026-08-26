@@ -1073,6 +1073,31 @@ fn note_user_activity() {
     derived_work::note_activity();
 }
 
+/// Ephemeral viewport hints for the fixed derived-work coordinator. Output
+/// facts remain the only queue; closing the app loses nothing that must be
+/// recovered.
+#[tauri::command]
+fn prioritize_derived_work(
+    selected_hash: Option<String>,
+    visible_hashes: Vec<String>,
+    section_kind: Option<String>,
+    section_month: Option<String>,
+) -> Result<(), String> {
+    let section = match (section_kind, section_month) {
+        (Some(kind), Some(month)) if matches!(kind.as_str(), "image" | "video") => {
+            let bounds = queries::month_bounds(&month, display_timezone())?;
+            Some(derived_work::SectionPriority {
+                kind,
+                start_ms: bounds.map(|value| value.0),
+                end_ms: bounds.map(|value| value.1),
+            })
+        }
+        _ => None,
+    };
+    derived_work::set_priority(selected_hash, visible_hashes, section);
+    Ok(())
+}
+
 #[tauri::command]
 fn transcribe_cancel() -> bool {
     transcription::request_cancel()
@@ -1630,6 +1655,7 @@ pub fn run() {
             reveal_data_subdir,
             open_item_externally,
             note_user_activity,
+            prioritize_derived_work,
             set_window_simple_fullscreen,
             ensure_preview,
             re_resolve_all,

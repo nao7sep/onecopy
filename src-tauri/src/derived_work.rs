@@ -8,11 +8,12 @@
 //! for each pass, so installing a tool or changing a feature takes effect on
 //! the next wake without restarting either indexing or the app.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
 
-use rusqlite::Connection;
+use rusqlite::{params_from_iter, Connection};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
@@ -25,11 +26,29 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 static SIMILARITY_DIRTY: AtomicBool = AtomicBool::new(true);
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 static MEDIA_WORK: Mutex<()> = Mutex::new(());
+static PRIORITY: LazyLock<Mutex<PriorityHints>> =
+    LazyLock::new(|| Mutex::new(PriorityHints::default()));
 
 const IDLE_AFTER_MS: i64 = 60_000;
 const POLL_SECONDS: u64 = 15;
 const IMAGE_BATCH: usize = 64;
 const VIDEO_BATCH: usize = 8;
+const PRIORITY_BATCH: usize = 64;
+const SECTION_HINT_LIMIT: usize = 256;
+
+#[derive(Clone, Default)]
+struct PriorityHints {
+    selected: Option<String>,
+    visible: Vec<String>,
+    section: Option<SectionPriority>,
+}
+
+#[derive(Clone)]
+pub struct SectionPriority {
+    pub kind: String,
+    pub start_ms: Option<i64>,
+    pub end_ms: Option<i64>,
+}
 
 pub struct Settings {
     pub data_root: PathBuf,
@@ -152,6 +171,21 @@ pub fn wake(index_changed: bool) {
     }
 }
 
+/// Replaces the current UI priority hints. They are deliberately ephemeral:
+/// output absence remains the queue and a restart needs no job recovery.
+pub fn set_priority(
+    selected: Option<String>,
+    visible: Vec<String>,
+    section: Option<SectionPriority>,
+) {
+    if let Ok(mut hints) = PRIORITY.lock() {
+        hints.selected = selected;
+        hints.visible = visible.into_iter().take(SECTION_HINT_LIMIT).collect();
+        hints.section = section;
+    }
+    wake(false);
+}
+
 pub fn start(app: AppHandle) {
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
@@ -228,6 +262,68 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
     let settings = settings_from_config(config.as_ref(), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
+
+    let hints = PRIORITY
+        .lock()
+        .map(|hints| hints.clone())
+        .unwrap_or_default();
+    let priority = priority_candidates(
+        &conn,
+        &settings,
+        hints.selected.as_deref(),
+        &hints.visible,
+        hints.section.as_ref(),
+    )?;
+    let mut priority_done = 0usize;
+    for hash in priority {
+        if !available() {
+            return Ok(false);
+        }
+        let image = {
+            let _claim = MEDIA_WORK
+                .lock()
+                .map_err(|_| "derived media owner is unavailable".to_string())?;
+            crate::preview::derive_image_hash(
+                &conn,
+                &cache,
+                settings.thumb_edge,
+                settings.preview_long_edge,
+                settings.ffmpeg.as_deref(),
+                &hash,
+            )?
+        };
+        if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
+            if image.derived > 0 {
+                SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
+            }
+            emit_progress(app, "previews", None);
+            let _ = app.emit("derived://updated", json!({ "class": "previews" }));
+            priority_done += 1;
+        } else {
+            let video = {
+                let _claim = MEDIA_WORK
+                    .lock()
+                    .map_err(|_| "derived media owner is unavailable".to_string())?;
+                crate::video::derive_video_hash(
+                    &conn,
+                    &cache,
+                    settings.ffmpeg.as_deref(),
+                    &settings.temp_dir,
+                    settings.thumb_edge,
+                    settings.preview_long_edge,
+                    &hash,
+                )?
+            };
+            if video.derived + video.failed > 0 {
+                emit_progress(app, "video-posters", None);
+                let _ = app.emit("derived://updated", json!({ "class": "video-posters" }));
+                priority_done += 1;
+            }
+        }
+        if priority_done == PRIORITY_BATCH {
+            return Ok(true);
+        }
+    }
 
     let mut image_budget_full = false;
     for index in 0..IMAGE_BATCH {
@@ -357,6 +453,149 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
 
     let _ = app.emit("derived://quiet", json!({}));
     Ok(false)
+}
+
+pub fn priority_candidates(
+    conn: &Connection,
+    settings: &Settings,
+    selected: Option<&str>,
+    visible: &[String],
+    section: Option<&SectionPriority>,
+) -> Result<Vec<String>, String> {
+    let mut hinted = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push = |hash: &str| {
+        if seen.insert(hash.to_string()) {
+            hinted.push(hash.to_string());
+        }
+    };
+    if let Some(selected) = selected {
+        push(selected);
+    }
+    for hash in visible {
+        push(hash);
+    }
+
+    let mut hashes = pending_hint_hashes(conn, settings, &hinted)?;
+    let mut seen: HashSet<String> = hashes.iter().cloned().collect();
+
+    let Some(section) = section else {
+        return Ok(hashes);
+    };
+    if !matches!(section.kind.as_str(), "image" | "video") {
+        return Ok(hashes);
+    }
+
+    let stale = format!(
+        "c.derived_version < {} AND c.derived_at_utc NOT IN ('failed', '{}')",
+        crate::preview::DERIVE_VERSION,
+        crate::preview::NEEDS_FFMPEG,
+    );
+    let image_pending = if settings.ffmpeg.is_some() {
+        format!(
+            "(c.derived_at_utc IS NULL OR c.derived_at_utc = '{}' OR ({stale}))",
+            crate::preview::NEEDS_FFMPEG,
+        )
+    } else {
+        format!("(c.derived_at_utc IS NULL OR ({stale}))")
+    };
+    let video_pending = if settings.ffmpeg.is_some() {
+        format!(
+            "(c.derived_at_utc IS NULL OR \
+             (c.derived_version < {} AND c.derived_at_utc != 'failed'))",
+            crate::preview::DERIVE_VERSION,
+        )
+    } else {
+        "0".to_string()
+    };
+    let time_clause = if section.start_ms.is_some() {
+        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
+    } else {
+        "AND l.resolved_utc_ms IS NULL"
+    };
+    let sql = format!(
+        "SELECT l.content_hash FROM logical_contents l \
+         JOIN contents c ON c.hash = l.content_hash \
+         WHERE l.kind = ?1 {time_clause} \
+           AND ((l.kind = 'image' AND {image_pending}) \
+                OR (l.kind = 'video' AND {video_pending})) \
+         ORDER BY l.resolved_utc_ms, l.representative_path_id \
+         LIMIT {SECTION_HINT_LIMIT}"
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let section_hashes: Vec<String> = match (section.start_ms, section.end_ms) {
+        (Some(start), Some(end)) => statement
+            .query_map(rusqlite::params![section.kind, start, end], |row| {
+                row.get(0)
+            })
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .collect(),
+        _ => statement
+            .query_map([&section.kind], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .collect(),
+    };
+    for hash in section_hashes {
+        if seen.insert(hash.clone()) {
+            hashes.push(hash);
+        }
+    }
+    Ok(hashes)
+}
+
+fn pending_hint_hashes(
+    conn: &Connection,
+    settings: &Settings,
+    hinted: &[String],
+) -> Result<Vec<String>, String> {
+    if hinted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = (1..=hinted.len())
+        .map(|index| format!("(?{index}, {})", index - 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let stale = format!(
+        "c.derived_version < {} AND c.derived_at_utc NOT IN ('failed', '{}')",
+        crate::preview::DERIVE_VERSION,
+        crate::preview::NEEDS_FFMPEG,
+    );
+    let image_pending = if settings.ffmpeg.is_some() {
+        format!(
+            "(c.derived_at_utc IS NULL OR c.derived_at_utc = '{}' OR ({stale}))",
+            crate::preview::NEEDS_FFMPEG,
+        )
+    } else {
+        format!("(c.derived_at_utc IS NULL OR ({stale}))")
+    };
+    let video_pending = if settings.ffmpeg.is_some() {
+        format!(
+            "(c.derived_at_utc IS NULL OR \
+             (c.derived_version < {} AND c.derived_at_utc != 'failed'))",
+            crate::preview::DERIVE_VERSION,
+        )
+    } else {
+        "0".to_string()
+    };
+    let sql = format!(
+        "WITH hinted(hash, priority) AS (VALUES {values}) \
+         SELECT h.hash FROM hinted h \
+         JOIN contents c ON c.hash = h.hash \
+         WHERE EXISTS (SELECT 1 FROM paths p \
+                       WHERE p.content_hash = c.hash AND p.missing = 0) \
+           AND ((c.kind = 'image' AND {image_pending}) \
+                OR (c.kind = 'video' AND {video_pending})) \
+         ORDER BY h.priority"
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(hinted), |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
 }
 
 fn emit_progress(app: &AppHandle, class: &str, counts: Option<(u64, u64)>) {

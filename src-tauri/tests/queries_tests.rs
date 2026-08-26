@@ -12,21 +12,26 @@ use onecopy_lib::index_store;
 use onecopy_lib::preview;
 use onecopy_lib::queries;
 
-fn db() -> Connection {
-    let dir = std::env::temp_dir().join(format!(
-        "onecopy-queries-{}",
-        std::process::id() as u64 + rand_suffix()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    index_store::open(&dir.join("index.sqlite3")).unwrap()
+struct TestDb {
+    _dir: tempfile::TempDir,
+    conn: Connection,
 }
 
-// A deterministic-enough suffix without pulling in a rng: the connection is
-// per-test and the file is disposable.
-fn rand_suffix() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    N.fetch_add(1, Ordering::SeqCst)
+impl std::ops::Deref for TestDb {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.conn
+    }
+}
+
+fn db() -> TestDb {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-queries-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    TestDb { _dir: dir, conn }
 }
 
 /// One image content row with a live path in January 2026 UTC.

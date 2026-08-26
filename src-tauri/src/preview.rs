@@ -584,6 +584,7 @@ pub fn derive_images_pending(
         ffmpeg,
         progress,
         None,
+        None,
     )
 }
 
@@ -605,6 +606,29 @@ pub(crate) fn derive_next_image(
         ffmpeg,
         None,
         Some(1),
+        None,
+    )
+}
+
+/// Runs one pending image only when it matches `hash`. Priority remains an
+/// ephemeral coordinator concern; every output/checkpoint rule stays here.
+pub(crate) fn derive_image_hash(
+    conn: &Connection,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
+    hash: &str,
+) -> Result<DeriveStats, String> {
+    derive_images_pending_limit(
+        conn,
+        cache,
+        thumb_edge,
+        preview_long_edge,
+        ffmpeg,
+        None,
+        Some(1),
+        Some(hash),
     )
 }
 
@@ -616,6 +640,7 @@ fn derive_images_pending_limit(
     ffmpeg: Option<&Path>,
     progress: Option<&dyn Fn(u64, u64)>,
     limit: Option<usize>,
+    only_hash: Option<&str>,
 ) -> Result<DeriveStats, String> {
 
     let mut stats = DeriveStats::default();
@@ -644,11 +669,12 @@ fn derive_images_pending_limit(
              FROM contents c WHERE c.kind = 'image' AND {pending_clause} \
              AND EXISTS (SELECT 1 FROM paths p \
                          WHERE p.content_hash = c.hash AND p.missing = 0) \
+             AND (?1 IS NULL OR c.hash = ?1) \
              ORDER BY c.hash{limit_clause}"
         ))
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?)))
+        .query_map([only_hash], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .filter_map(|(hash, path)| path.map(|p| (hash, p)))

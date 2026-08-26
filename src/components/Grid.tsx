@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   SORT_ORDERS,
   extLabel,
@@ -20,6 +21,7 @@ import { formatLocalMinute } from "../utils/displayTime";
 import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { log, toErrorFields } from "../repositories";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -391,6 +393,7 @@ export default function Grid({
 
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
+  const selectedSection = useItemsStore((s) => s.selected);
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
@@ -532,6 +535,24 @@ export default function Grid({
   const totalRows = Math.ceil(sorted.length / Math.max(1, columns));
   const win = visibleWindow(scrollTop, viewportHeight, rowHeight, totalRows);
   const visible = sorted.slice(win.startRow * columns, win.endRow * columns);
+  const visibleHashes = visible.flatMap((item) => (item.hash === null ? [] : [item.hash]));
+  const visibleHashSignature = visibleHashes.join("\n");
+  const selectedHash =
+    selectedItem === null
+      ? null
+      : (items.find((item) => itemKey(item) === selectedItem)?.hash ?? null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void invoke("prioritize_derived_work", {
+        selectedHash,
+        visibleHashes,
+        sectionKind: selectedSection?.kind ?? null,
+        sectionMonth: selectedSection?.month ?? null,
+      }).catch((error) => log.warn("derived priority hint failed", toErrorFields(error)));
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [selectedHash, selectedSection?.kind, selectedSection?.month, visibleHashSignature]);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
     // Space = LOOK (the agreed model): toggle the preview, through the one

@@ -135,6 +135,7 @@ pub fn derive_videos_pending(
         thumb_edge,
         preview_long_edge,
         None,
+        None,
     )
 }
 
@@ -155,6 +156,29 @@ pub(crate) fn derive_next_video(
         thumb_edge,
         preview_long_edge,
         Some(1),
+        None,
+    )
+}
+
+/// Runs one pending poster only when it matches `hash`.
+pub(crate) fn derive_video_hash(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: Option<&Path>,
+    temp_dir: &Path,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    hash: &str,
+) -> Result<VideoDeriveStats, String> {
+    derive_videos_pending_limit(
+        conn,
+        cache,
+        ffmpeg,
+        temp_dir,
+        thumb_edge,
+        preview_long_edge,
+        Some(1),
+        Some(hash),
     )
 }
 
@@ -166,6 +190,7 @@ fn derive_videos_pending_limit(
     thumb_edge: u32,
     preview_long_edge: u32,
     limit: Option<usize>,
+    only_hash: Option<&str>,
 ) -> Result<VideoDeriveStats, String> {
     let mut stats = VideoDeriveStats::default();
     let Some(ffmpeg) = ffmpeg else {
@@ -188,13 +213,14 @@ fn derive_videos_pending_limit(
                   OR (c.derived_version < {} AND c.derived_at_utc != 'failed')) \
              AND EXISTS (SELECT 1 FROM paths p \
                          WHERE p.content_hash = c.hash AND p.missing = 0) \
+             AND (?1 IS NULL OR c.hash = ?1) \
              ORDER BY c.hash{}",
             crate::preview::DERIVE_VERSION,
             limit_clause
         ))
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([only_hash], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
