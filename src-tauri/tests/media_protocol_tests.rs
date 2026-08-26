@@ -94,7 +94,9 @@ fn a_small_rangeless_file_is_served_whole() {
 
 #[test]
 fn an_empty_file_does_not_underflow() {
-    assert_eq!(resolve_range(None, 0, true), (0, 0, 200));
+    let (start, end, status) = resolve_range(None, 0, true);
+    assert_eq!((start, end, status), (0, 0, 200));
+    assert_eq!(response_length(0, start, end), 0, "the handler reads no byte");
 }
 
 #[test]

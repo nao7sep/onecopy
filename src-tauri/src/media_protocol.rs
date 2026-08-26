@@ -1,11 +1,147 @@
-//! The pure half of the media-serving protocols: HTTP Range parsing, the
-//! extension→content-type map, and magic-byte sniffing for cache entries.
-//! Extracted from the protocol handlers in lib.rs (which is the Tauri
-//! bootstrap and carries no test module) so the fiddly decisions are unit
-//! tested — a Range off-by-one surfaces as a video that mis-seeks, which is
-//! miserable to attribute from the player's behavior.
+//! The media-serving protocol authority: indexed-original and derived-cache
+//! I/O plus the pure Range, content-type, and magic-byte policy they share.
+//! The Tauri bootstrap only registers these handlers.
+
+use std::io::{Read, Seek, SeekFrom};
+
+use serde_json::json;
 
 use crate::extensions;
+
+fn not_found() -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(404)
+        .body(Vec::new())
+        .expect("static response")
+}
+
+/// Serves an original by indexed content hash or `path-<id>`. The webview
+/// never receives a filesystem path; large streamable files are range-capped
+/// so this synchronous protocol cannot read them wholesale on the UI thread.
+pub(crate) fn serve_original(
+    request: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let warn_404 = |reason: &str, detail: String| {
+        crate::logging::warn(
+            "mediafile request failed",
+            json!({ "reason": reason, "detail": detail }),
+        );
+        not_found()
+    };
+    let Some(data_root) = crate::DATA_ROOT.get() else {
+        return warn_404("data root unset", String::new());
+    };
+    let key = request.uri().path().trim_start_matches('/');
+    if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+        return not_found();
+    }
+
+    let conn = match crate::index_store::open(
+        &data_root.join(crate::storage::INDEX_DB_FILE_NAME),
+    ) {
+        Ok(conn) => conn,
+        Err(error) => return warn_404("index open failed", error),
+    };
+    let path: Option<String> = match key.strip_prefix("path-") {
+        Some(id) => id.parse::<i64>().ok().and_then(|id| {
+            conn.query_row(
+                "SELECT abs_path FROM paths WHERE id = ?1 AND missing = 0",
+                [id],
+                |row| row.get(0),
+            )
+            .ok()
+        }),
+        None => conn
+            .query_row(
+                "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+                [key],
+                |row| row.get(0),
+            )
+            .ok(),
+    };
+    let Some(path) = path else {
+        return warn_404("no live path for key", key.to_string());
+    };
+
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) => return warn_404("original unreadable", format!("{path}: {error}")),
+    };
+    let total = match file.metadata().map(|metadata| metadata.len()) {
+        Ok(total) => total,
+        Err(error) => return warn_404("metadata failed", format!("{path}: {error}")),
+    };
+    let content_type = content_type_for(&path);
+    let range_header = request
+        .headers()
+        .get("Range")
+        .and_then(|value| value.to_str().ok());
+    let (start, end, status) = resolve_range(range_header, total, is_streamable(content_type));
+
+    // `resolve_range` represents an empty 200 as (0, 0, 200). It is a span
+    // sentinel, not one byte to read.
+    let length = response_length(total, start, end);
+    let mut bytes = vec![0u8; length as usize];
+    if length > 0 {
+        if let Err(error) = file
+            .seek(SeekFrom::Start(start))
+            .and_then(|_| file.read_exact(&mut bytes))
+        {
+            return warn_404("read failed", format!("{path}: {error}"));
+        }
+    }
+
+    let mut builder = tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .header("Accept-Ranges", "bytes")
+        .header("Content-Length", length.to_string());
+    if status == 206 {
+        builder = builder.header("Content-Range", format!("bytes {start}-{end}/{total}"));
+    }
+    builder.body(bytes).unwrap_or_else(|_| not_found())
+}
+
+/// Serves immutable content-addressed thumbnails, previews, full-resolution
+/// stills, and video strip frames. Cache misses are expected 404s.
+pub(crate) fn serve_cache(
+    request: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let Some(root) = crate::cache_root() else {
+        return not_found();
+    };
+    let cache = crate::preview::CachePaths::new(root);
+    let path = request.uri().path().trim_start_matches('/');
+    let file = if let Some(hash) = path.strip_prefix("thumb-") {
+        cache.thumb(hash)
+    } else if let Some(hash) = path.strip_prefix("preview-") {
+        cache.preview(hash)
+    } else if let Some(hash) = path.strip_prefix("fullres-") {
+        cache.fullres(hash)
+    } else if let Some(rest) = path.strip_prefix("strip-") {
+        match rest.rsplit_once('-') {
+            Some((hash, index)) => match index.parse::<u32>() {
+                Ok(index) => crate::video::strip_path(&cache, hash, index),
+                Err(_) => return not_found(),
+            },
+            None => return not_found(),
+        }
+    } else {
+        return not_found();
+    };
+    match std::fs::read(file) {
+        Ok(bytes) => {
+            let content_type = sniff_image_content_type(&bytes);
+            tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", content_type)
+                .header("Cache-Control", "public, max-age=31536000, immutable")
+                .body(bytes)
+                .unwrap_or_else(|_| not_found())
+        }
+        Err(_) => not_found(),
+    }
+}
 
 /// `bytes=start-end` / `bytes=start-` / `bytes=-suffix`, single range only.
 pub fn parse_byte_range(header: &str, total: u64) -> Option<(u64, u64)> {
@@ -127,5 +263,15 @@ pub fn resolve_range(
             (0, HEAD_CHUNK.min(total) - 1, 206)
         }
         None => (0, total - 1, 200),
+    }
+}
+
+/// Length of the resolved response span. `resolve_range` uses `(0, 0)` as the
+/// empty-file sentinel, so ordinary inclusive-end arithmetic does not apply.
+pub fn response_length(total: u64, start: u64, end: u64) -> u64 {
+    if total == 0 {
+        0
+    } else {
+        end - start + 1
     }
 }

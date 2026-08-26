@@ -187,169 +187,6 @@ fn cache_root() -> Option<std::path::PathBuf> {
         .map(|root| root.join(storage::CACHE_DIR_NAME))
 }
 
-// Serves ORIGINAL files by content hash (`mediafile://localhost/<hash>`) with
-// single-range support — what makes <video> seeking and the 100% zoom view
-// work. Only hashes present in the index resolve; the path comes from the DB,
-// so the webview never handles filesystem paths. Large files without a Range
-// get a 206 head-chunk to push players into ranged loading instead of a
-// whole-file read.
-fn serve_mediafile(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let not_found = || {
-        tauri::http::Response::builder()
-            .status(404)
-            .body(Vec::new())
-            .expect("static response")
-    };
-    // None of these branches is expected control flow (unlike a cache miss in
-    // serve_mediacache), so each failure leaves a log line — an unmounted
-    // drive otherwise reads as blank views with a silent session log.
-    let warn_404 = |reason: &str, detail: String| {
-        logging::warn(
-            "mediafile request failed",
-            json!({ "reason": reason, "detail": detail }),
-        );
-        not_found()
-    };
-    let Some(data_root) = DATA_ROOT.get() else {
-        return warn_404("data root unset", String::new());
-    };
-    let key = request.uri().path().trim_start_matches('/');
-    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-        return not_found(); // malformed request, not a filesystem failure
-    }
-
-    let conn = match index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) {
-        Ok(conn) => conn,
-        Err(err) => return warn_404("index open failed", err),
-    };
-    // Two key forms, both DB lookups so the webview never holds a path:
-    // a content hash, or `path-<id>` for files that legitimately have no
-    // hash — an audio memo or document with a unique size is never
-    // content-read, so hash-only serving could not reach it at all.
-    let path: Option<String> = match key.strip_prefix("path-") {
-        Some(id) => id.parse::<i64>().ok().and_then(|id| {
-            conn.query_row(
-                "SELECT abs_path FROM paths WHERE id = ?1 AND missing = 0",
-                [id],
-                |r| r.get(0),
-            )
-            .ok()
-        }),
-        None => conn
-            .query_row(
-                "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-                [key],
-                |r| r.get(0),
-            )
-            .ok(),
-    };
-    let Some(path) = path else {
-        return warn_404("no live path for key", key.to_string());
-    };
-
-    let mut file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(err) => return warn_404("original unreadable", format!("{path}: {err}")),
-    };
-    let total = match file.metadata().map(|m| m.len()) {
-        Ok(total) => total,
-        Err(err) => return warn_404("metadata failed", format!("{path}: {err}")),
-    };
-
-    let content_type = content_type_for(&path);
-    let range_header = request
-        .headers()
-        .get("Range")
-        .and_then(|v| v.to_str().ok());
-
-    // The span decision is pure and unit-tested in media_protocol: it caps
-    // every span (a webview's `bytes=0-` otherwise resolves to the whole file,
-    // and this handler is synchronous, so wry runs it on the main thread), and
-    // it applies the head-chunk shortcut only to streamable content — a
-    // truncated image is a broken tile, not a partial one.
-    let (start, end, status) =
-        resolve_range(range_header, total, is_streamable(content_type));
-
-    let length = end - start + 1;
-    let mut bytes = vec![0u8; length as usize];
-    if let Err(err) = file
-        .seek(SeekFrom::Start(start))
-        .and_then(|_| file.read_exact(&mut bytes))
-    {
-        return warn_404("read failed", format!("{path}: {err}"));
-    }
-
-    let mut builder = tauri::http::Response::builder()
-        .status(status)
-        .header("Content-Type", content_type)
-        .header("Accept-Ranges", "bytes")
-        .header("Content-Length", length.to_string());
-    if status == 206 {
-        builder = builder.header("Content-Range", format!("bytes {start}-{end}/{total}"));
-    }
-    builder.body(bytes).unwrap_or_else(|_| not_found())
-}
-
-// Range parsing, content types, and byte sniffing live in media_protocol.rs
-// (pure and unit-tested there; lib.rs is the bootstrap and has no tests).
-use media_protocol::{
-    content_type_for, is_streamable, resolve_range, sniff_image_content_type,
-};
-
-// Serves `mediacache://localhost/thumb-<hash>` and `/preview-<hash>` straight
-// from the hash-keyed cache (http://mediacache.localhost/… on Windows). Cache
-// entries are content-addressed, so responses are immutable-cacheable; misses
-// are plain 404s (the grid falls back to a placeholder).
-fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
-    let not_found = || {
-        tauri::http::Response::builder()
-            .status(404)
-            .body(Vec::new())
-            .expect("static response")
-    };
-    let Some(root) = cache_root() else {
-        return not_found();
-    };
-    let cache = preview::CachePaths::new(root);
-    let path = request.uri().path().trim_start_matches('/');
-    let file = if let Some(hash) = path.strip_prefix("thumb-") {
-        cache.thumb(hash)
-    } else if let Some(hash) = path.strip_prefix("preview-") {
-        cache.preview(hash)
-    } else if let Some(hash) = path.strip_prefix("fullres-") {
-        cache.fullres(hash)
-    } else if let Some(rest) = path.strip_prefix("strip-") {
-        // strip-<hash>-<index>
-        match rest.rsplit_once('-') {
-            Some((hash, index)) => match index.parse::<u32>() {
-                Ok(index) => video::strip_path(&cache, hash, index),
-                Err(_) => return not_found(),
-            },
-            None => return not_found(),
-        }
-    } else {
-        return not_found();
-    };
-    match std::fs::read(&file) {
-        Ok(bytes) => {
-            // Preview entries can be byte-copies of originals (the derive
-            // fast path when an image already fits the preview edge), so the
-            // .webp cache name may hold JPEG/PNG/GIF bytes — sniff the magic
-            // instead of trusting the extension.
-            let content_type = sniff_image_content_type(&bytes);
-            tauri::http::Response::builder()
-                .status(200)
-                .header("Content-Type", content_type)
-                .header("Cache-Control", "public, max-age=31536000, immutable")
-                .body(bytes)
-                .unwrap_or_else(|_| not_found())
-        }
-        Err(_) => not_found(),
-    }
-}
-
 // Launches the index pipeline (walk → hash → extract → resolve → pair) on a
 // worker thread. Progress arrives as `scan://progress` events,
 // completion as `scan://done` (with the summary) or `scan://error`. Returns
@@ -1531,8 +1368,12 @@ pub fn run() {
         .plugin(instance_owner::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .register_uri_scheme_protocol("mediacache", |_ctx, request| serve_mediacache(&request))
-        .register_uri_scheme_protocol("mediafile", |_ctx, request| serve_mediafile(&request))
+        .register_uri_scheme_protocol("mediacache", |_ctx, request| {
+            media_protocol::serve_cache(&request)
+        })
+        .register_uri_scheme_protocol("mediafile", |_ctx, request| {
+            media_protocol::serve_original(&request)
+        })
         .setup(move |app| {
             // Everything in this closure runs BEFORE the window appears, so it
             // is the launch latency. Each phase logs its cost so a slow start
