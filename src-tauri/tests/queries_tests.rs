@@ -134,6 +134,35 @@ fn a_missing_copy_does_not_count_toward_the_badge() {
 }
 
 #[test]
+fn logical_summary_tracks_path_date_name_and_presence_changes() {
+    let conn = db();
+    seed_image(&conn, "hmoving", Some("2026-01-02T03:04:05.000Z"), "early.jpg");
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, mtime_ms, \
+         content_hash, resolved_utc_ms, resolved_source, date_only, missing, companion_of) \
+         VALUES ('/backup/later.jpg', '/backup', 'later.jpg', 'later', 'jpg', 'image', 100, 0, \
+                 'hmoving', ?1, 'metadata', 0, 0, NULL)",
+        params![1_769_904_000_000i64], // 2026-02-01T00:00:00Z
+    )
+    .unwrap();
+
+    let january = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    assert_eq!(january.len(), 1);
+    assert_eq!(january[0].copy_count, 2);
+    assert!(january[0].names_differ);
+
+    conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'early.jpg'", [])
+        .unwrap();
+    assert!(queries::section_items(&conn, "image", "2026-01", Tz::UTC)
+        .unwrap()
+        .is_empty());
+    let february = queries::section_items(&conn, "image", "2026-02", Tz::UTC).unwrap();
+    assert_eq!(february.len(), 1, "the remaining copy defines the logical month");
+    assert_eq!(february[0].copy_count, 1);
+    assert!(!february[0].names_differ);
+}
+
+#[test]
 fn issues_page_oldest_first_with_the_full_total() {
     // The modal's contract: OLDEST first (the longest-standing condition
     // leads — the developer's call), the total counting every row.
