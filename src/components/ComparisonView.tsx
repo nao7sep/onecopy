@@ -38,6 +38,7 @@ export default function ComparisonView() {
   const close = useComparisonStore((s) => s.close);
   const pendingPermanentCommit = useComparisonStore((s) => s.pendingPermanentCommit);
   const pendingCommitState = useComparisonStore((s) => s.pendingCommit);
+  const commitFailure = useComparisonStore((s) => s.commitFailure);
 
   useEffect(() => {
     if (!open) return;
@@ -178,6 +179,17 @@ export default function ComparisonView() {
       {busy ? (
         <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
           Working…
+        </footer>
+      ) : null}
+      {commitFailure !== null ? (
+        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-danger/30 bg-danger-surface px-3 py-1 text-xs text-danger">
+          <span>{commitFailure.message}</span>
+          <button
+            className="rounded border border-danger/40 px-2 py-0.5 hover:bg-danger/10"
+            onClick={() => void commitTurn(commitFailure.permanent)}
+          >
+            Retry remaining
+          </button>
         </footer>
       ) : null}
     </div>
