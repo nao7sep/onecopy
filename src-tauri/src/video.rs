@@ -121,7 +121,8 @@ pub struct StripDeriveStats {
     pub completed: u64,
     pub failed: u64,
     pub attempted: u64,
-    pub page_full: bool,
+    pub candidates_found: bool,
+    pub last_attempted_hash: Option<String>,
 }
 
 /// The video half of the SCAN derive pass: duration + poster only (through
@@ -319,15 +320,16 @@ pub fn derive_strips_pending(
     ffmpeg: &Path,
     temp_dir: &Path,
     strip: &StripConfig,
+    after_hash: Option<&str>,
     stop: &dyn Fn() -> bool,
     progress: &dyn Fn(u64, u64),
 ) -> Result<StripDeriveStats, String> {
     // not recorded: ffmpeg strip-frame staging lives in temp/ and produces
     // reconstructible binary cache entries.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
-    let rows = strip_candidates(conn, STRIP_CANDIDATE_PAGE_SIZE)?;
+    let rows = strip_candidates(conn, after_hash, STRIP_CANDIDATE_PAGE_SIZE)?;
     let mut stats = StripDeriveStats {
-        page_full: rows.len() == STRIP_CANDIDATE_PAGE_SIZE,
+        candidates_found: !rows.is_empty(),
         ..StripDeriveStats::default()
     };
     let total = rows.len() as u64;
@@ -336,6 +338,7 @@ pub fn derive_strips_pending(
             break;
         }
         stats.attempted += 1;
+        stats.last_attempted_hash = Some(hash.clone());
         let src = Path::new(&path);
         let duration_ms = duration_ms.max(0) as u64;
         let count = strip_frame_count(duration_ms, strip);
@@ -404,6 +407,7 @@ pub fn derive_strips_pending(
 /// materializes the whole physical-path table.
 pub fn strip_candidates(
     conn: &Connection,
+    after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, i64, String)>, String> {
     let mut stmt = conn
@@ -415,13 +419,14 @@ pub fn strip_candidates(
              WHERE l.kind = 'video' AND c.strip_frames IS NULL \
                AND c.duration_ms IS NOT NULL \
                AND c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
+               AND l.content_hash > ?1 \
                AND p.missing = 0 \
-             ORDER BY l.resolved_utc_ms DESC, l.content_hash \
-             LIMIT ?1",
+             ORDER BY l.content_hash \
+             LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([limit as i64], |row| {
+        .query_map(rusqlite::params![after_hash.unwrap_or(""), limit as i64], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
         .map_err(|e| e.to_string())?

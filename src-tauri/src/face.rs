@@ -284,7 +284,8 @@ pub struct FaceStats {
     pub scored: u64,
     pub failed: u64,
     pub attempted: u64,
-    pub page_full: bool,
+    pub candidates_found: bool,
+    pub last_attempted_hash: Option<String>,
 }
 
 pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;
@@ -299,17 +300,18 @@ pub fn face_scores_pending(
     cache: &crate::preview::CachePaths,
     models: Option<(&Path, &Path)>,
     mut on_progress: impl FnMut(u64, u64),
+    after_hash: Option<&str>,
     stop: &dyn Fn() -> bool,
 ) -> Result<FaceStats, String> {
     let mut stats = FaceStats::default();
     let Some((detector_model, emotion_model)) = models else {
         return Ok(stats);
     };
-    let pending = face_candidates(conn, FACE_CANDIDATE_PAGE_SIZE)?;
+    let pending = face_candidates(conn, after_hash, FACE_CANDIDATE_PAGE_SIZE)?;
     if pending.is_empty() {
         return Ok(stats);
     }
-    stats.page_full = pending.len() == FACE_CANDIDATE_PAGE_SIZE;
+    stats.candidates_found = true;
 
     let mut scorer = FaceScorer::load(detector_model, emotion_model)?;
     let total = pending.len() as u64;
@@ -323,6 +325,7 @@ pub fn face_scores_pending(
             break;
         }
         stats.attempted += 1;
+        stats.last_attempted_hash = Some(hash.clone());
         let preview = cache.preview(&hash);
         let outcome = std::fs::read(&preview)
             .map_err(|e| e.to_string())
@@ -352,6 +355,7 @@ pub fn face_scores_pending(
 /// independent of total library size.
 pub fn face_candidates(
     conn: &rusqlite::Connection,
+    after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, String)>, String> {
     let mut stmt = conn
@@ -364,14 +368,19 @@ pub fn face_candidates(
              WHERE l.kind = 'image' AND r.face_state IS NULL \
                AND c.derived_at_utc IS NOT NULL \
                AND c.derived_at_utc NOT IN ('failed', ?1) \
+               AND l.content_hash > ?2 \
                AND p.missing = 0 \
-             ORDER BY l.resolved_utc_ms DESC, l.content_hash \
-             LIMIT ?2",
+             ORDER BY l.content_hash \
+             LIMIT ?3",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(
-            rusqlite::params![crate::preview::NEEDS_FFMPEG, limit as i64],
+            rusqlite::params![
+                crate::preview::NEEDS_FFMPEG,
+                after_hash.unwrap_or(""),
+                limit as i64
+            ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|e| e.to_string())?

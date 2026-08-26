@@ -104,6 +104,7 @@ fn live_video_derive() {
         &ffmpeg,
         &root.join("temp"),
         &config(),
+        None,
         &|| false,
         &|_, _| {},
     )

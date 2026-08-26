@@ -516,11 +516,21 @@ fn live_photo_repair_candidates_are_a_stable_bounded_page() {
 
     let rows = scanner::live_photo_repair_candidates(
         &conn,
+        0,
         scanner::LIVE_PHOTO_REPAIR_PAGE_SIZE,
     )
     .unwrap();
     assert_eq!(rows.len(), scanner::LIVE_PHOTO_REPAIR_PAGE_SIZE);
     assert!(rows.windows(2).all(|pair| pair[0].0 < pair[1].0));
+
+    let next = scanner::live_photo_repair_candidates(
+        &conn,
+        rows.last().unwrap().0,
+        scanner::LIVE_PHOTO_REPAIR_PAGE_SIZE,
+    )
+    .unwrap();
+    assert_eq!(next.len(), 5);
+    assert!(next[0].0 > rows.last().unwrap().0);
 }
 
 #[test]

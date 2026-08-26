@@ -80,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
 CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
 CREATE INDEX IF NOT EXISTS idx_paths_resolved ON paths (kind, resolved_utc_ms);
 CREATE INDEX IF NOT EXISTS idx_paths_companion ON paths (companion_of);
-CREATE INDEX IF NOT EXISTS idx_paths_media_repair ON paths (missing, kind, id);
+CREATE INDEX IF NOT EXISTS idx_paths_media_repair_by_id ON paths (missing, id);
 
 -- The UI reads logical items, not physical paths. Keeping this one-row summary
 -- beside the source tables lets opening a small month seek that month instead
@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS logical_contents (
 );
 CREATE INDEX IF NOT EXISTS idx_logical_contents_section
   ON logical_contents (kind, resolved_utc_ms, content_hash);
+CREATE INDEX IF NOT EXISTS idx_logical_contents_work
+  ON logical_contents (kind, content_hash);
 
 -- Only the current trigger definitions may maintain the projection.
 DROP TRIGGER IF EXISTS paths_logical_after_insert;

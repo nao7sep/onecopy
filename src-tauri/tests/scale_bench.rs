@@ -66,7 +66,7 @@ fn six_item_section_in_a_million_row_index() {
 
 #[test]
 #[ignore]
-fn fixed_class_candidate_pages_stay_bounded_at_one_million_pending_items() {
+fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-bench-derived-pages-")
         .tempdir()
@@ -92,24 +92,87 @@ fn fixed_class_candidate_pages_stay_bounded_at_one_million_pending_items() {
             live_copy_count, names_differ)
          SELECT hash, kind, CAST(substr(hash, 9) AS INTEGER), 1, 1, 0
          FROM contents;
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, kind, indexed_at_utc, missing)
+         SELECT n + 2, printf('/repair-%07d', n), '/', printf('repair-%07d', n),
+                CASE WHEN n % 2 = 0 THEN 'video' ELSE 'image' END,
+                'ready', 0
+         FROM seq;
          COMMIT;",
     )
     .unwrap();
 
-    let strips = video::strip_candidates(&conn, video::STRIP_CANDIDATE_PAGE_SIZE).unwrap();
-    let faces = face::face_candidates(&conn, face::FACE_CANDIDATE_PAGE_SIZE).unwrap();
-    let transcripts = derived_work::transcript_candidates(
-        &conn,
-        derived_work::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
-    )
-    .unwrap();
+    let mut strip_after = None;
+    let mut strip_total = 0usize;
+    loop {
+        let rows = video::strip_candidates(
+            &conn,
+            strip_after.as_deref(),
+            video::STRIP_CANDIDATE_PAGE_SIZE,
+        )
+        .unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        strip_total += rows.len();
+        strip_after = rows.last().map(|row| row.0.clone());
+    }
 
-    assert_eq!(strips.len(), video::STRIP_CANDIDATE_PAGE_SIZE);
-    assert_eq!(faces.len(), face::FACE_CANDIDATE_PAGE_SIZE);
-    assert_eq!(
-        transcripts.len(),
-        derived_work::TRANSCRIPT_CANDIDATE_PAGE_SIZE
-    );
+    let mut face_after = None;
+    let mut face_total = 0usize;
+    loop {
+        let rows = face::face_candidates(
+            &conn,
+            face_after.as_deref(),
+            face::FACE_CANDIDATE_PAGE_SIZE,
+        )
+        .unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        face_total += rows.len();
+        face_after = rows.last().map(|row| row.0.clone());
+    }
+
+    let mut transcript_after = None;
+    let mut transcript_total = 0usize;
+    loop {
+        let rows = derived_work::transcript_candidates(
+            &conn,
+            transcript_after.as_deref(),
+            derived_work::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+        )
+        .unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        transcript_total += rows.len();
+        transcript_after = rows.last().map(|row| row.0.clone());
+    }
+
+    let mut repair_after = 0i64;
+    let mut repair_total = 0usize;
+    loop {
+        let rows = scanner::live_photo_repair_candidates(
+            &conn,
+            repair_after,
+            scanner::LIVE_PHOTO_REPAIR_PAGE_SIZE,
+        )
+        .unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        repair_total += rows.len();
+        repair_after = rows.last().unwrap().0;
+    }
+
+    assert_eq!(strip_total, 500_000);
+    assert_eq!(face_total, 500_000);
+    assert_eq!(transcript_total, 500_000);
+    assert_eq!(repair_total, 1_000_000);
 }
 
 #[test]

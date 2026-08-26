@@ -94,7 +94,7 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
 }
 
 #[test]
-fn fixed_class_candidate_reads_return_only_the_requested_ordered_page() {
+fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-derived-pages-")
         .tempdir()
@@ -127,14 +127,22 @@ fn fixed_class_candidate_reads_return_only_the_requested_ordered_page() {
         }
     }
 
-    let strips = video::strip_candidates(&conn, 7).unwrap();
-    let faces = face::face_candidates(&conn, 9).unwrap();
-    let transcripts = transcript_candidates(&conn, 11).unwrap();
+    let strips = video::strip_candidates(&conn, None, 7).unwrap();
+    let faces = face::face_candidates(&conn, None, 9).unwrap();
+    let transcripts = transcript_candidates(&conn, None, 11).unwrap();
 
     assert_eq!(strips.len(), 7);
     assert_eq!(faces.len(), 9);
     assert_eq!(transcripts.len(), 11);
-    assert_eq!(strips[0].0, "video-099");
-    assert_eq!(faces[0].0, "image-099");
-    assert_eq!(transcripts[0].0, "video-099");
+    assert_eq!(strips[0].0, "video-000");
+    assert_eq!(faces[0].0, "image-000");
+    assert_eq!(transcripts[0].0, "video-000");
+
+    let next_strips = video::strip_candidates(&conn, Some(&strips.last().unwrap().0), 7).unwrap();
+    let next_faces = face::face_candidates(&conn, Some(&faces.last().unwrap().0), 9).unwrap();
+    let next_transcripts =
+        transcript_candidates(&conn, Some(&transcripts.last().unwrap().0), 11).unwrap();
+    assert_eq!(next_strips[0].0, "video-007");
+    assert_eq!(next_faces[0].0, "image-009");
+    assert_eq!(next_transcripts[0].0, "video-011");
 }

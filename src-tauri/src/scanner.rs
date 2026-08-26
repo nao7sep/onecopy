@@ -1123,9 +1123,13 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
     // but no Live Photo evidence. Backfill exactly those media rows once into
     // the existing evidence store; a NULL raw value is the durable "checked,
     // absent" result, so later scans do not reopen every family photo.
+    let mut after_id = 0;
     loop {
-        let pending_live_photo =
-            live_photo_repair_candidates(conn, LIVE_PHOTO_REPAIR_PAGE_SIZE)?;
+        let pending_live_photo = live_photo_repair_candidates(
+            conn,
+            after_id,
+            LIVE_PHOTO_REPAIR_PAGE_SIZE,
+        )?;
         if pending_live_photo.is_empty() {
             break;
         }
@@ -1144,6 +1148,7 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
             )
             .map_err(|e| e.to_string())?;
             stats.extracted += 1;
+            after_id = id;
         }
     }
 
@@ -1155,20 +1160,22 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
 /// repair resumes naturally after cancellation without an in-memory ledger.
 pub fn live_photo_repair_candidates(
     conn: &Connection,
+    after_id: i64,
     limit: usize,
 ) -> Result<Vec<(i64, String, String)>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT p.id, p.abs_path, p.kind FROM paths p \
-             WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
+             WHERE p.missing = 0 AND p.id > ?1 \
+               AND p.kind IN ('image', 'video') \
                AND NOT EXISTS (SELECT 1 FROM evidence e \
                                WHERE e.path_id = p.id \
                                  AND e.source = 'live-photo-identifier') \
-             ORDER BY p.id LIMIT ?1",
+             ORDER BY p.id LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([limit as i64], |row| {
+        .query_map(params![after_id, limit as i64], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
         .map_err(|e| e.to_string())?

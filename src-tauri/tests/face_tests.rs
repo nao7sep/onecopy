@@ -110,7 +110,8 @@ fn model_less_pass_is_a_silent_no_op_leaving_scores_null() {
     seed_image(&conn, "img", "a.jpg");
     let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
 
-    let stats = face::face_scores_pending(&conn, &cache, None, |_, _| {}, &|| false).unwrap();
+    let stats =
+        face::face_scores_pending(&conn, &cache, None, |_, _| {}, None, &|| false).unwrap();
     assert_eq!((stats.scored, stats.failed), (0, 0));
     let score: Option<f64> = conn
         .query_row("SELECT face_score FROM contents WHERE hash = 'img'", [], |r| r.get(0))

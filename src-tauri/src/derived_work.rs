@@ -45,6 +45,19 @@ struct PriorityHints {
     section: Option<SectionPriority>,
 }
 
+#[derive(Default)]
+struct CandidateCursor {
+    after_hash: Option<String>,
+    exhausted: bool,
+}
+
+#[derive(Default)]
+struct CandidateCursors {
+    snapshots: CandidateCursor,
+    transcripts: CandidateCursor,
+    faces: CandidateCursor,
+}
+
 #[derive(Clone)]
 pub struct SectionPriority {
     pub kind: String,
@@ -201,6 +214,7 @@ pub fn start(app: AppHandle) {
         let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
         let mut observed = 0u64;
         let mut run_again = true;
+        let mut cursors = CandidateCursors::default();
         loop {
             if !run_again {
                 if let Ok(value) = generation.lock() {
@@ -212,15 +226,23 @@ pub fn start(app: AppHandle) {
                         )
                         .map(|(current, _)| *current);
                     if let Ok(current) = waited {
+                        if current != observed {
+                            cursors = CandidateCursors::default();
+                        }
                         observed = current;
                     }
+                }
+            } else if let Ok(current) = generation.lock().map(|current| *current) {
+                if current != observed {
+                    observed = current;
+                    cursors = CandidateCursors::default();
                 }
             }
             run_again = false;
             if !available() {
                 continue;
             }
-            match run_one_pass(&app) {
+            match run_one_pass(&app, &mut cursors) {
                 Ok(did_work) => run_again = did_work,
                 Err(error) if error.starts_with(crate::scanner::CANCELLED) => logging::debug(
                     "derived work stopped",
@@ -269,7 +291,7 @@ pub fn ensure_preview(
 /// every media item is still independently claimed and checkpointed. This
 /// avoids reopening both millions of times without holding stale settings
 /// indefinitely.
-fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
+fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
     let data_root = crate::DATA_ROOT.get().ok_or("data root unset")?.clone();
     let config = crate::storage::read_config_for_setup(&data_root)?;
     let settings = settings_from_config(config.as_ref(), &data_root);
@@ -445,7 +467,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
     }
 
     let stop = || !is_idle() || cancelled();
-    if !class_paused(WorkClass::Snapshots) {
+    if !class_paused(WorkClass::Snapshots) && !cursors.snapshots.exhausted {
         let stats = if let Some(ffmpeg) = settings.ffmpeg.as_deref() {
             with_active(app, WorkClass::Snapshots, || {
                 crate::video::derive_strips_pending(
@@ -454,6 +476,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                     ffmpeg,
                     &settings.temp_dir,
                     &settings.strip,
+                    cursors.snapshots.after_hash.as_deref(),
                     &stop,
                     &progress(app, WorkClass::Snapshots),
                 )
@@ -463,24 +486,37 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
             crate::video::StripDeriveStats::default()
         };
         if stats.attempted > 0 {
-            return Ok(stats.page_full);
+            cursors.snapshots.after_hash = stats.last_attempted_hash;
+            return Ok(true);
+        }
+        if !stats.candidates_found {
+            cursors.snapshots.exhausted = true;
         }
     }
 
     let whisper = whisper_model(&data_root);
-    if !class_paused(WorkClass::Transcripts) {
+    if !class_paused(WorkClass::Transcripts) && !cursors.transcripts.exhausted {
         if let (Some(model), Some(ffmpeg)) = (whisper.as_deref(), settings.ffmpeg.as_deref()) {
-            let ran = with_active(app, WorkClass::Transcripts, || {
-                transcribe_next(&conn, &cache, model, ffmpeg, app)
+            let step = with_active(app, WorkClass::Transcripts, || {
+                transcribe_next(
+                    &conn,
+                    &cache,
+                    model,
+                    ffmpeg,
+                    app,
+                    cursors.transcripts.after_hash.as_deref(),
+                )
             })?
-            .unwrap_or(false);
-            if ran {
+            .unwrap_or_default();
+            if step.attempted_hash.is_some() {
+                cursors.transcripts.after_hash = step.attempted_hash;
                 return Ok(true);
             }
+            cursors.transcripts.exhausted = step.exhausted;
         }
     }
 
-    if !class_paused(WorkClass::Faces) {
+    if !class_paused(WorkClass::Faces) && !cursors.faces.exhausted {
         if let Some((detector, emotion)) = settings.face_models.as_ref() {
             let stats = with_active(app, WorkClass::Faces, || {
                 crate::face::face_scores_pending(
@@ -488,12 +524,17 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                     &cache,
                     Some((detector.as_path(), emotion.as_path())),
                     |done, total| emit_progress(app, WorkClass::Faces, Some((done, total))),
+                    cursors.faces.after_hash.as_deref(),
                     &stop,
                 )
             })?
             .unwrap_or_default();
             if stats.attempted > 0 {
-                return Ok(stats.page_full);
+                cursors.faces.after_hash = stats.last_attempted_hash;
+                return Ok(true);
+            }
+            if !stats.candidates_found {
+                cursors.faces.exhausted = true;
             }
         }
     }
@@ -696,27 +737,45 @@ fn whisper_model(data_root: &Path) -> Option<PathBuf> {
     })
 }
 
+#[derive(Default)]
+struct TranscriptStep {
+    attempted_hash: Option<String>,
+    exhausted: bool,
+}
+
 fn transcribe_next(
     conn: &Connection,
     cache: &CachePaths,
     model: &Path,
     ffmpeg: &Path,
     app: &AppHandle,
-) -> Result<bool, String> {
-    let rows = transcript_candidates(conn, TRANSCRIPT_CANDIDATE_PAGE_SIZE)?;
+    after_hash: Option<&str>,
+) -> Result<TranscriptStep, String> {
+    let rows = transcript_candidates(conn, after_hash, TRANSCRIPT_CANDIDATE_PAGE_SIZE)?;
+    if rows.is_empty() {
+        return Ok(TranscriptStep {
+            exhausted: true,
+            ..TranscriptStep::default()
+        });
+    }
 
     for (hash, path) in rows {
         if crate::derived_state::transcript_result(conn, cache, &hash)?.status
             == crate::derived_state::READY
         {
-            return Ok(true);
+            return Ok(TranscriptStep {
+                attempted_hash: Some(hash),
+                exhausted: false,
+            });
         }
         if !is_idle() {
-            return Ok(false);
+            return Ok(TranscriptStep::default());
         }
         let claim = match crate::transcription::claim() {
             Ok(claim) => claim,
-            Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => return Ok(false),
+            Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
+                return Ok(TranscriptStep::default())
+            }
             Err(error) => return Err(error),
         };
         emit_progress(app, WorkClass::Transcripts, None);
@@ -780,7 +839,10 @@ fn transcribe_next(
                     !text.trim().is_empty(),
                 )?;
                 let _ = app.emit("transcribe://done", json!({ "hash": hash, "text": text }));
-                return Ok(true);
+                return Ok(TranscriptStep {
+                    attempted_hash: Some(hash),
+                    exhausted: false,
+                });
             }
             Err(error) => {
                 if error == crate::scanner::CANCELLED || was_cancelled {
@@ -789,7 +851,7 @@ fn transcribe_next(
                         json!({ "hash": hash, "reason": "cancelled" }),
                     );
                     let _ = app.emit("transcribe://cancelled", json!({ "hash": hash }));
-                    return Ok(false);
+                    return Ok(TranscriptStep::default());
                 }
                 crate::derived_state::record_transcript_failure(conn, &hash, &path, &error)?;
                 logging::debug(
@@ -800,11 +862,14 @@ fn transcribe_next(
                     "transcribe://error",
                     json!({ "hash": hash, "message": error }),
                 );
-                return Ok(true);
+                return Ok(TranscriptStep {
+                    attempted_hash: Some(hash),
+                    exhausted: false,
+                });
             }
         }
     }
-    Ok(false)
+    Ok(TranscriptStep::default())
 }
 
 /// One ordered page of videos whose transcript receipt is absent. Existing
@@ -812,6 +877,7 @@ fn transcribe_next(
 /// repaired instead of being selected and skipped forever.
 pub fn transcript_candidates(
     conn: &Connection,
+    after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, String)>, String> {
     let mut stmt = conn
@@ -823,12 +889,16 @@ pub fn transcript_candidates(
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
              WHERE l.kind = 'video' AND c.duration_ms IS NOT NULL \
                AND r.transcript_state IS NULL AND p.missing = 0 \
-             ORDER BY l.resolved_utc_ms DESC, l.content_hash \
-             LIMIT ?1",
+               AND l.content_hash > ?1 \
+             ORDER BY l.content_hash \
+             LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(
+            rusqlite::params![after_hash.unwrap_or(""), limit as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
