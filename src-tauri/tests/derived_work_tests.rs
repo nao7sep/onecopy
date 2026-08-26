@@ -92,6 +92,34 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
 }
 
 #[test]
+fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-derived-blocked-video-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('video', 1, 'video');
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+           VALUES ('/video.mov', '/', 'video.mov', 'video', 'video', 120, 'metadata');",
+    )
+    .unwrap();
+
+    let value = serde_json::to_value(snapshot(dir.path(), false).unwrap()).unwrap();
+    let previews = value["classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "previews")
+        .unwrap();
+
+    assert_eq!(previews["queued"], 1);
+    assert_eq!(previews["state"], "unavailable");
+    assert_eq!(previews["reason"], "Waiting for ffmpeg");
+}
+
+#[test]
 fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-derived-pages-")

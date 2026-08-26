@@ -84,8 +84,8 @@ pub(crate) fn work_debt(
     let live = "EXISTS (SELECT 1 FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0)";
     match class {
         WorkClass::Previews => {
-            let (image_pending, video_pending) =
-                preview_pending_predicates(capabilities.ffmpeg);
+            let (image_pending, _) = preview_pending_predicates(capabilities.ffmpeg);
+            let video_pending = video_preview_pending_predicate();
             let images = count(
                 conn,
                 &format!(
@@ -279,14 +279,18 @@ pub(crate) fn preview_pending_predicates(ffmpeg: bool) -> (String, String) {
         format!("(c.derived_at_utc IS NULL OR ({stale}))")
     };
     let video = if ffmpeg {
-        format!(
-            "(c.derived_at_utc IS NULL OR \
-             (c.derived_version < {DERIVE_VERSION} AND c.derived_at_utc != '{FAILED}'))",
-        )
+        video_preview_pending_predicate()
     } else {
         "0".to_string()
     };
     (image, video)
+}
+
+fn video_preview_pending_predicate() -> String {
+    format!(
+        "(c.derived_at_utc IS NULL OR \
+         (c.derived_version < {DERIVE_VERSION} AND c.derived_at_utc != '{FAILED}'))"
+    )
 }
 
 pub(crate) fn preview_available_predicate(content_alias: &str) -> String {
