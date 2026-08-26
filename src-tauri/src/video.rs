@@ -80,7 +80,7 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
     // carries the stream banner we parse.
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-i"]).arg(src);
-    let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
+    let run = crate::subprocess::run_bounded(cmd, &crate::background_work::cancelled)?;
     parse_duration_ms(&run.stderr)
         .ok_or_else(|| format!("no Duration in ffmpeg output for {}", src.display()))
 }
@@ -96,7 +96,7 @@ fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Re
         .arg(src)
         .args(["-frames:v", "1", "-q:v", "3", "-update", "1", "-y"])
         .arg(staged_jpg);
-    let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
+    let run = crate::subprocess::run_bounded(cmd, &crate::background_work::cancelled)?;
     if !run.status_ok {
         return Err(format!("frame extraction failed at {seconds}s for {}", src.display()));
     }
@@ -235,17 +235,20 @@ fn derive_videos_pending_limit(
 
             // Poster at 15% through the shared image pipeline.
             let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()));
-            extract_frame(ffmpeg, src, duration_ms * 15 / 100, &staged)?;
-            // The staged poster is a plain JPEG, so the image crate opens it
-            // directly — no ffmpeg needed for the decode half.
-            let poster_result = preview::generate_for_image(
-                &staged,
-                &hash,
-                cache,
-                thumb_edge,
-                preview_long_edge,
-                None,
-            );
+            let poster_result = extract_frame(ffmpeg, src, duration_ms * 15 / 100, &staged)
+                .and_then(|()| {
+                    // The staged poster is a plain JPEG, so the image crate
+                    // opens it directly — no ffmpeg needed for this half.
+                    preview::generate_for_image(
+                        &staged,
+                        &hash,
+                        cache,
+                        thumb_edge,
+                        preview_long_edge,
+                        None,
+                    )
+                    .map(|_| ())
+                });
             let _ = std::fs::remove_file(&staged);
             poster_result?;
             Ok(duration_ms)
@@ -272,6 +275,9 @@ fn derive_videos_pending_limit(
                     &[crate::derived_state::VIDEO_POSTER_ERROR],
                 )?;
                 stats.changed_hashes.push(hash);
+            }
+            Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) => {
                 stats.failed += 1;
@@ -366,6 +372,12 @@ pub fn derive_strips_pending(
                 )?;
                 done += 1;
                 progress(done, total);
+            }
+            Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                for index in 0..count {
+                    let _ = std::fs::remove_file(strip_path(cache, &hash, index));
+                }
+                return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) => {
                 // -1 = strips failed: keeps the row out of every later pass

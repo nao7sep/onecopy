@@ -82,6 +82,27 @@ pub fn cluster_by_appearance(
     burst_gap_seconds: u32,
     diameter_multiplier: u32,
 ) -> Vec<Vec<usize>> {
+    cluster_by_appearance_cancellable(
+        phashes,
+        times_ms,
+        strict_distance,
+        burst_distance,
+        burst_gap_seconds,
+        diameter_multiplier,
+        &|| false,
+    )
+    .expect("the non-cancellable cluster cannot stop")
+}
+
+fn cluster_by_appearance_cancellable(
+    phashes: &[i64],
+    times_ms: &[Option<i64>],
+    strict_distance: u32,
+    burst_distance: u32,
+    burst_gap_seconds: u32,
+    diameter_multiplier: u32,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Vec<usize>>, String> {
     let n = phashes.len();
     debug_assert_eq!(n, times_ms.len());
     let gap_ms = i64::from(burst_gap_seconds) * 1000;
@@ -96,8 +117,13 @@ pub fn cluster_by_appearance(
         }
     };
     let mut uf = UnionFind::new(n);
+    let mut comparisons = 0usize;
     for a in 0..n {
         for b in (a + 1)..n {
+            comparisons += 1;
+            if comparisons % 1024 == 0 && stop() {
+                return Err(crate::scanner::CANCELLED.to_string());
+            }
             if hamming(phashes[a], phashes[b]) <= allowed(a, b) {
                 uf.union(a, b);
             }
@@ -139,7 +165,7 @@ pub fn cluster_by_appearance(
     }
     // Deterministic output order regardless of HashMap iteration.
     out.sort_by_key(|c| c[0]);
-    out
+    Ok(out)
 }
 
 /// The month bucket key: UTC `yyyy-mm`, or `undated`.
@@ -312,6 +338,7 @@ fn rebuild_groups_with_exclusions(
     conn: &Connection,
     config: &SimilarityConfig,
     exclusions: &std::collections::HashSet<(String, String)>,
+    stop: &dyn Fn() -> bool,
 ) -> Result<GroupStats, String> {
     let mut stmt = conn
         .prepare(
@@ -337,6 +364,9 @@ fn rebuild_groups_with_exclusions(
         .filter_map(|r| r.ok())
         .collect();
     drop(stmt);
+    if stop() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
 
     // Partition into month buckets, then cluster within each.
     let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
@@ -348,20 +378,24 @@ fn rebuild_groups_with_exclusions(
     let mut groups: Vec<Vec<String>> = Vec::new();
 
     for indices in buckets.values() {
+        if stop() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
         // Quadratic within the bucket — integer work over in-memory rows, no
         // file reads. Chained components split around leaders (see
         // cluster_by_appearance).
         let mut bucket_groups: Vec<Vec<usize>> = Vec::new();
         let phashes: Vec<i64> = indices.iter().map(|&i| candidates[i].phash).collect();
         let times: Vec<Option<i64>> = indices.iter().map(|&i| candidates[i].time_ms).collect();
-        for cluster in cluster_by_appearance(
+        for cluster in cluster_by_appearance_cancellable(
             &phashes,
             &times,
             config.phash_max_distance,
             config.phash_max_distance_burst,
             config.max_gap_seconds,
             config.diameter_multiplier,
-        ) {
+            stop,
+        )? {
             let cluster: Vec<usize> = cluster.into_iter().map(|local| indices[local]).collect();
             if cluster.len() < 2 {
                 continue;
@@ -422,22 +456,34 @@ fn rebuild_groups_with_exclusions(
     // they were made in.
     let groups = split_by_exclusions(groups, exclusions);
 
-    // Persist wholesale.
-    conn.execute("DELETE FROM similar_group_members", [])
+    if stop() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
+
+    // Persist wholesale in one transaction. Cancellation or a write failure
+    // keeps the previous complete cohort rather than publishing an empty or
+    // half-rebuilt similarity view.
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute("DELETE FROM similar_group_members", [])
         .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM similar_groups", [])
+    transaction
+        .execute("DELETE FROM similar_groups", [])
         .map_err(|e| e.to_string())?;
 
     let mut stats = GroupStats::default();
     for members in &groups {
-        conn.execute(
+        if stop() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        transaction.execute(
             "INSERT INTO similar_groups (created_at_utc) VALUES (?1)",
             [crate::logging::now_iso_millis()],
         )
         .map_err(|e| e.to_string())?;
-        let group_id = conn.last_insert_rowid();
+        let group_id = transaction.last_insert_rowid();
         for hash in members {
-            conn.execute(
+            transaction.execute(
                 "INSERT INTO similar_group_members (group_id, content_hash) VALUES (?1, ?2)",
                 params![group_id, hash],
             )
@@ -447,11 +493,13 @@ fn rebuild_groups_with_exclusions(
         stats.groups += 1;
     }
 
+    transaction.commit().map_err(|e| e.to_string())?;
+
     Ok(stats)
 }
 
 pub fn rebuild_groups(conn: &Connection, config: &SimilarityConfig) -> Result<GroupStats, String> {
-    rebuild_groups_with_exclusions(conn, config, &std::collections::HashSet::new())
+    rebuild_groups_with_exclusions(conn, config, &std::collections::HashSet::new(), &|| false)
 }
 
 pub fn rebuild_groups_for_root(
@@ -460,7 +508,17 @@ pub fn rebuild_groups_for_root(
     root: &std::path::Path,
 ) -> Result<GroupStats, String> {
     let exclusions = crate::similar_exclusions::pairs(root)?;
-    rebuild_groups_with_exclusions(conn, config, &exclusions)
+    rebuild_groups_with_exclusions(conn, config, &exclusions, &|| false)
+}
+
+pub fn rebuild_groups_for_root_cancellable(
+    conn: &Connection,
+    config: &SimilarityConfig,
+    root: &std::path::Path,
+    stop: &dyn Fn() -> bool,
+) -> Result<GroupStats, String> {
+    let exclusions = crate::similar_exclusions::pairs(root)?;
+    rebuild_groups_with_exclusions(conn, config, &exclusions, stop)
 }
 
 /// One group's members, best-first: sharpness descending (the advisory

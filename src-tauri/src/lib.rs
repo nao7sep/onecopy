@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
+pub mod background_work;
 pub mod derived_work;
 pub mod derived_state;
 pub mod binaries;
@@ -942,7 +943,8 @@ fn ensure_preview(app: AppHandle, hash: String) -> Result<String, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
-            let canonical = derived_work::ensure_preview(&data_root, config.as_ref(), &hash)?;
+            let canonical =
+                derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             derived_work::notify_item_update(&app, &conn, "previews", &hash, &canonical);
             let _ = app.emit("derived://issues", json!({}));
@@ -963,6 +965,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
         "ensure_fullres",
         json!({ "hash": hash }),
         || {
+            let _work = background_work::begin_manual(&app, "previews")?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let cache_root = cache_root().ok_or("data root unset")?;
@@ -985,9 +988,11 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
+    let work = background_work::begin_manual(&app, "transcripts")?;
     let claim = transcription::claim()?;
     let handle = app.clone();
     std::thread::spawn(move || {
+        let _work = work;
         let result = (|| -> Result<String, String> {
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let video: String = conn
@@ -1016,6 +1021,12 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 std::path::Path::new(&video),
                 &hash,
                 move |percent| {
+                    background_work::report_manual_progress(
+                        &progress_handle,
+                        "transcripts",
+                        percent.clamp(0, 100) as u64,
+                        100,
+                    );
                     let _ = progress_handle.emit(
                         "transcribe://progress",
                         json!({ "hash": progress_hash, "percent": percent }),
@@ -1100,6 +1111,26 @@ fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> 
 #[tauri::command]
 fn note_user_activity() {
     derived_work::note_activity();
+}
+
+#[tauri::command(async)]
+fn background_work_snapshot(
+    app: AppHandle,
+) -> Result<background_work::BackgroundWorkSnapshot, String> {
+    let data_root = paths::data_root(&app)?;
+    background_work::snapshot(
+        &data_root,
+        derived_work::similarity_dirty(),
+    )
+}
+
+#[tauri::command]
+fn background_work_set_paused(
+    app: AppHandle,
+    class_id: Option<String>,
+    paused: bool,
+) -> Result<(), String> {
+    background_work::set_paused(&app, class_id.as_deref(), paused)
 }
 
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output
@@ -1720,6 +1751,8 @@ pub fn run() {
             reveal_data_subdir,
             open_item_externally,
             note_user_activity,
+            background_work_snapshot,
+            background_work_set_paused,
             prioritize_derived_work,
             set_window_simple_fullscreen,
             ensure_preview,

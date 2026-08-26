@@ -17,6 +17,7 @@ use rusqlite::{params_from_iter, Connection};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
+use crate::background_work::{cancelled, is_paused as class_paused, with_active, WorkClass};
 use crate::logging;
 use crate::preview::CachePaths;
 
@@ -58,6 +59,7 @@ pub struct Settings {
     pub thumb_edge: u32,
     pub preview_long_edge: u32,
     pub ffmpeg: Option<PathBuf>,
+    pub face_enabled: bool,
     pub face_models: Option<(PathBuf, PathBuf)>,
     pub temp_dir: PathBuf,
 }
@@ -115,6 +117,7 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
             let path = crate::binaries_manager::ffmpeg_path(data_root);
             path.is_file().then_some(path)
         },
+        face_enabled: score_faces,
         face_models: score_faces
             .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
             .flatten(),
@@ -153,13 +156,12 @@ pub fn is_idle() -> bool {
         && !crate::scan_running()
 }
 
-fn available() -> bool {
+pub(crate) fn available() -> bool {
     HEAVY_OPS.load(Ordering::SeqCst) == 0 && !crate::scan_running()
 }
 
-/// Wakes the coordinator after index or dependency state changes. Index
-/// changes also invalidate the process's similarity snapshot; a durable
-/// revision receipt will replace this process-local bit in the receipts slice.
+/// Wake after index, settings, tool, priority, or lifecycle changes. Index
+/// changes also invalidate the process-local similarity cohort.
 pub fn wake(index_changed: bool) {
     if index_changed {
         SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
@@ -169,6 +171,10 @@ pub fn wake(index_changed: bool) {
         *value = value.wrapping_add(1);
         ready.notify_one();
     }
+}
+
+pub(crate) fn similarity_dirty() -> bool {
+    SIMILARITY_DIRTY.load(Ordering::SeqCst)
 }
 
 /// Replaces the current UI priority hints. They are deliberately ephemeral:
@@ -215,6 +221,10 @@ pub fn start(app: AppHandle) {
             }
             match run_one_pass(&app) {
                 Ok(did_work) => run_again = did_work,
+                Err(error) if error.starts_with(crate::scanner::CANCELLED) => logging::debug(
+                    "derived work stopped",
+                    json!({ "reason": "cancelled" }),
+                ),
                 Err(error) => logging::warn(
                     "derived work pass failed",
                     json!({ "error": { "message": error } }),
@@ -229,10 +239,12 @@ pub fn start(app: AppHandle) {
 /// boundary as background work. The command can await this result for an
 /// immediate preview without racing the coordinator on the same cache entry.
 pub fn ensure_preview(
+    app: &AppHandle,
     data_root: &Path,
     config: Option<&serde_json::Value>,
     hash: &str,
 ) -> Result<String, String> {
+    let _active = crate::background_work::begin_manual(app, WorkClass::Previews.id())?;
     let _claim = MEDIA_WORK
         .lock()
         .map_err(|_| "derived media owner is unavailable".to_string())?;
@@ -279,7 +291,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
         if !available() {
             return Ok(false);
         }
-        let image = {
+        let image = with_active(app, WorkClass::Previews, || {
             let _claim = MEDIA_WORK
                 .lock()
                 .map_err(|_| "derived media owner is unavailable".to_string())?;
@@ -290,18 +302,19 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                 settings.preview_long_edge,
                 settings.ffmpeg.as_deref(),
                 &hash,
-            )?
-        };
+            )
+        })?
+        .unwrap_or_default();
         if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
             if image.derived > 0 {
                 SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
             }
-            emit_progress(app, "previews", None);
+            emit_progress(app, WorkClass::Previews, None);
             notify_image_changes(app, &conn, &image.changes);
             let _ = app.emit("derived://issues", json!({}));
             priority_done += 1;
         } else {
-            let video = {
+            let video = with_active(app, WorkClass::Previews, || {
                 let _claim = MEDIA_WORK
                     .lock()
                     .map_err(|_| "derived media owner is unavailable".to_string())?;
@@ -313,10 +326,11 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                     settings.thumb_edge,
                     settings.preview_long_edge,
                     &hash,
-                )?
-            };
+                )
+            })?
+            .unwrap_or_default();
             if video.derived + video.failed > 0 {
-                emit_progress(app, "video-posters", None);
+                emit_progress(app, WorkClass::Previews, None);
                 notify_video_changes(app, &conn, &video.changed_hashes);
                 let _ = app.emit("derived://issues", json!({}));
                 priority_done += 1;
@@ -332,7 +346,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
         if !available() {
             return Ok(false);
         }
-        let image = {
+        let image = with_active(app, WorkClass::Previews, || {
             let _claim = MEDIA_WORK
                 .lock()
                 .map_err(|_| "derived media owner is unavailable".to_string())?;
@@ -342,15 +356,16 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                 settings.thumb_edge,
                 settings.preview_long_edge,
                 settings.ffmpeg.as_deref(),
-            )?
-        };
+            )
+        })?
+        .unwrap_or_default();
         if image.derived + image.failed + image.blocked_no_ffmpeg == 0 {
             break;
         }
         if image.derived > 0 {
             SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
         }
-        emit_progress(app, "previews", None);
+        emit_progress(app, WorkClass::Previews, None);
         notify_image_changes(app, &conn, &image.changes);
         let _ = app.emit("derived://issues", json!({}));
         if index + 1 == IMAGE_BATCH {
@@ -363,7 +378,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
         if !available() {
             return Ok(false);
         }
-        let video = {
+        let video = with_active(app, WorkClass::Previews, || {
             let _claim = MEDIA_WORK
                 .lock()
                 .map_err(|_| "derived media owner is unavailable".to_string())?;
@@ -374,12 +389,13 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                 &settings.temp_dir,
                 settings.thumb_edge,
                 settings.preview_long_edge,
-            )?
-        };
+            )
+        })?
+        .unwrap_or_default();
         if video.derived + video.failed == 0 {
             break;
         }
-        emit_progress(app, "video-posters", None);
+        emit_progress(app, WorkClass::Previews, None);
         notify_video_changes(app, &conn, &video.changed_hashes);
         let _ = app.emit("derived://issues", json!({}));
         if index + 1 == VIDEO_BATCH {
@@ -391,15 +407,22 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
         return Ok(true);
     }
 
-    if SIMILARITY_DIRTY.swap(false, Ordering::SeqCst) {
-        let result = crate::similarity::rebuild_groups_for_root(
-            &conn,
-            &settings.similarity,
-            &settings.data_root,
-        );
+    if !class_paused(WorkClass::Similarity) && SIMILARITY_DIRTY.load(Ordering::SeqCst) {
+        let result = with_active(app, WorkClass::Similarity, || {
+            // Clear only after claiming the owner. Preview work that completes
+            // during this rebuild sets the bit again and therefore cannot be
+            // lost behind this cohort's result.
+            SIMILARITY_DIRTY.store(false, Ordering::SeqCst);
+            crate::similarity::rebuild_groups_for_root_cancellable(
+                &conn,
+                &settings.similarity,
+                &settings.data_root,
+                &cancelled,
+            )
+        });
         match result {
-            Ok(stats) => {
-                emit_progress(app, "similarity", None);
+            Ok(Some(stats)) => {
+                emit_progress(app, WorkClass::Similarity, None);
                 let _ = app.emit("derived://similarity-updated", json!({}));
                 logging::info(
                     "similarity rebuilt",
@@ -407,6 +430,7 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
                 );
                 return Ok(true);
             }
+            Ok(None) => return Ok(false),
             Err(error) => {
                 SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
                 return Err(error);
@@ -419,43 +443,62 @@ fn run_one_pass(app: &AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
 
-    let stop = || !is_idle();
-    if let Some(ffmpeg) = settings.ffmpeg.as_deref() {
-        let ran = crate::video::derive_strips_pending(
-            &conn,
-            &cache,
-            ffmpeg,
-            &settings.temp_dir,
-            &settings.strip,
-            &stop,
-            &progress(app, "strips"),
-        )?;
+    let stop = || !is_idle() || cancelled();
+    if !class_paused(WorkClass::Snapshots) {
+        let ran = if let Some(ffmpeg) = settings.ffmpeg.as_deref() {
+            with_active(app, WorkClass::Snapshots, || {
+                crate::video::derive_strips_pending(
+                    &conn,
+                    &cache,
+                    ffmpeg,
+                    &settings.temp_dir,
+                    &settings.strip,
+                    &stop,
+                    &progress(app, WorkClass::Snapshots),
+                )
+            })?
+            .unwrap_or(0)
+        } else {
+            0
+        };
         if ran > 0 {
             return Ok(false);
         }
     }
 
     let whisper = whisper_model(&data_root);
-    if let (Some(model), Some(ffmpeg)) = (whisper.as_deref(), settings.ffmpeg.as_deref()) {
-        if transcribe_next(&conn, &cache, model, ffmpeg, app)? {
-            return Ok(true);
+    if !class_paused(WorkClass::Transcripts) {
+        if let (Some(model), Some(ffmpeg)) = (whisper.as_deref(), settings.ffmpeg.as_deref()) {
+            let ran = with_active(app, WorkClass::Transcripts, || {
+                transcribe_next(&conn, &cache, model, ffmpeg, app)
+            })?
+            .unwrap_or(false);
+            if ran {
+                return Ok(true);
+            }
         }
     }
 
-    if let Some((detector, emotion)) = settings.face_models.as_ref() {
-        let stats = crate::face::face_scores_pending(
-            &conn,
-            &cache,
-            Some((detector.as_path(), emotion.as_path())),
-            |done, total| emit_progress(app, "faces", Some((done, total))),
-            &stop,
-        )?;
-        if stats.scored > 0 || stats.failed > 0 {
-            return Ok(false);
+    if !class_paused(WorkClass::Faces) {
+        if let Some((detector, emotion)) = settings.face_models.as_ref() {
+            let stats = with_active(app, WorkClass::Faces, || {
+                crate::face::face_scores_pending(
+                    &conn,
+                    &cache,
+                    Some((detector.as_path(), emotion.as_path())),
+                    |done, total| emit_progress(app, WorkClass::Faces, Some((done, total))),
+                    &stop,
+                )
+            })?
+            .unwrap_or_default();
+            if stats.scored > 0 || stats.failed > 0 {
+                return Ok(false);
+            }
         }
     }
 
     let _ = app.emit("derived://quiet", json!({}));
+    crate::background_work::emit_state_changed(app);
     Ok(false)
 }
 
@@ -602,12 +645,8 @@ fn pending_hint_hashes(
     Ok(rows)
 }
 
-fn emit_progress(app: &AppHandle, class: &str, counts: Option<(u64, u64)>) {
-    let (done, total) = counts.map_or((None, None), |(done, total)| (Some(done), Some(total)));
-    let _ = app.emit(
-        "derived://progress",
-        json!({ "class": class, "done": done, "total": total }),
-    );
+fn emit_progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) {
+    crate::background_work::progress(app, class, counts);
 }
 
 pub fn notify_item_update(
@@ -644,7 +683,7 @@ fn notify_video_changes(app: &AppHandle, conn: &Connection, hashes: &[String]) {
     }
 }
 
-fn progress<'a>(app: &'a AppHandle, class: &'a str) -> impl Fn(u64, u64) + 'a {
+fn progress(app: &AppHandle, class: WorkClass) -> impl Fn(u64, u64) + '_ {
     move |done, total| emit_progress(app, class, Some((done, total)))
 }
 
@@ -695,7 +734,7 @@ fn transcribe_next(
             Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => return Ok(false),
             Err(error) => return Err(error),
         };
-        emit_progress(app, "transcripts", None);
+        emit_progress(app, WorkClass::Transcripts, None);
         let finished = std::sync::Arc::new(AtomicBool::new(false));
         let watch = std::thread::spawn({
             let finished = std::sync::Arc::clone(&finished);
@@ -703,7 +742,7 @@ fn transcribe_next(
                 if finished.load(Ordering::SeqCst) {
                     return;
                 }
-                if !is_idle() {
+                if !is_idle() || cancelled() {
                     crate::transcription::request_cancel();
                     return;
                 }

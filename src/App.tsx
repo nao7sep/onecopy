@@ -62,9 +62,14 @@ import {
 import { itemKey } from "./state/items-store";
 import { DEFAULT_DESC, type SortChoice, type SortOrder } from "./models/items";
 import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
-import { installActivityPings, useDerivedWorkStore } from "./state/derived-work-store";
+import {
+  backgroundWorkLine,
+  installActivityPings,
+  useDerivedWorkStore,
+} from "./state/derived-work-store";
 import PreviewSurface from "./components/PreviewSurface";
 import { log, reportWindowCall, toErrorFields } from "./repositories";
+import BackgroundWorkModal from "./components/BackgroundWorkModal";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -106,7 +111,9 @@ export default function App() {
     void useAppStore.getState().patchState({ rightPaneTab: tab });
   };
   const issuesTotal = useIssuesStore((s) => s.total);
-  const derivedWorkLine = useDerivedWorkStore((s) => s.line);
+  const derivedWorkSnapshot = useDerivedWorkStore((s) => s.snapshot);
+  const setBackgroundWorkOpen = useDerivedWorkStore((s) => s.setOpen);
+  const derivedWorkLine = backgroundWorkLine(derivedWorkSnapshot);
   const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
@@ -157,7 +164,7 @@ export default function App() {
 
   // The derived-work coordinator's view of the user: throttled input pings.
   useEffect(() => {
-    installActivityPings(window);
+    return installActivityPings(window);
   }, []);
 
   // A newly opened preview window asks for the current selection; answer
@@ -636,6 +643,7 @@ export default function App() {
       ) : null}
       <ComparisonView />
       <BinariesModal />
+      <BackgroundWorkModal />
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       {scenesFor !== null ? (
@@ -939,9 +947,13 @@ export default function App() {
         </span>
         <span className="flex shrink-0 items-center gap-3">
           {/* Why the fans spin while work runs in the background. */}
-          {derivedWorkLine !== null ? (
-            <span className="text-ink-muted">{derivedWorkLine}</span>
-          ) : null}
+          <button
+            className="text-ink-muted hover:text-ink hover:underline"
+            title="Open Background work"
+            onClick={() => setBackgroundWorkOpen(true)}
+          >
+            {derivedWorkLine}
+          </button>
           {/* The issues count: NOTHING at zero, a danger-tinted count when
               conditions exist. No toasts anywhere — the design case is a
               multi-day unattended scan, so the count simply waits here. */}

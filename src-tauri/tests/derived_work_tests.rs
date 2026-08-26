@@ -1,5 +1,6 @@
 // Tests exercising the crate's public API from outside shipped source.
 
+use onecopy_lib::background_work::snapshot;
 use onecopy_lib::derived_work::{priority_candidates, settings_from_config, SectionPriority};
 use onecopy_lib::index_store;
 
@@ -55,4 +56,35 @@ fn selected_visible_and_section_backlog_keep_their_priority_without_duplicates()
         priority_candidates(&conn, &settings, Some("selected"), &visible, Some(&section)).unwrap();
 
     assert_eq!(candidates, ["selected", "visible", "backlog"]);
+}
+
+#[test]
+fn snapshot_projects_output_debt_without_inventing_jobs() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-derived-snapshot-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('image', 1, 'image');
+         INSERT INTO contents (hash, byte_size, kind, derived_at_utc)
+           VALUES ('broken', 1, 'image', 'failed');
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+           VALUES ('/image.jpg', '/', 'image.jpg', 'image', 'image', 120, 'metadata');
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+           VALUES ('/broken.jpg', '/', 'broken.jpg', 'image', 'broken', 130, 'metadata');",
+    )
+    .unwrap();
+
+    let value = serde_json::to_value(snapshot(dir.path(), false).unwrap()).unwrap();
+    let rows = value["classes"].as_array().unwrap();
+    let previews = rows.iter().find(|row| row["id"] == "previews").unwrap();
+    let faces = rows.iter().find(|row| row["id"] == "faces").unwrap();
+
+    assert_eq!(previews["queued"], 1);
+    assert_eq!(previews["failed"], 1);
+    assert_eq!(previews["state"], "queued");
+    assert_eq!(faces["state"], "disabled");
 }

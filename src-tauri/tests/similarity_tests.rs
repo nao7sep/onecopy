@@ -82,6 +82,27 @@ fn spare_shots_within_the_gap_group_together() {
 }
 
 #[test]
+fn cancellation_keeps_the_previous_complete_similarity_cohort() {
+    let (dir, conn) = seeded();
+    let t = 1_700_000_000_000i64;
+    insert_image(&conn, "a", "Ricoh", t, 0, 1.0);
+    insert_image(&conn, "b", "Ricoh", t + 1_000, 1, 1.0);
+    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    let before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| row.get(0))
+        .unwrap();
+
+    let error = rebuild_groups_for_root_cancellable(&conn, &config(), dir.path(), &|| true)
+        .unwrap_err();
+    let after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| row.get(0))
+        .unwrap();
+
+    assert_eq!(error, onecopy_lib::scanner::CANCELLED);
+    assert_eq!(after, before);
+}
+
+#[test]
 fn different_cameras_never_chain() {
     let (_d, conn) = seeded();
     let t = 1_700_000_000_000i64;
