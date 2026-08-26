@@ -2,6 +2,7 @@
 
 body {
   font-family: var(--font-ui);
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   /* Chrome is not selectable text: clicking a button's label must never

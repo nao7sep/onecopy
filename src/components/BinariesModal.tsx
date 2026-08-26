@@ -36,21 +36,24 @@ function statusLabel(entry: DependencyState): string {
   return entry.status === "up-to-date" ? "Up to date" : "Installed";
 }
 
+function displayArtifactIdentity(identity: string): string {
+  return identity.match(/^Latest Auto-Build \((.+)\)$/)?.[1] ?? identity;
+}
+
 /** The one line of version fact a row shows. A present entry whose version could
  * not be read says so — silence would leave an "Installed" row with an Update
  * button and no explanation of why it is offered. */
 function factLine(entry: DependencyState): string | null {
   const released = entry.released !== null ? `Released ${entry.released}` : null;
   if (entry.status === "not-installed") return released;
+  if (!entry.checkable) return released;
   const installed = entry.installedVersion;
   const latest = entry.facts.latestKnownVersion;
   const version =
     entry.status === "update-available" && installed !== null && latest !== null
-      ? entry.checkable
-        ? `Version ${installed} · ${latest} available`
-        : `Version ${installed} · this app version expects ${latest}`
+      ? `Build ${displayArtifactIdentity(installed)} · ${displayArtifactIdentity(latest)} available`
       : installed !== null
-        ? `Version ${installed}`
+        ? `Build ${displayArtifactIdentity(installed)}`
         : "Version unreadable";
   return [version, released].filter((part) => part !== null).join(" · ") || null;
 }

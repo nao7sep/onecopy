@@ -31,6 +31,7 @@ describe("scrollbar styling", () => {
     // whole app reads as undesigned.
     expect(css).toMatch(/--font-ui:\s*system-ui/);
     expect(css).toMatch(/body\s*{[^}]*font-family:\s*var\(--font-ui\)/);
+    expect(css).toMatch(/body\s*{[^}]*font-size:\s*13px/);
     // ONE :root block, so the token set has a single home — and so the
     // block-finding below cannot land on the wrong one.
     expect(css.match(/^:root\s*{/gm)).toHaveLength(1);

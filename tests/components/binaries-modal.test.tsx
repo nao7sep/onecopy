@@ -162,7 +162,7 @@ describe("the two lifecycles", () => {
     render(<BinariesModal />);
     expect(document.body.textContent).toContain("Installed");
     expect(document.body.textContent).not.toContain("Up to date");
-    expect(document.body.textContent).toContain("Version 1fc70f774d38");
+    expect(document.body.textContent).not.toContain("1fc70f774d38");
     expect(document.body.textContent).toContain("Released 2024-10-01");
     // No check is offered for it — there is nothing to ask.
     expect(buttons("Check for updates")).toHaveLength(0);
@@ -170,6 +170,23 @@ describe("the two lifecycles", () => {
     expect(document.body.textContent).toContain(
       "These models are downloaded only when you install them here.",
     );
+  });
+
+  it("presents rolling ffmpeg builds by date while retaining comparison state", () => {
+    seed([
+      entry("ffmpeg", "update-available", {
+        installedVersion: "Latest Auto-Build (2026-08-23 13:03)",
+        facts: {
+          latestKnownVersion: "Latest Auto-Build (2026-08-24 14:04)",
+          lastCheckedAtUtc: "2026-08-24T14:05:00.000Z",
+        },
+      }),
+    ]);
+    render(<BinariesModal />);
+
+    expect(document.body.textContent).toContain("Build 2026-08-23 13:03");
+    expect(document.body.textContent).toContain("2026-08-24 14:04 available");
+    expect(document.body.textContent).not.toContain("Latest Auto-Build");
   });
 
   it("offers the check only on the entry that has an upstream", () => {

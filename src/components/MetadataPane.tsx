@@ -100,7 +100,7 @@ function SimilarSection({ hash }: { hash: string }) {
             {/* The unlink where intruders are usually SPOTTED. Non-destructive
                 and persistent: the pair never regroups on any later scan. */}
             <button
-              className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-muted text-[10px] leading-none text-ink-muted hover:text-danger group-hover/similar:flex"
+              className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-muted text-[11px] leading-none text-ink-muted hover:text-danger group-hover/similar:flex"
               title={`Not similar — remove ${member.fileName} from this set. The photo is not deleted.`}
               onClick={() => {
                 void invoke("similar_unlink", { hash: member.hash })
