@@ -1,6 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../state/settings-store";
+import { saveSettings } from "../workflows/settings";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
@@ -291,7 +292,6 @@ export default function SettingsModal() {
   const validateTimezone = useSettingsStore((s) => s.validateTimezone);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
-  const save = useSettingsStore((s) => s.save);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   if (!open || draft === null) return null;
@@ -314,7 +314,7 @@ export default function SettingsModal() {
         <Button
           variant="primary"
           disabled={saving || !dirty || timezonePending || !timezoneValid}
-          onClick={() => void save()}
+          onClick={() => void saveSettings()}
         >
           {saving ? "Saving…" : "Save"}
         </Button>

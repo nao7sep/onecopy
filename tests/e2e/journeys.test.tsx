@@ -24,6 +24,7 @@ import {
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { finishWizard } from "../../src/workflows/wizard";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -71,8 +72,8 @@ const SCENE = [
 const pressWindow = (key: string, init: KeyboardEventInit = {}) =>
   window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
 
-/** One macrotask drain — lets the stores' fire-and-forget dynamic imports and
- * void-awaited refreshes land before the next assertion. */
+/** One macrotask drain — lets workflow-coordinated, void-awaited refreshes
+ * land before the next assertion. */
 const settle = () =>
   act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -131,7 +132,7 @@ describe("the culling journey", () => {
         timezone: "UTC",
         timezoneValid: true,
       });
-      await useWizardStore.getState().finish();
+      await finishWizard();
     });
     expect(invokeCalls.map((c) => c.command)).toContain("patch_config");
     expect(invokeCalls.map((c) => c.command)).toContain("start_scan");

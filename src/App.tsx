@@ -72,6 +72,7 @@ import {
 import PreviewSurface from "./components/PreviewSurface";
 import { log, reportWindowCall, toErrorFields } from "./repositories";
 import BackgroundWorkModal from "./components/BackgroundWorkModal";
+import { bootstrapApplication } from "./workflows/app-lifecycle";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -93,7 +94,6 @@ export default function App() {
   const progress = useSectionsStore((s) => s.progress);
   const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
   const itemsMessage = useItemsStore((s) => s.message);
-  const loadCounts = useSectionsStore((s) => s.loadCounts);
   const startScan = useSectionsStore((s) => s.startScan);
   const selected = useItemsStore((s) => s.selected);
   const items = useItemsStore((s) => s.items);
@@ -520,11 +520,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void useAppStore.getState().reload();
-    void loadCounts();
-    void useIssuesStore.getState().load();
-    void useBinariesStore.getState().load();
-  }, [loadCounts]);
+    void bootstrapApplication();
+  }, []);
 
   // One-shot state restore once the persisted document is in: sort order,
   // right-pane tab, Issues-open, and the last-open section + anchor (the

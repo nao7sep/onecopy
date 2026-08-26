@@ -1,4 +1,5 @@
 import { useWizardStore } from "../state/wizard-store";
+import { finishWizard } from "../workflows/wizard";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
@@ -16,7 +17,7 @@ const WIZARD_STEPS = 2;
 // directories exist, so it owes no Close affordance. A RE-RUN is different:
 // the app is already configured and the user may simply be looking, so it
 // offers Cancel, which writes nothing (every step edits store state, and
-// `finish` is the sole writer).
+// the Finish workflow is the sole writer).
 
 export default function Wizard() {
   const step = useWizardStore((s) => s.step);
@@ -29,7 +30,6 @@ export default function Wizard() {
   const removeDir = useWizardStore((s) => s.removeDir);
   const setStep = useWizardStore((s) => s.setStep);
   const setTimezone = useWizardStore((s) => s.setTimezone);
-  const finish = useWizardStore((s) => s.finish);
   const cancel = useWizardStore((s) => s.cancel);
 
   useBlockingSurface();
@@ -116,7 +116,7 @@ export default function Wizard() {
               <Button
                 variant="primary"
                 disabled={timezonePending || !timezoneValid || timezone.trim() === ""}
-                onClick={() => void finish()}
+                onClick={() => void finishWizard()}
               >
                 Finish and scan
               </Button>

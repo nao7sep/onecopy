@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { useWizardStore } from "../../src/state/wizard-store";
+import { finishWizard } from "../../src/workflows/wizard";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function patchConfigPayloads(): Array<Record<string, unknown>> {
@@ -31,7 +32,7 @@ beforeEach(() => {
 
 describe("finish", () => {
   it("saves the directories and timezone", async () => {
-    await useWizardStore.getState().finish();
+    await finishWizard();
 
     const merged = Object.assign({}, ...patchConfigPayloads()) as Record<
       string,
@@ -43,9 +44,9 @@ describe("finish", () => {
 
   it("does not save while timezone validation is pending or invalid", async () => {
     useWizardStore.setState({ timezoneValid: false, timezonePending: true });
-    await useWizardStore.getState().finish();
+    await finishWizard();
     useWizardStore.setState({ timezonePending: false });
-    await useWizardStore.getState().finish();
+    await finishWizard();
 
     expect(patchConfigPayloads()).toEqual([]);
   });

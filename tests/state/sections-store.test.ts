@@ -7,6 +7,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { useSectionsStore } from "../../src/state/sections-store";
+import { installScanEventWiring } from "../../src/workflows/scan-events";
 import type { SectionCounts } from "../../src/models/sections";
 import { fireEvent, mockCommand, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
@@ -24,6 +25,8 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   useSectionsStore.setState({ counts: null, scanning: false, progress: "", rescanNeeded: false });
 });
+
+void installScanEventWiring();
 
 describe("out-of-order count snapshots", () => {
   it("keeps the newer snapshot when the older response arrives last", async () => {

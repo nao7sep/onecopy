@@ -34,7 +34,6 @@ interface WizardState {
   removeDir: (path: string) => void;
   setStep: (step: 1 | 2) => void;
   setTimezone: (name: string) => Promise<void>;
-  finish: () => Promise<void>;
   /** Abandons a re-run, changing nothing. Never available on a first run. */
   cancel: () => void;
   recheckPresence: () => Promise<void>;
@@ -118,32 +117,10 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     }
   },
 
-  finish: async () => {
-    const { dirs, timezone, timezoneValid, timezonePending } = get();
-    if (!timezoneValid || timezonePending || timezone.trim() === "") return;
-    try {
-      // A patch of exactly the wizard's keys through the one config
-      // owner; everything else in config.json stays untouched.
-      const { useAppStore } = await import("./app-store");
-      await useAppStore.getState().patchConfig({
-        sourceDirs: dirs.map((d) => d.path),
-        defaultTimezone: timezone,
-      });
-      // Persisting a source removal also prunes its trust baseline immediately;
-      // a later re-add is first sight rather than a false substitution.
-      await get().recheckPresence();
-      set({ open: false });
-      log.info("wizard finished", { sourceDirs: dirs.length });
-      const { useSectionsStore } = await import("./sections-store");
-      await useSectionsStore.getState().startScan();
-    } catch (error) {
-      log.error("wizard save failed", toErrorFields(error));
-    }
-  },
-
   cancel: () => {
     // Nothing was written on the way through — every step edits store state
-    // only, and `finish` is the sole writer — so abandoning is just a close.
+    // only, and the Finish workflow is the sole writer — so abandoning is
+    // just a close.
     set({ open: false, reconfigure: false });
   },
 

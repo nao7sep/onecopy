@@ -1,7 +1,6 @@
-// The settings surface over the Design's tunables. The store never validates
-// beyond field-level checks (the resolver and features own semantics); Save
-// merges into the existing config, persists, re-resolves the whole index from
-// stored evidence (pure DB work — no file reads), and refreshes the views.
+// The settings surface over the Design's tunables. This store owns the draft,
+// field validation, and picker. The cross-store Save journey lives in
+// workflows/settings.
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
@@ -109,7 +108,6 @@ interface SettingsState {
   validateTimezone: (name: string) => Promise<void>;
   addSourceDir: () => Promise<void>;
   removeSourceDir: (path: string) => void;
-  save: () => Promise<void>;
 }
 
 const timezoneValidation = requestSeq();
@@ -182,31 +180,5 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   removeSourceDir: (path) => {
     const draft = get().draft;
     if (draft) get().update({ sourceDirs: draft.sourceDirs.filter((d) => d !== path) });
-  },
-
-  save: async () => {
-    const { draft, timezoneValid, timezonePending } = get();
-    if (!draft || !timezoneValid || timezonePending) return;
-    set({ saving: true, message: "" });
-    try {
-      // A patch of exactly the draft's keys through the one config owner —
-      // keys other surfaces manage (destinationRoots) are never touched.
-      const { useAppStore } = await import("./app-store");
-      await useAppStore.getState().patchConfig({ ...draft });
-      // Settings changes re-resolve everything from stored evidence and
-      // rebuild groups — pure DB work, no file reads.
-      const resolved = await invoke<number>("re_resolve_all");
-      const { useSectionsStore } = await import("./sections-store");
-      await useSectionsStore.getState().loadCounts();
-      const { useItemsStore } = await import("./items-store");
-      await useItemsStore.getState().refresh();
-      const { useWizardStore } = await import("./wizard-store");
-      await useWizardStore.getState().recheckPresence();
-      set({ open: false, draft: null, opened: null, saving: false });
-      log.info("settings saved", { resolved });
-    } catch (error) {
-      set({ saving: false, message: String(error) });
-      log.error("settings save failed", toErrorFields(error));
-    }
   },
 }));

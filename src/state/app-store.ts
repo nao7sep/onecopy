@@ -27,7 +27,7 @@ interface AppState {
    * does, so the notice cannot be missed by a re-render. */
   quarantines: QuarantineRecord[];
   dismissQuarantines: () => void;
-  reload: () => Promise<void>;
+  reload: () => Promise<LoadedAppData | null>;
   patchConfig: (patch: Record<string, unknown>) => Promise<void>;
   patchState: (patch: Record<string, unknown>) => Promise<void>;
 }
@@ -97,13 +97,11 @@ export const useAppStore = create<AppState>((set) => ({
         hasConfig: data.config !== null,
         hasState: data.state !== null,
       });
-      const { useWizardStore } = await import("./wizard-store");
-      await useWizardStore.getState().init(data.config);
-      const { useDestinationsStore } = await import("./destinations-store");
-      useDestinationsStore.getState().init(data.config);
+      return data;
     } catch (error) {
       set({ loadError: String(error) });
       log.error("app data load failed", toErrorFields(error));
+      return null;
     }
   },
 }));

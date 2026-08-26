@@ -8,13 +8,15 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
+import { installScanEventWiring } from "../../src/workflows/scan-events";
 
-// The stores register their event wiring once, in an async IIFE at module
-// load, so they are imported at the top of the file and the listener registry
-// is deliberately NOT cleared between specs — clearing it would leave every
-// store deaf for the rest of the run.
+// The application workflow registers event wiring once. The listener registry
+// is deliberately NOT cleared between specs — clearing it would leave this
+// module's idempotent installation deaf for the rest of the run.
 const sections = useSectionsStore;
 const binaries = useBinariesStore;
+
+void installScanEventWiring();
 
 async function settle() {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
