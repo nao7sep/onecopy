@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 
 const SOURCES = [
   "src/App.tsx",
+  "src/hooks/useMainWindowLifecycle.ts",
   "src/state/preview-store.ts",
   "src/state/comparison-store.ts",
   "src/windows/PreviewWindow.tsx",

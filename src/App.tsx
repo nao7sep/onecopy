@@ -1,32 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
 import { useAppStore } from "./state/app-store";
 import {
-  ZOOM_DEFAULT,
-  isZoomIn,
-  isZoomOut,
-  isZoomReset,
-  stepZoomIn,
-  stepZoomOut,
-} from "./utils/zoom";
-import {
   GRID_MIN_WIDTH,
   HEADER_HEIGHT,
-  PREVIEW_PANE_DEFAULT_WIDTH,
-  PREVIEW_PANE_MIN_WIDTH,
-  RIGHT_PANE_DEFAULT_WIDTH,
-  RIGHT_PANE_MIN_WIDTH,
-  SIDEBAR_DEFAULT_WIDTH,
-  SIDEBAR_MIN_WIDTH,
   SPLITTER_WIDTH,
-  clampPaneWidths,
-  computeMinWindowHeight,
-  computeMinWindowWidth,
 } from "./utils/windowSizing";
-import { parseSavedBounds, restorableBounds, shrinkToFit } from "./utils/windowBounds";
 import { useSectionsStore } from "./state/sections-store";
 import { statusLine } from "./models/status";
 import { useItemsStore } from "./state/items-store";
@@ -42,10 +22,6 @@ import QuarantineNotice from "./components/QuarantineNotice";
 import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
-import { useSettingsStore } from "./state/settings-store";
-import { isEditableTarget, isHelpShortcut, isSettingsShortcut, shadowsMacTextEditing } from "./utils/shortcuts";
-import { hasOpenModal } from "./utils/modalStack";
-import { isComposingEvent } from "./hooks/useComposing";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
 import QuickView from "./components/QuickView";
@@ -53,30 +29,25 @@ import TrashModal from "./components/TrashModal";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { Menu as MenuIcon, Minus, Plus, X } from "lucide-react";
 import { useWizardStore } from "./state/wizard-store";
-import { useComparisonStore } from "./state/comparison-store";
 import { useIssuesStore } from "./state/issues-store";
 import {
   toolsChip,
   useBinariesStore,
 } from "./state/binaries-store";
-import { itemKey } from "./state/items-store";
-import { DEFAULT_DESC, type SortChoice, type SortOrder } from "./models/items";
-import { comparisonHashForEnter } from "./models/interactions";
 import { usePreviewStore } from "./state/preview-store";
 import { useQuickViewStore } from "./state/quick-view-store";
 import {
   backgroundWorkLine,
-  installActivityPings,
   useDerivedWorkStore,
 } from "./state/derived-work-store";
 import PreviewSurface from "./components/PreviewSurface";
-import { log, reportWindowCall, toErrorFields } from "./repositories";
+import { log, toErrorFields } from "./repositories";
 import BackgroundWorkModal from "./components/BackgroundWorkModal";
-import { bootstrapApplication } from "./workflows/app-lifecycle";
-import { deleteSelectedItems } from "./workflows/items";
 import { closePreview } from "./workflows/preview";
-import { handleSpaceQuickView } from "./workflows/quick-view";
-import { openComparison } from "./workflows/comparison";
+import { useAppBootstrapAndRestore } from "./hooks/useAppBootstrapAndRestore";
+import { useGlobalCommands } from "./hooks/useGlobalCommands";
+import { useMainWindowLifecycle } from "./hooks/useMainWindowLifecycle";
+import { usePaneLayout } from "./hooks/usePaneLayout";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -111,11 +82,6 @@ export default function App() {
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
-  const [rightTab, setRightTabRaw] = useState<"details" | "destinations">("details");
-  const setRightTab = (tab: "details" | "destinations") => {
-    setRightTabRaw(tab);
-    void useAppStore.getState().patchState({ rightPaneTab: tab });
-  };
   const issuesTotal = useIssuesStore((s) => s.total);
   const derivedWorkSnapshot = useDerivedWorkStore((s) => s.snapshot);
   const setBackgroundWorkOpen = useDerivedWorkStore((s) => s.setOpen);
@@ -126,475 +92,38 @@ export default function App() {
   // is the modal's story.
   const ffmpegProgress = useBinariesStore((s) => s.installing["ffmpeg"]);
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
-  const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   /** Transient media inspection lives in the main webview. */
   const quickViewOpen = useQuickViewStore((state) => state.open);
-  /** Pending permanent deletion awaiting confirmation (item count shown). */
-  const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
-  /** Pending TRASH deletion awaiting confirmation — exists only when the
-   * opt-in `confirmTrashDelete` config flag is on. */
-  const [confirmTrash, setConfirmTrash] = useState<number | null>(null);
   const previewFollow = usePreviewStore((s) => s.follow);
   const previewPlacement = usePreviewStore((s) => s.placement);
   const previewCurrent = usePreviewStore((s) => s.current);
   const splitOpen = previewFollow && previewPlacement === "split";
-  const mainColRef = useRef<HTMLElement | null>(null);
-
-  // The one open-Settings path — the menu item and the Cmd+, chord both use
-  // it, so the two can never drift.
-  const openSettings = () =>
-    useSettingsStore.getState().openWith(useAppStore.getState().appData?.config ?? null);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // While typing: a bare "?" is text, not the help alias, and on macOS the
-      // Ctrl half of a dual-bound chord stands down — the Cmd half is the
-      // binding and always fires (keyboard-shortcut-conventions).
-      const editable = isEditableTarget(event.target);
-      if (editable && (event.key === "?" || shadowsMacTextEditing(event))) return;
-      if (isHelpShortcut(event)) {
-        event.preventDefault();
-        // Over another modal the chord only closes an already-open help —
-        // never stacks help on top of Settings or Managed tools.
-        setHelpOpen((open) => (open ? false : hasOpenModal() ? open : true));
-      } else if (isSettingsShortcut(event)) {
-        event.preventDefault();
-        if (!hasOpenModal()) openSettings();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  // The derived-work coordinator's view of the user: throttled input pings.
-  useEffect(() => {
-    return installActivityPings(window);
-  }, []);
-
-  // A newly opened preview window asks for the exact message already owned
-  // by the preview store. Rebuilding it from selection would lose one-shot
-  // presentation intent such as image zoom or a video snapshot seek.
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void import("@tauri-apps/api/event").then(async ({ listen, emit }) => {
-      const fn = await listen("preview://ready", () => {
-        const current = usePreviewStore.getState().current;
-        if (current !== null) void emit("preview://show", current);
-      });
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  // App chrome: the derived window minimum, applied at startup and when the
-  // split preview changes it; zoom is persisted app-level STATE (not a
-  // preference) on the discrete ladder, with cross-layout shortcut detection
-  // (JIS ";" included). Failures degrade silently in the browser-dev case
-  // where no Tauri window exists.
-  //
-  // NEVER while maximized: on Windows the min-size call knocks a maximized
-  // window back to normal, which is how Space (split placement flips this
-  // effect's dependency) un-maximized the developer's always-maximized main
-  // window. A maximized window cannot go below any minimum anyway, so the
-  // constraint waits in `pendingMinSize` and the resize listener below
-  // applies it once the window is normal again.
-  const pendingMinSize = useRef<LogicalSize | null>(null);
-  useEffect(() => {
-    const size = new LogicalSize(computeMinWindowWidth(splitOpen), computeMinWindowHeight());
-    const window = getCurrentWindow();
-    void (async () => {
-      try {
-        if (await window.isMaximized()) {
-          pendingMinSize.current = size;
-          return;
-        }
-        pendingMinSize.current = null;
-        await window.setMinSize(size);
-      } catch (error) {
-        reportWindowCall("setMinSize")(error);
-      }
-    })();
-  }, [splitOpen]);
-
-  // Window bounds: the window is created HIDDEN (tauri.conf `visible: false` —
-  // on Windows a visible window paints a white frame before WebView2 loads),
-  // saved bounds are restored while nobody can see the jump, and only then is
-  // the window shown. Bounds are state like zoom: physical pixels, saved
-  // debounced from the move/resize events, validated against the LIVE monitor
-  // set at boot — this machine swings between one and three screens, and a
-  // window restored onto a detached monitor has no reachable title bar.
-  const bootShown = useRef(false);
-  useEffect(() => {
-    if (bootShown.current || (appData === null && loadError === null)) return;
-    bootShown.current = true;
-    const window = getCurrentWindow();
-    // Whatever restore does, the window MUST end up visible — a thrown
-    // monitor query on some exotic setup may cost the placement, never the app.
-    const showFallback = setTimeout(() => {
-      void window.show().catch(reportWindowCall("show"));
-    }, 3000);
-    void (async () => {
-      try {
-        const { availableMonitors, currentMonitor, PhysicalPosition, PhysicalSize } =
-          await import("@tauri-apps/api/window");
-        const state = useAppStore.getState().appData?.state;
-        const saved = restorableBounds(
-          parseSavedBounds(state?.windowBounds),
-          await availableMonitors(),
-        );
-        if (saved !== null) {
-          // The NORMAL-state geometry, applied even when maximizing next:
-          // it is what un-maximizing returns to.
-          await window.setPosition(new PhysicalPosition(saved.x, saved.y));
-          await window.setSize(new PhysicalSize(saved.width, saved.height));
-        } else {
-          // First launch (or stale bounds): the 1400×900 default overflows a
-          // small laptop screen; shrink to the hosting monitor.
-          const monitor = await currentMonitor();
-          const inner = await window.innerSize();
-          const fitted = monitor !== null ? shrinkToFit(inner, monitor.size) : null;
-          if (fitted !== null) {
-            await window.setSize(new PhysicalSize(fitted.width, fitted.height));
-          }
-        }
-        // The app is almost always used maximized (developer, 2026-08-17) —
-        // a state worth restoring in its own right, independent of whether
-        // the normal-state bounds survived the monitor check.
-        if (state?.windowMaximized === true) {
-          await window.maximize();
-        }
-      } catch (error) {
-        reportWindowCall("restore bounds")(error);
-      } finally {
-        clearTimeout(showFallback);
-        await window.show().catch(reportWindowCall("show"));
-        await window.setFocus().catch(reportWindowCall("boot setFocus"));
-      }
-    })();
-  }, [appData, loadError]);
-
-  // The save half: on move/resize, read the live outer position + inner size
-  // (the restore counterparts) and persist, debounced — drags fire dozens of
-  // events per second and state.json wants the landing place, not the journey.
-  //
-  // Maximized is a FLAG, never geometry: while maximized, only
-  // `windowMaximized` updates — writing the maximized rect into
-  // `windowBounds` would overwrite the remembered normal size, so
-  // un-maximizing (now or next session) would have nowhere real to return
-  // to. This is also where a deferred min-size constraint lands once the
-  // window is normal again (see the min-size effect).
-  useEffect(() => {
-    const window = getCurrentWindow();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const save = () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => {
-        void (async () => {
-          try {
-            if (await window.isMaximized()) {
-              await useAppStore.getState().patchState({ windowMaximized: true });
-              return;
-            }
-            if (pendingMinSize.current !== null) {
-              const size = pendingMinSize.current;
-              pendingMinSize.current = null;
-              await window.setMinSize(size).catch(reportWindowCall("setMinSize"));
-            }
-            const position = await window.outerPosition();
-            const size = await window.innerSize();
-            await useAppStore.getState().patchState({
-              windowMaximized: false,
-              windowBounds: {
-                x: position.x,
-                y: position.y,
-                width: size.width,
-                height: size.height,
-              },
-            });
-          } catch (error) {
-            reportWindowCall("save bounds")(error);
-          }
-        })();
-      }, 500);
-    };
-    const unlistens: Array<() => void> = [];
-    void window.onMoved(save).then((fn) => unlistens.push(fn));
-    void window.onResized(save).then((fn) => unlistens.push(fn));
-    return () => {
-      if (timer !== null) clearTimeout(timer);
-      for (const fn of unlistens) fn();
-    };
-  }, []);
-
-  // Pane widths: persisted INTENT in pixels (written only on drag-end); the
-  // displayed width is the intent clamped against the live container width,
-  // so a narrow window never rewrites what the user chose.
-  const [paneIntents, setPaneIntents] = useState({
-    left: SIDEBAR_DEFAULT_WIDTH,
-    right: RIGHT_PANE_DEFAULT_WIDTH,
-    preview: PREVIEW_PANE_DEFAULT_WIDTH,
+  const { contentRowRef, paneWidths, beginPaneDrag, restorePaneIntents } =
+    usePaneLayout(splitOpen);
+  const { rightTab, setRightTab } = useAppBootstrapAndRestore({
+    appData,
+    counts,
+    restorePaneIntents,
   });
-  const paneIntentsRef = useRef(paneIntents);
-  paneIntentsRef.current = paneIntents;
-  const [containerWidth, setContainerWidth] = useState<number | null>(null);
-  const contentRowRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const row = contentRowRef.current;
-    if (!row) return;
-    const measure = () => setContainerWidth(row.clientWidth);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(row);
-    return () => observer.disconnect();
-  }, []);
-  const paneWidths = clampPaneWidths(
-    paneIntents.left,
-    paneIntents.right,
-    containerWidth ?? computeMinWindowWidth() * 4,
-    splitOpen ? paneIntents.preview : null,
-  );
-
-  const beginPaneDrag =
-    (side: "left" | "right" | "preview") => (event: React.MouseEvent) => {
-      event.preventDefault();
-      const startX = event.clientX;
-      const start = { ...paneIntentsRef.current };
-      // Window-wide resize cursor for the drag's duration — the pointer roams
-      // over elements carrying their own cursors otherwise (cursor conventions).
-      document.body.classList.add("col-resizing");
-      const onMove = (e: MouseEvent) => {
-        const delta = e.clientX - startX;
-        // The sidebar grows rightward; the preview and right pane grow
-        // leftward (their dividers sit on their left edges).
-        const next =
-          side === "left"
-            ? { ...paneIntentsRef.current, left: Math.max(SIDEBAR_MIN_WIDTH, start.left + delta) }
-            : side === "preview"
-              ? {
-                  ...paneIntentsRef.current,
-                  preview: Math.max(PREVIEW_PANE_MIN_WIDTH, start.preview - delta),
-                }
-              : {
-                  ...paneIntentsRef.current,
-                  right: Math.max(RIGHT_PANE_MIN_WIDTH, start.right - delta),
-                };
-        setPaneIntents(next);
-      };
-      const onUp = () => {
-        document.body.classList.remove("col-resizing");
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        void useAppStore.getState().patchState({
-          sidebarWidth: paneIntentsRef.current.left,
-          rightPaneWidth: paneIntentsRef.current.right,
-          previewPaneWidth: paneIntentsRef.current.preview,
-        });
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    };
-
-  const zoomRef = useRef(ZOOM_DEFAULT);
-  // Reactive mirror of zoomRef so the menu's zoom stepper can display it.
-  const [zoomLevel, setZoomLevel] = useState(ZOOM_DEFAULT);
-
-  // The one zoom application path: keys and the menu stepper both use it.
-  const applyZoom = (next: number) => {
-    zoomRef.current = next;
-    setZoomLevel(next);
-    void getCurrentWebview().setZoom(next).catch(reportWindowCall("setZoom"));
-    // Through the one state owner (patch of only this key, debounced) —
-    // a failed write is logged there, never silently swallowed.
-    void useAppStore.getState().patchState({ zoomLevel: next });
-  };
-
-  useEffect(() => {
-    if (appData === null) return;
-    const stored = appData.state?.zoomLevel;
-    const level = typeof stored === "number" ? stored : ZOOM_DEFAULT;
-    zoomRef.current = level;
-    setZoomLevel(level);
-    if (level !== ZOOM_DEFAULT) {
-      void getCurrentWebview().setZoom(level).catch(reportWindowCall("setZoom"));
-    }
-  }, [appData]);
-
-  useEffect(() => {
-    const onZoomKey = (event: KeyboardEvent) => {
-      // Mid-composition the chord belongs to the pending IME candidate;
-      // matters on macOS where Ctrl+; is an IME conversion chord.
-      if (isComposingEvent(event)) return;
-      if (hasOpenModal()) return;
-      const zoomIn = isZoomIn(event);
-      const zoomOut = isZoomOut(event);
-      const zoomReset = isZoomReset(event);
-      if (!zoomIn && !zoomOut && !zoomReset) return;
-      event.preventDefault();
-      applyZoom(
-        zoomReset
-          ? ZOOM_DEFAULT
-          : zoomIn
-            ? stepZoomIn(zoomRef.current)
-            : stepZoomOut(zoomRef.current),
-      );
-    };
-    window.addEventListener("keydown", onZoomKey);
-    return () => window.removeEventListener("keydown", onZoomKey);
-    // applyZoom is stable in behavior; the ref carries the current level.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Grid keys: Delete/Backspace trash-deletes the selected logical item
-  // (every copy; Shift = permanent); Enter opens the comparison view when the
-  // selection has similar photos. Ignored while typing in a form control or
-  // while the comparison view owns the keyboard.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // The command layer goes quiet while ANY modal is open: Backspace over
-      // an open dialog must never trash files behind the backdrop.
-      if (hasOpenModal()) return;
-      if (useComparisonStore.getState().open) return;
-      // A composite that already acted on this key has claimed it. React 19
-      // dispatches from #root, so the native event keeps bubbling to this
-      // window listener afterwards — without this, Enter on a destination row
-      // moves the file AND opens the comparison view for the item being moved.
-      if (event.defaultPrevented) return;
-      if (isEditableTarget(event.target)) return;
-      if (event.key === "Delete" || event.key === "Backspace") {
-        event.preventDefault();
-        const { selectedKeys, selectedItem } = useItemsStore.getState();
-        const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;
-        if (count === 0) return;
-        if (event.shiftKey) {
-          // Permanent deletion always confirms with the count (the design's
-          // rule, NOT configurable — this one bypasses the net).
-          setConfirmPermanent(count);
-        } else if (
-          useAppStore.getState().appData?.config?.confirmTrashDelete === true
-        ) {
-          // Opt-in confirmation for the ordinary trash delete (developer,
-          // 2026-08-17). OFF by default: the trash is the net, and a dialog
-          // on every Delete would break the keystroke-paced cull — but a
-          // deliberate user can trade that pace for the extra stop.
-          setConfirmTrash(count);
-        } else {
-          void deleteSelectedItems(false);
-        }
-      } else if (
-        event.key === " " &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.altKey
-      ) {
-        // Space owns the transient Quick View. Persistent Preview visibility
-        // belongs to its chrome control; a focused video player keeps Space
-        // for play/pause.
-        handleSpaceQuickView(event);
-      } else if (event.key === "Enter") {
-        const { items, selectedItem } = useItemsStore.getState();
-        const item = items.find((i) => itemKey(i) === selectedItem);
-        if (!item) return;
-        event.preventDefault();
-        const comparisonHash = comparisonHashForEnter(item);
-        if (comparisonHash !== null) {
-          // Similar photos exist: Enter means "show them all at once". A
-          // group with no other live members says so instead of surprising
-          // the user with a different surface.
-          void openComparison(comparisonHash)
-            .then((opened) => {
-              if (opened) return;
-              useItemsStore.setState({
-                message: "No similar photos left in this group",
-              });
-            });
-        }
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    void bootstrapApplication();
-  }, []);
-
-  // One-shot state restore once the persisted document is in: sort order,
-  // right-pane tab, Issues-open, and the last-open section + anchor (the
-  // section restore waits for counts so it never selects a vanished month).
-  const restoredRef = useRef(false);
-  useEffect(() => {
-    if (restoredRef.current || appData === null || counts === null) return;
-    restoredRef.current = true;
-    const state = appData.state ?? {};
-    // Per-lane sort choices; legacy shapes (a bare string, or a lane holding
-    // a bare order string) restore into their natural direction.
-    const isOrder = (v: unknown): v is SortOrder =>
-      v === "time" || v === "name" || v === "size" || v === "resolution" || v === "ext";
-    const asChoice = (v: unknown): SortChoice | null => {
-      if (isOrder(v)) return { order: v, desc: DEFAULT_DESC[v] };
-      if (typeof v === "object" && v !== null) {
-        const rec = v as Record<string, unknown>;
-        if (isOrder(rec.order)) {
-          return { order: rec.order, desc: rec.desc === true };
-        }
-      }
-      return null;
-    };
-    const savedOrders = (state.sortOrders ?? {}) as Record<string, unknown>;
-    useItemsStore.setState((current) => ({
-      sortOrders: {
-        media:
-          asChoice(savedOrders.media) ?? asChoice(state.sortOrder) ?? current.sortOrders.media,
-        other: asChoice(savedOrders.other) ?? current.sortOrders.other,
-      },
-    }));
-    if (state.rightPaneTab === "destinations") setRightTabRaw("destinations");
-    const left = state.sidebarWidth;
-    const right = state.rightPaneWidth;
-    const preview = state.previewPaneWidth;
-    setPaneIntents((current) => ({
-      left: typeof left === "number" && Number.isFinite(left) ? left : current.left,
-      right: typeof right === "number" && Number.isFinite(right) ? right : current.right,
-      preview:
-        typeof preview === "number" && Number.isFinite(preview) ? preview : current.preview,
-    }));
-    const placement = state.previewPlacement;
-    usePreviewStore
-      .getState()
-      .restoreFollow(
-        state.previewFollow === true,
-        placement === "split" || placement === "window" ? placement : null,
-      );
-    const last = state.lastSection as { kind?: string; month?: string } | undefined;
-    if (
-      last &&
-      (last.kind === "image" || last.kind === "video" || last.kind === "other") &&
-      typeof last.month === "string"
-    ) {
-      const lists =
-        last.kind === "image" ? counts.images : last.kind === "video" ? counts.videos : counts.others;
-      if (lists.some((s) => s.month === last.month)) {
-        void useItemsStore
-          .getState()
-          .select({ kind: last.kind, month: last.month })
-          .then(() => {
-            const anchor = state.lastItem;
-            if (typeof anchor !== "string") return;
-            const { items } = useItemsStore.getState();
-            if (items.some((i) => itemKey(i) === anchor)) {
-              useItemsStore.getState().selectItem(anchor);
-            }
-          });
-      }
-    }
-  }, [appData, counts]);
+  const {
+    helpOpen,
+    openHelp,
+    closeHelp,
+    openSettings,
+    confirmPermanent,
+    confirmTrash,
+    cancelPermanentDelete,
+    cancelTrashDelete,
+    confirmPermanentDelete,
+    confirmTrashDelete,
+  } = useGlobalCommands();
+  const { zoomLevel, zoomIn, zoomOut } = useMainWindowLifecycle({
+    appData,
+    loadError,
+    splitOpen,
+  });
 
   const status = statusLine({
     message: itemsMessage,
@@ -624,7 +153,7 @@ export default function App() {
       <ComparisonView />
       <BinariesModal />
       <BackgroundWorkModal />
-      <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ShortcutsModal open={helpOpen} onClose={closeHelp} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       {quickViewOpen ? <QuickView /> : null}
       {confirmPermanent !== null ? (
@@ -634,11 +163,8 @@ export default function App() {
             confirmPermanent === 1 ? "" : "s"
           } and every copy? This bypasses the trash and cannot be undone.`}
           confirmLabel="Delete permanently"
-          onConfirm={() => {
-            setConfirmPermanent(null);
-            void deleteSelectedItems(true);
-          }}
-          onCancel={() => setConfirmPermanent(null)}
+          onConfirm={confirmPermanentDelete}
+          onCancel={cancelPermanentDelete}
         />
       ) : null}
       {confirmTrash !== null ? (
@@ -648,11 +174,8 @@ export default function App() {
             confirmTrash === 1 ? "" : "s"
           } and every copy to the trash? Recoverable from Menu → Trash.`}
           confirmLabel="Move to trash"
-          onConfirm={() => {
-            setConfirmTrash(null);
-            void deleteSelectedItems(false);
-          }}
-          onCancel={() => setConfirmTrash(null)}
+          onConfirm={confirmTrashDelete}
+          onCancel={cancelTrashDelete}
         />
       ) : null}
       <SettingsModal />
@@ -713,7 +236,7 @@ export default function App() {
                   <button
                     className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
                     aria-label="Zoom out"
-                    onClick={() => applyZoom(stepZoomOut(zoomRef.current))}
+                    onClick={zoomOut}
                   >
                     <ZoomOutIcon />
                   </button>
@@ -723,7 +246,7 @@ export default function App() {
                   <button
                     className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
                     aria-label="Zoom in"
-                    onClick={() => applyZoom(stepZoomIn(zoomRef.current))}
+                    onClick={zoomIn}
                   >
                     <ZoomInIcon />
                   </button>
@@ -745,7 +268,7 @@ export default function App() {
                 Reveal logs folder
               </MenuItem>
               <MenuSeparator />
-              <MenuItem onSelect={() => setHelpOpen(true)}>Keyboard shortcuts…</MenuItem>
+              <MenuItem onSelect={openHelp}>Keyboard shortcuts…</MenuItem>
               <MenuItem onSelect={() => setAboutOpen(true)}>About OneCopy…</MenuItem>
             </Menu>
           </header>
@@ -767,7 +290,6 @@ export default function App() {
           <div className="w-px bg-border transition-colors group-hover:bg-border-strong" />
         </div>
         <main
-          ref={mainColRef}
           style={{ minWidth: GRID_MIN_WIDTH }}
           className="flex min-w-0 flex-1 flex-col overflow-hidden"
         >

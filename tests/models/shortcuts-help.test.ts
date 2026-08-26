@@ -18,6 +18,8 @@ import { shortcutGroups } from "../../src/models/shortcuts";
 
 const SOURCES = [
   "src/App.tsx",
+  "src/hooks/useGlobalCommands.ts",
+  "src/hooks/useMainWindowLifecycle.ts",
   "src/components/Grid.tsx",
   "src/state/quick-view-store.ts",
   "src/components/DestinationsTab.tsx",
