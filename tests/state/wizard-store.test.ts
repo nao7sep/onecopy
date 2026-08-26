@@ -24,6 +24,8 @@ beforeEach(() => {
     step: 2,
     dirs: [{ path: "/root", counting: false }] as never,
     timezone: "Asia/Tokyo",
+    timezoneValid: true,
+    timezonePending: false,
   });
 });
 
@@ -39,6 +41,41 @@ describe("finish", () => {
     expect(merged.defaultTimezone).toBe("Asia/Tokyo");
   });
 
+  it("does not save while timezone validation is pending or invalid", async () => {
+    useWizardStore.setState({ timezoneValid: false, timezonePending: true });
+    await useWizardStore.getState().finish();
+    useWizardStore.setState({ timezonePending: false });
+    await useWizardStore.getState().finish();
+
+    expect(patchConfigPayloads()).toEqual([]);
+  });
+});
+
+describe("timezone validation", () => {
+  it("ignores an older reply that arrives after the current value", async () => {
+    let settleOld: ((valid: boolean) => void) | undefined;
+    let settleCurrent: ((valid: boolean) => void) | undefined;
+    mockCommands({
+      validate_timezone: ({ name }) =>
+        new Promise<boolean>((resolve) => {
+          if (name === "Tokyo") settleOld = resolve;
+          else settleCurrent = resolve;
+        }),
+    });
+
+    const old = useWizardStore.getState().setTimezone("Tokyo");
+    const current = useWizardStore.getState().setTimezone("Asia/Tokyo");
+    settleCurrent?.(true);
+    await current;
+    settleOld?.(false);
+    await old;
+
+    expect(useWizardStore.getState()).toMatchObject({
+      timezone: "Asia/Tokyo",
+      timezoneValid: true,
+      timezonePending: false,
+    });
+  });
 });
 
 describe("loaded directory projection", () => {

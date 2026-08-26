@@ -134,11 +134,17 @@ fn report_quarantine(app: &AppHandle, record: Option<storage::QuarantineRecord>)
 // store's stale cached copy can blind-overwrite another's save. Returns the
 // merged document so the caller can publish it without a second read.
 #[tauri::command(async)]
-fn patch_config(app: AppHandle, patch: Value) -> Result<Value, String> {
+fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
     logging::boundary(
         "patch_config",
         json!({}),
         || {
+            if let Some(value) = patch.get_mut("defaultTimezone") {
+                let name = value
+                    .as_str()
+                    .ok_or("Default timezone must be an IANA timezone name")?;
+                *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
+            }
             let outcome = storage::patch_config(&app, &patch)?;
             report_quarantine(&app, outcome.quarantined);
             Ok(outcome.merged)
@@ -1283,7 +1289,7 @@ fn binaries_check(
 // Wizard support: is this a real IANA timezone name?
 #[tauri::command]
 fn validate_timezone(name: String) -> bool {
-    name.parse::<chrono_tz::Tz>().is_ok()
+    resolution::parse_timezone_name(&name).is_ok()
 }
 
 // The session gate's check: configured source directories that are not

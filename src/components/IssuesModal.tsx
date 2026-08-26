@@ -31,7 +31,7 @@ export default function IssuesModal() {
     <ModalShell
       title="Issues"
       onClose={() => setOpen(false)}
-      widthClass="w-[600px]"
+      widthClass="w-[min(820px,calc(100vw-3rem))]"
       footerStart={
         total > rows.length ? `Showing the oldest ${rows.length} of ${total}` : undefined
       }

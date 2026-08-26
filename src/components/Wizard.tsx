@@ -23,6 +23,7 @@ export default function Wizard() {
   const dirs = useWizardStore((s) => s.dirs);
   const timezone = useWizardStore((s) => s.timezone);
   const timezoneValid = useWizardStore((s) => s.timezoneValid);
+  const timezonePending = useWizardStore((s) => s.timezonePending);
   const reconfigure = useWizardStore((s) => s.reconfigure);
   const addDirs = useWizardStore((s) => s.addDirs);
   const removeDir = useWizardStore((s) => s.removeDir);
@@ -54,7 +55,7 @@ export default function Wizard() {
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
-      <div className="w-[560px] max-w-full rounded-2xl border border-border bg-surface p-7 shadow-xl">
+      <div className="w-[min(860px,calc(100vw-3rem))] rounded-2xl border border-border bg-surface p-7 shadow-xl">
         <h1 className="text-xl font-semibold tracking-tight text-ink-strong">
           {reconfigure ? "Reconfigure" : "Setup"}
         </h1>
@@ -104,13 +105,17 @@ export default function Wizard() {
               onChange={(e) => void setTimezone(e.target.value)}
             />
             <p className="mb-6 min-h-4 text-xs text-danger">
-              {timezoneValid ? "" : "Not a recognized timezone name"}
+              {timezonePending
+                ? "Checking timezone…"
+                : timezoneValid
+                  ? ""
+                  : "Not a recognized timezone name"}
             </p>
             <div className="flex items-center justify-between">
               {leading}
               <Button
                 variant="primary"
-                disabled={!timezoneValid || timezone.trim() === ""}
+                disabled={timezonePending || !timezoneValid || timezone.trim() === ""}
                 onClick={() => void finish()}
               >
                 Finish and scan

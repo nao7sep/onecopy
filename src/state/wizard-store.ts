@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
+import { requestSeq } from "./request-seq";
 
 export interface WizardDir {
   path: string;
@@ -19,6 +20,7 @@ interface WizardState {
   dirs: WizardDir[];
   timezone: string;
   timezoneValid: boolean;
+  timezonePending: boolean;
   /** True when the wizard was RE-RUN over an existing setup. A first run has
    * nothing to return to, so only a re-run offers Cancel. */
   reconfigure: boolean;
@@ -38,29 +40,34 @@ interface WizardState {
   recheckPresence: () => Promise<void>;
 }
 
+const timezoneValidation = requestSeq();
+
 export const useWizardStore = create<WizardState>((set, get) => ({
   open: false,
   step: 1,
   dirs: [],
   timezone: "",
   timezoneValid: true,
+  timezonePending: false,
   reconfigure: false,
   missingDirs: [],
   substitutedDirs: [],
 
   init: async (config) => {
+    timezoneValidation.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
     if (sourceDirs.length === 0) {
-      set({ open: true, step: 1, dirs: [], timezone, reconfigure: false });
+      set({ open: true, step: 1, dirs: [], timezone, timezoneValid: true, timezonePending: false, reconfigure: false });
     } else {
-      set({ open: false, timezone, reconfigure: false });
+      set({ open: false, timezone, timezoneValid: true, timezonePending: false, reconfigure: false });
       await get().recheckPresence();
     }
   },
 
   reopen: (config) => {
+    timezoneValidation.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
@@ -68,6 +75,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       open: true,
       step: 1,
       timezone,
+      timezoneValid: true,
+      timezonePending: false,
       reconfigure: true,
       dirs: sourceDirs.map((path) => ({ path })),
     });
@@ -95,17 +104,23 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   setStep: (step) => set({ step }),
 
   setTimezone: async (name) => {
-    set({ timezone: name });
+    const fresh = timezoneValidation.begin();
+    set({ timezone: name, timezoneValid: false, timezonePending: true });
+    if (name.trim() === "") {
+      if (fresh()) set({ timezonePending: false });
+      return;
+    }
     try {
       const valid = await invoke<boolean>("validate_timezone", { name });
-      if (get().timezone === name) set({ timezoneValid: valid });
+      if (fresh()) set({ timezoneValid: valid, timezonePending: false });
     } catch {
-      set({ timezoneValid: false });
+      if (fresh()) set({ timezoneValid: false, timezonePending: false });
     }
   },
 
   finish: async () => {
-    const { dirs, timezone } = get();
+    const { dirs, timezone, timezoneValid, timezonePending } = get();
+    if (!timezoneValid || timezonePending || timezone.trim() === "") return;
     try {
       // A patch of exactly the wizard's keys through the one config
       // owner; everything else in config.json stays untouched.

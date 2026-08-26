@@ -561,7 +561,7 @@ function DropChoiceModal({ path, onClose }: { path: string; onClose: () => void 
     <ModalShell
       title={`Drop into ${leafName(path)}`}
       onClose={onClose}
-      widthClass="w-[440px]"
+      widthClass="w-[min(720px,calc(100vw-3rem))]"
       closeLabel="Cancel"
       primaryAction={
         <>
@@ -586,7 +586,7 @@ function DropChoiceModal({ path, onClose }: { path: string; onClose: () => void 
         </>
       }
     >
-      <p className="truncate text-sm text-ink" title={path}>
+      <p className="select-text break-all text-sm text-ink" title={path}>
         {path}
       </p>
       <p className="mt-1 text-xs text-ink-muted">

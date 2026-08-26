@@ -50,6 +50,15 @@ pub struct ResolutionConfig {
     pub now_ms: i64,
 }
 
+pub fn parse_timezone_name(name: &str) -> Result<Tz, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Default timezone is required".to_string());
+    }
+    name.parse::<Tz>()
+        .map_err(|_| format!("Not a recognized IANA timezone: {name}"))
+}
+
 const DAY_MS: i64 = 86_400_000;
 
 impl ResolutionConfig {

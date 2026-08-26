@@ -11,6 +11,7 @@ export default function ConfirmDialog({
   message,
   confirmLabel,
   cancelLabel = "Cancel",
+  widthClass = "w-[400px]",
   onConfirm,
   onCancel,
 }: {
@@ -20,6 +21,7 @@ export default function ConfirmDialog({
   /** The dismiss label. Override where a more specific word reads better than
    *  the default — "Keep editing" beside a Discard, for example. */
   cancelLabel?: string;
+  widthClass?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -27,7 +29,7 @@ export default function ConfirmDialog({
     <ModalShell
       title={title}
       onClose={onCancel}
-      widthClass="w-[400px]"
+      widthClass={widthClass}
       closeLabel={cancelLabel}
       primaryAction={
         <button

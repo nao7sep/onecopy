@@ -872,7 +872,7 @@ export default function App() {
                 aria-selected={rightTab === tab}
                 aria-controls="right-tabpanel"
                 tabIndex={rightTab === tab ? 0 : -1}
-                className={`flex-1 px-2 py-1 text-xs ${
+                className={`flex-1 px-2 py-2.5 text-sm ${
                   rightTab === tab
                     ? "border-b-2 border-primary font-semibold text-primary"
                     : "text-ink-muted hover:text-ink"

@@ -552,7 +552,7 @@ fn install_ffmpeg_started(
         guard.deadline.check(&guard.cancelled)?;
         on_progress(
             "download",
-            format!("v{} from {}", resolved.version, resolved.download_url),
+            format!("version {}", resolved.version),
         );
         let bytes = acquisition::download_to(
             &resolved.download_url,

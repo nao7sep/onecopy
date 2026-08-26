@@ -59,11 +59,38 @@ export function installLine(phase: string, detail: string): string {
   return `${label} — ${detail}`;
 }
 
+export interface InstallStep {
+  phase: string;
+  text: string;
+}
+
+/** Preserve phase changes while replacing noisy progress updates within a phase. */
+function installStep(
+  steps: InstallStep[] | undefined,
+  phase: string,
+  text: string,
+): InstallStep[] {
+  const next = [...(steps ?? [])];
+  const index = next.findIndex((step) => step.phase === phase);
+  if (index < 0) next.push({ phase, text });
+  else next[index] = { phase, text };
+  return next;
+}
+
+function terminalStep(
+  steps: InstallStep[] | undefined,
+  text: string,
+): InstallStep[] {
+  return installStep(steps, "result", text);
+}
+
 interface BinariesState {
   entries: DependencyState[];
   /** Progress line per entry currently installing — several at once is
    * normal (the whole point of per-id claims). */
   installing: Record<string, string>;
+  /** The current attempt's durable phase history, retained through its result. */
+  installHistory: Record<string, InstallStep[]>;
   /** The last failure per entry, shown in its row until the next attempt. */
   errors: Record<string, string>;
   /** True while the registry-wide check runs (the button narrates it). */
@@ -95,6 +122,7 @@ interface BinariesState {
 export const useBinariesStore = create<BinariesState>((set, get) => ({
   entries: [],
   installing: {},
+  installHistory: {},
   errors: {},
   checking: false,
   checkingId: null,
@@ -116,7 +144,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     set((s) => {
       const errors = { ...s.errors };
       delete errors[id];
-      return { installing: { ...s.installing, [id]: "Starting…" }, errors };
+      return {
+        installing: { ...s.installing, [id]: "Starting…" },
+        installHistory: { ...s.installHistory, [id]: [] },
+        errors,
+      };
     });
     try {
       await invoke("binaries_install", { id });
@@ -124,7 +156,14 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       set((s) => {
         const installing = { ...s.installing };
         delete installing[id];
-        return { installing, errors: { ...s.errors, [id]: messageOf(error) } };
+        return {
+          installing,
+          installHistory: {
+            ...s.installHistory,
+            [id]: terminalStep(s.installHistory[id], "Install failed"),
+          },
+          errors: { ...s.errors, [id]: messageOf(error) },
+        };
       });
       log.error("binaries install start failed", { id, ...toErrorFields(error) });
     }
@@ -140,7 +179,13 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           if (s.installing[id] !== "Cancelling…") return s;
           const installing = { ...s.installing };
           delete installing[id];
-          return { installing };
+          return {
+            installing,
+            installHistory: {
+              ...s.installHistory,
+              [id]: terminalStep(s.installHistory[id], "Install stopped"),
+            },
+          };
         });
       }
     } catch (error) {
@@ -303,6 +348,14 @@ void (async () => {
             ...s.installing,
             [event.payload.id]: installLine(event.payload.phase, event.payload.detail),
           },
+          installHistory: {
+            ...s.installHistory,
+            [event.payload.id]: installStep(
+              s.installHistory[event.payload.id],
+              event.payload.phase,
+              installLine(event.payload.phase, event.payload.detail),
+            ),
+          },
         }));
       },
     );
@@ -310,7 +363,16 @@ void (async () => {
       useBinariesStore.setState((s) => {
         const installing = { ...s.installing };
         delete installing[event.payload.id];
-        return { installing };
+        return {
+          installing,
+          installHistory: {
+            ...s.installHistory,
+            [event.payload.id]: terminalStep(
+              s.installHistory[event.payload.id],
+              "Installed",
+            ),
+          },
+        };
       });
       void useBinariesStore.getState().load();
     });
@@ -320,7 +382,17 @@ void (async () => {
         const errors = { ...s.errors };
         delete installing[event.payload.id];
         delete errors[event.payload.id];
-        return { installing, errors };
+        return {
+          installing,
+          installHistory: {
+            ...s.installHistory,
+            [event.payload.id]: terminalStep(
+              s.installHistory[event.payload.id],
+              "Cancelled",
+            ),
+          },
+          errors,
+        };
       });
       void useBinariesStore.getState().load();
     });
@@ -330,6 +402,13 @@ void (async () => {
         delete installing[event.payload.id];
         return {
           installing,
+          installHistory: {
+            ...s.installHistory,
+            [event.payload.id]: terminalStep(
+              s.installHistory[event.payload.id],
+              "Install failed",
+            ),
+          },
           errors: { ...s.errors, [event.payload.id]: event.payload.message },
         };
       });

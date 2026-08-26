@@ -146,4 +146,31 @@ describe("binaries events", () => {
     expect(installing["whisper-large-v3-turbo"]).toBe("Downloading — 300 / 1549 MB");
     expect(installing["ultraface-rfb640"]).toBe("Verifying — checking integrity");
   });
+
+  it("retains each phase and a terminal result instead of flashing one line", async () => {
+    binaries.setState({ installing: {}, installHistory: {} });
+    fireEvent("binaries://progress", {
+      id: "ffmpeg",
+      phase: "resolve",
+      detail: "finding the latest build",
+    });
+    fireEvent("binaries://progress", {
+      id: "ffmpeg",
+      phase: "download",
+      detail: "84 MB",
+    });
+    fireEvent("binaries://progress", {
+      id: "ffmpeg",
+      phase: "verify",
+      detail: "checking integrity",
+    });
+    fireEvent("binaries://done", { id: "ffmpeg" });
+
+    expect(binaries.getState().installHistory.ffmpeg).toEqual([
+      { phase: "resolve", text: "Resolving — finding the latest build" },
+      { phase: "download", text: "Downloading — 84 MB" },
+      { phase: "verify", text: "Verifying — checking integrity" },
+      { phase: "result", text: "Installed" },
+    ]);
+  });
 });
