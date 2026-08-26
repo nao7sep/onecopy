@@ -14,6 +14,11 @@ import {
 
 const MONITOR = { position: { x: 0, y: 0 }, size: { width: 2560, height: 1440 } };
 const SECOND = { position: { x: 2560, y: 0 }, size: { width: 1920, height: 1080 } };
+const SCALED_LAPTOP = {
+  position: { x: 0, y: 0 },
+  size: { width: 1920, height: 1080 },
+  workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1032 } },
+};
 
 describe("parseSavedBounds", () => {
   it("accepts the saved shape and nothing weaker", () => {
@@ -61,9 +66,31 @@ describe("restorableBounds", () => {
     ).toBeNull();
   });
 
-  it("accepts a mostly-off-screen window whose corner is still grabbable", () => {
+  it("brings a grabbable, partly stranded window back inside the monitor", () => {
     const saved = { x: 2560 - 150, y: 1440 - 60, width: 1400, height: 900 };
-    expect(restorableBounds(saved, [MONITOR])).toEqual(saved);
+    expect(restorableBounds(saved, [MONITOR])).toEqual({
+      x: 1160,
+      y: 540,
+      width: 1400,
+      height: 900,
+    });
+  });
+
+  it("fits old oversized bounds to the current scaled work area", () => {
+    expect(
+      restorableBounds({ x: 20, y: 20, width: 2100, height: 1350 }, [SCALED_LAPTOP]),
+    ).toEqual({
+      x: 20,
+      y: 20,
+      width: 1728,
+      height: 929,
+    });
+  });
+
+  it("uses the taskbar-excluding work area for position clamps", () => {
+    expect(
+      restorableBounds({ x: 100, y: 300, width: 1400, height: 900 }, [SCALED_LAPTOP]),
+    ).toEqual({ x: 100, y: 132, width: 1400, height: 900 });
   });
 
   it("passes null through", () => {

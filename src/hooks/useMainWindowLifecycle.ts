@@ -108,7 +108,7 @@ export function useMainWindowLifecycle({
         } else {
           const monitor = await currentMonitor();
           const inner = await appWindow.innerSize();
-          const fitted = monitor !== null ? shrinkToFit(inner, monitor.size) : null;
+          const fitted = monitor !== null ? shrinkToFit(inner, monitor.workArea.size) : null;
           if (fitted !== null) {
             await appWindow.setSize(new PhysicalSize(fitted.width, fitted.height));
           }

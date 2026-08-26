@@ -28,12 +28,13 @@ describe("window minimums are derived, never hand-typed", () => {
     expect(HEADER_HEIGHT).toBeLessThan(CONTENT_MIN_HEIGHT);
   });
 
-  it("the launch size in tauri.conf.json clears the minimums", async () => {
+  it("the approved first-launch size clears the minimums", async () => {
     const { readFileSync } = await import("node:fs");
     const conf = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8")) as {
       app: { windows: { width: number; height: number }[] };
     };
     const [main] = conf.app.windows;
+    expect(main).toMatchObject({ width: 1120, height: 640 });
     expect(main.width).toBeGreaterThanOrEqual(computeMinWindowWidth());
     expect(main.height).toBeGreaterThanOrEqual(computeMinWindowHeight());
   });

@@ -1,7 +1,7 @@
 // Main-window bounds persistence: the pure half.
 //
-// The window used to open at the config's fixed 1400×900 wherever the OS
-// dropped it, every launch. Bounds are app-level STATE like zoom (state.json,
+// The window used to open at the config's fixed size wherever the OS dropped
+// it, every launch. Bounds are app-level STATE like zoom (state.json,
 // never config), saved debounced on move/resize and restored at boot BEFORE
 // the window is first shown — together with the hidden-at-creation window this
 // removes both the white startup flash and the restore jump.
@@ -21,6 +21,14 @@ export interface SavedBounds {
 interface MonitorRect {
   position: { x: number; y: number };
   size: { width: number; height: number };
+  workArea?: {
+    position: { x: number; y: number };
+    size: { width: number; height: number };
+  };
+}
+
+function usableArea(monitor: MonitorRect) {
+  return monitor.workArea ?? { position: monitor.position, size: monitor.size };
 }
 
 /** Parses the untyped state.json value. Anything malformed — missing field,
@@ -47,27 +55,42 @@ export function parseSavedBounds(value: unknown): SavedBounds | null {
  * can reach. Usable means some monitor shows a grabbable piece of the
  * window's TOP strip — at least 100×50 of it, including part of the first
  * 50 rows, which is where every OS puts the drag handle. Anything less
- * returns null and the boot keeps the OS default placement. */
+ * returns null and the boot keeps the OS default placement. A reachable saved
+ * window is fitted back inside that monitor's work area, so scale changes and
+ * taskbars cannot restore an oversized or partly stranded normal window. */
 export function restorableBounds(
   saved: SavedBounds | null,
   monitors: MonitorRect[],
 ): SavedBounds | null {
   if (saved === null) return null;
   for (const monitor of monitors) {
-    const left = Math.max(saved.x, monitor.position.x);
-    const top = Math.max(saved.y, monitor.position.y);
-    const right = Math.min(saved.x + saved.width, monitor.position.x + monitor.size.width);
-    const bottom = Math.min(saved.y + saved.height, monitor.position.y + monitor.size.height);
+    const area = usableArea(monitor);
+    const left = Math.max(saved.x, area.position.x);
+    const top = Math.max(saved.y, area.position.y);
+    const right = Math.min(saved.x + saved.width, area.position.x + area.size.width);
+    const bottom = Math.min(saved.y + saved.height, area.position.y + area.size.height);
     const overlapsTopStrip = top < saved.y + 50;
     if (right - left >= 100 && bottom - top >= 50 && overlapsTopStrip) {
-      return saved;
+      const fitted = shrinkToFit(saved, area.size) ?? saved;
+      return {
+        x: Math.min(
+          Math.max(saved.x, area.position.x),
+          area.position.x + area.size.width - fitted.width,
+        ),
+        y: Math.min(
+          Math.max(saved.y, area.position.y),
+          area.position.y + area.size.height - fitted.height,
+        ),
+        width: fitted.width,
+        height: fitted.height,
+      };
     }
   }
   return null;
 }
 
-/** First-launch fit: the config default (1400×900 logical) overflows a small
- * laptop screen. Returns the size to shrink to, or null when the window
+/** First-launch or restore fit: the requested inner size may overflow a small
+ * laptop's work area. Returns the size to shrink to, or null when the window
  * already fits. 90% of the monitor rather than 100%: an exactly-screen-sized
  * floating window reads as a broken maximize. */
 export function shrinkToFit(
