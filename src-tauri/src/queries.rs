@@ -33,18 +33,13 @@ pub struct SectionCounts {
 
 /// Logical items per kind per month (oldest month first, Undated last).
 pub fn section_counts(conn: &Connection, display_tz: Tz) -> Result<SectionCounts, String> {
-    // Hashed logical items: one row per content hash, earliest resolved time.
+    // Hashed logical items are already collapsed by the write-through read
+    // model. Counting no longer joins or groups every physical path.
     let mut stmt = conn
-        .prepare(
-            "SELECT c.kind, MIN(p.resolved_utc_ms), \
-             SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END) \
-             FROM contents c JOIN paths p ON p.content_hash = c.hash \
-             WHERE p.missing = 0 AND p.companion_of IS NULL \
-             GROUP BY c.hash",
-        )
+        .prepare("SELECT kind, resolved_utc_ms FROM logical_contents")
         .map_err(|e| e.to_string())?;
-    let hashed: Vec<(String, Option<i64>, i64)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let hashed: Vec<(String, Option<i64>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -78,9 +73,9 @@ pub fn section_counts(conn: &Connection, display_tz: Tz) -> Result<SectionCounts
         *map.entry(month).or_insert(0) += 1;
     };
 
-    for (kind, min_ms, resolved_count) in hashed {
-        let month = match min_ms {
-            Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
+    for (kind, resolved_ms) in hashed {
+        let month = match resolved_ms {
+            Some(ms) => month_key(ms, display_tz),
             _ => "undated".to_string(),
         };
         bucket(&kind, month);
@@ -140,223 +135,216 @@ pub fn section_items(
     month: &str,
     display_tz: Tz,
 ) -> Result<Vec<SectionItem>, String> {
-    let mut items: Vec<SectionItem> = Vec::new();
-
-    // hash -> every live copy's directory (deduped, display form). One pass,
-    // one map — GROUP_CONCAT cannot carry DISTINCT with a safe separator, and
-    // directories may contain commas.
-    let mut dirs_by_hash: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    let mut names_by_hash: std::collections::HashMap<String, std::collections::HashSet<String>> =
-        std::collections::HashMap::new();
-    {
-        let mut stmt = conn
-            .prepare(
-                "SELECT content_hash, dir_path, file_name FROM paths \
-                 WHERE content_hash IS NOT NULL AND missing = 0 AND companion_of IS NULL",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok());
-        for (hash, dir, name) in rows {
-            let display = crate::winpath::for_display(&dir).into_owned();
-            let entry = dirs_by_hash.entry(hash.clone()).or_default();
-            if !entry.contains(&display) {
-                entry.push(display);
-            }
-            names_by_hash.entry(hash).or_default().insert(name.to_lowercase());
-        }
-        for dirs in dirs_by_hash.values_mut() {
-            dirs.sort();
+    if !matches!(kind, "image" | "video" | "other") {
+        return Err(format!("bad section kind: {kind}"));
+    }
+    let bounds = month_bounds(month, display_tz)?;
+    let mut items = hashed_section_items(conn, kind, bounds)?;
+    let dirs_by_hash = hashed_section_dirs(conn, kind, bounds)?;
+    for item in &mut items {
+        if let Some(hash) = item.hash.as_ref() {
+            item.dir_paths = dirs_by_hash.get(hash).cloned().unwrap_or_default();
         }
     }
-    let names_differ = |hash: &str| names_by_hash.get(hash).is_some_and(|n| n.len() > 1);
-
-    if kind == "image" || kind == "video" {
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), \
-                 (SELECT COUNT(*) FROM paths cp \
-                  WHERE cp.content_hash = c.hash AND cp.missing = 0), \
-                 c.width, c.height, \
-                 (c.derived_at_utc IS NOT NULL AND c.derived_at_utc != 'failed' \
-                  AND c.derived_at_utc != 'needs-ffmpeg'), \
-                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
-                 (SELECT m.group_id FROM similar_group_members m WHERE m.content_hash = c.hash), \
-                 c.sharpness, c.byte_size, \
-                 EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
-                         WHERE pri.content_hash = c.hash AND comp.missing = 0 \
-                           AND pri.missing = 0), \
-                 c.duration_ms \
-                 FROM contents c JOIN paths p ON p.content_hash = c.hash \
-                 WHERE c.kind = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
-                 GROUP BY c.hash",
-            )
-            .map_err(|e| e.to_string())?;
-        #[allow(clippy::type_complexity)]
-        let rows: Vec<(
-            String,
-            i64,
-            String,
-            Option<i64>,
-            i64,
-            Option<i64>,
-            Option<i64>,
-            bool,
-            i64,
-            Option<i64>,
-            Option<f64>,
-            Option<i64>,
-            bool,
-            Option<i64>,
-        )> = stmt
-            .query_map([kind], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                    r.get(9)?,
-                    r.get(10)?,
-                    r.get(11)?,
-                    r.get(12)?,
-                    r.get(13)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
-
-        for (
-            hash,
-            path_id,
-            file_name,
-            min_ms,
-            copies,
-            w,
-            h,
-            has_thumb,
-            resolved_count,
-            group,
-            sharpness,
-            byte_size,
-            has_companions,
-            duration_ms,
-        ) in rows
-        {
-            let item_month = match min_ms {
-                Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
-                _ => "undated".to_string(),
-            };
-            if item_month == month {
-                let dir_paths = dirs_by_hash.get(&hash).cloned().unwrap_or_default();
-                let differs = names_differ(&hash);
-                items.push(SectionItem {
-                    hash: Some(hash),
-                    path_id,
-                    file_name,
-                    resolved_utc_ms: min_ms,
-                    copy_count: copies.max(0) as u64,
-                    width: w,
-                    height: h,
-                    has_thumb,
-                    similar_group_id: group,
-                    sharpness,
-                    byte_size,
-                    has_companions,
-                    duration_ms,
-                    names_differ: differs,
-                    dir_paths,
-                });
-            }
-        }
-    } else {
-        // Other files: hashed groups plus unhashed singletons in one pass.
-        let mut stmt = conn
-            .prepare(
-                "SELECT p.content_hash, MIN(p.id), MIN(p.file_name), MIN(p.resolved_utc_ms), \
-                 CASE WHEN p.content_hash IS NULL THEN 1 ELSE \
-                   (SELECT COUNT(*) FROM paths cp \
-                    WHERE cp.content_hash = p.content_hash AND cp.missing = 0) END, \
-                 SUM(CASE WHEN p.resolved_source = 'undated' THEN 0 ELSE 1 END), \
-                 MIN(p.size), MIN(p.dir_path) \
-                 FROM paths p \
-                 WHERE p.missing = 0 AND p.companion_of IS NULL \
-                   AND p.kind NOT IN ('image', 'video') \
-                 GROUP BY COALESCE(p.content_hash, 'path:' || p.id)",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows: Vec<(Option<String>, i64, String, Option<i64>, i64, i64, Option<i64>, String)> =
-            stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
-
-        for (hash, path_id, file_name, min_ms, copies, resolved_count, byte_size, dir_path) in
-            rows
-        {
-            let item_month = match min_ms {
-                Some(ms) if resolved_count > 0 => month_key(ms, display_tz),
-                _ => "undated".to_string(),
-            };
-            if item_month == month {
-                let dir_paths = hash
-                    .as_ref()
-                    .and_then(|h| dirs_by_hash.get(h).cloned())
-                    .unwrap_or_else(|| {
-                        vec![crate::winpath::for_display(&dir_path).into_owned()]
-                    });
-                let differs = hash.as_deref().is_some_and(names_differ);
-                items.push(SectionItem {
-                    hash,
-                    path_id,
-                    file_name,
-                    resolved_utc_ms: min_ms,
-                    copy_count: copies.max(0) as u64,
-                    width: None,
-                    height: None,
-                    has_thumb: false,
-                    similar_group_id: None,
-                    sharpness: None,
-                    byte_size,
-                    has_companions: false,
-                    duration_ms: None,
-                    names_differ: differs,
-                    dir_paths,
-                });
-            }
-        }
+    if kind == "other" {
+        items.extend(unhashed_other_items(conn, bounds)?);
     }
-
-    items.sort_by_key(|i| (i.resolved_utc_ms, i.path_id));
+    items.sort_by_key(|item| (item.resolved_utc_ms, item.path_id));
     Ok(items)
+}
+
+/// One logical row after a derived output changes. The coordinator publishes
+/// this directly so the open grid patches one item instead of re-reading a
+/// section that may contain millions of rows.
+pub fn item_by_hash(conn: &Connection, hash: &str) -> Result<Option<SectionItem>, String> {
+    let sql = format!("{HASHED_SECTION_SELECT} WHERE c.hash = ?1");
+    let mut item = conn
+        .query_row(&sql, [hash], section_item_from_row)
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some(item) = &mut item {
+        let mut statement = conn
+            .prepare(
+                "SELECT DISTINCT dir_path FROM paths
+                 WHERE content_hash = ?1 AND missing = 0 ORDER BY dir_path",
+            )
+            .map_err(|error| error.to_string())?;
+        item.dir_paths = statement
+            .query_map([hash], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(item)
+}
+
+const HASHED_SECTION_SELECT: &str =
+    "SELECT c.hash, l.representative_path_id, rp.file_name, l.resolved_utc_ms, \
+            l.live_copy_count, c.width, c.height, \
+            (l.kind IN ('image', 'video') AND c.derived_at_utc IS NOT NULL \
+             AND c.derived_at_utc != 'failed' AND c.derived_at_utc != 'needs-ffmpeg'), \
+            (SELECT m.group_id FROM similar_group_members m \
+             WHERE m.content_hash = c.hash LIMIT 1), \
+            c.sharpness, c.byte_size, \
+            EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
+                    WHERE pri.content_hash = c.hash AND comp.missing = 0 \
+                      AND pri.missing = 0), \
+            c.duration_ms, l.names_differ \
+     FROM logical_contents l \
+     JOIN contents c ON c.hash = l.content_hash \
+     JOIN paths rp ON rp.id = l.representative_path_id ";
+
+fn hashed_section_items(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+) -> Result<Vec<SectionItem>, String> {
+    let sql = hashed_section_sql(bounds.is_some());
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = match bounds {
+        Some((start, end)) => stmt
+            .query_map(rusqlite::params![kind, start, end], section_item_from_row)
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?,
+        None => stmt
+            .query_map([kind], section_item_from_row)
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?,
+    };
+    Ok(rows)
+}
+
+fn hashed_section_sql(has_bounds: bool) -> String {
+    let time_clause = if has_bounds {
+        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
+    } else {
+        "AND l.resolved_utc_ms IS NULL"
+    };
+    format!(
+        "{HASHED_SECTION_SELECT} WHERE l.kind = ?1 {time_clause} \
+         ORDER BY l.resolved_utc_ms, l.representative_path_id"
+    )
+}
+
+fn section_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SectionItem> {
+    Ok(SectionItem {
+        hash: Some(row.get(0)?),
+        path_id: row.get(1)?,
+        file_name: row.get(2)?,
+        resolved_utc_ms: row.get(3)?,
+        copy_count: row.get::<_, i64>(4)?.max(0) as u64,
+        width: row.get(5)?,
+        height: row.get(6)?,
+        has_thumb: row.get(7)?,
+        similar_group_id: row.get(8)?,
+        sharpness: row.get(9)?,
+        byte_size: row.get(10)?,
+        has_companions: row.get(11)?,
+        duration_ms: row.get(12)?,
+        names_differ: row.get(13)?,
+        dir_paths: Vec::new(),
+    })
+}
+
+fn hashed_section_dirs(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let time_clause = if bounds.is_some() {
+        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
+    } else {
+        "AND l.resolved_utc_ms IS NULL"
+    };
+    let sql = format!(
+        "SELECT DISTINCT p.content_hash, p.dir_path \
+         FROM logical_contents l JOIN paths p ON p.content_hash = l.content_hash \
+         WHERE l.kind = ?1 {time_clause} \
+           AND p.missing = 0 AND p.companion_of IS NULL \
+         ORDER BY p.content_hash, p.dir_path"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String)> = match bounds {
+        Some((start, end)) => stmt
+            .query_map(
+                rusqlite::params![kind, start, end],
+                section_dir_from_row,
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?,
+        None => stmt
+            .query_map([kind], section_dir_from_row)
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?,
+    };
+    let mut by_hash: HashMap<String, Vec<String>> = HashMap::new();
+    for (hash, dir) in rows {
+        let display = crate::winpath::for_display(&dir).into_owned();
+        let dirs = by_hash.entry(hash).or_default();
+        if !dirs.contains(&display) {
+            dirs.push(display);
+        }
+    }
+    Ok(by_hash)
+}
+
+fn section_dir_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String)> {
+    Ok((row.get(0)?, row.get(1)?))
+}
+
+fn unhashed_other_items(
+    conn: &Connection,
+    bounds: Option<(i64, i64)>,
+) -> Result<Vec<SectionItem>, String> {
+    let time_clause = if bounds.is_some() {
+        "AND resolved_utc_ms >= ?1 AND resolved_utc_ms < ?2"
+    } else {
+        "AND resolved_utc_ms IS NULL"
+    };
+    let sql = format!(
+        "SELECT id, file_name, resolved_utc_ms, size, dir_path FROM paths \
+         WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL \
+           AND kind NOT IN ('image', 'video') {time_clause} \
+         ORDER BY resolved_utc_ms, id"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let map = |row: &rusqlite::Row<'_>| {
+        let dir: String = row.get(4)?;
+        Ok(SectionItem {
+            hash: None,
+            path_id: row.get(0)?,
+            file_name: row.get(1)?,
+            resolved_utc_ms: row.get(2)?,
+            copy_count: 1,
+            width: None,
+            height: None,
+            has_thumb: false,
+            similar_group_id: None,
+            sharpness: None,
+            byte_size: row.get(3)?,
+            has_companions: false,
+            duration_ms: None,
+            names_differ: false,
+            dir_paths: vec![crate::winpath::for_display(&dir).into_owned()],
+        })
+    };
+    let rows = match bounds {
+        Some((start, end)) => stmt
+            .query_map(rusqlite::params![start, end], map)
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?,
+        None => stmt
+            .query_map([], map)
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?,
+    };
+    Ok(rows)
 }
 
 /// One comparison-view member: enough to render a preview tile, ORDER the
@@ -557,59 +545,13 @@ pub fn section_dirs(
     month: &str,
     display_tz: Tz,
 ) -> Result<Vec<String>, String> {
-    let kind_filter = if kind == "other" {
-        "p.kind NOT IN ('image', 'video')".to_string()
-    } else {
-        format!("p.kind = '{kind}'")
-    };
-    let (sql, range): (String, Option<(i64, i64)>) = if month == "undated" {
-        (
-            format!(
-                "SELECT DISTINCT p.dir_path FROM paths p \
-                 WHERE p.missing = 0 AND {kind_filter} AND p.resolved_source = 'undated'"
-            ),
-            None,
-        )
-    } else {
-        let (year, mon) = month
-            .split_once('-')
-            .and_then(|(y, m)| Some((y.parse::<i32>().ok()?, m.parse::<u32>().ok()?)))
-            .ok_or_else(|| format!("bad month key: {month}"))?;
-        let start = display_tz
-            .with_ymd_and_hms(year, mon, 1, 0, 0, 0)
-            .earliest()
-            .ok_or_else(|| format!("bad month start: {month}"))?
-            .timestamp_millis();
-        let (next_year, next_mon) = if mon == 12 { (year + 1, 1) } else { (year, mon + 1) };
-        let end = display_tz
-            .with_ymd_and_hms(next_year, next_mon, 1, 0, 0, 0)
-            .earliest()
-            .ok_or_else(|| format!("bad month end: {month}"))?
-            .timestamp_millis();
-        (
-            format!(
-                "SELECT DISTINCT p.dir_path FROM paths p \
-                 WHERE p.missing = 0 AND {kind_filter} \
-                   AND p.resolved_utc_ms >= ?1 AND p.resolved_utc_ms < ?2"
-            ),
-            Some((start, end)),
-        )
-    };
-
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows: Vec<String> = match range {
-        Some((start, end)) => stmt
-            .query_map(rusqlite::params![start, end], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect(),
-        None => stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect(),
-    };
-    Ok(rows)
+    let mut dirs: Vec<String> = section_items(conn, kind, month, display_tz)?
+        .into_iter()
+        .flat_map(|item| item.dir_paths)
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    Ok(dirs)
 }
 
 /// One issues row for the issues modal. `path` is None when the row has no
@@ -623,6 +565,7 @@ pub struct IssueRow {
     pub message: Option<String>,
     pub first_seen_utc: String,
     pub last_seen_utc: String,
+    pub recovery: Option<crate::derived_state::IssueRecovery>,
 }
 
 /// OLDEST first (the developer's call — the longest-standing condition leads),
@@ -637,7 +580,7 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
              ORDER BY first_seen_utc ASC, id ASC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
-    let rows: Vec<IssueRow> = stmt
+    let mut rows: Vec<IssueRow> = stmt
         .query_map([limit], |r| {
             let path: String = r.get(1)?;
             // Issue rows are written straight from `abs_path`, and on Windows
@@ -657,11 +600,15 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
                 message: r.get(3)?,
                 first_seen_utc: r.get(4)?,
                 last_seen_utc: r.get(5)?,
+                recovery: None,
             })
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+    for row in &mut rows {
+        row.recovery = crate::derived_state::issue_recovery(conn, row.id)?;
+    }
     Ok((total.max(0) as u64, rows))
 }
 
@@ -679,6 +626,33 @@ fn row_to_copy(
         r.get(6)?,
         r.get(7)?,
     ))
+}
+
+pub(crate) fn month_bounds(month: &str, display_tz: Tz) -> Result<Option<(i64, i64)>, String> {
+    if month == "undated" {
+        return Ok(None);
+    }
+    let (year, mon) = month
+        .split_once('-')
+        .and_then(|(year, mon)| Some((year.parse::<i32>().ok()?, mon.parse::<u32>().ok()?)))
+        .filter(|(_, mon)| (1..=12).contains(mon))
+        .ok_or_else(|| format!("bad month key: {month}"))?;
+    let (next_year, next_mon) = if mon == 12 {
+        (year + 1, 1)
+    } else {
+        (year, mon + 1)
+    };
+    let start = display_tz
+        .with_ymd_and_hms(year, mon, 1, 0, 0, 0)
+        .earliest()
+        .ok_or_else(|| format!("bad month start: {month}"))?
+        .timestamp_millis();
+    let end = display_tz
+        .with_ymd_and_hms(next_year, next_mon, 1, 0, 0, 0)
+        .earliest()
+        .ok_or_else(|| format!("bad month end: {month}"))?
+        .timestamp_millis();
+    Ok(Some((start, end)))
 }
 
 fn month_key(unix_ms: i64, tz: Tz) -> String {
@@ -727,6 +701,34 @@ mod tests {
             .unwrap()
             .and_utc()
             .timestamp_millis()
+    }
+
+    // EXCEPTION (tests-folder conventions): the query-plan assertion must use
+    // the private SQL builder that production executes; copying the SQL into
+    // an integration test would let the test and implementation drift apart.
+    #[test]
+    fn a_month_section_seeks_the_logical_section_index() {
+        let (_dir, conn) = seeded();
+        let sql = format!("EXPLAIN QUERY PLAN {}", hashed_section_sql(true));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let details: Vec<String> = stmt
+            .query_map(
+                rusqlite::params!["image", utc_ms(2026, 1, 1, 0), utc_ms(2026, 2, 1, 0)],
+                |row| row.get(3),
+            )
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            details
+                .iter()
+                .any(|line| line.contains("idx_logical_contents_section")),
+            "section query lost its indexed month seek: {details:?}"
+        );
+        assert!(
+            details.iter().all(|line| !line.starts_with("SCAN p")),
+            "section query regressed to a whole paths scan: {details:?}"
+        );
     }
 
     #[test]

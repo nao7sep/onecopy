@@ -19,10 +19,10 @@
 //! model it replaces put happiness at index 1. Assuming an order carried
 //! over would have scored a different emotion entirely, silently.
 //!
-//! Storage contract on `contents.face_score`: NULL = never scored (model
-//! absent or content not yet seen); 0.0 = scored, no face found; > 0 = the
-//! score above. Ordering treats NULL and 0.0 identically, which is what keeps
-//! a model-less install ordering exactly as today.
+//! Storage contract: `analysis_receipts.face_state` distinguishes pending,
+//! ready, and failed; `contents.face_score` holds the ready value (0 means no
+//! face, positive means a face was found). Ordering treats NULL and 0.0
+//! identically, which keeps a model-less install ordering exactly as today.
 
 use std::path::Path;
 
@@ -301,19 +301,24 @@ pub fn face_scores_pending(
     let Some((detector_model, emotion_model)) = models else {
         return Ok(stats);
     };
-    let pending: Vec<String> = {
+    let pending: Vec<(String, String)> = {
         let mut stmt = conn
             .prepare(
-                "SELECT hash FROM contents \
-                 WHERE kind = 'image' AND face_score IS NULL \
-                   AND derived_at_utc IS NOT NULL \
-                   AND derived_at_utc NOT IN ('failed', ?1) \
+                "SELECT c.hash, (SELECT p.abs_path FROM paths p \
+                                 WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
+                 FROM contents c \
+                 LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+                 WHERE c.kind = 'image' AND r.face_state IS NULL \
+                   AND c.derived_at_utc IS NOT NULL \
+                   AND c.derived_at_utc NOT IN ('failed', ?1) \
                    AND EXISTS (SELECT 1 FROM paths p \
-                               WHERE p.content_hash = contents.hash AND p.missing = 0)",
+                               WHERE p.content_hash = c.hash AND p.missing = 0)",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([crate::preview::NEEDS_FFMPEG], |r| r.get::<_, String>(0))
+            .query_map([crate::preview::NEEDS_FFMPEG], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
@@ -325,11 +330,11 @@ pub fn face_scores_pending(
 
     let mut scorer = FaceScorer::load(detector_model, emotion_model)?;
     let total = pending.len() as u64;
-    for hash in pending {
+    for (hash, path) in pending {
         if crate::scanner::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
-        // Backfill politeness (Phase 33): the user's return stops the pass
+        // Coordinator politeness: the user's return stops the pass
         // between images; what is scored stays scored.
         if stop() {
             break;
@@ -341,18 +346,15 @@ pub fn face_scores_pending(
             .and_then(|img| scorer.score(&img));
         match outcome {
             Ok(score) => {
-                conn.execute(
-                    "UPDATE contents SET face_score = ?2 WHERE hash = ?1",
-                    rusqlite::params![hash, score as f64],
-                )
-                .map_err(|e| e.to_string())?;
+                crate::derived_state::record_face_success(conn, &hash, &path, score as f64)?;
                 stats.scored += 1;
             }
             Err(err) => {
                 crate::logging::warn(
                     "face scoring failed",
-                    serde_json::json!({ "hash": hash, "error": { "message": err } }),
+                    serde_json::json!({ "hash": hash, "error": { "message": err.clone() } }),
                 );
+                crate::derived_state::record_face_failure(conn, &hash, &path, &err)?;
                 stats.failed += 1;
             }
         }

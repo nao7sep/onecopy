@@ -1,14 +1,13 @@
 // ONE preview surface, two placements: the second-monitor preview window and
 // the main window's split pane both render this. Images show the cached
-// preview at fit (Z/click for the true 100% view); videos show the poster and
-// strip with playback as an EXPLICIT act — auto-mounting <video> while the
-// selection scrubs would read a 1 MiB original head-chunk per keystroke.
+// preview at fit (press and hold for original pixels); videos share one player,
+// scene rail, and transcript layout. Playback is delayed briefly so keyboard
+// selection can settle without starting every video crossed along the way.
 // Detail arrives as a prop (the anchor owner fetched it once); the surface
 // itself fetches nothing.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { hasOpenModal } from "../utils/modalStack";
 import { log, toErrorFields } from "../repositories";
 import { isEditableTarget } from "../utils/shortcuts";
 import {
@@ -16,99 +15,249 @@ import {
   originalUrl,
   originalUrlByPath,
   previewUrl,
+  stripTimestampMs,
   stripUrl,
+  timestampLabel,
 } from "../models/items";
-import ZoomableImage from "./ZoomableImage";
+import InspectableImage, {
+  inspectPosition,
+  intrinsicOffset,
+  type InspectPosition,
+} from "./InspectableImage";
+import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
 import type { ItemDetail } from "../state/items-store";
-import { Play } from "lucide-react";
+import { ExternalLink } from "lucide-react";
+import TranscriptBlock from "./TranscriptBlock";
+import { useAppStore } from "../state/app-store";
 
-function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
-  const [playing, setPlaying] = useState(false);
+function VideoSurface({
+  hash,
+  detail,
+  seekMs,
+  playAfterSeek,
+  keyboardActive,
+  autoplayImmediately,
+}: {
+  hash: string;
+  detail: ItemDetail;
+  seekMs?: number;
+  playAfterSeek?: boolean;
+  keyboardActive?: boolean;
+  autoplayImmediately?: boolean;
+}) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [inspectPositionState, setInspectPositionState] = useState<InspectPosition>({
+    x: 0.5,
+    y: 0.5,
+    width: 0,
+    height: 0,
+  });
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const resumeAfterInspectRef = useRef(false);
+  const inspectingRef = useRef(false);
+  const autoplayTimerRef = useRef<number | null>(null);
+  const autoplayOnShow = useAppStore(
+    (state) => state.appData?.config?.videoAutoplayOnShow !== false,
+  );
+  const autoplayAfterSnapshot = useAppStore(
+    (state) => state.appData?.config?.videoAutoplayAfterSnapshot !== false,
+  );
+  const sceneCount = Math.max(0, detail.stripFrames ?? 0);
+  const updateInspectPosition = (point: PointerPoint) => {
+    setInspectPositionState(inspectPosition(viewportRef.current, point));
+  };
+  const hold = useHoldInspect({
+    onStart: (point) => {
+      const video = videoRef.current;
+      inspectingRef.current = true;
+      if (autoplayTimerRef.current !== null) {
+        window.clearTimeout(autoplayTimerRef.current);
+        autoplayTimerRef.current = null;
+      }
+      resumeAfterInspectRef.current = video !== null && !video.paused;
+      video?.pause();
+      updateInspectPosition(point);
+    },
+    onMove: updateInspectPosition,
+    onEnd: () => {
+      inspectingRef.current = false;
+      if (resumeAfterInspectRef.current) {
+        void videoRef.current?.play().catch(() => undefined);
+      }
+      resumeAfterInspectRef.current = false;
+    },
+  });
 
-  // The one exception in "Space = look": with a video loaded here, Space
-  // plays/pauses it (the media convention) instead of closing the preview.
-  // The store's shared Space rule DECLINES the key in that state, so this
-  // listener is the only claimant left standing.
+  useEffect(() => {
+    if (keyboardActive) surfaceRef.current?.focus({ preventScroll: true });
+  }, [keyboardActive]);
+
+  const seek = (atMs: number, play: boolean) => {
+    const video = videoRef.current;
+    if (video === null) return;
+    video.currentTime = atMs / 1000;
+    if (play) void video.play().catch(() => undefined);
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null || !autoplayOnShow || seekMs !== undefined) return;
+    if (autoplayImmediately) {
+      void video.play().catch(() => undefined);
+      return;
+    }
+    autoplayTimerRef.current = window.setTimeout(() => {
+      autoplayTimerRef.current = null;
+      void video.play().catch(() => undefined);
+    }, 250);
+    return () => {
+      if (autoplayTimerRef.current !== null) {
+        window.clearTimeout(autoplayTimerRef.current);
+        autoplayTimerRef.current = null;
+      }
+    };
+  }, [autoplayImmediately, autoplayOnShow, hash, seekMs]);
+
+  useEffect(() => {
+    if (seekMs === undefined) return;
+    const video = videoRef.current;
+    if (video === null) return;
+    const apply = () => {
+      const shouldPlay = playAfterSeek ?? autoplayAfterSnapshot;
+      if (inspectingRef.current && shouldPlay) resumeAfterInspectRef.current = true;
+      seek(seekMs, shouldPlay && !inspectingRef.current);
+    };
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) apply();
+    else video.addEventListener("loadedmetadata", apply, { once: true });
+    return () => video.removeEventListener("loadedmetadata", apply);
+  }, [autoplayAfterSnapshot, playAfterSeek, seekMs]);
+
+  // A focused player owns Space; Quick View routing stands down here.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== " " || event.metaKey || event.ctrlKey || event.altKey) return;
-      if (hasOpenModal()) return;
       if (isEditableTarget(event.target)) return;
+      if (!surfaceRef.current?.contains(document.activeElement)) return;
+      if (inspectingRef.current) return;
       event.preventDefault();
       const video = videoRef.current;
-      if (video === null) {
-        setPlaying(true);
-        return;
-      }
-      if (video.paused) void video.play();
+      if (video === null) return;
+      if (video.paused) void video.play().catch(() => undefined);
       else video.pause();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [keyboardActive]);
 
   return (
-    <div className="flex h-full w-full flex-col items-center gap-2 overflow-y-auto">
-      {playing && !playbackFailed ? (
-        <video
-          ref={videoRef}
-          controls
-          autoPlay
-          poster={previewUrl(hash)}
-          src={originalUrl(hash)}
-          className="max-h-[70%] max-w-full"
-          onError={() => setPlaybackFailed(true)}
-        />
-      ) : (
-        <div className="relative flex max-h-[70%] items-center justify-center">
-          <img
-            src={previewUrl(hash)}
-            alt={detail.fileName}
-            className="max-h-full max-w-full object-contain"
+    <div
+      ref={surfaceRef}
+      data-video-surface
+      tabIndex={keyboardActive ? 0 : -1}
+      role={keyboardActive ? "group" : undefined}
+      aria-label={keyboardActive ? "Video Quick View" : undefined}
+      className="flex h-full min-h-0 w-full flex-col gap-2 outline-none"
+    >
+      <div
+        ref={viewportRef}
+        className={`relative min-h-0 flex-1 overflow-hidden rounded-lg bg-background ${
+          hold.inspecting ? "cursor-crosshair" : ""
+        }`}
+        title={playbackFailed ? undefined : "Press and hold the picture for original pixels"}
+        onPointerDown={playbackFailed ? undefined : hold.onPointerDown}
+        onClickCapture={playbackFailed ? undefined : hold.onClickCapture}
+      >
+        {playbackFailed ? (
+          <InspectableImage hash={hash} fileName={detail.fileName} />
+        ) : (
+          <video
+            ref={videoRef}
+            controls={!hold.inspecting}
+            playsInline
+            poster={previewUrl(hash)}
+            src={originalUrl(hash)}
+            className={
+              hold.inspecting
+                ? "pointer-events-none absolute max-h-none max-w-none"
+                : "h-full w-full object-contain"
+            }
+            style={
+              hold.inspecting
+                ? videoInspectStyle(videoRef.current, detail, inspectPositionState)
+                : undefined
+            }
+            onError={() => setPlaybackFailed(true)}
           />
-          {!playbackFailed ? (
-            <button
-              className="absolute whitespace-nowrap rounded-full bg-background/80 px-4 py-2 text-sm text-ink hover:bg-background"
-              onClick={() => setPlaying(true)}
-            >
-              <Play size={14} className="mr-1 inline-block align-[-0.15em]" /> Play
-            </button>
-          ) : null}
-        </div>
-      )}
-      <div className="flex flex-wrap justify-center gap-1">
-        {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => (
-          <img
-            key={i}
-            src={stripUrl(hash, i)}
-            alt={`snapshot ${i + 1}`}
-            loading="lazy"
-            className="h-24 rounded-lg border border-border"
-          />
-        ))}
+        )}
+        {!hold.inspecting ? (
+          <button
+            className="absolute right-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
+            onClick={() => {
+              void invoke("open_item_externally", { hash }).catch((error) =>
+                log.warn("open in player failed", toErrorFields(error)),
+              );
+            }}
+          >
+            <ExternalLink size={13} /> Open in player
+          </button>
+        ) : null}
+        {!hold.inspecting && sceneCount > 0 ? (
+          <div className="absolute inset-x-2 bottom-10 flex gap-1 overflow-x-auto rounded-lg bg-background/75 p-1.5 backdrop-blur-sm">
+            {Array.from({ length: sceneCount }, (_, index) => {
+              const atMs = stripTimestampMs(detail.durationMs ?? 0, sceneCount, index);
+              return (
+                <button
+                  key={index}
+                  className="relative h-16 w-24 shrink-0 overflow-hidden rounded border border-border hover:border-primary-ring"
+                  title={`Play from ${timestampLabel(atMs)}`}
+                  aria-label={`Play from ${timestampLabel(atMs)}`}
+                  onClick={() => seek(atMs, autoplayAfterSnapshot)}
+                >
+                  <img
+                    src={stripUrl(hash, index)}
+                    alt={`snapshot at ${timestampLabel(atMs)}`}
+                    loading="lazy"
+                    className="h-full w-full object-cover"
+                  />
+                  <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[10px] text-ink">
+                    {timestampLabel(atMs)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
       {playbackFailed ? (
-        <p className="text-xs text-ink-muted">
-          This codec does not play in the app's webview.
+        <p className="shrink-0 text-xs text-ink-muted">
+          This codec does not play in the app. Open it in your player instead.
         </p>
       ) : null}
-      <button
-        className="inline-flex h-8 items-center justify-center rounded-lg border border-border px-3 text-sm font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
-        onClick={() => {
-          // The core resolves the hash to a live copy itself — the JS opener
-          // route was scope-rejected into a silent no-op, so this button did
-          // nothing for the exact user it exists for (unplayable codec).
-          void invoke("open_item_externally", { hash }).catch((error) =>
-            log.warn("open in player failed", toErrorFields(error)),
-          );
-        }}
-      >
-        Open in player
-      </button>
+      <div className="max-h-[35%] shrink-0 overflow-hidden">
+        <TranscriptBlock hash={hash} />
+      </div>
     </div>
   );
+}
+
+function videoInspectStyle(
+  video: HTMLVideoElement | null,
+  detail: ItemDetail,
+  position: InspectPosition,
+): CSSProperties {
+  const width = video?.videoWidth || detail.width || 0;
+  const height = video?.videoHeight || detail.height || 0;
+  if (width <= 0 || height <= 0 || position.width <= 0 || position.height <= 0) {
+    return { visibility: "hidden" };
+  }
+  return {
+    width: `${width}px`,
+    height: `${height}px`,
+    left: `${intrinsicOffset(width, position.width, position.x)}px`,
+    top: `${intrinsicOffset(height, position.height, position.y)}px`,
+  };
 }
 
 /** An image whose missing/undecodable preview reads as words, never as the
@@ -117,11 +266,9 @@ function VideoSurface({ hash, detail }: { hash: string; detail: ItemDetail }) {
 function ImageSurface({
   hash,
   fileName,
-  startZoomed = false,
 }: {
   hash: string;
   fileName: string;
-  startZoomed?: boolean;
 }) {
   // A missing cache entry is USUALLY just a photo the scan's bulk pass has
   // not reached (it runs walk-order; on a slow machine the tail is hours
@@ -129,8 +276,10 @@ function ImageSurface({
   // retries once. Only when that also fails does the surface settle on words
   // — the core's own reason, which knows "install ffmpeg" from "broken file".
   const [phase, setPhase] = useState<
-    { kind: "showing"; attempt: number } | { kind: "converting" } | { kind: "failed"; reason: string }
-  >({ kind: "showing", attempt: 0 });
+    { kind: "showing"; attempt: number; cacheHash: string }
+    | { kind: "converting" }
+    | { kind: "failed"; reason: string }
+  >({ kind: "showing", attempt: 0, cacheHash: hash });
   if (phase.kind === "converting") {
     return <p className="text-sm text-ink-muted">Converting…</p>;
   }
@@ -138,11 +287,10 @@ function ImageSurface({
     return <p className="text-sm text-ink-muted">{phase.reason}</p>;
   }
   return (
-    <ZoomableImage
-      key={`${hash}-${phase.attempt}`}
-      hash={hash}
+    <InspectableImage
+      key={`${phase.cacheHash}-${phase.attempt}`}
+      hash={phase.cacheHash}
       fileName={fileName}
-      startZoomed={startZoomed}
       onError={() => {
         if (phase.attempt > 0) {
           setPhase({
@@ -152,8 +300,8 @@ function ImageSurface({
           return;
         }
         setPhase({ kind: "converting" });
-        invoke("ensure_preview", { hash })
-          .then(() => setPhase({ kind: "showing", attempt: 1 }))
+        invoke<string>("ensure_preview", { hash })
+          .then((cacheHash) => setPhase({ kind: "showing", attempt: 1, cacheHash }))
           .catch((error) => {
             log.warn("on-demand preview derive failed", toErrorFields(error));
             setPhase({ kind: "failed", reason: String(error) });
@@ -189,14 +337,23 @@ export default function PreviewSurface({
   hash,
   detail,
   pathId = null,
-  zoom = false,
+  seekMs,
+  playAfterSeek,
+  keyboardActive = false,
+  autoplayImmediately = false,
 }: {
   hash: string | null;
   detail: ItemDetail | null;
   /** The unhashed route: identifies the file when no hash exists yet. */
   pathId?: number | null;
-  /** Enter's inspect: the image mounts at 100%. */
-  zoom?: boolean;
+  /** A scene rail can open the player at this exact point. */
+  seekMs?: number;
+  /** Overrides the snapshot autoplay preference for this one navigation. */
+  playAfterSeek?: boolean;
+  /** A transient owning layer can give its player the media keys. */
+  keyboardActive?: boolean;
+  /** Explicit views may play now; selection-follow Preview stays debounced. */
+  autoplayImmediately?: boolean;
 }) {
   if (detail !== null && isAudioFile(detail.fileName)) {
     const src =
@@ -223,13 +380,20 @@ export default function PreviewSurface({
     <div className="flex h-full min-h-0 items-center justify-center overflow-hidden p-2">
       {detail?.kind === "video" ? (
         // Keyed by hash so playback state never carries across files.
-        <VideoSurface key={hash} hash={hash} detail={detail} />
+        <VideoSurface
+          key={hash}
+          hash={hash}
+          detail={detail}
+          seekMs={seekMs}
+          playAfterSeek={playAfterSeek}
+          keyboardActive={keyboardActive}
+          autoplayImmediately={autoplayImmediately}
+        />
       ) : (
         <ImageSurface
           key={hash}
           hash={hash}
           fileName={detail?.fileName ?? ""}
-          startZoomed={zoom}
         />
       )}
     </div>

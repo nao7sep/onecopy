@@ -79,6 +79,87 @@ CREATE INDEX IF NOT EXISTS idx_paths_content_hash ON paths (content_hash);
 CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
 CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
 CREATE INDEX IF NOT EXISTS idx_paths_resolved ON paths (kind, resolved_utc_ms);
+CREATE INDEX IF NOT EXISTS idx_paths_companion ON paths (companion_of);
+
+-- The UI reads logical items, not physical paths. Keeping this one-row summary
+-- beside the source tables lets opening a small month seek that month instead
+-- of regrouping the whole library. It is a projection, never independent
+-- truth: the triggers below rebuild only the content touched by a path write.
+CREATE TABLE IF NOT EXISTS logical_contents (
+  content_hash           TEXT PRIMARY KEY REFERENCES contents(hash),
+  kind                   TEXT NOT NULL,
+  resolved_utc_ms        INTEGER,
+  representative_path_id INTEGER NOT NULL REFERENCES paths(id),
+  live_copy_count        INTEGER NOT NULL,
+  names_differ           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_logical_contents_section
+  ON logical_contents (kind, resolved_utc_ms, content_hash);
+
+-- Only the current trigger definitions may maintain the projection.
+DROP TRIGGER IF EXISTS paths_logical_after_insert;
+DROP TRIGGER IF EXISTS paths_logical_after_update;
+DROP TRIGGER IF EXISTS paths_logical_after_delete;
+
+CREATE TRIGGER IF NOT EXISTS paths_logical_after_insert_v2
+AFTER INSERT ON paths
+WHEN NEW.content_hash IS NOT NULL
+BEGIN
+  INSERT OR REPLACE INTO logical_contents
+    (content_hash, kind, resolved_utc_ms, representative_path_id,
+     live_copy_count, names_differ)
+  SELECT c.hash,
+         CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
+         MIN(p.resolved_utc_ms), MIN(p.id),
+         (SELECT COUNT(*) FROM paths cp
+          WHERE cp.content_hash = c.hash AND cp.missing = 0),
+         COUNT(DISTINCT lower(p.file_name)) > 1
+  FROM contents c JOIN paths p ON p.content_hash = c.hash
+  WHERE c.hash = NEW.content_hash AND p.missing = 0 AND p.companion_of IS NULL
+  GROUP BY c.hash, c.kind;
+END;
+
+CREATE TRIGGER IF NOT EXISTS paths_logical_after_update_v2
+AFTER UPDATE OF content_hash, resolved_utc_ms, resolved_source, missing,
+                companion_of, file_name ON paths
+BEGIN
+  DELETE FROM logical_contents
+  WHERE content_hash IN (OLD.content_hash, NEW.content_hash);
+
+  INSERT OR REPLACE INTO logical_contents
+    (content_hash, kind, resolved_utc_ms, representative_path_id,
+     live_copy_count, names_differ)
+  SELECT c.hash,
+         CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
+         MIN(p.resolved_utc_ms), MIN(p.id),
+         (SELECT COUNT(*) FROM paths cp
+          WHERE cp.content_hash = c.hash AND cp.missing = 0),
+         COUNT(DISTINCT lower(p.file_name)) > 1
+  FROM contents c JOIN paths p ON p.content_hash = c.hash
+  WHERE c.hash IN (OLD.content_hash, NEW.content_hash)
+    AND p.missing = 0 AND p.companion_of IS NULL
+  GROUP BY c.hash, c.kind;
+END;
+
+CREATE TRIGGER IF NOT EXISTS paths_logical_after_delete_v2
+AFTER DELETE ON paths
+WHEN OLD.content_hash IS NOT NULL
+BEGIN
+  DELETE FROM logical_contents WHERE content_hash = OLD.content_hash;
+
+  INSERT OR REPLACE INTO logical_contents
+    (content_hash, kind, resolved_utc_ms, representative_path_id,
+     live_copy_count, names_differ)
+  SELECT c.hash,
+         CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
+         MIN(p.resolved_utc_ms), MIN(p.id),
+         (SELECT COUNT(*) FROM paths cp
+          WHERE cp.content_hash = c.hash AND cp.missing = 0),
+         COUNT(DISTINCT lower(p.file_name)) > 1
+  FROM contents c JOIN paths p ON p.content_hash = c.hash
+  WHERE c.hash = OLD.content_hash AND p.missing = 0 AND p.companion_of IS NULL
+  GROUP BY c.hash, c.kind;
+END;
 
 CREATE TABLE IF NOT EXISTS evidence (
   id            INTEGER PRIMARY KEY,
@@ -91,6 +172,7 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_content ON evidence (content_hash);
 CREATE INDEX IF NOT EXISTS idx_evidence_path ON evidence (path_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_source_raw ON evidence (source, raw);
 
 CREATE TABLE IF NOT EXISTS similar_groups (
   id             INTEGER PRIMARY KEY,
@@ -102,6 +184,8 @@ CREATE TABLE IF NOT EXISTS similar_group_members (
   content_hash TEXT NOT NULL REFERENCES contents(hash),
   PRIMARY KEY (group_id, content_hash)
 );
+CREATE INDEX IF NOT EXISTS idx_similar_members_content
+  ON similar_group_members (content_hash);
 
 -- Issues are CURRENT-STATE diagnostics, not a log — the log file is the
 -- history. Identity is (kind, path): a recurrence UPDATES the row, so a
@@ -117,6 +201,25 @@ CREATE TABLE IF NOT EXISTS issues (
   last_seen_utc  TEXT NOT NULL,
   UNIQUE (kind, path)
 );
+
+-- Fixed-class output receipts, never jobs. NULL means the class is pending;
+-- ready and failed are durable results, while running/paused/waiting belong
+-- to the coordinator's ephemeral snapshot.
+CREATE TABLE IF NOT EXISTS analysis_receipts (
+  content_hash              TEXT PRIMARY KEY REFERENCES contents(hash),
+  face_state                TEXT CHECK (face_state IN ('ready', 'failed')),
+  face_updated_at_utc       TEXT,
+  transcript_state          TEXT CHECK (
+                              transcript_state IN
+                                ('ready-text', 'ready-empty', 'failed')
+                            ),
+  transcript_updated_at_utc TEXT
+);
+CREATE TRIGGER IF NOT EXISTS contents_analysis_after_delete
+AFTER DELETE ON contents
+BEGIN
+  DELETE FROM analysis_receipts WHERE content_hash = OLD.hash;
+END;
 
 CREATE TABLE IF NOT EXISTS scan_dirs (
   id                    INTEGER PRIMARY KEY,
@@ -140,7 +243,52 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         .map_err(|e| e.to_string())?;
     conn.pragma_update(None, "busy_timeout", 5000)
         .map_err(|e| e.to_string())?;
-    conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    let logical_table_exists = conn
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'logical_contents')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| e.to_string())?
+        != 0;
+    let needs_logical_hydration = !logical_table_exists;
+    if needs_logical_hydration {
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        let setup = (|| {
+            conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+            // Existing development indexes predate the logical read model.
+            // Hydrate inside the table-creation transaction so a crash cannot
+            // leave a permanently partial projection; later opens are O(1).
+            conn.execute_batch(
+                "INSERT INTO logical_contents
+           (content_hash, kind, resolved_utc_ms, representative_path_id,
+            live_copy_count, names_differ)
+         SELECT c.hash,
+                CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
+                MIN(p.resolved_utc_ms), MIN(p.id),
+                (SELECT COUNT(*) FROM paths cp
+                 WHERE cp.content_hash = c.hash AND cp.missing = 0),
+                COUNT(DISTINCT lower(p.file_name)) > 1
+         FROM contents c JOIN paths p ON p.content_hash = c.hash
+         WHERE p.missing = 0 AND p.companion_of IS NULL
+         GROUP BY c.hash, c.kind",
+            )
+            .map_err(|e| e.to_string())?;
+            Ok::<(), String>(())
+        })();
+        match setup {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(|e| e.to_string())?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    } else {
+        conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    }
     Ok(conn)
 }
 
@@ -219,9 +367,11 @@ mod tests {
             .collect();
         // Set EQUALITY, not a subset, so any table change is deliberate.
         let mut expected = vec![
+            "analysis_receipts",
             "contents",
             "evidence",
             "issues",
+            "logical_contents",
             "paths",
             "scan_dirs",
             "similar_group_members",
@@ -243,4 +393,34 @@ mod tests {
         upsert_issue(&conn, Some("/x"), "test", "x").unwrap();
     }
 
+    #[test]
+    fn open_hydrates_an_existing_index_when_the_read_model_is_first_added() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-index-upgrade-")
+            .tempdir()
+            .unwrap();
+        let db = dir.path().join("index.sqlite3");
+        let conn = open(&db).unwrap();
+        conn.execute_batch(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image');
+             INSERT INTO paths
+               (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms,
+                resolved_source)
+             VALUES ('/a.jpg', '/', 'a.jpg', 'image', 'h1', 1000, 'metadata');
+             DROP TABLE logical_contents;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(&db).unwrap();
+        let summary: (i64, i64) = conn
+            .query_row(
+                "SELECT resolved_utc_ms, live_copy_count FROM logical_contents \
+                 WHERE content_hash = 'h1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(summary, (1000, 1));
+    }
 }

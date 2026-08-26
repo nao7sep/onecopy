@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   SORT_ORDERS,
   extLabel,
@@ -14,12 +15,13 @@ import {
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useAppStore } from "../state/app-store";
-import { handleSpaceLook } from "../state/preview-store";
+import { handleSpaceQuickView } from "../state/quick-view-store";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
 import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { log, toErrorFields } from "../repositories";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -391,6 +393,7 @@ export default function Grid({
 
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
+  const selectedSection = useItemsStore((s) => s.selected);
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
@@ -532,13 +535,31 @@ export default function Grid({
   const totalRows = Math.ceil(sorted.length / Math.max(1, columns));
   const win = visibleWindow(scrollTop, viewportHeight, rowHeight, totalRows);
   const visible = sorted.slice(win.startRow * columns, win.endRow * columns);
+  const visibleHashes = visible.flatMap((item) => (item.hash === null ? [] : [item.hash]));
+  const visibleHashSignature = visibleHashes.join("\n");
+  const selectedHash =
+    selectedItem === null
+      ? null
+      : (items.find((item) => itemKey(item) === selectedItem)?.hash ?? null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void invoke("prioritize_derived_work", {
+        selectedHash,
+        visibleHashes,
+        sectionKind: selectedSection?.kind ?? null,
+        sectionMonth: selectedSection?.month ?? null,
+      }).catch((error) => log.warn("derived priority hint failed", toErrorFields(error)));
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [selectedHash, selectedSection?.kind, selectedSection?.month, visibleHashSignature]);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
-    // Space = LOOK (the agreed model): toggle the preview, through the one
-    // shared rule — with a video loaded in the preview the video surface owns
-    // the key instead (play/pause), so the rule must not claim it here.
+    // Space opens the transient Quick View. Persistent Preview visibility is
+    // chrome-only; a focused video player may decline this route and keep the
+    // key for play/pause.
     if (event.key === " ") {
-      handleSpaceLook(event);
+      handleSpaceQuickView(event);
       return;
     }
     // PageUp/PageDown jump by roughly a viewport of rows.
@@ -663,12 +684,14 @@ export default function Grid({
           const isSelected = selectedKeys.has(key);
           const onSelect = (event: React.MouseEvent) => {
             containerRef.current?.focus();
-            if (event.metaKey || event.ctrlKey) {
-              toggleItem(key);
-            } else if (event.shiftKey) {
+            // Browser double-click dispatch is click, click, dblclick. Acting
+            // only on the first click keeps both a single and a double click
+            // as one immediate logical toggle.
+            if (event.detail > 1) return;
+            if (event.shiftKey) {
               rangeSelect(sortedKeys, key);
             } else {
-              selectItem(key);
+              toggleItem(key);
             }
           };
           return (

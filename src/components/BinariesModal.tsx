@@ -1,9 +1,15 @@
-import { useBinariesStore, type DependencyState } from "../state/binaries-store";
+import {
+  useBinariesStore,
+  type DependencyState,
+  type InstallStep,
+} from "../state/binaries-store";
 import { useAppStore } from "../state/app-store";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
+
+const NO_INSTALL_HISTORY: InstallStep[] = [];
 
 // "Managed tools" — grouped by the two genuinely different LIFECYCLES the
 // registry holds (developer, 2026-08-17; one flat list forced an update
@@ -60,6 +66,9 @@ function factLine(entry: DependencyState): string | null {
 
 function EntryRow({ entry }: { entry: DependencyState }) {
   const progress = useBinariesStore((s) => s.installing[entry.id]);
+  const history = useBinariesStore(
+    (s) => s.installHistory[entry.id] ?? NO_INSTALL_HISTORY,
+  );
   const error = useBinariesStore((s) => s.errors[entry.id]);
   const checking = useBinariesStore((s) => s.checking);
   const checkingId = useBinariesStore((s) => s.checkingId);
@@ -71,6 +80,10 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const checkAll = useBinariesStore((s) => s.checkAll);
   const cancelCheck = useBinariesStore((s) => s.cancelCheck);
   const installing = progress !== undefined;
+  const visibleHistory =
+    history.length > 0 || progress === undefined
+      ? history
+      : [{ phase: "active", text: progress }];
 
   // Install when missing, Update when a newer version is known — and Update
   // again when a present entry's own version could not be read, which is the
@@ -102,12 +115,32 @@ function EntryRow({ entry }: { entry: DependencyState }) {
         <span className="shrink-0 text-xs text-ink-muted">{statusLabel(entry)}</span>
       </div>
       {fact !== null ? <p className="mt-1 text-xs text-ink-muted">{fact}</p> : null}
+      {visibleHistory.length > 0 ? (
+        <ol
+          className="mt-2 space-y-0.5"
+          aria-label={`${entry.label} install progress`}
+        >
+          {visibleHistory.map((step, index) => (
+            <li
+              key={step.phase}
+              className={`text-xs ${
+                installing && index === visibleHistory.length - 1
+                  ? "text-primary"
+                  : step.phase === "result"
+                    ? "font-medium text-ink"
+                    : "text-ink-muted"
+              }`}
+            >
+              {step.text}
+            </li>
+          ))}
+        </ol>
+      ) : null}
       {error !== undefined && !installing ? (
         <p className="mt-1 text-xs text-danger">{error}</p>
       ) : null}
       {installing ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <p className="text-xs text-primary">{progress}</p>
           <Button
             disabled={progress === "Cancelling…"}
             onClick={() => void cancel(entry.id)}
@@ -214,7 +247,7 @@ export default function BinariesModal() {
           today — at most about once a day. Default off. */}
       <div className="mt-5">
         <Row
-          label="Check ffmpeg for updates at launch"
+          label="Check for ffmpeg updates at launch"
           hint="About once a day. Nothing is ever installed without asking."
         >
           <Toggle

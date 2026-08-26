@@ -5,7 +5,7 @@
 // footer permanently claiming work is in flight. Nothing exercised them.
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
 
@@ -20,7 +20,16 @@ async function settle() {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
 }
 
-beforeAll(settle);
+async function settleUntil(predicate: () => boolean) {
+  for (let i = 0; i < 50 && !predicate(); i += 1) await Promise.resolve();
+}
+
+beforeAll(async () => {
+  for (let i = 0; i < 20 && listenerCount("derived://item") === 0; i += 1) {
+    await Promise.resolve();
+  }
+  expect(listenerCount("derived://item")).toBe(1);
+});
 
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
@@ -91,6 +100,44 @@ describe("watcher events", () => {
   });
 });
 
+describe("derived media events", () => {
+  it("patches one item without re-reading the open section or its counts", async () => {
+    const { useItemsStore } = await import("../../src/state/items-store");
+    useItemsStore.setState({
+      selected: { kind: "image", month: "2026-01" },
+      items: [
+        {
+          hash: "h1",
+          pathId: 1,
+          fileName: "one.jpg",
+          resolvedUtcMs: 1,
+          copyCount: 1,
+          width: null,
+          height: null,
+          hasThumb: false,
+          similarGroupId: null,
+          sharpness: null,
+          byteSize: 1,
+          hasCompanions: false,
+          durationMs: null,
+          namesDiffer: false,
+          dirPaths: ["/photos"],
+        },
+      ],
+    });
+
+    fireEvent("derived://item", {
+      previousHash: "h1",
+      item: { ...useItemsStore.getState().items[0], width: 4000, hasThumb: true },
+    });
+    await settleUntil(() => useItemsStore.getState().items[0]?.width === 4000);
+
+    expect(useItemsStore.getState().items[0]).toMatchObject({ width: 4000, hasThumb: true });
+    expect(invokeCalls.some((call) => call.command === "get_section_items")).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "get_section_counts")).toBe(false);
+  });
+});
+
 describe("quarantine events", () => {
   it("carries a mid-session quarantine to the reporting surface", async () => {
     // A patch reads the file it is about to merge into, so a store can be set
@@ -145,5 +192,32 @@ describe("binaries events", () => {
     const installing = binaries.getState().installing;
     expect(installing["whisper-large-v3-turbo"]).toBe("Downloading — 300 / 1549 MB");
     expect(installing["ultraface-rfb640"]).toBe("Verifying — checking integrity");
+  });
+
+  it("retains each phase and a terminal result instead of flashing one line", async () => {
+    binaries.setState({ installing: {}, installHistory: {} });
+    fireEvent("binaries://progress", {
+      id: "ffmpeg",
+      phase: "resolve",
+      detail: "finding the latest build",
+    });
+    fireEvent("binaries://progress", {
+      id: "ffmpeg",
+      phase: "download",
+      detail: "84 MB",
+    });
+    fireEvent("binaries://progress", {
+      id: "ffmpeg",
+      phase: "verify",
+      detail: "checking integrity",
+    });
+    fireEvent("binaries://done", { id: "ffmpeg" });
+
+    expect(binaries.getState().installHistory.ffmpeg).toEqual([
+      { phase: "resolve", text: "Resolving — finding the latest build" },
+      { phase: "download", text: "Downloading — 84 MB" },
+      { phase: "verify", text: "Verifying — checking integrity" },
+      { phase: "result", text: "Installed" },
+    ]);
   });
 });

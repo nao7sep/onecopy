@@ -131,6 +131,38 @@ fn rendering_formats_timestamps_and_drops_empty_segments() {
         Segment { start_ms: 75_000, text: "world".into() },
     ];
     assert_eq!(render(&segments), "[0:01] hello\n[1:15] world\n");
+    assert_eq!(render(&[]), "", "no speech is a successful empty transcript");
+}
+
+#[test]
+fn only_ffmpegs_explicit_no_audio_results_become_empty_success() {
+    assert!(no_audio_output(
+        "Stream map '0:a:0' matches no streams. To ignore this, add a trailing '?'"
+    ));
+    assert!(no_audio_output("Output file #0 does not contain any stream"));
+    assert!(!no_audio_output("Invalid data found when processing input"));
+}
+
+#[cfg(unix)]
+#[test]
+#[serial(transcription)]
+fn a_video_without_audio_extracts_as_a_successful_empty_stream() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-no-audio-")
+        .tempdir()
+        .unwrap();
+    let ffmpeg = dir.path().join("ffmpeg");
+    std::fs::write(
+        &ffmpeg,
+        "#!/bin/sh\necho \"Stream map '0:a:0' matches no streams\" >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let pcm = extract_pcm(&ffmpeg, Path::new("/nonexistent/silent.mov")).unwrap();
+    assert!(pcm.is_empty());
 }
 
 // LIVE: downloads the tiny model (~75 MB; sha256 from the upstream's LFS

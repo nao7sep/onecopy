@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { listenThenAnnounce } from "../utils/handshake";
 import ComparisonSlot from "../components/ComparisonSlot";
-import ZoomableImage from "../components/ZoomableImage";
 import { gridColumns, type ComparisonBroadcast } from "../state/comparison-store";
 
 // A secondary comparison surface on an extra monitor: renders its contiguous
@@ -12,9 +11,6 @@ import { gridColumns, type ComparisonBroadcast } from "../state/comparison-store
 
 export default function ComparisonWindow({ slice }: { slice: number }) {
   const [state, setState] = useState<ComparisonBroadcast | null>(null);
-  const [enlarged, setEnlarged] = useState<{ hash: string; name: string } | null>(null);
-  const enlargedRef = useRef(enlarged);
-  enlargedRef.current = enlarged;
 
   useEffect(() => {
     // Announce only once this window can hear the reply (see handshake.ts).
@@ -24,16 +20,6 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
       setState,
     );
     const onKeyDown = (event: KeyboardEvent) => {
-      if (enlargedRef.current !== null) {
-        // The enlarged overlay owns the keyboard locally: Escape returns to
-        // the slots (never forwarded — it must not close the comparison);
-        // Z falls through to the zoom toggle.
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setEnlarged(null);
-        }
-        return;
-      }
       event.preventDefault();
       // Modifiers ride along: without them the receiver cannot tell Cmd+0
       // from a bare slot-0 press, and forwarding strips the distinction.
@@ -98,9 +84,6 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
                 onToggle={() =>
                   void emit("comparison://key", { key: slot.slotKey, shiftKey: false })
                 }
-                onEnlarge={() =>
-                  setEnlarged({ hash: slot.member!.hash, name: slot.member!.fileName })
-                }
               />
             ) : (
               <div
@@ -118,16 +101,6 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         Keys work here too · Enter commits · Escape leaves
       </footer>
-      {enlarged !== null ? (
-        <div className="absolute inset-0 z-10 flex flex-col bg-background">
-          <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
-            <ZoomableImage hash={enlarged.hash} fileName={enlarged.name} />
-          </div>
-          <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-            {enlarged.name} · Z: 100% · Escape: back to the slots
-          </footer>
-        </div>
-      ) : null}
     </div>
   );
 }

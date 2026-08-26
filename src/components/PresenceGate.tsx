@@ -16,8 +16,8 @@ export default function PresenceGate({
   const recheck = useWizardStore((s) => s.recheckPresence);
   useBlockingSurface();
   return (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-background">
-      <div className="w-[560px] max-w-full rounded-2xl border border-border bg-surface p-7 shadow-xl">
+    <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
+      <div className="w-[min(820px,calc(100vw-3rem))] rounded-2xl border border-border bg-surface p-7 shadow-xl">
         <h1 className="mb-1 text-lg font-semibold text-ink-strong">
           Volumes missing
         </h1>

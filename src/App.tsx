@@ -48,7 +48,7 @@ import { hasOpenModal } from "./utils/modalStack";
 import { isComposingEvent } from "./hooks/useComposing";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
-import ScenesModal from "./components/ScenesModal";
+import QuickView from "./components/QuickView";
 import TrashModal from "./components/TrashModal";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { Menu as MenuIcon, Minus, Plus, X } from "lucide-react";
@@ -61,10 +61,17 @@ import {
 } from "./state/binaries-store";
 import { itemKey } from "./state/items-store";
 import { DEFAULT_DESC, type SortChoice, type SortOrder } from "./models/items";
-import { handleSpaceLook, usePreviewStore } from "./state/preview-store";
-import { installActivityPings, useBackfillStore } from "./state/backfill-store";
+import { comparisonHashForEnter } from "./models/interactions";
+import { usePreviewStore } from "./state/preview-store";
+import { handleSpaceQuickView, useQuickViewStore } from "./state/quick-view-store";
+import {
+  backgroundWorkLine,
+  installActivityPings,
+  useDerivedWorkStore,
+} from "./state/derived-work-store";
 import PreviewSurface from "./components/PreviewSurface";
 import { log, reportWindowCall, toErrorFields } from "./repositories";
+import BackgroundWorkModal from "./components/BackgroundWorkModal";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -106,7 +113,9 @@ export default function App() {
     void useAppStore.getState().patchState({ rightPaneTab: tab });
   };
   const issuesTotal = useIssuesStore((s) => s.total);
-  const backfillLine = useBackfillStore((s) => s.line);
+  const derivedWorkSnapshot = useDerivedWorkStore((s) => s.snapshot);
+  const setBackgroundWorkOpen = useDerivedWorkStore((s) => s.setOpen);
+  const derivedWorkLine = backgroundWorkLine(derivedWorkSnapshot);
   const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
@@ -116,8 +125,8 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
-  /** Enter on an anchor video opens the scenes modal for this hash. */
-  const [scenesFor, setScenesFor] = useState<string | null>(null);
+  /** Transient media inspection lives in the main webview. */
+  const quickViewOpen = useQuickViewStore((state) => state.open);
   /** Pending permanent deletion awaiting confirmation (item count shown). */
   const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
   /** Pending TRASH deletion awaiting confirmation — exists only when the
@@ -155,28 +164,21 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // The backfill scheduler's view of the user: throttled input pings.
+  // The derived-work coordinator's view of the user: throttled input pings.
   useEffect(() => {
-    installActivityPings(window);
+    return installActivityPings(window);
   }, []);
 
-  // A newly opened preview window asks for the current selection; answer
-  // with the payload AND the already-fetched detail (the window queries
-  // nothing itself).
+  // A newly opened preview window asks for the exact message already owned
+  // by the preview store. Rebuilding it from selection would lose one-shot
+  // presentation intent such as image zoom or a video snapshot seek.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void import("@tauri-apps/api/event").then(async ({ listen, emit }) => {
       const fn = await listen("preview://ready", () => {
-        const { items, selectedItem, detail } = useItemsStore.getState();
-        const item = items.find((i) => itemKey(i) === selectedItem);
-        if (item) {
-          void emit("preview://show", {
-            hash: item.hash,
-            pathId: item.hash === null ? item.pathId : null,
-            detail,
-          });
-        }
+        const current = usePreviewStore.getState().current;
+        if (current !== null) void emit("preview://show", current);
       });
       if (disposed) fn();
       else unlisten = fn;
@@ -482,46 +484,34 @@ export default function App() {
           void useItemsStore.getState().deleteSelected(false);
         }
       } else if (
-        (event.key === " " || event.key.toLowerCase() === "p") &&
+        event.key === " " &&
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey
       ) {
-        // Space = LOOK, with P as its alias; the chrome control is the third
-        // entry — all through the store's one rule so they cannot drift. A
-        // video loaded in the preview owns Space (play/pause), which is why
-        // the rule may decline to claim the event.
-        handleSpaceLook(event);
+        // Space owns the transient Quick View. Persistent Preview visibility
+        // belongs to its chrome control; a focused video player keeps Space
+        // for play/pause.
+        handleSpaceQuickView(event);
       } else if (event.key === "Enter") {
         const { items, selectedItem } = useItemsStore.getState();
         const item = items.find((i) => itemKey(i) === selectedItem);
         if (!item) return;
         event.preventDefault();
-        if (item.hash && item.durationMs !== null) {
-          // Enter goes deeper on the anchor: a video opens the scenes modal
-          // (selection-based culling — videos never group).
-          setScenesFor(item.hash);
-        } else if (item.hash && item.similarGroupId !== null) {
+        const comparisonHash = comparisonHashForEnter(item);
+        if (comparisonHash !== null) {
           // Similar photos exist: Enter means "show them all at once". A
           // group with no other live members says so instead of surprising
           // the user with a different surface.
           void useComparisonStore
             .getState()
-            .openGroup(item.hash)
+            .openGroup(comparisonHash)
             .then((opened) => {
               if (opened) return;
               useItemsStore.setState({
                 message: "No similar photos left in this group",
               });
             });
-        } else {
-          // No similars: Enter says so and does nothing else (developer,
-          // 2026-08-17). It used to open the 100% view — but Enter is the
-          // trained "open the similar set" reflex, pressed without checking
-          // the ≈ badge first, and a surprise mode-switch punishes exactly
-          // that habit. Inspection stays where it belongs: Space to peek,
-          // Z or a click for 100%.
-          useItemsStore.setState({ message: "No similar photos for this image" });
         }
       }
     };
@@ -636,11 +626,10 @@ export default function App() {
       ) : null}
       <ComparisonView />
       <BinariesModal />
+      <BackgroundWorkModal />
       <ShortcutsModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      {scenesFor !== null ? (
-        <ScenesModal hash={scenesFor} onClose={() => setScenesFor(null)} />
-      ) : null}
+      {quickViewOpen ? <QuickView /> : null}
       {confirmPermanent !== null ? (
         <ConfirmDialog
           title="Delete permanently?"
@@ -829,7 +818,8 @@ export default function App() {
                 hash={previewCurrent?.hash ?? null}
                 detail={previewCurrent?.detail ?? null}
                 pathId={previewCurrent?.pathId ?? null}
-                zoom={previewCurrent?.zoom === true}
+                seekMs={previewCurrent?.seekMs}
+                playAfterSeek={previewCurrent?.playAfterSeek}
               />
               <button
                 aria-label="Close preview"
@@ -872,7 +862,7 @@ export default function App() {
                 aria-selected={rightTab === tab}
                 aria-controls="right-tabpanel"
                 tabIndex={rightTab === tab ? 0 : -1}
-                className={`flex-1 px-2 py-1 text-xs ${
+                className={`flex-1 px-2 py-2.5 text-sm ${
                   rightTab === tab
                     ? "border-b-2 border-primary font-semibold text-primary"
                     : "text-ink-muted hover:text-ink"
@@ -938,11 +928,14 @@ export default function App() {
           {status.text}
         </span>
         <span className="flex shrink-0 items-center gap-3">
-          {/* The idle backfill's narration — why the fans spin while the
-              user is away; disappears the moment there is nothing to say. */}
-          {backfillLine !== null ? (
-            <span className="text-ink-muted">{backfillLine}</span>
-          ) : null}
+          {/* Why the fans spin while work runs in the background. */}
+          <button
+            className="text-ink-muted hover:text-ink hover:underline"
+            title="Open Background work"
+            onClick={() => setBackgroundWorkOpen(true)}
+          >
+            {derivedWorkLine}
+          </button>
           {/* The issues count: NOTHING at zero, a danger-tinted count when
               conditions exist. No toasts anywhere — the design case is a
               multi-day unattended scan, so the count simply waits here. */}

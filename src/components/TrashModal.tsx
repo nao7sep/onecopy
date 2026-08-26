@@ -60,7 +60,11 @@ export default function TrashModal({
   };
 
   return (
-    <ModalShell title="Trash" onClose={onClose} widthClass="w-[560px]">
+    <ModalShell
+      title="Trash"
+      onClose={onClose}
+      widthClass="w-[min(820px,calc(100vw-3rem))]"
+    >
       {confirm !== null ? (
         <ConfirmDialog
           title="Empty this trash?"
@@ -68,6 +72,7 @@ export default function TrashModal({
             confirm.files === 1 ? "" : "s"
           } (${formatBytes(confirm.bytes)}) from ${confirm.root}? The trash is the safety net — emptied files cannot be recovered.`}
           confirmLabel="Empty trash"
+          widthClass="w-[min(820px,calc(100vw-3rem))]"
           onConfirm={() => {
             const row = confirm;
             setConfirm(null);

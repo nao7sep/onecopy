@@ -65,22 +65,12 @@ pub struct ScanLists {
 /// typed defaults filling gaps — the store never validates, each consumer
 /// projects what it needs (config-seeding conventions).
 pub struct ScanSettings {
-    pub data_root: std::path::PathBuf,
     pub source_dirs: Vec<String>,
     pub lists: ScanLists,
     pub resolution: ResolutionConfig,
-    pub similarity: crate::similarity::SimilarityConfig,
-    pub strip: crate::video::StripConfig,
-    pub thumb_edge: u32,
-    pub preview_long_edge: u32,
+    pub pairing_enabled: bool,
     pub keep_awake: bool,
     pub cache_root: std::path::PathBuf,
-    /// The managed ffmpeg when present on disk; None leaves videos underived.
-    pub ffmpeg: Option<std::path::PathBuf>,
-    /// Both face models, or None — the pair is all-or-nothing because the
-    /// score needs detection AND expression.
-    pub face_models: Option<(std::path::PathBuf, std::path::PathBuf)>,
-    pub temp_dir: std::path::PathBuf,
 }
 
 pub fn settings_from_config(
@@ -91,13 +81,6 @@ pub fn settings_from_config(
     let defaults = crate::storage::DefaultConfig::default();
     let get = |key: &str| config.and_then(|c| c.get(key));
 
-    let u32_of = |key: &str, fallback: u32| -> u32 {
-        get(key)
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(fallback)
-    };
-
     let tz: chrono_tz::Tz = get("defaultTimezone")
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse().ok())
@@ -106,7 +89,6 @@ pub fn settings_from_config(
 
     let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
     ScanSettings {
-        data_root: data_root.to_path_buf(),
         source_dirs: string_list_preserving_case(config, "sourceDirs"),
         // Supported file types are specs, not user choices: the lists live in
         // extensions.rs only, and a stray legacy key in config.json is ignored.
@@ -123,51 +105,9 @@ pub fn settings_from_config(
                 .unwrap_or(defaults.good_range_start_year),
             now_ms,
         },
-        similarity: crate::similarity::SimilarityConfig {
-            max_gap_seconds: u32_of("similarityMaxGapSeconds", defaults.similarity_max_gap_seconds),
-            phash_max_distance: u32_of(
-                "similarityPhashMaxDistance",
-                defaults.similarity_phash_max_distance,
-            ),
-            phash_max_distance_burst: u32_of(
-                "similarityPhashMaxDistanceBurst",
-                defaults.similarity_phash_max_distance_burst,
-            ),
-            diameter_multiplier: u32_of(
-                "similarityDiameterMultiplier",
-                defaults.similarity_diameter_multiplier,
-            ),
-        },
-        strip: crate::video::StripConfig {
-            seconds_per_frame: u32_of(
-                "videoStripSecondsPerFrame",
-                defaults.video_strip_seconds_per_frame,
-            ),
-            min_frames: u32_of("videoStripMinFrames", defaults.video_strip_min_frames),
-            max_frames: u32_of("videoStripMaxFrames", defaults.video_strip_max_frames),
-        },
-        ffmpeg: {
-            let path = crate::binaries_manager::ffmpeg_path(data_root);
-            path.is_file().then_some(path)
-        },
-        face_models: {
-            // Opt-in (Phase 33): with scoring disabled the models are
-            // invisible to every pass even when a file happens to exist.
-            let enabled = get("scoreFaces").and_then(|v| v.as_bool()).unwrap_or(false);
-            let installed = |id: &str| {
-                crate::binaries_manager::spec_of(id).and_then(|spec| {
-                    let state = crate::binaries_manager::state_of(data_root, spec);
-                    (state.status != crate::binaries::BinaryStatus::NotInstalled)
-                        .then(|| crate::binaries_manager::installed_path(data_root, spec))
-                })
-            };
-            enabled
-                .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
-                .flatten()
-        },
-        temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
-        thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
-        preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
+        pairing_enabled: get("pairingEnabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.pairing_enabled),
         keep_awake: get("keepAwakeDuringIndexing")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.keep_awake_during_indexing),
@@ -200,10 +140,6 @@ pub struct ScanSummary {
     pub resolved: u64,
     pub undated: u64,
     pub paired: u64,
-    pub derived: u64,
-    pub derive_failed: u64,
-    pub videos_derived: u64,
-    pub similar_groups: u64,
 }
 
 /// Escapes LIKE wildcards in a path prefix. `_` is common in real paths and
@@ -402,8 +338,9 @@ pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, Str
     Ok(canonical)
 }
 
-/// One full pipeline run over every configured root: walk → hash → extract →
-/// resolve → pair → derive, reporting a progress line after each stage.
+/// One full index run over every configured root: walk → hash → extract →
+/// resolve → pair, reporting a progress line after each stage. Derived media
+/// is deliberately owned by `derived_work`, which wakes after this returns.
 pub fn run_full_scan(
     conn: &Connection,
     settings: &ScanSettings,
@@ -430,18 +367,13 @@ pub fn run_full_scan(
         progress("walk", walk_progress_line(root, stats.seen, stats.added));
     }
 
-    run_pipeline_tail(conn, settings, progress, &mut summary)?;
+    run_index_tail(conn, settings, progress, &mut summary)?;
     Ok(summary)
 }
 
-/// True when checkpointed work from an interrupted run is still waiting: media
-/// rows never hashed, or image/video contents never derived. Videos count only
-/// while ffmpeg is present — without it the video stage would skip them again,
-/// and a resume that can do nothing must not fire on every launch. Cheap
-/// (three indexed EXISTS probes), so callers may use it as a gate.
 /// Whether any configured root still owes a full walk — it has never been
 /// walked to completion, or a walk over it was interrupted. This is the one
-/// thing `pending_work_exists` cannot see: its probes are all row-level, so
+/// thing `pending_index_work_exists` cannot see: its probes are row-level, so
 /// once the tail drains the rows a partial walk created, it reports clean
 /// forever while whole directories remain unread.
 pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
@@ -467,7 +399,7 @@ pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
     Ok(false)
 }
 
-pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bool, String> {
+pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     let probe = |sql: &str| -> Result<bool, String> {
         conn.query_row(sql, [], |r| r.get::<_, i64>(0))
             .map(|n| n != 0)
@@ -479,45 +411,37 @@ pub fn pending_work_exists(conn: &Connection, ffmpeg_present: bool) -> Result<bo
     )? {
         return Ok(true);
     }
-    // Every contents probe requires a LIVE path. A row whose only copies are
-    // missing can never be derived, so reporting it as pending fires a no-op
-    // resume scan on every launch — and that scan rebuilds all similarity
-    // groups each time, for work it cannot do.
-    const LIVE: &str = "EXISTS (SELECT 1 FROM paths p \
-                        WHERE p.content_hash = contents.hash AND p.missing = 0)";
-    if probe(&format!(
-        "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
-         AND derived_at_utc IS NULL AND {LIVE})"
-    ))? {
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM paths \
+         WHERE missing = 0 AND indexed_at_utc IS NULL)",
+    )? {
         return Ok(true);
     }
-    // Stills blocked on ffmpeg become derivable the moment it lands, so they
-    // are pending work then and inert before — the same gate the videos use.
-    if ffmpeg_present
-        && probe(&format!(
-            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'image' \
-             AND derived_at_utc = '{}' AND {LIVE})",
-            crate::preview::NEEDS_FFMPEG
-        ))?
-    {
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 \
+         AND indexed_at_utc IS NOT NULL AND resolved_source IS NULL)",
+    )? {
         return Ok(true);
     }
-    if ffmpeg_present
-        && probe(&format!(
-            "SELECT EXISTS(SELECT 1 FROM contents WHERE kind = 'video' \
-             AND derived_at_utc IS NULL AND {LIVE})"
-        ))?
-    {
+    // A build that learns a new metadata fact must backfill an already-complete
+    // pre-release index once. The NULL raw row is still evidence: it means the
+    // file was checked and carries no Live Photo identifier.
+    if probe(
+        "SELECT EXISTS(SELECT 1 FROM paths p \
+         WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
+           AND NOT EXISTS (SELECT 1 FROM evidence e \
+                           WHERE e.path_id = p.id \
+                             AND e.source = 'live-photo-identifier'))",
+    )? {
         return Ok(true);
     }
     Ok(false)
 }
 
-/// The pipeline minus the walk: hash → extract → resolve → pair → derive →
-/// video → group, over whatever the checkpoints left pending. Shared by the
-/// full scan, the startup resume, and the scoped section rescan, so every
-/// recovery path runs the same (and the whole) tail.
-pub fn run_pipeline_tail(
+/// The index pipeline minus the walk: hash → extract → resolve → pair, over
+/// whatever the checkpoints left pending. Shared by the full scan, startup
+/// resume, watcher, and scoped section rescan.
+pub fn run_index_tail(
     conn: &Connection,
     settings: &ScanSettings,
     progress: &dyn Fn(&str, String),
@@ -549,68 +473,9 @@ pub fn run_pipeline_tail(
         format!("{} resolved, {} undated", resolve_stats.resolved, resolve_stats.undated),
     );
 
-    let pair_stats = pair_companions(conn)?;
+    let pair_stats = pair_companions(conn, settings.pairing_enabled)?;
     summary.paired = pair_stats.paired;
     progress("pair", format!("{} companions", pair_stats.paired));
-
-    let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
-    let per_item = |done: u64, total: u64| progress("derive", format!("{done}/{total}"));
-    let derive_stats = crate::preview::derive_images_pending(
-        conn,
-        &cache,
-        settings.thumb_edge,
-        settings.preview_long_edge,
-        settings.ffmpeg.as_deref(),
-        Some(&per_item),
-    )?;
-    summary.derived = derive_stats.derived;
-    summary.derive_failed = derive_stats.failed;
-    progress(
-        "derive",
-        if derive_stats.blocked_no_ffmpeg > 0 {
-            format!(
-                "{} previews, {} failures, {} waiting for ffmpeg",
-                derive_stats.derived, derive_stats.failed, derive_stats.blocked_no_ffmpeg
-            )
-        } else {
-            format!("{} previews, {} failures", derive_stats.derived, derive_stats.failed)
-        },
-    );
-
-    let video_stats = crate::video::derive_videos_pending(
-        conn,
-        &cache,
-        settings.ffmpeg.as_deref(),
-        &settings.temp_dir,
-        settings.thumb_edge,
-        settings.preview_long_edge,
-    )?;
-    summary.videos_derived = video_stats.derived;
-    progress(
-        "video",
-        if video_stats.skipped_no_ffmpeg {
-            "ffmpeg not installed — videos left for a later scan".to_string()
-        } else {
-            format!(
-                "{} posters+strips, {} failures",
-                video_stats.derived, video_stats.failed
-            )
-        },
-    );
-
-    let group_stats = crate::similarity::rebuild_groups_for_root(
-        conn,
-        &settings.similarity,
-        &settings.data_root,
-    )?;
-    summary.similar_groups = group_stats.groups;
-    progress(
-        "group",
-        format!(
-            "{} similar groups over {} photos",
-            group_stats.groups, group_stats.grouped_items
-        ),
-    );
 
     Ok(())
 }
@@ -1220,6 +1085,14 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
                 )
                 .map_err(|e| e.to_string())?;
             }
+            if kind == "image" || kind == "video" {
+                conn.execute(
+                    "INSERT INTO evidence (path_id, source, raw, offset_known) \
+                     VALUES (?1, 'live-photo-identifier', ?2, 0)",
+                    params![id, meta.live_photo_identifier.as_deref()],
+                )
+                .map_err(|e| e.to_string())?;
+            }
         }
 
         if let Some(token) = timestamps::from_filename(&file_name) {
@@ -1239,6 +1112,44 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
         conn.execute(
             "UPDATE paths SET indexed_at_utc = ?2 WHERE id = ?1",
             params![id, logging::now_iso_millis()],
+        )
+        .map_err(|e| e.to_string())?;
+        stats.extracted += 1;
+    }
+
+    // Existing pre-release indexes already have `indexed_at_utc` checkpoints
+    // but no Live Photo evidence. Backfill exactly those media rows once into
+    // the existing evidence store; a NULL raw value is the durable "checked,
+    // absent" result, so later scans do not reopen every family photo.
+    let pending_live_photo: Vec<(i64, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id, p.abs_path, p.kind FROM paths p \
+                 WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
+                   AND NOT EXISTS (SELECT 1 FROM evidence e \
+                                   WHERE e.path_id = p.id \
+                                     AND e.source = 'live-photo-identifier')",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        rows
+    };
+    for (id, abs, kind) in pending_live_photo {
+        check_cancel()?;
+        let path = Path::new(&abs);
+        let identifier = match kind.as_str() {
+            "image" => crate::live_photo::still_content_identifier(path),
+            "video" => crate::live_photo::quicktime_content_identifier(path),
+            _ => None,
+        };
+        conn.execute(
+            "INSERT INTO evidence (path_id, source, raw, offset_known) \
+             VALUES (?1, 'live-photo-identifier', ?2, 0)",
+            params![id, identifier],
         )
         .map_err(|e| e.to_string())?;
         stats.extracted += 1;
@@ -1346,29 +1257,19 @@ pub struct PairStats {
     pub paired: u64,
 }
 
-/// Same-directory pairing: a companion attaches to the primary (image or
-/// video) sharing its lowercased stem in the same directory — never across
-/// directories, which is what makes rotating-name false links (GoPro)
-/// structurally impossible. Deterministic: the lowest-id primary wins if
-/// several share a stem. A companion with no primary stays unattached and
-/// behaves as an other-file.
-pub fn pair_companions(conn: &Connection) -> Result<PairStats, String> {
-    // Unpair first. `companion_of` was previously assigned once and never
-    // reconsidered, so moving a JPEG out of the folder in Finder — the app's
-    // own supported out-of-app-changes path — left the RAW pointing at a row
-    // marked missing. Every read model filters `companion_of IS NULL`, so that
-    // RAW then appeared in NO section, no count and no issue row, and neither
-    // a delete nor a move-out of the new JPEG picked it up. A full rescan did
-    // not fix it, because nothing ever cleared the column.
-    conn.execute(
-        "UPDATE paths SET companion_of = NULL \
-         WHERE companion_of IS NOT NULL \
-           AND NOT EXISTS (SELECT 1 FROM paths pri \
-                           WHERE pri.id = paths.companion_of AND pri.missing = 0)",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    let updated = conn
+/// Rebuilds every enabled companion relationship. RAW/sidecar companions use
+/// same-directory + lowercased stem. Live Photo MOVs use same-directory +
+/// exact Apple content identifier and may have unrelated stems. The lowest-id
+/// primary wins any ambiguous match. Disabled pairing leaves every row
+/// independent.
+pub fn pair_companions(conn: &Connection, enabled: bool) -> Result<PairStats, String> {
+    conn.execute("UPDATE paths SET companion_of = NULL WHERE companion_of IS NOT NULL", [])
+        .map_err(|e| e.to_string())?;
+    if !enabled {
+        return Ok(PairStats::default());
+    }
+
+    let mut updated = conn
         .execute(
             "UPDATE paths SET companion_of = (
                 SELECT p.id FROM paths p
@@ -1380,6 +1281,38 @@ pub fn pair_companions(conn: &Connection) -> Result<PairStats, String> {
                 SELECT 1 FROM paths p
                 WHERE p.dir_path = paths.dir_path AND p.stem = paths.stem
                   AND p.kind IN ('image', 'video') AND p.missing = 0)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+
+    updated += conn
+        .execute(
+            "UPDATE paths SET companion_of = (
+               SELECT image.id
+               FROM evidence video_id
+               JOIN evidence image_id
+                 ON image_id.source = 'live-photo-identifier'
+                AND image_id.raw = video_id.raw
+               JOIN paths image ON image.id = image_id.path_id
+               WHERE video_id.path_id = paths.id
+                 AND video_id.source = 'live-photo-identifier'
+                 AND video_id.raw IS NOT NULL
+                 AND image.kind = 'image' AND image.missing = 0
+                 AND image.dir_path = paths.dir_path
+               ORDER BY image.id LIMIT 1)
+             WHERE kind = 'video' AND missing = 0 AND companion_of IS NULL
+               AND EXISTS (
+                 SELECT 1
+                 FROM evidence video_id
+                 JOIN evidence image_id
+                   ON image_id.source = 'live-photo-identifier'
+                  AND image_id.raw = video_id.raw
+                 JOIN paths image ON image.id = image_id.path_id
+                 WHERE video_id.path_id = paths.id
+                   AND video_id.source = 'live-photo-identifier'
+                   AND video_id.raw IS NOT NULL
+                   AND image.kind = 'image' AND image.missing = 0
+                   AND image.dir_path = paths.dir_path)",
             [],
         )
         .map_err(|e| e.to_string())?;

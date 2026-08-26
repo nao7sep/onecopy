@@ -26,7 +26,7 @@ export default function PreviewControl() {
     <span className="flex items-center gap-1">
       <button
         aria-pressed={follow}
-        title={follow ? "Hide preview (Space)" : "Show preview (Space)"}
+        title={follow ? "Hide preview" : "Show preview"}
         className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors ${
           follow
             ? "bg-primary-surface text-primary"

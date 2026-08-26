@@ -7,9 +7,61 @@
 use std::time::Instant;
 
 use onecopy_lib::index_store;
+use onecopy_lib::queries;
 use onecopy_lib::scanner;
 use onecopy_lib::similarity::{rebuild_groups, SimilarityConfig};
 use rusqlite::params;
+
+#[test]
+#[ignore]
+fn six_item_section_in_a_million_row_index() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-sections-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO contents (hash, byte_size, kind) VALUES ('benchmark-anchor', 1, 'image');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing)
+           VALUES ('/anchor', '/', 'anchor', 'image', 'benchmark-anchor', 1);
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999993
+         )
+         INSERT INTO contents (hash, byte_size, kind)
+           SELECT printf('background-%07d', n), 100, 'image' FROM seq;
+         INSERT INTO logical_contents
+           (content_hash, kind, resolved_utc_ms, representative_path_id,
+            live_copy_count, names_differ)
+           SELECT hash, 'image', 1735689600000, 1, 1, 0 FROM contents
+           WHERE hash LIKE 'background-%';
+         COMMIT;",
+    )
+    .unwrap();
+    for n in 0..6 {
+        let hash = format!("target-{n}");
+        conn.execute(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES (?1, 100, 'image')",
+            [&hash],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, \
+             resolved_utc_ms, resolved_source) VALUES (?1, '/target', ?2, 'image', ?3, \
+             1767225600000, 'metadata')",
+            params![format!("/target/{n}.jpg"), format!("{n}.jpg"), hash],
+        )
+        .unwrap();
+    }
+
+    let started = Instant::now();
+    let items = queries::section_items(&conn, "image", "2026-01", chrono_tz::UTC).unwrap();
+    eprintln!(
+        "opened six items among one million logical rows in {:?}",
+        started.elapsed()
+    );
+    assert_eq!(items.len(), 6);
+}
 
 #[test]
 #[ignore]

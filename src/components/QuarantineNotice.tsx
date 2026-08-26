@@ -47,7 +47,11 @@ export default function QuarantineNotice() {
   if (quarantines.length === 0) return null;
 
   return (
-    <ModalShell title="A settings file could not be read" onClose={dismiss}>
+    <ModalShell
+      title="A settings file could not be read"
+      onClose={dismiss}
+      widthClass="w-[min(820px,calc(100vw-3rem))]"
+    >
       <ul className="space-y-2">
         {quarantines.map((record) => (
           <Record key={record.quarantinedTo} record={record} />

@@ -21,6 +21,11 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["goodRangeStartYear"], serde_json::json!(1995));
     assert_eq!(value["similarityMaxGapSeconds"], serde_json::json!(90));
     assert_eq!(value["previewLongEdgePx"], serde_json::json!(1600));
+    assert_eq!(value["videoAutoplayOnShow"], serde_json::json!(true));
+    assert_eq!(
+        value["videoAutoplayAfterSnapshot"],
+        serde_json::json!(true)
+    );
     assert_eq!(value["pairingEnabled"], serde_json::json!(true));
     assert_eq!(value["verifyAfterCopy"], serde_json::json!(true));
     assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));
@@ -44,6 +49,17 @@ fn cache_is_always_managed_under_the_app_root_and_legacy_external_data_is_untouc
 
     assert_eq!(settings.cache_root, root.join(CACHE_DIR_NAME));
     assert_eq!(std::fs::read(marker).unwrap(), b"old cache bytes");
+}
+
+#[test]
+fn scanner_projects_the_pairing_switch() {
+    let root = temp_dir("pairing-switch");
+    let disabled = serde_json::json!({ "pairingEnabled": false });
+    let enabled = serde_json::json!({ "pairingEnabled": true });
+
+    assert!(!onecopy_lib::scanner::settings_from_config(Some(&disabled), &root, 0).pairing_enabled);
+    assert!(onecopy_lib::scanner::settings_from_config(Some(&enabled), &root, 0).pairing_enabled);
+    assert!(onecopy_lib::scanner::settings_from_config(None, &root, 0).pairing_enabled);
 }
 
 #[test]

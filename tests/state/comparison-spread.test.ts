@@ -21,7 +21,9 @@ import {
   createdWindows,
   emitCalls,
   mockCommands,
+  invokeCalls,
   resetTauriMocks,
+  setFocus,
   setCurrentMonitor,
   setMonitors,
   setWindowCreatedHook,
@@ -66,6 +68,7 @@ beforeEach(() => {
     page: 0,
     spreadCount: 0,
     busy: false,
+    commitFailure: null,
   });
 });
 
@@ -128,6 +131,8 @@ describe("opening a group across screens", () => {
     expect(spread?.options.decorations).toBe(false);
     expect(spread?.options.alwaysOnTop).toBe(true);
     expect(spread?.options.fullscreen).toBeUndefined();
+    expect(spread?.options.focus).toBe(false);
+    expect(setFocus).toHaveBeenCalled();
   });
 
   it("reuses a hidden window instead of booting a second webview", async () => {
@@ -138,6 +143,7 @@ describe("opening a group across screens", () => {
       get_section_counts: () => ({ images: [], videos: [], others: [] }),
       get_section_items: () => [],
       patch_config: () => ({}),
+      set_window_simple_fullscreen: () => null,
     });
 
     await useComparisonStore.getState().openGroup("m0");
@@ -150,6 +156,10 @@ describe("opening a group across screens", () => {
 
     // The window survived the close, so the second session constructs none.
     expect(createdWindows.length).toBe(afterFirst);
+    const transitions = invokeCalls
+      .filter((call) => call.command === "set_window_simple_fullscreen")
+      .map((call) => call.args.enable);
+    expect(transitions).toEqual([false, true]);
   });
 
   it("opens NO spread for a family that fits the main screen", async () => {

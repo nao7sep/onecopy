@@ -80,7 +80,7 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
     // carries the stream banner we parse.
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-i"]).arg(src);
-    let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
+    let run = crate::subprocess::run_bounded(cmd, &crate::background_work::cancelled)?;
     parse_duration_ms(&run.stderr)
         .ok_or_else(|| format!("no Duration in ffmpeg output for {}", src.display()))
 }
@@ -96,7 +96,7 @@ fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Re
         .arg(src)
         .args(["-frames:v", "1", "-q:v", "3", "-update", "1", "-y"])
         .arg(staged_jpg);
-    let run = crate::subprocess::run_bounded(cmd, &crate::scanner::cancelled)?;
+    let run = crate::subprocess::run_bounded(cmd, &crate::background_work::cancelled)?;
     if !run.status_ok {
         return Err(format!("frame extraction failed at {seconds}s for {}", src.display()));
     }
@@ -111,13 +111,14 @@ pub struct VideoDeriveStats {
     pub derived: u64,
     pub failed: u64,
     pub skipped_no_ffmpeg: bool,
+    pub changed_hashes: Vec<String>,
 }
 
 /// The video half of the SCAN derive pass: duration + poster only (through
 /// the image pipeline, so thumb/preview land in the shared cache). Scene
 /// strips deliberately do NOT happen here (Phase 33): a grid without posters
 /// reads as broken, so posters block the scan, but strips are many frames per
-/// video and belong to the idle backfill — `derive_strips_pending` finds them
+/// video and belong to idle derived work — `derive_strips_pending` finds them
 /// through the NULL `strip_frames` this pass leaves behind.
 pub fn derive_videos_pending(
     conn: &Connection,
@@ -126,6 +127,71 @@ pub fn derive_videos_pending(
     temp_dir: &Path,
     thumb_edge: u32,
     preview_long_edge: u32,
+) -> Result<VideoDeriveStats, String> {
+    derive_videos_pending_limit(
+        conn,
+        cache,
+        ffmpeg,
+        temp_dir,
+        thumb_edge,
+        preview_long_edge,
+        None,
+        None,
+    )
+}
+
+/// Runs at most one video-poster job for the derived-work coordinator.
+pub(crate) fn derive_next_video(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: Option<&Path>,
+    temp_dir: &Path,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+) -> Result<VideoDeriveStats, String> {
+    derive_videos_pending_limit(
+        conn,
+        cache,
+        ffmpeg,
+        temp_dir,
+        thumb_edge,
+        preview_long_edge,
+        Some(1),
+        None,
+    )
+}
+
+/// Runs one pending poster only when it matches `hash`.
+pub(crate) fn derive_video_hash(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: Option<&Path>,
+    temp_dir: &Path,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    hash: &str,
+) -> Result<VideoDeriveStats, String> {
+    derive_videos_pending_limit(
+        conn,
+        cache,
+        ffmpeg,
+        temp_dir,
+        thumb_edge,
+        preview_long_edge,
+        Some(1),
+        Some(hash),
+    )
+}
+
+fn derive_videos_pending_limit(
+    conn: &Connection,
+    cache: &CachePaths,
+    ffmpeg: Option<&Path>,
+    temp_dir: &Path,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    limit: Option<usize>,
+    only_hash: Option<&str>,
 ) -> Result<VideoDeriveStats, String> {
     let mut stats = VideoDeriveStats::default();
     let Some(ffmpeg) = ffmpeg else {
@@ -138,18 +204,24 @@ pub fn derive_videos_pending(
 
     // A row stamped with an older DERIVE_VERSION is pending again, so bumping
     // the constant re-derives posters and strips without touching a user file.
+    let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     let mut stmt = conn
         .prepare(&format!(
             "SELECT c.hash, (SELECT p.abs_path FROM paths p \
              WHERE p.content_hash = c.hash AND p.missing = 0 LIMIT 1) \
              FROM contents c WHERE c.kind = 'video' \
              AND (c.derived_at_utc IS NULL \
-                  OR (c.derived_version < {} AND c.derived_at_utc != 'failed'))",
-            crate::preview::DERIVE_VERSION
+                  OR (c.derived_version < {} AND c.derived_at_utc != 'failed')) \
+             AND EXISTS (SELECT 1 FROM paths p \
+                         WHERE p.content_hash = c.hash AND p.missing = 0) \
+             AND (?1 IS NULL OR c.hash = ?1) \
+             ORDER BY c.hash{}",
+            crate::preview::DERIVE_VERSION,
+            limit_clause
         ))
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([only_hash], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -163,17 +235,20 @@ pub fn derive_videos_pending(
 
             // Poster at 15% through the shared image pipeline.
             let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()));
-            extract_frame(ffmpeg, src, duration_ms * 15 / 100, &staged)?;
-            // The staged poster is a plain JPEG, so the image crate opens it
-            // directly — no ffmpeg needed for the decode half.
-            let poster_result = preview::generate_for_image(
-                &staged,
-                &hash,
-                cache,
-                thumb_edge,
-                preview_long_edge,
-                None,
-            );
+            let poster_result = extract_frame(ffmpeg, src, duration_ms * 15 / 100, &staged)
+                .and_then(|()| {
+                    // The staged poster is a plain JPEG, so the image crate
+                    // opens it directly — no ffmpeg needed for this half.
+                    preview::generate_for_image(
+                        &staged,
+                        &hash,
+                        cache,
+                        thumb_edge,
+                        preview_long_edge,
+                        None,
+                    )
+                    .map(|_| ())
+                });
             let _ = std::fs::remove_file(&staged);
             poster_result?;
             Ok(duration_ms)
@@ -194,11 +269,24 @@ pub fn derive_videos_pending(
                 .map_err(|e| e.to_string())?;
                 // Current-state issues: a derive that now succeeds retires the
                 // failure it recorded on an earlier pass.
-                crate::index_store::clear_issues(conn, &path, &["video-derive-error"])?;
+                crate::index_store::clear_issues(
+                    conn,
+                    &path,
+                    &[crate::derived_state::VIDEO_POSTER_ERROR],
+                )?;
+                stats.changed_hashes.push(hash);
+            }
+            Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) => {
                 stats.failed += 1;
-                crate::index_store::upsert_issue(conn, Some(&path), "video-derive-error", &err)?;
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(&path),
+                    crate::derived_state::VIDEO_POSTER_ERROR,
+                    &err,
+                )?;
                 conn.execute(
                     "UPDATE contents SET derived_at_utc = 'failed' WHERE hash = ?1",
                     [&hash],
@@ -211,7 +299,7 @@ pub fn derive_videos_pending(
     Ok(stats)
 }
 
-/// The backfill half (Phase 33): scene strips for videos the scan already
+/// The idle derived-work half: scene strips for videos the poster pass already
 /// postered, found through their NULL `strip_frames`. Runs only while the app
 /// is idle — `stop` is consulted between videos, so the user's return waits
 /// at most one video's strip extraction. Returns how many videos got strips.
@@ -277,9 +365,19 @@ pub fn derive_strips_pending(
                     params![hash, count as i64],
                 )
                 .map_err(|e| e.to_string())?;
-                crate::index_store::clear_issues(conn, &path, &["video-derive-error"])?;
+                crate::index_store::clear_issues(
+                    conn,
+                    &path,
+                    &[crate::derived_state::VIDEO_STRIP_ERROR],
+                )?;
                 done += 1;
                 progress(done, total);
+            }
+            Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                for index in 0..count {
+                    let _ = std::fs::remove_file(strip_path(cache, &hash, index));
+                }
+                return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) => {
                 // -1 = strips failed: keeps the row out of every later pass
@@ -293,11 +391,15 @@ pub fn derive_strips_pending(
                     params![hash],
                 )
                 .map_err(|e| e.to_string())?;
-                crate::index_store::upsert_issue(conn, Some(&path), "video-derive-error", &err)?;
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(&path),
+                    crate::derived_state::VIDEO_STRIP_ERROR,
+                    &err,
+                )?;
                 progress(done, total);
             }
         }
     }
     Ok(done)
 }
-

@@ -282,6 +282,7 @@ export default function SettingsModal() {
   const draft = useSettingsStore((s) => s.draft);
   const opened = useSettingsStore((s) => s.opened);
   const timezoneValid = useSettingsStore((s) => s.timezoneValid);
+  const timezonePending = useSettingsStore((s) => s.timezonePending);
   const saving = useSettingsStore((s) => s.saving);
   const message = useSettingsStore((s) => s.message);
   const close = useSettingsStore((s) => s.close);
@@ -307,12 +308,12 @@ export default function SettingsModal() {
       onClose={requestClose}
       closeLabel="Cancel"
       closeDisabled={saving}
-      widthClass="w-[520px]"
+      widthClass="w-[min(760px,calc(100vw-3rem))]"
       footerStart={message}
       primaryAction={
         <Button
           variant="primary"
-          disabled={saving || !dirty || !timezoneValid}
+          disabled={saving || !dirty || timezonePending || !timezoneValid}
           onClick={() => void save()}
         >
           {saving ? "Saving…" : "Save"}
@@ -360,12 +361,21 @@ export default function SettingsModal() {
             Timestamps
           </h2>
           <Row label="Default timezone" hint="IANA name, e.g. Asia/Tokyo">
-            <TextInput
-              className="w-48"
-              invalid={!timezoneValid}
-              value={draft.defaultTimezone}
-              onChange={(e) => void validateTimezone(e.target.value)}
-            />
+            <span>
+              <TextInput
+                className="w-48"
+                invalid={!timezonePending && !timezoneValid}
+                value={draft.defaultTimezone}
+                onChange={(e) => void validateTimezone(e.target.value)}
+              />
+              <span className="mt-1 block min-h-4 text-xs text-danger">
+                {timezonePending
+                  ? "Checking timezone…"
+                  : timezoneValid
+                    ? ""
+                    : "Not a recognized timezone name"}
+              </span>
+            </span>
           </Row>
           <NumberField
             label="Good range starts (year)"
@@ -431,6 +441,16 @@ export default function SettingsModal() {
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Videos
           </h2>
+          <CheckField
+            label="Play videos automatically when shown"
+            checked={draft.videoAutoplayOnShow}
+            onChange={(v) => update({ videoAutoplayOnShow: v })}
+          />
+          <CheckField
+            label="Play after choosing a snapshot"
+            checked={draft.videoAutoplayAfterSnapshot}
+            onChange={(v) => update({ videoAutoplayAfterSnapshot: v })}
+          />
           <NumberField
             label="Seconds per snapshot frame"
             value={draft.videoStripSecondsPerFrame}
@@ -510,7 +530,7 @@ export default function SettingsModal() {
             Behavior
           </h2>
           <CheckField
-            label="Pair companion files (RAW, sidecars)"
+            label="Pair companion files (Live Photos, RAW, sidecars)"
             checked={draft.pairingEnabled}
             onChange={(v) => update({ pairingEnabled: v })}
           />
@@ -525,14 +545,14 @@ export default function SettingsModal() {
             onChange={(v) => update({ verifyAfterCopy: v })}
           />
           <CheckField
-            label="Confirm before moving items to trash"
-            checked={draft.confirmTrashDelete}
-            onChange={(v) => update({ confirmTrashDelete: v })}
-          />
-          <CheckField
             label="Score faces for photo ordering (background, needs the face models)"
             checked={draft.scoreFaces}
             onChange={(v) => update({ scoreFaces: v })}
+          />
+          <CheckField
+            label="Confirm before moving items to trash"
+            checked={draft.confirmTrashDelete}
+            onChange={(v) => update({ confirmTrashDelete: v })}
           />
         </div>
       ) : null}

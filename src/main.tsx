@@ -4,6 +4,7 @@ import App from "./App";
 import PreviewWindow from "./windows/PreviewWindow";
 import ComparisonWindow from "./windows/ComparisonWindow";
 import IdentifyWindow from "./windows/IdentifyWindow";
+import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
 import { log, toErrorFields, initLogging, loadAppData } from "./repositories";
 import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
@@ -59,14 +60,16 @@ const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {view === "preview" ? (
-      <PreviewWindow />
-    ) : view === "comparison" ? (
-      <ComparisonWindow slice={slice} />
-    ) : view === "identify" ? (
-      <IdentifyWindow number={slice} />
-    ) : (
-      <App />
-    )}
+    <RootErrorBoundary>
+      {view === "preview" ? (
+        <PreviewWindow />
+      ) : view === "comparison" ? (
+        <ComparisonWindow slice={slice} />
+      ) : view === "identify" ? (
+        <IdentifyWindow number={slice} />
+      ) : (
+        <App />
+      )}
+    </RootErrorBoundary>
   </React.StrictMode>,
 );

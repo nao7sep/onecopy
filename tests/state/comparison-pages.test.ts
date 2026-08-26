@@ -44,6 +44,7 @@ function openSession(count: number, perPage: number): void {
     sessionMembers: members.map((m) => m.hash),
     capacities: [perPage],
     busy: false,
+    commitFailure: null,
     permanentArmed: true,
     pendingPermanentCommit: false,
     pendingCommit: null,
@@ -166,6 +167,41 @@ describe("the commit confirmations", () => {
     await useComparisonStore.getState().commitTurn(true);
     expect(deleted()).toHaveLength(0);
     expect(useComparisonStore.getState().pendingPermanentCommit).toBe(true);
+  });
+});
+
+describe("partial commit recovery", () => {
+  it("retires successes and retries only logical items that remain", async () => {
+    openSession(3, 16);
+    useComparisonStore.getState().toggleKeep(0);
+    let h2Attempts = 0;
+    mockCommands({
+      delete_item: ({ hash }) => {
+        if (hash === "h2" && h2Attempts++ === 0) {
+          return { deletedFiles: 0, failedFiles: 1, removedRows: 0 };
+        }
+        return { deletedFiles: 1, failedFiles: 0, removedRows: 1 };
+      },
+      get_issues: () => ({ total: 1, rows: [] }),
+    });
+
+    await useComparisonStore.getState().commitTurn(false);
+
+    expect(deleted()).toEqual(["h1", "h2"]);
+    expect(useComparisonStore.getState().open).toBe(true);
+    expect(useComparisonStore.getState().members.map((m) => m?.hash ?? null)).toEqual([
+      "h0",
+      null,
+      "h2",
+    ]);
+    expect(useComparisonStore.getState().commitFailure?.message).toContain(
+      "Retry targets only the remaining items",
+    );
+
+    await useComparisonStore.getState().commitTurn(false);
+
+    expect(deleted()).toEqual(["h1", "h2", "h2"]);
+    expect(useComparisonStore.getState().open).toBe(false);
   });
 });
 

@@ -123,14 +123,15 @@ export default function PreviewWindow() {
           hash={message.hash}
           detail={message.detail}
           pathId={message.pathId}
-          zoom={message.zoom === true}
+          seekMs={message.seekMs}
+          playAfterSeek={message.playAfterSeek}
         />
       </div>
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span className="truncate" title={message.detail?.fileName ?? ""}>
           {message.detail?.fileName ?? "…"}
         </span>
-        <span>Z: 100% · F: fullscreen · Escape: close</span>
+        <span>Hold: original pixels · F: fullscreen · Escape: close</span>
       </footer>
     </div>
   );

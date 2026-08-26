@@ -1,6 +1,7 @@
-import { factsLine, previewUrl } from "../models/items";
+import { factsLine } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
 import { Focus, Smile } from "lucide-react";
+import InspectableImage from "./InspectableImage";
 
 // One comparison slot, shared by the main comparison surface and the
 // secondary per-monitor windows: preview image, the GLOBAL slot key, keeper
@@ -12,7 +13,6 @@ export default function ComparisonSlot({
   kept,
   onToggle,
   onUnlink,
-  onEnlarge,
 }: {
   member: GroupMember;
   slotKey: string;
@@ -22,7 +22,6 @@ export default function ComparisonSlot({
    * permanently and non-destructively. Absent in surfaces that cannot
    * mutate the session (the secondary windows forward keys instead). */
   onUnlink?: () => void;
-  onEnlarge?: () => void;
 }) {
   const facts = factsLine(member);
   return (
@@ -39,16 +38,13 @@ export default function ComparisonSlot({
       className={`group/slot relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
         kept ? "border-primary bg-primary-surface" : "border-border bg-surface"
       }`}
-      onClick={onToggle}
-      onDoubleClick={onEnlarge}
-      title="Click: keep · double-click: enlarge"
+      onClick={(event) => {
+        if (event.detail === 1) onToggle();
+      }}
+      title="Click or double-click: toggle keep"
     >
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
-        <img
-          src={previewUrl(member.hash)}
-          alt={member.fileName}
-          className="h-full w-full object-contain"
-        />
+        <InspectableImage hash={member.hash} fileName={member.fileName} />
       </div>
       <span
         className={`absolute left-2 top-2 flex h-8 w-8 items-center justify-center rounded text-lg font-bold ${

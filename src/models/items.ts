@@ -23,6 +23,40 @@ export interface SectionItem {
   dirPaths: string[];
 }
 
+/** Matches the backend's evenly spaced interior scene timestamps exactly. */
+export function stripTimestampMs(durationMs: number, count: number, index: number): number {
+  if (count <= 0) return 0;
+  return Math.floor((Math.max(0, durationMs) * (index + 1)) / (count + 1));
+}
+
+export function timestampLabel(milliseconds: number): string {
+  const seconds = Math.floor(Math.max(0, milliseconds) / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** Replaces one derived logical row without re-reading its whole section.
+ * Identity promotion may collapse into a canonical row already present, so
+ * both keys are removed before the one current row is inserted. */
+export function replaceDerivedItem(
+  items: SectionItem[],
+  previousHash: string,
+  item: SectionItem,
+): SectionItem[] {
+  if (item.hash === null) return items;
+  const affected = items
+    .map((candidate, index) =>
+      candidate.hash === previousHash || candidate.hash === item.hash ? index : -1,
+    )
+    .filter((index) => index >= 0);
+  if (affected.length === 0) return items;
+  const insertion = Math.min(...affected);
+  const next = items.filter(
+    (candidate) => candidate.hash !== previousHash && candidate.hash !== item.hash,
+  );
+  next.splice(Math.min(insertion, next.length), 0, item);
+  return next;
+}
+
 export type SortOrder = "time" | "name" | "size" | "resolution" | "ext";
 
 export interface SortChoice {

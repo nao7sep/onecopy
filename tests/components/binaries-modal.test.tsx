@@ -43,6 +43,7 @@ function seed(entries: DependencyState[]): void {
   useBinariesStore.setState({
     modalOpen: true,
     installing: {},
+    installHistory: {},
     errors: {},
     checking: false,
     checkingId: null,
@@ -65,7 +66,7 @@ beforeEach(() => {
   seed([
     entry("ffmpeg", "not-installed"),
     entry("whisper-large-v3-turbo", "not-installed"),
-    entry("whisper-large-v3-turbo", "up-to-date"),
+    entry("ultraface-rfb640", "up-to-date"),
   ]);
 });
 
@@ -84,6 +85,27 @@ describe("parallel installs", () => {
     expect(install).toHaveLength(1); // ffmpeg's — the model row shows progress
     expect(install[0]!.disabled).toBe(false);
     expect(document.body.textContent).toContain("Downloading — 100 / 1207 MB");
+  });
+
+  it("keeps completed phases readable after a fast install finishes", () => {
+    seed([entry("ffmpeg", "up-to-date")]);
+    useBinariesStore.setState({
+      installHistory: {
+        ffmpeg: [
+          { phase: "resolve", text: "Resolving — finding the latest build" },
+          { phase: "download", text: "Downloading — 84 MB" },
+          { phase: "verify", text: "Verifying — checking integrity" },
+          { phase: "result", text: "Installed" },
+        ],
+      },
+    });
+
+    render(<BinariesModal />);
+
+    expect(document.body.textContent).toContain("Resolving — finding the latest build");
+    expect(document.body.textContent).toContain("Downloading — 84 MB");
+    expect(document.body.textContent).toContain("Verifying — checking integrity");
+    expect(document.body.textContent).toContain("Installed");
   });
 
   it("offers cancellation on the running row and sends that entry id", async () => {
@@ -222,6 +244,27 @@ describe("the two lifecycles", () => {
 });
 
 describe("check feedback", () => {
+  it("settles a check started immediately after an install result", async () => {
+    vi.useFakeTimers();
+    try {
+      seed([entry("ffmpeg", "up-to-date")]);
+      useBinariesStore.setState({
+        installHistory: { ffmpeg: [{ phase: "result", text: "Installed" }] },
+      });
+      render(<BinariesModal />);
+
+      await act(async () => {
+        buttons("Check for updates")[0]!.click();
+        await vi.advanceTimersByTimeAsync(700);
+      });
+
+      expect(useBinariesStore.getState().checking).toBe(false);
+      expect(document.body.textContent).toContain("You're up to date");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("acknowledges the click visibly and ends in a plain-words outcome", async () => {
     // A real check can finish in tens of milliseconds, which reads as a dead
     // button. The store holds the checking state to a visible floor, then

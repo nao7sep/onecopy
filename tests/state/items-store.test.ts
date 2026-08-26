@@ -155,11 +155,61 @@ describe("a failed load", () => {
   });
 });
 
+describe("incremental derived rows", () => {
+  it("updates facts and remaps every selection key across identity promotion", () => {
+    seed([item({ pathId: 1, hash: "quick-1", hasThumb: false })]);
+    useItemsStore.setState({
+      selectedItem: "quick-1",
+      selectedKeys: new Set(["quick-1"]),
+      rangeOrigin: "quick-1",
+      rangeBase: new Set(["quick-1"]),
+    });
+
+    useItemsStore.getState().applyDerivedItem(
+      "quick-1",
+      item({ pathId: 1, hash: "real", hasThumb: true, width: 4000 }),
+    );
+
+    const state = useItemsStore.getState();
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({ hash: "real", hasThumb: true, width: 4000 });
+    expect(state.selectedItem).toBe("real");
+    expect([...state.selectedKeys]).toEqual(["real"]);
+    expect(state.rangeOrigin).toBe("real");
+    expect([...state.rangeBase]).toEqual(["real"]);
+  });
+});
+
 describe("rangeSelect", () => {
   const keys = ["h1", "h2", "h3", "h4", "h5", "h6"];
 
   beforeEach(() => {
     seed(keys.map((_k, i) => item({ pathId: i + 1 })));
+  });
+
+  it("clears details whenever the anchor changes", () => {
+    const staleDetail = {
+      fileName: "old.jpg",
+      kind: "image",
+      byteSize: 10,
+      width: 100,
+      height: 100,
+      durationMs: null,
+      resolvedUtcMs: 0,
+      resolvedSource: "metadata",
+      dateOnly: false,
+      copyPaths: ["/photos/old.jpg"],
+      companionPaths: [],
+      stripFrames: null,
+    };
+    useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]), detail: staleDetail });
+
+    useItemsStore.getState().toggleItem("h2");
+    expect(useItemsStore.getState().detail).toBeNull();
+
+    useItemsStore.setState({ detail: staleDetail });
+    useItemsStore.getState().setAnchor("h3");
+    expect(useItemsStore.getState().detail).toBeNull();
   });
 
   it("selects the span between the anchor and the target", () => {

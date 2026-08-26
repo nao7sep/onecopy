@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DESC, SORT_ORDERS, extLabel, extOf, sortItems, type SectionItem, type SortOrder } from "../../src/models/items";
+import {
+  DEFAULT_DESC,
+  SORT_ORDERS,
+  extLabel,
+  extOf,
+  replaceDerivedItem,
+  sortItems,
+  stripTimestampMs,
+  timestampLabel,
+  type SectionItem,
+  type SortOrder,
+} from "../../src/models/items";
 
 function item(overrides: Partial<SectionItem>): SectionItem {
   return {
@@ -47,6 +58,40 @@ describe("sortItems", () => {
     const input = [a, b];
     sortItems(input, { order: "name", desc: false });
     expect(input.map((i) => i.pathId)).toEqual([1, 2]);
+  });
+});
+
+describe("replaceDerivedItem", () => {
+  it("patches one row and collapses a provisional identity into an existing canonical row", () => {
+    const provisional = item({ hash: "quick-1", pathId: 1, hasThumb: false });
+    const canonical = item({ hash: "real", pathId: 2, hasThumb: false });
+    const updated = item({ hash: "real", pathId: 1, hasThumb: true, width: 4000 });
+
+    const result = replaceDerivedItem([provisional, canonical], "quick-1", updated);
+
+    expect(result).toEqual([updated]);
+  });
+
+  it("leaves a section that does not contain either identity untouched", () => {
+    const items = [item({ hash: "other", pathId: 1 })];
+    expect(replaceDerivedItem(items, "old", item({ hash: "new" }))).toBe(items);
+  });
+});
+
+describe("video scene timestamps", () => {
+  it("matches the backend's evenly spaced interior frames", () => {
+    expect([0, 1, 2, 3].map((index) => stripTimestampMs(30_000, 4, index))).toEqual([
+      6_000,
+      12_000,
+      18_000,
+      24_000,
+    ]);
+  });
+
+  it("formats long and invalid durations without leaking NaN", () => {
+    expect(timestampLabel(3_661_999)).toBe("61:01");
+    expect(stripTimestampMs(-1, 4, 0)).toBe(0);
+    expect(stripTimestampMs(1_000, 0, 0)).toBe(0);
   });
 });
 

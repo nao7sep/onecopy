@@ -4,7 +4,9 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub mod backup_store;
-pub mod backfill;
+pub mod background_work;
+pub mod derived_work;
+pub mod derived_state;
 pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;
@@ -134,11 +136,17 @@ fn report_quarantine(app: &AppHandle, record: Option<storage::QuarantineRecord>)
 // store's stale cached copy can blind-overwrite another's save. Returns the
 // merged document so the caller can publish it without a second read.
 #[tauri::command(async)]
-fn patch_config(app: AppHandle, patch: Value) -> Result<Value, String> {
+fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
     logging::boundary(
         "patch_config",
         json!({}),
         || {
+            if let Some(value) = patch.get_mut("defaultTimezone") {
+                let name = value
+                    .as_str()
+                    .ok_or("Default timezone must be an IANA timezone name")?;
+                *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
+            }
             let outcome = storage::patch_config(&app, &patch)?;
             report_quarantine(&app, outcome.quarantined);
             Ok(outcome.merged)
@@ -341,8 +349,8 @@ fn serve_mediacache(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Res
     }
 }
 
-// Launches the full scan pipeline (walk → hash → extract → resolve → pair →
-// derive) on a worker thread. Progress arrives as `scan://progress` events,
+// Launches the index pipeline (walk → hash → extract → resolve → pair) on a
+// worker thread. Progress arrives as `scan://progress` events,
 // completion as `scan://done` (with the summary) or `scan://error`. Returns
 // false when a scan is already running.
 #[tauri::command(async)]
@@ -355,21 +363,12 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
 // checkpointed pending rows. A cancelled run (app exit) reports as
 // `scan://done { cancelled: true }`, never as an error — the pending rows are
 // the resume point, and the next launch picks them up.
-/// Whether checkpointed work is waiting and worth resuming — the one probe
-/// behind both resume triggers, the startup one and the ffmpeg install that
-/// unblocks formats it alone can decode. A failed probe is logged and read as
-/// "no": a resume is a convenience, never a gate on anything.
-fn scan_resume_wanted(data_root: &std::path::Path) -> bool {
-    resume_plan(data_root).0
-}
-
 /// `(resume_wanted, needs_walk)`. A root whose walk was interrupted must be
-/// RE-WALKED, not just tailed: `pending_work_exists` probes rows, and a
+/// RE-WALKED, not just tailed: `pending_index_work_exists` probes rows, and a
 /// cancelled walk leaves whole directories with no rows at all, so once the
 /// tail drains what the partial walk created it reports clean forever while
 /// months stay silently empty.
 fn resume_plan(data_root: &std::path::Path) -> (bool, bool) {
-    let ffmpeg_present = binaries_manager::ffmpeg_path(data_root).is_file();
     let Ok(conn) = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME)) else {
         return (false, false);
     };
@@ -397,7 +396,7 @@ fn resume_plan(data_root: &std::path::Path) -> (bool, bool) {
     if needs_walk {
         return (true, true);
     }
-    match scanner::pending_work_exists(&conn, ffmpeg_present) {
+    match scanner::pending_index_work_exists(&conn) {
         Ok(pending) => (pending, false),
         Err(err) => {
             logging::warn(
@@ -447,7 +446,7 @@ fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
                     scanner::run_full_scan(&conn, &settings, &emit_progress)
                 } else {
                     let mut summary = scanner::ScanSummary::default();
-                    scanner::run_pipeline_tail(&conn, &settings, &emit_progress, &mut summary)
+                    scanner::run_index_tail(&conn, &settings, &emit_progress, &mut summary)
                         .map(|()| summary)
                 }
             });
@@ -455,6 +454,7 @@ fn spawn_scan(app: AppHandle, include_walk: bool) -> Result<bool, String> {
                 Ok(summary) => {
                     logging::info("scan complete", json!({ "summary": summary }));
                     let _ = handle.emit("scan://done", json!({ "summary": summary }));
+                    derived_work::wake(true);
                 }
                 Err(err) if err == scanner::CANCELLED => {
                     logging::info("scan cancelled", json!({ "resumesAtNextLaunch": true }));
@@ -569,8 +569,8 @@ fn delete_item(
     path_id: Option<i64>,
     permanent: bool,
 ) -> Result<operations::DeleteOutcome, String> {
-    // The backfill must never compete with a user operation for the disk.
-    let _heavy = backfill::heavy_op();
+    // Derived work must never compete with a user operation for the disk.
+    let _heavy = derived_work::heavy_op();
     logging::boundary(
         "delete_item",
         json!({ "hash": hash, "pathId": path_id, "permanent": permanent }),
@@ -634,8 +634,8 @@ fn move_item_out(
     dest_dir: String,
     mode: String,
 ) -> Result<operations::MoveOutOutcome, String> {
-    // The backfill must never compete with a user operation for the disk.
-    let _heavy = backfill::heavy_op();
+    // Derived work must never compete with a user operation for the disk.
+    let _heavy = derived_work::heavy_op();
     logging::boundary(
         "move_item_out",
         json!({ "hash": hash, "pathId": path_id, "destDir": dest_dir, "mode": mode }),
@@ -848,9 +848,9 @@ fn open_item_externally(app: AppHandle, hash: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-// Re-resolves every indexed item from stored evidence and rebuilds similar
-// groups — the settings-change path (timezone, good range, thresholds); no
-// file is read.
+// Re-resolves every indexed item from stored evidence. Similarity is marked
+// stale for its sole owner to rebuild; this command never performs derived
+// work itself.
 #[tauri::command(async)]
 fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
     logging::boundary(
@@ -870,7 +870,8 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
                 &settings.resolution,
                 scanner::ResolveScope::All,
             )?;
-            similarity::rebuild_groups_for_root(&conn, &settings.similarity, &data_root)?;
+            scanner::pair_companions(&conn, settings.pairing_enabled)?;
+            derived_work::wake(true);
             Ok(stats.resolved)
         },
         |resolved| json!({ "resolved": resolved }),
@@ -899,13 +900,13 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
             for dir in &dirs {
                 changed += watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists)?;
             }
-            // The tail also runs when nothing changed on disk but checkpointed
-            // work is still pending — a section rescan is the recovery the
-            // user reaches for after an interrupted scan, and gating the whole
-            // tail on `changed` made it a no-op exactly then.
-            if changed > 0 || scanner::pending_work_exists(&conn, settings.ffmpeg.is_some())? {
+            // Finish any interrupted index checkpoints too. Derived media is
+            // woken after the index tail instead of being smuggled into the
+            // rescan command.
+            if changed > 0 || scanner::pending_index_work_exists(&conn)? {
                 let mut summary = scanner::ScanSummary::default();
-                scanner::run_pipeline_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
+                scanner::run_index_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
+                derived_work::wake(true);
             }
             Ok(changed)
         },
@@ -935,26 +936,21 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
 // calls this when its cache entry 404s, then reloads the entry. Idempotent
 // and cheap when the entry already exists.
 #[tauri::command(async)]
-fn ensure_preview(app: AppHandle, hash: String) -> Result<(), String> {
+fn ensure_preview(app: AppHandle, hash: String) -> Result<String, String> {
     logging::boundary(
         "ensure_preview",
         json!({ "hash": hash }),
         || {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
-            let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
+            let canonical =
+                derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache = preview::CachePaths::new(settings.cache_root.clone());
-            preview::derive_one(
-                &conn,
-                &cache,
-                settings.thumb_edge,
-                settings.preview_long_edge,
-                settings.ffmpeg.as_deref(),
-                &hash,
-            )
+            derived_work::notify_item_update(&app, &conn, "previews", &hash, &canonical);
+            let _ = app.emit("derived://issues", json!({}));
+            Ok(canonical)
         },
-        |_| json!({}),
+        |canonical| json!({ "canonicalHash": canonical }),
     )
 }
 
@@ -969,6 +965,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
         "ensure_fullres",
         json!({ "hash": hash }),
         || {
+            let _work = background_work::begin_manual(&app, "previews")?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let cache_root = cache_root().ok_or("data root unset")?;
@@ -986,14 +983,16 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 // minutes-long and memory-heavy (~2–2.5 GB while running, released after) —
 // with progress/done/error events; the transcript lands in the cache and
 // `transcript_get` serves it thereafter. The process-wide claim prevents a
-// manual run and idle backfill from loading two models; cancel is immediate.
+// manual run and coordinated background work from loading two models; cancel is immediate.
 #[tauri::command(async)]
 fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
+    let work = background_work::begin_manual(&app, "transcripts")?;
     let claim = transcription::claim()?;
     let handle = app.clone();
     std::thread::spawn(move || {
+        let _work = work;
         let result = (|| -> Result<String, String> {
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let video: String = conn
@@ -1011,9 +1010,10 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 .then(|| binaries_manager::installed_path(&data_root, model_spec));
             let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
             let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
+            let tools_available = model.is_some() && ffmpeg.is_some();
             let progress_handle = handle.clone();
             let progress_hash = hash.clone();
-            transcription::transcribe_to_cache_claimed(
+            let text = transcription::transcribe_to_cache_claimed(
                 &claim,
                 &cache,
                 model.as_deref(),
@@ -1021,16 +1021,49 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 std::path::Path::new(&video),
                 &hash,
                 move |percent| {
+                    let percent = percent.clamp(0, 100);
+                    background_work::report_manual_progress(
+                        &progress_handle,
+                        "transcripts",
+                        percent as u64,
+                        100,
+                    );
                     let _ = progress_handle.emit(
                         "transcribe://progress",
                         json!({ "hash": progress_hash, "percent": percent }),
                     );
                 },
-            )
+            );
+            match text {
+                Ok(text) => {
+                    derived_state::record_transcript_success(
+                        &conn,
+                        &hash,
+                        &video,
+                        !text.trim().is_empty(),
+                    )?;
+                    Ok(text)
+                }
+                Err(error)
+                    if error == scanner::CANCELLED || transcription::is_cancelled() =>
+                {
+                    // Preserve a typed cancellation after the claim resets its
+                    // process-wide flag at the end of this worker.
+                    Err(scanner::CANCELLED.to_string())
+                }
+                Err(error) if !tools_available => Err(error),
+                Err(error) => {
+                    derived_state::record_transcript_failure(&conn, &hash, &video, &error)?;
+                    Err(error)
+                }
+            }
         })();
         match result {
             Ok(text) => {
                 let _ = handle.emit("transcribe://done", json!({ "hash": hash, "text": text }));
+            }
+            Err(err) if err == scanner::CANCELLED => {
+                let _ = handle.emit("transcribe://cancelled", json!({ "hash": hash }));
             }
             Err(err) => {
                 logging::warn(
@@ -1044,12 +1077,16 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     Ok(())
 }
 
-// The cached transcript, or null when none exists yet.
+// The transcript's explicit output state. A missing cache entry behind a
+// ready receipt is repaired back to pending here rather than displayed as a
+// false success.
 #[tauri::command(async)]
-fn transcript_get(hash: String) -> Result<Option<String>, String> {
+fn transcript_get(app: AppHandle, hash: String) -> Result<derived_state::TranscriptResult, String> {
+    let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
     let cache = preview::CachePaths::new(cache_root);
-    Ok(std::fs::read_to_string(cache.transcript(&hash)).ok())
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+    derived_state::transcript_result(&conn, &cache, &hash)
 }
 
 // Comparison-mode fullscreen for the spread windows (Phase 33). macOS only:
@@ -1074,12 +1111,57 @@ fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> 
     }
 }
 
-// The frontend's throttled input ping — the backfill scheduler's whole view
+    // The frontend's throttled input ping — the coordinator's whole view
 // of the user. Atomic store; keeping it plain (main-thread) is deliberate,
 // it must never queue behind async work.
 #[tauri::command]
 fn note_user_activity() {
-    backfill::note_activity();
+    derived_work::note_activity();
+}
+
+#[tauri::command(async)]
+fn background_work_snapshot(
+    app: AppHandle,
+) -> Result<background_work::BackgroundWorkSnapshot, String> {
+    let data_root = paths::data_root(&app)?;
+    background_work::snapshot(
+        &data_root,
+        derived_work::similarity_dirty(),
+    )
+}
+
+#[tauri::command]
+fn background_work_set_paused(
+    app: AppHandle,
+    class_id: Option<String>,
+    paused: bool,
+) -> Result<(), String> {
+    background_work::set_paused(&app, class_id.as_deref(), paused)
+}
+
+/// Ephemeral viewport hints for the fixed derived-work coordinator. Output
+/// facts remain the only queue; closing the app loses nothing that must be
+/// recovered.
+#[tauri::command]
+fn prioritize_derived_work(
+    selected_hash: Option<String>,
+    visible_hashes: Vec<String>,
+    section_kind: Option<String>,
+    section_month: Option<String>,
+) -> Result<(), String> {
+    let section = match (section_kind, section_month) {
+        (Some(kind), Some(month)) if matches!(kind.as_str(), "image" | "video") => {
+            let bounds = queries::month_bounds(&month, display_timezone())?;
+            Some(derived_work::SectionPriority {
+                kind,
+                start_ms: bounds.map(|value| value.0),
+                end_ms: bounds.map(|value| value.1),
+            })
+        }
+        _ => None,
+    };
+    derived_work::set_priority(selected_hash, visible_hashes, section);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1110,8 +1192,8 @@ fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
 // verified here so the command can never delete an arbitrary tree.
 #[tauri::command(async)]
 fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
-    // The backfill must never compete with a user operation for the disk.
-    let _heavy = backfill::heavy_op();
+    // Derived work must never compete with a user operation for the disk.
+    let _heavy = derived_work::heavy_op();
     logging::boundary(
         "trash_empty",
         json!({ "root": root }),
@@ -1164,6 +1246,42 @@ fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
     )
 }
 
+#[tauri::command(async)]
+fn retry_issue(app: AppHandle, id: i64) -> Result<bool, String> {
+    logging::boundary(
+        "retry_issue",
+        json!({ "id": id }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let retried = derived_state::retry_issue(&conn, id)?;
+            if retried {
+                derived_work::wake(false);
+            }
+            Ok(retried)
+        },
+        |retried| json!({ "retried": retried }),
+    )
+}
+
+#[tauri::command(async)]
+fn retry_all_issues(app: AppHandle) -> Result<u64, String> {
+    logging::boundary(
+        "retry_all_issues",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let retried = derived_state::retry_all(&conn)?;
+            if retried > 0 {
+                derived_work::wake(false);
+            }
+            Ok(retried)
+        },
+        |retried| json!({ "retried": retried }),
+    )
+}
+
 // Every managed dependency's presence + facts + derived status, in display
 // order — the Managed tools window renders one row per entry, and the ffmpeg
 // chip reads its entry out of the same list.
@@ -1197,35 +1315,11 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
         match outcome {
             Ok(Ok(facts)) => {
                 let _ = handle.emit("binaries://done", json!({ "id": id, "facts": facts }));
-                if !is_ffmpeg {
-                    return;
-                }
-                // Installing ffmpeg IS the remedy for everything it blocked —
-                // HEIC/AVIF stills and every video — so pick that work up now
-                // rather than leaving the library on placeholder tiles until
-                // the next launch. The same tail-only resume the startup path
-                // runs, and its single-run guard makes it a no-op mid-scan.
-                if scan_resume_wanted(&data_root) {
-                    // Report what actually happened. A scan already running
-                    // makes spawn_scan a no-op AND cannot pick this work up
-                    // itself — its ScanSettings captured `ffmpeg: None` at
-                    // spawn — so the blocked rows wait for the next scan,
-                    // rescan, or watcher pass. The wizard leads straight into
-                    // this case by design: "Finish and scan" stays enabled
-                    // while the install runs.
-                    match spawn_scan(handle.clone(), false) {
-                        Ok(true) => {
-                            logging::info("scan resumed after ffmpeg install", json!({}))
-                        }
-                        Ok(false) => logging::info(
-                            "ffmpeg installed mid-scan; blocked items wait for the next pass",
-                            json!({}),
-                        ),
-                        Err(err) => logging::warn(
-                            "resume after ffmpeg install failed",
-                            json!({ "error": { "message": err } }),
-                        ),
-                    }
+                if is_ffmpeg {
+                    // Tool installation changes derived-work eligibility, not
+                    // index debt. The coordinator re-reads the tool state on
+                    // this wake; no scan restart or captured config is involved.
+                    derived_work::wake(false);
                 }
             }
             Ok(Err(err)) => {
@@ -1282,7 +1376,7 @@ fn binaries_check(
 // Wizard support: is this a real IANA timezone name?
 #[tauri::command]
 fn validate_timezone(name: String) -> bool {
-    name.parse::<chrono_tz::Tz>().is_ok()
+    resolution::parse_timezone_name(&name).is_ok()
 }
 
 // The session gate's check: configured source directories that are not
@@ -1505,9 +1599,9 @@ pub fn run() {
             let setup_config = storage::read_config_for_setup(&data_root)?;
             let cache_root = data_root.join(storage::CACHE_DIR_NAME);
             let _ = DATA_ROOT.set(data_root.clone());
-            // The idle backfill (Phase 33): strips, transcripts, faces fill
-            // in whenever tools exist and the user is away.
-            backfill::start(app.handle().clone());
+            // One coordinator owns reconstructible media work; its optional
+            // heavy classes run only while the user is away.
+            derived_work::start(app.handle().clone());
             // The sweep walks the ENTIRE cache tree, which grows with the
             // library — it was the launch's biggest fixed cost, paid before
             // the window could appear. It maintains a reconstructible cache
@@ -1663,6 +1757,9 @@ pub fn run() {
             reveal_data_subdir,
             open_item_externally,
             note_user_activity,
+            background_work_snapshot,
+            background_work_set_paused,
+            prioritize_derived_work,
             set_window_simple_fullscreen,
             ensure_preview,
             re_resolve_all,
@@ -1676,6 +1773,8 @@ pub fn run() {
             trash_empty,
             dismiss_issue,
             dismiss_all_issues,
+            retry_issue,
+            retry_all_issues,
             binaries_state,
             binaries_install,
             binaries_cancel,

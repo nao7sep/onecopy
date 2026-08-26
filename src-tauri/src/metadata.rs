@@ -39,6 +39,7 @@ pub struct MediaMetadata {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub duration_ms: Option<u64>,
+    pub live_photo_identifier: Option<String>,
 }
 
 /// Reads still-image metadata (EXIF). nom-exif first (JPEG/HEIC/PNG and some
@@ -54,8 +55,12 @@ pub fn read_image_metadata(path: &Path) -> MediaMetadata {
 /// Reads video track metadata (QuickTime/MP4/…). A parse failure is an empty
 /// result.
 pub fn read_video_metadata(path: &Path) -> MediaMetadata {
+    let live_photo_identifier = crate::live_photo::quicktime_content_identifier(path);
     let Ok(track) = nom_exif::read_track(path) else {
-        return MediaMetadata::default();
+        return MediaMetadata {
+            live_photo_identifier,
+            ..MediaMetadata::default()
+        };
     };
 
     let text = |tag: TrackInfoTag| match track.get(tag) {
@@ -88,6 +93,7 @@ pub fn read_video_metadata(path: &Path) -> MediaMetadata {
             Some(EntryValue::U32(v)) => Some(u64::from(*v)),
             _ => None,
         },
+        live_photo_identifier,
     }
 }
 
@@ -128,6 +134,10 @@ fn from_nom_exif(exif: &nom_exif::Exif) -> MediaMetadata {
         width: dimension(ExifTag::ExifImageWidth),
         height: dimension(ExifTag::ExifImageHeight),
         duration_ms: None,
+        live_photo_identifier: exif
+            .get(ExifTag::MakerNote)
+            .and_then(EntryValue::as_undefined)
+            .and_then(crate::live_photo::apple_maker_note_content_identifier),
     }
 }
 
@@ -195,6 +205,7 @@ fn read_kamadak(path: &Path) -> Option<MediaMetadata> {
         width: None,
         height: None,
         duration_ms: None,
+        live_photo_identifier: None,
     })
 }
 

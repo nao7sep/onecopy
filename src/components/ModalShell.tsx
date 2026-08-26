@@ -14,11 +14,8 @@
 // - The footer carries the labelled dismiss beside the primary action; the
 //   header ✕ is the supplementary affordance.
 
-import { useEffect, useId, useRef } from "react";
-import { pushModal, popModal, isTopmostModal } from "../utils/modalStack";
-import { acquireScrollLock, releaseScrollLock } from "../utils/scrollLock";
-import { resolveInitialFocus, resolveTrapTarget } from "../utils/focusTrap";
-import { isComposingEvent } from "../hooks/useComposing";
+import { useId, useRef } from "react";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { X } from "lucide-react";
 import Button from "./ui/Button";
 
@@ -46,54 +43,7 @@ export default function ModalShell({
 }) {
   const titleId = useId();
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const tokenRef = useRef<object>({});
-  const onCloseRef = useRef(onClose);
-  const closeDisabledRef = useRef(closeDisabled);
-  onCloseRef.current = onClose;
-  closeDisabledRef.current = closeDisabled;
-
-  useEffect(() => {
-    const token = tokenRef.current;
-    const opener = document.activeElement as HTMLElement | null;
-    pushModal(token);
-    acquireScrollLock();
-
-    // rAF so the surface has painted before focus resolution runs.
-    const raf = requestAnimationFrame(() => {
-      const surface = surfaceRef.current;
-      if (surface !== null && isTopmostModal(token)) {
-        resolveInitialFocus(surface).focus();
-      }
-    });
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!isTopmostModal(token)) return;
-      if (event.key === "Escape") {
-        // Escape during IME composition cancels the candidate, not the modal.
-        if (isComposingEvent(event)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (!closeDisabledRef.current) onCloseRef.current();
-      } else if (event.key === "Tab") {
-        const surface = surfaceRef.current;
-        if (surface === null) return;
-        const target = resolveTrapTarget(surface, document.activeElement, event.shiftKey);
-        if (target !== null) {
-          event.preventDefault();
-          target.focus();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("keydown", onKeyDown, true);
-      releaseScrollLock();
-      popModal(token);
-      opener?.focus();
-    };
-  }, []);
+  useModalLayer(surfaceRef, onClose, closeDisabled);
 
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-background/80">

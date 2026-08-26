@@ -142,3 +142,10 @@ fn future_timestamps_beyond_one_day_are_rejected() {
 fn all_sources_failing_means_undated() {
     assert!(resolve(None, None, None, None, &config()).is_none());
 }
+
+#[test]
+fn timezone_names_reject_blank_and_non_iana_values() {
+    assert_eq!(parse_timezone_name(" Asia/Tokyo ").unwrap(), chrono_tz::Asia::Tokyo);
+    assert!(parse_timezone_name("").is_err());
+    assert!(parse_timezone_name("Tokyo").is_err());
+}

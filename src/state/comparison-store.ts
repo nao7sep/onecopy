@@ -122,6 +122,9 @@ interface ComparisonState {
   shortlist: boolean;
   shortlistPage: number;
   busy: boolean;
+  /** A partially completed commit stays in-session so Retry can target only
+   * the logical items whose files remain. */
+  commitFailure: { message: string; permanent: boolean } | null;
   /** Permanent commits confirm ONCE per comparison session (a per-turn
    * prompt would destroy the keystroke rhythm the view exists for). */
   permanentArmed: boolean;
@@ -348,7 +351,7 @@ async function resolveSpread(
  * approach). */
 async function openSpread(
   others: Awaited<ReturnType<typeof availableMonitors>>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     for (let i = 0; i < others.length; i += 1) {
       const label = `comparison-${i + 1}`;
@@ -365,12 +368,11 @@ async function openSpread(
         );
         await existing.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
         await existing.show();
-        await existing.setFocus();
         // macOS: cover the menu bar and dock too (simple fullscreen — no
         // Spaces animation). No-op elsewhere; borderless-at-bounds already
         // covers the Windows taskbar.
-        void invoke("set_window_simple_fullscreen", { label, enable: true }).catch(
-          (error) => log.warn("simple fullscreen failed", toErrorFields(error)),
+        await setComparisonFullscreen(label, true).catch(
+          reportWindowCall("comparison enter fullscreen"),
         );
         continue;
       }
@@ -388,37 +390,93 @@ async function openSpread(
         alwaysOnTop: true,
         skipTaskbar: true,
         resizable: false,
+        focus: false,
       });
       void created.once("tauri://created", () => {
-        void invoke("set_window_simple_fullscreen", { label, enable: true }).catch(
-          (error) => log.warn("simple fullscreen failed", toErrorFields(error)),
-        );
+        const state = useComparisonStore.getState();
+        if (!state.open || i >= state.spreadCount) return;
+        void setComparisonFullscreen(label, true)
+          .catch(reportWindowCall("comparison enter fullscreen"))
+          .then(() =>
+            getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus")),
+          );
+      });
+      void created.once("tauri://error", (event) => {
+        log.warn("comparison window creation failed", {
+          label,
+          error: { message: String(event.payload) },
+        });
+        recoverSingleWindowComparison();
       });
     }
+    return true;
   } catch (error) {
     log.warn("comparison spread failed; staying single-window", toErrorFields(error));
+    return false;
   }
+}
+
+function recoverSingleWindowComparison(): void {
+  const state = useComparisonStore.getState();
+  if (!state.open || state.spreadCount === 0) return;
+  const spreadCount = state.spreadCount;
+  useComparisonStore.setState({ capacities: [SLOT_KEYS.length], spreadCount: 0 });
+  broadcast();
+  void queueComparisonLifecycle(async () => {
+    await closeSpread(spreadCount);
+    await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+  });
 }
 
 /** HIDES the spread rather than closing it. A hidden window keeps its webview
  * and its `comparison://state` listener, so the next group opens without a
  * boot — the same reuse imagequeue's viewer relies on. They are real windows
  * owned by the app and go away with it. */
-async function closeSpread(): Promise<void> {
-  const { spreadCount } = useComparisonStore.getState();
+async function closeSpread(spreadCount: number): Promise<void> {
   for (let i = 1; i <= spreadCount; i += 1) {
     const label = `comparison-${i}`;
     const window = await WebviewWindow.getByLabel(label).catch(() => null);
     if (window !== null) {
       // Leave simple fullscreen BEFORE hiding: a hidden simple-fullscreen
       // window reappears in a broken half-state on macOS.
-      await invoke("set_window_simple_fullscreen", { label, enable: false }).catch(
+      await setComparisonFullscreen(label, false).catch(
         reportWindowCall("comparison leave fullscreen"),
       );
       await window.hide().catch(reportWindowCall("comparison hide"));
     }
   }
-  useComparisonStore.setState({ spreadCount: 0 });
+}
+
+const fullscreenTransitions = new Map<string, Promise<void>>();
+
+/** A label has one ordered native fullscreen transition stream. */
+function setComparisonFullscreen(label: string, enable: boolean): Promise<void> {
+  const previous = fullscreenTransitions.get(label) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => invoke<void>("set_window_simple_fullscreen", { label, enable }));
+  fullscreenTransitions.set(label, next);
+  const clear = () => {
+    if (fullscreenTransitions.get(label) === next) fullscreenTransitions.delete(label);
+  };
+  void next.then(clear, clear);
+  return next;
+}
+
+let comparisonLifecycle: Promise<void> = Promise.resolve();
+
+/** Opening and closing claimed screens are one serialized lifecycle. */
+function queueComparisonLifecycle(action: () => Promise<void>): Promise<void> {
+  const next = comparisonLifecycle.then(action, action);
+  comparisonLifecycle = next.catch(() => undefined);
+  return next;
+}
+
+async function teardownComparison(spreadCount: number): Promise<void> {
+  await closeSpread(spreadCount);
+  const { restorePreviewAfterComparison } = await import("./preview-store");
+  await restorePreviewAfterComparison();
+  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
 }
 
 async function refreshAfterChange(): Promise<void> {
@@ -440,6 +498,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   shortlistPage: 0,
   sessionMembers: [],
   busy: false,
+  commitFailure: null,
   permanentArmed: false,
   pendingPermanentCommit: false,
   pendingCommit: null,
@@ -485,28 +544,37 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // announces itself must find a session already open to be answered.
       const perScreen = perScreenCapacity(members);
       const { others, capacities } = await resolveSpread(perScreen, members.length);
-      set({
-        open: true,
-        capacities,
-        spreadCount: others.length,
-        portraitDominant: perScreen === 3,
-        members,
-        kept: new Set<string>(),
-        visited: new Set([0]),
-        page: 0,
-        shortlist: false,
-        shortlistPage: 0,
-        sessionMembers: members.map((m) => m.hash),
-        // A new comparison session re-arms the one permanent confirmation.
-        permanentArmed: false,
-        pendingPermanentCommit: false,
-        pendingCommit: null,
+      await queueComparisonLifecycle(async () => {
+        if (!fresh()) return;
+        set({
+          open: true,
+          capacities,
+          spreadCount: others.length,
+          portraitDominant: perScreen === 3,
+          members,
+          kept: new Set<string>(),
+          visited: new Set([0]),
+          page: 0,
+          shortlist: false,
+          shortlistPage: 0,
+          sessionMembers: members.map((m) => m.hash),
+          // A new comparison session re-arms the one permanent confirmation.
+          permanentArmed: false,
+          pendingPermanentCommit: false,
+          pendingCommit: null,
+          commitFailure: null,
+        });
+        broadcast();
+        const { hidePreviewForComparison } = await import("./preview-store");
+        await hidePreviewForComparison();
+        const spreadOpened = await openSpread(others);
+        if (!spreadOpened) {
+          set({ capacities: [SLOT_KEYS.length], spreadCount: 0 });
+          broadcast();
+          await closeSpread(others.length);
+        }
+        await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
       });
-      broadcast();
-      void import("./preview-store").then(({ hidePreviewForComparison }) =>
-        hidePreviewForComparison(),
-      );
-      await openSpread(others);
       return true;
     } catch (error) {
       log.error("similar group load failed", toErrorFields(error));
@@ -562,6 +630,8 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   commitTurn: async (permanent) => {
     const state = get();
     if (state.busy) return;
+    const retrying = state.commitFailure !== null;
+    const commitPermanent = state.commitFailure?.permanent ?? permanent;
     const size = turnSize(state.capacities);
     const pages = pageCountOf(state.members.length, size);
     // The advance half of Enter's rhythm: while unseen pages remain, Enter
@@ -583,7 +653,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       get().commitTurn(permanent) as unknown;
       return;
     }
-    if (permanent && !state.permanentArmed) {
+    if (commitPermanent && !state.permanentArmed) {
       set({ pendingPermanentCommit: true });
       return;
     }
@@ -598,38 +668,27 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     const configConfirms =
       useAppStore.getState().appData?.config?.confirmTrashDelete === true;
     const needsConfirm =
-      trashCount > 0 && (state.kept.size === 0 || pages > 1 || configConfirms);
+      !retrying &&
+      trashCount > 0 &&
+      (state.kept.size === 0 || pages > 1 || configConfirms);
     if (needsConfirm) {
       set({
         pendingCommit: {
           keepCount: state.kept.size,
           trashCount,
-          permanent,
+          permanent: commitPermanent,
         },
       });
       return;
     }
-    await doCommit(set, get, permanent);
+    await doCommit(set, get, commitPermanent);
   },
 
   close: () => {
-    set({
-      open: false,
-      members: [],
-      kept: new Set(),
-      visited: new Set(),
-      page: 0,
-      shortlist: false,
-      shortlistPage: 0,
-      sessionMembers: [],
-      permanentArmed: false,
-      pendingPermanentCommit: false,
-      pendingCommit: null,
-    });
-    void closeSpread();
-    void import("./preview-store").then(({ restorePreviewAfterComparison }) =>
-      restorePreviewAfterComparison(),
-    );
+    if (!get().open) return;
+    const spreadCount = get().spreadCount;
+    set(closedComparisonState());
+    void queueComparisonLifecycle(() => teardownComparison(spreadCount));
     void refreshAfterChange();
   },
 }));
@@ -682,29 +741,83 @@ async function doCommit(
   permanent: boolean,
 ): Promise<void> {
   const state = get();
-  set({ busy: true });
-  try {
-    const live = state.members.filter((m): m is GroupMember => m !== null);
-    const goners = live.filter((m) => !state.kept.has(m.hash));
-    for (const member of goners) {
-      await invoke("delete_item", {
+  set({ busy: true, commitFailure: null });
+  const live = state.members.filter((m): m is GroupMember => m !== null);
+  const goners = live.filter((m) => !state.kept.has(m.hash));
+  let failedFiles = 0;
+  let failedItems = 0;
+  for (const member of goners) {
+    try {
+      const outcome = await invoke<{ failedFiles: number }>("delete_item", {
         hash: member.hash,
         pathId: null,
         permanent,
       });
+      if ((outcome?.failedFiles ?? 0) > 0) {
+        failedFiles += outcome.failedFiles;
+        failedItems += 1;
+        continue;
+      }
+      // Retire each success immediately. If a later item fails, Retry sees
+      // only live members and cannot replay already completed intent.
+      set({
+        members: get().members.map((candidate) =>
+          candidate !== null && candidate.hash === member.hash ? null : candidate,
+        ),
+      });
+      broadcast();
+    } catch (error) {
+      failedItems += 1;
+      log.error("comparison item commit failed", {
+        hash: member.hash,
+        ...toErrorFields(error),
+      });
     }
-    const family = state.sessionMembers;
-    get().close();
-    set({ busy: false });
-    await refreshAfterChange();
-    // Land the anchor on the next photo PAST this family, so Enter chains
-    // straight into the next group (the developer's cull rhythm).
-    const { useItemsStore } = await import("./items-store");
-    useItemsStore.getState().selectAfterFamily(family);
-  } catch (error) {
-    log.error("comparison commit failed", toErrorFields(error));
-    set({ busy: false });
   }
+  if (failedItems > 0) {
+    const detail = failedFiles > 0
+      ? `${failedFiles} file${failedFiles === 1 ? "" : "s"}`
+      : `${failedItems} item${failedItems === 1 ? "" : "s"}`;
+    set({
+      busy: false,
+      commitFailure: {
+        message: `${detail} could not be deleted. Retry targets only the remaining items.`,
+        permanent,
+      },
+    });
+    await refreshAfterChange();
+    const { useIssuesStore } = await import("./issues-store");
+    await useIssuesStore.getState().load();
+    return;
+  }
+  const family = state.sessionMembers;
+  const spreadCount = get().spreadCount;
+  set(closedComparisonState());
+  await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+  await refreshAfterChange();
+  // Land the anchor on the next photo PAST this family, so Enter chains
+  // straight into the next group (the developer's cull rhythm).
+  const { useItemsStore } = await import("./items-store");
+  useItemsStore.getState().selectAfterFamily(family);
+}
+
+function closedComparisonState(): Partial<ComparisonState> {
+  return {
+    open: false,
+    members: [],
+    kept: new Set(),
+    visited: new Set(),
+    page: 0,
+    shortlist: false,
+    shortlistPage: 0,
+    sessionMembers: [],
+    busy: false,
+    permanentArmed: false,
+    pendingPermanentCommit: false,
+    pendingCommit: null,
+    commitFailure: null,
+    spreadCount: 0,
+  };
 }
 
 // Main-window-only wiring: secondary comparison windows forward their keys and

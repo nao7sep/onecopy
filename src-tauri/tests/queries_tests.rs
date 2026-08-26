@@ -12,21 +12,26 @@ use onecopy_lib::index_store;
 use onecopy_lib::preview;
 use onecopy_lib::queries;
 
-fn db() -> Connection {
-    let dir = std::env::temp_dir().join(format!(
-        "onecopy-queries-{}",
-        std::process::id() as u64 + rand_suffix()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    index_store::open(&dir.join("index.sqlite3")).unwrap()
+struct TestDb {
+    _dir: tempfile::TempDir,
+    conn: Connection,
 }
 
-// A deterministic-enough suffix without pulling in a rng: the connection is
-// per-test and the file is disposable.
-fn rand_suffix() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    N.fetch_add(1, Ordering::SeqCst)
+impl std::ops::Deref for TestDb {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.conn
+    }
+}
+
+fn db() -> TestDb {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-queries-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    TestDb { _dir: dir, conn }
 }
 
 /// One image content row with a live path in January 2026 UTC.
@@ -116,6 +121,24 @@ fn copy_count_counts_every_live_path_for_one_content() {
 }
 
 #[test]
+fn one_derived_item_can_be_projected_without_reading_its_section() {
+    let conn = db();
+    seed_image(&conn, "single", Some("2026-01-02T03:04:05.000Z"), "one.jpg");
+    conn.execute(
+        "UPDATE contents SET width = 4000, height = 3000, sharpness = 9.0
+         WHERE hash = 'single'",
+        [],
+    )
+    .unwrap();
+
+    let item = queries::item_by_hash(&conn, "single").unwrap().unwrap();
+    assert_eq!(item.hash.as_deref(), Some("single"));
+    assert_eq!((item.width, item.height), (Some(4000), Some(3000)));
+    assert_eq!(item.dir_paths, ["/root"]);
+    assert!(queries::item_by_hash(&conn, "missing").unwrap().is_none());
+}
+
+#[test]
 fn a_missing_copy_does_not_count_toward_the_badge() {
     let conn = db();
     seed_image(&conn, "hgone", Some("2026-01-02T03:04:05.000Z"), "a.jpg");
@@ -131,6 +154,35 @@ fn a_missing_copy_does_not_count_toward_the_badge() {
     let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
     let item = items.iter().find(|i| i.hash.as_deref() == Some("hgone")).unwrap();
     assert_eq!(item.copy_count, 1, "a vanished copy is not a copy");
+}
+
+#[test]
+fn logical_summary_tracks_path_date_name_and_presence_changes() {
+    let conn = db();
+    seed_image(&conn, "hmoving", Some("2026-01-02T03:04:05.000Z"), "early.jpg");
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, mtime_ms, \
+         content_hash, resolved_utc_ms, resolved_source, date_only, missing, companion_of) \
+         VALUES ('/backup/later.jpg', '/backup', 'later.jpg', 'later', 'jpg', 'image', 100, 0, \
+                 'hmoving', ?1, 'metadata', 0, 0, NULL)",
+        params![1_769_904_000_000i64], // 2026-02-01T00:00:00Z
+    )
+    .unwrap();
+
+    let january = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    assert_eq!(january.len(), 1);
+    assert_eq!(january[0].copy_count, 2);
+    assert!(january[0].names_differ);
+
+    conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'early.jpg'", [])
+        .unwrap();
+    assert!(queries::section_items(&conn, "image", "2026-01", Tz::UTC)
+        .unwrap()
+        .is_empty());
+    let february = queries::section_items(&conn, "image", "2026-02", Tz::UTC).unwrap();
+    assert_eq!(february.len(), 1, "the remaining copy defines the logical month");
+    assert_eq!(february[0].copy_count, 1);
+    assert!(!february[0].names_differ);
 }
 
 #[test]
@@ -311,7 +363,7 @@ fn issue_rows_never_carry_the_verbatim_prefix() {
     let conn = db();
     index_store::upsert_issue(&conn, Some(r"\\?\C:\photos\broken.heic"), "decode-error", "x")
         .unwrap();
-    index_store::upsert_issue(&conn, Some(r"\\?\UNC\nas\media\clip.mov"), "video-derive-error", "y")
+    index_store::upsert_issue(&conn, Some(r"\\?\UNC\nas\media\clip.mov"), "video-poster-error", "y")
         .unwrap();
     // A rootless issue keeps its empty path as None, which the prefix strip
     // must not disturb.

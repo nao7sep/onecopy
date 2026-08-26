@@ -56,11 +56,11 @@ fn fixture(label: &str) -> Fixture {
 }
 
 #[test]
-fn pending_work_probe_tracks_unhashed_media_and_underived_contents() {
+fn pending_index_probe_ignores_derived_media_debt() {
     let fx = fixture("pending-probe");
 
     // Empty index: nothing pending.
-    assert!(!pending_work_exists(&fx.conn, true).unwrap());
+    assert!(!pending_index_work_exists(&fx.conn).unwrap());
 
     // A media path without a content hash is pending work.
     fx.conn
@@ -70,32 +70,34 @@ fn pending_work_probe_tracks_unhashed_media_and_underived_contents() {
             [],
         )
         .unwrap();
-    assert!(pending_work_exists(&fx.conn, false).unwrap());
+    assert!(pending_index_work_exists(&fx.conn).unwrap());
 
-    // Hashed but underived image content: still pending.
+    // Hashing alone leaves metadata evidence pending.
     fx.conn
         .execute_batch(
             "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 1, 'image');
              UPDATE paths SET content_hash = 'h1';",
         )
         .unwrap();
-    assert!(pending_work_exists(&fx.conn, false).unwrap());
+    assert!(pending_index_work_exists(&fx.conn).unwrap());
 
-    // Derived image: clean. An underived video counts only when ffmpeg
-    // is present — a resume that could do nothing must not fire.
-    // The video needs a LIVE path of its own: a contents row nothing on disk
-    // points at can never be derived, and reporting it pending would fire a
-    // no-op resume on every launch.
+    // Once index evidence is complete, underived image and video contents do
+    // not restart indexing. They belong exclusively to derived_work.
     fx.conn
         .execute_batch(
-            "UPDATE contents SET derived_at_utc = 'done';
+            "INSERT INTO evidence (path_id, source, raw) \
+               SELECT id, 'live-photo-identifier', NULL FROM paths;
+             UPDATE paths SET indexed_at_utc = 'done', resolved_source = 'undated';
              INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 1, 'video');
              INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing)
-               VALUES ('/a/v.mov', '/a', 'v.mov', 'video', 'v1', 0);",
+               VALUES ('/a/v.mov', '/a', 'v.mov', 'video', 'v1', 0);
+             INSERT INTO evidence (path_id, source, raw) \
+               SELECT id, 'live-photo-identifier', NULL FROM paths WHERE content_hash = 'v1';
+             UPDATE paths SET indexed_at_utc = 'done', resolved_source = 'undated' \
+               WHERE content_hash = 'v1';",
         )
         .unwrap();
-    assert!(!pending_work_exists(&fx.conn, false).unwrap());
-    assert!(pending_work_exists(&fx.conn, true).unwrap());
+    assert!(!pending_index_work_exists(&fx.conn).unwrap());
 }
 
 fn test_cache(f: &Fixture) -> onecopy_lib::preview::CachePaths {
@@ -346,7 +348,7 @@ fn companions_pair_same_directory_same_stem_only() {
     std::fs::write(sub.join("IMG_1234.arw"), b"stray raw").unwrap();
 
     walk_root(&f.conn, &f.root, &lists()).unwrap();
-    let stats = pair_companions(&f.conn).unwrap();
+    let stats = pair_companions(&f.conn, true).unwrap();
     assert_eq!(stats.paired, 2);
 
     let paired_to_jpg: i64 = f
@@ -371,8 +373,127 @@ fn companions_pair_same_directory_same_stem_only() {
         .unwrap();
     assert_eq!(stray_unpaired, 1);
 
-    // Idempotent: a second pass pairs nothing new.
-    assert_eq!(pair_companions(&f.conn).unwrap().paired, 0);
+    // Idempotent: a second rebuild reports and retains the same two pairs.
+    assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
+
+    pair_companions(&f.conn, false).unwrap();
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL"),
+        0,
+        "the global pairing switch leaves RAW and sidecars independent"
+    );
+}
+
+#[test]
+fn corpus_live_photos_pair_by_identifier_not_stem_and_honor_the_toggle() {
+    fn source(parts: &[&str]) -> std::path::PathBuf {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("tests/fixtures/live-photo");
+        for part in parts {
+            path.push(part);
+        }
+        path
+    }
+    let copy = |from: &[&str], to: &std::path::Path| {
+        std::fs::copy(source(from), to).unwrap();
+    };
+
+    let f = fixture("live-photo-pairing");
+    let jpeg = f.root.join("jpeg-valid");
+    let heic = f.root.join("heic-valid");
+    let invalid = f.root.join("invalid");
+    for dir in [&jpeg, &heic, &invalid] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+
+    // Deliberately unrelated stems: metadata, never a filename convention,
+    // is the Live Photo authority.
+    copy(&["jpeg-pair", "key-photo.jpg"], &jpeg.join("still-a.jpg"));
+    copy(
+        &["jpeg-pair", "paired-video.mov"],
+        &jpeg.join("motion-z.mov"),
+    );
+    copy(&["heic-pair", "key-photo.heic"], &heic.join("still-b.heic"));
+    copy(
+        &["heic-pair", "paired-video.mov"],
+        &heic.join("motion-y.mov"),
+    );
+
+    // Same directory is necessary but not sufficient: a different Apple id
+    // and a MOV with no Live Photo metadata both remain primary videos.
+    copy(&["jpeg-pair", "key-photo.jpg"], &invalid.join("still.jpg"));
+    copy(
+        &["heic-pair", "paired-video.mov"],
+        &invalid.join("mismatched.mov"),
+    );
+    copy(
+        &["unpaired", "video-without-live-metadata.mov"],
+        &invalid.join("missing-id.mov"),
+    );
+
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    extract_pending(&f.conn).unwrap();
+    let stats = pair_companions(&f.conn, true).unwrap();
+    assert_eq!(stats.paired, 2);
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM paths WHERE kind = 'video' AND companion_of IS NOT NULL"
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM paths WHERE file_name IN ('mismatched.mov', 'missing-id.mov') \
+             AND companion_of IS NULL"
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM paths movie JOIN paths still ON movie.companion_of = still.id \
+             WHERE movie.kind = 'video' AND still.kind = 'image' \
+               AND movie.dir_path = still.dir_path AND movie.stem != still.stem"
+        ),
+        2
+    );
+
+    pair_companions(&f.conn, false).unwrap();
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL"),
+        0
+    );
+    assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
+}
+
+#[test]
+fn a_preexisting_index_backfills_live_photo_evidence_once() {
+    let f = fixture("live-photo-backfill");
+    std::fs::write(f.root.join("old.jpg"), b"not an image").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    // Stand in for an index completed by a build that predated Live Photo
+    // evidence. The ordinary metadata checkpoint must not suppress the new
+    // one-time fact extraction.
+    f.conn
+        .execute_batch(
+            "INSERT INTO contents (hash, byte_size, kind, derived_at_utc) \
+               VALUES ('old-hash', 12, 'image', 'done');
+             UPDATE paths SET indexed_at_utc = 'already-indexed', content_hash = 'old-hash';",
+        )
+        .unwrap();
+    assert!(pending_index_work_exists(&f.conn).unwrap());
+    assert_eq!(extract_pending(&f.conn).unwrap().extracted, 1);
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM evidence WHERE source = 'live-photo-identifier' AND raw IS NULL"
+        ),
+        1
+    );
+    assert_eq!(extract_pending(&f.conn).unwrap().extracted, 0);
 }
 
 #[test]
@@ -433,7 +554,7 @@ fn a_companion_unpairs_when_its_primary_disappears() {
     std::fs::write(f.root.join("IMG.JPG"), b"jpeg-bytes").unwrap();
     std::fs::write(f.root.join("IMG.ARW"), b"raw-bytes").unwrap();
     walk_root(&f.conn, &f.root, &lists()).unwrap();
-    pair_companions(&f.conn).unwrap();
+    pair_companions(&f.conn, true).unwrap();
 
     let companion_of = |name: &str| -> Option<i64> {
         f.conn
@@ -451,7 +572,7 @@ fn a_companion_unpairs_when_its_primary_disappears() {
     std::fs::create_dir_all(f.root.join("keepers")).unwrap();
     std::fs::rename(f.root.join("IMG.JPG"), f.root.join("keepers").join("IMG.JPG")).unwrap();
     walk_root(&f.conn, &f.root, &lists()).unwrap();
-    pair_companions(&f.conn).unwrap();
+    pair_companions(&f.conn, true).unwrap();
 
     // The RAW must return to the other-files section rather than pointing at a
     // vanished primary: every read model filters companion_of IS NULL, so a
@@ -613,10 +734,7 @@ fn completed_walk_checkpoint_uses_the_settled_symlink_identity() {
 }
 
 #[test]
-fn blocked_stills_become_pending_only_once_ffmpeg_is_present() {
-    // The gate binaries_install relies on: a HEIC blocked on ffmpeg is inert
-    // while ffmpeg is absent (so the startup resume cannot fire on work it
-    // could never do) and pending the moment it lands.
+fn ffmpeg_blocked_stills_never_create_index_debt() {
     let f = fixture("blocked-stills");
     f.conn
         .execute(
@@ -627,20 +745,21 @@ fn blocked_stills_become_pending_only_once_ffmpeg_is_present() {
         .unwrap();
     f.conn
         .execute(
-            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) \
-             VALUES ('/root/a.heic', '/root', 'a.heic', 'image', 'h1', 0)",
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing, \
+                                indexed_at_utc, resolved_source) \
+             VALUES ('/root/a.heic', '/root', 'a.heic', 'image', 'h1', 0, 'done', 'undated')",
+            [],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO evidence (path_id, source, raw) \
+             SELECT id, 'live-photo-identifier', NULL FROM paths",
             [],
         )
         .unwrap();
 
-    assert!(
-        !pending_work_exists(&f.conn, false).unwrap(),
-        "inert while ffmpeg is absent"
-    );
-    assert!(
-        pending_work_exists(&f.conn, true).unwrap(),
-        "pending the moment ffmpeg lands"
-    );
+    assert!(!pending_index_work_exists(&f.conn).unwrap());
 }
 
 #[test]
@@ -664,7 +783,7 @@ fn contents_without_a_live_path_are_not_pending_work() {
         .unwrap();
 
     assert!(
-        !pending_work_exists(&f.conn, true).unwrap(),
+        !pending_index_work_exists(&f.conn).unwrap(),
         "an underivable row must not keep the resume firing forever"
     );
 }
