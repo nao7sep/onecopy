@@ -67,13 +67,15 @@ interface PreviewState {
     payload: PreviewPayload,
     detail: ItemDetail | null,
     intent?: PreviewIntent,
+    windowState?: Record<string, unknown>,
   ) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
   close: () => void;
-  /** The chrome control shows or hides persistent Preview. */
-  toggleFollow: () => Promise<void>;
   /** Moves the open surface to the other placement, and remembers the choice. */
-  setPlacementPreference: (preference: PlacementPreference) => Promise<void>;
+  setPlacementPreference: (
+    preference: PlacementPreference,
+    windowState?: Record<string, unknown>,
+  ) => Promise<void>;
   /** Restores the persisted follow flag without opening anything yet. */
   restoreFollow: (on: boolean, preference: PlacementPreference) => void;
   /** The selection emptied: clear the surface, keep follow armed. */
@@ -89,7 +91,7 @@ interface PreviewState {
 // Cached existence flag: getByLabel per keystroke is an IPC round trip.
 let previewWindowOpen = false;
 
-async function ensurePreviewWindow(): Promise<void> {
+async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing !== null) {
     previewWindowOpen = true;
@@ -119,19 +121,15 @@ async function ensurePreviewWindow(): Promise<void> {
     previewWindowOpen = false;
     const store = usePreviewStore.getState();
     if (store.placement === "window") {
-      usePreviewStore.setState({ placement: null });
       // The placement PREFERENCE survives — closing the window means "not
       // now", not "never on that screen again".
-      store.restoreFollow(false, store.placementPreference);
-      persistFollow(false);
+      usePreviewStore.setState({ follow: false, placement: null, current: null });
     }
   });
   try {
     const monitors = await availableMonitors();
-    const { useAppStore } = await import("./app-store");
-    const state = useAppStore.getState().appData?.state ?? {};
     const saved = restorableBounds(
-      parseSavedBounds((state as Record<string, unknown>).previewWindowBounds),
+      parseSavedBounds(state.previewWindowBounds),
       monitors as never,
     );
     if (saved !== null) {
@@ -143,13 +141,13 @@ async function ensurePreviewWindow(): Promise<void> {
       // Nothing remembered: a POSITION nicety only — priority slot 2.
       const ordered = orderMonitors(
         monitors,
-        priorityFromState(useAppStore.getState().appData?.state ?? null),
+        priorityFromState(state),
       );
       await window.setPosition(ordered[1].position);
     }
     // First-ever open defaults to maximized (this is an enlarge-and-view
     // surface); after that the flag is the window's own remembered state.
-    if ((state as Record<string, unknown>).previewWindowMaximized !== false) {
+    if (state.previewWindowMaximized !== false) {
       await window.maximize();
     }
     await window.show().catch(reportWindowCall("preview show"));
@@ -238,12 +236,6 @@ function throttledDeliver(message: PreviewShowMessage): void {
   }
 }
 
-function persistFollow(on: boolean): void {
-  void import("./app-store").then(({ useAppStore }) =>
-    useAppStore.getState().patchState({ previewFollow: on }),
-  );
-}
-
 // ---- The store ------------------------------------------------------------
 
 export const usePreviewStore = create<PreviewState>((set, get) => ({
@@ -252,16 +244,15 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   placementPreference: null,
   current: null,
 
-  open: async (payload, detail, intent = {}) => {
+  open: async (payload, detail, intent = {}, windowState = {}) => {
     try {
       const placement = resolvePlacement(get().placementPreference);
       // State FIRST: the side pane renders `current` the moment this lands,
       // which is what makes the image appear immediately on activation.
       const message = { ...payload, detail, ...intent };
       set({ follow: true, placement, current: message });
-      persistFollow(true);
       if (placement === "window") {
-        await ensurePreviewWindow();
+        await ensurePreviewWindow(windowState);
         await frontPreviewWindow();
         // A freshly created webview misses this emit (still booting) — its
         // ready announcement fetches the current state instead; an already
@@ -276,40 +267,14 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   close: () => {
     const { placement } = get();
     set({ follow: false, placement: null, current: null });
-    persistFollow(false);
     if (placement === "window") {
       void WebviewWindow.getByLabel("preview").then((w) => w?.close());
     }
   },
 
-  // The one show/hide path: Space and the chrome control both call it, so the
-  // key and the button can never disagree about what state they left behind.
-  toggleFollow: async () => {
-    const { follow, close, open } = get();
-    if (follow) {
-      close();
-      return;
-    }
-    const { useItemsStore } = await import("./items-store");
-    const { items, selectedItem, detail } = useItemsStore.getState();
-    const { itemKey } = await import("./items-store");
-    const item = items.find((i) => itemKey(i) === selectedItem);
-    // With no anchor there is nothing to preview yet, so arm follow and let
-    // the first selection open it — the same path a restored flag takes.
-    if (!item) {
-      set({ follow: true });
-      persistFollow(true);
-      return;
-    }
-    await open({ hash: item.hash, pathId: item.hash === null ? item.pathId : null }, detail);
-  },
-
-  setPlacementPreference: async (preference) => {
+  setPlacementPreference: async (preference, windowState = {}) => {
     const { follow, placement, current } = get();
     set({ placementPreference: preference });
-    void import("./app-store").then(({ useAppStore }) =>
-      useAppStore.getState().patchState({ previewPlacement: preference }),
-    );
     if (!follow) return;
     const next = resolvePlacement(preference);
     if (next === placement) return;
@@ -328,7 +293,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       await WebviewWindow.getByLabel("preview").then((w) => w?.close());
     }
     if (next === "window" && current !== null) {
-      await ensurePreviewWindow();
+      await ensurePreviewWindow(windowState);
       await frontPreviewWindow();
       void emit("preview://show", current);
     }
@@ -351,12 +316,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const { follow, placement } = get();
     if (!follow) return;
     if (placement === null) {
-      // Follow restored from state but the surface not opened yet this
-      // session: open it on the first REAL anchor (a cleared selection must
-      // not open an empty surface).
-      if (payload.hash !== null || payload.pathId !== null) {
-        void get().open(payload, detail);
-      }
+      // A restored follow flag is opened by the item workflow, which can
+      // supply the app-owned window geometry without a peer-store import.
       return;
     }
     throttledDeliver({ ...payload, detail });

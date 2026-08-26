@@ -15,13 +15,14 @@ import {
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useAppStore } from "../state/app-store";
-import { handleSpaceQuickView } from "../state/quick-view-store";
+import { handleSpaceQuickView } from "../workflows/quick-view";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
 import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { log, toErrorFields } from "../repositories";
+import { rescanCurrentSection } from "../workflows/items";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -619,7 +620,7 @@ export default function Grid({
         <button
           className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
           title="Re-check only the directories this section's files came from"
-          onClick={() => void useItemsStore.getState().rescanSection()}
+          onClick={() => void rescanCurrentSection()}
         >
           Rescan section
         </button>

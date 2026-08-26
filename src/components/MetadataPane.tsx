@@ -16,7 +16,7 @@ import { fileManagerWord } from "../utils/shortcuts";
 import { log, toErrorFields } from "../repositories";
 import Button from "./ui/Button";
 import TranscriptBlock from "./TranscriptBlock";
-import { usePreviewStore } from "../state/preview-store";
+import { openPreview } from "../workflows/preview";
 import { useAppStore } from "../state/app-store";
 
 // The right pane's metadata tab: content facts, the resolved capture time
@@ -193,13 +193,11 @@ export default function MetadataPane({
                   title={`Show video at ${timestampLabel(atMs)}`}
                   aria-label={`Show video at ${timestampLabel(atMs)}`}
                   onClick={() =>
-                    void usePreviewStore
-                      .getState()
-                      .open(
-                        { hash, pathId: null },
-                        detail,
-                        { seekMs: atMs, playAfterSeek: playAfterSnapshot },
-                      )
+                    void openPreview(
+                      { hash, pathId: null },
+                      detail,
+                      { seekMs: atMs, playAfterSeek: playAfterSnapshot },
+                    )
                   }
                 >
                   <img

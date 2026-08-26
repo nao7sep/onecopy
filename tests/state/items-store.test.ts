@@ -7,6 +7,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
+import { deleteSelectedItems } from "../../src/workflows/items";
 import type { SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
@@ -268,7 +269,7 @@ describe("deleteSelected", () => {
     );
 
     useItemsStore.getState().selectItem("h2"); // "b.jpg", middle in name order
-    await useItemsStore.getState().deleteSelected(false);
+    await deleteSelectedItems(false);
 
     // Display order is a.jpg(h3), b.jpg(h2), c.jpg(h1) — the next after b is c.
     expect(useItemsStore.getState().selectedItem).toBe("h1");
@@ -282,7 +283,7 @@ describe("deleteSelected", () => {
     );
 
     useItemsStore.getState().selectItem("h3");
-    await useItemsStore.getState().deleteSelected(false);
+    await deleteSelectedItems(false);
 
     expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
@@ -320,7 +321,7 @@ describe("deleteSelected", () => {
 
     useItemsStore.getState().selectItem("h1");
     useItemsStore.getState().toggleItem("h3");
-    await useItemsStore.getState().deleteSelected(false);
+    await deleteSelectedItems(false);
 
     const deleted = invokeCalls
       .filter((c) => c.command === "delete_item")
@@ -335,7 +336,7 @@ describe("deleteSelected", () => {
     mockCommand("delete_item", () => ({ deletedFiles: 0, failedFiles: 1 }));
 
     useItemsStore.getState().selectItem("h1");
-    await useItemsStore.getState().deleteSelected(false);
+    await deleteSelectedItems(false);
 
     // A delete that silently did nothing is the worst outcome: the user
     // presses again, and again. Something must reach the UI.
@@ -351,7 +352,7 @@ describe("deleteSelected", () => {
     });
 
     useItemsStore.getState().selectItem("h1");
-    await useItemsStore.getState().deleteSelected(false);
+    await deleteSelectedItems(false);
 
     expect(useItemsStore.getState().message).toMatch(/not present/i);
   });

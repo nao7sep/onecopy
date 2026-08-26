@@ -13,12 +13,11 @@
 
 import { Columns2, Eye, EyeOff, Monitor } from "lucide-react";
 import { resolvePlacement, usePreviewStore } from "../state/preview-store";
+import { setPreviewPlacement, togglePreview } from "../workflows/preview";
 
 export default function PreviewControl() {
   const follow = usePreviewStore((s) => s.follow);
   const preference = usePreviewStore((s) => s.placementPreference);
-  const toggleFollow = usePreviewStore((s) => s.toggleFollow);
-  const setPlacementPreference = usePreviewStore((s) => s.setPlacementPreference);
 
   const effective = resolvePlacement(preference);
 
@@ -32,7 +31,7 @@ export default function PreviewControl() {
             ? "bg-primary-surface text-primary"
             : "text-ink-muted hover:bg-surface-muted hover:text-ink"
         }`}
-        onClick={() => void toggleFollow()}
+        onClick={() => void togglePreview()}
       >
         {follow ? <Eye size={14} /> : <EyeOff size={14} />}
         Preview
@@ -46,7 +45,7 @@ export default function PreviewControl() {
                 ? "bg-primary-surface text-primary"
                 : "text-ink-muted hover:text-ink"
             }`}
-            onClick={() => void setPlacementPreference("split")}
+            onClick={() => void setPreviewPlacement("split")}
           >
             <Columns2 size={13} />
           </button>
@@ -58,7 +57,7 @@ export default function PreviewControl() {
                 ? "bg-primary-surface text-primary"
                 : "text-ink-muted hover:text-ink"
             }`}
-            onClick={() => void setPlacementPreference("window")}
+            onClick={() => void setPreviewPlacement("window")}
           >
             <Monitor size={13} />
           </button>

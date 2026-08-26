@@ -63,7 +63,7 @@ import { itemKey } from "./state/items-store";
 import { DEFAULT_DESC, type SortChoice, type SortOrder } from "./models/items";
 import { comparisonHashForEnter } from "./models/interactions";
 import { usePreviewStore } from "./state/preview-store";
-import { handleSpaceQuickView, useQuickViewStore } from "./state/quick-view-store";
+import { useQuickViewStore } from "./state/quick-view-store";
 import {
   backgroundWorkLine,
   installActivityPings,
@@ -73,6 +73,9 @@ import PreviewSurface from "./components/PreviewSurface";
 import { log, reportWindowCall, toErrorFields } from "./repositories";
 import BackgroundWorkModal from "./components/BackgroundWorkModal";
 import { bootstrapApplication } from "./workflows/app-lifecycle";
+import { deleteSelectedItems } from "./workflows/items";
+import { closePreview } from "./workflows/preview";
+import { handleSpaceQuickView } from "./workflows/quick-view";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -481,7 +484,7 @@ export default function App() {
           // deliberate user can trade that pace for the extra stop.
           setConfirmTrash(count);
         } else {
-          void useItemsStore.getState().deleteSelected(false);
+          void deleteSelectedItems(false);
         }
       } else if (
         event.key === " " &&
@@ -563,15 +566,13 @@ export default function App() {
       preview:
         typeof preview === "number" && Number.isFinite(preview) ? preview : current.preview,
     }));
-    void import("./state/preview-store").then(({ usePreviewStore }) => {
-      const placement = state.previewPlacement;
-      usePreviewStore
-        .getState()
-        .restoreFollow(
-          state.previewFollow === true,
-          placement === "split" || placement === "window" ? placement : null,
-        );
-    });
+    const placement = state.previewPlacement;
+    usePreviewStore
+      .getState()
+      .restoreFollow(
+        state.previewFollow === true,
+        placement === "split" || placement === "window" ? placement : null,
+      );
     const last = state.lastSection as { kind?: string; month?: string } | undefined;
     if (
       last &&
@@ -636,7 +637,7 @@ export default function App() {
           confirmLabel="Delete permanently"
           onConfirm={() => {
             setConfirmPermanent(null);
-            void useItemsStore.getState().deleteSelected(true);
+            void deleteSelectedItems(true);
           }}
           onCancel={() => setConfirmPermanent(null)}
         />
@@ -650,7 +651,7 @@ export default function App() {
           confirmLabel="Move to trash"
           onConfirm={() => {
             setConfirmTrash(null);
-            void useItemsStore.getState().deleteSelected(false);
+            void deleteSelectedItems(false);
           }}
           onCancel={() => setConfirmTrash(null)}
         />
@@ -822,7 +823,7 @@ export default function App() {
                 aria-label="Close preview"
                 title="Close preview (Space)"
                 className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md bg-surface/80 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-                onClick={() => usePreviewStore.getState().close()}
+                onClick={closePreview}
               >
                 <X size={14} />
               </button>

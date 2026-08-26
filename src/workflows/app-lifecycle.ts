@@ -9,8 +9,12 @@ import { useIssuesStore } from "../state/issues-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useWizardStore } from "../state/wizard-store";
 import { installScanEventWiring } from "./scan-events";
+import { installItemWorkflow } from "./items";
+import { installPreviewPersistence } from "./preview";
 
 export async function bootstrapApplication(): Promise<void> {
+  installItemWorkflow();
+  installPreviewPersistence();
   await installScanEventWiring();
   const [data] = await Promise.all([
     useAppStore.getState().reload(),

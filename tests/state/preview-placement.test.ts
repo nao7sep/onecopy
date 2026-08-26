@@ -14,10 +14,12 @@ import {
   usePreviewStore,
 } from "../../src/state/preview-store";
 import {
-  handleSpaceQuickView,
   useQuickViewStore,
 } from "../../src/state/quick-view-store";
+import { handleSpaceQuickView } from "../../src/workflows/quick-view";
 import { useItemsStore } from "../../src/state/items-store";
+import { togglePreview } from "../../src/workflows/preview";
+import { installItemWorkflow } from "../../src/workflows/items";
 import type { SectionItem } from "../../src/models/items";
 import { mockCommands, resetTauriMocks } from "../mocks/tauri";
 
@@ -40,6 +42,8 @@ function item(pathId: number): SectionItem {
     dirPaths: [`/Volumes/A/photos`],
   };
 }
+
+installItemWorkflow();
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
@@ -92,12 +96,20 @@ describe("placement is the user's statement alone", () => {
 });
 
 describe("activating the preview", () => {
+  it("projects an item-store anchor through the application workflow", () => {
+    usePreviewStore.setState({ follow: true, placement: "split", current: null });
+
+    useItemsStore.getState().selectItem("h1");
+
+    expect(usePreviewStore.getState().current?.hash).toBe("h1");
+  });
+
   it("shows the anchor's image IMMEDIATELY when one is selected", async () => {
     // The broken half the developer reported: activate-then-select was the
     // only order that worked. `open` must seed `current` before returning.
     useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]) });
 
-    await usePreviewStore.getState().toggleFollow();
+    await togglePreview();
 
     const { follow, placement, current } = usePreviewStore.getState();
     expect(follow).toBe(true);
@@ -106,7 +118,7 @@ describe("activating the preview", () => {
   });
 
   it("arms follow and stays empty when nothing is selected", async () => {
-    await usePreviewStore.getState().toggleFollow();
+    await togglePreview();
     const { follow, current } = usePreviewStore.getState();
     expect(follow).toBe(true);
     expect(current).toBeNull();
@@ -114,7 +126,7 @@ describe("activating the preview", () => {
 
   it("a cleared selection blanks the surface instead of holding the last photo", async () => {
     useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]) });
-    await usePreviewStore.getState().toggleFollow();
+    await togglePreview();
     expect(usePreviewStore.getState().current?.hash).toBe("h1");
 
     usePreviewStore.getState().anchorCleared();

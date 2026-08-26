@@ -33,13 +33,6 @@ export function itemKey(item: SectionItem): string {
   return item.hash ?? `path-${item.pathId}`;
 }
 
-/** Mirrors operations::DeleteOutcome. */
-interface DeleteOutcome {
-  deletedFiles: number;
-  failedFiles: number;
-  removedRows: number;
-}
-
 interface ItemsState {
   selected: SelectedSection | null;
   items: SectionItem[];
@@ -73,10 +66,6 @@ interface ItemsState {
   setAnchor: (key: string | null) => void;
   toggleItem: (key: string) => void;
   rangeSelect: (sortedKeys: string[], key: string) => void;
-  deleteSelected: (permanent: boolean) => Promise<void>;
-  /** Deletes an explicit set, for surfaces scoped to one item. */
-  deleteKeys: (keys: Set<string>, permanent: boolean) => Promise<void>;
-  rescanSection: () => Promise<void>;
   refresh: () => Promise<void>;
   applyDerivedItem: (previousHash: string, item: SectionItem) => void;
   /** After a similar-family is fully decided, land the anchor on the first
@@ -122,9 +111,6 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         : { order, desc: DEFAULT_DESC[order] };
     const sortOrders = { ...get().sortOrders, [lane]: next };
     set({ sortOrders });
-    void import("./app-store").then(({ useAppStore }) =>
-      useAppStore.getState().patchState({ sortOrders }),
-    );
   },
 
   select: async (section) => {
@@ -153,9 +139,6 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
             detail: null,
           }),
     });
-    void import("./app-store").then(({ useAppStore }) =>
-      useAppStore.getState().patchState({ lastSection: section }),
-    );
     // Sequence, not identity: `refresh` passes the SAME section object, so an
     // identity check cannot tell two same-section reloads apart — with the
     // reads async, an older response landing last would resurrect rows a
@@ -188,14 +171,14 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       rangeBase: key === null ? new Set<string>() : new Set([key]),
       detail: null,
     });
-    notifyAnchor(key);
+    loadAnchorDetail(key);
   },
 
   // Moves the anchor only. The range origin deliberately stays put, so a
   // Shift+arrow run can reverse and shrink instead of only growing.
   setAnchor: (key) => {
     set({ selectedItem: key, detail: null });
-    notifyAnchor(key);
+    loadAnchorDetail(key);
   },
 
   toggleItem: (key) => {
@@ -218,7 +201,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       rangeBase: new Set(next),
       detail: null,
     });
-    notifyAnchor(anchor);
+    loadAnchorDetail(anchor);
   },
 
   // Recomputes the range as the span from the origin to the target on top of
@@ -239,86 +222,6 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     set({ selectedKeys: next });
   },
 
-  // Deletes every selected logical item — copies plus companions each — to
-  // trash (or permanently with Shift). Selection recovers onto the next
-  // unselected item so a cull run keeps its keyboard rhythm.
-  deleteSelected: async (permanent) => {
-    const { selectedItem, selectedKeys, deleteKeys } = get();
-    const keys = selectedKeys.size > 0
-      ? selectedKeys
-      : selectedItem !== null
-        ? new Set([selectedItem])
-        : new Set<string>();
-    await deleteKeys(keys, permanent);
-  },
-
-  // Deletes an explicit set. A surface scoped to ONE item calls this rather
-  // than deleteSelected, whose target is whatever is selected in the grid.
-  deleteKeys: async (keys, permanent) => {
-    const { items, selectedItem, refresh } = get();
-    if (keys.size === 0) return;
-    // Recovery walks the order the GRID renders, not the backend's — under
-    // any sort but "time" the two diverge, and recovering through the backend
-    // order lands the ring on a tile the user is not looking at.
-    const shown = sortItems(items, get().currentSort());
-    // With the anchor toggled off, the deleted run still has a position: use
-    // the first selected tile, so recovery stays adjacent instead of falling
-    // back to index 0 and scrolling the grid to the top.
-    const anchorIndex =
-      selectedItem !== null
-        ? shown.findIndex((i) => itemKey(i) === selectedItem)
-        : shown.findIndex((i) => keys.has(itemKey(i)));
-    set({ message: null });
-    try {
-      let failed = 0;
-      for (const item of shown.filter((i) => keys.has(itemKey(i)))) {
-        const outcome = await invoke<DeleteOutcome>("delete_item", {
-          hash: item.hash,
-          pathId: item.hash === null ? item.pathId : null,
-          permanent,
-        });
-        failed += outcome?.failedFiles ?? 0;
-      }
-      const survivor =
-        shown.slice(anchorIndex + 1).find((i) => !keys.has(itemKey(i))) ??
-        [...shown.slice(0, Math.max(anchorIndex, 0))]
-          .reverse()
-          .find((i) => !keys.has(itemKey(i))) ??
-        null;
-      const survivorKey = survivor ? itemKey(survivor) : null;
-      // A per-copy failure is reported in the outcome, never as a rejection,
-      // and leaves the file on disk. Saying so is the whole difference
-      // between "Delete does nothing" and "that drive is read-only".
-      if (failed > 0) {
-        set({
-          message: `${failed} file${failed === 1 ? "" : "s"} could not be deleted — see Issues.`,
-        });
-        const { useIssuesStore } = await import("./issues-store");
-        await useIssuesStore.getState().load();
-      }
-      // ORDER (Phase 33, the Windows walk): rows vanish FIRST, then focus
-      // lands where the deleted item was — follower, else previous, else
-      // none, the standard file-manager rhythm. Setting the survivor before
-      // the refresh made the focus ring visibly hop to a neighbour while the
-      // doomed tiles were still on screen.
-      await refresh();
-      set({
-        selectedItem: survivorKey,
-        selectedKeys: survivorKey ? new Set([survivorKey]) : new Set(),
-        rangeOrigin: survivorKey,
-        rangeBase: survivorKey ? new Set([survivorKey]) : new Set<string>(),
-      });
-      // The recovery selection is an anchor move: the preview must stop
-      // showing the file that was just trashed.
-      notifyAnchor(survivorKey);
-      const { useSectionsStore } = await import("./sections-store");
-      await useSectionsStore.getState().loadCounts();
-    } catch (error) {
-      log.error("delete failed", toErrorFields(error));
-      set({ message: messageOf(error) });
-    }
-  },
-
   selectAfterFamily: (memberHashes) => {
     const { items } = get();
     const family = new Set(memberHashes);
@@ -334,24 +237,6 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       (lastMember >= 0 ? shown[lastMember] : undefined);
     if (next) {
       get().selectItem(itemKey(next));
-    }
-  },
-
-  // Scoped rescan: re-stats only the directories that contributed to the open
-  // section (the full per-root walk stays behind the Scan button).
-  rescanSection: async () => {
-    const { selected, refresh } = get();
-    if (!selected) return;
-    try {
-      await invoke<number>("rescan_section", {
-        kind: selected.kind,
-        month: selected.month,
-      });
-      await refresh();
-      const { useSectionsStore } = await import("./sections-store");
-      await useSectionsStore.getState().loadCounts();
-    } catch (error) {
-      log.error("section rescan failed", toErrorFields(error));
     }
   },
 
@@ -373,14 +258,16 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     const remapSet = (keys: Set<string>): Set<string> =>
       new Set([...keys].map(remapKey));
     const selectedItem = remap(state.selectedItem);
+    const anchorRemapped = selectedItem !== state.selectedItem;
     set({
       items,
       selectedItem,
       selectedKeys: remapSet(state.selectedKeys),
       rangeOrigin: remap(state.rangeOrigin),
       rangeBase: remapSet(state.rangeBase),
+      ...(anchorRemapped ? { detail: null } : {}),
     });
-    if (selectedItem === current) notifyAnchor(current);
+    if (selectedItem === current) loadAnchorDetail(current);
   },
 }));
 
@@ -401,47 +288,25 @@ function dropVanishedSelection(
     selectedKeys: keys,
     rangeOrigin: rangeOrigin !== null && alive.has(rangeOrigin) ? rangeOrigin : anchor,
     rangeBase: new Set([...rangeBase].filter((k) => alive.has(k))),
+    ...(anchor !== selectedItem ? { detail: null } : {}),
   });
-  if (anchor !== selectedItem) notifyAnchor(anchor);
+  if (anchor !== selectedItem) loadAnchorDetail(anchor);
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** Every path that moves the anchor funnels here: the persisted `lastItem`,
- * the preview follow (throttled in the preview store), and the ONE detail
- * fetch — whose result both fills the metadata pane and completes the
- * preview's message, so nothing queries twice and nothing races. */
-function notifyAnchor(key: string | null): void {
-  void import("./app-store").then(({ useAppStore }) =>
-    useAppStore.getState().patchState({ lastItem: key }),
-  );
-  if (key === null) {
-    // The selection emptied: the preview must BLANK, not hold the previous
-    // photo — for a trashed file the hold was a small lie. This return used
-    // to come before the preview heard anything.
-    void import("./preview-store").then(({ usePreviewStore }) =>
-      usePreviewStore.getState().anchorCleared(),
-    );
-    return;
-  }
+/** One detail query belongs to the item state owner. Persistence and Preview
+ * projection observe the resulting state at the application edge. */
+function loadAnchorDetail(key: string | null): void {
+  if (key === null) return;
   const item = useItemsStore.getState().items.find((i) => itemKey(i) === key);
   if (!item) return;
   const payload = { hash: item.hash, pathId: item.hash === null ? item.pathId : null };
-  void import("./preview-store").then(({ usePreviewStore }) =>
-    usePreviewStore.getState().anchorChanged(payload, null),
-  );
-  // Both guards: the key check drops a response for an anchor the user left,
+  // Both guards: the key check drops a response for an anchor the user left;
   // the sequence drops the OLDER of two responses for the same anchor.
   const fresh = detailLoad.begin();
   void invoke<ItemDetail>("get_item_detail", payload)
     .then((detail) => {
       if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ detail });
-        void import("./preview-store").then(({ usePreviewStore }) =>
-          usePreviewStore.getState().detailLoaded(payload, detail),
-        );
       }
     })
     .catch((error) => {
