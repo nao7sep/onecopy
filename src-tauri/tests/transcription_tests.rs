@@ -1,8 +1,7 @@
 // Transcription's model-free contracts (the always-on majority per the Phase
-// 28 test doctrine) plus the ignored LIVE test that proves the linked engine
-// with the TINY model and the canonical public-domain speech sample — the
-// same pair whisper.cpp itself tests with — so the 1.6 GB default never has
-// to enter a test run.
+// 28 test doctrine) plus explicit ignored LIVE tests for the linked engine
+// and production model behavior, so the 1.6 GB default never enters an
+// ordinary test run.
 
 use std::path::Path;
 
@@ -259,4 +258,133 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
     let text = render(&segments).to_lowercase();
     eprintln!("transcript: {text}");
     assert!(text.contains("country"), "the known phrase must be heard: {text}");
+}
+
+// LIVE: downloads the exact production model (~1.6 GB), transcribes the
+// shared synthetic noisy dialogue with a long silent tail, and rejects the
+// phrase-loop shape reported during dogfooding. This is deliberately separate
+// from the tiny linked-engine smoke above: model behavior is the fact under
+// test. Run explicitly by name with --ignored and one test thread.
+#[test]
+#[ignore]
+#[serial(transcription)]
+fn live_production_model_does_not_loop_a_phrase_into_trailing_silence() {
+    use sha2::Digest;
+
+    let spec = onecopy_lib::binaries_manager::spec_of("whisper-large-v3-turbo")
+        .expect("production transcription model is registered");
+    let pin = spec.pinned.as_ref().expect("production model is pinned");
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-transcribe-production-live-")
+        .tempdir()
+        .unwrap();
+    let model = dir.path().join(spec.file_name);
+    let agent = ureq::config::Config::builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
+    let mut response = agent.get(pin.url).call().expect("model download");
+    let mut output = std::fs::File::create(&model).unwrap();
+    let downloaded = std::io::copy(&mut response.body_mut().as_reader(), &mut output).unwrap();
+    assert_eq!(downloaded, pin.bytes, "model byte count");
+    drop(output);
+    let mut input = std::io::BufReader::new(std::fs::File::open(&model).unwrap());
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut input, &mut buffer).unwrap();
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    assert_eq!(
+        hex::encode(hasher.finalize()),
+        pin.sha256,
+        "model integrity"
+    );
+
+    let ffmpeg = Path::new("/opt/homebrew/bin/ffmpeg");
+    assert!(
+        ffmpeg.is_file(),
+        "this macOS live test needs Homebrew ffmpeg"
+    );
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../company/assets/test-fixtures/video/dialogue/dialogue-english-with-noise.mp4");
+    assert!(fixture.is_file(), "shared synthetic fixture checkout");
+    let mut pcm = extract_pcm(ffmpeg, &fixture, &dir.path().join("pcm")).unwrap();
+    pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
+
+    let segments = run_whisper(&model, &pcm, |_| {}).unwrap();
+    for segment in &segments {
+        eprintln!("{} ms: {}", segment.start_ms, segment.text);
+    }
+    let transcript = render(&segments);
+    assert!(
+        transcript.to_lowercase().contains("coordinates"),
+        "the known fixture dialogue must be heard: {transcript}"
+    );
+    assert!(
+        !segments_have_phrase_loop(&segments),
+        "one decoder attempt emitted a repeated phrase loop: {}",
+        transcript
+    );
+}
+
+fn segments_have_phrase_loop(segments: &[Segment]) -> bool {
+    let normalized = segments
+        .iter()
+        .map(|segment| {
+            segment
+                .text
+                .split_whitespace()
+                .map(|token| token.to_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    if normalized
+        .windows(2)
+        .any(|pair| !pair[0].is_empty() && pair[0] == pair[1])
+    {
+        return true;
+    }
+    let tokens = normalized.into_iter().flatten().collect::<Vec<_>>();
+    for width in 3..=16.min(tokens.len() / 3) {
+        for start in 0..=tokens.len().saturating_sub(width * 3) {
+            if tokens[start..start + width] == tokens[start + width..start + width * 2]
+                && tokens[start..start + width] == tokens[start + width * 2..start + width * 3]
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[test]
+fn phrase_loop_probe_distinguishes_decoder_loops_from_ordinary_repetition() {
+    let segment = |text: &str| Segment {
+        start_ms: 0,
+        text: text.to_string(),
+    };
+    assert!(segments_have_phrase_loop(&[
+        segment("please remove the coordinates"),
+        segment("please remove the coordinates"),
+    ]));
+    assert!(segments_have_phrase_loop(&[segment(
+        "please remove the coordinates please remove the coordinates please remove the coordinates"
+    )]));
+    assert!(!segments_have_phrase_loop(&[segment(
+        "thank you, thank you for removing the location before sharing"
+    )]));
+    assert!(!segments_have_phrase_loop(&[
+        segment("please remove the coordinates"),
+        segment("then share the photograph"),
+    ]));
 }
