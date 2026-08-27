@@ -16,7 +16,11 @@ beforeEach(() => {
     emptiness: {},
     message: "",
     result: null,
+    confirmation: null,
     activePath: null,
+    dragSelection: null,
+    dragReceiverPath: null,
+    dragPresentation: null,
     pendingDrop: null,
   });
 });
@@ -70,12 +74,30 @@ describe("destination folder states", () => {
     expect(view.container.textContent).not.toContain("Drop into");
   });
 
-  it("opens the Move/Copy choice only for OneCopy's internal selection", () => {
+  it("highlights only the semantic receiver owned by the pointer gesture", () => {
+    useDestinationsStore.setState({
+      roots: ["/dest", "/other"],
+      expanded: new Set(),
+      activePath: "/dest",
+      dragReceiverPath: "/other",
+      pendingDrop: null,
+    });
+    const view = render(<DestinationsTab />);
+    const dest = view.container.querySelector<HTMLElement>("[data-tree-path='/dest']")!;
+    const other = view.container.querySelector<HTMLElement>("[data-tree-path='/other']")!;
+
+    expect(dest.className).not.toContain("ring-2");
+    expect(other.className).toContain("ring-2");
+  });
+
+  it("does not treat a browser payload as an internal operation", () => {
     useDestinationsStore.setState({
       roots: ["/dest"],
       expanded: new Set(),
       activePath: "/dest",
-      pendingDrop: null,
+      dragSelection: null,
+      dragReceiverPath: null,
+      dragPresentation: null,
     });
     const view = render(<DestinationsTab />);
     const row = view.container.querySelector<HTMLElement>("[data-tree-path='/dest']")!;
@@ -83,30 +105,6 @@ describe("destination folder states", () => {
     fireEvent.drop(row, {
       dataTransfer: { types: ["application/x-onecopy-drag"] },
     });
-
-    expect(useDestinationsStore.getState().pendingDrop).toBe("/dest");
-    expect(view.container.textContent).toContain("Drop into dest");
-  });
-
-  it("keeps ordinary text drops native inside a real editor", () => {
-    useDestinationsStore.setState({
-      roots: ["/dest"],
-      expanded: new Set(),
-      activePath: "/dest",
-    });
-    const view = render(<DestinationsTab />);
-    fireEvent.click(view.getByText("New subfolder"));
-    const input = view.getByPlaceholderText("folder name");
-    const dataTransfer = { types: ["text/plain"], items: [], dropEffect: "copy" };
-
-    const over = new Event("dragover", { bubbles: true, cancelable: true });
-    Object.defineProperties(over, { dataTransfer: { value: dataTransfer } });
-    input.dispatchEvent(over);
-    expect(over.defaultPrevented).toBe(false);
-
-    const drop = new Event("drop", { bubbles: true, cancelable: true });
-    Object.defineProperties(drop, { dataTransfer: { value: dataTransfer } });
-    input.dispatchEvent(drop);
-    expect(drop.defaultPrevented).toBe(false);
+    expect(useDestinationsStore.getState().pendingDrop).toBeNull();
   });
 });

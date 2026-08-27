@@ -10,7 +10,9 @@ import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import {
+  captureDestinationSelection,
   confirmDestinationDeleteRest,
+  moveDestinationSelectionTo,
   moveSelectionTo,
 } from "../../src/workflows/destinations";
 
@@ -83,7 +85,17 @@ beforeEach(() => {
     patch_state: () => ({}),
     get_item_detail: () => null,
   });
-  useDestinationsStore.setState({ pendingDeleteRest: null, message: "", result: null });
+  useDestinationsStore.setState({
+    pendingDeleteRest: null,
+    pendingDrop: null,
+    dragSelection: null,
+    dragReceiverPath: null,
+    dragPresentation: null,
+    message: "",
+    result: null,
+    confirmation: null,
+    expanded: new Set(),
+  });
   selectAll(["h1", "h2", "h3"]);
 });
 
@@ -105,7 +117,7 @@ describe("staging a permanent move", () => {
     const pending = useDestinationsStore.getState().pendingDeleteRest;
     expect(pending?.destDir).toBe("/dest");
     expect(pending?.count).toBe(3);
-    expect(pending?.items.map((entry) => entry.hash)).toEqual([
+    expect(pending?.selection.items.map((entry) => entry.hash)).toEqual([
       "h1",
       "h2",
       "h3",
@@ -152,7 +164,12 @@ describe("staging a permanent move", () => {
       pendingDeleteRest: {
         destDir: "/dest",
         count: 3,
-        items: [{ hash: "h1", pathId: null }],
+        selection: {
+          items: [{ hash: "h1", pathId: null }],
+          blockedNameCount: 0,
+          anchorKey: "h1",
+          shownKeys: ["h1"],
+        },
       },
     });
     useDestinationsStore.getState().cancelPendingDeleteRest();
@@ -177,6 +194,16 @@ describe("the non-permanent modes", () => {
       .filter((c) => c.command === "move_items_out")
       .map((c) => c.args.mode);
     expect(modes).toEqual(["copy"]);
+  });
+
+  it("acts on a frozen drag intent rather than a later live selection", async () => {
+    selectAll(["h1"]);
+    const dragged = captureDestinationSelection();
+    selectAll(["h4"]);
+
+    await moveDestinationSelectionTo("/dest", "copy", dragged);
+
+    expect(movedHashes()).toEqual(["h1"]);
   });
 });
 
@@ -263,6 +290,9 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().result).toEqual(unresolved);
+    expect(useDestinationsStore.getState().confirmation).toBe(
+      "Copied 1 file to dest.",
+    );
   });
 
   it("clears a result when the same operation succeeds on retry", async () => {
@@ -283,6 +313,9 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().result).toBeNull();
+    expect(useDestinationsStore.getState().confirmation).toBe(
+      "Copied 1 file to dest.",
+    );
   });
 
   it("clears the selection-required result after the requested action succeeds", async () => {
@@ -294,6 +327,56 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().result).toBeNull();
+  });
+
+  it("accounts for completed work in one partial result", async () => {
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        exported: 2,
+        conflicts: ["/dest/IMG_3.jpg"],
+        postAction: { deletedFiles: 1, failedFiles: 0, removedRows: 1 },
+      }),
+    });
+    selectAll(["h1", "h2", "h3"]);
+
+    await moveSelectionTo("/dest", "move-trash-rest");
+
+    const result = useDestinationsStore.getState().result;
+    expect(result?.severity).toBe("warning");
+    expect(result?.message).toContain("2 files delivered");
+    expect(result?.message).toContain("1 original handled");
+    expect(result?.message).toContain("IMG_3.jpg");
+  });
+
+  it("recovers selection beside a source row removed by Move", async () => {
+    selectAll(["h1"]);
+    mockCommands({
+      move_items_out: () => OUTCOME,
+      get_section_items: () => [item(2), item(3), item(4)],
+    });
+
+    await moveSelectionTo("/dest", "move-trash-rest");
+
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+  });
+
+  it("keeps surviving multi-selection members when its anchor was moved", async () => {
+    selectAll(["h1", "h2", "h3"]);
+    useItemsStore.setState({ selectedItem: "h2" });
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        conflicts: ["/dest/IMG_1.jpg", "/dest/IMG_3.jpg"],
+      }),
+      get_section_items: () => [item(1), item(3), item(4)],
+    });
+
+    await moveSelectionTo("/dest", "move-trash-rest");
+
+    const state = useItemsStore.getState();
+    expect(state.selectedItem).toBe("h3");
+    expect(state.selectedKeys).toEqual(new Set(["h1", "h3"]));
   });
 });
 

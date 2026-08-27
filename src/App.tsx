@@ -50,6 +50,8 @@ import { useGlobalCommands } from "./hooks/useGlobalCommands";
 import { useMainWindowLifecycle } from "./hooks/useMainWindowLifecycle";
 import { usePaneLayout } from "./hooks/usePaneLayout";
 import { useMutationStore } from "./state/mutation-store";
+import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
+import DestinationDragPreview from "./components/DestinationDragPreview";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -64,6 +66,7 @@ function ZoomInIcon() {
 // status bar.
 
 export default function App() {
+  useDestinationDragBoundary();
   const appData = useAppStore((s) => s.appData);
   const loadError = useAppStore((s) => s.loadError);
   const counts = useSectionsStore((s) => s.counts);
@@ -161,6 +164,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-ink">
+      <DestinationDragPreview />
       {wizardOpen && appData !== null ? (
         <Wizard />
       ) : gateOpen ? (

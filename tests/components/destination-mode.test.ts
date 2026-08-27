@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  dropMode,
-  keyboardMoveMode,
-} from "../../src/components/DestinationsTab";
+import { keyboardMoveMode } from "../../src/components/DestinationsTab";
 
 function key(
   modifiers: Partial<Pick<KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">> = {},
@@ -25,9 +22,5 @@ describe("destination move mode", () => {
     expect(keyboardMoveMode(key({ ctrlKey: true }))).toBe("copy");
     expect(keyboardMoveMode(key({ shiftKey: true }))).toBe("move-delete-rest");
     expect(keyboardMoveMode(key())).toBe("move-trash-rest");
-  });
-
-  it("keeps pointer modifiers independent of AltGr keyboard handling", () => {
-    expect(dropMode(key({ metaKey: true, altKey: true }))).toBe("copy");
   });
 });

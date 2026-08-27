@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useDestinationsStore,
   type DirEntry,
@@ -9,11 +9,13 @@ import ModalShell from "./ModalShell";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   addDestinationRoot,
+  moveDestinationSelectionTo,
   confirmDestinationDeleteRest,
   moveSelectionTo,
   removeDestinationRoot,
   type MoveMode,
 } from "../workflows/destinations";
+import type { PendingDestinationDrop } from "../models/destinationTransfer";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -30,12 +32,6 @@ type MoveModifiers = Pick<
   KeyboardEvent,
   "altKey" | "ctrlKey" | "metaKey" | "shiftKey"
 >;
-
-export function dropMode(event: MoveModifiers): MoveMode {
-  if (event.metaKey || event.ctrlKey) return "copy";
-  if (event.shiftKey) return "move-delete-rest";
-  return "move-trash-rest";
-}
 
 export function keyboardMoveMode(event: MoveModifiers): MoveMode | null {
   if (event.altKey && (event.metaKey || event.ctrlKey)) return null;
@@ -57,76 +53,6 @@ export function nodeHasChildren(
 }
 
 const EMPTY_DIR_ENTRIES: DirEntry[] = [];
-
-function keepsNativeTextDrop(event: DragEvent): boolean {
-  const target = event.target as Element | null;
-  if (!target?.closest?.(
-    "textarea, [contenteditable='true'], input:not([type]), input[type='text'], input[type='search'], input[type='url'], input[type='email'], input[type='number'], input[type='password'], input[type='tel']",
-  )) return false;
-  const types = Array.from(event.dataTransfer?.types ?? []);
-  if (types.includes("Files") || types.includes("application/x-onecopy-drag")) return false;
-  return types.some((type) => type === "text/plain" || type === "text/uri-list" || type === "text/html");
-}
-
-function useDropHandlers(path: string) {
-  const [dropReady, setDropReady] = useState(false);
-  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const resetDrop = () => {
-    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
-    resetTimer.current = null;
-    setDropReady(false);
-  };
-  const renewDrop = () => {
-    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
-    setDropReady(true);
-    // An internal HTML drag can still lose its terminal event when the webview
-    // blurs. Repeated dragover renews this lease; silence clears the row.
-    resetTimer.current = setTimeout(resetDrop, 750);
-  };
-  useEffect(
-    () => () => {
-      if (resetTimer.current !== null) clearTimeout(resetTimer.current);
-    },
-    [],
-  );
-  return {
-    dropReady,
-    handlers: {
-      onDragOver: (event: React.DragEvent) => {
-        if (event.dataTransfer.types.includes("application/x-onecopy-drag")) {
-          event.preventDefault();
-          // Stop the window-level "none" handler from overriding: rows are
-          // the ONLY drop affordance (tapebox's rule).
-          event.stopPropagation();
-          event.dataTransfer.dropEffect = "move";
-          renewDrop();
-        }
-      },
-      onDragLeave: (event: React.DragEvent) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-        resetDrop();
-      },
-      onDrop: (event: React.DragEvent) => {
-        event.preventDefault();
-        event.stopPropagation();
-        resetDrop();
-        // Rows receive only OneCopy's own selection token. The window-level
-        // safety boundary also prevents external navigation, but an external
-        // file released directly over a row must not accidentally open the
-        // Move/Copy choice for whatever happens to be selected in the grid.
-        if (!event.dataTransfer.types.includes("application/x-onecopy-drag")) return;
-        // The choice is ASKED, never inferred from modifier keys held at
-        // drop time (Phase 33) — with one exception kept deliberately:
-        // Cmd/Ctrl-drop still means copy, the OS-wide drag convention.
-        if (event.metaKey || event.ctrlKey) {
-          void moveSelectionTo(path, "copy");
-          return;
-        }
-        useDestinationsStore.getState().setPendingDrop(path);
-      },
-    },
-  };
-}
 
 /** The last path segment — the row label for roots. */
 function leafName(path: string): string {
@@ -152,7 +78,9 @@ function DirNode({
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const isActive = activePath === entry.path;
-  const { dropReady, handlers } = useDropHandlers(entry.path);
+  const dropReady = useDestinationsStore(
+    (state) => state.dragReceiverPath === entry.path,
+  );
 
   return (
     <li
@@ -163,6 +91,7 @@ function DirNode({
     >
       <div
         data-tree-path={entry.path}
+        data-destination-receiver={entry.path}
         className={`flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
           dropReady
             ? "bg-primary-surface ring-2 ring-primary"
@@ -172,7 +101,6 @@ function DirNode({
         }`}
         style={{ paddingLeft: `${depth * 12}px` }}
         onClick={() => setActive(entry.path)}
-        {...handlers}
       >
         <button
           tabIndex={-1}
@@ -228,7 +156,9 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const isActive = activePath === root;
-  const { dropReady, handlers } = useDropHandlers(root);
+  const dropReady = useDestinationsStore(
+    (state) => state.dragReceiverPath === root,
+  );
   return (
     <li
       id={`tree-${encodeURIComponent(root)}`}
@@ -239,6 +169,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
     >
       <div
         data-tree-path={root}
+        data-destination-receiver={root}
         className={`flex items-start rounded-md px-1.5 py-1 text-sm transition-colors ${
           dropReady
             ? "bg-primary-surface ring-2 ring-primary"
@@ -247,7 +178,6 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
               : "hover:bg-surface-muted"
         }`}
         onClick={() => setActive(root)}
-        {...handlers}
       >
         <button
           tabIndex={-1}
@@ -424,6 +354,8 @@ export default function DestinationsTab() {
   const message = useDestinationsStore((s) => s.message);
   const result = useDestinationsStore((s) => s.result);
   const dismissResult = useDestinationsStore((s) => s.dismissResult);
+  const confirmation = useDestinationsStore((s) => s.confirmation);
+  const dismissConfirmation = useDestinationsStore((s) => s.dismissConfirmation);
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
@@ -502,34 +434,11 @@ export default function DestinationsTab() {
   const pendingDeleteRest = useDestinationsStore((s) => s.pendingDeleteRest);
   const pendingDrop = useDestinationsStore((s) => s.pendingDrop);
 
-  // Rows are the ONLY drop affordance: anywhere else in the window the drag
-  // must read not-allowed, not the webview's default "+" over panes that
-  // cannot accept anything. Rows stopPropagation, so this never sees them.
-  useEffect(() => {
-    const deny = (event: DragEvent) => {
-      if (keepsNativeTextDrop(event)) return;
-      // OneCopy has no external import target. Own every renderer drop boundary
-      // so a file, image, text, or URL can never replace the webview.
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
-    };
-    const swallow = (event: DragEvent) => {
-      if (keepsNativeTextDrop(event)) return;
-      event.preventDefault();
-    };
-    window.addEventListener("dragover", deny);
-    window.addEventListener("drop", swallow);
-    return () => {
-      window.removeEventListener("dragover", deny);
-      window.removeEventListener("drop", swallow);
-    };
-  }, []);
-
   return (
     <div className="flex h-full flex-col p-3">
       {pendingDrop !== null ? (
         <DropChoiceModal
-          path={pendingDrop}
+          drop={pendingDrop}
           onClose={() => useDestinationsStore.getState().setPendingDrop(null)}
         />
       ) : null}
@@ -557,6 +466,7 @@ export default function DestinationsTab() {
           roots — an empty composite is still a landing place. */}
       <ul
         role="tree"
+        data-destination-scroll
         aria-label="Destination folders"
         aria-activedescendant={
           activePath !== null ? `tree-${encodeURIComponent(activePath)}` : undefined
@@ -578,6 +488,23 @@ export default function DestinationsTab() {
         )}
       </ul>
       <ActionBar />
+      {confirmation !== null ? (
+        <div
+          role="status"
+          className="mt-2 flex shrink-0 items-start gap-2 rounded-md border border-border-strong bg-surface-muted px-2.5 py-2 text-xs text-ink"
+        >
+          <span className="min-w-0 flex-1 break-words">
+            <strong className="font-semibold">Done:</strong> {confirmation}
+          </span>
+          <button
+            className="shrink-0 rounded px-1 font-medium underline-offset-2 hover:underline"
+            onClick={dismissConfirmation}
+            aria-label="Dismiss confirmation"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       {result !== null ? (
         <div
           role={result.severity === "info" ? "status" : "alert"}
@@ -620,7 +547,14 @@ export default function DestinationsTab() {
  * keys held at release — a silent decision nobody remembers making with a
  * mouse button down. The permanent variant is deliberately absent here: it
  * stays behind the keyboard chord and its own confirmation. */
-function DropChoiceModal({ path, onClose }: { path: string; onClose: () => void }) {
+function DropChoiceModal({
+  drop,
+  onClose,
+}: {
+  drop: PendingDestinationDrop;
+  onClose: () => void;
+}) {
+  const { path, selection } = drop;
   const button =
     "inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring";
   return (
@@ -635,7 +569,8 @@ function DropChoiceModal({ path, onClose }: { path: string; onClose: () => void 
             className={`${button} bg-primary-solid text-ink-inverted shadow-sm hover:bg-primary-solid-hover`}
             onClick={() => {
               onClose();
-              void moveSelectionTo(path, "move-trash-rest");
+              useDestinationsStore.getState().setActive(path);
+              void moveDestinationSelectionTo(path, "move-trash-rest", selection);
             }}
           >
             Move here
@@ -644,7 +579,8 @@ function DropChoiceModal({ path, onClose }: { path: string; onClose: () => void 
             className={`${button} border border-border text-ink hover:border-border-strong hover:bg-surface-muted`}
             onClick={() => {
               onClose();
-              void moveSelectionTo(path, "copy");
+              useDestinationsStore.getState().setActive(path);
+              void moveDestinationSelectionTo(path, "copy", selection);
             }}
           >
             Copy here

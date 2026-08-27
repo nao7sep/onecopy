@@ -39,13 +39,6 @@ button:disabled {
   cursor: default;
 }
 
-/* While an HTML5 drag is in flight the pointer roams over other elements, each
-   with its own cursor — force the closed hand window-wide for the duration
-   (Grid toggles the class in dragstart/dragend). */
-body.dragging * {
-  cursor: grabbing !important;
-}
-
 /* Same principle for a pane-divider drag: the resize cursor holds window-wide
    until mouseup (App toggles the class). */
 body.col-resizing * {

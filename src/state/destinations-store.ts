@@ -6,6 +6,11 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
+import type {
+  DestinationDragPresentation,
+  DestinationSelection,
+  PendingDestinationDrop,
+} from "../models/destinationTransfer";
 
 export interface DirEntry {
   name: string;
@@ -31,22 +36,35 @@ interface DestinationsState {
   message: string;
   result: DestinationResult | null;
   dismissResult: () => void;
+  /** A clean Copy needs local confirmation because its source row remains and
+   * destination files are not rendered in this tree.  It is independent from
+   * an older unresolved result, which an unrelated success must not erase. */
+  confirmation: string | null;
+  dismissConfirmation: () => void;
   /** A move-delete-rest awaiting its permanent-deletion confirmation. The
    * backend identities freeze exactly what the dialog counted, independent of
    * later selection or watcher projection changes. */
   pendingDeleteRest: {
     destDir: string;
     count: number;
-    items: Array<{ hash: string | null; pathId: number | null }>;
+    selection: DestinationSelection;
   } | null;
   cancelPendingDeleteRest: () => void;
   /** The tree's keyboard cursor (the composite-control active item). */
   activePath: string | null;
   setActive: (path: string | null) => void;
-  /** A drop landed on this folder and awaits the Move/Copy choice (Phase 33:
-   * a modal asks; modifier keys at drop time silently decided before). */
-  pendingDrop: string | null;
-  setPendingDrop: (path: string | null) => void;
+  /** Exact selected identities carried by the current internal drag. */
+  dragSelection: DestinationSelection | null;
+  setDragSelection: (selection: DestinationSelection | null) => void;
+  /** Semantic receiver currently under the app-owned pointer drag. */
+  dragReceiverPath: string | null;
+  setDragReceiverPath: (path: string | null) => void;
+  /** Pointer-following payload preview; presentation only, never authority. */
+  dragPresentation: DestinationDragPresentation | null;
+  /** A drop landed and awaits the Move/Copy choice. Both receiver and dragged
+   * identities are frozen; the modal never rereads live grid selection. */
+  pendingDrop: PendingDestinationDrop | null;
+  setPendingDrop: (drop: PendingDestinationDrop | null) => void;
   init: (config: Record<string, unknown> | null) => void;
   toggleExpand: (path: string) => Promise<void>;
   refreshNode: (path: string) => Promise<void>;
@@ -67,12 +85,20 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   message: "",
   result: null,
   dismissResult: () => set({ result: null }),
+  confirmation: null,
+  dismissConfirmation: () => set({ confirmation: null }),
   activePath: null,
 
   setActive: (path) => set({ activePath: path }),
 
+  dragSelection: null,
+  setDragSelection: (selection) => set({ dragSelection: selection }),
+  dragReceiverPath: null,
+  setDragReceiverPath: (path) => set({ dragReceiverPath: path }),
+  dragPresentation: null,
+
   pendingDrop: null,
-  setPendingDrop: (path) => set({ pendingDrop: path }),
+  setPendingDrop: (drop) => set({ pendingDrop: drop }),
 
   pendingDeleteRest: null,
 

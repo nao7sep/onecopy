@@ -16,6 +16,7 @@ import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useDerivedWorkStore } from "../../src/state/derived-work-store";
 import { useSectionsStore } from "../../src/state/sections-store";
+import { useDestinationsStore } from "../../src/state/destinations-store";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -96,6 +97,11 @@ beforeEach(() => {
   useQuickViewStore.setState({ open: false });
   useDerivedWorkStore.setState({ activeItem: null });
   useSectionsStore.setState({ scanning: false, stopping: false, progress: null });
+  useDestinationsStore.setState({
+    dragSelection: null,
+    dragReceiverPath: null,
+    dragPresentation: null,
+  });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: ITEMS,
@@ -218,23 +224,37 @@ describe("Space", () => {
 });
 
 describe("pointer selection", () => {
-  it("clears the drag cursor on Escape and drop even when dragend is lost", () => {
+  it("freezes the dragged selection after a real movement threshold", () => {
     const { view } = renderGrid();
     const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
+    const originalElementFromPoint = document.elementFromPoint;
+    document.elementFromPoint = () => null;
 
-    fireEvent.dragStart(tile, {
-      dataTransfer: { setData: () => undefined, effectAllowed: "none" },
+    fireEvent.pointerDown(tile, {
+      button: 0,
+      isPrimary: true,
+      pointerId: 1,
+      clientX: 10,
+      clientY: 10,
     });
-    expect(document.body.classList.contains("dragging")).toBe(true);
-
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(document.body.classList.contains("dragging")).toBe(false);
-
-    fireEvent.dragStart(tile, {
-      dataTransfer: { setData: () => undefined, effectAllowed: "none" },
+    fireEvent.pointerMove(document, {
+      pointerId: 1,
+      clientX: 13,
+      clientY: 13,
     });
-    fireEvent.drop(window);
-    expect(document.body.classList.contains("dragging")).toBe(false);
+    expect(useDestinationsStore.getState().dragSelection).toBeNull();
+    fireEvent.pointerMove(document, {
+      pointerId: 1,
+      clientX: 20,
+      clientY: 10,
+    });
+
+    expect(useDestinationsStore.getState().dragSelection?.items).toEqual([
+      { hash: "h1", pathId: null },
+    ]);
+
+    fireEvent.pointerCancel(document, { pointerId: 1 });
+    document.elementFromPoint = originalElementFromPoint;
   });
 
   it("ordinary clicks toggle immediately", () => {

@@ -32,6 +32,7 @@ import {
   mergeActiveItemWork,
   useDerivedWorkStore,
 } from "../state/derived-work-store";
+import { useDestinationPointerDrag } from "../hooks/useDestinationPointerDrag";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -47,31 +48,6 @@ const LIST_ROW_ESTIMATE = 34;
 // Click selects; Delete/Backspace trash-deletes the selection (every copy),
 // Shift makes it permanent — the keydown lives in App.
 
-/** Starts a drag carrying the whole selection. Shared by the tile and the list
- * row so both layouts drop into the destination tree identically. */
-function dragProps(item: SectionItem) {
-  return {
-    draggable: true,
-    onDragStart: (event: React.DragEvent) => {
-      // Dragging an unselected item re-anchors the selection onto it, so the
-      // drag always carries exactly what looks selected.
-      const { selectedKeys, selectItem } = useItemsStore.getState();
-      const key = itemKey(item);
-      if (!selectedKeys.has(key)) selectItem(key);
-      event.dataTransfer.setData("application/x-onecopy-drag", "selection");
-      event.dataTransfer.effectAllowed = "copyMove";
-      // Window-wide closed hand for the drag's duration (App.css rule) — the
-      // pointer roams over elements with their own cursors otherwise.
-      document.body.classList.add("dragging");
-    },
-    onDragEnd: clearGridDragCursor,
-  };
-}
-
-export function clearGridDragCursor() {
-  document.body.classList.remove("dragging");
-}
-
 function Thumb({ item }: { item: SectionItem }) {
   const [thumbFailed, setThumbFailed] = useState(false);
   if (item.hash === null || !item.hasThumb || thumbFailed) {
@@ -84,6 +60,7 @@ function Thumb({ item }: { item: SectionItem }) {
       src={thumbUrl(item.hash)}
       alt={item.fileName}
       loading="lazy"
+      draggable={false}
       // h/w-full rather than max-h/max-w: an image SMALLER than the tile is
       // scaled UP to fill it, so its softness is the signal that it is a small
       // file. Left at its native size it sat neatly in the middle and looked
@@ -111,8 +88,21 @@ function Tile({
   presentation: ItemPresentation;
 }) {
   const facts = factsLine(item);
+  const drag = useDestinationPointerDrag({
+    key: itemKey(item),
+    label: item.fileName,
+    thumbHash: item.hasThumb ? item.hash : null,
+  });
   return (
-    <figure className="w-40 cursor-grab" onClick={onSelect} {...dragProps(item)}>
+    <figure
+      className={`w-40 select-none transition-[opacity,transform] ${
+        drag.dragging
+          ? "scale-[0.97] cursor-grabbing opacity-55"
+          : "cursor-grab"
+      }`}
+      onClick={onSelect}
+      {...drag.handlers}
+    >
       <div
         className={`relative flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
           isSelected ? "border-primary-ring ring-2 ring-primary-ring" : "border-border"
@@ -315,15 +305,22 @@ function ListRow({
   onSelect: (event: React.MouseEvent) => void;
   widths: Record<SizedColumn, number>;
 }) {
+  const drag = useDestinationPointerDrag({
+    key: itemKey(item),
+    label: item.fileName,
+    thumbHash: item.hasThumb ? item.hash : null,
+  });
   return (
     <div
-      className={`flex w-full cursor-grab items-center rounded-md border px-3 py-1.5 text-sm transition-colors ${
+      className={`flex w-full select-none items-center rounded-md border px-3 py-1.5 text-sm transition-[background-color,border-color,opacity] ${
+        drag.dragging ? "cursor-grabbing opacity-55" : "cursor-grab"
+      } ${
         isSelected
           ? "border-primary-ring bg-primary-surface"
           : "border-transparent hover:bg-surface-muted"
       }`}
       onClick={onSelect}
-      {...dragProps(item)}
+      {...drag.handlers}
     >
       <span
         className="shrink-0 truncate text-[11px] font-semibold text-ink-muted"
@@ -405,28 +402,6 @@ export default function Grid({
    * grid behind them must not quietly take the keyboard. */
   mayClaimFocus: boolean;
 }) {
-  useEffect(() => {
-    const clearOnVisibilityLoss = () => {
-      if (document.hidden) clearGridDragCursor();
-    };
-    const clearOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") clearGridDragCursor();
-    };
-    window.addEventListener("blur", clearGridDragCursor);
-    window.addEventListener("dragend", clearGridDragCursor);
-    window.addEventListener("drop", clearGridDragCursor);
-    window.addEventListener("keydown", clearOnEscape, true);
-    document.addEventListener("visibilitychange", clearOnVisibilityLoss);
-    return () => {
-      window.removeEventListener("blur", clearGridDragCursor);
-      window.removeEventListener("dragend", clearGridDragCursor);
-      window.removeEventListener("drop", clearGridDragCursor);
-      window.removeEventListener("keydown", clearOnEscape, true);
-      document.removeEventListener("visibilitychange", clearOnVisibilityLoss);
-      clearGridDragCursor();
-    };
-  }, []);
-
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
   const selectedSection = useItemsStore((s) => s.selected);
