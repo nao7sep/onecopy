@@ -440,3 +440,80 @@ fn a_burst_cannot_chain_into_a_far_photo() {
         "the far photo stays out: {clusters:?}"
     );
 }
+
+#[test]
+fn exact_candidates_match_exhaustive_pairing_across_strict_and_burst_rules() {
+    for round in 0..8u32 {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ u64::from(round);
+        let mut hashes = Vec::new();
+        let mut times = Vec::new();
+        for index in 0..160usize {
+            if index % 8 == 0 {
+                state ^= state >> 30;
+                state = state.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                state ^= state >> 27;
+            }
+            let flips = (index % 8) as u32;
+            let mask = ((1u64 << flips) - 1).rotate_left((index as u32 * 7 + round) % 64);
+            hashes.push((state ^ mask) as i64);
+            times.push(if index % 13 == 0 {
+                None
+            } else {
+                Some((index / 8) as i64 * 300_000 + (index % 8) as i64 * 15_000)
+            });
+        }
+
+        let mut actual = cluster_by_appearance(&hashes, &times, 4, 10, 90, 64);
+        let mut expected = exhaustive_components(&hashes, &times, 4, 10, 90);
+        normalize_components(&mut actual);
+        normalize_components(&mut expected);
+        assert_eq!(
+            actual, expected,
+            "candidate search lost an edge in round {round}"
+        );
+    }
+}
+
+fn exhaustive_components(
+    hashes: &[i64],
+    times: &[Option<i64>],
+    strict: u32,
+    burst: u32,
+    gap_seconds: u32,
+) -> Vec<Vec<usize>> {
+    let mut parent: Vec<usize> = (0..hashes.len()).collect();
+    let gap_ms = i64::from(gap_seconds) * 1000;
+    for a in 0..hashes.len() {
+        for b in (a + 1)..hashes.len() {
+            let allowed = match (times[a], times[b]) {
+                (Some(left), Some(right)) if (left - right).abs() <= gap_ms => strict.max(burst),
+                _ => strict,
+            };
+            if (hashes[a] ^ hashes[b]).count_ones() <= allowed {
+                let left = test_find(&mut parent, a);
+                let right = test_find(&mut parent, b);
+                parent[right] = left;
+            }
+        }
+    }
+    let mut components = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+    for index in 0..hashes.len() {
+        let root = test_find(&mut parent, index);
+        components.entry(root).or_default().push(index);
+    }
+    components.into_values().collect()
+}
+
+fn test_find(parent: &mut [usize], index: usize) -> usize {
+    if parent[index] != index {
+        parent[index] = test_find(parent, parent[index]);
+    }
+    parent[index]
+}
+
+fn normalize_components(components: &mut Vec<Vec<usize>>) {
+    for component in components.iter_mut() {
+        component.sort_unstable();
+    }
+    components.sort();
+}

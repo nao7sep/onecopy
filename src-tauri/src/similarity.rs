@@ -8,11 +8,13 @@
 //! appearance alone. Cross-camera grouping stays deferred — a cluster
 //! partitions by camera identity before the burst split.
 //!
-//! Buckets bound the pairwise work (global pairwise at millions of files is
-//! not tractable, and banding cannot rescue exact recall); the cost is that a
-//! family straddling a month boundary splits — accepted by design. Bucket
-//! months are UTC — a scope, not a display concept; section display months
-//! can differ near boundaries by the display-timezone offset.
+//! Month buckets bound memory and product scope. Inside them, disjoint Hamming
+//! bands produce exact candidates for the strict visual threshold, while a
+//! sliding capture-time window covers the wider burst threshold; full dHash
+//! checks remove false candidates. A family straddling a month boundary still
+//! splits — accepted by design. Bucket months are UTC — a scope, not a display
+//! concept; section display months can differ near boundaries by the
+//! display-timezone offset.
 //!
 //! Groups have NO size cap (the developer removed the earlier cap of 32,
 //! 2026-08-16). The comparison view runs any group in 16-slot turns backed by
@@ -55,6 +57,123 @@ pub struct GroupStats {
 
 fn hamming(a: i64, b: i64) -> u32 {
     (a ^ b).count_ones()
+}
+
+/// Exact strict-distance candidate generation for 64-bit dHash. Splitting the
+/// bits into `distance + 1` disjoint bands gives the pigeonhole guarantee: two
+/// hashes at Hamming distance <= `distance` share at least one whole band.
+/// Buckets may produce false positives, which the full-distance check removes;
+/// they cannot miss a qualifying pair.
+fn union_strict_neighbors(
+    phashes: &[i64],
+    distance: u32,
+    uf: &mut UnionFind,
+    comparisons: &mut usize,
+    stop: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    if distance >= 64 {
+        for a in 0..phashes.len() {
+            for b in (a + 1)..phashes.len() {
+                checked_comparison(comparisons, stop)?;
+                uf.union(a, b);
+            }
+        }
+        return Ok(());
+    }
+
+    let band_count = distance as usize + 1;
+    let mut buckets: HashMap<(usize, u64), Vec<usize>> = HashMap::new();
+    let mut seen_at = vec![usize::MAX; phashes.len()];
+    for a in 0..phashes.len() {
+        if a % 1024 == 0 && stop() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        for band in 0..band_count {
+            let key = (band, hamming_band(phashes[a] as u64, band, band_count));
+            if let Some(candidates) = buckets.get(&key) {
+                for &b in candidates {
+                    if seen_at[b] == a {
+                        continue;
+                    }
+                    seen_at[b] = a;
+                    checked_comparison(comparisons, stop)?;
+                    if hamming(phashes[a], phashes[b]) <= distance {
+                        uf.union(a, b);
+                    }
+                }
+            }
+        }
+        for band in 0..band_count {
+            let key = (band, hamming_band(phashes[a] as u64, band, band_count));
+            buckets.entry(key).or_default().push(a);
+        }
+    }
+    Ok(())
+}
+
+fn hamming_band(hash: u64, band: usize, band_count: usize) -> u64 {
+    let base_width = 64 / band_count;
+    let wider_bands = 64 % band_count;
+    let width = base_width + usize::from(band < wider_bands);
+    let offset = band * base_width + band.min(wider_bands);
+    let mask = if width == 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
+    (hash >> offset) & mask
+}
+
+/// The relaxed threshold applies only to pairs close in capture time. Sorting
+/// known timestamps turns that rule into a sliding window; undated or distant
+/// pairs were already covered exactly by the strict Hamming search.
+fn union_burst_neighbors(
+    phashes: &[i64],
+    times_ms: &[Option<i64>],
+    strict_distance: u32,
+    burst_distance: u32,
+    gap_ms: i64,
+    uf: &mut UnionFind,
+    comparisons: &mut usize,
+    stop: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let distance = strict_distance.max(burst_distance);
+    if distance <= strict_distance {
+        return Ok(());
+    }
+    let mut timed: Vec<(i64, usize)> = times_ms
+        .iter()
+        .enumerate()
+        .filter_map(|(index, time)| time.map(|value| (value, index)))
+        .collect();
+    timed.sort_unstable();
+    let mut left = 0usize;
+    for right in 0..timed.len() {
+        if right % 1024 == 0 && stop() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        while timed[right].0 - timed[left].0 > gap_ms {
+            left += 1;
+        }
+        for prior in left..right {
+            checked_comparison(comparisons, stop)?;
+            let a = timed[prior].1;
+            let b = timed[right].1;
+            if hamming(phashes[a], phashes[b]) <= distance {
+                uf.union(a, b);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn checked_comparison(comparisons: &mut usize, stop: &dyn Fn() -> bool) -> Result<(), String> {
+    *comparisons += 1;
+    if *comparisons % 1024 == 0 && stop() {
+        Err(crate::scanner::CANCELLED.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 /// Visual clustering within a bucket, with a BOUNDED DIAMETER.
@@ -106,8 +225,8 @@ fn cluster_by_appearance_cancellable(
     let n = phashes.len();
     debug_assert_eq!(n, times_ms.len());
     let gap_ms = i64::from(burst_gap_seconds) * 1000;
-    // The per-PAIR allowance is the whole time-gating mechanism: burst-close
-    // pairs may differ more visually, everything else keeps the strict line.
+    // The per-pair allowance remains the diameter/refinement rule after exact
+    // candidate generation has built the connected components.
     let allowed = |a: usize, b: usize| -> u32 {
         match (times_ms[a], times_ms[b]) {
             (Some(ta), Some(tb)) if (ta - tb).abs() <= gap_ms => {
@@ -118,17 +237,17 @@ fn cluster_by_appearance_cancellable(
     };
     let mut uf = UnionFind::new(n);
     let mut comparisons = 0usize;
-    for a in 0..n {
-        for b in (a + 1)..n {
-            comparisons += 1;
-            if comparisons % 1024 == 0 && stop() {
-                return Err(crate::scanner::CANCELLED.to_string());
-            }
-            if hamming(phashes[a], phashes[b]) <= allowed(a, b) {
-                uf.union(a, b);
-            }
-        }
-    }
+    union_strict_neighbors(phashes, strict_distance, &mut uf, &mut comparisons, stop)?;
+    union_burst_neighbors(
+        phashes,
+        times_ms,
+        strict_distance,
+        burst_distance,
+        gap_ms,
+        &mut uf,
+        &mut comparisons,
+        stop,
+    )?;
     let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in 0..n {
         let root = uf.find(i);
@@ -208,6 +327,13 @@ struct Candidate {
     time_ms: Option<i64>,
     phash: i64,
 }
+
+const SIMILARITY_CANDIDATES_SQL: &str = "SELECT c.hash,
+            COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''),
+            l.resolved_utc_ms, c.phash
+     FROM logical_contents l
+     JOIN contents c ON c.hash = l.content_hash
+     WHERE l.kind = 'image' AND c.phash IS NOT NULL";
 
 /// Rebuilds every similar group from the current index. Only images with a
 /// perceptual hash participate; the logical item's time is the earliest among
@@ -341,15 +467,7 @@ fn rebuild_groups_with_exclusions(
     stop: &dyn Fn() -> bool,
 ) -> Result<GroupStats, String> {
     let mut stmt = conn
-        .prepare(
-            "SELECT c.hash, \
-             COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''), \
-             MIN(p.resolved_utc_ms), c.phash \
-             FROM contents c JOIN paths p ON p.content_hash = c.hash \
-             WHERE c.kind = 'image' AND c.phash IS NOT NULL \
-               AND p.missing = 0 AND p.companion_of IS NULL \
-             GROUP BY c.hash",
-        )
+        .prepare(SIMILARITY_CANDIDATES_SQL)
         .map_err(|e| e.to_string())?;
     let candidates: Vec<Candidate> = stmt
         .query_map([], |r| {
@@ -381,9 +499,9 @@ fn rebuild_groups_with_exclusions(
         if stop() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
-        // Quadratic within the bucket — integer work over in-memory rows, no
-        // file reads. Chained components split around leaders (see
-        // cluster_by_appearance).
+        // Exact strict Hamming candidates plus the relaxed capture-time
+        // window stay in memory and read no files. Chained components split
+        // around leaders (see cluster_by_appearance).
         let mut bucket_groups: Vec<Vec<usize>> = Vec::new();
         let phashes: Vec<i64> = indices.iter().map(|&i| candidates[i].phash).collect();
         let times: Vec<Option<i64>> = indices.iter().map(|&i| candidates[i].time_ms).collect();
@@ -538,4 +656,60 @@ pub fn group_members(conn: &Connection, group_id: i64) -> Result<Vec<String>, St
         .filter_map(|r| r.ok())
         .collect();
     Ok(members)
+}
+
+// EXCEPTION (tests-folder convention): this pins the private candidate SQL
+// used by the shipped rebuild rather than duplicating it in an integration
+// test that could silently diverge.
+#[cfg(test)]
+mod candidate_query_tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn candidate_load_uses_the_logical_projection_without_regrouping_paths() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-similarity-plan-")
+            .tempdir()
+            .unwrap();
+        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let mut statement = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {SIMILARITY_CANDIDATES_SQL}"))
+            .unwrap();
+        let details: Vec<String> = statement
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+
+        assert!(
+            details.iter().any(|line| line.contains("logical_contents")),
+            "similarity lost the maintained logical source: {details:?}"
+        );
+        assert!(
+            details.iter().all(|line| !line.contains("paths")),
+            "similarity regressed to physical-path grouping: {details:?}"
+        );
+        assert!(
+            details.iter().all(|line| !line.contains("TEMP B-TREE")),
+            "similarity candidate loading reintroduced sorting/grouping: {details:?}"
+        );
+    }
+
+    #[test]
+    fn sparse_candidate_construction_remains_cancellable() {
+        let phashes: Vec<i64> = (0..10_000).map(|value| value * 0x1_0001).collect();
+        let times = vec![None; phashes.len()];
+        let polls = Cell::new(0usize);
+        let stopped = || {
+            polls.set(polls.get() + 1);
+            polls.get() >= 3
+        };
+
+        let error = cluster_by_appearance_cancellable(&phashes, &times, 4, 10, 90, 2, &stopped)
+            .unwrap_err();
+        assert_eq!(error, crate::scanner::CANCELLED);
+        assert!(polls.get() >= 3);
+    }
 }
