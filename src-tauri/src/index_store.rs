@@ -22,7 +22,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 1;
+const SCHEMA_REVISION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -214,6 +214,8 @@ CREATE TABLE IF NOT EXISTS issues (
   last_seen_utc  TEXT NOT NULL,
   UNIQUE (kind, path)
 );
+CREATE INDEX IF NOT EXISTS idx_issues_first_seen
+  ON issues (first_seen_utc, id);
 
 -- Fixed-class output receipts, never jobs. NULL means the class is pending;
 -- ready and failed are durable results, while running/paused/waiting belong

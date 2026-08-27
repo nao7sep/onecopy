@@ -694,16 +694,78 @@ pub fn item_detail(
 
 /// The directories that contributed files to one (kind, month) section — the
 /// scoped-rescan unit: re-stat exactly these, never the whole roots.
+fn section_dirs_sql(has_bounds: bool) -> String {
+    let time_clause = if has_bounds {
+        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
+    } else {
+        "AND l.resolved_utc_ms IS NULL"
+    };
+    format!(
+        "SELECT DISTINCT p.dir_path
+         FROM logical_contents l
+         JOIN paths p ON p.content_hash = l.content_hash
+         WHERE l.kind = ?1 {time_clause}
+           AND p.missing = 0 AND p.companion_of IS NULL"
+    )
+}
+
+fn unhashed_other_section_dirs_sql(has_bounds: bool) -> String {
+    let time_clause = if has_bounds {
+        "AND resolved_utc_ms >= ?1 AND resolved_utc_ms < ?2"
+    } else {
+        "AND resolved_utc_ms IS NULL"
+    };
+    format!(
+        "SELECT DISTINCT dir_path
+         FROM paths INDEXED BY idx_paths_unhashed_other_section
+         WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+           AND kind NOT IN ('image', 'video') {time_clause}"
+    )
+}
+
 pub fn section_dirs(
     conn: &Connection,
     kind: &str,
     month: &str,
     display_tz: Tz,
 ) -> Result<Vec<String>, String> {
-    let mut dirs: Vec<String> = section_items(conn, kind, month, display_tz)?
-        .into_iter()
-        .flat_map(|item| item.dir_paths)
-        .collect();
+    if !matches!(kind, "image" | "video" | "other") {
+        return Err(format!("bad section kind: {kind}"));
+    }
+    let bounds = month_bounds(month, display_tz)?;
+    let sql = section_dirs_sql(bounds.is_some());
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut dirs: Vec<String> = match bounds {
+        Some((start, end)) => statement
+            .query_map(rusqlite::params![kind, start, end], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?,
+        None => statement
+            .query_map([kind], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?,
+    };
+    drop(statement);
+
+    if kind == "other" {
+        let sql = unhashed_other_section_dirs_sql(bounds.is_some());
+        let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let other_dirs: Vec<String> = match bounds {
+            Some((start, end)) => statement
+                .query_map(rusqlite::params![start, end], |row| row.get(0))
+                .map_err(|error| error.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?,
+            None => statement
+                .query_map([], |row| row.get(0))
+                .map_err(|error| error.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?,
+        };
+        dirs.extend(other_dirs);
+    }
     dirs.sort();
     dirs.dedup();
     Ok(dirs)
@@ -723,6 +785,10 @@ pub struct IssueRow {
     pub recovery: Option<crate::derived_state::IssueRecovery>,
 }
 
+const ISSUES_PAGE_SQL: &str =
+    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc FROM issues
+     ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
+
 /// OLDEST first (the developer's call — the longest-standing condition leads),
 /// capped; the count comes with it for the status-bar element.
 pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), String> {
@@ -730,10 +796,7 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
         .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare(
-            "SELECT id, path, kind, message, first_seen_utc, last_seen_utc FROM issues \
-             ORDER BY first_seen_utc ASC, id ASC LIMIT ?1",
-        )
+        .prepare(ISSUES_PAGE_SQL)
         .map_err(|e| e.to_string())?;
     let mut rows: Vec<IssueRow> = stmt
         .query_map([limit], |r| {
@@ -862,6 +925,45 @@ mod tests {
     }
 
     #[test]
+    fn section_repair_seeks_directly_to_directory_facts() {
+        let (_dir, conn) = seeded();
+        let plans = [
+            (
+                section_dirs_sql(true),
+                vec![
+                    rusqlite::types::Value::Text("image".to_string()),
+                    0.into(),
+                    1.into(),
+                ],
+                vec!["idx_logical_contents_section", "idx_paths_content_hash"],
+            ),
+            (
+                unhashed_other_section_dirs_sql(true),
+                vec![0.into(), 1.into()],
+                vec!["idx_paths_unhashed_other_section"],
+            ),
+        ];
+        for (sql, params, expected_indexes) in plans {
+            let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let details: Vec<String> = statement
+                .query_map(rusqlite::params_from_iter(params), |row| row.get(3))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            for expected in expected_indexes {
+                assert!(
+                    details.iter().any(|line| line.contains(expected)),
+                    "section repair lost {expected}: {details:?}"
+                );
+            }
+            assert!(
+                details.iter().all(|line| !line.starts_with("SCAN p")),
+                "section repair regressed to a whole paths scan: {details:?}"
+            );
+        }
+    }
+
+    #[test]
     fn sidebar_count_queries_seek_month_and_edge_indexes() {
         let (_dir, conn) = seeded();
         let plans = [
@@ -906,6 +1008,29 @@ mod tests {
                 "sidebar count query introduced temporary sorting: {details:?}"
             );
         }
+    }
+
+    #[test]
+    fn issues_page_seeks_oldest_diagnostics_without_sorting() {
+        let (_dir, conn) = seeded();
+        let mut statement = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {ISSUES_PAGE_SQL}"))
+            .unwrap();
+        let details: Vec<String> = statement
+            .query_map([500], |row| row.get(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            details
+                .iter()
+                .any(|line| line.contains("idx_issues_first_seen")),
+            "Issues page lost its oldest-first index: {details:?}"
+        );
+        assert!(
+            details.iter().all(|line| !line.contains("USE TEMP B-TREE")),
+            "Issues page reintroduced whole-table sorting: {details:?}"
+        );
     }
 
     #[test]

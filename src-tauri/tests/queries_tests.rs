@@ -279,6 +279,15 @@ fn section_dirs_matches_the_directories_of_section_items() {
     seed_at(&conn, "hfeb", "/root/feb", "a.jpg", 1_769_889_600_000);
     // 2026-01-31T10:00:00Z == 2026-01-31T19:00 JST → January in Tokyo.
     seed_at(&conn, "hjan", "/root/jan", "b.jpg", 1_769_853_600_000);
+    // Rescan consumes filesystem identity, not display text. Windows stores
+    // the verbatim spelling and must receive it back unchanged.
+    seed_at(
+        &conn,
+        "hwin",
+        r"\\?\C:\photos",
+        "c.jpg",
+        1_769_853_600_000,
+    );
 
     for month in ["2026-01", "2026-02"] {
         let items = queries::section_items(&conn, "image", month, tz).unwrap();
@@ -306,6 +315,40 @@ fn section_dirs_matches_the_directories_of_section_items() {
         queries::section_items(&conn, "image", "2026-02", tz).unwrap().len(),
         1,
         "the Tokyo boundary puts exactly one item in February"
+    );
+}
+
+#[test]
+fn section_dirs_cover_hashed_and_unhashed_other_files_when_dated_or_undated() {
+    let conn = db();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, kind, byte_size)
+           VALUES ('dated-other', 'other', 10), ('undated-other', 'other', 10);
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms,
+            resolved_source)
+           VALUES
+             ('/hashed/dated.bin', '/hashed', 'dated.bin', 'other',
+              'dated-other', 1562760000000, 'filesystem'),
+             ('/hashed-undated/undated.bin', '/hashed-undated', 'undated.bin',
+              'other', 'undated-other', NULL, 'undated'),
+             ('/unhashed/dated.pdf', '/unhashed', 'dated.pdf', 'other', NULL,
+              1562760000000, 'filesystem'),
+             ('/unhashed-undated/undated.pdf', '/unhashed-undated',
+              'undated.pdf', 'other', NULL, NULL, 'undated');",
+    )
+    .unwrap();
+
+    assert_eq!(
+        queries::section_dirs(&conn, "other", "2019-07", chrono_tz::UTC).unwrap(),
+        vec!["/hashed".to_string(), "/unhashed".to_string()]
+    );
+    assert_eq!(
+        queries::section_dirs(&conn, "other", "undated", chrono_tz::UTC).unwrap(),
+        vec![
+            "/hashed-undated".to_string(),
+            "/unhashed-undated".to_string()
+        ]
     );
 }
 

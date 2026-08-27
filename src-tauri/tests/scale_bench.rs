@@ -119,6 +119,74 @@ fn section_counts_across_one_million_logical_items() {
 
 #[test]
 #[ignore]
+fn first_issues_page_among_one_million_current_diagnostics() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-issues-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO issues
+           (path, kind, message, first_seen_utc, last_seen_utc)
+         SELECT printf('/issue-%07d', n), 'read-error', 'synthetic',
+                printf('2026-01-%07d', 999999 - n),
+                printf('2026-02-%07d', n)
+         FROM seq;
+         COMMIT;",
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let (total, rows) = queries::issues(&conn, 500).unwrap();
+    eprintln!(
+        "opened 500 of one million current Issues in {:?}",
+        started.elapsed()
+    );
+    assert_eq!(total, 1_000_000);
+    assert_eq!(rows.len(), 500);
+}
+
+#[test]
+#[ignore]
+fn section_repair_collects_directories_without_materializing_one_million_items() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-section-dirs-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, kind, missing)
+         VALUES (1, '/representative', '/', 'representative', 'other', 1);
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO contents (hash, byte_size, kind)
+         SELECT printf('repair-section-%07d', n), 1, 'image' FROM seq;
+         INSERT INTO logical_contents
+           (content_hash, kind, resolved_utc_ms, representative_path_id,
+            live_copy_count, names_differ)
+         SELECT hash, 'image', 1735689600000, 1, 1, 0 FROM contents;
+         COMMIT;",
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let dirs = queries::section_dirs(&conn, "image", "2025-01", chrono_tz::UTC).unwrap();
+    eprintln!(
+        "collected section repair directories across one million items in {:?}",
+        started.elapsed()
+    );
+    assert!(dirs.is_empty());
+}
+
+#[test]
+#[ignore]
 fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-bench-derived-pages-")
