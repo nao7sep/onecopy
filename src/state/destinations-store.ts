@@ -11,6 +11,7 @@ export interface DirEntry {
   name: string;
   path: string;
   hasChildren: boolean;
+  isEmpty: boolean;
 }
 
 interface DestinationsState {
@@ -39,24 +40,12 @@ interface DestinationsState {
   init: (config: Record<string, unknown> | null) => void;
   toggleExpand: (path: string) => Promise<void>;
   refreshNode: (path: string) => Promise<void>;
-  /** Re-lists every expanded node (and re-probes emptiness) — the pane calls
+  /** Re-lists every expanded node — the pane calls
    * this on mount and when the app window regains focus, so a folder created
    * in Finder/Explorer appears without a restart. */
   refreshExpanded: () => Promise<void>;
   createFolder: (parent: string, name: string) => Promise<void>;
   deleteFolder: (path: string, parent: string) => Promise<void>;
-}
-
-async function probeEmptiness(paths: string[]): Promise<Record<string, boolean>> {
-  const result: Record<string, boolean> = {};
-  for (const path of paths) {
-    try {
-      result[path] = await invoke<boolean>("dir_is_empty", { path });
-    } catch {
-      result[path] = false;
-    }
-  }
-  return result;
 }
 
 export const useDestinationsStore = create<DestinationsState>((set, get) => ({
@@ -97,7 +86,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   refreshNode: async (path) => {
     try {
       const entries = await invoke<DirEntry[]>("list_subdirs", { path });
-      const emptiness = await probeEmptiness(entries.map((e) => e.path));
+      const emptiness = Object.fromEntries(entries.map((entry) => [entry.path, entry.isEmpty]));
       set({
         children: { ...get().children, [path]: entries },
         emptiness: { ...get().emptiness, ...emptiness },

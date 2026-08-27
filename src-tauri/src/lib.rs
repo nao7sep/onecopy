@@ -418,12 +418,17 @@ struct DirEntry {
     name: String,
     path: String,
     has_children: bool,
+    is_empty: bool,
 }
 
 #[tauri::command(async)]
 fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
+    list_subdirs_at(std::path::Path::new(&path))
+}
+
+fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
     let mut entries: Vec<DirEntry> = Vec::new();
-    let read = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
+    let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     for entry in read.flatten() {
         let Ok(file_type) = entry.file_type() else { continue };
         if !file_type.is_dir() {
@@ -434,19 +439,60 @@ fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
             continue; // dotfolders (incl. .onecopy-trash) stay out of the tree
         }
         let child_path = entry.path();
-        let has_children = std::fs::read_dir(&child_path)
-            .map(|mut children| {
-                children.any(|c| c.as_ref().is_ok_and(|e| e.file_type().is_ok_and(|t| t.is_dir())))
-            })
-            .unwrap_or(false);
+        let (has_children, is_empty) = child_directory_facts(&child_path);
         entries.push(DirEntry {
             name,
             path: child_path.to_string_lossy().to_string(),
             has_children,
+            is_empty,
         });
     }
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(entries)
+}
+
+fn child_directory_facts(path: &std::path::Path) -> (bool, bool) {
+    let Ok(children) = std::fs::read_dir(path) else {
+        return (false, false);
+    };
+    let mut is_empty = true;
+    for child in children {
+        is_empty = false;
+        if child.is_ok_and(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir())) {
+            return (true, false);
+        }
+    }
+    (false, is_empty)
+}
+
+// EXCEPTION (tests-folder convention): destination listing is a private Tauri
+// command, so its filesystem projection is pinned beside the helper it calls.
+#[cfg(test)]
+mod destination_listing_tests {
+    use super::*;
+
+    #[test]
+    fn one_listing_projects_children_and_emptiness_together() {
+        let root = tempfile::Builder::new()
+            .prefix("onecopy-destinations-")
+            .tempdir()
+            .unwrap();
+        std::fs::create_dir(root.path().join("empty")).unwrap();
+        std::fs::create_dir(root.path().join("files-only")).unwrap();
+        std::fs::write(root.path().join("files-only/item.txt"), b"item").unwrap();
+        std::fs::create_dir_all(root.path().join("nested/child")).unwrap();
+        std::fs::create_dir(root.path().join(".hidden")).unwrap();
+
+        let rows = list_subdirs_at(root.path()).unwrap();
+        let facts = |name: &str| {
+            let row = rows.iter().find(|row| row.name == name).unwrap();
+            (row.has_children, row.is_empty)
+        };
+        assert_eq!(facts("empty"), (false, true));
+        assert_eq!(facts("files-only"), (false, false));
+        assert_eq!(facts("nested"), (true, false));
+        assert!(rows.iter().all(|row| row.name != ".hidden"));
+    }
 }
 
 // Creates a subfolder under a tree node. The name must be case-insensitively
@@ -497,13 +543,6 @@ fn delete_empty_dir(path: String) -> Result<(), String> {
         || std::fs::remove_dir(&path).map_err(|e| e.to_string()),
         |_| json!({}),
     )
-}
-
-// Is this directory empty? Drives the tree's distinct empty-folder rendering.
-#[tauri::command(async)]
-fn dir_is_empty(path: String) -> Result<bool, String> {
-    let mut read = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
-    Ok(read.next().is_none())
 }
 
 // Opens a subdirectory of the app's data root in the OS file manager (the
@@ -1482,7 +1521,6 @@ pub fn run() {
             list_subdirs,
             create_subdir,
             delete_empty_dir,
-            dir_is_empty,
             reveal_data_subdir,
             open_item_externally,
             note_user_activity,

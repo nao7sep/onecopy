@@ -193,8 +193,9 @@ describe("a folder created inside the app is immediately usable", () => {
     // like a tree". The folder existed on disk; the tree could not show it.
     mockCommands({
       create_subdir: () => "/dest/photos/2026",
-      list_subdirs: () => [{ name: "2026", path: "/dest/photos/2026", hasChildren: false }],
-      dir_is_empty: () => true,
+      list_subdirs: () => [
+        { name: "2026", path: "/dest/photos/2026", hasChildren: false, isEmpty: true },
+      ],
     });
     useDestinationsStore.setState({
       roots: ["/dest/photos"],
@@ -220,7 +221,12 @@ describe("expandability reads the live children map", () => {
     // ...but the node has since been listed itself and HAS one.
     const children = {
       "/dest/photos/2026": [
-        { name: "spain", path: "/dest/photos/2026/spain", hasChildren: false },
+        {
+          name: "spain",
+          path: "/dest/photos/2026/spain",
+          hasChildren: false,
+          isEmpty: true,
+        },
       ],
     };
     expect(nodeHasChildren(entry, children)).toBe(true);
