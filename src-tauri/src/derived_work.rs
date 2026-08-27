@@ -302,7 +302,7 @@ pub fn ensure_preview(
         hash,
         result.as_deref().unwrap_or(hash),
     );
-    let _ = app.emit("derived://issues", json!({}));
+    notify_issues(app);
     result
 }
 
@@ -357,7 +357,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             }
             emit_progress(app, WorkClass::Previews, None);
             notify_image_changes(app, &conn, projection, &image.changes);
-            let _ = app.emit("derived://issues", json!({}));
+            notify_issues(app);
             priority_done += 1;
         } else {
             let video = with_active(app, WorkClass::Previews, || {
@@ -376,7 +376,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             if video.derived + video.failed > 0 {
                 emit_progress(app, WorkClass::Previews, None);
                 notify_video_changes(app, &conn, projection, &video.changed_hashes);
-                let _ = app.emit("derived://issues", json!({}));
+                notify_issues(app);
                 priority_done += 1;
             }
         }
@@ -412,7 +412,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         }
         emit_progress(app, WorkClass::Previews, None);
         notify_image_changes(app, &conn, projection, &image.changes);
-        let _ = app.emit("derived://issues", json!({}));
+        notify_issues(app);
         if index + 1 == IMAGE_BATCH {
             image_budget_full = true;
         }
@@ -442,7 +442,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         }
         emit_progress(app, WorkClass::Previews, None);
         notify_video_changes(app, &conn, projection, &video.changed_hashes);
-        let _ = app.emit("derived://issues", json!({}));
+        notify_issues(app);
         if index + 1 == VIDEO_BATCH {
             video_budget_full = true;
         }
@@ -526,6 +526,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             crate::video::StripDeriveStats::default()
         };
         if stats.attempted > 0 {
+            notify_issues(app);
             if priority.is_empty() {
                 cursors.snapshots.after_hash = stats.last_attempted_hash;
             }
@@ -560,6 +561,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             })?
             .unwrap_or_default();
             if step.attempted_hash.is_some() {
+                notify_issues(app);
                 if priority.is_empty() {
                     cursors.transcripts.after_hash = step.attempted_hash;
                 }
@@ -602,6 +604,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                 Err(error) => return Err(error),
             };
             if stats.attempted > 0 {
+                notify_issues(app);
                 if priority.is_empty() {
                     cursors.faces.after_hash = stats.last_attempted_hash;
                 }
@@ -686,6 +689,13 @@ fn emit_progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) 
     record_progress(app, class, counts);
 }
 
+/// Derived failures are current state in SQLite. One invalidation per
+/// attempted batch keeps every frontend surface on that authority without a
+/// polling loop or class-specific issue store.
+fn notify_issues(app: &AppHandle) {
+    let _ = app.emit("derived://issues", json!({}));
+}
+
 pub(crate) fn pause_for_resource_safety(
     app: &AppHandle,
     conn: &Connection,
@@ -699,7 +709,7 @@ pub(crate) fn pause_for_resource_safety(
         &format!("resource-limit-{}", class.id()),
         crate::resource_limits::safety_message(error),
     )?;
-    let _ = app.emit("derived://issues", json!({}));
+    notify_issues(app);
     Ok(())
 }
 
