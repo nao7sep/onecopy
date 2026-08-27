@@ -104,6 +104,8 @@ describe("what the status bar shows", () => {
           bytesDone: 1024,
           bytesTotal: 2048,
           failures: 0,
+          currentFileBytesDone: null,
+          currentFileBytesTotal: null,
           nextPhase: "complete",
         },
       },

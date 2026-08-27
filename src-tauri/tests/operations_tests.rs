@@ -1,12 +1,12 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
-use rusqlite::Connection;
-use onecopy_lib::preview::CachePaths;
-use onecopy_lib::operations::*;
-use onecopy_lib::index_store;
-use onecopy_lib::scanner::{self, ScanLists};
 use onecopy_lib::extensions;
+use onecopy_lib::index_store;
+use onecopy_lib::operations::*;
+use onecopy_lib::preview::CachePaths;
+use onecopy_lib::scanner::{self, ScanLists};
+use rusqlite::Connection;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -106,12 +106,11 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
         .expect("one day folder");
-    let manifest: Vec<serde_json::Value> =
-        std::fs::read_to_string(day_dir.join("manifest.jsonl"))
-            .expect("a manifest was written")
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
+    let manifest: Vec<serde_json::Value> = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+        .expect("a manifest was written")
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     assert_eq!(manifest.len(), 3, "one manifest line per trashed file");
     for line in &manifest {
         let stored = line["storedPath"].as_str().expect("storedPath");
@@ -167,9 +166,18 @@ fn delete_batch_plans_once_and_cancels_only_between_logical_units() {
         &f.app_root,
         &f.cache,
         &[
-            ItemIdentity { hash: Some(a.clone()), path_id: None },
-            ItemIdentity { hash: Some(a), path_id: None },
-            ItemIdentity { hash: Some(b), path_id: None },
+            ItemIdentity {
+                hash: Some(a.clone()),
+                path_id: None,
+            },
+            ItemIdentity {
+                hash: Some(a),
+                path_id: None,
+            },
+            ItemIdentity {
+                hash: Some(b),
+                path_id: None,
+            },
         ],
         DeleteMode::Permanent,
         &|| cancel.get(),
@@ -187,15 +195,25 @@ fn delete_batch_plans_once_and_cancels_only_between_logical_units() {
 
     assert!(outcome.cancelled);
     assert_eq!(outcome.items.len(), 1, "the duplicate request is one unit");
-    assert_eq!(outcome.files_total, 3, "primary, companion, and second item");
+    assert_eq!(
+        outcome.files_total, 3,
+        "primary, companion, and second item"
+    );
     assert_eq!(outcome.bytes_total, 60);
     assert_eq!(outcome.deleted_files, 2, "cancellation never splits a pair");
     assert!(!f.root.join("a.jpg").exists());
     assert!(!f.root.join("a.xmp").exists());
-    assert!(f.root.join("b.jpg").exists(), "the unstarted unit is untouched");
+    assert!(
+        f.root.join("b.jpg").exists(),
+        "the unstarted unit is untouched"
+    );
     assert!(progress.borrow().iter().any(|snapshot| matches!(
         snapshot,
-        DeleteBatchProgress::Planning { items_done: 2, items_total: 2, .. }
+        DeleteBatchProgress::Planning {
+            items_done: 2,
+            items_total: 2,
+            ..
+        }
     )));
 }
 
@@ -393,13 +411,16 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
         .expect("one day folder");
-    let manifest: Vec<serde_json::Value> =
-        std::fs::read_to_string(day_dir.join("manifest.jsonl"))
-            .expect("a manifest was written")
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-    assert_eq!(manifest.len(), 4, "every trashed original has a manifest line");
+    let manifest: Vec<serde_json::Value> = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+        .expect("a manifest was written")
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        manifest.len(),
+        4,
+        "every trashed original has a manifest line"
+    );
     for line in &manifest {
         let stored = line["storedPath"].as_str().expect("storedPath");
         assert!(
@@ -414,6 +435,157 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
         .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 0, "inbox-zero: nothing remains in the index");
+}
+
+#[test]
+fn destination_batch_reserves_colliding_names_before_publishing_either_item() {
+    let f = fixture("batch-name-collision");
+    for (dir, bytes) in [("a", b"first".as_slice()), ("b", b"second".as_slice())] {
+        std::fs::create_dir_all(f.root.join(dir)).unwrap();
+        std::fs::write(f.root.join(dir).join("same.jpg"), bytes).unwrap();
+    }
+    scan(&f);
+    let mut stmt = f
+        .conn
+        .prepare("SELECT DISTINCT content_hash FROM paths ORDER BY content_hash")
+        .unwrap();
+    let items = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|hash| ItemIdentity {
+            hash: Some(hash.unwrap()),
+            path_id: None,
+        })
+        .collect::<Vec<_>>();
+    drop(stmt);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.items.len(), 2);
+    assert_eq!(outcome.exported, 0);
+    assert_eq!(outcome.conflicts.len(), 2);
+    assert!(!dest.join("same.jpg").exists());
+}
+
+#[test]
+fn cancellation_during_private_streaming_publishes_nothing() {
+    let f = fixture("batch-private-cancel");
+    std::fs::write(f.root.join("large.jpg"), vec![7u8; 2 * 1024 * 1024]).unwrap();
+    scan(&f);
+    let hash: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let item = ItemIdentity {
+        hash: Some(hash),
+        path_id: None,
+    };
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let stop = std::cell::Cell::new(false);
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item],
+        &dest,
+        MoveOutMode::MoveDeleteRest,
+        &|| stop.get(),
+        |progress| {
+            if matches!(
+                progress,
+                MoveBatchProgress::Delivering {
+                    current_file_bytes_done: Some(0),
+                    ..
+                }
+            ) {
+                stop.set(true);
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(outcome.cancelled);
+    assert!(
+        outcome.items.is_empty(),
+        "the private unit remains unstarted"
+    );
+    assert!(f.root.join("large.jpg").exists());
+    assert!(!dest.join("large.jpg").exists());
+    assert_eq!(
+        std::fs::read_dir(&dest).unwrap().count(),
+        0,
+        "private stage cleaned"
+    );
+}
+
+#[test]
+fn cancellation_after_publication_waits_for_post_action_then_stops_between_items() {
+    let f = fixture("batch-commit-boundary");
+    for name in ["a.jpg", "b.jpg"] {
+        std::fs::write(f.root.join(name), name.as_bytes()).unwrap();
+    }
+    scan(&f);
+    let mut stmt = f
+        .conn
+        .prepare("SELECT content_hash FROM paths ORDER BY file_name")
+        .unwrap();
+    let items = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|hash| ItemIdentity {
+            hash: Some(hash.unwrap()),
+            path_id: None,
+        })
+        .collect::<Vec<_>>();
+    drop(stmt);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let stop = std::cell::Cell::new(false);
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &dest,
+        MoveOutMode::MoveDeleteRest,
+        &|| stop.get(),
+        |progress| {
+            if matches!(
+                progress,
+                MoveBatchProgress::Delivering { files_done: 1, .. }
+            ) {
+                stop.set(true);
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(outcome.cancelled);
+    assert_eq!(outcome.items.len(), 1, "only the committed unit retires");
+    assert!(dest.join("a.jpg").exists());
+    assert!(
+        !f.root.join("a.jpg").exists(),
+        "post-action completed despite stop"
+    );
+    assert!(!dest.join("b.jpg").exists());
+    assert!(f.root.join("b.jpg").exists(), "next unit stayed untouched");
 }
 
 #[test]
@@ -495,7 +667,10 @@ fn conflicting_destination_blocks_and_withholds_the_post_action() {
     .unwrap();
     assert_eq!(outcome.conflicts.len(), 1);
     assert_eq!(outcome.exported, 0);
-    assert_eq!(outcome.post_action.deleted_files, 0, "no destructive follow-up");
+    assert_eq!(
+        outcome.post_action.deleted_files, 0,
+        "no destructive follow-up"
+    );
     assert!(f.root.join("clash.jpg").exists(), "originals untouched");
     assert_eq!(
         std::fs::read(dest.join("clash.jpg")).unwrap(),
@@ -661,11 +836,8 @@ fn companion_copy_failure_withholds_the_post_action() {
     // it is the failure the outcome could not previously express at all.
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            f.root.join("x.arw"),
-            std::fs::Permissions::from_mode(0o000),
-        )
-        .unwrap();
+        std::fs::set_permissions(f.root.join("x.arw"), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
     }
 
     let hash: String = f
@@ -694,6 +866,10 @@ fn companion_copy_failure_withholds_the_post_action() {
     assert!(
         !outcome.undelivered.is_empty(),
         "an undeliverable companion must be reported, not silently dropped"
+    );
+    assert!(
+        !dest.join("x.jpg").exists(),
+        "the verified primary remains private when its companion cannot stage"
     );
     assert!(f.root.join("x.jpg").exists(), "primary must survive");
     assert!(f.root.join("x.arw").exists(), "the RAW must survive");
@@ -780,15 +956,14 @@ fn copy_count_matches_the_rows_a_delete_targets() {
             |r| r.get(0),
         )
         .unwrap();
-    let items =
-        onecopy_lib::queries::section_items(
-            &f.conn,
-            "image",
-            "undated",
-            chrono_tz::Tz::UTC,
-            item_projection(),
-        )
-            .unwrap();
+    let items = onecopy_lib::queries::section_items(
+        &f.conn,
+        "image",
+        "undated",
+        chrono_tz::Tz::UTC,
+        item_projection(),
+    )
+    .unwrap();
     let shown = items
         .iter()
         .find(|i| i.hash.as_deref() == Some(hash.as_str()))
@@ -843,15 +1018,14 @@ fn a_shared_hash_split_across_paired_and_unpaired_rows_still_agrees() {
         .unwrap();
     assert_eq!(paired, 1, "exactly one of the two ARWs pairs");
 
-    let items =
-        onecopy_lib::queries::section_items(
-            &f.conn,
-            "other",
-            "undated",
-            chrono_tz::Tz::UTC,
-            item_projection(),
-        )
-            .unwrap();
+    let items = onecopy_lib::queries::section_items(
+        &f.conn,
+        "other",
+        "undated",
+        chrono_tz::Tz::UTC,
+        item_projection(),
+    )
+    .unwrap();
     let badge = items
         .iter()
         .find(|i| i.hash.as_deref() == Some(raw_hash.as_str()))
@@ -916,7 +1090,11 @@ fn unhashed_other_files_move_out_and_conflict_correctly_by_path_id() {
         assert_eq!(outcome.conflicts.len(), conflicts, "{label}: conflicts");
         assert_eq!(
             std::fs::read(dest.join("unique.bin")).unwrap(),
-            if existing.is_empty() { b"unique-payload".to_vec() } else { existing.to_vec() },
+            if existing.is_empty() {
+                b"unique-payload".to_vec()
+            } else {
+                existing.to_vec()
+            },
             "{label}: the destination holds what it should"
         );
 

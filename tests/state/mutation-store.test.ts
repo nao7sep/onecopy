@@ -15,6 +15,8 @@ const PROGRESS: MutationProgress = {
   bytesDone: 20,
   bytesTotal: 80,
   failures: 0,
+  currentFileBytesDone: null,
+  currentFileBytesTotal: null,
   nextPhase: "complete",
 };
 

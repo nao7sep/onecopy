@@ -325,86 +325,18 @@ fn display_timezone() -> chrono_tz::Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
-// Moves or copies one logical item out to a destination directory. Modes:
+// Moves or copies one ordered logical-item set to a destination directory. Modes:
 // "move-trash-rest" (plain drag), "move-delete-rest" (Shift), "copy" (Cmd/Ctrl).
 // Destinations under a configured source root are rejected — moving files into
 // a scanned directory would only re-index them.
 #[tauri::command(async)]
-fn move_item_out(
+fn move_items_out(
     app: AppHandle,
-    hash: Option<String>,
-    path_id: Option<i64>,
+    items: Vec<operations::ItemIdentity>,
     dest_dir: String,
     mode: String,
-) -> Result<operations::MoveOutOutcome, String> {
-    logging::boundary(
-        "move_item_out",
-        json!({ "hash": hash, "pathId": path_id, "destDir": dest_dir, "mode": mode }),
-        || {
-            let key = hash
-                .clone()
-                .unwrap_or_else(|| format!("path-{}", path_id.unwrap_or_default()));
-            let _media = media_use::begin(&app, &[key])?;
-            ensure_sources_present(&app)?;
-            let data_root = paths::data_root(&app)?;
-            let config = storage::read_config_for_setup(&data_root)?;
-            let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
-            let dest = std::path::Path::new(&dest_dir);
-            for source in &settings.source_dirs {
-                if path_identity::directory_is_within(dest, std::path::Path::new(source))? {
-                    return Err(format!(
-                        "destination {dest_dir} lies inside the scanned directory {source}; \
-                         move-out targets must be outside every source directory"
-                    ));
-                }
-            }
-
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache = preview::CachePaths::new(data_root.join(storage::CACHE_DIR_NAME));
-            let item = match (&hash, path_id) {
-                (Some(hash), _) => operations::ItemRef::Hash(hash),
-                (None, Some(id)) => operations::ItemRef::PathId(id),
-                (None, None) => return Err("move_item_out needs a hash or a pathId".to_string()),
-            };
-            // Same binary under DIFFERENT names (Phase 33): moving or copying
-            // delivers exactly one name, and which one lands must never be a
-            // surprise — for move-the-rest modes the other names would die
-            // with the deleted copies. Blocked core-side (the UI badges and
-            // pre-checks, but this is the authority); Reveal-per-copy is the
-            // manual resolution path. Case-insensitive: IMG.JPG and img.jpg
-            // are one name on the fleet's volumes.
-            if let Some(hash) = &hash {
-                let distinct: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(DISTINCT lower(file_name)) FROM paths \
-                         WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL",
-                        [hash],
-                        |r| r.get(0),
-                    )
-                    .map_err(|e| e.to_string())?;
-                if distinct > 1 {
-                    return Err(format!(
-                        "this item's copies carry {distinct} different names — \
-                         reveal the copies and resolve the names first"
-                    ));
-                }
-            }
-            let mode = match mode.as_str() {
-                "move-trash-rest" => operations::MoveOutMode::MoveTrashRest,
-                "move-delete-rest" => operations::MoveOutMode::MoveDeleteRest,
-                "copy" => operations::MoveOutMode::CopyKeepAll,
-                other => return Err(format!("unknown move-out mode: {other}")),
-            };
-            operations::move_out(&conn, &data_root, &cache, item, dest, mode)
-        },
-        |outcome| {
-            json!({
-                "exported": outcome.exported,
-                "skipped": outcome.skipped_identical,
-                "conflicts": outcome.conflicts.len(),
-            })
-        },
-    )
+) -> Result<operations::MoveBatchOutcome, String> {
+    mutation_runtime::move_items_out(&app, items, dest_dir, mode)
 }
 
 // Destination-tree support: immediate subdirectories of one directory (the
@@ -1697,7 +1629,7 @@ pub fn run() {
             similar_exclusions_clear,
             delete_items,
             mutation_cancel,
-            move_item_out,
+            move_items_out,
             list_subdirs,
             create_subdir,
             delete_empty_dir,

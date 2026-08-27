@@ -78,6 +78,8 @@ pub(crate) fn request_cancel(id: u64) -> bool {
 #[serde(rename_all = "kebab-case")]
 enum Kind {
     Delete,
+    DestinationCopy,
+    DestinationMove,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -85,6 +87,7 @@ enum Kind {
 enum Phase {
     Planning,
     Deleting,
+    Delivering,
     Complete,
 }
 
@@ -101,6 +104,8 @@ struct Progress {
     bytes_done: u64,
     bytes_total: u64,
     failures: u64,
+    current_file_bytes_done: Option<u64>,
+    current_file_bytes_total: Option<u64>,
     next_phase: Option<Phase>,
 }
 
@@ -180,6 +185,8 @@ pub(crate) fn delete_items(
         bytes_done: 0,
         bytes_total: 0,
         failures: 0,
+        current_file_bytes_done: None,
+        current_file_bytes_total: None,
         next_phase: Some(Phase::Deleting),
     };
     publisher.progress(&last_progress);
@@ -197,12 +204,10 @@ pub(crate) fn delete_items(
             let _media = crate::media_use::begin(app, &keys)?;
             crate::ensure_sources_present(app)?;
             let data_root = crate::paths::data_root(app)?;
-            let conn = crate::index_store::open(
-                &data_root.join(crate::storage::INDEX_DB_FILE_NAME),
-            )?;
-            let cache = crate::preview::CachePaths::new(
-                data_root.join(crate::storage::CACHE_DIR_NAME),
-            );
+            let conn =
+                crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+            let cache =
+                crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
             let mode = if permanent {
                 crate::operations::DeleteMode::Permanent
             } else {
@@ -233,6 +238,8 @@ pub(crate) fn delete_items(
                             bytes_done: 0,
                             bytes_total,
                             failures: 0,
+                            current_file_bytes_done: None,
+                            current_file_bytes_total: None,
                             next_phase: Some(Phase::Deleting),
                         },
                         crate::operations::DeleteBatchProgress::Deleting {
@@ -254,6 +261,8 @@ pub(crate) fn delete_items(
                             bytes_done,
                             bytes_total,
                             failures,
+                            current_file_bytes_done: None,
+                            current_file_bytes_total: None,
                             next_phase: Some(Phase::Complete),
                         },
                     };
@@ -287,6 +296,8 @@ pub(crate) fn delete_items(
                 },
                 bytes_total: outcome.bytes_total,
                 failures: outcome.failed_files,
+                current_file_bytes_done: None,
+                current_file_bytes_total: None,
                 next_phase: None,
             };
             publisher.done(&terminal, outcome.cancelled);
@@ -294,6 +305,184 @@ pub(crate) fn delete_items(
         Err(error) => publisher.error(operation_id, Kind::Delete, error),
     }
     result
+}
+
+pub(crate) fn move_items_out(
+    app: &AppHandle,
+    mut items: Vec<crate::operations::ItemIdentity>,
+    dest_dir: String,
+    mode: String,
+) -> Result<crate::operations::MoveBatchOutcome, String> {
+    let mode = match mode.as_str() {
+        "move-trash-rest" => crate::operations::MoveOutMode::MoveTrashRest,
+        "move-delete-rest" => crate::operations::MoveOutMode::MoveDeleteRest,
+        "copy" => crate::operations::MoveOutMode::CopyKeepAll,
+        other => return Err(format!("unknown move-out mode: {other}")),
+    };
+    let kind = if mode == crate::operations::MoveOutMode::CopyKeepAll {
+        Kind::DestinationCopy
+    } else {
+        Kind::DestinationMove
+    };
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|item| seen.insert(item.clone()));
+    let mutation = begin()?;
+    let operation_id = mutation.id();
+    let mut publisher = Publisher::new(app);
+    let mut last_progress = Progress {
+        operation_id,
+        kind,
+        phase: Phase::Planning,
+        items_done: 0,
+        items_total: items.len() as u64,
+        files_done: 0,
+        files_total: 0,
+        bytes_done: 0,
+        bytes_total: 0,
+        failures: 0,
+        current_file_bytes_done: None,
+        current_file_bytes_total: None,
+        next_phase: Some(Phase::Delivering),
+    };
+    publisher.progress(&last_progress);
+    let result = crate::logging::boundary(
+        "move_items_out",
+        json!({
+            "items": items.len(),
+            "destDir": dest_dir,
+            "mode": mode_string(mode),
+            "operationId": operation_id,
+        }),
+        || {
+            if items.is_empty() {
+                return Ok(crate::operations::MoveBatchOutcome::default());
+            }
+            let keys = items
+                .iter()
+                .map(crate::operations::ItemIdentity::media_key)
+                .collect::<Result<Vec<_>, _>>()?;
+            let _media = crate::media_use::begin(app, &keys)?;
+            crate::ensure_sources_present(app)?;
+            let data_root = crate::paths::data_root(app)?;
+            let config = crate::storage::read_config_for_setup(&data_root)?;
+            let settings = crate::scanner::settings_from_config(config.as_ref(), &data_root, 0);
+            let destination = std::path::Path::new(&dest_dir);
+            for source in &settings.source_dirs {
+                if crate::path_identity::directory_is_within(
+                    destination,
+                    std::path::Path::new(source),
+                )? {
+                    return Err(format!(
+                        "destination {dest_dir} lies inside the scanned directory {source}; move-out targets must be outside every source directory"
+                    ));
+                }
+            }
+            let conn =
+                crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+            let cache =
+                crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
+            crate::operations::move_batch(
+                &conn,
+                &data_root,
+                &cache,
+                &items,
+                destination,
+                mode,
+                &|| mutation.cancelled(),
+                |progress| {
+                    last_progress = match progress {
+                        crate::operations::MoveBatchProgress::Planning {
+                            items_done,
+                            items_total,
+                            files_total,
+                            bytes_total,
+                            current_file_bytes_done,
+                            current_file_bytes_total,
+                        } => Progress {
+                            operation_id,
+                            kind,
+                            phase: Phase::Planning,
+                            items_done,
+                            items_total,
+                            files_done: 0,
+                            files_total,
+                            bytes_done: 0,
+                            bytes_total,
+                            failures: 0,
+                            current_file_bytes_done,
+                            current_file_bytes_total,
+                            next_phase: Some(Phase::Delivering),
+                        },
+                        crate::operations::MoveBatchProgress::Delivering {
+                            items_done,
+                            items_total,
+                            files_done,
+                            files_total,
+                            bytes_done,
+                            bytes_total,
+                            failures,
+                            current_file_bytes_done,
+                            current_file_bytes_total,
+                        } => Progress {
+                            operation_id,
+                            kind,
+                            phase: Phase::Delivering,
+                            items_done,
+                            items_total,
+                            files_done,
+                            files_total,
+                            bytes_done,
+                            bytes_total,
+                            failures,
+                            current_file_bytes_done,
+                            current_file_bytes_total,
+                            next_phase: Some(Phase::Complete),
+                        },
+                    };
+                    publisher.progress(&last_progress);
+                },
+            )
+        },
+        |outcome| {
+            json!({
+                "cancelled": outcome.cancelled,
+                "items": outcome.items.len(),
+                "exported": outcome.exported,
+                "conflicts": outcome.conflicts.len(),
+                "undelivered": outcome.undelivered.len(),
+            })
+        },
+    );
+    match &result {
+        Ok(outcome) => {
+            let terminal = Progress {
+                operation_id,
+                kind,
+                phase: Phase::Complete,
+                items_done: outcome.items.len() as u64,
+                items_total: last_progress.items_total,
+                files_done: last_progress.files_done,
+                files_total: outcome.files_total,
+                bytes_done: last_progress.bytes_done,
+                bytes_total: outcome.bytes_total,
+                failures: last_progress.failures,
+                current_file_bytes_done: None,
+                current_file_bytes_total: None,
+                next_phase: None,
+            };
+            publisher.done(&terminal, outcome.cancelled);
+        }
+        Err(error) => publisher.error(operation_id, kind, error),
+    }
+    result
+}
+
+fn mode_string(mode: crate::operations::MoveOutMode) -> &'static str {
+    match mode {
+        crate::operations::MoveOutMode::MoveTrashRest => "move-trash-rest",
+        crate::operations::MoveOutMode::MoveDeleteRest => "move-delete-rest",
+        crate::operations::MoveOutMode::CopyKeepAll => "copy",
+    }
 }
 
 #[cfg(test)]

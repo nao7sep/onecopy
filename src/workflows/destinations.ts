@@ -7,15 +7,23 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useDestinationsStore } from "../state/destinations-store";
+import { useIssuesStore } from "../state/issues-store";
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 
-interface MoveOutOutcome {
+interface MoveBatchOutcome {
+  cancelled: boolean;
+  error: string | null;
   exported: number;
   skippedIdentical: number;
   conflicts: string[];
   undelivered: string[];
-  postAction: { deletedFiles: number };
+  postAction: { deletedFiles: number; failedFiles: number };
+}
+
+interface ItemIdentity {
+  hash: string | null;
+  pathId: number | null;
 }
 
 export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
@@ -48,36 +56,25 @@ export async function removeDestinationRoot(root: string): Promise<void> {
 
 export async function confirmDestinationDeleteRest(): Promise<void> {
   const pending = useDestinationsStore.getState().pendingDeleteRest;
-  if (pending === null || pending.confirmed) return;
-  useDestinationsStore.setState({
-    pendingDeleteRest: { ...pending, confirmed: true },
-  });
-  try {
-    await moveSelectionTo(
-      pending.destDir,
-      "move-delete-rest",
-      pending.keys,
-    );
-  } finally {
-    useDestinationsStore.setState({ pendingDeleteRest: null });
-  }
+  if (pending === null) return;
+  // The modal relinquishes its frozen intent before admission. A second click
+  // therefore cannot submit the same permanent batch twice; once admitted,
+  // cancellation belongs to the shared mutation activity in the footer.
+  useDestinationsStore.setState({ pendingDeleteRest: null });
+  await executeMoveBatch(pending.destDir, "move-delete-rest", pending.items);
 }
 
 export async function moveSelectionTo(
   destDir: string,
   mode: MoveMode,
-  explicitKeys?: string[],
 ): Promise<void> {
   const { items, selectedItem, selectedKeys } = useItemsStore.getState();
-  // A confirmed permanent move acts on the exact set the dialog counted.
   const keys =
-    explicitKeys !== undefined
-      ? new Set(explicitKeys)
-      : selectedKeys.size > 0
-        ? selectedKeys
-        : selectedItem !== null
-          ? new Set([selectedItem])
-          : new Set<string>();
+    selectedKeys.size > 0
+      ? selectedKeys
+      : selectedItem !== null
+        ? new Set([selectedItem])
+        : new Set<string>();
   // Fail the whole multi-selection before moving anything if copy names
   // disagree. The core enforces the same rule per operation.
   const blocked = items.filter(
@@ -89,21 +86,6 @@ export async function moveSelectionTo(
     });
     return;
   }
-  if (
-    mode === "move-delete-rest" &&
-    !useDestinationsStore.getState().pendingDeleteRest?.confirmed &&
-    keys.size > 0
-  ) {
-    useDestinationsStore.setState({
-      pendingDeleteRest: {
-        destDir,
-        count: keys.size,
-        confirmed: false,
-        keys: [...keys],
-      },
-    });
-    return;
-  }
   const targets = items.filter((item) => keys.has(itemKey(item)));
   if (targets.length === 0) {
     useDestinationsStore.setState({
@@ -111,53 +93,74 @@ export async function moveSelectionTo(
     });
     return;
   }
-  try {
-    let exported = 0;
-    let skipped = 0;
-    let handled = 0;
-    const conflicts: string[] = [];
-    const undelivered: string[] = [];
-    let done = 0;
-    for (const item of targets) {
-      done += 1;
-      if (targets.length > 1) {
-        useDestinationsStore.setState({
-          message: `Working… ${done}/${targets.length}`,
-        });
-      }
-      const outcome = await invoke<MoveOutOutcome>("move_item_out", {
-        hash: item.hash,
-        pathId: item.hash === null ? item.pathId : null,
+  const identities = targets.map((item) => ({
+    hash: item.hash,
+    pathId: item.hash === null ? item.pathId : null,
+  }));
+  if (mode === "move-delete-rest") {
+    useDestinationsStore.setState({
+      pendingDeleteRest: {
         destDir,
-        mode,
-      });
-      exported += outcome.exported;
-      skipped += outcome.skippedIdentical;
-      handled += outcome.postAction.deletedFiles;
-      conflicts.push(...outcome.conflicts);
-      undelivered.push(...outcome.undelivered);
-    }
+        count: identities.length,
+        items: identities,
+      },
+    });
+    return;
+  }
+  await executeMoveBatch(destDir, mode, identities);
+}
+
+async function executeMoveBatch(
+  destDir: string,
+  mode: MoveMode,
+  identities: ItemIdentity[],
+): Promise<void> {
+  try {
+    const outcome = await invoke<MoveBatchOutcome>("move_items_out", {
+      items: identities,
+      destDir,
+      mode,
+    });
     const parts: string[] = [];
-    if (exported > 0) parts.push(`${exported} exported`);
-    if (skipped > 0) parts.push(`${skipped} already there`);
-    if (handled > 0) parts.push(`${handled} originals handled`);
-    if (conflicts.length > 0) {
+    if (outcome.exported > 0) parts.push(`${outcome.exported} exported`);
+    if (outcome.skippedIdentical > 0) {
+      parts.push(`${outcome.skippedIdentical} already there`);
+    }
+    if (outcome.postAction.deletedFiles > 0) {
+      parts.push(`${outcome.postAction.deletedFiles} originals handled`);
+    }
+    if (outcome.postAction.failedFiles > 0) {
       parts.push(
-        `CONFLICT: ${conflicts.join(", ")} differs — those items untouched`,
+        `FAILED: ${outcome.postAction.failedFiles} originals could not be handled — see Issues`,
       );
     }
-    if (undelivered.length > 0) {
+    if (outcome.conflicts.length > 0) {
       parts.push(
-        `FAILED: could not write ${undelivered.join(", ")} — those items untouched`,
+        `CONFLICT: ${outcome.conflicts.join(", ")} differs — originals kept`,
       );
     }
+    if (outcome.undelivered.length > 0) {
+      parts.push(
+        `FAILED: could not write ${outcome.undelivered.join(", ")} — originals kept`,
+      );
+    }
+    if (outcome.cancelled) parts.push("Stopped — unstarted items untouched");
+    if (outcome.error !== null) parts.push(`STOPPED: ${outcome.error}`);
     useDestinationsStore.setState({
       message: parts.join(" · ") || "Nothing to do",
     });
-    await useItemsStore.getState().refresh();
-    await useSectionsStore.getState().loadCounts();
+    await refreshDestinationOwners();
   } catch (error) {
     useDestinationsStore.setState({ message: String(error) });
     log.error("move out failed", toErrorFields(error));
+    await refreshDestinationOwners();
   }
+}
+
+async function refreshDestinationOwners(): Promise<void> {
+  await Promise.all([
+    useItemsStore.getState().refresh(),
+    useSectionsStore.getState().loadCounts(),
+    useIssuesStore.getState().load(),
+  ]);
 }

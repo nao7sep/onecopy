@@ -21,14 +21,13 @@ interface DestinationsState {
   expanded: Set<string>;
   emptiness: Record<string, boolean>;
   message: string;
-  /** A move-delete-rest awaiting its permanent-deletion confirmation
-   * (`confirmed` marks the re-entry pass so it is not re-staged).   * `keys` freezes the exact items the dialog counted, so a selection change
-   * while it is open cannot redirect it. */
+  /** A move-delete-rest awaiting its permanent-deletion confirmation. The
+   * backend identities freeze exactly what the dialog counted, independent of
+   * later selection or watcher projection changes. */
   pendingDeleteRest: {
     destDir: string;
     count: number;
-    confirmed: boolean;
-    keys: string[];
+    items: Array<{ hash: string | null; pathId: number | null }>;
   } | null;
   cancelPendingDeleteRest: () => void;
   /** The tree's keyboard cursor (the composite-control active item). */

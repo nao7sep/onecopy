@@ -38,6 +38,9 @@ function item(pathId: number): SectionItem {
 }
 
 const OUTCOME = {
+  cancelled: false,
+  error: null,
+  items: [],
   exported: 1,
   skippedIdentical: 0,
   conflicts: [],
@@ -53,7 +56,10 @@ function selectAll(keys: string[]): void {
     selectedKeys: new Set(keys),
     rangeOrigin: keys[0] ?? null,
     rangeBase: new Set(keys),
-    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
+    sortOrders: {
+      media: { order: "time", desc: false },
+      other: { order: "name", desc: false },
+    },
     loading: false,
     detail: null,
     message: null,
@@ -62,14 +68,15 @@ function selectAll(keys: string[]): void {
 
 function movedHashes(): unknown[] {
   return invokeCalls
-    .filter((c) => c.command === "move_item_out")
-    .map((c) => c.args.hash);
+    .filter((c) => c.command === "move_items_out")
+    .flatMap((c) => c.args.items as Array<{ hash: unknown }>)
+    .map((item) => item.hash);
 }
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
-    move_item_out: () => OUTCOME,
+    move_items_out: () => OUTCOME,
     get_section_items: () => [],
     get_section_counts: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
@@ -98,7 +105,11 @@ describe("staging a permanent move", () => {
     const pending = useDestinationsStore.getState().pendingDeleteRest;
     expect(pending?.destDir).toBe("/dest");
     expect(pending?.count).toBe(3);
-    expect(pending?.confirmed).toBe(false);
+    expect(pending?.items.map((entry) => entry.hash)).toEqual([
+      "h1",
+      "h2",
+      "h3",
+    ]);
   });
 
   it("acts on the selection it QUOTED, not the one selected later", async () => {
@@ -108,6 +119,7 @@ describe("staging a permanent move", () => {
     // The grid selection changes while the dialog is open — a click behind it,
     // or a watcher refresh landing on a different anchor.
     selectAll(["h4"]);
+    useItemsStore.setState({ items: [item(4)] });
     await confirmDestinationDeleteRest();
 
     // The dialog counted three specific items. Permanently destroying a
@@ -115,9 +127,33 @@ describe("staging a permanent move", () => {
     expect(movedHashes().sort()).toEqual(["h1", "h2", "h3"]);
   });
 
+  it("relinquishes confirmed intent before admission so a double click submits once", async () => {
+    let finish: ((outcome: typeof OUTCOME) => void) | undefined;
+    mockCommands({
+      move_items_out: () =>
+        new Promise<typeof OUTCOME>((resolve) => {
+          finish = resolve;
+        }),
+    });
+    await moveSelectionTo("/dest", "move-delete-rest");
+
+    const first = confirmDestinationDeleteRest();
+    const second = confirmDestinationDeleteRest();
+
+    expect(
+      invokeCalls.filter((call) => call.command === "move_items_out"),
+    ).toHaveLength(1);
+    finish?.(OUTCOME);
+    await Promise.all([first, second]);
+  });
+
   it("cancelling moves nothing and clears the staging", () => {
     useDestinationsStore.setState({
-      pendingDeleteRest: { destDir: "/dest", count: 3, confirmed: false, keys: ["h1"] },
+      pendingDeleteRest: {
+        destDir: "/dest",
+        count: 3,
+        items: [{ hash: "h1", pathId: null }],
+      },
     });
     useDestinationsStore.getState().cancelPendingDeleteRest();
 
@@ -138,16 +174,16 @@ describe("the non-permanent modes", () => {
     await moveSelectionTo("/dest", "copy");
 
     const modes = invokeCalls
-      .filter((c) => c.command === "move_item_out")
+      .filter((c) => c.command === "move_items_out")
       .map((c) => c.args.mode);
-    expect(modes).toEqual(["copy", "copy", "copy"]);
+    expect(modes).toEqual(["copy"]);
   });
 });
 
 describe("outcome reporting", () => {
   it("spells out a conflict instead of swallowing it", async () => {
     mockCommands({
-      move_item_out: () => ({
+      move_items_out: () => ({
         ...OUTCOME,
         exported: 0,
         conflicts: ["/dest/IMG_1.jpg"],
@@ -164,7 +200,7 @@ describe("outcome reporting", () => {
 
   it("reports a target nothing could be written to", async () => {
     mockCommands({
-      move_item_out: () => ({
+      move_items_out: () => ({
         ...OUTCOME,
         exported: 0,
         undelivered: ["/dest/IMG_1.arw"],
@@ -177,6 +213,23 @@ describe("outcome reporting", () => {
 
     expect(useDestinationsStore.getState().message).toMatch(/FAILED/);
     expect(useDestinationsStore.getState().message).toContain("IMG_1.arw");
+  });
+
+  it("keeps source post-action failures visible after progress closes", async () => {
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        postAction: { deletedFiles: 1, failedFiles: 2, removedRows: 1 },
+      }),
+    });
+    selectAll(["h1"]);
+
+    await moveSelectionTo("/dest", "move-trash-rest");
+
+    expect(useDestinationsStore.getState().message).toContain(
+      "2 originals could not be handled",
+    );
+    expect(useDestinationsStore.getState().message).toContain("Issues");
   });
 
   it("says so plainly when nothing is selected", async () => {
@@ -196,7 +249,12 @@ describe("a folder created inside the app is immediately usable", () => {
     mockCommands({
       create_subdir: () => "/dest/photos/2026",
       list_subdirs: () => [
-        { name: "2026", path: "/dest/photos/2026", hasChildren: false, isEmpty: true },
+        {
+          name: "2026",
+          path: "/dest/photos/2026",
+          hasChildren: false,
+          isEmpty: true,
+        },
       ],
     });
     useDestinationsStore.setState({
@@ -209,7 +267,9 @@ describe("a folder created inside the app is immediately usable", () => {
     await useDestinationsStore.getState().createFolder("/dest/photos", "2026");
 
     const state = useDestinationsStore.getState();
-    expect(state.children["/dest/photos"]?.map((c) => c.name)).toEqual(["2026"]);
+    expect(state.children["/dest/photos"]?.map((c) => c.name)).toEqual([
+      "2026",
+    ]);
     expect(state.expanded.has("/dest/photos")).toBe(true);
     expect(state.activePath).toBe("/dest/photos/2026");
   });
@@ -217,7 +277,8 @@ describe("a folder created inside the app is immediately usable", () => {
 
 describe("expandability reads the live children map", () => {
   it("a leaf that gained a child becomes expandable without re-listing its parent", async () => {
-    const { nodeHasChildren } = await import("../../src/components/DestinationsTab");
+    const { nodeHasChildren } =
+      await import("../../src/components/DestinationsTab");
     // The grandparent's listing said "no children" when it was true...
     const entry = { path: "/dest/photos/2026", hasChildren: false };
     // ...but the node has since been listed itself and HAS one.

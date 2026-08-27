@@ -1,10 +1,7 @@
 import { formatBytes } from "./items";
 
-export type MutationKind = "delete";
-export type MutationPhase =
-  | "planning"
-  | "deleting"
-  | "complete";
+export type MutationKind = "delete" | "destination-copy" | "destination-move";
+export type MutationPhase = "planning" | "deleting" | "delivering" | "complete";
 
 export interface MutationProgress {
   operationId: number;
@@ -17,6 +14,8 @@ export interface MutationProgress {
   bytesDone: number;
   bytesTotal: number;
   failures: number;
+  currentFileBytesDone: number | null;
+  currentFileBytesTotal: number | null;
   nextPhase: MutationPhase | null;
 }
 
@@ -24,13 +23,36 @@ export function mutationProgressLine(
   progress: MutationProgress,
   cancelling: boolean,
 ): string {
-  const action = "deletion";
+  const action =
+    progress.kind === "delete"
+      ? "deletion"
+      : progress.kind === "destination-copy"
+        ? "copy"
+        : "move";
   if (cancelling) return `Stopping ${action}…`;
   if (progress.phase === "planning") {
-    return `Planning ${action} — ${progress.itemsDone.toLocaleString()}/${progress.itemsTotal.toLocaleString()} items`;
+    const current =
+      progress.currentFileBytesDone !== null &&
+      progress.currentFileBytesTotal !== null &&
+      progress.currentFileBytesTotal > 0
+        ? ` · current ${Math.min(100, Math.floor((progress.currentFileBytesDone / progress.currentFileBytesTotal) * 100))}%`
+        : "";
+    return `Planning ${action} — ${progress.itemsDone.toLocaleString()}/${progress.itemsTotal.toLocaleString()} items${current}`;
   }
   if (progress.phase === "complete") {
-    return "Deletion complete";
+    return `${action[0].toUpperCase()}${action.slice(1)} complete`;
   }
-  return `Deleting — ${progress.itemsDone.toLocaleString()}/${progress.itemsTotal.toLocaleString()} items · ${progress.filesDone.toLocaleString()}/${progress.filesTotal.toLocaleString()} files · ${formatBytes(progress.bytesDone)}/${formatBytes(progress.bytesTotal)}${progress.failures > 0 ? ` · ${progress.failures.toLocaleString()} failed` : ""}`;
+  const verb =
+    progress.kind === "delete"
+      ? "Deleting"
+      : progress.kind === "destination-copy"
+        ? "Copying"
+        : "Moving";
+  const current =
+    progress.currentFileBytesDone !== null &&
+    progress.currentFileBytesTotal !== null &&
+    progress.currentFileBytesTotal > 0
+      ? ` · current ${Math.min(100, Math.floor((progress.currentFileBytesDone / progress.currentFileBytesTotal) * 100))}%`
+      : "";
+  return `${verb} — ${progress.itemsDone.toLocaleString()}/${progress.itemsTotal.toLocaleString()} items · ${progress.filesDone.toLocaleString()}/${progress.filesTotal.toLocaleString()} files · ${formatBytes(progress.bytesDone)}/${formatBytes(progress.bytesTotal)}${current}${progress.failures > 0 ? ` · ${progress.failures.toLocaleString()} failed` : ""}`;
 }

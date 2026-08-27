@@ -97,6 +97,24 @@ fn hash_while_copying_copies_exactly_and_hashes_the_stream() {
 }
 
 #[test]
+fn cancellable_copy_removes_its_owned_private_output() {
+    let bytes = vec![3u8; 2 * 1024 * 1024];
+    let (_dir, src) = temp_file("tee-cancel", &bytes);
+    let dst_dir = tempfile::tempdir().unwrap();
+    let dst = dst_dir.path().join("private.tmp");
+    let stop = std::cell::Cell::new(false);
+    let error = hash_while_copying_cancellable(&src, &dst, &|| stop.get(), &mut |done, _| {
+        if done > 0 {
+            stop.set(true);
+        }
+    })
+    .unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    assert!(!dst.exists());
+}
+
+#[test]
 fn cancellable_hash_matches_plain_and_stops_on_cancel() {
     use std::sync::atomic::AtomicBool;
 
@@ -130,9 +148,14 @@ fn streamed_hash_progress_is_descriptor_exact_and_monotonic() {
 
     let observed = observed.into_inner().unwrap();
     assert_eq!(observed.first(), Some(&(0, bytes.len() as u64)));
-    assert_eq!(observed.last(), Some(&(bytes.len() as u64, bytes.len() as u64)));
+    assert_eq!(
+        observed.last(),
+        Some(&(bytes.len() as u64, bytes.len() as u64))
+    );
     assert!(observed.windows(2).all(|pair| pair[0].0 <= pair[1].0));
-    assert!(observed.iter().all(|(_, total)| *total == bytes.len() as u64));
+    assert!(observed
+        .iter()
+        .all(|(_, total)| *total == bytes.len() as u64));
 }
 
 #[test]

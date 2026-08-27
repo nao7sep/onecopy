@@ -54,10 +54,37 @@ pub(crate) fn full_hash_file(file: &mut File) -> std::io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+pub(crate) fn full_hash_file_cancellable(
+    file: &mut File,
+    total: u64,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64, u64),
+) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; BUF_SIZE];
+    let mut done = 0u64;
+    progress(done, total);
+    loop {
+        if cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        done = done.saturating_add(n as u64);
+        progress(done, total);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 /// `full_hash` with a cooperative cancel checked between read chunks, so app
-/// exit interrupts a multi-gigabyte hash in bounded time. Scan-only — the
-/// move-out tee (`hash_while_copying`) deliberately has no cancel: a delivery
-/// verify must never be abandoned halfway.
+/// exit interrupts a multi-gigabyte hash in bounded time.
 pub fn full_hash_cancellable(
     path: &Path,
     cancel: &std::sync::atomic::AtomicBool,
@@ -108,15 +135,39 @@ pub fn hash_while_copying(
     src: &Path,
     dst: &Path,
 ) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
-    hash_while_copying_with_after_sync(src, dst, |_| {})
+    hash_while_copying_inner(src, dst, &|| false, &mut |_, _| {}, |_| {})
 }
 
+#[cfg(test)]
 fn hash_while_copying_with_after_sync(
     src: &Path,
     dst: &Path,
     after_sync: impl FnOnce(&Path),
 ) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
+    hash_while_copying_inner(src, dst, &|| false, &mut |_, _| {}, after_sync)
+}
+
+/// The destination-batch variant may stop while the bytes are still private.
+/// Its caller deliberately stops consulting cancellation once publication of
+/// one logical item begins, so this helper never creates a half-public unit.
+pub fn hash_while_copying_cancellable(
+    src: &Path,
+    dst: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64, u64),
+) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
+    hash_while_copying_inner(src, dst, cancelled, progress, |_| {})
+}
+
+fn hash_while_copying_inner(
+    src: &Path,
+    dst: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64, u64),
+    after_sync: impl FnOnce(&Path),
+) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
     let mut reader = File::open(crate::winpath::for_fs(src).as_ref())?;
+    let expected_total = reader.metadata()?.len();
     let mut writer = File::options()
         .read(true)
         .write(true)
@@ -126,9 +177,16 @@ fn hash_while_copying_with_after_sync(
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
     let mut total: u64 = 0;
+    progress(total, expected_total);
 
     let copied = (|| -> std::io::Result<(String, u64)> {
         loop {
+            if cancelled() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "cancelled",
+                ));
+            }
             let n = reader.read(&mut buf)?;
             if n == 0 {
                 break;
@@ -136,6 +194,7 @@ fn hash_while_copying_with_after_sync(
             hasher.update(&buf[..n]);
             writer.write_all(&buf[..n])?;
             total += n as u64;
+            progress(total, expected_total);
         }
         writer.sync_all()?;
         after_sync(dst);
@@ -184,15 +243,12 @@ mod descriptor_tests {
         let held = dir.path().join("held.tmp");
         std::fs::write(&source, b"copied bytes").unwrap();
 
-        let (hash, bytes, identity) = hash_while_copying_with_after_sync(
-            &source,
-            &staged,
-            |path| {
+        let (hash, bytes, identity) =
+            hash_while_copying_with_after_sync(&source, &staged, |path| {
                 std::fs::rename(path, &held).unwrap();
                 std::fs::write(path, b"replacement").unwrap();
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
 
         assert_eq!(hash, blake3::hash(b"copied bytes").to_hex().to_string());
         assert_eq!(bytes, 12);

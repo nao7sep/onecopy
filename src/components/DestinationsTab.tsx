@@ -516,7 +516,7 @@ export default function DestinationsTab() {
           onClose={() => useDestinationsStore.getState().setPendingDrop(null)}
         />
       ) : null}
-      {pendingDeleteRest !== null && !pendingDeleteRest.confirmed ? (
+      {pendingDeleteRest !== null ? (
         <ConfirmDialog
           title="Move and delete the rest?"
           message={`Move ${pendingDeleteRest.count} item${
