@@ -102,7 +102,13 @@ beforeEach(() => {
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
   useWizardStore.setState({ open: false, dirs: [], timezone: "UTC", timezoneValid: true });
-  useSectionsStore.setState({ counts: null, scanning: false, progress: "", rescanNeeded: false });
+  useSectionsStore.setState({
+    counts: null,
+    scanning: false,
+    stopping: false,
+    progress: null,
+    rescanNeeded: false,
+  });
   useItemsStore.setState({
     selected: null,
     items: [],
@@ -140,9 +146,19 @@ describe("the culling journey", () => {
 
     // ---- Scan events: progress is visible, done populates the tree ----
     await act(async () => {
-      fireEvent("scan://progress", { phase: "walk", detail: "/photos: 4 files" });
+      fireEvent("scan://progress", {
+        phase: "walk",
+        done: 0,
+        total: 1,
+        currentPath: "/photos",
+        discovered: 4,
+        bytesDone: null,
+        bytesTotal: null,
+        failures: 0,
+        nextPhase: "hash",
+      });
     });
-    expect(useSectionsStore.getState().progress).toContain("Scanning");
+    expect(useSectionsStore.getState().progress?.phase).toBe("walk");
 
     mockCommand("get_section_counts", () => ({
       images: [{ month: "2026-01", count: 4 }],

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { libraryLine, statusLine } from "../../src/models/status";
 import type { SectionCounts } from "../../src/models/sections";
+import type { ScanProgress } from "../../src/models/scan";
 
 const COUNTS: SectionCounts = {
   images: [
@@ -14,9 +15,22 @@ const COUNTS: SectionCounts = {
 const IDLE = {
   message: null,
   scanning: false,
-  progress: "",
+  stopping: false,
+  progress: null,
   rescanNeeded: false,
   counts: COUNTS,
+};
+
+const HASH_PROGRESS: ScanProgress = {
+  phase: "hash",
+  done: 30,
+  total: 900,
+  currentPath: "/photos/large.mov",
+  discovered: null,
+  bytesDone: 50,
+  bytesTotal: 100,
+  failures: 0,
+  nextPhase: "extract",
 };
 
 describe("the library line", () => {
@@ -66,7 +80,7 @@ describe("what the status bar shows", () => {
       ...IDLE,
       message: "2 files could not be deleted — see Issues.",
       scanning: true,
-      progress: "previews: 30/900",
+      progress: HASH_PROGRESS,
       rescanNeeded: true,
     });
     expect(status.tone).toBe("danger");
@@ -74,12 +88,59 @@ describe("what the status bar shows", () => {
   });
 
   it("prefers live scan progress over the totals it is busy changing", () => {
-    const status = statusLine({ ...IDLE, scanning: true, progress: "previews: 30/900" });
-    expect(status.text).toBe("previews: 30/900");
+    const status = statusLine({ ...IDLE, scanning: true, progress: HASH_PROGRESS });
+    expect(status.text).toBe("Reading files — 30/900 · large.mov · 50%");
+    expect(status.title).toContain("Cloud placeholders");
   });
 
   it("still says something while a scan has yet to report a phase", () => {
-    expect(statusLine({ ...IDLE, scanning: true, progress: "" }).text).toBe("Scanning…");
+    expect(statusLine({ ...IDLE, scanning: true, progress: null }).text).toBe("Scanning…");
+  });
+
+  it("shows cooperative stopping instead of stale phase progress", () => {
+    const status = statusLine({
+      ...IDLE,
+      scanning: true,
+      stopping: true,
+      progress: HASH_PROGRESS,
+    });
+    expect(status.text).toBe("Stopping indexing…");
+    expect(status.title).toContain("current cancellable read, file, or durable step");
+  });
+
+  it("keeps an indexed terminal state beside the standing totals", () => {
+    const progress: ScanProgress = {
+      ...HASH_PROGRESS,
+      phase: "indexed",
+      done: 1,
+      total: 1,
+      currentPath: null,
+      bytesDone: null,
+      bytesTotal: null,
+      nextPhase: null,
+    };
+    expect(statusLine({ ...IDLE, progress })).toMatchObject({
+      text: "Up to date · 1,204 images · 87 videos",
+      title: expect.stringContaining("Background work"),
+    });
+  });
+
+  it("warns when indexing finishes with recoverable file failures", () => {
+    const progress: ScanProgress = {
+      ...HASH_PROGRESS,
+      phase: "indexed",
+      done: 1,
+      total: 1,
+      currentPath: null,
+      bytesDone: null,
+      bytesTotal: null,
+      failures: 2,
+      nextPhase: null,
+    };
+    expect(statusLine({ ...IDLE, progress })).toMatchObject({
+      tone: "warning",
+      text: "Indexed — 2 failed · open Issues · 1,204 images · 87 videos",
+    });
   });
 
   it("warns that the index is knowingly incomplete", () => {

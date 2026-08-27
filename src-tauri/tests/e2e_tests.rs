@@ -82,7 +82,7 @@ fn settings(world: &World) -> scanner::ScanSettings {
 }
 
 fn scan(conn: &Connection, world: &World) -> Result<scanner::ScanSummary, String> {
-    scanner::run_full_scan(conn, &settings(world), &|_, _| {})
+    scanner::run_full_scan(conn, &settings(world), &|_| {})
 }
 
 fn derive_all(conn: &Connection, world: &World) {
@@ -133,18 +133,26 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     let cache = CachePaths::new(w.home.join("cache"));
 
     // ---- Index: walk → hash → extract → resolve → pair, then stop ----
-    let phases = std::sync::Mutex::new(Vec::<String>::new());
-    let summary = scanner::run_full_scan(&conn, &settings(&w), &|phase, _| {
+    let phases = std::sync::Mutex::new(Vec::<scanner::ScanPhase>::new());
+    let summary = scanner::run_full_scan(&conn, &settings(&w), &|progress| {
+        let phase = progress.phase;
         let mut phases = phases.lock().unwrap();
-        if phases.last().is_none_or(|last| last != phase) {
-            phases.push(phase.to_string());
+        if phases.last().is_none_or(|last| *last != phase) {
+            phases.push(phase);
         }
     })
     .expect("the scan completes");
     assert_eq!(summary.seen, 5, "five physical files walked");
     assert_eq!(
         phases.into_inner().unwrap(),
-        ["walk", "hash", "extract", "resolve", "pair"],
+        [
+            scanner::ScanPhase::Walk,
+            scanner::ScanPhase::Hash,
+            scanner::ScanPhase::Extract,
+            scanner::ScanPhase::Resolve,
+            scanner::ScanPhase::Pair,
+            scanner::ScanPhase::Indexed,
+        ],
         "scan progress exposes index phases only",
     );
     let underived: i64 = conn
@@ -318,10 +326,11 @@ fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
     scanner::SCAN_CANCEL.store(false, Ordering::Relaxed);
     let conn = index_store::open(&interrupted.home.join("index.sqlite3")).unwrap();
     let interrupted_settings = settings(&interrupted);
-    let err = scanner::run_full_scan(&conn, &interrupted_settings, &|phase, _| {
+    let err = scanner::run_full_scan(&conn, &interrupted_settings, &|progress| {
+        let phase = progress.phase;
         // Walk and hash are done; extraction's per-row check takes the hit,
         // leaving real work on BOTH sides of the cut.
-        if phase == "hash" {
+        if phase == scanner::ScanPhase::Hash && progress.done == progress.total {
             scanner::SCAN_CANCEL.store(true, Ordering::Relaxed);
         }
     })
@@ -330,7 +339,7 @@ fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
 
     // ---- Resume finishes; the control never stopped ----
     scanner::SCAN_CANCEL.store(false, Ordering::Relaxed);
-    scanner::run_full_scan(&conn, &interrupted_settings, &|_, _| {})
+    scanner::run_full_scan(&conn, &interrupted_settings, &|_| {})
         .expect("the resume completes");
     let control_conn = index_store::open(&control.home.join("index.sqlite3")).unwrap();
     scan(&control_conn, &control).expect("the control scan completes");

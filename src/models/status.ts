@@ -21,6 +21,7 @@
 // that matter), and anything that would accumulate.
 
 import type { SectionCounts } from "./sections";
+import { progressLine, progressTitle, type ScanProgress } from "./scan";
 
 export type StatusTone = "danger" | "warning" | "normal";
 
@@ -51,7 +52,8 @@ export function statusLine(input: {
   /** A failed delete or a refused command; null when the last action was clean. */
   message: string | null;
   scanning: boolean;
-  progress: string;
+  stopping: boolean;
+  progress: ScanProgress | null;
   rescanNeeded: boolean;
   counts: SectionCounts | null;
 }): Status {
@@ -59,7 +61,20 @@ export function statusLine(input: {
     return { tone: "danger", text: input.message, title: input.message };
   }
   if (input.scanning) {
-    return { tone: "normal", text: input.progress === "" ? "Scanning…" : input.progress };
+    if (input.stopping) {
+      return {
+        tone: "normal",
+        text: "Stopping indexing…",
+        title: "Finishing the current cancellable read, file, or durable step; unfinished work remains owed for the next scan.",
+      };
+    }
+    return input.progress === null
+      ? { tone: "normal", text: "Scanning…" }
+      : {
+          tone: "normal",
+          text: progressLine(input.progress),
+          title: progressTitle(input.progress),
+        };
   }
   if (input.rescanNeeded) {
     return {
@@ -74,6 +89,14 @@ export function statusLine(input: {
     return { tone: "normal", text: "Starting…" };
   }
   const line = libraryLine(input.counts);
+  if (input.progress?.phase === "indexed") {
+    const terminal = progressLine(input.progress);
+    return {
+      tone: input.progress.failures > 0 ? "warning" : "normal",
+      text: line === "" ? terminal : `${terminal} · ${line}`,
+      title: progressTitle(input.progress),
+    };
+  }
   return line === ""
     ? { tone: "normal", text: "Nothing to handle" }
     : { tone: "normal", text: line };

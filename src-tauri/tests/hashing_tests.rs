@@ -115,6 +115,27 @@ fn cancellable_hash_matches_plain_and_stops_on_cancel() {
 }
 
 #[test]
+fn streamed_hash_progress_is_descriptor_exact_and_monotonic() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Mutex;
+
+    let bytes = vec![5u8; 2_500_000];
+    let (_dir, path) = temp_file("progress", &bytes);
+    let observed = Mutex::new(Vec::<(u64, u64)>::new());
+
+    full_hash_cancellable_with_progress(&path, &AtomicBool::new(false), &|done, total| {
+        observed.lock().unwrap().push((done, total));
+    })
+    .unwrap();
+
+    let observed = observed.into_inner().unwrap();
+    assert_eq!(observed.first(), Some(&(0, bytes.len() as u64)));
+    assert_eq!(observed.last(), Some(&(bytes.len() as u64, bytes.len() as u64)));
+    assert!(observed.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    assert!(observed.iter().all(|(_, total)| *total == bytes.len() as u64));
+}
+
+#[test]
 fn hash_while_copying_refuses_to_clobber_an_existing_destination() {
     let (_dir, src) = temp_file("noclobber", b"data");
     let dst_dir = tempfile::Builder::new()

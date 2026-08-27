@@ -189,8 +189,18 @@ fn scan_wall_clock_against_the_corpus() {
     let settings = scanner::settings_from_config(Some(&config), home.path(), 0);
 
     let started = Instant::now();
-    let summary = scanner::run_full_scan(&conn, &settings, &|phase, detail| {
-        eprintln!("[{:>7.1?}] {phase}: {detail}", started.elapsed());
+    let last_phase = std::cell::Cell::new(None);
+    let summary = scanner::run_full_scan(&conn, &settings, &|progress| {
+        if last_phase.get() != Some(progress.phase) || progress.done == progress.total {
+            eprintln!(
+                "[{:>7.1?}] {:?}: {}/{}",
+                started.elapsed(),
+                progress.phase,
+                progress.done,
+                progress.total
+            );
+            last_phase.set(Some(progress.phase));
+        }
     })
     .unwrap();
     eprintln!("TOTAL: {:?}  summary: {summary:?}", started.elapsed());

@@ -573,6 +573,40 @@ fn settings_changes_re_resolve_from_evidence_without_file_reads() {
 }
 
 #[test]
+fn date_resolution_seeks_across_multiple_bounded_pages() {
+    let f = fixture("resolve-pages");
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    for index in 0..600 {
+        f.conn
+            .execute(
+                "INSERT INTO paths \
+                 (abs_path, dir_path, file_name, kind, mtime_ms, indexed_at_utc, missing) \
+                 VALUES (?1, '/virtual', ?2, 'other', ?3, 'ready', 0)",
+                rusqlite::params![
+                    format!("/virtual/{index}.txt"),
+                    format!("{index}.txt"),
+                    now_ms
+                ],
+            )
+            .unwrap();
+    }
+
+    let stats =
+        resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+    assert_eq!((stats.resolved, stats.undated), (600, 0));
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM paths WHERE resolved_source = 'filesystem'"
+        ),
+        600
+    );
+}
+
+#[test]
 fn app_trash_directories_are_never_indexed() {
     let f = fixture("trash-skip");
     let trash = f.root.join(".onecopy-trash").join("2026-08-08");
@@ -1092,22 +1126,41 @@ fn a_differently_spelled_configured_root_is_not_forgotten() {
 }
 
 #[test]
-fn the_walk_progress_line_shows_a_path_a_person_recognises() {
-    // `settled_root` hands this `fs::canonicalize`, which on Windows is the
-    // verbatim spelling — so this is the scan's one user-facing path and it
-    // has to come back conventional. Runs everywhere: `for_display` is a pure
-    // string transform, so a Mac can pin the Windows spelling.
+fn scan_phase_tokens_serialize_to_the_frontend_contract() {
+    for (phase, token) in [
+        (ScanPhase::Walk, "walk"),
+        (ScanPhase::Hash, "hash"),
+        (ScanPhase::Extract, "extract"),
+        (ScanPhase::Resolve, "resolve"),
+        (ScanPhase::Pair, "pair"),
+        (ScanPhase::Indexed, "indexed"),
+    ] {
+        assert_eq!(serde_json::to_value(phase).unwrap(), serde_json::json!(token));
+    }
+
+    let snapshot = ScanProgress {
+        phase: ScanPhase::Hash,
+        done: 3,
+        total: 8,
+        current_path: Some("/photos/a.mov".to_string()),
+        discovered: None,
+        bytes_done: Some(25),
+        bytes_total: Some(100),
+        failures: 1,
+        next_phase: Some(ScanPhase::Extract),
+    };
     assert_eq!(
-        walk_progress_line(r"\\?\C:\photos", 1234, 56),
-        r"C:\photos: 1234 files (56 new)"
-    );
-    assert_eq!(
-        walk_progress_line(r"\\?\UNC\nas\media", 7, 0),
-        r"\\nas\media: 7 files (0 new)"
-    );
-    // The unix spelling is untouched — the transform is a strip, not a rewrite.
-    assert_eq!(
-        walk_progress_line("/Volumes/Photos", 3, 3),
-        "/Volumes/Photos: 3 files (3 new)"
+        serde_json::to_value(snapshot).unwrap(),
+        serde_json::json!({
+            "phase": "hash",
+            "done": 3,
+            "total": 8,
+            "currentPath": "/photos/a.mov",
+            "discovered": null,
+            "bytesDone": 25,
+            "bytesTotal": 100,
+            "failures": 1,
+            "nextPhase": "extract"
+        })
     );
 }

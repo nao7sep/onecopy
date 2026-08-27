@@ -9,12 +9,28 @@ import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks } 
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
 import { installScanEventWiring } from "../../src/workflows/scan-events";
+import type { ScanProgress } from "../../src/models/scan";
 
 // The application workflow registers event wiring once. The listener registry
 // is deliberately NOT cleared between specs — clearing it would leave this
 // module's idempotent installation deaf for the rest of the run.
 const sections = useSectionsStore;
 const binaries = useBinariesStore;
+
+function scanProgress(overrides: Partial<ScanProgress> = {}): ScanProgress {
+  return {
+    phase: "hash",
+    done: 1,
+    total: 2,
+    currentPath: "/photos/a.jpg",
+    discovered: null,
+    bytesDone: null,
+    bytesTotal: null,
+    failures: 0,
+    nextPhase: "extract",
+    ...overrides,
+  };
+}
 
 void installScanEventWiring();
 
@@ -35,6 +51,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
+  sections.setState({ scanning: false, stopping: false, progress: null, rescanNeeded: false });
   mockCommands({
     get_section_counts: () => [],
     get_section_items: () => [],
@@ -47,20 +64,27 @@ beforeEach(async () => {
 
 describe("scan events", () => {
   it("reports progress and marks the scan running", async () => {
-    fireEvent("scan://progress", { phase: "hashing", detail: "12/40" });
+    const progress = scanProgress({ phase: "hashing", done: 12, total: 40 });
+    fireEvent("scan://progress", progress);
 
     expect(sections.getState().scanning).toBe(true);
-    // An unknown phase token degrades to a capitalized word, dash-joined —
-    // the store speaks user language, never raw pipeline tokens.
-    expect(sections.getState().progress).toBe("Hashing \u2014 12/40");
+    // Event wiring projects typed backend facts; presentation owns the words.
+    expect(sections.getState().progress).toEqual(progress);
   });
 
   it("clears the scan on a clean finish", async () => {
-    sections.setState({ scanning: true, progress: "Hashing \u2014 1/2" });
+    const indexed = scanProgress({
+      phase: "indexed",
+      done: 1,
+      total: 1,
+      currentPath: null,
+      nextPhase: null,
+    });
+    fireEvent("scan://progress", indexed);
 
     fireEvent("scan://done", {});
     expect(sections.getState().scanning).toBe(false);
-    expect(sections.getState().progress).toBe("");
+    expect(sections.getState().progress).toEqual(indexed);
   });
 
   it("distinguishes a cancelled finish from a clean one", async () => {
@@ -68,17 +92,19 @@ describe("scan events", () => {
 
     fireEvent("scan://done", { cancelled: true });
     expect(sections.getState().scanning).toBe(false);
+    expect(sections.getState().stopping).toBe(false);
     // A cancelled walk may have left whole directories unread, so the counts
     // understate the library — it must not read as a clean finish.
     expect(sections.getState().rescanNeeded).toBe(true);
   });
 
   it("clears the scan on an error rather than leaving the footer stuck", async () => {
-    sections.setState({ scanning: true, progress: "Hashing \u2014 1/2" });
+    sections.setState({ scanning: true, progress: scanProgress() });
 
     fireEvent("scan://error", { message: "index open failed" });
     expect(sections.getState().scanning).toBe(false);
-    expect(sections.getState().progress).toBe("");
+    expect(sections.getState().stopping).toBe(false);
+    expect(sections.getState().progress).toBeNull();
   });
 });
 

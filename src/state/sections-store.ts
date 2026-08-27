@@ -7,15 +7,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
 import type { SectionCounts } from "../models/sections";
+import type { ScanProgress } from "../models/scan";
 
 interface SectionsState {
   counts: SectionCounts | null;
   scanning: boolean;
-  progress: string;
+  stopping: boolean;
+  progress: ScanProgress | null;
   /** The watcher lost events (overflow); a manual Scan repairs the index. */
   rescanNeeded: boolean;
   loadCounts: () => Promise<void>;
   startScan: () => Promise<void>;
+  cancelScan: () => Promise<void>;
 }
 
 const countsLoad = requestSeq();
@@ -23,7 +26,8 @@ const countsLoad = requestSeq();
 export const useSectionsStore = create<SectionsState>((set) => ({
   counts: null,
   scanning: false,
-  progress: "",
+  stopping: false,
+  progress: null,
   rescanNeeded: false,
 
   loadCounts: async () => {
@@ -43,12 +47,21 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     try {
       const started = await invoke<boolean>("start_scan");
       if (started) {
-        set({ scanning: true, progress: "Scanning…", rescanNeeded: false });
+        set({ scanning: true, stopping: false, progress: null, rescanNeeded: false });
         log.info("scan started");
       }
     } catch (error) {
       log.error("scan start failed", toErrorFields(error));
-      set({ scanning: false, progress: "" });
+      set({ scanning: false, stopping: false, progress: null });
+    }
+  },
+
+  cancelScan: async () => {
+    try {
+      const accepted = await invoke<boolean>("cancel_scan");
+      if (accepted) set({ stopping: true });
+    } catch (error) {
+      log.error("scan cancellation failed", toErrorFields(error));
     }
   },
 }));

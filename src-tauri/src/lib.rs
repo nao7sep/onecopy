@@ -181,6 +181,14 @@ fn start_scan(app: AppHandle) -> Result<bool, String> {
     scan_runtime::start(app, true)
 }
 
+// Requests cooperative cancellation. The worker stops at the current
+// cancellable read or independently safe file/row boundary, emits
+// `scan://done { cancelled: true }`, and leaves unfinished checkpoints owed.
+#[tauri::command(async)]
+fn cancel_scan() -> bool {
+    scan_runtime::request_cancel()
+}
+
 // The volume-loss guard (the session gate's runtime counterpart): destructive
 // operations refuse to run while any configured source directory is absent —
 // a vanished volume must block deletes, not let them half-apply.
@@ -604,7 +612,7 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
             // rescan command.
             if changed > 0 || scanner::pending_index_work_exists(&conn)? {
                 let mut summary = scanner::ScanSummary::default();
-                scanner::run_index_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
+                scanner::run_index_tail(&conn, &settings, &|_| {}, &mut summary)?;
                 derived_work::wake(true);
             }
             Ok(changed)
@@ -1451,6 +1459,7 @@ pub fn run() {
             patch_config,
             patch_state,
             start_scan,
+            cancel_scan,
             get_section_counts,
             get_section_items,
             get_item_detail,

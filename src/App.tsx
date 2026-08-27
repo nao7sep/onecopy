@@ -66,10 +66,12 @@ export default function App() {
   const loadError = useAppStore((s) => s.loadError);
   const counts = useSectionsStore((s) => s.counts);
   const scanning = useSectionsStore((s) => s.scanning);
+  const stoppingScan = useSectionsStore((s) => s.stopping);
   const progress = useSectionsStore((s) => s.progress);
   const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
   const itemsMessage = useItemsStore((s) => s.message);
   const startScan = useSectionsStore((s) => s.startScan);
+  const cancelScan = useSectionsStore((s) => s.cancelScan);
   const selected = useItemsStore((s) => s.selected);
   const items = useItemsStore((s) => s.items);
   const itemsLoading = useItemsStore((s) => s.loading);
@@ -128,6 +130,7 @@ export default function App() {
   const status = statusLine({
     message: itemsMessage,
     scanning,
+    stopping: stoppingScan,
     progress,
     rescanNeeded,
     counts,
@@ -447,6 +450,16 @@ export default function App() {
           {status.text}
         </span>
         <span className="flex shrink-0 items-center gap-3">
+          {scanning ? (
+            <button
+              className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
+              disabled={stoppingScan}
+              title="Stop safely after the current cancellable read, file, or durable step"
+              onClick={() => void cancelScan()}
+            >
+              {stoppingScan ? "Stopping…" : "Stop indexing"}
+            </button>
+          ) : null}
           {/* Why the fans spin while work runs in the background. */}
           <button
             className="text-ink-muted hover:text-ink hover:underline"

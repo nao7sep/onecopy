@@ -62,9 +62,23 @@ pub fn full_hash_cancellable(
     path: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::io::Result<String> {
+    full_hash_cancellable_with_progress(path, cancel, &|_, _| {})
+}
+
+/// The scan-progress variant reports bytes after each bounded read. The
+/// caller owns coalescing and presentation; hashing owns the exact descriptor
+/// byte count and therefore is the only honest source for this percentage.
+pub fn full_hash_cancellable_with_progress(
+    path: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &dyn Fn(u64, u64),
+) -> std::io::Result<String> {
     let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
+    let total = file.metadata()?.len();
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
+    let mut done = 0u64;
+    progress(done, total);
     loop {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(std::io::Error::new(
@@ -77,6 +91,8 @@ pub fn full_hash_cancellable(
             break;
         }
         hasher.update(&buf[..n]);
+        done += n as u64;
+        progress(done, total);
     }
     Ok(hasher.finalize().to_hex().to_string())
 }

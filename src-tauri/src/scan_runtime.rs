@@ -2,9 +2,11 @@
 //! startup resume probes, progress events, cooperative cancellation, and join.
 //! Scanner owns index semantics; this module owns only ephemeral execution.
 
+use std::cell::Cell;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -99,11 +101,24 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
                     .create()
                     .ok()
             });
-            let emit_progress = |phase: &str, detail: String| {
-                let _ = handle.emit(
-                    "scan://progress",
-                    json!({ "phase": phase, "detail": detail }),
-                );
+            // The scanner may report each durable item and each streamed hash
+            // chunk. Transport at human cadence while always publishing phase
+            // boundaries and completed totals; this keeps the UI honest
+            // without flooding the webview on a fast million-row pass.
+            let last_phase = Cell::new(None::<crate::scanner::ScanPhase>);
+            let last_emit = Cell::new(Instant::now() - Duration::from_secs(1));
+            let emit_progress = |progress: crate::scanner::ScanProgress| {
+                let now = Instant::now();
+                let phase_changed = last_phase.get() != Some(progress.phase);
+                let completed = progress.done == progress.total;
+                if phase_changed
+                    || completed
+                    || now.duration_since(last_emit.get()) >= Duration::from_millis(125)
+                {
+                    last_phase.set(Some(progress.phase));
+                    last_emit.set(now);
+                    let _ = handle.emit("scan://progress", progress);
+                }
             };
             let outcome = crate::index_store::open(&db_file).and_then(|conn| {
                 if include_walk {
@@ -171,8 +186,10 @@ mod tests {
     }
 }
 
-pub fn request_cancel() {
+pub fn request_cancel() -> bool {
+    let was_running = running();
     crate::scanner::SCAN_CANCEL.store(true, Ordering::Relaxed);
+    was_running
 }
 
 pub fn join() {

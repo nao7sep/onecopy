@@ -213,7 +213,7 @@ fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String
         // The shared index tail, so watcher, scan, and section rescan cannot
         // drift on which durable file facts a pass covers.
         let mut summary = scanner::ScanSummary::default();
-        scanner::run_index_tail(&conn, &settings, &|_, _| {}, &mut summary)?;
+        scanner::run_index_tail(&conn, &settings, &|_| {}, &mut summary)?;
         crate::derived_work::wake(true);
         logging::info("watcher pass", json!({ "dirs": dirs.len(), "changed": changed }));
     }
