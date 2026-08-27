@@ -386,6 +386,154 @@ fn companions_pair_same_directory_same_stem_only() {
 }
 
 #[test]
+fn scoped_pairing_repairs_only_the_affected_directory() {
+    let f = fixture("pairing-scope");
+    let left = f.root.join("left");
+    let right = f.root.join("right");
+    for dir in [&left, &right] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("IMG.JPG"), b"jpeg").unwrap();
+        std::fs::write(dir.join("IMG.ARW"), b"raw").unwrap();
+    }
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
+
+    std::fs::remove_file(left.join("IMG.JPG")).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &left, &lists()).unwrap();
+    let right_before: i64 = f
+        .conn
+        .query_row(
+            "SELECT companion_of FROM paths WHERE dir_path = ?1 AND kind = 'companion'",
+            [right.to_string_lossy().as_ref()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let dirs = vec![left.to_string_lossy().to_string()];
+    assert_eq!(
+        pair_companions_in_dirs(&f.conn, true, &dirs)
+            .unwrap()
+            .paired,
+        0
+    );
+    let (left_link, right_after): (Option<i64>, i64) = (
+        f.conn
+            .query_row(
+                "SELECT companion_of FROM paths WHERE dir_path = ?1 AND kind = 'companion'",
+                [left.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .unwrap(),
+        f.conn
+            .query_row(
+                "SELECT companion_of FROM paths WHERE dir_path = ?1 AND kind = 'companion'",
+                [right.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .unwrap(),
+    );
+    assert_eq!(left_link, None, "the vanished primary unpairs locally");
+    assert_eq!(
+        right_after, right_before,
+        "an unrelated cohort is untouched"
+    );
+}
+
+#[test]
+fn scoped_repair_uses_walk_debt_as_its_crash_receipt() {
+    let f = fixture("pairing-recovery");
+    std::fs::write(f.root.join("IMG.JPG"), b"jpeg").unwrap();
+    let settled = settled_root(&f.conn, &f.root).unwrap();
+    walk_root(&f.conn, &settled, &lists()).unwrap();
+    let roots = vec![f.root.to_string_lossy().to_string()];
+    assert!(!walk_owed(&f.conn, &roots).unwrap());
+
+    let marked = begin_scoped_index_repair(&f.conn, &roots).unwrap();
+    assert_eq!(marked.len(), 1);
+    assert!(
+        walk_owed(&f.conn, &roots).unwrap(),
+        "an interrupted repair is owed"
+    );
+
+    // A second operation did not create this debt and must never clear it.
+    let inherited = begin_scoped_index_repair(&f.conn, &roots).unwrap();
+    assert!(inherited.is_empty());
+    complete_scoped_index_repair(&f.conn, &inherited).unwrap();
+    assert!(walk_owed(&f.conn, &roots).unwrap());
+
+    complete_scoped_index_repair(&f.conn, &marked).unwrap();
+    assert!(!walk_owed(&f.conn, &roots).unwrap());
+}
+
+#[test]
+fn duplicate_live_photo_identifiers_never_cross_directory_cohorts() {
+    let f = fixture("live-photo-duplicate-trees");
+    for dir in ["backup-a", "backup-b"] {
+        f.conn
+            .execute(
+                "INSERT INTO paths (abs_path, dir_path, file_name, stem, kind, missing)
+                 VALUES (?1, ?2, 'still.jpg', 'still', 'image', 0),
+                        (?3, ?2, 'motion.mov', 'motion', 'video', 0)",
+                rusqlite::params![
+                    format!("/{dir}/still.jpg"),
+                    format!("/{dir}"),
+                    format!("/{dir}/motion.mov")
+                ],
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO evidence (path_id, source, raw)
+                 SELECT id, 'live-photo-identifier', 'stale-id'
+                 FROM paths WHERE dir_path = ?1 AND kind = 'video'",
+                [format!("/{dir}")],
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO evidence (path_id, source, raw)
+                 SELECT id, 'live-photo-identifier', 'shared-id'
+                 FROM paths WHERE dir_path = ?1",
+                [format!("/{dir}")],
+            )
+            .unwrap();
+    }
+
+    assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM paths video JOIN paths image
+             ON image.id = video.companion_of
+             WHERE video.kind = 'video' AND image.dir_path = video.dir_path"
+        ),
+        2
+    );
+}
+
+#[test]
+#[serial_test::serial(scan_cancel)]
+fn cancelled_pairing_preserves_the_previous_complete_projection() {
+    let f = fixture("pairing-cancel");
+    std::fs::write(f.root.join("IMG.JPG"), b"jpeg").unwrap();
+    std::fs::write(f.root.join("IMG.ARW"), b"raw").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    pair_companions(&f.conn, true).unwrap();
+
+    SCAN_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(pair_companions(&f.conn, false).unwrap_err(), CANCELLED);
+    SCAN_CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL"
+        ),
+        1,
+        "cancellation happens before the atomic projection changes"
+    );
+}
+
+#[test]
 fn corpus_live_photos_pair_by_identifier_not_stem_and_honor_the_toggle() {
     fn source(parts: &[&str]) -> std::path::PathBuf {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

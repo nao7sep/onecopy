@@ -190,12 +190,14 @@ pub fn collect(
     }
 }
 
-/// Re-stats the dirty directories and runs the pending index tail. Waits
-/// out an in-flight full scan (its walk covers the changes anyway).
+/// Re-stats the dirty directories and runs the pending index tail. The shared
+/// index claim retains this event batch until any in-flight scan or section
+/// repair finishes; a scan may have passed this directory before the event.
 fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
-    if crate::scan_runtime::running() {
-        return Ok(0);
-    }
+    crate::scan_runtime::with_index_claim(|| process_dirty_claimed(app, dirs))
+}
+
+fn process_dirty_claimed(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
     let data_root = crate::paths::data_root(app)?;
     let loaded = crate::storage::load_app_data(app)?;
     let settings = scanner::settings_from_config(
@@ -204,18 +206,28 @@ fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String
         chrono::Utc::now().timestamp_millis(),
     );
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+    let affected_dirs: Vec<String> = dirs
+        .iter()
+        .map(|dir| crate::winpath::for_fs(dir).to_string_lossy().to_string())
+        .collect();
+    let repair_roots = scanner::begin_scoped_index_repair(&conn, &affected_dirs)?;
 
     let mut changed = 0u64;
     for dir in dirs {
         changed += restat_dir(&conn, dir, &settings.lists)?;
     }
     if changed > 0 {
-        // The shared index tail, so watcher, scan, and section rescan cannot
-        // drift on which durable file facts a pass covers.
+        // Every owed row is still drained, but relationship repair is limited
+        // to this batch plus the directories whose pending receipts are about
+        // to disappear in that tail.
         let mut summary = scanner::ScanSummary::default();
-        scanner::run_index_tail(&conn, &settings, &|_| {}, &mut summary)?;
+        scanner::run_index_tail_for_dirs(&conn, &settings, &affected_dirs, &|_| {}, &mut summary)?;
         crate::derived_work::wake(true);
-        logging::info("watcher pass", json!({ "dirs": dirs.len(), "changed": changed }));
+        logging::info(
+            "watcher pass",
+            json!({ "dirs": dirs.len(), "changed": changed }),
+        );
     }
+    scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
     Ok(changed)
 }

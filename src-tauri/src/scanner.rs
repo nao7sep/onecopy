@@ -245,6 +245,98 @@ fn like_prefix(root: &str) -> String {
     format!("{}%", ensure_trailing_separator(&escaped))
 }
 
+fn relationship_path_key(path: &str) -> String {
+    let mut key = path.replace('\\', "/").to_lowercase();
+    while key.len() > 1 && key.ends_with('/') {
+        key.pop();
+    }
+    key
+}
+
+fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
+    let directory = relationship_path_key(directory);
+    let root = relationship_path_key(root);
+    (root == "/" && directory.starts_with('/'))
+        || directory == root
+        || (directory.starts_with(&root)
+            && directory
+                .as_bytes()
+                .get(root.len())
+                .is_some_and(|separator| *separator == b'/'))
+}
+
+/// Marks the already-complete scan roots touched by a scoped repair. The
+/// marker is deliberately coarse and already part of the walk checkpoint: a
+/// crash before local pairing completes makes startup run one full repairing
+/// walk, without adding a directory job table or a second relationship truth.
+/// Roots that were dirty before this repair are never returned and therefore
+/// never cleared by its success path.
+pub fn begin_scoped_index_repair(
+    conn: &Connection,
+    dirs: &[String],
+) -> Result<Vec<String>, String> {
+    if dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+    let mut statement = transaction
+        .prepare(
+            "SELECT root FROM scan_dirs
+             WHERE last_completed_at_utc IS NOT NULL AND dirty = 0",
+        )
+        .map_err(|error| error.to_string())?;
+    let clean_roots = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+
+    let mut touched = std::collections::HashSet::<String>::new();
+    for dir in dirs {
+        let mut matched = false;
+        for root in &clean_roots {
+            if directory_belongs_to_root(dir, root) {
+                touched.insert(root.clone());
+                matched = true;
+            }
+        }
+        // An alias or vanished directory may not compare lexically. Marking
+        // every clean root is conservative but recoverable; failing to mark
+        // any would let a crash preserve stale relationships indefinitely.
+        if !matched {
+            touched.extend(clean_roots.iter().cloned());
+        }
+    }
+
+    let mut roots: Vec<String> = touched.into_iter().collect();
+    roots.sort_by_key(|root| root.to_lowercase());
+    for root in &roots {
+        transaction
+            .execute(
+                "UPDATE scan_dirs SET dirty = 1
+             WHERE root = ?1 AND last_completed_at_utc IS NOT NULL AND dirty = 0",
+                [root],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(roots)
+}
+
+pub fn complete_scoped_index_repair(
+    conn: &Connection,
+    roots_marked_by_repair: &[String],
+) -> Result<(), String> {
+    for root in roots_marked_by_repair {
+        conn.execute("UPDATE scan_dirs SET dirty = 0 WHERE root = ?1", [root])
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 /// Forgets every file under a root the user has stopped configuring.
 ///
 /// Removing a source directory means "stop handling this folder". Without
@@ -463,7 +555,12 @@ pub fn run_full_scan(
         summary.failures += stats.errors;
     }
 
+    // Each root's walk checkpoint is independently complete above. Mark the
+    // roots again for the projection tail so a crash after rows go missing but
+    // before pairing commits cannot leave stale relationships looking final.
+    let tail_roots = begin_scoped_index_repair(conn, &settings.source_dirs)?;
     run_index_tail(conn, settings, progress, &mut summary)?;
+    complete_scoped_index_repair(conn, &tail_roots)?;
     Ok(summary)
 }
 
@@ -543,6 +640,39 @@ pub fn run_index_tail(
     progress: &dyn Fn(ScanProgress),
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
+    let recovery_dirs = pending_index_dirs(conn)?;
+    let repair_roots = begin_scoped_index_repair(conn, &recovery_dirs)?;
+    run_index_tail_scoped(conn, settings, None, progress, summary)?;
+    complete_scoped_index_repair(conn, &repair_roots)
+}
+
+/// The same durable tail for a watcher/section repair. Directory scope applies
+/// only to pairing: hashing, extraction, and date resolution continue to drain
+/// every owed row, and their directories are captured before those receipts
+/// disappear so the final relationship projection cannot miss older debt.
+pub fn run_index_tail_for_dirs(
+    conn: &Connection,
+    settings: &ScanSettings,
+    dirs: &[String],
+    progress: &dyn Fn(ScanProgress),
+    summary: &mut ScanSummary,
+) -> Result<(), String> {
+    let mut pair_dirs = pending_index_dirs(conn)?;
+    pair_dirs.extend(dirs.iter().cloned());
+    pair_dirs.sort();
+    pair_dirs.dedup();
+    let repair_roots = begin_scoped_index_repair(conn, &pair_dirs)?;
+    run_index_tail_scoped(conn, settings, Some(&pair_dirs), progress, summary)?;
+    complete_scoped_index_repair(conn, &repair_roots)
+}
+
+fn run_index_tail_scoped(
+    conn: &Connection,
+    settings: &ScanSettings,
+    pair_dirs: Option<&[String]>,
+    progress: &dyn Fn(ScanProgress),
+    summary: &mut ScanSummary,
+) -> Result<(), String> {
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
     let hash_stats = hash_pending_with_progress(conn, &cache, progress)?;
     summary.full_hashed = hash_stats.full_hashed;
@@ -560,7 +690,8 @@ pub fn run_index_tail(
     summary.resolved = resolve_stats.resolved;
     summary.undated = resolve_stats.undated;
 
-    let pair_stats = pair_companions_with_progress(conn, settings.pairing_enabled, progress)?;
+    let pair_stats =
+        pair_companions_with_progress(conn, settings.pairing_enabled, pair_dirs, progress)?;
     summary.paired = pair_stats.paired;
 
     progress(ScanProgress::completed(
@@ -571,6 +702,28 @@ pub fn run_index_tail(
     ));
 
     Ok(())
+}
+
+fn pending_index_dirs(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT DISTINCT p.dir_path FROM paths p
+             WHERE p.missing = 0 AND (
+               (p.content_hash IS NULL AND p.kind IN ('image', 'video'))
+               OR p.indexed_at_utc IS NULL
+               OR (p.indexed_at_utc IS NOT NULL AND p.resolved_source IS NULL)
+               OR (p.kind IN ('image', 'video') AND NOT EXISTS (
+                    SELECT 1 FROM evidence e
+                    WHERE e.path_id = p.id AND e.source = 'live-photo-identifier'))
+             )",
+        )
+        .map_err(|error| error.to_string())?;
+    let dirs = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(dirs)
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -1612,91 +1765,245 @@ pub struct PairStats {
     pub paired: u64,
 }
 
+fn raw_pair_candidates_sql(scoped: bool) -> String {
+    let from = if scoped {
+        "FROM onecopy_pair_scope scope
+         CROSS JOIN paths companion INDEXED BY idx_paths_pairing"
+    } else {
+        "FROM paths companion"
+    };
+    let scope = scoped
+        .then_some(" AND companion.dir_path = scope.dir_path")
+        .unwrap_or("");
+    format!(
+        "INSERT INTO onecopy_pair_results (path_id, primary_id)
+         SELECT companion.id, (
+           SELECT candidate.id FROM paths candidate
+           WHERE candidate.dir_path = companion.dir_path
+             AND candidate.stem = companion.stem
+             AND candidate.kind IN ('image', 'video')
+             AND candidate.missing = 0
+           ORDER BY candidate.id LIMIT 1)
+         {from}
+         WHERE companion.kind = 'companion' AND companion.missing = 0{scope}"
+    )
+}
+
+fn live_photo_pair_candidates_sql(scoped: bool) -> String {
+    let from = if scoped {
+        "FROM onecopy_pair_scope scope
+         CROSS JOIN paths video INDEXED BY idx_paths_pairing"
+    } else {
+        "FROM paths video"
+    };
+    let scope = scoped
+        .then_some(" AND video.dir_path = scope.dir_path")
+        .unwrap_or("");
+    format!(
+        "INSERT INTO onecopy_pair_results (path_id, primary_id)
+         SELECT video.id, (
+           SELECT image.id
+           FROM paths image INDEXED BY idx_paths_dir
+           WHERE image.dir_path = video.dir_path
+             AND image.kind = 'image' AND image.missing = 0
+             AND EXISTS (
+               SELECT 1 FROM evidence image_id
+               WHERE image_id.path_id = image.id
+                 AND image_id.source = 'live-photo-identifier'
+                 AND image_id.raw IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM evidence video_id
+                   WHERE video_id.path_id = video.id
+                     AND video_id.source = 'live-photo-identifier'
+                     AND video_id.raw = image_id.raw))
+           ORDER BY image.id LIMIT 1)
+         {from}
+         WHERE video.kind = 'video' AND video.missing = 0{scope}"
+    )
+}
+
 /// Rebuilds every enabled companion relationship. RAW/sidecar companions use
 /// same-directory + lowercased stem. Live Photo MOVs use same-directory +
 /// exact Apple content identifier and may have unrelated stems. The lowest-id
 /// primary wins any ambiguous match. Disabled pairing leaves every row
 /// independent.
 pub fn pair_companions(conn: &Connection, enabled: bool) -> Result<PairStats, String> {
-    pair_companions_with_progress(conn, enabled, &|_| {})
+    pair_companions_with_progress(conn, enabled, None, &|_| {})
+}
+
+pub fn pair_companions_in_dirs(
+    conn: &Connection,
+    enabled: bool,
+    dirs: &[String],
+) -> Result<PairStats, String> {
+    pair_companions_with_progress(conn, enabled, Some(dirs), &|_| {})
 }
 
 fn pair_companions_with_progress(
     conn: &Connection,
     enabled: bool,
+    dirs: Option<&[String]>,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<PairStats, String> {
-    let total = if enabled { 3 } else { 1 };
-    let mut phase = ScanProgress::phase(
-        ScanPhase::Pair,
-        total,
-        Some(ScanPhase::Indexed),
-    );
+    let mut phase = ScanProgress::phase(ScanPhase::Pair, 1, Some(ScanPhase::Indexed));
     progress(phase.clone());
-    conn.execute("UPDATE paths SET companion_of = NULL WHERE companion_of IS NOT NULL", [])
-        .map_err(|e| e.to_string())?;
-    phase.done = 1;
-    progress(phase.clone());
-    if !enabled {
-        return Ok(PairStats::default());
+    check_cancel()?;
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+    let outcome = (|| -> Result<PairStats, String> {
+        transaction
+            .execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS onecopy_pair_scope (
+               dir_path TEXT PRIMARY KEY
+             ) WITHOUT ROWID;
+             CREATE TEMP TABLE IF NOT EXISTS onecopy_pair_results (
+               path_id INTEGER PRIMARY KEY,
+               primary_id INTEGER
+             ) WITHOUT ROWID;
+             DELETE FROM onecopy_pair_scope;
+             DELETE FROM onecopy_pair_results;",
+            )
+            .map_err(|error| error.to_string())?;
+
+        if let Some(dirs) = dirs {
+            let mut insert_scope = transaction
+                .prepare("INSERT OR IGNORE INTO onecopy_pair_scope (dir_path) VALUES (?1)")
+                .map_err(|error| error.to_string())?;
+            for dir in dirs {
+                insert_scope
+                    .execute([dir])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+
+        let update_scope = dirs
+            .is_some()
+            .then_some(" AND paths.dir_path IN (SELECT dir_path FROM onecopy_pair_scope)")
+            .unwrap_or("");
+
+        if enabled {
+            // Target row first, then a same-directory indexed lookup. The
+            // scalar subquery prevents duplicate backup trees with the same
+            // Apple identifier from forming a fleet-wide evidence cross-product.
+            transaction
+                .execute(&raw_pair_candidates_sql(dirs.is_some()), [])
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM onecopy_pair_results WHERE primary_id IS NULL",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+
+            transaction
+                .execute(&live_photo_pair_candidates_sql(dirs.is_some()), [])
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM onecopy_pair_results WHERE primary_id IS NULL",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+
+        check_cancel()?;
+        transaction
+            .execute(
+                &format!(
+                    "UPDATE paths SET companion_of = NULL
+                 WHERE companion_of IS NOT NULL{update_scope}
+                   AND NOT EXISTS (
+                     SELECT 1 FROM onecopy_pair_results desired
+                     WHERE desired.path_id = paths.id
+                       AND desired.primary_id = paths.companion_of)"
+                ),
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE paths
+             SET companion_of = (
+               SELECT desired.primary_id FROM onecopy_pair_results desired
+               WHERE desired.path_id = paths.id)
+             WHERE id IN (SELECT path_id FROM onecopy_pair_results)
+               AND companion_of IS NOT (
+                 SELECT desired.primary_id FROM onecopy_pair_results desired
+                 WHERE desired.path_id = paths.id)",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        let paired = transaction
+            .query_row("SELECT COUNT(*) FROM onecopy_pair_results", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|error| error.to_string())? as u64;
+        Ok(PairStats { paired })
+    })();
+
+    match outcome {
+        Ok(stats) => {
+            transaction.commit().map_err(|error| error.to_string())?;
+            phase.done = 1;
+            progress(phase);
+            Ok(stats)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod pairing_plan_tests {
+    // EXCEPTION to tests-folder conventions: these assertions exercise the
+    // private SQL builders used verbatim by pairing. Duplicating the queries in
+    // an integration test could pass after production regressed.
+    use super::{live_photo_pair_candidates_sql, raw_pair_candidates_sql};
+
+    fn plan(conn: &rusqlite::Connection, sql: String) -> Vec<String> {
+        let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
     }
 
-    check_cancel()?;
-    let mut updated = conn
-        .execute(
-            "UPDATE paths SET companion_of = (
-                SELECT p.id FROM paths p
-                WHERE p.dir_path = paths.dir_path AND p.stem = paths.stem
-                  AND p.kind IN ('image', 'video') AND p.missing = 0
-                ORDER BY p.id LIMIT 1)
-             WHERE kind = 'companion' AND missing = 0 AND companion_of IS NULL
-               AND EXISTS (
-                SELECT 1 FROM paths p
-                WHERE p.dir_path = paths.dir_path AND p.stem = paths.stem
-                  AND p.kind IN ('image', 'video') AND p.missing = 0)",
-            [],
+    #[test]
+    fn scoped_candidate_queries_seek_directories_before_relationship_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        conn.execute_batch(
+            "CREATE TEMP TABLE onecopy_pair_scope (
+               dir_path TEXT PRIMARY KEY
+             ) WITHOUT ROWID;
+             CREATE TEMP TABLE onecopy_pair_results (
+               path_id INTEGER PRIMARY KEY,
+               primary_id INTEGER
+             ) WITHOUT ROWID;",
         )
-        .map_err(|e| e.to_string())?;
-    phase.done = 2;
-    progress(phase.clone());
+        .unwrap();
 
-    check_cancel()?;
-    updated += conn
-        .execute(
-            "UPDATE paths SET companion_of = (
-               SELECT image.id
-               FROM evidence video_id
-               JOIN evidence image_id
-                 ON image_id.source = 'live-photo-identifier'
-                AND image_id.raw = video_id.raw
-               JOIN paths image ON image.id = image_id.path_id
-               WHERE video_id.path_id = paths.id
-                 AND video_id.source = 'live-photo-identifier'
-                 AND video_id.raw IS NOT NULL
-                 AND image.kind = 'image' AND image.missing = 0
-                 AND image.dir_path = paths.dir_path
-               ORDER BY image.id LIMIT 1)
-             WHERE kind = 'video' AND missing = 0 AND companion_of IS NULL
-               AND EXISTS (
-                 SELECT 1
-                 FROM evidence video_id
-                 JOIN evidence image_id
-                   ON image_id.source = 'live-photo-identifier'
-                  AND image_id.raw = video_id.raw
-                 JOIN paths image ON image.id = image_id.path_id
-                 WHERE video_id.path_id = paths.id
-                   AND video_id.source = 'live-photo-identifier'
-                   AND video_id.raw IS NOT NULL
-                   AND image.kind = 'image' AND image.missing = 0
-                   AND image.dir_path = paths.dir_path)",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
-    phase.done = 3;
-    progress(phase);
-    Ok(PairStats {
-        paired: updated as u64,
-    })
+        let raw = plan(&conn, raw_pair_candidates_sql(true)).join("\n");
+        assert!(raw.contains("idx_paths_pairing (dir_path=?)"), "{raw}");
+        assert!(
+            raw.contains("idx_paths_pairing (dir_path=? AND stem=?)"),
+            "{raw}"
+        );
+
+        let live = plan(&conn, live_photo_pair_candidates_sql(true)).join("\n");
+        assert!(live.contains("idx_paths_pairing (dir_path=?)"), "{live}");
+        assert!(live.contains("idx_paths_dir (dir_path=?)"), "{live}");
+        assert_eq!(
+            live.matches("idx_evidence_path (path_id=?)").count(),
+            2,
+            "{live}"
+        );
+        assert!(
+            !live.contains("idx_evidence_source_raw"),
+            "a global identifier lookup must never drive local pairing:\n{live}"
+        );
+    }
 }
 
 fn store_content_hash(

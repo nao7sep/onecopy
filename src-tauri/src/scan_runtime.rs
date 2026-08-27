@@ -13,6 +13,12 @@ use tauri::{AppHandle, Emitter};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+// Every index-producing workflow shares this one ephemeral owner. The scan
+// worker, watcher repair, section rescan, and settings re-resolution may use
+// different connections and threads, but their semantic pipelines must never
+// interleave. SQLite serializes individual writes; this serializes the whole
+// fact-to-projection operation.
+static INDEXING: Mutex<()> = Mutex::new(());
 
 struct RunningClaim<'a>(&'a AtomicBool);
 
@@ -24,6 +30,13 @@ impl Drop for RunningClaim<'_> {
 
 pub fn running() -> bool {
     RUNNING.load(Ordering::SeqCst)
+}
+
+pub fn with_index_claim<T>(work: impl FnOnce() -> T) -> T {
+    let _claim = INDEXING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    work()
 }
 
 /// `(resume_wanted, needs_walk)`. A cancelled walk can leave directories
@@ -120,19 +133,21 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
                     let _ = handle.emit("scan://progress", progress);
                 }
             };
-            let outcome = crate::index_store::open(&db_file).and_then(|conn| {
-                if include_walk {
-                    crate::scanner::run_full_scan(&conn, &settings, &emit_progress)
-                } else {
-                    let mut summary = crate::scanner::ScanSummary::default();
-                    crate::scanner::run_index_tail(
-                        &conn,
-                        &settings,
-                        &emit_progress,
-                        &mut summary,
-                    )
-                    .map(|()| summary)
-                }
+            let outcome = with_index_claim(|| {
+                crate::index_store::open(&db_file).and_then(|conn| {
+                    if include_walk {
+                        crate::scanner::run_full_scan(&conn, &settings, &emit_progress)
+                    } else {
+                        let mut summary = crate::scanner::ScanSummary::default();
+                        crate::scanner::run_index_tail(
+                            &conn,
+                            &settings,
+                            &emit_progress,
+                            &mut summary,
+                        )
+                        .map(|()| summary)
+                    }
+                })
             });
             match outcome {
                 Ok(summary) => {
@@ -172,7 +187,7 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::RunningClaim;
+    use super::{with_index_claim, RunningClaim};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -183,6 +198,41 @@ mod tests {
             panic!("worker stopped unexpectedly");
         });
         assert!(!running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn one_index_claim_serializes_whole_workflows() {
+        let (first_entered_tx, first_entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (second_attempted_tx, second_attempted_rx) = std::sync::mpsc::channel();
+        let (second_entered_tx, second_entered_rx) = std::sync::mpsc::channel();
+
+        let first = std::thread::spawn(move || {
+            with_index_claim(|| {
+                first_entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+        });
+        first_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+
+        let second = std::thread::spawn(move || {
+            second_attempted_tx.send(()).unwrap();
+            with_index_claim(|| second_entered_tx.send(()).unwrap());
+        });
+        second_attempted_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(second_entered_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+        release_tx.send(()).unwrap();
+        second_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
     }
 }
 

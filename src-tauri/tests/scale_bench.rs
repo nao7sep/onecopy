@@ -177,6 +177,87 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
 
 #[test]
 #[ignore]
+fn scoped_pairing_stays_inside_one_directory_among_one_million_duplicate_tree_paths() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-pair-scope-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let seeded = Instant::now();
+    conn.execute_batch(
+        "BEGIN;
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 499999
+         ), kind(slot, name, ext) AS (
+           VALUES(0, 'still', 'jpg'), (1, 'motion', 'mov')
+         )
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, stem, ext, kind, missing)
+         SELECT n * 2 + slot + 1,
+                printf('/backup-%06d/%s.%s', n, name, ext),
+                printf('/backup-%06d', n),
+                printf('%s.%s', name, ext), name, ext,
+                CASE slot WHEN 0 THEN 'image' ELSE 'video' END, 0
+         FROM seq CROSS JOIN kind;
+         INSERT INTO evidence (path_id, source, raw)
+           SELECT id, 'live-photo-identifier', 'shared-across-every-backup'
+           FROM paths;
+         COMMIT;",
+    )
+    .unwrap();
+    eprintln!(
+        "seeded one million paths and evidence rows in {:?}",
+        seeded.elapsed()
+    );
+
+    let target = vec!["/backup-499999".to_string()];
+    let started = Instant::now();
+    let stats = scanner::pair_companions_in_dirs(&conn, true, &target).unwrap();
+    eprintln!("scoped one-directory pairing in {:?}", started.elapsed());
+    assert_eq!(stats.paired, 1);
+    let links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(links, 1, "the other 499,999 cohorts remain untouched");
+
+    let enabled = Instant::now();
+    assert_eq!(
+        scanner::pair_companions(&conn, true).unwrap().paired,
+        500_000
+    );
+    eprintln!(
+        "globally enabled 500,000 cohorts in {:?}",
+        enabled.elapsed()
+    );
+    let disabled = Instant::now();
+    assert_eq!(scanner::pair_companions(&conn, false).unwrap().paired, 0);
+    eprintln!("globally disabled pairing in {:?}", disabled.elapsed());
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    let reenabled = Instant::now();
+    assert_eq!(
+        scanner::pair_companions(&conn, true).unwrap().paired,
+        500_000
+    );
+    eprintln!(
+        "globally re-enabled 500,000 cohorts in {:?}",
+        reenabled.elapsed()
+    );
+}
+
+#[test]
+#[ignore]
 fn scan_wall_clock_against_the_corpus() {
     let corpus = std::env::var("ONECOPY_BENCH_CORPUS").expect("set ONECOPY_BENCH_CORPUS");
     let home = tempfile::Builder::new()

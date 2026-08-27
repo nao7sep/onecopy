@@ -563,7 +563,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
     logging::boundary(
         "re_resolve_all",
         json!({}),
-        || {
+        || scan_runtime::with_index_claim(|| {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
@@ -580,7 +580,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
             scanner::pair_companions(&conn, settings.pairing_enabled)?;
             derived_work::wake(true);
             Ok(stats.resolved)
-        },
+        }),
         |resolved| json!({ "resolved": resolved }),
     )
 }
@@ -593,7 +593,7 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
     logging::boundary(
         "rescan_section",
         json!({ "kind": kind, "month": month }),
-        || {
+        || scan_runtime::with_index_claim(|| {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
@@ -603,6 +603,7 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
             );
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
+            let repair_roots = scanner::begin_scoped_index_repair(&conn, &dirs)?;
             let mut changed = 0u64;
             for dir in &dirs {
                 changed += watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists)?;
@@ -612,11 +613,18 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
             // rescan command.
             if changed > 0 || scanner::pending_index_work_exists(&conn)? {
                 let mut summary = scanner::ScanSummary::default();
-                scanner::run_index_tail(&conn, &settings, &|_| {}, &mut summary)?;
+                scanner::run_index_tail_for_dirs(
+                    &conn,
+                    &settings,
+                    &dirs,
+                    &|_| {},
+                    &mut summary,
+                )?;
                 derived_work::wake(true);
             }
+            scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
             Ok(changed)
-        },
+        }),
         |changed| json!({ "changed": changed }),
     )
 }
