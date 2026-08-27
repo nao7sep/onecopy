@@ -6,10 +6,10 @@
 
 use std::time::Instant;
 
+use onecopy_lib::derived_state;
 use onecopy_lib::index_store;
 use onecopy_lib::queries;
 use onecopy_lib::scanner;
-use onecopy_lib::derived_state;
 use onecopy_lib::similarity::{rebuild_groups, SimilarityConfig};
 use rusqlite::params;
 
@@ -62,6 +62,59 @@ fn six_item_section_in_a_million_row_index() {
         started.elapsed()
     );
     assert_eq!(items.len(), 6);
+}
+
+#[test]
+#[ignore]
+fn section_counts_across_one_million_logical_items() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-section-counts-")
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, kind, missing)
+         VALUES (1, '/representative', '/', 'representative', 'other', 1);
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO contents (hash, byte_size, kind)
+         SELECT printf('count-%07d', n), 1,
+                CASE n % 3 WHEN 0 THEN 'image' WHEN 1 THEN 'video' ELSE 'other' END
+         FROM seq;
+         INSERT INTO logical_contents
+           (content_hash, kind, resolved_utc_ms, representative_path_id,
+            live_copy_count, names_differ)
+         SELECT hash, kind,
+                1262304000000 + (CAST(substr(hash, 7) AS INTEGER) % 5844) * 86400000,
+                1, 1, 0
+         FROM contents;
+         COMMIT;",
+    )
+    .unwrap();
+
+    let first = Instant::now();
+    let counts = queries::cached_section_counts(&db, chrono_tz::Asia::Tokyo).unwrap();
+    eprintln!("first million-row section count in {:?}", first.elapsed());
+    let total: u64 = counts
+        .images
+        .iter()
+        .chain(&counts.videos)
+        .chain(&counts.others)
+        .map(|section| section.count)
+        .sum();
+    assert_eq!(total, 1_000_000);
+
+    let repeated = Instant::now();
+    let repeated_counts = queries::cached_section_counts(&db, chrono_tz::Asia::Tokyo).unwrap();
+    eprintln!(
+        "repeated million-row section count in {:?}",
+        repeated.elapsed()
+    );
+    assert_eq!(repeated_counts, counts);
 }
 
 #[test]

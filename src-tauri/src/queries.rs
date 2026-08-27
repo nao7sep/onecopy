@@ -9,8 +9,10 @@
 //! belong to the new month, and SQL's UTC month would misfile them.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use chrono::TimeZone;
+use chrono::{Datelike, TimeZone};
 use chrono_tz::Tz;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -23,7 +25,7 @@ pub struct MonthSection {
     pub count: u64,
 }
 
-#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Debug, Default, PartialEq, Eq, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SectionCounts {
     pub images: Vec<MonthSection>,
@@ -31,68 +33,217 @@ pub struct SectionCounts {
     pub others: Vec<MonthSection>,
 }
 
+const LOGICAL_MONTH_COUNT_SQL: &str =
+    "SELECT COUNT(*) FROM logical_contents INDEXED BY idx_logical_contents_section
+     WHERE kind = ?1 AND resolved_utc_ms >= ?2 AND resolved_utc_ms < ?3";
+const UNHASHED_OTHER_MONTH_COUNT_SQL: &str =
+    "SELECT COUNT(*) FROM paths INDEXED BY idx_paths_unhashed_other_section
+     WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+       AND kind NOT IN ('image', 'video')
+       AND resolved_utc_ms >= ?1 AND resolved_utc_ms < ?2";
+const LOGICAL_UNDATED_COUNT_SQL: &str =
+    "SELECT COUNT(*) FROM logical_contents INDEXED BY idx_logical_contents_section
+     WHERE kind = ?1 AND resolved_utc_ms IS NULL";
+const UNHASHED_OTHER_UNDATED_COUNT_SQL: &str =
+    "SELECT COUNT(*) FROM paths INDEXED BY idx_paths_unhashed_other_section
+     WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+       AND kind NOT IN ('image', 'video') AND resolved_utc_ms IS NULL";
+
 /// Logical items per kind per month (oldest month first, Undated last).
 pub fn section_counts(conn: &Connection, display_tz: Tz) -> Result<SectionCounts, String> {
-    // Hashed logical items are already collapsed by the write-through read
-    // model. Counting no longer joins or groups every physical path.
-    let mut stmt = conn
-        .prepare("SELECT kind, resolved_utc_ms FROM logical_contents")
-        .map_err(|e| e.to_string())?;
-    let hashed: Vec<(String, Option<i64>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-
-    // Unhashed logical items: unique-size other-files, one row each.
-    let mut stmt = conn
-        .prepare(
-            "SELECT kind, resolved_utc_ms FROM paths \
-             WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL \
-               AND kind NOT IN ('image', 'video')",
-        )
-        .map_err(|e| e.to_string())?;
-    let unhashed: Vec<(String, Option<i64>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-
-    let mut images: HashMap<String, u64> = HashMap::new();
-    let mut videos: HashMap<String, u64> = HashMap::new();
-    let mut others: HashMap<String, u64> = HashMap::new();
-
-    let mut bucket = |kind: &str, month: String| {
-        let map = match kind {
-            "image" => &mut images,
-            "video" => &mut videos,
-            _ => &mut others,
-        };
-        *map.entry(month).or_insert(0) += 1;
-    };
-
-    for (kind, resolved_ms) in hashed {
-        let month = match resolved_ms {
-            Some(ms) => month_key(ms, display_tz),
-            _ => "undated".to_string(),
-        };
-        bucket(&kind, month);
-    }
-    for (kind, ms) in unhashed {
-        let month = match ms {
-            Some(ms) => month_key(ms, display_tz),
-            None => "undated".to_string(),
-        };
-        bucket(&kind, month);
-    }
-
     Ok(SectionCounts {
-        images: sorted_sections(images),
-        videos: sorted_sections(videos),
-        others: sorted_sections(others),
+        images: sections_for_kind(conn, "image", display_tz)?,
+        videos: sections_for_kind(conn, "video", display_tz)?,
+        others: sections_for_kind(conn, "other", display_tz)?,
     })
+}
+
+fn logical_edge_sql(newest: bool) -> String {
+    let direction = if newest { "DESC" } else { "ASC" };
+    format!(
+        "SELECT resolved_utc_ms
+         FROM logical_contents INDEXED BY idx_logical_contents_section
+         WHERE kind = ?1 AND resolved_utc_ms IS NOT NULL
+         ORDER BY resolved_utc_ms {direction} LIMIT 1"
+    )
+}
+
+fn unhashed_other_edge_sql(newest: bool) -> String {
+    let direction = if newest { "DESC" } else { "ASC" };
+    format!(
+        "SELECT resolved_utc_ms
+         FROM paths INDEXED BY idx_paths_unhashed_other_section
+         WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+           AND kind NOT IN ('image', 'video') AND resolved_utc_ms IS NOT NULL
+         ORDER BY resolved_utc_ms {direction} LIMIT 1"
+    )
+}
+
+fn optional_edge(conn: &Connection, sql: &str, kind: Option<&str>) -> Result<Option<i64>, String> {
+    let result = match kind {
+        Some(kind) => conn.query_row(sql, [kind], |row| row.get(0)).optional(),
+        None => conn.query_row(sql, [], |row| row.get(0)).optional(),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+fn sections_for_kind(
+    conn: &Connection,
+    kind: &str,
+    display_tz: Tz,
+) -> Result<Vec<MonthSection>, String> {
+    let mut oldest = vec![optional_edge(conn, &logical_edge_sql(false), Some(kind))?];
+    let mut newest = vec![optional_edge(conn, &logical_edge_sql(true), Some(kind))?];
+    if kind == "other" {
+        oldest.push(optional_edge(conn, &unhashed_other_edge_sql(false), None)?);
+        newest.push(optional_edge(conn, &unhashed_other_edge_sql(true), None)?);
+    }
+    let oldest = oldest.into_iter().flatten().min();
+    let newest = newest.into_iter().flatten().max();
+    let mut sections = Vec::new();
+
+    if let (Some(oldest), Some(newest)) = (oldest, newest) {
+        let oldest = display_tz
+            .timestamp_millis_opt(oldest)
+            .earliest()
+            .ok_or_else(|| "oldest resolved timestamp is outside the calendar".to_string())?;
+        let newest = display_tz
+            .timestamp_millis_opt(newest)
+            .latest()
+            .ok_or_else(|| "newest resolved timestamp is outside the calendar".to_string())?;
+        let (mut year, mut month) = (oldest.year(), oldest.month());
+        let last = (newest.year(), newest.month());
+        let mut logical_count = conn
+            .prepare(LOGICAL_MONTH_COUNT_SQL)
+            .map_err(|error| error.to_string())?;
+        let mut other_count = (kind == "other")
+            .then(|| conn.prepare(UNHASHED_OTHER_MONTH_COUNT_SQL))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+
+        loop {
+            let key = format!("{year:04}-{month:02}");
+            let (start, end) = month_bounds(&key, display_tz)?
+                .ok_or_else(|| format!("dated month unexpectedly has no bounds: {key}"))?;
+            let mut count = logical_count
+                .query_row(rusqlite::params![kind, start, end], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| error.to_string())?
+                .max(0) as u64;
+            if let Some(statement) = &mut other_count {
+                count += statement
+                    .query_row(rusqlite::params![start, end], |row| row.get::<_, i64>(0))
+                    .map_err(|error| error.to_string())?
+                    .max(0) as u64;
+            }
+            if count > 0 {
+                sections.push(MonthSection { month: key, count });
+            }
+            if (year, month) == last {
+                break;
+            }
+            if month == 12 {
+                year += 1;
+                month = 1;
+            } else {
+                month += 1;
+            }
+        }
+    }
+
+    let mut undated = conn
+        .query_row(LOGICAL_UNDATED_COUNT_SQL, [kind], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| error.to_string())?
+        .max(0) as u64;
+    if kind == "other" {
+        undated += conn
+            .query_row(UNHASHED_OTHER_UNDATED_COUNT_SQL, [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|error| error.to_string())?
+            .max(0) as u64;
+    }
+    if undated > 0 {
+        sections.push(MonthSection {
+            month: "undated".to_string(),
+            count: undated,
+        });
+    }
+    Ok(sections)
+}
+
+struct CachedSectionCounts {
+    data_version: i64,
+    display_tz: Tz,
+    counts: SectionCounts,
+}
+
+struct SectionCountsCache {
+    db_file: PathBuf,
+    conn: Connection,
+    cached: Option<CachedSectionCounts>,
+}
+
+impl SectionCountsCache {
+    fn open(db_file: &Path) -> Result<Self, String> {
+        Ok(Self {
+            db_file: db_file.to_path_buf(),
+            conn: crate::index_store::open(db_file)?,
+            cached: None,
+        })
+    }
+
+    fn load(&mut self, display_tz: Tz) -> Result<(SectionCounts, bool), String> {
+        let data_version = self
+            .conn
+            .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?;
+        if let Some(cached) = &self.cached {
+            if cached.data_version == data_version && cached.display_tz == display_tz {
+                return Ok((cached.counts.clone(), false));
+            }
+        }
+
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Deferred,
+        )
+        .map_err(|error| error.to_string())?;
+        let counts = section_counts(&transaction, display_tz)?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        self.cached = Some(CachedSectionCounts {
+            data_version,
+            display_tz,
+            counts: counts.clone(),
+        });
+        Ok((counts, true))
+    }
+}
+
+static SECTION_COUNTS_CACHE: Mutex<Option<SectionCountsCache>> = Mutex::new(None);
+
+/// Reuses the exact count projection while SQLite reports the same committed
+/// index snapshot and the OS display timezone is unchanged. The cache owns a
+/// read-only-in-practice observer connection, so `PRAGMA data_version` changes
+/// for every writer connection without adding a revision table or trigger.
+pub fn cached_section_counts(db_file: &Path, display_tz: Tz) -> Result<SectionCounts, String> {
+    let mut cache = SECTION_COUNTS_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let needs_connection = cache
+        .as_ref()
+        .is_none_or(|existing| existing.db_file != db_file);
+    if needs_connection {
+        *cache = Some(SectionCountsCache::open(db_file)?);
+    }
+    cache
+        .as_mut()
+        .expect("section count cache was initialized")
+        .load(display_tz)
+        .map(|(counts, _)| counts)
 }
 
 /// One grid row: a logical file within a section. `hash` is None for
@@ -659,31 +810,6 @@ pub(crate) fn month_bounds(month: &str, display_tz: Tz) -> Result<Option<(i64, i
     Ok(Some((start, end)))
 }
 
-fn month_key(unix_ms: i64, tz: Tz) -> String {
-    use chrono::Datelike;
-    match tz.timestamp_millis_opt(unix_ms) {
-        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
-            format!("{:04}-{:02}", dt.year(), dt.month())
-        }
-        chrono::LocalResult::None => "undated".to_string(),
-    }
-}
-
-/// Oldest month first; Undated last.
-fn sorted_sections(map: HashMap<String, u64>) -> Vec<MonthSection> {
-    let mut sections: Vec<MonthSection> = map
-        .into_iter()
-        .map(|(month, count)| MonthSection { month, count })
-        .collect();
-    sections.sort_by(|a, b| match (a.month.as_str(), b.month.as_str()) {
-        ("undated", "undated") => std::cmp::Ordering::Equal,
-        ("undated", _) => std::cmp::Ordering::Greater,
-        (_, "undated") => std::cmp::Ordering::Less,
-        (a, b) => a.cmp(b),
-    });
-    sections
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,6 +858,103 @@ mod tests {
         assert!(
             details.iter().all(|line| !line.starts_with("SCAN p")),
             "section query regressed to a whole paths scan: {details:?}"
+        );
+    }
+
+    #[test]
+    fn sidebar_count_queries_seek_month_and_edge_indexes() {
+        let (_dir, conn) = seeded();
+        let plans = [
+            (
+                LOGICAL_MONTH_COUNT_SQL.to_string(),
+                vec![
+                    rusqlite::types::Value::Text("image".to_string()),
+                    0.into(),
+                    1.into(),
+                ],
+                "idx_logical_contents_section",
+            ),
+            (
+                UNHASHED_OTHER_MONTH_COUNT_SQL.to_string(),
+                vec![0.into(), 1.into()],
+                "idx_paths_unhashed_other_section",
+            ),
+            (
+                logical_edge_sql(false),
+                vec![rusqlite::types::Value::Text("image".to_string())],
+                "idx_logical_contents_section",
+            ),
+            (
+                unhashed_other_edge_sql(false),
+                Vec::new(),
+                "idx_paths_unhashed_other_section",
+            ),
+        ];
+        for (sql, params, expected_index) in plans {
+            let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let details: Vec<String> = statement
+                .query_map(rusqlite::params_from_iter(params), |row| row.get(3))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert!(
+                details.iter().any(|line| line.contains(expected_index)),
+                "sidebar count query lost {expected_index}: {details:?}"
+            );
+            assert!(
+                details.iter().all(|line| !line.contains("USE TEMP B-TREE")),
+                "sidebar count query introduced temporary sorting: {details:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn section_count_cache_tracks_sqlite_revision_and_timezone() {
+        let (dir, writer) = seeded();
+        writer
+            .execute_batch(&format!(
+                "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 1, 'image');
+                 INSERT INTO paths
+                   (abs_path, dir_path, file_name, kind, content_hash,
+                    resolved_utc_ms, resolved_source)
+                 VALUES ('/h1.jpg', '/', 'h1.jpg', 'image', 'h1', {boundary}, 'metadata');",
+                boundary = utc_ms(2016, 3, 31, 22),
+            ))
+            .unwrap();
+        let db = dir.path().join("index.sqlite3");
+        let mut cache = SectionCountsCache::open(&db).unwrap();
+
+        let (tokyo, first_recomputed) = cache.load(chrono_tz::Asia::Tokyo).unwrap();
+        assert!(first_recomputed);
+        assert_eq!(tokyo.images[0].month, "2016-04");
+        let (_, repeated_recomputed) = cache.load(chrono_tz::Asia::Tokyo).unwrap();
+        assert!(!repeated_recomputed);
+
+        writer
+            .execute_batch(&format!(
+                "INSERT INTO contents (hash, byte_size, kind) VALUES ('h2', 1, 'image');
+                 INSERT INTO paths
+                   (abs_path, dir_path, file_name, kind, content_hash,
+                    resolved_utc_ms, resolved_source)
+                 VALUES ('/h2.jpg', '/', 'h2.jpg', 'image', 'h2', {earlier}, 'metadata');",
+                earlier = utc_ms(2016, 3, 1, 0),
+            ))
+            .unwrap();
+        let (updated, revision_recomputed) = cache.load(chrono_tz::Asia::Tokyo).unwrap();
+        assert!(revision_recomputed);
+        assert_eq!(
+            updated.images.iter().map(|month| month.count).sum::<u64>(),
+            2
+        );
+
+        let (utc, timezone_recomputed) = cache.load(chrono_tz::UTC).unwrap();
+        assert!(timezone_recomputed);
+        assert_eq!(
+            utc.images,
+            vec![MonthSection {
+                month: "2016-03".into(),
+                count: 2
+            }]
         );
     }
 

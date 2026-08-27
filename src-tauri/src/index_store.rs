@@ -18,6 +18,12 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
+// This is an idempotent schema-generation stamp, not a migration ladder. The
+// index is reconstructible and pre-release: bumping the stamp makes the next
+// open apply the complete current schema once, while ordinary read commands
+// avoid replaying DDL and replacing triggers on every connection.
+const SCHEMA_REVISION: i64 = 1;
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
   id               INTEGER PRIMARY KEY,
@@ -81,6 +87,10 @@ CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
 CREATE INDEX IF NOT EXISTS idx_paths_resolved ON paths (kind, resolved_utc_ms);
 CREATE INDEX IF NOT EXISTS idx_paths_companion ON paths (companion_of);
 CREATE INDEX IF NOT EXISTS idx_paths_media_repair_by_id ON paths (missing, id);
+CREATE INDEX IF NOT EXISTS idx_paths_unhashed_other_section
+  ON paths (resolved_utc_ms, id)
+  WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+    AND kind NOT IN ('image', 'video');
 
 -- The UI reads logical items, not physical paths. Keeping this one-row summary
 -- beside the source tables lets opening a small month seek that month instead
@@ -246,6 +256,9 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         .map_err(|e| e.to_string())?;
     conn.pragma_update(None, "busy_timeout", 5000)
         .map_err(|e| e.to_string())?;
+    let schema_revision = conn
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map_err(|error| error.to_string())?;
     let logical_table_exists = conn
         .query_row(
             "SELECT EXISTS(
@@ -257,7 +270,12 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         .map_err(|e| e.to_string())?
         != 0;
     let needs_logical_hydration = !logical_table_exists;
-    if needs_logical_hydration {
+    if schema_revision > SCHEMA_REVISION {
+        return Err(format!(
+            "index schema revision {schema_revision} is newer than this app supports ({SCHEMA_REVISION})"
+        ));
+    }
+    if schema_revision < SCHEMA_REVISION || needs_logical_hydration {
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())?;
         let setup = (|| {
@@ -265,8 +283,9 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
             // Existing development indexes predate the logical read model.
             // Hydrate inside the table-creation transaction so a crash cannot
             // leave a permanently partial projection; later opens are O(1).
-            conn.execute_batch(
-                "INSERT INTO logical_contents
+            if needs_logical_hydration {
+                conn.execute_batch(
+                    "INSERT INTO logical_contents
            (content_hash, kind, resolved_utc_ms, representative_path_id,
             live_copy_count, names_differ)
          SELECT c.hash,
@@ -278,8 +297,11 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
          FROM contents c JOIN paths p ON p.content_hash = c.hash
          WHERE p.missing = 0 AND p.companion_of IS NULL
          GROUP BY c.hash, c.kind",
-            )
-            .map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            conn.pragma_update(None, "user_version", SCHEMA_REVISION)
+                .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();
         match setup {
@@ -289,8 +311,6 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 return Err(error);
             }
         }
-    } else {
-        conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     }
     Ok(conn)
 }
@@ -359,6 +379,11 @@ mod tests {
         let db = dir.path().join("index.sqlite3");
 
         let conn = open(&db).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_REVISION
+        );
         // All v0 tables exist.
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -394,6 +419,29 @@ mod tests {
         // Re-opening an existing file is fine (IF NOT EXISTS schema).
         let conn = open(&db).unwrap();
         upsert_issue(&conn, Some("/x"), "test", "x").unwrap();
+    }
+
+    #[test]
+    fn reopening_a_current_index_does_not_publish_schema_writes() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-index-read-open-")
+            .tempdir()
+            .unwrap();
+        let db = dir.path().join("index.sqlite3");
+        let observer = open(&db).unwrap();
+        let before: i64 = observer
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .unwrap();
+
+        drop(open(&db).unwrap());
+
+        let after: i64 = observer
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "an ordinary connection open must not invalidate read caches"
+        );
     }
 
     #[test]

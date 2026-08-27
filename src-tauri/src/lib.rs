@@ -1202,8 +1202,10 @@ fn get_section_counts(app: AppHandle) -> Result<queries::SectionCounts, String> 
         json!({}),
         || {
             let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            queries::section_counts(&conn, display_timezone())
+            queries::cached_section_counts(
+                &data_root.join(storage::INDEX_DB_FILE_NAME),
+                display_timezone(),
+            )
         },
         |counts| {
             json!({
