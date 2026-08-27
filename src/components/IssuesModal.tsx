@@ -10,8 +10,9 @@ import Button from "./ui/Button";
 // a scan finds the condition resolved; the Dismiss controls are the user's
 // half, for the operation records nothing can re-check. Dismissing a
 // condition that still exists is honest but temporary: the next scan that
-// re-detects it brings it back. Retry is backend-authored and only appears
-// for reconstructible output work; destructive intent is never replayed.
+// re-detects it brings it back. Recovery is backend-authored: reconstructible
+// output may Retry, bounded filesystem conditions may Recheck, and destructive
+// intent is never replayed.
 
 export default function IssuesModal() {
   const open = useIssuesStore((s) => s.open);
@@ -22,7 +23,7 @@ export default function IssuesModal() {
   const load = useIssuesStore((s) => s.load);
   const dismiss = useIssuesStore((s) => s.dismiss);
   const dismissAll = useIssuesStore((s) => s.dismissAll);
-  const retry = useIssuesStore((s) => s.retry);
+  const recover = useIssuesStore((s) => s.recover);
   const retryAll = useIssuesStore((s) => s.retryAll);
   const setOpen = useIssuesStore((s) => s.setOpen);
 
@@ -31,7 +32,9 @@ export default function IssuesModal() {
   }, [open, load]);
 
   if (!open) return null;
-  const retryable = rows.filter((row) => row.recovery?.status === "available").length;
+  const retryable = rows.filter(
+    (row) => row.recovery?.action === "retry" && row.recovery.status === "available",
+  ).length;
 
   return (
     <ModalShell
@@ -72,10 +75,14 @@ export default function IssuesModal() {
                   {row.recovery ? (
                     <Button
                       size="sm"
-                      disabled={row.recovery.status === "queued"}
-                      onClick={() => void retry(row.id)}
+                      disabled={row.recovery.status !== "available"}
+                      onClick={() => void recover(row.id)}
                     >
-                      {row.recovery.status === "queued" ? "Queued" : row.recovery.label}
+                      {row.recovery.status === "queued"
+                        ? "Queued"
+                        : row.recovery.status === "running"
+                          ? "Running"
+                          : row.recovery.label}
                     </Button>
                   ) : null}
                   <span className="text-ink-muted" title={`Last seen ${formatLocalMinute(row.lastSeenUtc)}`}>

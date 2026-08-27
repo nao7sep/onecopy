@@ -47,6 +47,45 @@ fn restat_upserts_new_files_and_marks_vanished_missing() {
     assert_eq!(missing, 1);
 }
 
+#[test]
+fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-watch-unreadable-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let root = dir.path().join("watched");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("known.jpg"), b"known").unwrap();
+    restat_dir(&conn, &root, &lists()).unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(restat_dir(&conn, &root, &lists()).is_err());
+    let missing: i64 = conn
+        .query_row("SELECT missing FROM paths", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(missing, 0, "failed enumeration proves nothing about absence");
+    let issues: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE kind = 'walk-error' AND path = ?1",
+            [root.to_string_lossy().as_ref()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(issues, 1, "the failure must remain visible and recheckable");
+
+    std::fs::create_dir_all(&root).unwrap();
+    assert_eq!(restat_dir(&conn, &root, &lists()).unwrap(), 1);
+    let state: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT missing FROM paths), (SELECT COUNT(*) FROM issues)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, (1, 0), "success retires the current condition");
+}
+
 #[cfg(windows)]
 #[test]
 fn restat_uses_the_same_windows_spelling_as_a_full_scan() {

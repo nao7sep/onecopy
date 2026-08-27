@@ -18,7 +18,15 @@ export interface IssueRow {
   message: string | null;
   firstSeenUtc: string;
   lastSeenUtc: string;
-  recovery: { label: string; status: "available" | "queued" } | null;
+  recovery: {
+    action: "retry" | "recheck";
+    label: string;
+    status: "available" | "queued" | "running";
+  } | null;
+}
+
+interface RecheckResult {
+  status: "started" | "busy" | "stillFailing" | "notRecoverable";
 }
 
 interface IssuesState {
@@ -33,7 +41,7 @@ interface IssuesState {
   setOpen: (open: boolean) => void;
   dismiss: (id: number) => Promise<void>;
   dismissAll: () => Promise<void>;
-  retry: (id: number) => Promise<void>;
+  recover: (id: number) => Promise<void>;
   retryAll: () => Promise<void>;
 }
 
@@ -85,14 +93,36 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     }
   },
 
-  retry: async (id) => {
+  recover: async (id) => {
+    const recovery = get().rows.find((row) => row.id === id)?.recovery;
+    if (!recovery || recovery.status !== "available") return;
     set({ error: null });
+    set((state) => ({
+      rows: state.rows.map((row) =>
+        row.id === id && row.recovery
+          ? { ...row, recovery: { ...row.recovery, status: "running" } }
+          : row,
+      ),
+    }));
     try {
-      await invoke("retry_issue", { id });
-      await get().load();
+      if (recovery.action === "recheck") {
+        const result = await invoke<RecheckResult>("recheck_issue", { id });
+        await get().load();
+        if (result.status === "busy") {
+          set({ error: "Indexing is busy. Recheck when it finishes." });
+        } else if (result.status === "stillFailing") {
+          set({ error: "The filesystem condition is still present." });
+        } else if (result.status === "notRecoverable") {
+          set({ error: "Recovery is no longer available." });
+        }
+      } else {
+        await invoke("retry_issue", { id });
+        await get().load();
+      }
     } catch (error) {
-      log.error("issue retry failed", toErrorFields(error));
-      set({ error: "Couldn’t retry the issue." });
+      log.error("issue recovery failed", toErrorFields(error));
+      await get().load();
+      set({ error: "Couldn’t run the recovery." });
     }
   },
 

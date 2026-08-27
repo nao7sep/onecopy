@@ -389,6 +389,31 @@ fn clearing_retires_only_the_named_kinds_at_the_path() {
     assert!(rows.iter().any(|r| r.path.as_deref() == Some("/root/b.jpg")));
 }
 
+#[test]
+fn filesystem_recovery_is_backend_authored_and_projects_active_work_as_running() {
+    let conn = db();
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "unreadable").unwrap();
+    let issue_id: i64 = conn
+        .query_row("SELECT id FROM issues", [], |row| row.get(0))
+        .unwrap();
+
+    let (_, available) = queries::issues(&conn, 10).unwrap();
+    let recovery = available[0].recovery.as_ref().unwrap();
+    assert_eq!(recovery.action, "recheck");
+    assert_eq!(recovery.label, "Recheck");
+    assert_eq!(recovery.status, "available");
+
+    let running = onecopy_lib::scan_runtime::try_with_recheck_claim(issue_id, || {
+        queries::issues(&conn, 10).unwrap().1
+    })
+    .unwrap();
+    assert_eq!(
+        running[0].recovery.as_ref().unwrap().status,
+        "running",
+        "the backend projection follows the admitted index claim"
+    );
+}
+
 /// Seeds an image in a specific directory at a specific instant.
 fn seed_at(conn: &Connection, hash: &str, dir: &str, name: &str, utc_ms: i64) {
     conn.execute(

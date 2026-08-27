@@ -119,8 +119,21 @@ fn walk_adds_then_skips_unchanged_then_marks_missing() {
     assert_eq!((s1.added, s1.unchanged, s1.marked_missing), (2, 0, 0));
 
     // Second pass: everything unchanged.
+    let vanished_before_insert = f.root.join("never-indexed.jpg");
+    index_store::upsert_issue(
+        &f.conn,
+        Some(vanished_before_insert.to_string_lossy().as_ref()),
+        STAT_ERROR,
+        "stat failed before the row could be inserted",
+    )
+    .unwrap();
     let s2 = walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!((s2.added, s2.unchanged), (0, 2));
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'stat-error'"),
+        0,
+        "a complete walk retires a vanished pre-insert stat failure"
+    );
 
     // Delete one file: the row is marked missing, never removed.
     std::fs::remove_file(f.root.join("notes.txt")).unwrap();
@@ -130,6 +143,104 @@ fn walk_adds_then_skips_unchanged_then_marks_missing() {
         count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 1"),
         1
     );
+}
+
+#[test]
+fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
+    let f = fixture("incomplete-walk");
+    let known = f.root.join("known.jpg");
+    std::fs::write(&known, b"known").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    std::fs::remove_dir_all(&f.root).unwrap();
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert!(stats.errors > 0);
+    assert_eq!(stats.marked_missing, 0);
+    assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 0);
+    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 1);
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'walk-error'"),
+        1
+    );
+
+    std::fs::create_dir_all(&f.root).unwrap();
+    let repaired = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(repaired.errors, 0);
+    assert_eq!(repaired.marked_missing, 1);
+    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM issues"), 0);
+}
+
+#[test]
+fn filesystem_issue_rechecks_are_exact_and_leave_pipeline_scope_explicit() {
+    let f = fixture("issue-recheck");
+    let readable = f.root.join("readable.jpg");
+    std::fs::write(&readable, b"readable bytes").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    let changed_bytes = b"readable bytes after the failed attempt";
+    std::fs::write(&readable, changed_bytes).unwrap();
+
+    let readable_path = readable.to_string_lossy().to_string();
+    index_store::upsert_issue(&f.conn, Some(&readable_path), READ_ERROR, "read failed").unwrap();
+    let read_id: i64 = f
+        .conn
+        .query_row(
+            "SELECT id FROM issues WHERE kind = ?1 AND path = ?2",
+            rusqlite::params![READ_ERROR, readable_path],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        recheck_filesystem_issue(&f.conn, read_id, &lists()).unwrap(),
+        RecheckOutcome::Resolved { include_walk: false },
+        "a successful exact read resumes only the index tail"
+    );
+    assert_eq!(
+        f.conn
+            .query_row(
+                "SELECT size FROM paths WHERE abs_path = ?1",
+                [&readable_path],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        changed_bytes.len() as i64,
+        "the probe must refresh path facts before the hash ladder resumes"
+    );
+
+    let missing = f.root.join("vanished.jpg");
+    let missing_path = missing.to_string_lossy().to_string();
+    f.conn
+        .execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, missing) \
+             VALUES (?1, ?2, 'vanished.jpg', 'image', 0)",
+            rusqlite::params![missing_path, f.root.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    index_store::upsert_issue(&f.conn, Some(&missing_path), STAT_ERROR, "stat failed").unwrap();
+    let stat_id: i64 = f
+        .conn
+        .query_row(
+            "SELECT id FROM issues WHERE kind = ?1 AND path = ?2",
+            rusqlite::params![STAT_ERROR, missing_path],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        recheck_filesystem_issue(&f.conn, stat_id, &lists()).unwrap(),
+        RecheckOutcome::Resolved { include_walk: true },
+        "a vanished path needs the normal repairing walk"
+    );
+    assert_eq!(
+        f.conn
+            .query_row(
+                "SELECT missing FROM paths WHERE abs_path = ?1",
+                [&missing_path],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM issues"), 0);
 }
 
 #[test]

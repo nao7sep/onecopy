@@ -838,7 +838,7 @@ pub struct IssueRow {
     pub message: Option<String>,
     pub first_seen_utc: String,
     pub last_seen_utc: String,
-    pub recovery: Option<crate::derived_state::IssueRecovery>,
+    pub recovery: Option<crate::issue_recovery::IssueRecovery>,
 }
 
 const ISSUES_PAGE_SQL: &str =
@@ -880,8 +880,15 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+    let active_recheck_issue = crate::scan_runtime::active_recheck_issue();
     for row in &mut rows {
-        row.recovery = crate::derived_state::issue_recovery(conn, row.id)?;
+        row.recovery = crate::issue_recovery::projection(
+            conn,
+            row.id,
+            &row.kind,
+            row.path.is_some(),
+            active_recheck_issue,
+        )?;
     }
     Ok((total.max(0) as u64, rows))
 }

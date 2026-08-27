@@ -15,6 +15,7 @@ pub mod fs_publish;
 pub mod hashing;
 pub mod face;
 pub mod index_store;
+pub mod issue_recovery;
 mod instance_owner;
 pub mod live_photo;
 pub mod logging;
@@ -1115,6 +1116,46 @@ fn retry_all_issues(app: AppHandle) -> Result<u64, String> {
     )
 }
 
+#[tauri::command(async)]
+fn recheck_issue(app: AppHandle, id: i64) -> Result<issue_recovery::RecheckResult, String> {
+    logging::boundary(
+        "recheck_issue",
+        json!({ "id": id }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let loaded = storage::load_app_data(&app)?;
+            let settings = scanner::settings_from_config(
+                loaded.config.as_ref(),
+                &data_root,
+                chrono::Utc::now().timestamp_millis(),
+            );
+            let db_file = data_root.join(storage::INDEX_DB_FILE_NAME);
+            let outcome = scan_runtime::try_with_recheck_claim(id, || {
+                let conn = index_store::open(&db_file)?;
+                scanner::recheck_filesystem_issue(&conn, id, &settings.lists)
+            });
+            let Some(outcome) = outcome else {
+                return Ok(issue_recovery::RecheckResult::Busy);
+            };
+            let include_walk = match outcome? {
+                scanner::RecheckOutcome::Resolved { include_walk } => include_walk,
+                scanner::RecheckOutcome::NotRecoverable => {
+                    return Ok(issue_recovery::RecheckResult::NotRecoverable)
+                }
+                scanner::RecheckOutcome::StillFailing => {
+                    return Ok(issue_recovery::RecheckResult::StillFailing)
+                }
+            };
+            // Recheck itself is one bounded path/directory probe. Any durable
+            // index debt it reveals resumes through the one existing worker,
+            // with its normal cancellation and progress surface.
+            let _ = scan_runtime::start(app.clone(), include_walk)?;
+            Ok(issue_recovery::RecheckResult::Started)
+        },
+        |result| json!({ "result": result }),
+    )
+}
+
 // Every managed dependency's presence + facts + derived status, in display
 // order — the Managed tools window renders one row per entry, and the ffmpeg
 // chip reads its entry out of the same list.
@@ -1616,6 +1657,7 @@ pub fn run() {
             dismiss_all_issues,
             retry_issue,
             retry_all_issues,
+            recheck_issue,
             binaries_state,
             binaries_install,
             binaries_cancel,

@@ -36,23 +36,76 @@ pub fn restat_dir(
     let mut changed = 0u64;
     let mut present: HashSet<String> = HashSet::new();
 
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue };
-            if !file_type.is_file() {
-                continue;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            crate::index_store::upsert_issue(
+                conn,
+                Some(dir.to_string_lossy().as_ref()),
+                scanner::WALK_ERROR,
+                &error.to_string(),
+            )?;
+            return Err(error.to_string());
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(dir.to_string_lossy().as_ref()),
+                    scanner::WALK_ERROR,
+                    &error.to_string(),
+                )?;
+                return Err(error.to_string());
             }
-            let path = entry.path();
-            let abs = path.to_string_lossy().to_string();
-            if abs.contains(crate::trash::TRASH_DIR_NAME) {
-                continue;
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(path.to_string_lossy().as_ref()),
+                    scanner::STAT_ERROR,
+                    &error.to_string(),
+                )?;
+                return Err(error.to_string());
             }
-            present.insert(abs);
-            if scanner::upsert_file(conn, &path, lists)? != scanner::Upsert::Unchanged {
-                changed += 1;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let abs = path.to_string_lossy().to_string();
+        if abs.contains(crate::trash::TRASH_DIR_NAME) {
+            continue;
+        }
+        present.insert(abs.clone());
+        match scanner::upsert_file(conn, &path, lists) {
+            Ok(scanner::Upsert::Unchanged) => {}
+            Ok(_) => changed += 1,
+            Err(error) => {
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(&abs),
+                    scanner::STAT_ERROR,
+                    &error,
+                )?;
+                return Err(error);
             }
         }
+        crate::index_store::clear_issues(
+            conn,
+            &abs,
+            &[scanner::STAT_ERROR, scanner::WALK_ERROR],
+        )?;
     }
+    crate::index_store::clear_issues(
+        conn,
+        &dir.to_string_lossy(),
+        &[scanner::WALK_ERROR],
+    )?;
 
     // Rows directly in this dir whose files are gone → missing.
     let dir_str = dir.to_string_lossy().to_string();
@@ -67,8 +120,7 @@ pub fn restat_dir(
     drop(stmt);
     for path in known {
         if !present.contains(&path) {
-            conn.execute("UPDATE paths SET missing = 1 WHERE abs_path = ?1", [&path])
-                .map_err(|e| e.to_string())?;
+            scanner::mark_path_missing(conn, &path)?;
             changed += 1;
         }
     }

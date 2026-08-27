@@ -37,6 +37,150 @@ use crate::timestamps;
 /// the `CANCELLED` sentinel, which the scan wrapper reports as a cancellation,
 /// never a failure — the checkpointed rows resume on the next launch.
 pub static SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
+pub const WALK_ERROR: &str = "walk-error";
+pub const STAT_ERROR: &str = "stat-error";
+pub const READ_ERROR: &str = "read-error";
+pub const COPIES_DISAGREE: &str = "copies-disagree";
+const PATH_SCAN_ISSUES: &[&str] = &[WALK_ERROR, STAT_ERROR, READ_ERROR, COPIES_DISAGREE];
+
+pub fn filesystem_issue_recheckable(kind: &str) -> bool {
+    matches!(kind, WALK_ERROR | STAT_ERROR | READ_ERROR)
+}
+
+pub(crate) fn mark_path_missing(conn: &Connection, path: &str) -> Result<(), String> {
+    conn.execute("UPDATE paths SET missing = 1 WHERE abs_path = ?1", [path])
+        .map_err(|error| error.to_string())?;
+    crate::index_store::clear_issues(conn, path, PATH_SCAN_ISSUES)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecheckOutcome {
+    NotRecoverable,
+    StillFailing,
+    Resolved { include_walk: bool },
+}
+
+enum PathProbe {
+    File,
+    Missing,
+    StillFailing,
+}
+
+fn refresh_recheck_path(
+    conn: &Connection,
+    path: &str,
+    lists: &ScanLists,
+) -> Result<PathProbe, String> {
+    match std::fs::symlink_metadata(crate::winpath::for_fs(Path::new(path))) {
+        Ok(metadata) if metadata.is_file() => match upsert_file(conn, Path::new(path), lists) {
+            Ok(_) => Ok(PathProbe::File),
+            Err(error) => {
+                record_issue(conn, Some(path.to_string()), STAT_ERROR, &error)?;
+                Ok(PathProbe::StillFailing)
+            }
+        },
+        Ok(_) => {
+            mark_path_missing(conn, path)?;
+            Ok(PathProbe::Missing)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            mark_path_missing(conn, path)?;
+            Ok(PathProbe::Missing)
+        }
+        Err(error) => {
+            record_issue(conn, Some(path.to_string()), STAT_ERROR, &error.to_string())?;
+            Ok(PathProbe::StillFailing)
+        }
+    }
+}
+
+/// Revalidates exactly one filesystem condition named by an Issue. A resolved
+/// result says whether the existing index worker must include a walk when it
+/// resumes the durable debt exposed by this bounded probe. Expected IO
+/// failures refresh the current-state Issue; store failures remain errors.
+pub fn recheck_filesystem_issue(
+    conn: &Connection,
+    issue_id: i64,
+    lists: &ScanLists,
+) -> Result<RecheckOutcome, String> {
+    let issue: Option<(String, String)> = conn
+        .query_row(
+            "SELECT kind, path FROM issues WHERE id = ?1",
+            [issue_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((kind, path)) = issue else {
+        return Ok(RecheckOutcome::NotRecoverable);
+    };
+    if path.is_empty() || !filesystem_issue_recheckable(&kind) {
+        return Ok(RecheckOutcome::NotRecoverable);
+    }
+
+    let (resolved, include_walk) = match kind.as_str() {
+        READ_ERROR => match refresh_recheck_path(conn, &path, lists)? {
+            PathProbe::File => {
+                // Deliberately discard the probe digest. Landing a content
+                // hash is the cohort-aware ladder's authority; the normal
+                // worker may repeat this exceptional read rather than create
+                // a second identity path here.
+                match crate::hashing::full_hash_cancellable(Path::new(&path), &SCAN_CANCEL) {
+                    Ok(_) => (true, false),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        mark_path_missing(conn, &path)?;
+                        (true, true)
+                    }
+                    Err(error) => {
+                        check_cancel()?;
+                        record_issue(conn, Some(path.clone()), READ_ERROR, &error.to_string())?;
+                        (false, false)
+                    }
+                }
+            }
+            PathProbe::Missing => (true, true),
+            PathProbe::StillFailing => (false, false),
+        },
+        STAT_ERROR => match refresh_recheck_path(conn, &path, lists)? {
+            PathProbe::File => (true, false),
+            PathProbe::Missing => (true, true),
+            PathProbe::StillFailing => (false, false),
+        },
+        WALK_ERROR => probe_walk_path(Path::new(&path)).map_or_else(
+            |error| {
+                record_issue(conn, Some(path.clone()), WALK_ERROR, &error.to_string())?;
+                Ok::<(bool, bool), String>((false, false))
+            },
+            |_| Ok((true, true)),
+        )?,
+        _ => (false, false),
+    };
+    if !resolved {
+        return Ok(RecheckOutcome::StillFailing);
+    }
+
+    crate::index_store::clear_issues(conn, &path, &[&kind])?;
+    Ok(RecheckOutcome::Resolved { include_walk })
+}
+
+/// Probes only the path at which recursive enumeration failed. A directory is
+/// fully enumerated one level deep so a successful `read_dir` call cannot hide
+/// a later entry error; descendants remain the ordinary walk's responsibility.
+fn probe_walk_path(path: &Path) -> std::io::Result<()> {
+    let path = crate::winpath::for_fs(path);
+    match std::fs::symlink_metadata(path.as_ref()) {
+        Ok(metadata) if metadata.is_dir() => {
+            for entry in std::fs::read_dir(path.as_ref())? {
+                let entry = entry?;
+                let _ = entry.file_type()?;
+            }
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 
 /// The sentinel a cancelled stage propagates in place of a real error.
 pub const CANCELLED: &str = "scan cancelled";
@@ -902,6 +1046,8 @@ fn walk_root_with_progress(
 
     // Collect the currently-present set to diff against the DB afterwards.
     let mut present: Vec<String> = Vec::new();
+    let mut walk_incomplete = false;
+    let mut current_stat_failures = std::collections::HashSet::<String>::new();
     // One probe up front so a clean index never pays a per-file DELETE.
     let issues_present = crate::index_store::any_issues(conn);
 
@@ -912,16 +1058,21 @@ fn walk_root_with_progress(
         let entry = match entry {
             Ok(e) => e,
             Err(err) => {
+                walk_incomplete = true;
                 stats.errors += 1;
                 record_issue(
                     conn,
                     err.path().map(|p| p.to_string_lossy().to_string()),
-                    "walk-error",
+                    WALK_ERROR,
                     &err.to_string(),
                 )?;
                 continue;
             }
         };
+        if issues_present {
+            let entry_path = entry.path().to_string_lossy().to_string();
+            crate::index_store::clear_issues(conn, &entry_path, &[WALK_ERROR])?;
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -945,14 +1096,17 @@ fn walk_root_with_progress(
                 // The success counterpart: a re-walked file that now stats
                 // clean drops its scan-condition rows (current-state issues).
                 if issues_present {
-                    crate::index_store::clear_issues(conn, &abs, &["stat-error", "walk-error"])?;
+                    crate::index_store::clear_issues(conn, &abs, &[STAT_ERROR, WALK_ERROR])?;
                 }
             }
             Err(err) => {
                 stats.seen -= 1;
-                present.pop();
+                // WalkDir proved this pathname exists even though its richer
+                // stat/upsert failed. Keep it in `present`: absence is false,
+                // while the exact stat condition remains a recheckable Issue.
+                current_stat_failures.insert(abs.clone());
                 stats.errors += 1;
-                record_issue(conn, Some(abs), "stat-error", &err)?;
+                record_issue(conn, Some(abs), STAT_ERROR, &err)?;
             }
         }
 
@@ -965,38 +1119,75 @@ fn walk_root_with_progress(
         ));
     }
 
-    // Anything under this root the walk did not see is missing. The rows stay
-    // (their trash/delete history may matter) but leave every view and count.
-    // LIKE wildcards in the root itself (`_` is common in real paths) are
-    // escaped with `!`, which appears in no sane path on either OS.
-    let escaped_root = root_str
-        .replace('!', "!!")
-        .replace('%', "!%")
-        .replace('_', "!_");
-    let placeholders_root = format!("{}%", ensure_trailing_separator(&escaped_root));
-    let mut select = conn
-        .prepare("SELECT abs_path FROM paths WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0")
-        .map_err(|e| e.to_string())?;
-    let known: Vec<String> = select
-        .query_map([&placeholders_root], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    let present_set: std::collections::HashSet<&String> = present.iter().collect();
-    for path in known {
-        if !present_set.contains(&path) {
-            conn.execute("UPDATE paths SET missing = 1 WHERE abs_path = ?1", [&path])
-                .map_err(|e| e.to_string())?;
-            stats.marked_missing += 1;
+    // Only a complete directory enumeration can prove absence. A path whose
+    // richer stat failed was still seen and remains live with an exact Issue;
+    // only a WalkDir traversal error can hide an unknown subtree, so only that
+    // leaves the root dirty and suppresses the missing-row diff.
+    if !walk_incomplete {
+        // Anything under this root the walk did not see is missing. The rows
+        // stay (their trash/delete history may matter) but leave every view
+        // and count. LIKE wildcards in the root itself (`_` is common in real
+        // paths) are escaped with `!`, which appears in no sane path.
+        let escaped_root = root_str
+            .replace('!', "!!")
+            .replace('%', "!%")
+            .replace('_', "!_");
+        let placeholders_root = format!("{}%", ensure_trailing_separator(&escaped_root));
+        let mut select = conn
+            .prepare("SELECT abs_path FROM paths WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0")
+            .map_err(|e| e.to_string())?;
+        let known: Vec<String> = select
+            .query_map([&placeholders_root], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        let present_set: std::collections::HashSet<&String> = present.iter().collect();
+        for path in known {
+            if !present_set.contains(&path) {
+                mark_path_missing(conn, &path)?;
+                stats.marked_missing += 1;
+            }
         }
-    }
 
-    conn.execute(
-        "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, ?2, 0) \
-         ON CONFLICT(root) DO UPDATE SET last_completed_at_utc = ?2, dirty = 0",
-        params![root_str, scanned_at],
-    )
-    .map_err(|e| e.to_string())?;
+        // A complete walk also proves that old entry failures beneath this
+        // root no longer exist, including when the failed entry itself was
+        // removed and therefore yielded no success event above.
+        conn.execute(
+            "DELETE FROM issues WHERE kind = ?1 \
+             AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
+            params![WALK_ERROR, root_str, placeholders_root],
+        )
+        .map_err(|error| error.to_string())?;
+
+        // Successful files cleared their own stat row above. The remaining
+        // stale rows can only name entries a complete traversal proved gone;
+        // preserve the exact paths that failed again in this pass.
+        let mut statement = conn
+            .prepare(
+                "SELECT path FROM issues WHERE kind = ?1 \
+                 AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
+            )
+            .map_err(|error| error.to_string())?;
+        let stale_stat_paths = statement
+            .query_map(params![STAT_ERROR, root_str, placeholders_root], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| error.to_string())?
+            .filter_map(|row| row.ok())
+            .filter(|path| !current_stat_failures.contains(path))
+            .collect::<Vec<_>>();
+        drop(statement);
+        for path in stale_stat_paths {
+            crate::index_store::clear_issues(conn, &path, &[STAT_ERROR])?;
+        }
+
+        conn.execute(
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, ?2, 0) \
+             ON CONFLICT(root) DO UPDATE SET last_completed_at_utc = ?2, dirty = 0",
+            params![root_str, scanned_at],
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     progress(ScanProgress::walk(
         completed_roots + 1,

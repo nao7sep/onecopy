@@ -107,7 +107,7 @@ describe("the issues modal", () => {
 
   it("retries only backend-authorized rows and leaves them visible as queued", async () => {
     let rows = [
-      row(1, { recovery: { label: "Retry", status: "available" } }),
+      row(1, { recovery: { action: "retry", label: "Retry", status: "available" } }),
       row(2, { kind: "delete-error" }),
     ];
     mockCommands({
@@ -115,7 +115,14 @@ describe("the issues modal", () => {
       retry_issue: (args) => {
         rows = rows.map((item) =>
           item.id === args.id
-            ? { ...item, recovery: { label: "Retry", status: "queued" as const } }
+            ? {
+                ...item,
+                recovery: {
+                  action: "retry" as const,
+                  label: "Retry",
+                  status: "queued" as const,
+                },
+              }
             : item,
         );
         return true;
@@ -136,15 +143,19 @@ describe("the issues modal", () => {
 
   it("offers retry all only while at least one safe retry is available", async () => {
     let rows = [
-      row(1, { recovery: { label: "Retry", status: "available" } }),
-      row(2, { recovery: { label: "Retry", status: "queued" } }),
+      row(1, { recovery: { action: "retry", label: "Retry", status: "available" } }),
+      row(2, { recovery: { action: "retry", label: "Retry", status: "queued" } }),
     ];
     mockCommands({
       get_issues: () => ({ total: rows.length, rows }),
       retry_all_issues: () => {
         rows = rows.map((item) => ({
           ...item,
-          recovery: { label: "Retry", status: "queued" as const },
+          recovery: {
+            action: "retry" as const,
+            label: "Retry",
+            status: "queued" as const,
+          },
         }));
         return 1;
       },
@@ -159,5 +170,38 @@ describe("the issues modal", () => {
 
     expect(invokeCalls.some((call) => call.command === "retry_all_issues")).toBe(true);
     expect(document.body.textContent).not.toContain("Retry all");
+  });
+
+  it("runs a backend-authored filesystem recheck without folding it into retry all", async () => {
+    let rows = [
+      row(1, {
+        kind: "read-error",
+        recovery: { action: "recheck", label: "Recheck", status: "available" },
+      }),
+    ];
+    let release!: () => void;
+    mockCommands({
+      get_issues: () => ({ total: rows.length, rows }),
+      recheck_issue: () =>
+        new Promise<{ status: "started" }>((resolve) => {
+          release = () => {
+            rows = [];
+            resolve({ status: "started" });
+          };
+        }),
+    });
+    render(<IssuesModal />);
+    await act(async () => useIssuesStore.getState().setOpen(true));
+
+    const recheck = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Recheck",
+    );
+    act(() => recheck!.click());
+    expect(document.body.textContent).toContain("Running");
+    expect(document.body.textContent).not.toContain("Retry all");
+
+    await act(async () => release());
+    expect(invokeCalls.some((call) => call.command === "recheck_issue")).toBe(true);
+    expect(document.body.textContent).toContain("No issues");
   });
 });

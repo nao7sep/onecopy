@@ -837,13 +837,6 @@ pub fn prioritized_transcript_candidates(
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct IssueRecovery {
-    pub label: &'static str,
-    pub status: &'static str,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct TranscriptResult {
     pub status: &'static str,
     pub text: Option<String>,
@@ -1281,9 +1274,13 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
     Ok(retried)
 }
 
-pub fn issue_recovery(conn: &Connection, issue_id: i64) -> Result<Option<IssueRecovery>, String> {
+pub fn issue_recovery(
+    conn: &Connection,
+    issue_id: i64,
+) -> Result<Option<crate::issue_recovery::IssueRecovery>, String> {
     if resource_class_for_issue(conn, issue_id)?.is_some() {
-        return Ok(Some(IssueRecovery {
+        return Ok(Some(crate::issue_recovery::IssueRecovery {
+            action: "retry",
             label: "Resume",
             status: "available",
         }));
@@ -1326,7 +1323,8 @@ pub fn issue_recovery(conn: &Connection, issue_id: i64) -> Result<Option<IssueRe
             .map_err(|error| error.to_string())?,
         _ => return Ok(None),
     };
-    Ok(queued.map(|queued| IssueRecovery {
+    Ok(queued.map(|queued| crate::issue_recovery::IssueRecovery {
+        action: "retry",
         label: "Retry",
         status: if queued { "queued" } else { "available" },
     }))

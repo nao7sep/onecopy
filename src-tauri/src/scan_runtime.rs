@@ -19,6 +19,7 @@ static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 // interleave. SQLite serializes individual writes; this serializes the whole
 // fact-to-projection operation.
 static INDEXING: Mutex<()> = Mutex::new(());
+static ACTIVE_RECHECK_ISSUE: Mutex<Option<i64>> = Mutex::new(None);
 
 struct RunningClaim<'a>(&'a AtomicBool);
 
@@ -37,6 +38,47 @@ pub fn with_index_claim<T>(work: impl FnOnce() -> T) -> T {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     work()
+}
+
+struct RecheckClaim;
+
+impl Drop for RecheckClaim {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_RECHECK_ISSUE.lock() {
+            *active = None;
+        }
+    }
+}
+
+/// Runs one issue-anchored filesystem probe only when the index pipeline is
+/// idle. Rechecks never wait in a shadow queue: a busy pipeline is an honest
+/// `None`, while an admitted probe publishes its issue id for read projection.
+pub fn try_with_recheck_claim<T>(issue_id: i64, work: impl FnOnce() -> T) -> Option<T> {
+    if running() {
+        return None;
+    }
+    let _index = INDEXING.try_lock().ok()?;
+    // `start` publishes RUNNING before its worker tries the index claim. Check
+    // again after admission so a recheck cannot slip ahead of that worker and
+    // then lose the resume request when `start` honestly returns false.
+    if running() {
+        return None;
+    }
+    crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
+    if let Ok(mut active) = ACTIVE_RECHECK_ISSUE.lock() {
+        *active = Some(issue_id);
+    } else {
+        return None;
+    }
+    let _active = RecheckClaim;
+    Some(work())
+}
+
+pub fn active_recheck_issue() -> Option<i64> {
+    ACTIVE_RECHECK_ISSUE
+        .lock()
+        .ok()
+        .and_then(|active| *active)
 }
 
 /// `(resume_wanted, needs_walk)`. A cancelled walk can leave directories
