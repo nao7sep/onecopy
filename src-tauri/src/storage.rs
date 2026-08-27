@@ -132,9 +132,9 @@ impl Default for DefaultConfig {
             video_autoplay_after_snapshot: true,
             pairing_enabled: true,
             theme: "system".to_string(),
-            ui_font_family:
-                "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif"
-                    .to_string(),
+            // Blank means the stylesheet's explicit system stack. Persist
+            // only a real user override here, never CSS implementation detail.
+            ui_font_family: String::new(),
             check_updates_at_launch: false,
             keep_awake_during_indexing: true,
             verify_after_copy: true,

@@ -67,3 +67,24 @@ describe("video playback preferences", () => {
     });
   });
 });
+
+describe("UI font preference", () => {
+  it("presents the historical seeded CSS stack as the blank system default", () => {
+    useSettingsStore.getState().openWith({
+      ...config,
+      uiFontFamily:
+        'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    });
+    expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("");
+  });
+
+  it("preserves a custom family list", () => {
+    useSettingsStore.getState().openWith({
+      ...config,
+      uiFontFamily: "  Iosevka, monospace  ",
+    });
+    expect(useSettingsStore.getState().draft?.uiFontFamily).toBe(
+      "  Iosevka, monospace  ",
+    );
+  });
+});

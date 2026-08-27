@@ -27,6 +27,7 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
         serde_json::json!(true)
     );
     assert_eq!(value["pairingEnabled"], serde_json::json!(true));
+    assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert_eq!(value["verifyAfterCopy"], serde_json::json!(true));
     assert_eq!(value["showFaceStars"], serde_json::json!(true));
     assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));

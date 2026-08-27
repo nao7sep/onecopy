@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
+import { normalizeUiFontPreference } from "../utils/theme";
 import { requestSeq } from "./request-seq";
 
 export interface SettingsDraft {
@@ -82,7 +83,7 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     pairingEnabled: config?.pairingEnabled !== false,
     theme:
       config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",
-    uiFontFamily: typeof config?.uiFontFamily === "string" ? config.uiFontFamily : "",
+    uiFontFamily: normalizeUiFontPreference(config?.uiFontFamily),
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
     verifyAfterCopy: config?.verifyAfterCopy !== false,
     // Opt-in, so absence means OFF — the opposite polarity of the two above.

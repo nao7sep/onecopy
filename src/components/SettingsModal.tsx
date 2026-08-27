@@ -488,7 +488,7 @@ export default function SettingsModal() {
           </h2>
           <Row
             label="UI font"
-            hint="A CSS font-family list, resolved by the webview"
+            hint="Blank uses the system font; custom values accept a CSS font-family list"
           >
             <TextInput
               className="w-64"
