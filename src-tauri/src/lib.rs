@@ -1052,11 +1052,12 @@ fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
 // before calling; the root path must be one `trash_overview` reported —
 // verified here so the command can never delete an arbitrary tree.
 #[tauri::command(async)]
-fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
+fn trash_empty(app: AppHandle, root: String) -> Result<trash::EmptyOutcome, String> {
     logging::boundary(
         "trash_empty",
         json!({ "root": root }),
         || {
+            let empty = trash::begin_empty()?;
             let _media = media_use::begin(&app, &[])?;
             let data_root = paths::data_root(&app)?;
             let dirs = storage::load_config_source_dirs(&data_root)?;
@@ -1064,10 +1065,39 @@ fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
             if !known.iter().any(|r| r.root == root) {
                 return Err("not a known trash root".to_string());
             }
-            trash::empty_root(std::path::Path::new(&root))
+            let last_emit = std::cell::Cell::new(
+                std::time::Instant::now() - std::time::Duration::from_secs(1),
+            );
+            let last_failures = std::cell::Cell::new(0u64);
+            trash::empty_root_with_progress(
+                std::path::Path::new(&root),
+                empty.cancellation_flag(),
+                &|progress| {
+                    let now = std::time::Instant::now();
+                    let completed = progress.done == progress.total;
+                    let failure_changed = progress.failures != last_failures.get();
+                    if completed
+                        || failure_changed
+                        || now.duration_since(last_emit.get())
+                            >= std::time::Duration::from_millis(125)
+                    {
+                        last_emit.set(now);
+                        last_failures.set(progress.failures);
+                        let _ = app.emit(
+                            "trash://progress",
+                            json!({ "root": root, "progress": progress }),
+                        );
+                    }
+                },
+            )
         },
-        |_| json!({}),
+        |outcome| json!({ "cancelled": outcome.cancelled, "failures": outcome.failures }),
     )
+}
+
+#[tauri::command(async)]
+fn trash_empty_cancel() -> bool {
+    trash::cancel_empty()
 }
 
 // Dismissal is the user's half of the issues lifecycle: scan-derived rows
@@ -1709,6 +1739,7 @@ pub fn run() {
             transcribe_cancel,
             trash_overview,
             trash_empty,
+            trash_empty_cancel,
             dismiss_issue,
             dismiss_all_issues,
             retry_issue,

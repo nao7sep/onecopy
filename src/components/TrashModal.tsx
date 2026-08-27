@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { formatBytes } from "../models/items";
 import { log, toErrorFields } from "../repositories";
@@ -23,6 +24,19 @@ interface TrashRootInfo {
   files: number;
 }
 
+interface TrashEmptyProgress {
+  done: number;
+  total: number;
+  bytesDone: number;
+  bytesTotal: number;
+  failures: number;
+}
+
+interface TrashEmptyOutcome {
+  cancelled: boolean;
+  failures: number;
+}
+
 export default function TrashModal({
   open,
   onClose,
@@ -33,6 +47,10 @@ export default function TrashModal({
   const [rows, setRows] = useState<TrashRootInfo[] | null>(null);
   const [confirm, setConfirm] = useState<TrashRootInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [activeRoot, setActiveRoot] = useState<string | null>(null);
+  const [progress, setProgress] = useState<TrashEmptyProgress | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -47,19 +65,73 @@ export default function TrashModal({
       });
   }, [open]);
 
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let alive = true;
+    void listen<{ root: string; progress: TrashEmptyProgress }>(
+      "trash://progress",
+      (event) => {
+        if (!alive || !busyRef.current) return;
+        setActiveRoot(event.payload.root);
+        setProgress(event.payload.progress);
+      },
+    ).then((stop) => {
+      if (alive) unlisten = stop;
+      else stop();
+    }).catch((error) => {
+      log.warn("trash progress wiring failed", toErrorFields(error));
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+
   if (!open) return null;
 
   const empty = async (row: TrashRootInfo) => {
+    busyRef.current = true;
     setBusy(true);
+    setActiveRoot(row.root);
+    setProgress(null);
+    setCancelling(false);
     setError(null);
     try {
-      await invoke("trash_empty", { root: row.root });
-      setRows(await invoke<TrashRootInfo[]>("trash_overview"));
+      const outcome = await invoke<TrashEmptyOutcome>("trash_empty", { root: row.root });
+      let outcomeError = outcome.failures > 0
+        ? `${outcome.failures.toLocaleString()} entr${outcome.failures === 1 ? "y" : "ies"} could not be removed.`
+        : null;
+      try {
+        setRows(await invoke<TrashRootInfo[]>("trash_overview"));
+      } catch (error) {
+        log.error("trash remeasurement failed", toErrorFields(error));
+        setRows(null);
+        outcomeError = outcomeError === null
+          ? "Trash was processed, but its totals couldn’t be refreshed."
+          : `${outcomeError} Totals couldn’t be refreshed.`;
+      }
+      setError(outcomeError);
     } catch (error) {
       log.error("trash empty failed", toErrorFields(error));
       setError("Couldn’t empty this trash.");
     } finally {
+      busyRef.current = false;
       setBusy(false);
+      setActiveRoot(null);
+      setProgress(null);
+      setCancelling(false);
+    }
+  };
+
+  const cancelEmpty = async () => {
+    if (!busy || cancelling) return;
+    setCancelling(true);
+    try {
+      const active = await invoke<boolean>("trash_empty_cancel");
+      if (!active) setCancelling(false);
+    } catch (error) {
+      setCancelling(false);
+      log.error("trash empty cancellation failed", toErrorFields(error));
     }
   };
 
@@ -67,6 +139,7 @@ export default function TrashModal({
     <ModalShell
       title="Trash"
       onClose={onClose}
+      closeDisabled={busy}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
       footerStart={rows !== null ? error : undefined}
     >
@@ -111,6 +184,15 @@ export default function TrashModal({
                   {row.files.toLocaleString()} file{row.files === 1 ? "" : "s"} ·{" "}
                   {formatBytes(row.bytes)}
                 </p>
+                {activeRoot === row.root ? (
+                  <p className="mt-1 text-xs tabular-nums text-primary">
+                    {cancelling
+                      ? "Cancelling…"
+                      : progress === null
+                        ? "Starting…"
+                        : `Removing — ${progress.done.toLocaleString()}/${progress.total.toLocaleString()} · ${formatBytes(progress.bytesDone)}/${formatBytes(progress.bytesTotal)}${progress.failures > 0 ? ` · ${progress.failures.toLocaleString()} failed` : ""}`}
+                  </p>
+                ) : null}
               </div>
               <Button
                 onClick={() => {
@@ -121,13 +203,19 @@ export default function TrashModal({
               >
                 Reveal
               </Button>
-              <Button
-                variant="danger"
-                disabled={busy || row.files === 0}
-                onClick={() => setConfirm(row)}
-              >
-                Empty
-              </Button>
+              {activeRoot === row.root ? (
+                <Button disabled={cancelling} onClick={() => void cancelEmpty()}>
+                  {cancelling ? "Cancelling…" : "Cancel"}
+                </Button>
+              ) : (
+                <Button
+                  variant="danger"
+                  disabled={busy || row.files === 0}
+                  onClick={() => setConfirm(row)}
+                >
+                  Empty
+                </Button>
+              )}
             </li>
           ))}
         </ul>

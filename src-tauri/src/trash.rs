@@ -23,6 +23,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 
@@ -32,6 +34,50 @@ pub const TRASH_DIR_NAME: &str = ".onecopy-trash";
 /// The per-day restore ledger. Named once so the sizing pass can recognise and
 /// exclude its own bookkeeping (see `tree_size`).
 pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";
+
+static EMPTY_RUNNING: AtomicBool = AtomicBool::new(false);
+static EMPTY_CANCELLED: AtomicBool = AtomicBool::new(false);
+static EMPTY_TRANSITION: Mutex<()> = Mutex::new(());
+
+pub struct EmptyClaim;
+
+impl EmptyClaim {
+    pub fn cancellation_flag(&self) -> &AtomicBool {
+        &EMPTY_CANCELLED
+    }
+}
+
+impl Drop for EmptyClaim {
+    fn drop(&mut self) {
+        let _transition = EMPTY_TRANSITION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        EMPTY_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+pub fn begin_empty() -> Result<EmptyClaim, String> {
+    let _transition = EMPTY_TRANSITION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if EMPTY_RUNNING.load(Ordering::SeqCst) {
+        return Err("a trash root is already being emptied".to_string());
+    }
+    EMPTY_CANCELLED.store(false, Ordering::SeqCst);
+    EMPTY_RUNNING.store(true, Ordering::SeqCst);
+    Ok(EmptyClaim)
+}
+
+pub fn cancel_empty() -> bool {
+    let _transition = EMPTY_TRANSITION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !EMPTY_RUNNING.load(Ordering::SeqCst) {
+        return false;
+    }
+    EMPTY_CANCELLED.store(true, Ordering::SeqCst);
+    true
+}
 /// The home-volume trash lives under the app root (macOS forbids creating
 /// `/.onecopy-trash`). Named once in paths.rs, like every other subpath.
 use crate::paths::TRASH_DIR_NAME as HOME_TRASH_SUBDIR;
@@ -438,21 +484,111 @@ fn mounted_trash_roots() -> Vec<PathBuf> {
 /// simply left (reported in the count difference); the trash never needs to
 /// be perfect, only smaller.
 pub fn empty_root(root: &Path) -> Result<(), String> {
-    if !root.exists() {
-        return Ok(());
+    let never_cancelled = AtomicBool::new(false);
+    empty_root_with_progress(root, &never_cancelled, &|_| {}).map(|_| ())
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyProgress {
+    pub done: u64,
+    pub total: u64,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub failures: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyOutcome {
+    pub cancelled: bool,
+    pub failures: u64,
+}
+
+/// Permanently removes one already-authorized trash root with progress over
+/// recoverable files. Manifests are bookkeeping and do not inflate the same
+/// totals the overview/confirmation shows. The root itself must remain a real
+/// directory and inner symlinks are never followed. Cancellation is checked
+/// while planning and between files; an individual filesystem deletion is
+/// already atomic at that unit.
+pub fn empty_root_with_progress(
+    root: &Path,
+    cancelled: &AtomicBool,
+    progress: &dyn Fn(EmptyProgress),
+) -> Result<EmptyOutcome, String> {
+    match std::fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("trash root is not a directory".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            progress(EmptyProgress::default());
+            return Ok(EmptyOutcome::default());
+        }
+        Err(error) => return Err(error.to_string()),
     }
-    let entries = std::fs::read_dir(root).map_err(|e| e.to_string())?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let _ = std::fs::remove_dir_all(&path);
+
+    let mut files: Vec<(PathBuf, u64, bool)> = Vec::new();
+    let mut directories: Vec<PathBuf> = Vec::new();
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(EmptyOutcome {
+                cancelled: true,
+                failures: 0,
+            });
+        }
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.path() == root {
+            continue;
+        }
+        if entry.file_type().is_dir() {
+            directories.push(entry.path().to_path_buf());
         } else {
-            // Stray top-level files (none are written today) go too: the
-            // user asked for empty.
-            let _ = std::fs::remove_file(&path);
+            // Symlinks and other stray non-directories are bookkeeping, never
+            // followed and never counted as recoverable media, but Empty must
+            // still remove their directory entries.
+            let recoverable = entry.file_type().is_file()
+                && entry.file_name() != MANIFEST_FILE_NAME;
+            let bytes = recoverable
+                .then(|| entry.metadata().map(|metadata| metadata.len()).unwrap_or(0))
+                .unwrap_or(0);
+            files.push((entry.path().to_path_buf(), bytes, recoverable));
         }
     }
-    Ok(())
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+
+    let mut snapshot = EmptyProgress {
+        total: files.iter().filter(|(_, _, recoverable)| *recoverable).count() as u64,
+        bytes_total: files
+            .iter()
+            .filter(|(_, _, recoverable)| *recoverable)
+            .map(|(_, bytes, _)| *bytes)
+            .sum(),
+        ..EmptyProgress::default()
+    };
+    progress(snapshot.clone());
+
+    for (path, bytes, recoverable) in files {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(EmptyOutcome {
+                cancelled: true,
+                failures: snapshot.failures,
+            });
+        }
+        if std::fs::remove_file(&path).is_err() {
+            snapshot.failures += 1;
+        }
+        if recoverable {
+            snapshot.done += 1;
+            snapshot.bytes_done = snapshot.bytes_done.saturating_add(bytes);
+            progress(snapshot.clone());
+        }
+    }
+    for directory in directories {
+        let _ = std::fs::remove_dir(directory);
+    }
+    Ok(EmptyOutcome {
+        cancelled: false,
+        failures: snapshot.failures,
+    })
 }
 
 /// Total bytes and file count of the RECOVERABLE contents of a tree; a missing

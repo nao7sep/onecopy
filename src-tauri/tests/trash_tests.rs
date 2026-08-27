@@ -324,7 +324,22 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
     assert_eq!(row.files, 2, "only recoverable files may be counted");
     assert_eq!(row.bytes, 1500, "only recoverable bytes may be counted");
 
-    empty_root(Path::new(&row.root)).unwrap();
+    let snapshots = std::cell::RefCell::new(Vec::new());
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let outcome = empty_root_with_progress(
+        Path::new(&row.root),
+        &cancelled,
+        &|progress| snapshots.borrow_mut().push(progress),
+    )
+    .unwrap();
+    assert!(!outcome.cancelled);
+    assert_eq!(outcome.failures, 0);
+    let snapshots = snapshots.into_inner();
+    assert_eq!(snapshots.first().unwrap().done, 0);
+    assert_eq!(snapshots.first().unwrap().total, 2);
+    assert_eq!(snapshots.first().unwrap().bytes_total, 1500);
+    assert_eq!(snapshots.last().unwrap().done, 2);
+    assert_eq!(snapshots.last().unwrap().bytes_done, 1500);
     let after = overview(&[source.to_string_lossy().to_string()], &app_root);
     let same = after.iter().find(|r| r.root == row.root).unwrap();
     assert_eq!(same.files, 0, "emptied means empty");
@@ -333,6 +348,52 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
         Path::new(&row.root).exists(),
         "the root itself survives for the next trash move"
     );
+}
+
+#[test]
+fn empty_cancellation_stops_between_files_without_hiding_remaining_contents() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-trash-empty-cancel-")
+        .tempdir()
+        .unwrap();
+    let root = dir.path().join("trash");
+    std::fs::create_dir_all(root.join("20260827-utc")).unwrap();
+    std::fs::write(root.join("20260827-utc/one.jpg"), vec![1u8; 10]).unwrap();
+    std::fs::write(root.join("20260827-utc/two.jpg"), vec![2u8; 20]).unwrap();
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let snapshots = std::cell::RefCell::new(Vec::new());
+
+    let outcome = empty_root_with_progress(&root, &cancelled, &|progress| {
+        snapshots.borrow_mut().push(progress);
+    })
+    .unwrap();
+
+    assert!(outcome.cancelled);
+    assert!(snapshots.into_inner().is_empty());
+    assert!(root.join("20260827-utc/one.jpg").exists());
+    assert!(root.join("20260827-utc/two.jpg").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_never_follows_a_replaced_root_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-trash-empty-root-link-")
+        .tempdir()
+        .unwrap();
+    let outside = dir.path().join("outside");
+    let root = dir.path().join("trash");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.jpg"), b"keep").unwrap();
+    symlink(&outside, &root).unwrap();
+
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let error = empty_root_with_progress(&root, &cancelled, &|_| {}).unwrap_err();
+
+    assert_eq!(error, "trash root is not a directory");
+    assert_eq!(std::fs::read(outside.join("keep.jpg")).unwrap(), b"keep");
 }
 
 #[test]

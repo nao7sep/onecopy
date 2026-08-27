@@ -8,7 +8,7 @@
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import TrashModal from "../../src/components/TrashModal";
-import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const ROWS = [
   { root: "/Users/nao7sep/.onecopy/trash", bytes: 5_242_880, files: 42 },
@@ -62,7 +62,7 @@ describe("the trash modal", () => {
         emptied === null ? ROWS : [{ ...ROWS[0], bytes: 0, files: 0 }, ROWS[1]],
       trash_empty: (args) => {
         emptied = args.root as string;
-        return null;
+        return { cancelled: false, failures: 0 };
       },
     });
     render(<TrashModal open onClose={() => {}} />);
@@ -87,6 +87,76 @@ describe("the trash modal", () => {
     expect(emptied).toBe(ROWS[0].root);
     // And the list re-measured rather than pretending.
     expect(document.body.textContent).toContain("0 files");
+  });
+
+  it("shows stable progress and offers cooperative cancellation", async () => {
+    let finish = (_value: { cancelled: boolean; failures: number }): void => {};
+    mockCommands({
+      trash_empty: () => new Promise((resolve) => {
+        finish = resolve;
+      }),
+      trash_empty_cancel: () => true,
+    });
+    render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    const empty = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Empty" && !button.hasAttribute("disabled"),
+    )!;
+    await act(async () => empty.click());
+    const confirm = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Empty trash",
+    )!;
+    await act(async () => confirm.click());
+
+    fireEvent("trash://progress", {
+      root: ROWS[0].root,
+      progress: {
+        done: 12,
+        total: 42,
+        bytesDone: 1_048_576,
+        bytesTotal: 5_242_880,
+        failures: 1,
+      },
+    });
+    await act(async () => {});
+    expect(document.body.textContent).toContain("Removing — 12/42 · 1 MB/5 MB · 1 failed");
+
+    const cancel = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Cancel",
+    )!;
+    await act(async () => cancel.click());
+    expect(invokeCalls).toContainEqual({ command: "trash_empty_cancel", args: {} });
+    expect(document.body.textContent).toContain("Cancelling…");
+
+    finish({ cancelled: true, failures: 0 });
+    await act(async () => {});
+  });
+
+  it("does not misreport a completed operation when remeasurement fails", async () => {
+    let measurements = 0;
+    mockCommands({
+      trash_overview: () => {
+        measurements += 1;
+        if (measurements > 1) throw new Error("volume left");
+        return ROWS;
+      },
+      trash_empty: () => ({ cancelled: false, failures: 0 }),
+    });
+    render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    const empty = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Empty" && !button.hasAttribute("disabled"),
+    )!;
+    await act(async () => empty.click());
+    const confirm = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Empty trash",
+    )!;
+    await act(async () => confirm.click());
+
+    expect(document.body.textContent).toContain(
+      "Trash was processed, but its totals couldn’t be refreshed.",
+    );
+    expect(document.body.textContent).not.toContain("Couldn’t empty this trash.");
   });
 });
 
