@@ -13,6 +13,7 @@ import {
   type SortOrder,
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
+import { useSectionsStore } from "../state/sections-store";
 import { useAppStore } from "../state/app-store";
 import { handleSpaceQuickView } from "../workflows/quick-view";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
@@ -422,6 +423,7 @@ export default function Grid({
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
   const selectedSection = useItemsStore((s) => s.selected);
+  const scanning = useSectionsStore((s) => s.scanning);
   const activeWork = useDerivedWorkStore((s) => s.activeItem);
   const showFaceStars = useAppStore(
     (state) => state.appData?.config?.showFaceStars !== false,
@@ -668,9 +670,10 @@ export default function Grid({
         <button
           className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
           title="Re-check only the directories this section's files came from"
+          disabled={scanning}
           onClick={() => void rescanCurrentSection()}
         >
-          Rescan section
+          {scanning ? "Indexing…" : "Rescan section"}
         </button>
         <label htmlFor="grid-sort">Sort</label>
         <select

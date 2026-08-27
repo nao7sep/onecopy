@@ -15,6 +15,7 @@ import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useDerivedWorkStore } from "../../src/state/derived-work-store";
+import { useSectionsStore } from "../../src/state/sections-store";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -94,6 +95,7 @@ beforeEach(() => {
   });
   useQuickViewStore.setState({ open: false });
   useDerivedWorkStore.setState({ activeItem: null });
+  useSectionsStore.setState({ scanning: false, stopping: false, progress: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: ITEMS,
@@ -106,6 +108,18 @@ beforeEach(() => {
     detail: null,
     sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
     message: null,
+  });
+});
+
+describe("section repair admission", () => {
+  it("does not admit a second section repair while indexing owns the runtime", () => {
+    useSectionsStore.setState({ scanning: true });
+    renderGrid();
+
+    const button = [...document.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent === "Indexing…",
+    );
+    expect(button?.disabled).toBe(true);
   });
 });
 

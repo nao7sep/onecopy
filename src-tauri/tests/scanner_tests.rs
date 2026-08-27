@@ -810,8 +810,16 @@ fn settings_changes_re_resolve_from_evidence_without_file_reads() {
         default_timezone: chrono_tz::UTC,
         ..resolution_config()
     };
-    let stats = resolve_from_evidence(&f.conn, &utc_config, ResolveScope::All).unwrap();
+    let snapshots = std::cell::RefCell::new(Vec::new());
+    let stats = re_resolve_all_with_progress(&f.conn, &utc_config, false, &|progress| {
+        snapshots.borrow_mut().push(progress);
+    })
+    .unwrap();
     assert_eq!(stats.resolved, 1);
+    let snapshots = snapshots.into_inner();
+    assert_eq!(snapshots.first().unwrap().phase, ScanPhase::Resolve);
+    assert_eq!(snapshots.last().unwrap().phase, ScanPhase::Indexed);
+    assert!(snapshots.iter().any(|progress| progress.phase == ScanPhase::Pair));
 
     let ms: i64 = f
         .conn
@@ -829,6 +837,53 @@ fn settings_changes_re_resolve_from_evidence_without_file_reads() {
         .and_utc()
         .timestamp_millis();
     assert_eq!(ms, expected);
+}
+
+#[test]
+fn settings_re_resolution_leaves_absent_rows_as_resumable_debt() {
+    let f = fixture("re-resolve-missing");
+    let now_ms = resolution_config().now_ms;
+    for (id, missing) in [(1, 0), (2, 1)] {
+        f.conn
+            .execute(
+                "INSERT INTO paths \
+                 (id, abs_path, dir_path, file_name, kind, mtime_ms, indexed_at_utc, \
+                  resolved_utc_ms, resolved_source, missing) \
+                 VALUES (?1, ?2, '/virtual', ?3, 'other', ?4, 'ready', ?4, 'filesystem', ?5)",
+                rusqlite::params![
+                    id,
+                    format!("/virtual/{id}.txt"),
+                    format!("{id}.txt"),
+                    now_ms,
+                    missing,
+                ],
+            )
+            .unwrap();
+    }
+
+    re_resolve_all_with_progress(&f.conn, &resolution_config(), false, &|_| {}).unwrap();
+
+    let absent_source: Option<String> = f
+        .conn
+        .query_row(
+            "SELECT resolved_source FROM paths WHERE id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(absent_source, None);
+    f.conn
+        .execute("UPDATE paths SET missing = 0 WHERE id = 2", [])
+        .unwrap();
+    assert!(pending_index_work_exists(&f.conn).unwrap());
+
+    let resumed = resolve_from_evidence(
+        &f.conn,
+        &resolution_config(),
+        ResolveScope::PendingOnly,
+    )
+    .unwrap();
+    assert_eq!(resumed.resolved, 1);
 }
 
 #[test]

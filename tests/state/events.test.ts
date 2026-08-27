@@ -64,6 +64,14 @@ beforeEach(async () => {
 });
 
 describe("scan events", () => {
+  it("shows an admitted scoped repair while it waits for the index claim", async () => {
+    fireEvent("scan://waiting", {});
+
+    expect(sections.getState().scanning).toBe(true);
+    expect(sections.getState().stopping).toBe(false);
+    expect(sections.getState().progress).toBeNull();
+  });
+
   it("reports progress and marks the scan running", async () => {
     const progress = scanProgress({ phase: "hashing", done: 12, total: 40 });
     fireEvent("scan://progress", progress);

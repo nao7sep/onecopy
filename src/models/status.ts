@@ -80,7 +80,7 @@ export function statusLine(input: {
     return {
       tone: "warning",
       text: "Rescan needed",
-      title: "The watcher lost events — run Scan all sources to repair the index",
+      title: "Indexing stopped before the library was fully repaired — run Scan all sources to finish it",
     };
   }
   if (input.counts === null) {

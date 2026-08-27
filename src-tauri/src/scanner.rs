@@ -307,6 +307,29 @@ impl ScanProgress {
         progress.failures = failures;
         progress
     }
+
+    pub(crate) fn directory_walk(
+        done: u64,
+        total: u64,
+        path: &str,
+        failures: u64,
+        next_phase: ScanPhase,
+    ) -> Self {
+        let mut progress = Self::phase(ScanPhase::Walk, total, Some(next_phase));
+        progress.done = done;
+        progress.current_path = Some(crate::winpath::for_display(path).to_string());
+        progress.failures = failures;
+        progress
+    }
+
+    pub(crate) fn phase_completed(
+        phase: ScanPhase,
+        total: u64,
+        failures: u64,
+        next_phase: Option<ScanPhase>,
+    ) -> Self {
+        Self::completed(phase, total, failures, next_phase)
+    }
 }
 
 pub fn settings_from_config(
@@ -1816,6 +1839,39 @@ pub fn resolve_from_evidence(
     scope: ResolveScope,
 ) -> Result<ResolveStats, String> {
     resolve_from_evidence_with_progress(conn, config, scope, &|_| {})
+}
+
+/// Settings changed the resolution policy. Invalidate the old projection in
+/// one durable statement first, then rebuild through the ordinary pending
+/// path so cancellation or a crash leaves explicit resumable debt instead of
+/// a library silently split between old and new rules.
+pub fn re_resolve_all_with_progress(
+    conn: &Connection,
+    config: &ResolutionConfig,
+    pairing_enabled: bool,
+    progress: &dyn Fn(ScanProgress),
+) -> Result<ResolveStats, String> {
+    check_cancel()?;
+    conn.execute(
+        "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0 \
+         WHERE indexed_at_utc IS NOT NULL",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    let stats = resolve_from_evidence_with_progress(
+        conn,
+        config,
+        ResolveScope::PendingOnly,
+        progress,
+    )?;
+    pair_companions_with_progress(conn, pairing_enabled, None, progress)?;
+    progress(ScanProgress::completed(
+        ScanPhase::Indexed,
+        1,
+        0,
+        None,
+    ));
+    Ok(stats)
 }
 
 fn resolve_from_evidence_with_progress(

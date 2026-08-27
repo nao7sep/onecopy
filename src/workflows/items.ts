@@ -144,5 +144,10 @@ export async function rescanCurrentSection(): Promise<void> {
     await useSectionsStore.getState().loadCounts();
   } catch (error) {
     log.error("section rescan failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("scan cancelled")) {
+      useItemsStore.setState({ message });
+      await useIssuesStore.getState().load();
+    }
   }
 }

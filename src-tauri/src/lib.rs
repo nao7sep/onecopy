@@ -621,7 +621,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
     logging::boundary(
         "re_resolve_all",
         json!({}),
-        || scan_runtime::with_index_claim(|| {
+        || scan_runtime::run_inline(&app, |progress| {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
@@ -630,12 +630,19 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
                 chrono::Utc::now().timestamp_millis(),
             );
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let stats = scanner::resolve_from_evidence(
+            // Resolution rows carry their own resumable debt. Pairing is an
+            // atomic projection, so retain the existing coarse dirty-root
+            // receipt across the whole Settings rebuild; cancellation before
+            // publication must make a later index repair retry it.
+            let repair_roots =
+                scanner::begin_scoped_index_repair(&conn, &settings.source_dirs)?;
+            let stats = scanner::re_resolve_all_with_progress(
                 &conn,
                 &settings.resolution,
-                scanner::ResolveScope::All,
+                settings.pairing_enabled,
+                progress,
             )?;
-            scanner::pair_companions(&conn, settings.pairing_enabled)?;
+            scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
             derived_work::wake(true);
             Ok(stats.resolved)
         }),
@@ -651,7 +658,7 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
     logging::boundary(
         "rescan_section",
         json!({ "kind": kind, "month": month }),
-        || scan_runtime::with_index_claim(|| {
+        || scan_runtime::run_inline(&app, |progress| {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
@@ -663,13 +670,34 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
             let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
             let repair_roots = scanner::begin_scoped_index_repair(&conn, &dirs)?;
             let mut changed = 0u64;
-            for dir in &dirs {
+            let total = dirs.len() as u64;
+            for (index, dir) in dirs.iter().enumerate() {
+                progress(scanner::ScanProgress::directory_walk(
+                    index as u64,
+                    total,
+                    dir,
+                    0,
+                    scanner::ScanPhase::Hash,
+                ));
                 changed += watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists)?;
             }
             // Finish any interrupted index checkpoints too. Derived media is
             // woken after the index tail instead of being smuggled into the
             // rescan command.
-            if changed > 0 || scanner::pending_index_work_exists(&conn)? {
+            let tail_owed = changed > 0 || scanner::pending_index_work_exists(&conn)?;
+            if total > 0 {
+                progress(scanner::ScanProgress::phase_completed(
+                    scanner::ScanPhase::Walk,
+                    total,
+                    0,
+                    Some(if tail_owed {
+                        scanner::ScanPhase::Hash
+                    } else {
+                        scanner::ScanPhase::Indexed
+                    }),
+                ));
+            }
+            if tail_owed {
                 let mut summary = scanner::ScanSummary::default();
                 scanner::run_index_tail_for_dirs(
                     &conn,
@@ -679,6 +707,13 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
                     &mut summary,
                 )?;
                 derived_work::wake(true);
+            } else {
+                progress(scanner::ScanProgress::phase_completed(
+                    scanner::ScanPhase::Indexed,
+                    1,
+                    0,
+                    None,
+                ));
             }
             scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
             Ok(changed)

@@ -51,6 +51,9 @@ function refreshDerivedIssues(): void {
 
 async function install(): Promise<void> {
   try {
+    await listen("scan://waiting", () => {
+      useSectionsStore.setState({ scanning: true, stopping: false, progress: null });
+    });
     await listen<ScanProgress>("scan://progress", (event) => {
       const progress = event.payload;
       const phase = progress.phase;
@@ -96,8 +99,16 @@ async function install(): Promise<void> {
       clearScanRefreshes();
       lastScanPhase = null;
       lastScanFailures = 0;
-      useSectionsStore.setState({ scanning: false, stopping: false, progress: null });
+      useSectionsStore.setState({
+        scanning: false,
+        stopping: false,
+        progress: null,
+        rescanNeeded: true,
+      });
       log.error("scan failed", { error: { message: event.payload.message } });
+      void useSectionsStore.getState().loadCounts();
+      void useItemsStore.getState().refresh();
+      void useIssuesStore.getState().load();
     });
     await listen("watch://updated", () => {
       void useSectionsStore.getState().loadCounts();

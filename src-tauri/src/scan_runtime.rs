@@ -5,13 +5,15 @@
 use std::cell::Cell;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static RUNNING_WAIT: std::sync::LazyLock<(Mutex<()>, Condvar)> =
+    std::sync::LazyLock::new(|| (Mutex::new(()), Condvar::new()));
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 // Every index-producing workflow shares this one ephemeral owner. The scan
 // worker, watcher repair, section rescan, and settings re-resolution may use
@@ -21,11 +23,53 @@ static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static INDEXING: Mutex<()> = Mutex::new(());
 static ACTIVE_RECHECK_ISSUE: Mutex<Option<i64>> = Mutex::new(None);
 
-struct RunningClaim<'a>(&'a AtomicBool);
+struct RunningClaim;
 
-impl Drop for RunningClaim<'_> {
+impl Drop for RunningClaim {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        let _wait_guard = RUNNING_WAIT
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        RUNNING.store(false, Ordering::SeqCst);
+        RUNNING_WAIT.1.notify_all();
+    }
+}
+
+fn try_running_claim() -> Option<RunningClaim> {
+    let _wait_guard = RUNNING_WAIT
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        // Reset while reservation and cancellation share the wait lock, so a
+        // Cancel accepted just after admission cannot be overwritten by the
+        // operation's startup path.
+        crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
+        Some(RunningClaim)
+    } else {
+        None
+    }
+}
+
+fn wait_running_claim() -> RunningClaim {
+    loop {
+        if let Some(claim) = try_running_claim() {
+            return claim;
+        }
+        let mut guard = RUNNING_WAIT
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while running() {
+            guard = RUNNING_WAIT
+                .1
+                .wait(guard)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
     }
 }
 
@@ -128,11 +172,10 @@ pub fn resume_plan(data_root: &Path) -> (bool, bool) {
 /// Starts the one worker. `include_walk` selects full walk+tail versus a
 /// checkpointed tail resume; a second start is an honest `false` no-op.
 pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
-    if RUNNING.swap(true, Ordering::SeqCst) {
+    let Some(running_claim) = try_running_claim() else {
         return Ok(false);
-    }
-    crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
-    let prepared = (|| -> Result<(), String> {
+    };
+    let prepared = (move || -> Result<(), String> {
         let data_root = crate::paths::data_root(&app)?;
         let config = crate::storage::read_config_for_setup(&data_root)?;
         let settings = crate::scanner::settings_from_config(
@@ -146,7 +189,7 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
         let worker = std::thread::spawn(move || {
             // A worker-thread panic does not terminate the app. The claim must
             // therefore release on unwind as well as every ordinary outcome.
-            let _running = RunningClaim(&RUNNING);
+            let _running = running_claim;
             let _awake = settings.keep_awake.then(|| {
                 keepawake::Builder::default()
                     .idle(true)
@@ -160,21 +203,7 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
             // chunk. Transport at human cadence while always publishing phase
             // boundaries and completed totals; this keeps the UI honest
             // without flooding the webview on a fast million-row pass.
-            let last_phase = Cell::new(None::<crate::scanner::ScanPhase>);
-            let last_emit = Cell::new(Instant::now() - Duration::from_secs(1));
-            let emit_progress = |progress: crate::scanner::ScanProgress| {
-                let now = Instant::now();
-                let phase_changed = last_phase.get() != Some(progress.phase);
-                let completed = progress.done == progress.total;
-                if phase_changed
-                    || completed
-                    || now.duration_since(last_emit.get()) >= Duration::from_millis(125)
-                {
-                    last_phase.set(Some(progress.phase));
-                    last_emit.set(now);
-                    let _ = handle.emit("scan://progress", progress);
-                }
-            };
+            let emit_progress = progress_emitter(handle.clone());
             let outcome = with_index_claim(|| {
                 crate::index_store::open(&db_file).and_then(|conn| {
                     if include_walk {
@@ -220,26 +249,72 @@ pub fn start(app: AppHandle, include_walk: bool) -> Result<bool, String> {
     })();
     match prepared {
         Ok(()) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+/// Runs a user-started scoped index operation through the same reservation,
+/// cancellation flag, coalesced progress transport, and terminal events as a
+/// full scan. It waits behind an already-admitted scan instead of creating a
+/// second queue or allowing settings/index repair to interleave with it.
+pub fn run_inline<T>(
+    app: &AppHandle,
+    work: impl FnOnce(&dyn Fn(crate::scanner::ScanProgress)) -> Result<T, String>,
+) -> Result<T, String> {
+    let _running = wait_running_claim();
+    let _ = app.emit("scan://waiting", json!({}));
+    let emit_progress = progress_emitter(app.clone());
+    let outcome = with_index_claim(|| work(&emit_progress));
+    match &outcome {
+        Ok(_) => {
+            let _ = app.emit("scan://done", json!({}));
+        }
+        Err(error) if error == crate::scanner::CANCELLED => {
+            let _ = app.emit("scan://done", json!({ "cancelled": true }));
+        }
         Err(error) => {
-            RUNNING.store(false, Ordering::SeqCst);
-            Err(error)
+            let _ = app.emit("scan://error", json!({ "message": error }));
+        }
+    }
+    outcome
+}
+
+fn progress_emitter(handle: AppHandle) -> impl Fn(crate::scanner::ScanProgress) {
+    // The scanner may report each durable item and each streamed hash chunk.
+    // Transport at human cadence while always publishing phase boundaries and
+    // completed totals, shared by full and scoped user-started index work.
+    let last_phase = Cell::new(None::<crate::scanner::ScanPhase>);
+    let last_emit = Cell::new(Instant::now() - Duration::from_secs(1));
+    move |progress: crate::scanner::ScanProgress| {
+        let now = Instant::now();
+        let phase_changed = last_phase.get() != Some(progress.phase);
+        let completed = progress.done == progress.total;
+        if phase_changed
+            || completed
+            || now.duration_since(last_emit.get()) >= Duration::from_millis(125)
+        {
+            last_phase.set(Some(progress.phase));
+            last_emit.set(now);
+            let _ = handle.emit("scan://progress", progress);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{with_index_claim, RunningClaim};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use super::{running, try_running_claim, wait_running_claim, with_index_claim};
+
+    static RESERVATION_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn running_claim_releases_during_unwind() {
-        let running = AtomicBool::new(true);
+        let _serial = RESERVATION_TEST.lock().unwrap();
+        let claim = try_running_claim().unwrap();
         let _ = std::panic::catch_unwind(|| {
-            let _claim = RunningClaim(&running);
+            let _claim = claim;
             panic!("worker stopped unexpectedly");
         });
-        assert!(!running.load(Ordering::SeqCst));
+        assert!(!running());
     }
 
     #[test]
@@ -276,12 +351,53 @@ mod tests {
         first.join().unwrap();
         second.join().unwrap();
     }
+
+    #[test]
+    fn inline_reservation_waits_without_racing_an_admitted_scan() {
+        let _serial = RESERVATION_TEST.lock().unwrap();
+        let first = try_running_claim().unwrap();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let _second = wait_running_claim();
+            acquired_tx.send(()).unwrap();
+        });
+
+        assert!(acquired_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+        drop(first);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        waiter.join().unwrap();
+        assert!(!running());
+    }
+
+    #[test]
+    fn cancellation_belongs_to_exactly_one_reservation() {
+        let _serial = RESERVATION_TEST.lock().unwrap();
+        let first = try_running_claim().unwrap();
+        assert!(super::request_cancel());
+        assert!(crate::scanner::SCAN_CANCEL.load(std::sync::atomic::Ordering::SeqCst));
+        drop(first);
+
+        let second = try_running_claim().unwrap();
+        assert!(!crate::scanner::SCAN_CANCEL.load(std::sync::atomic::Ordering::SeqCst));
+        drop(second);
+        assert!(!super::request_cancel());
+    }
 }
 
 pub fn request_cancel() -> bool {
-    let was_running = running();
+    let _wait_guard = RUNNING_WAIT
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !running() {
+        return false;
+    }
     crate::scanner::SCAN_CANCEL.store(true, Ordering::Relaxed);
-    was_running
+    true
 }
 
 pub fn join() {
