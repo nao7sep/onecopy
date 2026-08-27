@@ -97,6 +97,9 @@ pub struct DefaultConfig {
     /// means the models are not even downloaded by any automatic path, and
     /// the coordinator never runs the pass; ordering falls back to sharpness.
     pub score_faces: bool,
+    /// Show an existing face score as a subtle thumbnail/comparison hint.
+    /// This is presentation-only and never causes scoring or model downloads.
+    pub show_face_stars: bool,
     /// Confirm ordinary Delete/Backspace trash-deletes in the grid. OFF by
     /// default (developer, 2026-08-17): the trash is the net, and a dialog on
     /// every Delete would break the keystroke-paced cull — but a deliberate
@@ -136,6 +139,7 @@ impl Default for DefaultConfig {
             keep_awake_during_indexing: true,
             verify_after_copy: true,
             score_faces: false,
+            show_face_stars: true,
             confirm_trash_delete: false,
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),

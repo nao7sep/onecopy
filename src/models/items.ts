@@ -47,6 +47,7 @@ export interface SectionItem {
   hasThumb: boolean;
   similarGroupId: number | null;
   sharpness: number | null;
+  faceScore: number | null;
   byteSize: number | null;
   hasCompanions: boolean;
   durationMs: number | null;
@@ -286,14 +287,21 @@ export function formatDimensions(
   return `${width}×${height}`;
 }
 
-/** The one line of hard facts a tile or row shows beneath the name: pixels
- * then bytes, whichever of the two is known. */
+/** The one line of hard facts a tile or row shows beneath the name: pixels,
+ * video duration, then bytes, whichever are known. */
 export function factsLine(item: {
   width: number | null;
   height: number | null;
+  durationMs?: number | null;
   byteSize: number | null;
 }): string {
-  return [formatDimensions(item.width, item.height), item.byteSize !== null ? formatBytes(item.byteSize) : null]
+  return [
+    formatDimensions(item.width, item.height),
+    item.durationMs !== null && item.durationMs !== undefined
+      ? formatDuration(item.durationMs)
+      : null,
+    item.byteSize !== null ? formatBytes(item.byteSize) : null,
+  ]
     .filter((part): part is string => part !== null)
     .join(" · ");
 }

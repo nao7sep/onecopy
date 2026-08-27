@@ -90,7 +90,13 @@ describe("Settings categories", () => {
       (label) => label.textContent,
     );
     expect(labels.indexOf("Score faces for photo ordering (background, needs the face models)"))
-      .toBeLessThan(labels.indexOf("Confirm before moving items to trash"));
+      .toBeLessThan(labels.indexOf("Show face-score stars on photos"));
+    expect(labels.indexOf("Show face-score stars on photos")).toBeLessThan(
+      labels.indexOf("Confirm before moving items to trash"),
+    );
+    expect(
+      (screen.getByLabelText("Show face-score stars on photos") as HTMLInputElement).checked,
+    ).toBe(true);
   });
 });
 

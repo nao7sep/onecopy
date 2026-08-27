@@ -3,13 +3,18 @@ import { useBinariesStore } from "../state/binaries-store";
 import { useDerivedWorkStore } from "../state/derived-work-store";
 import { useTranscriptStore } from "../state/transcript-store";
 import Button from "./ui/Button";
+import type { ItemWorkState } from "../models/items";
 
 export default function TranscriptBlock({
   hash,
   variant = "full",
+  work = null,
 }: {
   hash: string;
   variant?: "full" | "compact";
+  /** Backend-authored item projection when the owning surface has it. The
+   * transcript store still owns content and manual-action lifecycle. */
+  work?: ItemWorkState | null;
 }) {
   const view = useTranscriptStore((state) => state.rows[hash]);
   const load = useTranscriptStore((state) => state.load);
@@ -42,18 +47,34 @@ export default function TranscriptBlock({
   const paused =
     masterPaused || transcriptWork?.state === "paused" || transcriptWork?.state === "stopping";
   const compact = variant === "compact";
+  const unavailable =
+    work !== null ? work.state === "unavailable" : !toolsAvailable;
+  const waiting =
+    paused || work?.state === "blocked" || work?.state === "waiting";
+  const projectedRunning = work?.state === "running";
+  const projectedProgress =
+    work?.done !== null && work?.done !== undefined && work.total !== null && work.total > 0
+      ? work.total === 100
+        ? `${Math.min(100, Math.round(work.done))}%`
+        : `${work.done}/${work.total}`
+      : null;
 
   let content: React.ReactNode;
-  if (state.status === "loading") {
-    content = <p className="text-xs text-ink-muted">Loading transcript…</p>;
-  } else if (state.status === "running") {
+  if (state.status === "running" || projectedRunning) {
+    const progress = state.status === "running" ? state.percent : projectedProgress;
     content = (
       <p className="text-xs text-primary">
-        Transcribing{state.percent !== null ? ` — ${state.percent}%` : "…"}
+        Transcribing{progress !== null ? ` — ${progress}${typeof progress === "number" ? "%" : ""}` : "…"}
       </p>
     );
-  } else if (state.status === "failed") {
-    content = <p className="break-words text-xs text-danger">{state.message ?? "Transcription failed."}</p>;
+  } else if (state.status === "failed" || work?.state === "failed") {
+    content = (
+      <p className="break-words text-xs text-danger">
+        {state.status === "failed"
+          ? (state.message ?? "Transcription failed.")
+          : (work?.reason ?? "Transcription failed.")}
+      </p>
+    );
   } else if (state.status === "ready") {
     content =
       state.text === null || state.text.trim() === "" ? (
@@ -67,14 +88,16 @@ export default function TranscriptBlock({
           {state.text}
         </pre>
       );
-  } else if (!toolsAvailable) {
+  } else if (unavailable) {
     content = (
       <p className="text-xs text-ink-muted">
-        Not available — install ffmpeg and the transcription model from Managed tools.
+        Not available — {work?.reason ?? "install ffmpeg and the transcription model from Managed tools"}.
       </p>
     );
-  } else if (paused) {
-    content = <p className="text-xs text-ink-muted">Queued — transcription is paused.</p>;
+  } else if (waiting) {
+    content = <p className="text-xs text-ink-muted">{work?.reason ?? "Queued — transcription is paused."}</p>;
+  } else if (state.status === "loading") {
+    content = <p className="text-xs text-ink-muted">Loading transcript…</p>;
   } else {
     content = <p className="text-xs text-ink-muted">Not transcribed yet.</p>;
   }
@@ -87,13 +110,13 @@ export default function TranscriptBlock({
       </Button>
     );
   } else if (!compact && (state.status === "pending" || state.status === "failed")) {
-    if (paused) {
+    if (waiting) {
       action = (
         <Button onClick={() => useDerivedWorkStore.getState().setOpen(true)}>
           Background work
         </Button>
       );
-    } else if (!toolsAvailable) {
+    } else if (unavailable) {
       action = (
         <Button onClick={() => useBinariesStore.getState().setModalOpen(true)}>
           Managed tools

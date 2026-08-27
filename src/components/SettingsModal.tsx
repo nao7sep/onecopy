@@ -543,6 +543,11 @@ export default function SettingsModal() {
             onChange={(v) => update({ scoreFaces: v })}
           />
           <CheckField
+            label="Show face-score stars on photos"
+            checked={draft.showFaceStars}
+            onChange={(v) => update({ showFaceStars: v })}
+          />
+          <CheckField
             label="Confirm before moving items to trash"
             checked={draft.confirmTrashDelete}
             onChange={(v) => update({ confirmTrashDelete: v })}

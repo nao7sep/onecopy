@@ -27,6 +27,7 @@ function item(over: Partial<SectionItem> & { pathId: number }): SectionItem {
     hasThumb: true,
     similarGroupId: null,
     sharpness: null,
+    faceScore: null,
     byteSize: 1000,
     hasCompanions: false,
     durationMs: null,

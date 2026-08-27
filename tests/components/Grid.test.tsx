@@ -14,6 +14,7 @@ import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { useDerivedWorkStore } from "../../src/state/derived-work-store";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -27,6 +28,7 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
     hasThumb: false,
     similarGroupId: null,
     sharpness: null,
+    faceScore: null,
     byteSize: pathId * 10,
     hasCompanions: false,
     durationMs: null,
@@ -91,6 +93,7 @@ beforeEach(() => {
     current: null,
   });
   useQuickViewStore.setState({ open: false });
+  useDerivedWorkStore.setState({ activeItem: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: ITEMS,
@@ -220,6 +223,75 @@ describe("pointer selection", () => {
     fireEvent.doubleClick(tile, { detail: 2 });
 
     expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
+  });
+});
+
+describe("thumbnail information hierarchy", () => {
+  it("puts duration in the facts line and relationships in one labelled badge", () => {
+    const related = [
+      item(1, {
+        copyCount: 3,
+        similarGroupId: 7,
+        hasCompanions: true,
+        durationMs: 65_000,
+        byteSize: 2_097_152,
+        width: 1920,
+        height: 1080,
+      }),
+      item(2, { similarGroupId: 7 }),
+    ];
+    const { view } = renderGrid(related);
+
+    expect(view.container.textContent).toContain("1920×1080 · 1:05 · 2 MB");
+    const accessibleLabel = view.getByText(
+      "3 exact copies; 2 similar photos; has paired companion files; every action includes them",
+    );
+    expect(accessibleLabel.classList.contains("sr-only")).toBe(true);
+    expect(accessibleLabel.previousElementSibling?.textContent).toBe("×3 · ≈2 · pair");
+  });
+
+  it("projects a check for one selected item and ordinals for a multi-selection", async () => {
+    const { view } = renderGrid();
+    await anchor("h1");
+    expect(view.getByText("Selected").classList.contains("sr-only")).toBe(true);
+
+    await act(async () => {
+      useItemsStore.setState({
+        selectedItem: "h2",
+        selectedKeys: new Set(["h1", "h2"]),
+      });
+    });
+    expect(view.getByText("Selected 1 of 2").previousElementSibling?.textContent).toBe("1");
+    expect(view.getByText("Selected 2 of 2").previousElementSibling?.textContent).toBe("2");
+  });
+
+  it("overlays the one active runtime state without changing durable item facts", () => {
+    const running = item(1, {
+      derivedWork: {
+        ...EMPTY_ITEM_WORK,
+        faces: {
+          state: "pending",
+          hasValue: false,
+          reason: null,
+          done: null,
+          total: null,
+        },
+      },
+    });
+    useDerivedWorkStore.setState({
+      activeItem: {
+        id: "faces",
+        hash: "h1",
+        done: 42,
+        total: 100,
+        stopping: false,
+      },
+    });
+    const { view } = renderGrid([running]);
+    expect(view.getByText("Face scoring running 42%").previousElementSibling?.textContent).toBe(
+      "Faces 42%",
+    );
+    expect(running.derivedWork.faces?.state).toBe("pending");
   });
 });
 

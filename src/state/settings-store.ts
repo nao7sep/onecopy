@@ -30,6 +30,7 @@ export interface SettingsDraft {
   verifyAfterCopy: boolean;
   confirmTrashDelete: boolean;
   scoreFaces: boolean;
+  showFaceStars: boolean;
   sourceDirs: string[];
 }
 
@@ -88,6 +89,9 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     confirmTrashDelete: config?.confirmTrashDelete === true,
     // Opt-in (Phase 33): absence means OFF.
     scoreFaces: config?.scoreFaces === true,
+    // Presentation is independent of scoring: existing results remain useful
+    // after the optional background analysis is turned off.
+    showFaceStars: config?.showFaceStars !== false,
     sourceDirs: stringArrayField(config, "sourceDirs"),
   };
 }

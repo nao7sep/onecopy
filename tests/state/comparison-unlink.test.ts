@@ -153,6 +153,7 @@ describe("finishing a family", () => {
       hasThumb: true,
       similarGroupId: null,
       sharpness: null,
+      faceScore: null,
       byteSize: 1000,
       hasCompanions: false,
       durationMs: null,

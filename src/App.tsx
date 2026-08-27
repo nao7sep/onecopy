@@ -9,7 +9,7 @@ import {
 } from "./utils/windowSizing";
 import { useSectionsStore } from "./state/sections-store";
 import { statusLine } from "./models/status";
-import { useItemsStore } from "./state/items-store";
+import { itemKey, useItemsStore } from "./state/items-store";
 import Sidebar from "./components/Sidebar";
 import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
@@ -82,6 +82,10 @@ export default function App() {
     selectedItemKey !== null && !selectedItemKey.startsWith("path-")
       ? selectedItemKey
       : null;
+  const selectedSectionItem =
+    selectedItemKey === null
+      ? null
+      : (items.find((item) => itemKey(item) === selectedItemKey) ?? null);
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
@@ -428,7 +432,7 @@ export default function App() {
             className="min-h-0 flex-1 overflow-y-auto outline-none"
           >
             {rightTab === "details" ? (
-              <MetadataPane detail={detail} hash={selectedHash} />
+              <MetadataPane detail={detail} hash={selectedHash} item={selectedSectionItem} />
             ) : (
               <DestinationsTab />
             )}

@@ -6,6 +6,7 @@ import {
   extLabel,
   extOf,
   replaceDerivedItem,
+  factsLine,
   sortItems,
   stripTimestampMs,
   timestampLabel,
@@ -25,6 +26,7 @@ function item(overrides: Partial<SectionItem>): SectionItem {
     hasThumb: false,
     similarGroupId: null,
     sharpness: null,
+    faceScore: null,
     byteSize: null,
     hasCompanions: false,
     durationMs: null,
@@ -94,6 +96,14 @@ describe("video scene timestamps", () => {
     expect(timestampLabel(3_661_999)).toBe("61:01");
     expect(stripTimestampMs(-1, 4, 0)).toBe(0);
     expect(stripTimestampMs(1_000, 0, 0)).toBe(0);
+  });
+});
+
+describe("factsLine", () => {
+  it("includes dimensions, video duration, and size in their stable order", () => {
+    expect(
+      factsLine({ width: 1920, height: 1080, durationMs: 65_000, byteSize: 2_097_152 }),
+    ).toBe("1920×1080 · 1:05 · 2 MB");
   });
 });
 

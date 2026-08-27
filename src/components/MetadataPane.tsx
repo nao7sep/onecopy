@@ -10,7 +10,7 @@ import {
   timestampLabel,
 } from "../models/items";
 import { itemKey, useItemsStore } from "../state/items-store";
-import type { ItemDetail } from "../models/items";
+import type { ItemDetail, ItemWorkStates, SectionItem } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
 import { formatLocalMinute } from "../utils/displayTime";
 import { fileManagerWord } from "../utils/shortcuts";
@@ -20,6 +20,14 @@ import TranscriptBlock from "./TranscriptBlock";
 import { openPreview } from "../workflows/preview";
 import { openComparison } from "../workflows/comparison";
 import { useAppStore } from "../state/app-store";
+import {
+  mergeActiveItemWork,
+  useDerivedWorkStore,
+} from "../state/derived-work-store";
+import {
+  workPresentationRows,
+  type PresentationTone,
+} from "../models/itemPresentation";
 
 // The right pane's metadata tab: content facts, the resolved capture time
 // with its source, and the full copy-path list — the live health check (1 copy
@@ -155,16 +163,54 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
+function workTone(tone: PresentationTone): string {
+  if (tone === "danger") return "text-danger";
+  if (tone === "warning") return "text-warning";
+  if (tone === "primary") return "text-primary";
+  return "text-ink";
+}
+
+function WorkSection({
+  states,
+  transcriptHasOwnSection,
+}: {
+  states: ItemWorkStates;
+  transcriptHasOwnSection: boolean;
+}) {
+  const rows = workPresentationRows(states).filter(
+    (row) => !(transcriptHasOwnSection && row.id === "transcripts"),
+  );
+  if (rows.length === 0) return null;
+  return (
+    <div className="mb-2 mt-3">
+      <dt className="text-xs text-ink-muted">Processing</dt>
+      <dd className="mt-1 space-y-1">
+        {rows.map((row) => (
+          <div key={row.id} className="flex items-start justify-between gap-3 text-xs">
+            <span className="text-ink-muted">{row.label}</span>
+            <span className={`text-right ${workTone(row.tone)}`}>{row.value}</span>
+          </div>
+        ))}
+      </dd>
+    </div>
+  );
+}
+
 export default function MetadataPane({
   detail,
   hash,
+  item,
 }: {
   detail: ItemDetail | null;
   hash: string | null;
+  item: SectionItem | null;
 }) {
   const playAfterSnapshot = useAppStore(
     (state) => state.appData?.config?.videoAutoplayAfterSnapshot !== false,
   );
+  const activeWork = useDerivedWorkStore((state) => state.activeItem);
+  const projectedWork =
+    item === null ? null : mergeActiveItemWork(item.derivedWork, item.hash, activeWork);
   if (detail === null) {
     return <p className="p-3 text-sm text-ink-muted">No selection</p>;
   }
@@ -178,6 +224,12 @@ export default function MetadataPane({
         label="Size"
         value={detail.byteSize !== null ? formatBytes(detail.byteSize) : "—"}
       />
+      {projectedWork !== null ? (
+        <WorkSection
+          states={projectedWork}
+          transcriptHasOwnSection={detail.kind === "video" && hash !== null}
+        />
+      ) : null}
       {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
         <div className="mb-2">
           <dt className="text-xs text-ink-muted">Snapshots</dt>
@@ -218,7 +270,11 @@ export default function MetadataPane({
         </div>
       ) : null}
       {detail.kind === "video" && hash !== null ? (
-        <TranscriptBlock hash={hash} variant="compact" />
+        <TranscriptBlock
+          hash={hash}
+          variant="compact"
+          work={projectedWork?.transcripts ?? null}
+        />
       ) : null}
       {detail.width !== null && detail.height !== null ? (
         <Row label="Dimensions" value={`${detail.width} × ${detail.height}`} />

@@ -1,7 +1,9 @@
 import { factsLine } from "../models/items";
+import { faceStarLabel, faceStarRating } from "../models/itemPresentation";
 import type { GroupMember } from "../state/comparison-store";
-import { Focus, Smile } from "lucide-react";
+import { Focus } from "lucide-react";
 import InspectableImage from "./InspectableImage";
+import { useAppStore } from "../state/app-store";
 
 // One comparison slot, shared by the main comparison surface and the
 // secondary per-monitor windows: preview image, the GLOBAL slot key, keeper
@@ -24,6 +26,10 @@ export default function ComparisonSlot({
   onUnlink?: () => void;
 }) {
   const facts = factsLine(member);
+  const showFaceStars = useAppStore(
+    (state) => state.appData?.config?.showFaceStars !== false,
+  );
+  const faceStars = showFaceStars ? faceStarRating(member.faceScore) : 0;
   return (
     <figure
       // Assistive tech learns the keep state; the slot stays out of the Tab
@@ -76,12 +82,15 @@ export default function ComparisonSlot({
             {member.fileName}
           </span>
           <span className="flex shrink-0 gap-2">
-            {/* Face score beside sharpness — both advisory. Only a real face
-                (> 0) earns the badge; scored-faceless and unscored show
-                nothing, so face-free libraries never see the column. */}
-            {member.faceScore !== null && member.faceScore > 0 ? (
-              <span className="flex items-center gap-1" title="Face score (advisory)">
-                <Smile size={12} aria-hidden="true" /> {Math.round(member.faceScore * 100)}
+            {/* A score is a best-face confidence/smile hint, not a percentage
+                rating. Zero/no-face and unscored stay quiet. */}
+            {faceStars > 0 ? (
+              <span
+                className="tracking-tight text-primary"
+                title={faceStarLabel(faceStars)}
+              >
+                <span aria-hidden="true">{"★".repeat(faceStars)}</span>
+                <span className="sr-only">{faceStarLabel(faceStars)}</span>
               </span>
             ) : null}
             {member.sharpness !== null ? (

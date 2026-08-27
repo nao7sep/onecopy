@@ -146,6 +146,7 @@ describe("derived media events", () => {
           hasThumb: false,
           similarGroupId: null,
           sharpness: null,
+          faceScore: null,
           byteSize: 1,
           hasCompanions: false,
           durationMs: null,

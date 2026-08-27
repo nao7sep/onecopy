@@ -146,6 +146,8 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
     assert_eq!(photo.derived_work.preview.as_ref().unwrap().state, "ready");
     assert_eq!(photo.derived_work.faces.as_ref().unwrap().state, "ready");
     assert!(photo.derived_work.faces.as_ref().unwrap().has_value);
+    assert_eq!(photo.face_score, Some(0.75));
+    assert_eq!(serde_json::to_value(&photo).unwrap()["faceScore"], 0.75);
     assert_eq!(photo.derived_work.similarity.as_ref().unwrap().state, "pending");
     assert!(photo.derived_work.similarity.as_ref().unwrap().has_value);
 

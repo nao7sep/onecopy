@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   SORT_ORDERS,
@@ -6,7 +6,6 @@ import {
   extOf,
   factsLine,
   formatBytes,
-  formatDuration,
   sortItems,
   thumbUrl,
   type SectionItem,
@@ -20,9 +19,18 @@ import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
 import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { log, toErrorFields } from "../repositories";
 import { rescanCurrentSection } from "../workflows/items";
+import {
+  itemPresentation,
+  type ItemPresentation,
+  type PresentationBadge,
+} from "../models/itemPresentation";
+import {
+  mergeActiveItemWork,
+  useDerivedWorkStore,
+} from "../state/derived-work-store";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -94,55 +102,46 @@ function Tile({
   item,
   isSelected,
   onSelect,
+  presentation,
 }: {
   item: SectionItem;
   isSelected: boolean;
   onSelect: (event: React.MouseEvent) => void;
+  presentation: ItemPresentation;
 }) {
   const facts = factsLine(item);
   return (
-    <figure className="relative w-40 cursor-grab" onClick={onSelect} {...dragProps(item)}>
+    <figure className="w-40 cursor-grab" onClick={onSelect} {...dragProps(item)}>
       <div
-        className={`flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
+        className={`relative flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
           isSelected ? "border-primary-ring ring-2 ring-primary-ring" : "border-border"
         } bg-surface`}
       >
         <Thumb item={item} />
+        {presentation.selection !== null ? (
+          <span
+            className="absolute left-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-md bg-primary px-1 text-[11px] font-semibold tabular-nums text-ink-inverted"
+            title={presentation.selection.label}
+          >
+            <span aria-hidden="true">
+              {presentation.selection.ordinal ?? <Check size={12} />}
+            </span>
+            <span className="sr-only">{presentation.selection.label}</span>
+          </span>
+        ) : null}
+        {presentation.status !== null ? (
+          <TileBadge badge={presentation.status} className="right-1 top-1 max-w-[7.5rem]" />
+        ) : null}
+        {presentation.relationships !== null ? (
+          <TileBadge
+            badge={presentation.relationships}
+            className={`bottom-1 left-1 ${presentation.analysis === null ? "max-w-[7.5rem]" : "max-w-24"}`}
+          />
+        ) : null}
+        {presentation.analysis !== null ? (
+          <TileBadge badge={presentation.analysis} className="bottom-1 right-1" />
+        ) : null}
       </div>
-      {item.copyCount > 1 ? (
-        <span className="absolute right-1 top-1 rounded-md bg-primary-surface px-1.5 py-0.5 text-[11px] font-medium text-primary">
-          ×{item.copyCount}
-        </span>
-      ) : null}
-      {item.similarGroupId !== null ? (
-        <span
-          className="absolute left-1 top-1 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink"
-          title="Has similar photos — press Enter to compare"
-        >
-          ≈
-        </span>
-      ) : null}
-      {item.durationMs !== null ? (
-        <span className="absolute bottom-9 left-1 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink">
-          {formatDuration(item.durationMs)}
-        </span>
-      ) : null}
-      {item.hasCompanions ? (
-        <span
-          className="absolute bottom-9 right-1 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink-muted"
-          title="Has a paired companion file (RAW/sidecar) — every action includes it"
-        >
-          pair
-        </span>
-      ) : null}
-      {item.namesDiffer ? (
-        <span
-          className="absolute bottom-9 left-1 rounded-md bg-warning-surface px-1.5 py-0.5 text-[11px] text-warning"
-          title="Copies of this file carry different names — Move and Copy are disabled until the names are resolved (reveal the copies from Details)"
-        >
-          ≠name
-        </span>
-      ) : null}
       <figcaption className="mt-1 w-40" title={item.fileName}>
         <span className="block truncate text-xs text-ink">{item.fileName}</span>
         {/* Pixels and bytes, quietly. Without them a section of the same shot
@@ -155,6 +154,32 @@ function Tile({
         ) : null}
       </figcaption>
     </figure>
+  );
+}
+
+function TileBadge({
+  badge,
+  className,
+}: {
+  badge: PresentationBadge;
+  className: string;
+}) {
+  const tone =
+    badge.tone === "danger"
+      ? "bg-danger-surface text-danger"
+      : badge.tone === "warning"
+        ? "bg-warning-surface text-warning"
+        : badge.tone === "primary"
+          ? "bg-primary-surface text-primary"
+          : "bg-surface-muted text-ink-muted";
+  return (
+    <span
+      className={`absolute truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium ${tone} ${className}`}
+      title={badge.label}
+    >
+      <span aria-hidden="true">{badge.text}</span>
+      <span className="sr-only">{badge.label}</span>
+    </span>
   );
 }
 
@@ -397,6 +422,10 @@ export default function Grid({
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
   const selectedSection = useItemsStore((s) => s.selected);
+  const activeWork = useDerivedWorkStore((s) => s.activeItem);
+  const showFaceStars = useAppStore(
+    (state) => state.appData?.config?.showFaceStars !== false,
+  );
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
@@ -406,6 +435,19 @@ export default function Grid({
   );
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
   const sortCatalogue = SORT_ORDERS[lane];
+  const similarCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const item of items) {
+      if (item.similarGroupId !== null) {
+        counts.set(item.similarGroupId, (counts.get(item.similarGroupId) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [items]);
+  const selectionOrdinals = useMemo(
+    () => new Map([...selectedKeys].map((key, index) => [key, index + 1])),
+    [selectedKeys],
+  );
 
   // Other-files column widths: persisted intent, applied immediately, saved
   // debounced on change (the drag fires continuously).
@@ -696,6 +738,17 @@ export default function Grid({
         {visible.map((item, i) => {
           const key = itemKey(item);
           const isSelected = selectedKeys.has(key);
+          const projectedItem = {
+            ...item,
+            derivedWork: mergeActiveItemWork(item.derivedWork, item.hash, activeWork),
+          };
+          const presentation = itemPresentation(projectedItem, {
+            similarCount:
+              item.similarGroupId === null ? 0 : (similarCounts.get(item.similarGroupId) ?? 0),
+            selectionOrdinal: selectionOrdinals.get(key) ?? null,
+            selectedCount: selectedKeys.size,
+            showFaceStars,
+          });
           const onSelect = (event: React.MouseEvent) => {
             containerRef.current?.focus();
             // Browser double-click dispatch is click, click, dblclick. Acting
@@ -726,7 +779,12 @@ export default function Grid({
                   widths={columnWidths}
                 />
               ) : (
-                <Tile item={item} isSelected={isSelected} onSelect={onSelect} />
+                <Tile
+                  item={projectedItem}
+                  isSelected={isSelected}
+                  onSelect={onSelect}
+                  presentation={presentation}
+                />
               )}
             </div>
           );

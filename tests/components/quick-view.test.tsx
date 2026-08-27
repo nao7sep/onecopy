@@ -33,6 +33,7 @@ beforeEach(() => {
         hasThumb: true,
         similarGroupId: null,
         sharpness: null,
+        faceScore: null,
         byteSize: 10,
         hasCompanions: false,
         durationMs: null,

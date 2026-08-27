@@ -195,8 +195,46 @@ fn live_face_models_find_nothing_in_a_face_free_image() {
     let gradient = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(640, 480, |x, y| {
         image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
     }));
+    let load_started = std::time::Instant::now();
     let mut scorer = face::FaceScorer::load(&detector, &emotion).unwrap();
+    let load_elapsed = load_started.elapsed();
     let score = scorer.score(&gradient).unwrap();
     eprintln!("face-free gradient scored {score}");
     assert_eq!(score, 0.0, "no face may be found where none exists");
+
+    // Optional repeatable measurement over a harmless generated corpus:
+    // ONECOPY_FACE_FIXTURES=/path/to/images cargo test live_face_models --
+    // --ignored --nocapture. No private or repo-specific path is embedded.
+    if let Some(root) = std::env::var_os("ONECOPY_FACE_FIXTURES") {
+        let mut images = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png")
+                    })
+            })
+            .collect::<Vec<_>>();
+        images.sort();
+        assert!(!images.is_empty(), "fixture directory contains no images");
+        let inference_started = std::time::Instant::now();
+        for path in &images {
+            let image = image::open(path).unwrap();
+            let started = std::time::Instant::now();
+            let score = scorer.score(&image).unwrap();
+            eprintln!(
+                "{}\t{score:.6}\t{:?}",
+                path.file_name().unwrap().to_string_lossy(),
+                started.elapsed()
+            );
+            assert!(score.is_finite() && (0.0..=1.0).contains(&score));
+        }
+        eprintln!(
+            "model load: {load_elapsed:?}; inference total: {:?}; images: {}",
+            inference_started.elapsed(),
+            images.len()
+        );
+    }
 }

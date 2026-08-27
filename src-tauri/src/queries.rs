@@ -262,6 +262,9 @@ pub struct SectionItem {
     pub has_thumb: bool,
     pub similar_group_id: Option<i64>,
     pub sharpness: Option<f64>,
+    /// Ready face score for advisory presentation; None remains unscored or
+    /// failed, while zero is a successful no-face result.
+    pub face_score: Option<f64>,
     pub byte_size: Option<i64>,
     pub has_companions: bool,
     pub duration_ms: Option<i64>,
@@ -420,6 +423,7 @@ fn section_item_from_row(
         has_thumb: row.get(7)?,
         similar_group_id: row.get(8)?,
         sharpness: row.get(9)?,
+        face_score: row.get(19)?,
         byte_size: row.get(10)?,
         has_companions: row.get(11)?,
         duration_ms: row.get(12)?,
@@ -521,6 +525,7 @@ fn unhashed_other_items(
             has_thumb: false,
             similar_group_id: None,
             sharpness: None,
+            face_score: None,
             byte_size: row.get(3)?,
             has_companions: false,
             duration_ms: None,
