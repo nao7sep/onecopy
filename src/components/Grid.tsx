@@ -409,12 +409,19 @@ export default function Grid({
     const clearOnVisibilityLoss = () => {
       if (document.hidden) clearGridDragCursor();
     };
+    const clearOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearGridDragCursor();
+    };
     window.addEventListener("blur", clearGridDragCursor);
     window.addEventListener("dragend", clearGridDragCursor);
+    window.addEventListener("drop", clearGridDragCursor);
+    window.addEventListener("keydown", clearOnEscape, true);
     document.addEventListener("visibilitychange", clearOnVisibilityLoss);
     return () => {
       window.removeEventListener("blur", clearGridDragCursor);
       window.removeEventListener("dragend", clearGridDragCursor);
+      window.removeEventListener("drop", clearGridDragCursor);
+      window.removeEventListener("keydown", clearOnEscape, true);
       document.removeEventListener("visibilitychange", clearOnVisibilityLoss);
       clearGridDragCursor();
     };

@@ -58,6 +58,16 @@ export function nodeHasChildren(
 
 const EMPTY_DIR_ENTRIES: DirEntry[] = [];
 
+function keepsNativeTextDrop(event: DragEvent): boolean {
+  const target = event.target as Element | null;
+  if (!target?.closest?.(
+    "textarea, [contenteditable='true'], input:not([type]), input[type='text'], input[type='search'], input[type='url'], input[type='email'], input[type='number'], input[type='password'], input[type='tel']",
+  )) return false;
+  const types = Array.from(event.dataTransfer?.types ?? []);
+  if (types.includes("Files") || types.includes("application/x-onecopy-drag")) return false;
+  return types.some((type) => type === "text/plain" || type === "text/uri-list" || type === "text/html");
+}
+
 function useDropHandlers(path: string) {
   const [dropReady, setDropReady] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -100,6 +110,11 @@ function useDropHandlers(path: string) {
         event.preventDefault();
         event.stopPropagation();
         resetDrop();
+        // Rows receive only OneCopy's own selection token. The window-level
+        // safety boundary also prevents external navigation, but an external
+        // file released directly over a row must not accidentally open the
+        // Move/Copy choice for whatever happens to be selected in the grid.
+        if (!event.dataTransfer.types.includes("application/x-onecopy-drag")) return;
         // The choice is ASKED, never inferred from modifier keys held at
         // drop time (Phase 33) — with one exception kept deliberately:
         // Cmd/Ctrl-drop still means copy, the OS-wide drag convention.
@@ -407,6 +422,8 @@ export default function DestinationsTab() {
   const expanded = useDestinationsStore((s) => s.expanded);
   const children = useDestinationsStore((s) => s.children);
   const message = useDestinationsStore((s) => s.message);
+  const result = useDestinationsStore((s) => s.result);
+  const dismissResult = useDestinationsStore((s) => s.dismissResult);
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
@@ -490,14 +507,14 @@ export default function DestinationsTab() {
   // cannot accept anything. Rows stopPropagation, so this never sees them.
   useEffect(() => {
     const deny = (event: DragEvent) => {
+      if (keepsNativeTextDrop(event)) return;
       // OneCopy has no external import target. Own every renderer drop boundary
       // so a file, image, text, or URL can never replace the webview.
       event.preventDefault();
-      if (event.dataTransfer?.types.includes("application/x-onecopy-drag")) {
-        event.dataTransfer.dropEffect = "none";
-      }
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
     };
     const swallow = (event: DragEvent) => {
+      if (keepsNativeTextDrop(event)) return;
       event.preventDefault();
     };
     window.addEventListener("dragover", deny);
@@ -561,6 +578,37 @@ export default function DestinationsTab() {
         )}
       </ul>
       <ActionBar />
+      {result !== null ? (
+        <div
+          role={result.severity === "info" ? "status" : "alert"}
+          className={`mt-2 flex shrink-0 items-start gap-2 rounded-md border px-2.5 py-2 text-xs ${
+            result.severity === "error"
+              ? "border-danger bg-danger-surface text-danger"
+              : result.severity === "warning"
+                ? "border-warning bg-warning-surface text-warning"
+                : "border-border-strong bg-surface-muted text-ink"
+          }`}
+        >
+          <span className="min-w-0 flex-1 break-words">
+            <strong className="font-semibold">
+              {result.severity === "error"
+                ? "Error"
+                : result.severity === "warning"
+                  ? "Needs attention"
+                  : "Information"}
+              :
+            </strong>{" "}
+            {result.message}
+          </span>
+          <button
+            className="shrink-0 rounded px-1 font-medium underline-offset-2 hover:underline"
+            onClick={dismissResult}
+            aria-label="Dismiss result"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       {message !== "" ? (
         <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">{message}</p>
       ) : null}

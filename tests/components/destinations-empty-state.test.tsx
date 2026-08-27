@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import DestinationsTab from "../../src/components/DestinationsTab";
 import { useDestinationsStore } from "../../src/state/destinations-store";
@@ -15,7 +15,9 @@ beforeEach(() => {
     expanded: new Set(),
     emptiness: {},
     message: "",
+    result: null,
     activePath: null,
+    pendingDrop: null,
   });
 });
 
@@ -50,5 +52,61 @@ describe("destination folder states", () => {
     mockCommands({ list_subdirs: () => [] });
     await act(async () => useDestinationsStore.getState().refreshNode("/dest"));
     expect(view.container.textContent).toContain("No subfolders");
+  });
+
+  it("keeps external files denial-only even when released over a destination row", () => {
+    useDestinationsStore.setState({
+      roots: ["/dest"],
+      expanded: new Set(),
+      activePath: "/dest",
+      pendingDrop: null,
+    });
+    const view = render(<DestinationsTab />);
+    const row = view.container.querySelector<HTMLElement>("[data-tree-path='/dest']")!;
+
+    fireEvent.drop(row, { dataTransfer: { types: ["Files"] } });
+
+    expect(useDestinationsStore.getState().pendingDrop).toBeNull();
+    expect(view.container.textContent).not.toContain("Drop into");
+  });
+
+  it("opens the Move/Copy choice only for OneCopy's internal selection", () => {
+    useDestinationsStore.setState({
+      roots: ["/dest"],
+      expanded: new Set(),
+      activePath: "/dest",
+      pendingDrop: null,
+    });
+    const view = render(<DestinationsTab />);
+    const row = view.container.querySelector<HTMLElement>("[data-tree-path='/dest']")!;
+
+    fireEvent.drop(row, {
+      dataTransfer: { types: ["application/x-onecopy-drag"] },
+    });
+
+    expect(useDestinationsStore.getState().pendingDrop).toBe("/dest");
+    expect(view.container.textContent).toContain("Drop into dest");
+  });
+
+  it("keeps ordinary text drops native inside a real editor", () => {
+    useDestinationsStore.setState({
+      roots: ["/dest"],
+      expanded: new Set(),
+      activePath: "/dest",
+    });
+    const view = render(<DestinationsTab />);
+    fireEvent.click(view.getByText("New subfolder"));
+    const input = view.getByPlaceholderText("folder name");
+    const dataTransfer = { types: ["text/plain"], items: [], dropEffect: "copy" };
+
+    const over = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperties(over, { dataTransfer: { value: dataTransfer } });
+    input.dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(false);
+
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperties(drop, { dataTransfer: { value: dataTransfer } });
+    input.dispatchEvent(drop);
+    expect(drop.defaultPrevented).toBe(false);
   });
 });

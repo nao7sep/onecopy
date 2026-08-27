@@ -218,6 +218,25 @@ describe("Space", () => {
 });
 
 describe("pointer selection", () => {
+  it("clears the drag cursor on Escape and drop even when dragend is lost", () => {
+    const { view } = renderGrid();
+    const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
+
+    fireEvent.dragStart(tile, {
+      dataTransfer: { setData: () => undefined, effectAllowed: "none" },
+    });
+    expect(document.body.classList.contains("dragging")).toBe(true);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(document.body.classList.contains("dragging")).toBe(false);
+
+    fireEvent.dragStart(tile, {
+      dataTransfer: { setData: () => undefined, effectAllowed: "none" },
+    });
+    fireEvent.drop(window);
+    expect(document.body.classList.contains("dragging")).toBe(false);
+  });
+
   it("ordinary clicks toggle immediately", () => {
     const { view } = renderGrid();
     const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;

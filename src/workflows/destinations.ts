@@ -28,6 +28,21 @@ interface ItemIdentity {
 
 export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
 
+function receiverOperationKey(destDir: string, mode: MoveMode): string {
+  return JSON.stringify([destDir, mode]);
+}
+
+function moveOperationKey(
+  destDir: string,
+  mode: MoveMode,
+  identities: ItemIdentity[],
+): string {
+  const items = identities
+    .map((item) => (item.hash !== null ? `hash:${item.hash}` : `path:${item.pathId}`))
+    .sort();
+  return JSON.stringify([destDir, mode, items]);
+}
+
 export async function addDestinationRoot(): Promise<void> {
   try {
     const picked = await openDialog({ directory: true, multiple: false });
@@ -75,28 +90,35 @@ export async function moveSelectionTo(
       : selectedItem !== null
         ? new Set([selectedItem])
         : new Set<string>();
-  // Fail the whole multi-selection before moving anything if copy names
-  // disagree. The core enforces the same rule per operation.
-  const blocked = items.filter(
-    (item) => keys.has(itemKey(item)) && item.namesDiffer,
-  );
-  if (blocked.length > 0) {
-    useDestinationsStore.setState({
-      message: `${blocked.length} selected item${blocked.length === 1 ? "" : "s"} have copies under different names — Move/Copy is disabled for them. Reveal the copies (Details) to resolve the names first.`,
-    });
-    return;
-  }
   const targets = items.filter((item) => keys.has(itemKey(item)));
-  if (targets.length === 0) {
-    useDestinationsStore.setState({
-      message: "Select an item in the grid first",
-    });
-    return;
-  }
   const identities = targets.map((item) => ({
     hash: item.hash,
     pathId: item.hash === null ? item.pathId : null,
   }));
+  const operationKey = moveOperationKey(destDir, mode, identities);
+  // Fail the whole multi-selection before moving anything if copy names
+  // disagree. The core enforces the same rule per operation.
+  const blocked = targets.filter((item) => item.namesDiffer);
+  if (blocked.length > 0) {
+    useDestinationsStore.setState({
+      result: {
+        severity: "warning",
+        message: `${blocked.length} selected item${blocked.length === 1 ? "" : "s"} have copies under different names — Move/Copy is disabled for them. Reveal the copies (Details) to resolve the names first.`,
+        operationKey,
+      },
+    });
+    return;
+  }
+  if (targets.length === 0) {
+    useDestinationsStore.setState({
+      result: {
+        severity: "warning",
+        message: "Select an item in the grid first.",
+        operationKey: receiverOperationKey(destDir, mode),
+      },
+    });
+    return;
+  }
   if (mode === "move-delete-rest") {
     useDestinationsStore.setState({
       pendingDeleteRest: {
@@ -115,6 +137,8 @@ async function executeMoveBatch(
   mode: MoveMode,
   identities: ItemIdentity[],
 ): Promise<void> {
+  const operationKey = moveOperationKey(destDir, mode, identities);
+  const receiverKey = receiverOperationKey(destDir, mode);
   try {
     const outcome = await invoke<MoveBatchOutcome>("move_items_out", {
       items: identities,
@@ -122,36 +146,59 @@ async function executeMoveBatch(
       mode,
     });
     const parts: string[] = [];
-    if (outcome.exported > 0) parts.push(`${outcome.exported} exported`);
     if (outcome.skippedIdentical > 0) {
       parts.push(`${outcome.skippedIdentical} already there`);
     }
-    if (outcome.postAction.deletedFiles > 0) {
-      parts.push(`${outcome.postAction.deletedFiles} originals handled`);
-    }
     if (outcome.postAction.failedFiles > 0) {
       parts.push(
-        `FAILED: ${outcome.postAction.failedFiles} originals could not be handled — see Issues`,
+        `${outcome.postAction.failedFiles} originals could not be handled — see Issues.`,
       );
     }
     if (outcome.conflicts.length > 0) {
       parts.push(
-        `CONFLICT: ${outcome.conflicts.join(", ")} differs — originals kept`,
+        `${outcome.conflicts.join(", ")} already exists with different content; originals kept.`,
       );
     }
     if (outcome.undelivered.length > 0) {
       parts.push(
-        `FAILED: could not write ${outcome.undelivered.join(", ")} — originals kept`,
+        `Could not write ${outcome.undelivered.join(", ")}; originals kept.`,
       );
     }
-    if (outcome.cancelled) parts.push("Stopped — unstarted items untouched");
-    if (outcome.error !== null) parts.push(`STOPPED: ${outcome.error}`);
-    useDestinationsStore.setState({
-      message: parts.join(" · ") || "Nothing to do",
-    });
+    if (outcome.cancelled) parts.push("Stopped; unstarted items are untouched.");
+    if (outcome.error !== null) parts.push(`Stopped: ${outcome.error}`);
+    if (
+      parts.length === 0 &&
+      outcome.exported === 0 &&
+      outcome.postAction.deletedFiles === 0
+    ) {
+      parts.push("Nothing changed.");
+    }
+    const severity =
+      outcome.postAction.failedFiles > 0 ||
+      outcome.undelivered.length > 0 ||
+      outcome.error !== null
+        ? "error"
+        : outcome.conflicts.length > 0
+          ? "warning"
+          : "info";
+    if (parts.length > 0) {
+      useDestinationsStore.setState({
+        result: { severity, message: parts.join(" · "), operationKey },
+      });
+    } else {
+      const previous = useDestinationsStore.getState().result;
+      if (
+        previous?.operationKey === operationKey ||
+        previous?.operationKey === receiverKey
+      ) {
+        useDestinationsStore.setState({ result: null });
+      }
+    }
     await refreshDestinationOwners();
   } catch (error) {
-    useDestinationsStore.setState({ message: String(error) });
+    useDestinationsStore.setState({
+      result: { severity: "error", message: String(error), operationKey },
+    });
     log.error("move out failed", toErrorFields(error));
     await refreshDestinationOwners();
   }

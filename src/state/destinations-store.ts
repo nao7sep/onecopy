@@ -14,6 +14,14 @@ export interface DirEntry {
   isEmpty: boolean;
 }
 
+export interface DestinationResult {
+  severity: "info" | "warning" | "error";
+  message: string;
+  /** Identifies the receiver action whose committed outcome this describes.
+   * A successful retry clears only a result with the same operation key. */
+  operationKey: string;
+}
+
 interface DestinationsState {
   roots: string[];
   children: Record<string, DirEntry[]>;
@@ -21,6 +29,8 @@ interface DestinationsState {
   expanded: Set<string>;
   emptiness: Record<string, boolean>;
   message: string;
+  result: DestinationResult | null;
+  dismissResult: () => void;
   /** A move-delete-rest awaiting its permanent-deletion confirmation. The
    * backend identities freeze exactly what the dialog counted, independent of
    * later selection or watcher projection changes. */
@@ -55,6 +65,8 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   expanded: new Set<string>(),
   emptiness: {},
   message: "",
+  result: null,
+  dismissResult: () => set({ result: null }),
   activePath: null,
 
   setActive: (path) => set({ activePath: path }),

@@ -83,7 +83,7 @@ beforeEach(() => {
     patch_state: () => ({}),
     get_item_detail: () => null,
   });
-  useDestinationsStore.setState({ pendingDeleteRest: null, message: "" });
+  useDestinationsStore.setState({ pendingDeleteRest: null, message: "", result: null });
   selectAll(["h1", "h2", "h3"]);
 });
 
@@ -194,8 +194,9 @@ describe("outcome reporting", () => {
 
     await moveSelectionTo("/dest", "copy");
 
-    expect(useDestinationsStore.getState().message).toMatch(/CONFLICT/);
-    expect(useDestinationsStore.getState().message).toContain("IMG_1.jpg");
+    expect(useDestinationsStore.getState().result?.severity).toBe("warning");
+    expect(useDestinationsStore.getState().result?.message).toMatch(/different content/);
+    expect(useDestinationsStore.getState().result?.message).toContain("IMG_1.jpg");
   });
 
   it("reports a target nothing could be written to", async () => {
@@ -211,8 +212,9 @@ describe("outcome reporting", () => {
 
     await moveSelectionTo("/dest", "copy");
 
-    expect(useDestinationsStore.getState().message).toMatch(/FAILED/);
-    expect(useDestinationsStore.getState().message).toContain("IMG_1.arw");
+    expect(useDestinationsStore.getState().result?.severity).toBe("error");
+    expect(useDestinationsStore.getState().result?.message).toMatch(/Could not write/);
+    expect(useDestinationsStore.getState().result?.message).toContain("IMG_1.arw");
   });
 
   it("keeps source post-action failures visible after progress closes", async () => {
@@ -226,10 +228,11 @@ describe("outcome reporting", () => {
 
     await moveSelectionTo("/dest", "move-trash-rest");
 
-    expect(useDestinationsStore.getState().message).toContain(
+    expect(useDestinationsStore.getState().result?.severity).toBe("error");
+    expect(useDestinationsStore.getState().result?.message).toContain(
       "2 originals could not be handled",
     );
-    expect(useDestinationsStore.getState().message).toContain("Issues");
+    expect(useDestinationsStore.getState().result?.message).toContain("Issues");
   });
 
   it("says so plainly when nothing is selected", async () => {
@@ -238,7 +241,59 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(movedHashes()).toHaveLength(0);
-    expect(useDestinationsStore.getState().message).toMatch(/select an item/i);
+    expect(useDestinationsStore.getState().result?.severity).toBe("warning");
+    expect(useDestinationsStore.getState().result?.message).toMatch(/select an item/i);
+  });
+
+  it("keeps an unresolved result through an unrelated full success", async () => {
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        exported: 0,
+        conflicts: ["/old/IMG_1.jpg"],
+        postAction: { deletedFiles: 0, failedFiles: 0, removedRows: 0 },
+      }),
+    });
+    selectAll(["h1"]);
+    await moveSelectionTo("/old", "copy");
+    const unresolved = useDestinationsStore.getState().result;
+
+    mockCommands({ move_items_out: () => OUTCOME });
+    selectAll(["h1"]);
+    await moveSelectionTo("/dest", "copy");
+
+    expect(useDestinationsStore.getState().result).toEqual(unresolved);
+  });
+
+  it("clears a result when the same operation succeeds on retry", async () => {
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        exported: 0,
+        conflicts: ["/dest/IMG_1.jpg"],
+        postAction: { deletedFiles: 0, failedFiles: 0, removedRows: 0 },
+      }),
+    });
+    selectAll(["h1"]);
+    await moveSelectionTo("/dest", "copy");
+    expect(useDestinationsStore.getState().result).not.toBeNull();
+
+    mockCommands({ move_items_out: () => OUTCOME });
+    selectAll(["h1"]);
+    await moveSelectionTo("/dest", "copy");
+
+    expect(useDestinationsStore.getState().result).toBeNull();
+  });
+
+  it("clears the selection-required result after the requested action succeeds", async () => {
+    useItemsStore.setState({ selectedKeys: new Set(), selectedItem: null });
+    await moveSelectionTo("/dest", "copy");
+    expect(useDestinationsStore.getState().result?.message).toMatch(/select an item/i);
+
+    selectAll(["h1"]);
+    await moveSelectionTo("/dest", "copy");
+
+    expect(useDestinationsStore.getState().result).toBeNull();
   });
 });
 
