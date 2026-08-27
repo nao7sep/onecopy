@@ -189,7 +189,14 @@ describe("quarantine events", () => {
 
 describe("binaries events", () => {
   it("clears the entry and keeps the failure visible on an error", async () => {
-    binaries.setState({ installing: { ffmpeg: "Downloading — 12 MB" } });
+    binaries.setState({
+      installing: {
+        ffmpeg: {
+          progress: { phase: "download", done: 12, total: null, nextPhase: "verify" },
+          cancelling: false,
+        },
+      },
+    });
 
     fireEvent("binaries://error", { id: "ffmpeg", message: "checksum mismatch" });
     expect(binaries.getState().installing["ffmpeg"]).toBeUndefined();
@@ -198,7 +205,7 @@ describe("binaries events", () => {
 
   it("clears progress without inventing an error when an install is cancelled", async () => {
     binaries.setState({
-      installing: { ffmpeg: "Cancelling…" },
+      installing: { ffmpeg: { progress: null, cancelling: true } },
       errors: { ffmpeg: "old failure" },
     });
 
@@ -209,20 +216,34 @@ describe("binaries events", () => {
 
   it("narrates SEVERAL installs at once, each in words", async () => {
     // Installs are parallel per entry (developer, 2026-08-17): the map keeps
-    // one humanized line per id — "download" never reaches the user raw.
+    // one typed snapshot per id; presentation owns the humanized line.
     fireEvent("binaries://progress", {
       id: "whisper-large-v3-turbo",
       phase: "download",
-      detail: "300 / 1549 MB",
+      done: 300 * 1_048_576,
+      total: 1_549 * 1_048_576,
+      nextPhase: "verify",
     });
     fireEvent("binaries://progress", {
       id: "ultraface-rfb640",
       phase: "verify",
-      detail: "checking integrity",
+      done: 0,
+      total: 1_588_012,
+      nextPhase: "install",
     });
     const installing = binaries.getState().installing;
-    expect(installing["whisper-large-v3-turbo"]).toBe("Downloading — 300 / 1549 MB");
-    expect(installing["ultraface-rfb640"]).toBe("Verifying — checking integrity");
+    expect(installing["whisper-large-v3-turbo"]?.progress).toEqual({
+      phase: "download",
+      done: 300 * 1_048_576,
+      total: 1_549 * 1_048_576,
+      nextPhase: "verify",
+    });
+    expect(installing["ultraface-rfb640"]?.progress).toEqual({
+      phase: "verify",
+      done: 0,
+      total: 1_588_012,
+      nextPhase: "install",
+    });
   });
 
   it("retains each phase and a terminal result instead of flashing one line", async () => {
@@ -230,24 +251,30 @@ describe("binaries events", () => {
     fireEvent("binaries://progress", {
       id: "ffmpeg",
       phase: "resolve",
-      detail: "finding the latest build",
+      done: 1,
+      total: 1,
+      nextPhase: "download",
     });
     fireEvent("binaries://progress", {
       id: "ffmpeg",
       phase: "download",
-      detail: "84 MB",
+      done: 84 * 1_048_576,
+      total: 84 * 1_048_576,
+      nextPhase: "verify",
     });
     fireEvent("binaries://progress", {
       id: "ffmpeg",
       phase: "verify",
-      detail: "checking integrity",
+      done: 84 * 1_048_576,
+      total: 84 * 1_048_576,
+      nextPhase: "install",
     });
     fireEvent("binaries://done", { id: "ffmpeg" });
 
     expect(binaries.getState().installHistory.ffmpeg).toEqual([
-      { phase: "resolve", text: "Resolving — finding the latest build" },
-      { phase: "download", text: "Downloading — 84 MB" },
-      { phase: "verify", text: "Verifying — checking integrity" },
+      { phase: "resolve", text: "Resolving — 1/1 · Next: Downloading" },
+      { phase: "download", text: "Downloading — 84 MB / 84 MB (100%) · Next: Verifying" },
+      { phase: "verify", text: "Verifying — 84 MB / 84 MB (100%) · Next: Installing" },
       { phase: "result", text: "Installed" },
     ]);
   });

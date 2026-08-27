@@ -250,7 +250,7 @@ pub(crate) fn download_to(
     cancelled: &AtomicBool,
     deadline: &OperationDeadline,
     expected_bytes: Option<u64>,
-    mut on_progress: impl FnMut(u64),
+    mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<u64, String> {
     assert_https(url)?;
     check_cancelled(cancelled)?;
@@ -265,6 +265,7 @@ pub(crate) fn download_to(
                 .and_then(reqwest::Response::error_for_status)
                 .map_err(|e| e.to_string())?;
             assert_https(response.url().as_str())?;
+            let announced_bytes = expected_bytes.or(response.content_length());
             if let Some(length) = response.content_length() {
                 if length > ceiling {
                     return Err(format!(
@@ -279,6 +280,7 @@ pub(crate) fn download_to(
                     }
                 }
             }
+            on_progress(0, announced_bytes);
             // Tokio's filesystem adapter keeps this current-thread runtime free
             // to poll the cancellation and whole-deadline branches while the OS
             // performs writes and the durable flush on its blocking pool.
@@ -296,7 +298,7 @@ pub(crate) fn download_to(
                 ensure_download_within_ceiling(total, expected_bytes)?;
                 file.write_all(&bytes).await.map_err(|e| e.to_string())?;
                 if total.saturating_sub(reported) >= 1024 * 1024 {
-                    on_progress(total);
+                    on_progress(total, announced_bytes);
                     reported = total;
                 }
             }
@@ -307,8 +309,18 @@ pub(crate) fn download_to(
                     ));
                 }
             }
-            if total != reported {
-                on_progress(total);
+            if expected_bytes.is_none()
+                && announced_bytes.is_some_and(|announced| announced != total)
+            {
+                return Err(format!(
+                    "download length mismatch: server announced {} bytes, received {total}",
+                    announced_bytes.unwrap_or_default()
+                ));
+            }
+            if total != reported || announced_bytes.is_none() {
+                // A server may omit Content-Length. The completed snapshot can
+                // still close the phase with the actual stable byte total.
+                on_progress(total, Some(announced_bytes.unwrap_or(total)));
             }
             file.sync_all().await.map_err(|e| e.to_string())?;
             Ok(total)
@@ -405,10 +417,14 @@ pub(crate) fn file_sha256(
     path: &Path,
     cancelled: &AtomicBool,
     deadline: &OperationDeadline,
+    mut on_progress: impl FnMut(u64, u64),
 ) -> Result<String, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let total = file.metadata().map_err(|e| e.to_string())?.len();
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1024 * 1024];
+    let mut done = 0u64;
+    on_progress(done, total);
     loop {
         deadline.check(cancelled)?;
         let n = file.read(&mut buf).map_err(|e| e.to_string())?;
@@ -416,6 +432,8 @@ pub(crate) fn file_sha256(
             break;
         }
         hasher.update(&buf[..n]);
+        done += n as u64;
+        on_progress(done, total);
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -714,7 +732,7 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         let deadline = OperationDeadline::for_install(Some(2 * 1024 * 1024));
         assert_eq!(
-            file_sha256(&file, &cancelled, &deadline).unwrap_err(),
+            file_sha256(&file, &cancelled, &deadline, |_, _| {}).unwrap_err(),
             CANCELLED_ERROR
         );
 
@@ -733,6 +751,29 @@ mod tests {
                 .unwrap_err(),
             CANCELLED_ERROR
         );
+    }
+
+    #[test]
+    fn hashing_reports_stable_byte_progress_through_completion() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-acquisition-hash-progress-")
+            .tempdir()
+            .unwrap();
+        let file = dir.path().join("artifact.bin");
+        let bytes = 2 * 1024 * 1024 + 17;
+        std::fs::write(&file, vec![7u8; bytes]).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let deadline = OperationDeadline::for_install(Some(bytes as u64));
+        let mut snapshots = Vec::new();
+
+        file_sha256(&file, &cancelled, &deadline, |done, total| {
+            snapshots.push((done, total));
+        })
+        .unwrap();
+
+        assert_eq!(snapshots.first(), Some(&(0, bytes as u64)));
+        assert_eq!(snapshots.last(), Some(&(bytes as u64, bytes as u64)));
+        assert!(snapshots.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     }
 
     #[test]

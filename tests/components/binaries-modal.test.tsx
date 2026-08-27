@@ -14,6 +14,16 @@ import BinariesModal from "../../src/components/BinariesModal";
 import { useBinariesStore, type DependencyState } from "../../src/state/binaries-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
+const downloading = {
+  progress: {
+    phase: "download" as const,
+    done: 100 * 1_048_576,
+    total: 1_207 * 1_048_576,
+    nextPhase: "verify" as const,
+  },
+  cancelling: false,
+};
+
 function entry(
   id: string,
   status: DependencyState["status"],
@@ -80,13 +90,13 @@ const buttons = (label: string) =>
 describe("parallel installs", () => {
   it("keeps every other row's button live while one entry downloads", () => {
     useBinariesStore.setState({
-      installing: { "whisper-large-v3-turbo": "Downloading — 100 / 1207 MB" },
+      installing: { "whisper-large-v3-turbo": downloading },
     });
     render(<BinariesModal />);
     const install = buttons("Install");
     expect(install).toHaveLength(1); // ffmpeg's — the model row shows progress
     expect(install[0]!.disabled).toBe(false);
-    expect(document.body.textContent).toContain("Downloading — 100 / 1207 MB");
+    expect(document.body.textContent).toContain("Downloading — 100 MB / 1.2 GB (8%)");
   });
 
   it("keeps completed phases readable after a fast install finishes", () => {
@@ -112,7 +122,7 @@ describe("parallel installs", () => {
 
   it("offers cancellation on the running row and sends that entry id", async () => {
     useBinariesStore.setState({
-      installing: { "whisper-large-v3-turbo": "Downloading — 100 / 1207 MB" },
+      installing: { "whisper-large-v3-turbo": downloading },
     });
     render(<BinariesModal />);
 
@@ -127,7 +137,7 @@ describe("parallel installs", () => {
   it("does not leave stale cancellation progress when the worker already ended", async () => {
     mockCommands({ binaries_cancel: () => false });
     useBinariesStore.setState({
-      installing: { "whisper-large-v3-turbo": "Downloading — 100 / 1207 MB" },
+      installing: { "whisper-large-v3-turbo": downloading },
     });
     render(<BinariesModal />);
 

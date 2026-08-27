@@ -10,6 +10,11 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  managedInstallLine,
+  type ManagedInstallActivity,
+  type ManagedInstallProgress,
+} from "../models/dependencyProgress";
 import { log, toErrorFields } from "../repositories";
 
 export type DependencyStatus =
@@ -44,21 +49,6 @@ export interface DependencyState {
   released: string | null;
 }
 
-/** Install-progress phase tokens rendered as words — this is not a console
- * app (developer, 2026-08-17); raw tokens never reach the user. */
-const INSTALL_PHASE_LABELS: Record<string, string> = {
-  resolve: "Resolving",
-  download: "Downloading",
-  verify: "Verifying",
-  install: "Installing",
-};
-
-export function installLine(phase: string, detail: string): string {
-  const label =
-    INSTALL_PHASE_LABELS[phase] ?? phase.charAt(0).toUpperCase() + phase.slice(1);
-  return `${label} — ${detail}`;
-}
-
 export interface InstallStep {
   phase: string;
   text: string;
@@ -88,9 +78,9 @@ interface BinariesState {
   entries: DependencyState[];
   loading: boolean;
   loadError: string | null;
-  /** Progress line per entry currently installing — several at once is
+  /** Typed activity per entry currently installing — several at once is
    * normal (the whole point of per-id claims). */
-  installing: Record<string, string>;
+  installing: Record<string, ManagedInstallActivity>;
   /** The current attempt's durable phase history, retained through its result. */
   installHistory: Record<string, InstallStep[]>;
   /** The last failure per entry, shown in its row until the next attempt. */
@@ -151,7 +141,10 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       const errors = { ...s.errors };
       delete errors[id];
       return {
-        installing: { ...s.installing, [id]: "Starting…" },
+        installing: {
+          ...s.installing,
+          [id]: { progress: null, cancelling: false },
+        },
         installHistory: { ...s.installHistory, [id]: [] },
         errors,
       };
@@ -177,12 +170,18 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
 
   cancel: async (id) => {
     const previous = get().installing[id];
-    set((s) => ({ installing: { ...s.installing, [id]: "Cancelling…" } }));
+    if (previous === undefined || previous.cancelling) return;
+    set((s) => ({
+      installing: {
+        ...s.installing,
+        [id]: { ...previous, cancelling: true },
+      },
+    }));
     try {
       const active = await invoke<boolean>("binaries_cancel", { id });
       if (!active) {
         set((s) => {
-          if (s.installing[id] !== "Cancelling…") return s;
+          if (s.installing[id]?.cancelling !== true) return s;
           const installing = { ...s.installing };
           delete installing[id];
           return {
@@ -197,7 +196,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     } catch (error) {
       log.error("binaries install cancellation failed", { id, ...toErrorFields(error) });
       set((s) => {
-        if (s.installing[id] !== "Cancelling…") return s;
+        if (s.installing[id]?.cancelling !== true) return s;
         const installing = { ...s.installing };
         if (previous === undefined) delete installing[id];
         else installing[id] = previous;
@@ -346,20 +345,24 @@ export function ffmpegEntry(
 
 void (async () => {
   try {
-    await listen<{ id: string; phase: string; detail: string }>(
+    await listen<{ id: string } & ManagedInstallProgress>(
       "binaries://progress",
       (event) => {
+        const { id, ...progress } = event.payload;
         useBinariesStore.setState((s) => ({
           installing: {
             ...s.installing,
-            [event.payload.id]: installLine(event.payload.phase, event.payload.detail),
+            [id]: {
+              progress,
+              cancelling: s.installing[id]?.cancelling ?? false,
+            },
           },
           installHistory: {
             ...s.installHistory,
-            [event.payload.id]: installStep(
-              s.installHistory[event.payload.id],
-              event.payload.phase,
-              installLine(event.payload.phase, event.payload.detail),
+            [id]: installStep(
+              s.installHistory[id],
+              progress.phase,
+              managedInstallLine(progress),
             ),
           },
         }));

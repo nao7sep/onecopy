@@ -3,6 +3,7 @@ import {
   type DependencyState,
   type InstallStep,
 } from "../state/binaries-store";
+import { managedInstallActivityLine } from "../models/dependencyProgress";
 import { useAppStore } from "../state/app-store";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
@@ -80,10 +81,11 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const checkAll = useBinariesStore((s) => s.checkAll);
   const cancelCheck = useBinariesStore((s) => s.cancelCheck);
   const installing = progress !== undefined;
+  const progressLine = progress === undefined ? null : managedInstallActivityLine(progress);
   const visibleHistory =
     history.length > 0 || progress === undefined
       ? history
-      : [{ phase: "active", text: progress }];
+      : [{ phase: "active", text: progressLine ?? "Starting…" }];
 
   // Install when missing, Update when a newer version is known — and Update
   // again when a present entry's own version could not be read, which is the
@@ -142,10 +144,10 @@ function EntryRow({ entry }: { entry: DependencyState }) {
       {installing ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Button
-            disabled={progress === "Cancelling…"}
+            disabled={progress?.cancelling === true}
             onClick={() => void cancel(entry.id)}
           >
-            {progress === "Cancelling…" ? "Cancelling…" : "Cancel"}
+            {progress?.cancelling === true ? "Cancelling…" : "Cancel"}
           </Button>
         </div>
       ) : action !== null || offersCheck ? (

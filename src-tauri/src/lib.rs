@@ -1176,10 +1176,31 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
     std::thread::spawn(move || {
         let progress_id = id.clone();
         let progress_handle = handle.clone();
-        let emit = move |phase: &str, detail: String| {
+        let last_phase = std::cell::Cell::new(None::<binaries_manager::InstallPhase>);
+        let last_emit = std::cell::Cell::new(
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+        );
+        let emit = move |progress: binaries_manager::InstallProgress| {
+            let now = std::time::Instant::now();
+            let phase_changed = last_phase.get() != Some(progress.phase);
+            let completed = progress.total.is_some_and(|total| progress.done >= total);
+            if !phase_changed
+                && !completed
+                && now.duration_since(last_emit.get()) < std::time::Duration::from_millis(125)
+            {
+                return;
+            }
+            last_phase.set(Some(progress.phase));
+            last_emit.set(now);
             let _ = progress_handle.emit(
                 "binaries://progress",
-                json!({ "id": progress_id, "phase": phase, "detail": detail }),
+                json!({
+                    "id": progress_id,
+                    "phase": progress.phase,
+                    "done": progress.done,
+                    "total": progress.total,
+                    "nextPhase": progress.next_phase,
+                }),
             );
         };
         let is_ffmpeg = id == "ffmpeg";

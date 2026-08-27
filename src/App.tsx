@@ -34,6 +34,7 @@ import {
   toolsChip,
   useBinariesStore,
 } from "./state/binaries-store";
+import { managedInstallActivityLine } from "./models/dependencyProgress";
 import { usePreviewStore } from "./state/preview-store";
 import { useQuickViewStore } from "./state/quick-view-store";
 import {
@@ -489,7 +490,13 @@ export default function App() {
           {/* The managed-tools chip (toolsChip owns the words and the
               loudness — see its rules); clicking always opens the modal. */}
           {(() => {
-            const chip = toolsChip(ffmpegProgress !== undefined, ffmpegProgress ?? "", binariesEntries);
+            const chip = toolsChip(
+              ffmpegProgress !== undefined,
+              ffmpegProgress === undefined
+                ? ""
+                : managedInstallActivityLine(ffmpegProgress),
+              binariesEntries,
+            );
             return chip !== null ? (
               <button
                 className={

@@ -58,6 +58,52 @@ pub enum DependencyKind {
     Model,
 }
 
+/// One typed snapshot of an entry's acquisition. Fixed phases use one unit;
+/// streamed phases use bytes and retain an unknown total only when the server
+/// did not announce one. The frontend owns wording and history presentation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallPhase {
+    Resolve,
+    Download,
+    Verify,
+    Install,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallProgress {
+    pub phase: InstallPhase,
+    pub done: u64,
+    pub total: Option<u64>,
+    pub next_phase: Option<InstallPhase>,
+}
+
+impl InstallProgress {
+    fn fixed(phase: InstallPhase, done: u64, next_phase: Option<InstallPhase>) -> Self {
+        Self {
+            phase,
+            done,
+            total: Some(1),
+            next_phase,
+        }
+    }
+
+    fn bytes(
+        phase: InstallPhase,
+        done: u64,
+        total: Option<u64>,
+        next_phase: InstallPhase,
+    ) -> Self {
+        Self {
+            phase,
+            done,
+            total,
+            next_phase: Some(next_phase),
+        }
+    }
+}
+
 /// One managed dependency. `pinned` is Some for model entries — the canonical
 /// artifact the app provisions; None for binaries, which resolve live.
 pub struct DependencySpec {
@@ -445,7 +491,7 @@ pub fn cancel_entry(id: &str) -> bool {
 pub fn install_entry(
     root: &Path,
     id: &str,
-    on_progress: impl FnMut(&str, String),
+    on_progress: impl FnMut(InstallProgress),
 ) -> Result<BinaryFacts, String> {
     let started = begin_install(id)?;
     install_entry_started(root, started, on_progress)
@@ -464,7 +510,7 @@ pub fn begin_install(id: &str) -> Result<StartedInstall, String> {
 pub fn install_entry_started(
     root: &Path,
     started: StartedInstall,
-    mut on_progress: impl FnMut(&str, String),
+    mut on_progress: impl FnMut(InstallProgress),
 ) -> Result<BinaryFacts, String> {
     let id = started.0.id.clone();
     let spec = spec_of(&id).ok_or_else(|| format!("unknown dependency: {id}"))?;
@@ -478,25 +524,40 @@ pub fn install_entry_started(
             let partial = temp.join(format!("{id}-{}.partial", nanoid::generate()));
             let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone()]);
             let result = (|| -> Result<BinaryFacts, String> {
-                on_progress(
-                    "download",
-                    format!("{} ({} MB)", spec.label, pinned.bytes / 1_048_576),
-                );
+                on_progress(InstallProgress::bytes(
+                    InstallPhase::Download,
+                    0,
+                    Some(pinned.bytes),
+                    InstallPhase::Verify,
+                ));
                 acquisition::download_to(
                     pinned.url,
                     &partial,
                     &guard.cancelled,
                     &guard.deadline,
                     Some(pinned.bytes),
-                    |done| {
-                        on_progress(
-                            "download",
-                            format!("{} / {} MB", done / 1_048_576, pinned.bytes / 1_048_576),
-                        );
+                    |done, total| {
+                        on_progress(InstallProgress::bytes(
+                            InstallPhase::Download,
+                            done,
+                            total,
+                            InstallPhase::Verify,
+                        ));
                     },
                 )?;
-                on_progress("verify", "checking integrity".to_string());
-                let actual = acquisition::file_sha256(&partial, &guard.cancelled, &guard.deadline)?;
+                let actual = acquisition::file_sha256(
+                    &partial,
+                    &guard.cancelled,
+                    &guard.deadline,
+                    |done, total| {
+                        on_progress(InstallProgress::bytes(
+                            InstallPhase::Verify,
+                            done,
+                            Some(total),
+                            InstallPhase::Install,
+                        ));
+                    },
+                )?;
                 if actual != pinned.sha256 {
                     return Err(format!(
                         "checksum mismatch for {id}: expected {}, got {actual}",
@@ -506,6 +567,11 @@ pub fn install_entry_started(
                 let target = installed_path(root, spec);
                 std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
                 acquisition::check_cancelled(&guard.cancelled)?;
+                on_progress(InstallProgress::fixed(
+                    InstallPhase::Install,
+                    0,
+                    None,
+                ));
                 // An old identity must never survive a replacement attempt:
                 // if publication or the new identity write fails, state stays
                 // installed-unchecked instead of assigning either digest.
@@ -515,6 +581,11 @@ pub fn install_entry_started(
                 // not recorded: the model file is a re-downloadable artifact.
                 acquisition::publish_staged(&partial, &target)?;
                 write_model_identity(root, spec, pinned)?;
+                on_progress(InstallProgress::fixed(
+                    InstallPhase::Install,
+                    1,
+                    None,
+                ));
                 // The facts store remains untouched: latest is the pin compiled
                 // into this app, while installed identity belongs beside the
                 // verified artifact rather than in network facts.
@@ -536,43 +607,64 @@ pub fn install_entry_started(
 fn install_ffmpeg_started(
     root: &Path,
     guard: BusyGuard,
-    mut on_progress: impl FnMut(&str, String),
+    mut on_progress: impl FnMut(InstallProgress),
 ) -> Result<BinaryFacts, String> {
     let temp = root.join(TEMP_DIR_NAME);
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
 
     guard.deadline.check(&guard.cancelled)?;
-    on_progress("resolve", "finding the latest build".to_string());
+    on_progress(InstallProgress::fixed(
+        InstallPhase::Resolve,
+        0,
+        Some(InstallPhase::Download),
+    ));
     let resolved = acquisition::resolve_latest(&guard.cancelled, &guard.deadline)?;
+    on_progress(InstallProgress::fixed(
+        InstallPhase::Resolve,
+        1,
+        Some(InstallPhase::Download),
+    ));
 
     let partial = temp.join(format!("ffmpeg-{}.partial", nanoid::generate()));
     let staged = temp.join(format!("ffmpeg-{}.staged", nanoid::generate()));
     let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]);
     let result = (|| -> Result<BinaryFacts, String> {
         guard.deadline.check(&guard.cancelled)?;
-        on_progress(
-            "download",
-            format!("version {}", resolved.version),
-        );
-        let bytes = acquisition::download_to(
+        acquisition::download_to(
             &resolved.download_url,
             &partial,
             &guard.cancelled,
             &guard.deadline,
             None,
-            |done| {
-                on_progress("download", format!("{} MB", done / 1_048_576));
+            |done, total| {
+                on_progress(InstallProgress::bytes(
+                    InstallPhase::Download,
+                    done,
+                    total,
+                    InstallPhase::Verify,
+                ));
             },
         )?;
         guard.deadline.check(&guard.cancelled)?;
-        on_progress("verify", format!("{bytes} bytes downloaded"));
         let expected = binaries::parse_sums(
             &acquisition::fetch_text(&resolved.sums_url, &guard.cancelled, &guard.deadline)?,
             &resolved.sums_asset,
         )
         .ok_or_else(|| format!("{} not in the checksum file", resolved.sums_asset))?;
         guard.deadline.check(&guard.cancelled)?;
-        let actual = acquisition::file_sha256(&partial, &guard.cancelled, &guard.deadline)?;
+        let actual = acquisition::file_sha256(
+            &partial,
+            &guard.cancelled,
+            &guard.deadline,
+            |done, total| {
+                on_progress(InstallProgress::bytes(
+                    InstallPhase::Verify,
+                    done,
+                    Some(total),
+                    InstallPhase::Install,
+                ));
+            },
+        )?;
         if actual != expected {
             return Err(format!(
                 "checksum mismatch for {}: expected {expected}, got {actual}",
@@ -580,7 +672,11 @@ fn install_ffmpeg_started(
             ));
         }
 
-        on_progress("install", "extracting".to_string());
+        on_progress(InstallProgress::fixed(
+            InstallPhase::Install,
+            0,
+            None,
+        ));
         acquisition::extract_ffmpeg(
             &partial,
             &staged,
@@ -619,6 +715,11 @@ fn install_ffmpeg_started(
             last_checked_at_utc: Some(logging::now_iso_millis()),
         };
         save_facts_for(root, "ffmpeg", &facts)?;
+        on_progress(InstallProgress::fixed(
+            InstallPhase::Install,
+            1,
+            None,
+        ));
         logging::info(
             "ffmpeg installed",
             serde_json::json!({ "version": resolved.version, "path": target.to_string_lossy() }),
@@ -866,8 +967,8 @@ mod tests {
             .prefix("onecopy-binmgr-live-")
             .tempdir()
             .unwrap();
-        let facts = install_entry(dir.path(), "ffmpeg", |phase, detail| {
-            eprintln!("[{phase}] {detail}");
+        let facts = install_entry(dir.path(), "ffmpeg", |progress| {
+            eprintln!("{progress:?}");
         })
         .expect("live install should succeed");
         assert!(facts.latest_known_version.is_some());
