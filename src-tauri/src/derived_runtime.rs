@@ -25,6 +25,7 @@ struct RuntimeState {
     paused_classes: u8,
     active: Option<ActiveWorkSnapshot>,
     preempt_requested: bool,
+    exclusive: bool,
 }
 
 impl RuntimeState {
@@ -62,7 +63,7 @@ struct ActiveGuard {
 impl ActiveGuard {
     fn begin(app: &AppHandle, class: WorkClass) -> Option<Self> {
         let mut runtime = RUNTIME.0.lock().ok()?;
-        if runtime.paused(class) || runtime.active.is_some() {
+        if runtime.exclusive || runtime.paused(class) || runtime.active.is_some() {
             return None;
         }
         runtime.active = Some(ActiveWorkSnapshot {
@@ -115,6 +116,9 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
         .0
         .lock()
         .map_err(|_| "background-work state is unavailable".to_string())?;
+    if runtime.exclusive {
+        return Err("A file operation is using the media boundary.".to_string());
+    }
     if runtime.paused(class) {
         return Err(paused_message(class));
     }
@@ -145,6 +149,9 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
         if runtime.paused(class) {
             return Err(paused_message(class));
         }
+        if runtime.exclusive {
+            return Err("A file operation is using the media boundary.".to_string());
+        }
     }
     runtime.active = Some(ActiveWorkSnapshot {
         class,
@@ -161,6 +168,74 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
             class,
         },
     })
+}
+
+/// Temporarily excludes every automatic and requested derived-media owner.
+/// Mutations use this before asking webviews to release playback handles, so
+/// neither a cache derive nor a model job can reopen an item during the
+/// release-to-mutate interval.
+pub struct ExclusiveGuard {
+    app: AppHandle,
+}
+
+impl Drop for ExclusiveGuard {
+    fn drop(&mut self) {
+        if let Ok(mut runtime) = RUNTIME.0.lock() {
+            runtime.exclusive = false;
+            runtime.preempt_requested = false;
+            RUNTIME.1.notify_all();
+        }
+        emit_state_changed(&self.app);
+    }
+}
+
+pub fn begin_exclusive(app: &AppHandle) -> Result<ExclusiveGuard, String> {
+    let mut runtime = RUNTIME
+        .0
+        .lock()
+        .map_err(|_| "background-work state is unavailable".to_string())?;
+    if runtime.exclusive {
+        return Err("Another file operation is already running.".to_string());
+    }
+    runtime.exclusive = true;
+    if let Some(active) = runtime.active {
+        runtime.preempt_requested = true;
+        drop(runtime);
+        if active.class == WorkClass::Transcripts {
+            crate::transcription::request_cancel();
+        }
+        emit_state_changed(app);
+        runtime = RUNTIME
+            .0
+            .lock()
+            .map_err(|_| "background-work state is unavailable".to_string())?;
+        let (next, waited) = RUNTIME
+            .1
+            .wait_timeout_while(runtime, Duration::from_secs(10), |state| {
+                state.active.is_some()
+            })
+            .map_err(|_| "background-work state is unavailable".to_string())?;
+        runtime = next;
+        if waited.timed_out() && runtime.active.is_some() {
+            runtime.exclusive = false;
+            runtime.preempt_requested = false;
+            RUNTIME.1.notify_all();
+            drop(runtime);
+            emit_state_changed(app);
+            return Err("Media work is still stopping; no files were changed.".to_string());
+        }
+    }
+    drop(runtime);
+    emit_state_changed(app);
+    Ok(ExclusiveGuard { app: app.clone() })
+}
+
+pub(crate) fn exclusive() -> bool {
+    RUNTIME
+        .0
+        .lock()
+        .map(|runtime| runtime.exclusive)
+        .unwrap_or(true)
 }
 
 fn paused_message(class: WorkClass) -> String {
@@ -229,6 +304,10 @@ pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<
     }
     emit_state_changed(app);
     Ok(())
+}
+
+pub(crate) fn pause_for_safety(app: &AppHandle, class: WorkClass) -> Result<(), String> {
+    set_paused(app, Some(class.id()), true)
 }
 
 pub(crate) fn progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) {

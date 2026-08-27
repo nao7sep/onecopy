@@ -138,7 +138,8 @@ fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> 
 /// at 1600 px it is ~6 MB, a 25× cut in everything after the decode. The
 /// decode itself is untouched (HEVC has no partial decode), and the original
 /// DIMENSIONS are safe: the metadata pass owns width/height and the derive's
-/// UPDATE goes through COALESCE. The 100% view keeps the unbounded route.
+/// UPDATE goes through COALESCE. The 100% view omits scaling but keeps the
+/// same fixed pipe and decoder allocation ceilings.
 fn decode_via_ffmpeg_bounded(
     ffmpeg: &Path,
     src: &Path,
@@ -157,7 +158,11 @@ fn decode_via_ffmpeg_bounded(
         cmd.args(["-vf", &format!("scale='min({edge},iw)':-2")]);
     }
     cmd.args(["-f", "image2pipe", "-c:v", "bmp", "-"]);
-    let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
+    let run = crate::subprocess::run_bounded_output(
+        cmd,
+        &crate::derived_runtime::cancelled,
+        crate::resource_limits::MAX_FFMPEG_STILL_OUTPUT,
+    )?;
     if !run.status_ok || run.stdout.is_empty() {
         // The recent-output tail, bounded — the whole point is diagnosing
         // this one file, not carrying an ffmpeg essay into a DB column.
@@ -166,7 +171,7 @@ fn decode_via_ffmpeg_bounded(
             run.stderr_tail()
         ));
     }
-    image::load_from_memory(&run.stdout).map_err(|e| e.to_string())
+    crate::resource_limits::decode_bytes(&run.stdout)
 }
 
 /// Decodes `src`, returning the image alongside the EXIF orientation still
@@ -181,7 +186,7 @@ pub fn decode_image(src: &Path, ffmpeg: Option<&Path>) -> Result<(DynamicImage, 
         let ffmpeg = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
         return Ok((decode_via_ffmpeg(ffmpeg, src)?, 1));
     }
-    let decoded = image::open(src).map_err(|e| e.to_string())?;
+    let decoded = crate::resource_limits::decode_file(src)?;
     Ok((decoded, read_orientation(src)))
 }
 
@@ -195,18 +200,36 @@ pub fn generate_for_image(
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
 ) -> Result<DerivedFacts, String> {
-    let (decoded, orientation) = if needs_ffmpeg_decode(src) {
+    let (decoded, orientation) = decode_for_preview(src, preview_long_edge, ffmpeg)?;
+    derive_from_decoded(decoded, orientation, src, hash, cache, thumb_edge, preview_long_edge)
+}
+
+fn decode_for_preview(
+    src: &Path,
+    preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
+) -> Result<(DynamicImage, u16), String> {
+    if needs_ffmpeg_decode(src) {
         let ffmpeg = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
-        // The derive needs at most the preview edge; the bounded pipe is the
-        // fast path (see decode_via_ffmpeg_bounded).
-        (
+        return Ok((
             decode_via_ffmpeg_bounded(ffmpeg, src, Some(preview_long_edge))?,
             1,
-        )
-    } else {
-        decode_image(src, ffmpeg)?
-    };
-    derive_from_decoded(decoded, orientation, src, hash, cache, thumb_edge, preview_long_edge)
+        ));
+    }
+    match decode_image(src, ffmpeg) {
+        Ok(decoded) => Ok(decoded),
+        Err(error) if crate::resource_limits::is_decode_limit(&error) => {
+            let ffmpeg = ffmpeg.ok_or(error)?;
+            // One lower-working-set retry: ffmpeg scales before its BMP
+            // reaches this process, so an enormous but valid still can still
+            // produce the bounded preview the UI actually needs.
+            Ok((
+                decode_via_ffmpeg_bounded(ffmpeg, src, Some(preview_long_edge))?,
+                1,
+            ))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// The tee variant for a provisionally-identified image: the derive was going
@@ -220,30 +243,11 @@ pub fn generate_for_image_teeing(
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
 ) -> Result<(String, DerivedFacts), String> {
-    if needs_ffmpeg_decode(src) {
-        // ffmpeg opens the file itself, so there is no read of ours to tee:
-        // hash it streaming (never a whole-file buffer, which for a 12 MP
-        // still is the larger cost) and let the decode read separately.
-        let real_hash = crate::hashing::full_hash(src).map_err(|e| e.to_string())?;
-        let ffmpeg_path = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
-        let (decoded, orientation) =
-            (decode_via_ffmpeg_bounded(ffmpeg_path, src, Some(preview_long_edge))?, 1);
-        let facts = derive_from_decoded(
-            decoded,
-            orientation,
-            src,
-            &real_hash,
-            cache,
-            thumb_edge,
-            preview_long_edge,
-        )?;
-        return Ok((real_hash, facts));
-    }
-
-    let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
-    let real_hash = blake3::hash(&bytes).to_hex().to_string();
-    let orientation = read_orientation(src);
-    let decoded = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    // Hash and decode are two bounded streams. Holding the whole encoded file
+    // merely to avoid the second read doubled the peak working set and made a
+    // large compressed image capable of exhausting memory before decoding.
+    let real_hash = crate::hashing::full_hash(src).map_err(|e| e.to_string())?;
+    let (decoded, orientation) = decode_for_preview(src, preview_long_edge, ffmpeg)?;
     let facts = derive_from_decoded(
         decoded,
         orientation,

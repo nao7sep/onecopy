@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
 
 use rusqlite::{params_from_iter, Connection};
@@ -26,11 +26,9 @@ use crate::logging;
 use crate::preview::CachePaths;
 
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
-static HEAVY_OPS: AtomicUsize = AtomicUsize::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static SIMILARITY_DIRTY: AtomicBool = AtomicBool::new(true);
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
-static MEDIA_WORK: Mutex<()> = Mutex::new(());
 static PRIORITY: LazyLock<Mutex<PriorityHints>> =
     LazyLock::new(|| Mutex::new(PriorityHints::default()));
 
@@ -157,20 +155,6 @@ pub fn note_activity() {
     LAST_ACTIVITY_MS.store(now_ms(), Ordering::SeqCst);
 }
 
-pub struct HeavyOp;
-
-pub fn heavy_op() -> HeavyOp {
-    HEAVY_OPS.fetch_add(1, Ordering::SeqCst);
-    HeavyOp
-}
-
-impl Drop for HeavyOp {
-    fn drop(&mut self) {
-        HEAVY_OPS.fetch_sub(1, Ordering::SeqCst);
-        wake(false);
-    }
-}
-
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -180,12 +164,12 @@ fn now_ms() -> i64 {
 
 pub fn is_idle() -> bool {
     now_ms() - LAST_ACTIVITY_MS.load(Ordering::SeqCst) >= IDLE_AFTER_MS
-        && HEAVY_OPS.load(Ordering::SeqCst) == 0
+        && !crate::derived_runtime::exclusive()
         && !crate::scan_runtime::running()
 }
 
 pub(crate) fn available() -> bool {
-    HEAVY_OPS.load(Ordering::SeqCst) == 0 && !crate::scan_runtime::running()
+    !crate::derived_runtime::exclusive() && !crate::scan_runtime::running()
 }
 
 pub(crate) fn similarity_dirty() -> bool {
@@ -282,9 +266,6 @@ pub fn ensure_preview(
     hash: &str,
 ) -> Result<String, String> {
     let _active = crate::derived_runtime::begin_manual(app, WorkClass::Previews.id())?;
-    let _claim = MEDIA_WORK
-        .lock()
-        .map_err(|_| "derived media owner is unavailable".to_string())?;
     let settings = settings_from_config(config, data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
@@ -329,9 +310,6 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             return Ok(false);
         }
         let image = with_active(app, WorkClass::Previews, || {
-            let _claim = MEDIA_WORK
-                .lock()
-                .map_err(|_| "derived media owner is unavailable".to_string())?;
             crate::preview::derive_image_hash(
                 &conn,
                 &cache,
@@ -352,9 +330,6 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             priority_done += 1;
         } else {
             let video = with_active(app, WorkClass::Previews, || {
-                let _claim = MEDIA_WORK
-                    .lock()
-                    .map_err(|_| "derived media owner is unavailable".to_string())?;
                 crate::video::derive_video_hash(
                     &conn,
                     &cache,
@@ -384,9 +359,6 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             return Ok(false);
         }
         let image = with_active(app, WorkClass::Previews, || {
-            let _claim = MEDIA_WORK
-                .lock()
-                .map_err(|_| "derived media owner is unavailable".to_string())?;
             crate::preview::derive_next_image(
                 &conn,
                 &cache,
@@ -416,9 +388,6 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             return Ok(false);
         }
         let video = with_active(app, WorkClass::Previews, || {
-            let _claim = MEDIA_WORK
-                .lock()
-                .map_err(|_| "derived media owner is unavailable".to_string())?;
             crate::video::derive_next_video(
                 &conn,
                 &cache,
@@ -470,6 +439,10 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             Ok(None) => return Ok(false),
             Err(error) => {
                 SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
+                if crate::resource_limits::is_safety_error(&error) {
+                    pause_for_resource_safety(app, &conn, WorkClass::Similarity, &error)?;
+                    return Ok(false);
+                }
                 return Err(error);
             }
         }
@@ -515,6 +488,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                 transcribe_next(
                     &conn,
                     &cache,
+                    &settings.temp_dir,
                     model,
                     ffmpeg,
                     app,
@@ -532,7 +506,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
 
     if !class_paused(WorkClass::Faces) && !cursors.faces.exhausted {
         if let Some((detector, emotion)) = settings.face_models.as_ref() {
-            let stats = with_active(app, WorkClass::Faces, || {
+            let result = with_active(app, WorkClass::Faces, || {
                 crate::face::face_scores_pending(
                     &conn,
                     &cache,
@@ -541,8 +515,15 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                     cursors.faces.after_hash.as_deref(),
                     &stop,
                 )
-            })?
-            .unwrap_or_default();
+            });
+            let stats = match result {
+                Ok(value) => value.unwrap_or_default(),
+                Err(error) if crate::resource_limits::is_safety_error(&error) => {
+                    pause_for_resource_safety(app, &conn, WorkClass::Faces, &error)?;
+                    return Ok(false);
+                }
+                Err(error) => return Err(error),
+            };
             if stats.attempted > 0 {
                 cursors.faces.after_hash = stats.last_attempted_hash;
                 return Ok(true);
@@ -665,6 +646,23 @@ fn emit_progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) 
     record_progress(app, class, counts);
 }
 
+pub(crate) fn pause_for_resource_safety(
+    app: &AppHandle,
+    conn: &Connection,
+    class: WorkClass,
+    error: &str,
+) -> Result<(), String> {
+    crate::derived_runtime::pause_for_safety(app, class)?;
+    crate::index_store::upsert_issue(
+        conn,
+        None,
+        &format!("resource-limit-{}", class.id()),
+        crate::resource_limits::safety_message(error),
+    )?;
+    let _ = app.emit("derived://issues", json!({}));
+    Ok(())
+}
+
 pub fn notify_item_update(
     app: &AppHandle,
     conn: &Connection,
@@ -720,6 +718,7 @@ struct TranscriptStep {
 fn transcribe_next(
     conn: &Connection,
     cache: &CachePaths,
+    temp_dir: &Path,
     model: &Path,
     ffmpeg: &Path,
     app: &AppHandle,
@@ -781,6 +780,7 @@ fn transcribe_next(
         let result = crate::transcription::transcribe_to_cache_claimed(
             &claim,
             cache,
+            temp_dir,
             Some(model),
             Some(ffmpeg),
             Path::new(&path),
@@ -829,6 +829,10 @@ fn transcribe_next(
                         json!({ "hash": hash, "reason": "cancelled" }),
                     );
                     let _ = app.emit("transcribe://cancelled", json!({ "hash": hash }));
+                    return Ok(TranscriptStep::default());
+                }
+                if crate::resource_limits::is_safety_error(&error) {
+                    pause_for_resource_safety(app, conn, WorkClass::Transcripts, &error)?;
                     return Ok(TranscriptStep::default());
                 }
                 crate::derived_state::record_transcript_failure(conn, &hash, &path, &error)?;

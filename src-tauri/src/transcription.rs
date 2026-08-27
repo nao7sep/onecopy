@@ -9,7 +9,8 @@
 //! job and is dropped with it, so memory (~2–2.5 GB for large-v3-turbo)
 //! exists only while a transcription runs.
 
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::preview::CachePaths;
@@ -73,15 +74,37 @@ pub fn is_cancelled() -> bool {
 /// 16 kHz mono f32 — the one input whisper accepts.
 pub const SAMPLE_RATE: u32 = 16_000;
 
+struct RemoveFile(PathBuf);
+
+impl Drop for RemoveFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Extracts a video's audio track as 16 kHz mono f32 PCM through the managed
 /// ffmpeg (bounded, cancellable — the same subprocess rules every ffmpeg call
 /// obeys). ~3.8 MB per minute of audio in memory, transient. An empty result
 /// is a successful no-audio finding, not a failure to retry forever.
-pub fn extract_pcm(ffmpeg: &Path, video: &Path) -> Result<Vec<f32>, String> {
+pub fn extract_pcm(ffmpeg: &Path, video: &Path, temp_dir: &Path) -> Result<Vec<f32>, String> {
+    crate::resource_limits::require_available(
+        crate::resource_limits::PCM_REQUIRED_AVAILABLE,
+        "Audio extraction",
+    )?;
+    std::fs::create_dir_all(temp_dir).map_err(|error| error.to_string())?;
+    let staged = temp_dir.join(format!("pcm-{}.f32le", crate::nanoid::generate()));
+    let _cleanup = RemoveFile(staged.clone());
     let mut command = std::process::Command::new(ffmpeg);
     command.args([
         "-hide_banner",
         "-nostdin",
+        "-loglevel",
+        "error",
+        "-nostats",
+        "-stats_period",
+        "30",
+        "-progress",
+        "pipe:1",
         "-i",
     ]);
     command.arg(video);
@@ -93,10 +116,13 @@ pub fn extract_pcm(ffmpeg: &Path, video: &Path) -> Result<Vec<f32>, String> {
         "16000",
         "-ac",
         "1",
+        "-fs",
+        &crate::resource_limits::MAX_PCM_OUTPUT.to_string(),
         "-f",
         "f32le",
-        "-",
+        "-y",
     ]);
+    command.arg(&staged);
     let run = crate::subprocess::run_bounded(command, &is_cancelled)?;
     if !run.status_ok {
         if no_audio_output(&run.stderr) {
@@ -104,9 +130,28 @@ pub fn extract_pcm(ffmpeg: &Path, video: &Path) -> Result<Vec<f32>, String> {
         }
         return Err(format!("audio extraction failed: {}", run.stderr_tail()));
     }
-    let mut pcm = Vec::with_capacity(run.stdout.len() / 4);
-    for chunk in run.stdout.chunks_exact(4) {
-        pcm.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    let bytes = std::fs::metadata(&staged)
+        .map_err(|error| format!("audio extraction produced no PCM: {error}"))?
+        .len();
+    if bytes >= crate::resource_limits::MAX_PCM_OUTPUT as u64 {
+        return Err(format!(
+            "audio extraction exceeded the {} MiB safety limit",
+            crate::resource_limits::MAX_PCM_OUTPUT / 1024 / 1024
+        ));
+    }
+    if bytes % 4 != 0 {
+        return Err("audio extraction produced a partial PCM sample".to_string());
+    }
+    let mut reader = std::io::BufReader::new(
+        std::fs::File::open(&staged).map_err(|error| error.to_string())?,
+    );
+    let mut pcm = Vec::with_capacity(bytes as usize / 4);
+    let mut sample = [0u8; 4];
+    while pcm.len() < bytes as usize / 4 {
+        reader
+            .read_exact(&mut sample)
+            .map_err(|error| error.to_string())?;
+        pcm.push(f32::from_le_bytes(sample));
     }
     Ok(pcm)
 }
@@ -133,6 +178,11 @@ pub fn run_whisper(
     mut on_progress: impl FnMut(i32) + 'static,
 ) -> Result<Vec<Segment>, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+    crate::resource_limits::require_available(
+        crate::resource_limits::WHISPER_REQUIRED_AVAILABLE,
+        "Transcription",
+    )?;
 
     // whisper.cpp otherwise writes its internal decoder trace directly to
     // stderr. The app owns useful progress and errors; the repeated token
@@ -197,6 +247,7 @@ pub fn render(segments: &[Segment]) -> String {
 /// cancelled or failed run leaves no partial cache entry by construction).
 pub fn transcribe_to_cache(
     cache: &CachePaths,
+    temp_dir: &Path,
     model: Option<&Path>,
     ffmpeg: Option<&Path>,
     video: &Path,
@@ -208,12 +259,22 @@ pub fn transcribe_to_cache(
         return Ok(existing);
     }
     let claim = claim()?;
-    transcribe_to_cache_claimed(&claim, cache, model, ffmpeg, video, hash, on_progress)
+    transcribe_to_cache_claimed(
+        &claim,
+        cache,
+        temp_dir,
+        model,
+        ffmpeg,
+        video,
+        hash,
+        on_progress,
+    )
 }
 
 pub(crate) fn transcribe_to_cache_claimed(
     _claim: &TranscriptionClaim,
     cache: &CachePaths,
+    temp_dir: &Path,
     model: Option<&Path>,
     ffmpeg: Option<&Path>,
     video: &Path,
@@ -233,7 +294,7 @@ pub(crate) fn transcribe_to_cache_claimed(
     let Some(ffmpeg) = ffmpeg else {
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
-    let pcm = extract_pcm(ffmpeg, video)?;
+    let pcm = extract_pcm(ffmpeg, video, temp_dir)?;
     let text = if pcm.is_empty() {
         String::new()
     } else {

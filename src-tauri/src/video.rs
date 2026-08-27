@@ -302,7 +302,7 @@ pub fn derive_strips_pending(
             for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
                 let staged = temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()));
                 let frame_result = extract_frame(ffmpeg, src, *at_ms, &staged).and_then(|()| {
-                    let img = image::open(&staged).map_err(|e| e.to_string())?;
+                    let img = crate::resource_limits::decode_file(&staged)?;
                     let target = strip_path(cache, &hash, index as u32);
                     preview::write_webp(&img, &target, 76.0)
                 });

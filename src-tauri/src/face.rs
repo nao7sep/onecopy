@@ -74,6 +74,10 @@ pub struct FaceScorer {
 
 impl FaceScorer {
     pub fn load(detector_model: &Path, emotion_model: &Path) -> Result<FaceScorer, String> {
+        crate::resource_limits::require_available(
+            crate::resource_limits::FACE_REQUIRED_AVAILABLE,
+            "Face scoring",
+        )?;
         let detector = ort::session::Session::builder()
             .map_err(|e| e.to_string())?
             .commit_from_file(detector_model)
@@ -331,7 +335,7 @@ pub fn face_scores_pending(
         let preview = cache.preview(&hash);
         let outcome = std::fs::read(&preview)
             .map_err(|e| e.to_string())
-            .and_then(|bytes| image::load_from_memory(&bytes).map_err(|e| e.to_string()))
+            .and_then(|bytes| crate::resource_limits::decode_bytes(&bytes))
             .and_then(|img| scorer.score(&img));
         match outcome {
             Ok(score) => {

@@ -8,6 +8,7 @@ import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
 import { log, toErrorFields, initLogging, loadAppData } from "./repositories";
 import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
+import { installMediaUseBoundary } from "./media-use";
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
 // already works before this resolves (defaulting to the dev-build gate).
@@ -58,18 +59,24 @@ const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
 const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <RootErrorBoundary>
-      {view === "preview" ? (
-        <PreviewWindow />
-      ) : view === "comparison" ? (
-        <ComparisonWindow slice={slice} />
-      ) : view === "identify" ? (
-        <IdentifyWindow number={slice} />
-      ) : (
-        <App />
-      )}
-    </RootErrorBoundary>
-  </React.StrictMode>,
-);
+void installMediaUseBoundary()
+  .then(() => {
+    ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+      <React.StrictMode>
+        <RootErrorBoundary>
+          {view === "preview" ? (
+            <PreviewWindow />
+          ) : view === "comparison" ? (
+            <ComparisonWindow slice={slice} />
+          ) : view === "identify" ? (
+            <IdentifyWindow number={slice} />
+          ) : (
+            <App />
+          )}
+        </RootErrorBoundary>
+      </React.StrictMode>,
+    );
+  })
+  .catch((error) => {
+    log.error("media ownership bootstrap failed", toErrorFields(error));
+  });

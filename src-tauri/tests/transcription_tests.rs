@@ -22,9 +22,10 @@ fn cache(label: &str) -> (tempfile::TempDir, CachePaths) {
 #[test]
 #[serial(transcription)]
 fn an_absent_model_names_the_remedy() {
-    let (_dir, cache) = cache("no-model");
+    let (dir, cache) = cache("no-model");
     let err = transcribe_to_cache(
         &cache,
+        &dir.path().join("temp"),
         None,
         Some(Path::new("/nonexistent/ffmpeg")),
         Path::new("/nonexistent/video.mov"),
@@ -38,9 +39,10 @@ fn an_absent_model_names_the_remedy() {
 #[test]
 #[serial(transcription)]
 fn an_absent_ffmpeg_names_the_remedy_too() {
-    let (_dir, cache) = cache("no-ffmpeg");
+    let (dir, cache) = cache("no-ffmpeg");
     let err = transcribe_to_cache(
         &cache,
+        &dir.path().join("temp"),
         Some(Path::new("/nonexistent/model.bin")),
         None,
         Path::new("/nonexistent/video.mov"),
@@ -56,13 +58,14 @@ fn an_existing_transcript_short_circuits_without_touching_the_engine() {
     // The cache is the contract: once transcribed, opening the media surface
     // must never load the model again — proven by passing paths that would
     // explode if anything tried to use them.
-    let (_dir, cache) = cache("cached");
+    let (dir, cache) = cache("cached");
     let target = cache.transcript("h2");
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     std::fs::write(&target, "[0:01] already transcribed\n").unwrap();
 
     let text = transcribe_to_cache(
         &cache,
+        &dir.path().join("temp"),
         None, // no model — and none needed
         None, // no ffmpeg either
         Path::new("/nonexistent/video.mov"),
@@ -78,9 +81,10 @@ fn an_existing_transcript_short_circuits_without_touching_the_engine() {
 fn a_failed_run_leaves_no_partial_cache_entry() {
     // Write-once-at-the-end is the design; a bogus ffmpeg fails extraction
     // long before any write, and the cache tree must stay empty.
-    let (_dir, cache) = cache("failed");
+    let (dir, cache) = cache("failed");
     let err = transcribe_to_cache(
         &cache,
+        &dir.path().join("temp"),
         Some(Path::new("/nonexistent/model.bin")),
         Some(Path::new("/nonexistent/ffmpeg")),
         Path::new("/nonexistent/video.mov"),
@@ -104,9 +108,10 @@ fn one_claim_blocks_every_contender_without_cross_cancelling() {
         "a rejected contender never resets the active run's cancellation"
     );
 
-    let (_dir, cache) = cache("single-flight");
+    let (dir, cache) = cache("single-flight");
     let error = transcribe_to_cache(
         &cache,
+        &dir.path().join("temp"),
         Some(Path::new("/nonexistent/model.bin")),
         Some(Path::new("/nonexistent/ffmpeg")),
         Path::new("/nonexistent/video.mov"),
@@ -161,8 +166,34 @@ fn a_video_without_audio_extracts_as_a_successful_empty_stream() {
     .unwrap();
     std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-    let pcm = extract_pcm(&ffmpeg, Path::new("/nonexistent/silent.mov")).unwrap();
+    let pcm = extract_pcm(
+        &ffmpeg,
+        Path::new("/nonexistent/silent.mov"),
+        dir.path(),
+    )
+    .unwrap();
     assert!(pcm.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+#[serial(transcription)]
+fn pcm_is_staged_then_streamed_once_into_the_float_buffer() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ffmpeg = dir.path().join("ffmpeg");
+    std::fs::write(
+        &ffmpeg,
+        "#!/bin/sh\nfor last do :; done\nprintf '\\000\\000\\000\\077\\000\\000\\000\\277' > \"$last\"\necho progress=continue\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let temp = dir.path().join("temp");
+    let pcm = extract_pcm(&ffmpeg, Path::new("ignored.mov"), &temp).unwrap();
+    assert_eq!(pcm, vec![0.5, -0.5]);
+    assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
 }
 
 // LIVE: downloads the tiny model (~75 MB; sha256 from the upstream's LFS

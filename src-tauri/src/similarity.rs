@@ -635,6 +635,10 @@ pub fn rebuild_groups_for_root_cancellable(
     root: &std::path::Path,
     stop: &dyn Fn() -> bool,
 ) -> Result<GroupStats, String> {
+    crate::resource_limits::require_available(
+        crate::resource_limits::SIMILARITY_REQUIRED_AVAILABLE,
+        "Similarity analysis",
+    )?;
     let exclusions = crate::similar_exclusions::pairs(root)?;
     rebuild_groups_with_exclusions(conn, config, &exclusions, stop)
 }

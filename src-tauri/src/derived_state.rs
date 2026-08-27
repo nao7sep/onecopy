@@ -266,6 +266,7 @@ pub const PREVIEW_ERROR: &str = "decode-error";
 pub const TRANSCRIPT_ERROR: &str = "transcription-error";
 pub const VIDEO_POSTER_ERROR: &str = "video-poster-error";
 pub const VIDEO_STRIP_ERROR: &str = "video-strip-error";
+pub const RESOURCE_ISSUE_PREFIX: &str = "resource-limit-";
 
 pub const READY: &str = "ready";
 pub const READY_TEXT: &str = "ready-text";
@@ -911,6 +912,12 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
 }
 
 pub fn issue_recovery(conn: &Connection, issue_id: i64) -> Result<Option<IssueRecovery>, String> {
+    if resource_class_for_issue(conn, issue_id)?.is_some() {
+        return Ok(Some(IssueRecovery {
+            label: "Resume",
+            status: "available",
+        }));
+    }
     let Some((kind, _path, hash)) = content_hash_for_issue(conn, issue_id)? else {
         return Ok(None);
     };
@@ -953,4 +960,49 @@ pub fn issue_recovery(conn: &Connection, issue_id: i64) -> Result<Option<IssueRe
         label: "Retry",
         status: if queued { "queued" } else { "available" },
     }))
+}
+
+pub(crate) fn resource_class_for_issue(
+    conn: &Connection,
+    issue_id: i64,
+) -> Result<Option<WorkClass>, String> {
+    let kind: Option<String> = conn
+        .query_row("SELECT kind FROM issues WHERE id = ?1", [issue_id], |row| row.get(0))
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(kind
+        .as_deref()
+        .and_then(|kind| kind.strip_prefix(RESOURCE_ISSUE_PREFIX))
+        .and_then(WorkClass::parse))
+}
+
+pub(crate) fn take_resource_issue(
+    conn: &Connection,
+    issue_id: i64,
+) -> Result<Option<WorkClass>, String> {
+    let class = resource_class_for_issue(conn, issue_id)?;
+    if class.is_some() {
+        conn.execute("DELETE FROM issues WHERE id = ?1", [issue_id])
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(class)
+}
+
+pub(crate) fn take_all_resource_issues(conn: &Connection) -> Result<Vec<WorkClass>, String> {
+    let mut statement = conn
+        .prepare("SELECT DISTINCT kind FROM issues WHERE kind LIKE 'resource-limit-%'")
+        .map_err(|error| error.to_string())?;
+    let classes = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|kind| {
+            kind.strip_prefix(RESOURCE_ISSUE_PREFIX)
+                .and_then(WorkClass::parse)
+        })
+        .collect::<Vec<_>>();
+    drop(statement);
+    conn.execute("DELETE FROM issues WHERE kind LIKE 'resource-limit-%'", [])
+        .map_err(|error| error.to_string())?;
+    Ok(classes)
 }

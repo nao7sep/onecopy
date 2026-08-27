@@ -19,6 +19,7 @@ mod instance_owner;
 pub mod live_photo;
 pub mod logging;
 pub mod media_protocol;
+pub mod media_use;
 pub mod metadata;
 mod nanoid;
 pub mod operations;
@@ -27,6 +28,7 @@ pub mod path_identity;
 pub mod preview;
 pub mod queries;
 pub mod resolution;
+pub mod resource_limits;
 pub mod scanner;
 pub mod scan_runtime;
 pub mod similarity;
@@ -165,6 +167,8 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
 
 // The storage root, for the mediafile protocol's hash→path lookups.
 pub(crate) static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+static EXIT_QUIESCING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn cache_root() -> Option<std::path::PathBuf> {
     DATA_ROOT
@@ -276,12 +280,14 @@ fn delete_item(
     path_id: Option<i64>,
     permanent: bool,
 ) -> Result<operations::DeleteOutcome, String> {
-    // Derived work must never compete with a user operation for the disk.
-    let _heavy = derived_work::heavy_op();
     logging::boundary(
         "delete_item",
         json!({ "hash": hash, "pathId": path_id, "permanent": permanent }),
         || {
+            let key = hash
+                .clone()
+                .unwrap_or_else(|| format!("path-{}", path_id.unwrap_or_default()));
+            let _media = media_use::begin(&app, &[key])?;
             ensure_sources_present(&app)?;
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
@@ -341,12 +347,14 @@ fn move_item_out(
     dest_dir: String,
     mode: String,
 ) -> Result<operations::MoveOutOutcome, String> {
-    // Derived work must never compete with a user operation for the disk.
-    let _heavy = derived_work::heavy_op();
     logging::boundary(
         "move_item_out",
         json!({ "hash": hash, "pathId": path_id, "destDir": dest_dir, "mode": mode }),
         || {
+            let key = hash
+                .clone()
+                .unwrap_or_else(|| format!("path-{}", path_id.unwrap_or_default()));
+            let _media = media_use::begin(&app, &[key])?;
             ensure_sources_present(&app)?;
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
@@ -589,6 +597,7 @@ fn open_item_externally(app: AppHandle, hash: String) -> Result<(), String> {
             |r| r.get(0),
         )
         .map_err(|_| "no live copy of this item".to_string())?;
+    let _media = media_use::begin(&app, std::slice::from_ref(&hash))?;
     app.opener()
         .open_path(path, None::<&str>)
         .map_err(|e| e.to_string())
@@ -770,6 +779,7 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
             let text = transcription::transcribe_to_cache_claimed(
                 &claim,
                 &cache,
+                &data_root.join(binaries_manager::TEMP_DIR_NAME),
                 model.as_deref(),
                 ffmpeg.as_deref(),
                 std::path::Path::new(&video),
@@ -806,6 +816,15 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                     Err(scanner::CANCELLED.to_string())
                 }
                 Err(error) if !tools_available => Err(error),
+                Err(error) if resource_limits::is_safety_error(&error) => {
+                    derived_work::pause_for_resource_safety(
+                        &handle,
+                        &conn,
+                        derived_state::WorkClass::Transcripts,
+                        &error,
+                    )?;
+                    Err(error)
+                }
                 Err(error) => {
                     derived_state::record_transcript_failure(&conn, &hash, &video, &error)?;
                     Err(error)
@@ -871,6 +890,16 @@ fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> 
 #[tauri::command]
 fn note_user_activity() {
     derived_work::note_activity();
+}
+
+#[tauri::command]
+fn media_use_current(window: tauri::WebviewWindow) -> Option<Value> {
+    media_use::current(window.label())
+}
+
+#[tauri::command]
+fn media_use_released(window: tauri::WebviewWindow, token: u64) -> bool {
+    media_use::acknowledge(token, window.label())
 }
 
 #[tauri::command(async)]
@@ -953,12 +982,11 @@ fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
 // verified here so the command can never delete an arbitrary tree.
 #[tauri::command(async)]
 fn trash_empty(app: AppHandle, root: String) -> Result<(), String> {
-    // Derived work must never compete with a user operation for the disk.
-    let _heavy = derived_work::heavy_op();
     logging::boundary(
         "trash_empty",
         json!({ "root": root }),
         || {
+            let _media = media_use::begin(&app, &[])?;
             let data_root = paths::data_root(&app)?;
             let dirs = storage::load_config_source_dirs(&data_root)?;
             let known = trash::overview(&dirs, &data_root);
@@ -1015,6 +1043,11 @@ fn retry_issue(app: AppHandle, id: i64) -> Result<bool, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            if let Some(class) = derived_state::take_resource_issue(&conn, id)? {
+                derived_runtime::set_paused(&app, Some(class.id()), false)?;
+                derived_work::wake(false);
+                return Ok(true);
+            }
             let retried = derived_state::retry_issue(&conn, id)?;
             if retried {
                 derived_work::wake(false);
@@ -1033,7 +1066,11 @@ fn retry_all_issues(app: AppHandle) -> Result<u64, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let retried = derived_state::retry_all(&conn)?;
+            let mut retried = derived_state::retry_all(&conn)?;
+            for class in derived_state::take_all_resource_issues(&conn)? {
+                derived_runtime::set_paused(&app, Some(class.id()), false)?;
+                retried += 1;
+            }
             if retried > 0 {
                 derived_work::wake(false);
             }
@@ -1523,6 +1560,8 @@ pub fn run() {
             delete_empty_dir,
             reveal_data_subdir,
             open_item_externally,
+            media_use_current,
+            media_use_released,
             note_user_activity,
             background_work_snapshot,
             background_work_set_paused,
@@ -1577,12 +1616,28 @@ pub fn run() {
         }
     };
 
-    app.run(|_app_handle, event| match event {
+    app.run(|app_handle, event| match event {
         // Cooperative scan interruption: flag as soon as exit is requested so
         // the worker starts winding down, then join it at Exit — bounded by
         // the per-item cancel checks — so no SQLite write is killed halfway.
-        tauri::RunEvent::ExitRequested { .. } => {
+        tauri::RunEvent::ExitRequested { api, .. } => {
             scan_runtime::request_cancel();
+            if !EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                api.prevent_exit();
+                let handle = app_handle.clone();
+                std::thread::spawn(move || {
+                    let media = media_use::begin(&handle, &[]);
+                    scan_runtime::join();
+                    if let Err(error) = &media {
+                        logging::warn(
+                            "shutdown media release failed",
+                            json!({ "error": { "message": error } }),
+                        );
+                    }
+                    handle.exit(0);
+                    drop(media);
+                });
+            }
         }
         tauri::RunEvent::Exit => {
             scan_runtime::request_cancel();

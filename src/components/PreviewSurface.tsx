@@ -29,6 +29,7 @@ import type { ItemDetail } from "../models/items";
 import { ExternalLink } from "lucide-react";
 import TranscriptBlock from "./TranscriptBlock";
 import { useAppStore } from "../state/app-store";
+import { useOwnedMedia } from "../media-use";
 
 function VideoSurface({
   hash,
@@ -52,7 +53,7 @@ function VideoSurface({
     width: 0,
     height: 0,
   });
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoRef, setVideoRef] = useOwnedMedia<HTMLVideoElement>();
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const resumeAfterInspectRef = useRef(false);
@@ -173,7 +174,7 @@ function VideoSurface({
           <InspectableImage hash={hash} fileName={detail.fileName} />
         ) : (
           <video
-            ref={videoRef}
+            ref={setVideoRef}
             controls={!hold.inspecting}
             playsInline
             poster={previewUrl(hash)}
@@ -322,13 +323,20 @@ function AudioSurface({
   src: string;
   fileName: string;
 }) {
+  const [, setAudioRef] = useOwnedMedia<HTMLAudioElement>();
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-4">
       <p className="max-w-full truncate text-sm text-ink" title={fileName}>
         {fileName}
       </p>
       {/* Keyed by src so playback state never carries across files. */}
-      <audio key={src} controls src={src} className="w-full max-w-[420px]" />
+      <audio
+        ref={setAudioRef}
+        key={src}
+        controls
+        src={src}
+        className="w-full max-w-[420px]"
+      />
     </div>
   );
 }

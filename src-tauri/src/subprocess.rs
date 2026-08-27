@@ -21,11 +21,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 /// No output at all for this long means stuck, not slow.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How much recent stderr an error carries.
 pub const TAIL_BYTES: usize = 2000;
+pub const STDOUT_BYTES: usize = 1024 * 1024;
+pub const STDERR_BYTES: usize = 1024 * 1024;
 
 /// How often the watcher wakes to check liveness, idleness and cancellation.
 const POLL: Duration = Duration::from_millis(100);
@@ -60,7 +65,18 @@ impl Run {
 /// the child instead of waiting for it — the difference between an app that
 /// closes and one that appears to hang.
 pub fn run_bounded(command: Command, cancelled: &dyn Fn() -> bool) -> Result<Run, String> {
-    run_bounded_idle(command, cancelled, IDLE_TIMEOUT)
+    run_bounded_idle_output(command, cancelled, IDLE_TIMEOUT, STDOUT_BYTES)
+}
+
+/// `run_bounded` with a hard stdout ceiling. Binary-producing commands use
+/// this so a malformed or unexpectedly large stream cannot grow a `Vec`
+/// until the process is out of memory.
+pub fn run_bounded_output(
+    command: Command,
+    cancelled: &dyn Fn() -> bool,
+    max_stdout: usize,
+) -> Result<Run, String> {
+    run_bounded_idle_output(command, cancelled, IDLE_TIMEOUT, max_stdout)
 }
 
 /// `run_bounded` with a caller-chosen idle bound, for work whose healthy runtime
@@ -68,10 +84,31 @@ pub fn run_bounded(command: Command, cancelled: &dyn Fn() -> bool) -> Result<Run
 /// and letting a wedged one hold a status read for the full 120s would look like
 /// a hang.
 pub fn run_bounded_idle(
-    mut command: Command,
+    command: Command,
     cancelled: &dyn Fn() -> bool,
     idle_timeout: Duration,
 ) -> Result<Run, String> {
+    run_bounded_idle_output(command, cancelled, idle_timeout, STDOUT_BYTES)
+}
+
+fn run_bounded_idle_output(
+    mut command: Command,
+    cancelled: &dyn Fn() -> bool,
+    idle_timeout: Duration,
+    max_stdout: usize,
+) -> Result<Run, String> {
+    #[cfg(unix)]
+    // SAFETY: this closure runs in the child after fork and before exec. It
+    // performs one async-signal-safe syscall and returns only its OS error.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -86,11 +123,14 @@ pub fn run_bounded_idle(
     let started = Instant::now();
     let stdout_buf = Arc::new(Mutex::new(Vec::new()));
     let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+    let stdout_overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stderr_overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let mut readers = Vec::new();
     if let Some(mut out) = child.stdout.take() {
         let buf = Arc::clone(&stdout_buf);
         let seen = Arc::clone(&last_output);
+        let overflow = Arc::clone(&stdout_overflow);
         readers.push(std::thread::spawn(move || {
             let mut chunk = [0u8; 64 * 1024];
             while let Ok(n) = out.read(&mut chunk) {
@@ -99,7 +139,11 @@ pub fn run_bounded_idle(
                 }
                 seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                 if let Ok(mut b) = buf.lock() {
-                    b.extend_from_slice(&chunk[..n]);
+                    if b.len().saturating_add(n) > max_stdout {
+                        overflow.store(true, Ordering::Relaxed);
+                    } else if !overflow.load(Ordering::Relaxed) {
+                        b.extend_from_slice(&chunk[..n]);
+                    }
                 }
             }
         }));
@@ -107,6 +151,7 @@ pub fn run_bounded_idle(
     if let Some(mut err) = child.stderr.take() {
         let buf = Arc::clone(&stderr_buf);
         let seen = Arc::clone(&last_output);
+        let overflow = Arc::clone(&stderr_overflow);
         readers.push(std::thread::spawn(move || {
             let mut chunk = [0u8; 16 * 1024];
             while let Ok(n) = err.read(&mut chunk) {
@@ -115,7 +160,11 @@ pub fn run_bounded_idle(
                 }
                 seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                 if let Ok(mut b) = buf.lock() {
-                    b.extend_from_slice(&chunk[..n]);
+                    if b.len().saturating_add(n) > STDERR_BYTES {
+                        overflow.store(true, Ordering::Relaxed);
+                    } else if !overflow.load(Ordering::Relaxed) {
+                        b.extend_from_slice(&chunk[..n]);
+                    }
                 }
             }
         }));
@@ -128,15 +177,24 @@ pub fn run_bounded_idle(
             Err(e) => break Err(e.to_string()),
         }
         if cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_owned(&mut child);
             break Err(crate::scanner::CANCELLED.to_string());
         }
-        let idle_ms = started.elapsed().as_millis() as u64
-            - last_output.load(Ordering::Relaxed);
+        if stdout_overflow.load(Ordering::Relaxed) {
+            kill_owned(&mut child);
+            break Err(format!(
+                "subprocess output exceeded the {} MiB safety limit",
+                max_stdout / 1024 / 1024
+            ));
+        }
+        if stderr_overflow.load(Ordering::Relaxed) {
+            kill_owned(&mut child);
+            break Err("subprocess stderr exceeded the 1 MiB safety limit".to_string());
+        }
+        let idle_ms = (started.elapsed().as_millis() as u64)
+            .saturating_sub(last_output.load(Ordering::Relaxed));
         if idle_ms > idle_timeout.as_millis() as u64 {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_owned(&mut child);
             break Err(format!(
                 "no output for {}s — killed as stuck",
                 idle_timeout.as_secs()
@@ -153,6 +211,16 @@ pub fn run_bounded_idle(
     let stderr = String::from_utf8_lossy(&stderr_buf.lock().map(|b| b.clone()).unwrap_or_default())
         .into_owned();
 
+    if stdout_overflow.load(Ordering::Relaxed) {
+        return Err(format!(
+            "subprocess output exceeded the {} MiB safety limit",
+            max_stdout / 1024 / 1024
+        ));
+    }
+    if stderr_overflow.load(Ordering::Relaxed) {
+        return Err("subprocess stderr exceeded the 1 MiB safety limit".to_string());
+    }
+
     match outcome {
         Ok(status_ok) => Ok(Run { status_ok, stdout, stderr }),
         Err(reason) => {
@@ -165,4 +233,22 @@ pub fn run_bounded_idle(
             })
         }
     }
+}
+
+#[cfg(unix)]
+fn kill_owned(child: &mut std::process::Child) {
+    // The child created its own process group before exec, so the negative PID
+    // reaches ffmpeg and anything it spawned without touching unrelated app
+    // or external-player processes.
+    // SAFETY: kill has no memory preconditions; the PID is the owned child.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn kill_owned(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }

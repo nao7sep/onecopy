@@ -73,6 +73,27 @@ fn only_reconstructible_failures_offer_retry_and_stay_visible_while_queued() {
 }
 
 #[test]
+fn resource_safety_pause_offers_resume_without_attaching_to_one_file() {
+    let (_dir, conn) = seeded();
+    index_store::upsert_issue(
+        &conn,
+        None,
+        "resource-limit-transcripts",
+        "Transcription needs more available memory",
+    )
+    .unwrap();
+
+    let (_, rows) = queries::issues(&conn, 20).unwrap();
+    let issue = rows
+        .iter()
+        .find(|row| row.kind == "resource-limit-transcripts")
+        .unwrap();
+    assert!(issue.path.is_none());
+    assert_eq!(issue.recovery.as_ref().unwrap().label, "Resume");
+    assert_eq!(issue.recovery.as_ref().unwrap().status, "available");
+}
+
+#[test]
 fn retry_all_resets_each_safe_output_without_replaying_destructive_intent() {
     let (_dir, conn) = seeded();
     assert_eq!(derived_state::retry_all(&conn).unwrap(), 5);
