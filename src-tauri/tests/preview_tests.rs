@@ -468,8 +468,8 @@ fn live_still_decode_through_ffmpeg() {
     let cache = CachePaths::new(root.join("cache"));
 
     // A HEIC stored upright, and one whose display orientation is a quarter
-    // turn away. Both are tile-grid HEICs from Apple's own encoder — the
-    // structure iPhone photos use.
+    // turn away. These small fixtures pin orientation; the canonical
+    // acceptance corpus separately exercises Apple's tiled HEIC structure.
     for (hash, name) in [("up01", "upright.heic"), ("rot01", "rotated.heic")] {
         let src = fixtures.join(name);
         assert!(src.is_file(), "fixture {name} is committed");

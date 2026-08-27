@@ -155,7 +155,13 @@ fn decode_via_ffmpeg_bounded(
         .args(["-frames:v", "1"]);
     if let Some(edge) = max_edge {
         // min() so a small image never upscales; -2 keeps dimensions even.
-        cmd.args(["-vf", &format!("scale='min({edge},iw)':-2")]);
+        // A tiled HEIC's decoder output is already a complex tile-grid graph
+        // on current ffmpeg, so the scale must join that graph. A simple
+        // `-vf` graph conflicts with it and rejects otherwise valid photos.
+        cmd.args([
+            "-filter_complex",
+            &format!("scale='min({edge},iw)':-2"),
+        ]);
     }
     cmd.args(["-f", "image2pipe", "-c:v", "bmp", "-"]);
     let run = crate::subprocess::run_bounded_output(

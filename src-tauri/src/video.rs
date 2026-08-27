@@ -90,14 +90,48 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
 fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Result<(), String> {
     log_invocation("extract-frame", src);
     let seconds = format!("{}.{:03}", at_ms / 1000, at_ms % 1000);
+    // Decode at most one second accurately. The earlier coarse input seek
+    // keeps long videos fast; omitting it for the first second avoids the
+    // non-zero container timeline trap in short transport streams.
+    let coarse_ms = at_ms.saturating_sub(1_000);
+    let precise_ms = at_ms - coarse_ms;
+    let coarse_seconds = format!("{}.{:03}", coarse_ms / 1000, coarse_ms % 1000);
+    let precise_seconds = format!("{}.{:03}", precise_ms / 1000, precise_ms % 1000);
     let mut cmd = std::process::Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "error", "-ss", &seconds, "-i"])
+    cmd.args(["-hide_banner", "-loglevel", "error"]);
+    if coarse_ms > 0 {
+        cmd.args(["-ss", &coarse_seconds]);
+    }
+    cmd.arg("-i")
         .arg(src)
-        .args(["-frames:v", "1", "-q:v", "3", "-update", "1", "-y"])
+        .args([
+            "-ss",
+            &precise_seconds,
+            // A container's duration can extend past its last frame PTS.
+            // Clone that final frame across this bounded seek window so the
+            // last interior strip timestamp remains a valid request.
+            "-vf",
+            "tpad=stop_mode=clone:stop_duration=1",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            // JPEG is full-range. Current managed ffmpeg correctly rejects
+            // limited-range YUV unless the conversion is explicit.
+            "-pix_fmt",
+            "yuvj420p",
+            "-update",
+            "1",
+            "-y",
+        ])
         .arg(staged_jpg);
     let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
     if !run.status_ok {
-        return Err(format!("frame extraction failed at {seconds}s for {}", src.display()));
+        return Err(format!(
+            "frame extraction failed at {seconds}s for {}: {}",
+            src.display(),
+            run.stderr_tail()
+        ));
     }
     if !staged_jpg.is_file() {
         return Err(format!("ffmpeg emitted no frame at {seconds}s for {}", src.display()));

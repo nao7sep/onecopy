@@ -37,8 +37,10 @@ fn strip_timestamps_are_interior_and_even() {
     assert!(times.last().copied().unwrap() < 100_000);
 }
 
-// Live end-to-end: installs (or reuses) ffmpeg, synthesizes a test clip
-// with lavfi testsrc, and derives poster + strip into the cache. Run with
+// Live end-to-end: installs (or reuses) ffmpeg, synthesizes a transport
+// stream whose timeline begins above zero, and derives poster + strip into
+// the cache. The non-zero start catches input-side seeking, which can report
+// success without emitting a frame for MTS. Run with
 // `cargo test live_video_derive -- --ignored --nocapture`.
 #[test]
 #[ignore]
@@ -56,12 +58,14 @@ fn live_video_derive() {
     eprintln!("ffmpeg {:?}", facts.latest_known_version);
     let ffmpeg = binaries_manager::ffmpeg_path(root);
 
-    // Synthesize a 30 s test clip.
-    let clip = root.join("clip.mp4");
+    // MPEG-TS starts this generated stream around 1.4 s rather than zero.
+    // Four frames in one second also make the last of five strip timestamps
+    // land after the last real PTS, exercising the bounded final-frame pad.
+    let clip = root.join("clip.mts");
     let status = std::process::Command::new(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
-        .arg("testsrc=duration=30:size=640x360:rate=24")
-        .args(["-pix_fmt", "yuv420p", "-y"])
+        .arg("testsrc=duration=1:size=640x360:rate=4")
+        .args(["-pix_fmt", "yuv420p", "-f", "mpegts", "-y"])
         .arg(&clip)
         .status()
         .unwrap();
@@ -113,14 +117,14 @@ fn live_video_derive() {
     )
     .unwrap();
     assert_eq!(done.completed, 1);
-    // 30 s at 1/20 s clamps to min 5 frames.
+    // One second also clamps to the minimum five frames.
     for i in 0..5 {
         assert!(strip_path(&cache, "vid01", i).exists(), "strip frame {i}");
     }
     let duration: i64 = conn
         .query_row("SELECT duration_ms FROM contents WHERE hash = 'vid01'", [], |r| r.get(0))
         .unwrap();
-    assert!((29_000..31_500).contains(&duration), "duration {duration}");
+    assert!((900..1_500).contains(&duration), "duration {duration}");
 }
 
 #[test]
