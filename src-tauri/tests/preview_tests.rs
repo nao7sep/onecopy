@@ -309,6 +309,14 @@ fn derive_pending_processes_images_once_and_flags_decode_failures() {
 
     let stats = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
     assert_eq!((stats.derived, stats.failed), (1, 1));
+    assert_eq!(
+        stats.changes,
+        [
+            ("bad001".to_string(), "bad001".to_string()),
+            ("good01".to_string(), "good01".to_string()),
+        ],
+        "success and failure both publish their durable item transition"
+    );
     assert!(cache.preview("good01").exists());
 
     let issue_count: i64 = conn
@@ -415,6 +423,7 @@ fn stills_needing_ffmpeg_wait_for_it_instead_of_failing() {
 
     let stats = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
     assert_eq!((stats.derived, stats.failed, stats.blocked_no_ffmpeg), (0, 0, 1));
+    assert_eq!(stats.changes, [("heic01".to_string(), "heic01".to_string())]);
 
     // Waiting on a tool is not a bad file: no issue row, and the marker is
     // distinct from `failed` so installing ffmpeg is enough to derive it.

@@ -322,7 +322,16 @@ fn get_section_items(
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            queries::section_items(&conn, &kind, &month, display_timezone())
+            queries::section_items(
+                &conn,
+                &kind,
+                &month,
+                display_timezone(),
+                queries::ItemProjectionContext {
+                    capabilities: derived_work::work_capabilities(&data_root)?,
+                    similarity_dirty: derived_work::similarity_dirty(),
+                },
+            )
         },
         |items| json!({ "items": items.len() }),
     )
@@ -706,12 +715,7 @@ fn ensure_preview(app: AppHandle, hash: String) -> Result<String, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
-            let canonical =
-                derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            derived_work::notify_item_update(&app, &conn, "previews", &hash, &canonical);
-            let _ = app.emit("derived://issues", json!({}));
-            Ok(canonical)
+            derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)
         },
         |canonical| json!({ "canonicalHash": canonical }),
     )
@@ -752,12 +756,17 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
     let work = derived_runtime::begin_manual(&app, "transcripts")?;
+    derived_runtime::active_item(&app, derived_state::WorkClass::Transcripts, &hash);
     let claim = transcription::claim()?;
     let handle = app.clone();
     std::thread::spawn(move || {
         let _work = work;
         let result = (|| -> Result<String, String> {
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let projection = queries::ItemProjectionContext {
+                capabilities: derived_work::work_capabilities(&data_root)?,
+                similarity_dirty: derived_work::similarity_dirty(),
+            };
             let video: String = conn
                 .query_row(
                     "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
@@ -806,6 +815,14 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                         &video,
                         !text.trim().is_empty(),
                     )?;
+                    derived_work::notify_item_update(
+                        &handle,
+                        &conn,
+                        projection,
+                        "transcripts",
+                        &hash,
+                        &hash,
+                    );
                     Ok(text)
                 }
                 Err(error)
@@ -815,7 +832,17 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                     // process-wide flag at the end of this worker.
                     Err(scanner::CANCELLED.to_string())
                 }
-                Err(error) if !tools_available => Err(error),
+                Err(error) if !tools_available => {
+                    derived_work::notify_item_update(
+                        &handle,
+                        &conn,
+                        projection,
+                        "transcripts",
+                        &hash,
+                        &hash,
+                    );
+                    Err(error)
+                }
                 Err(error) if resource_limits::is_safety_error(&error) => {
                     derived_work::pause_for_resource_safety(
                         &handle,
@@ -827,6 +854,14 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                 }
                 Err(error) => {
                     derived_state::record_transcript_failure(&conn, &hash, &video, &error)?;
+                    derived_work::notify_item_update(
+                        &handle,
+                        &conn,
+                        projection,
+                        "transcripts",
+                        &hash,
+                        &hash,
+                    );
                     Err(error)
                 }
             }

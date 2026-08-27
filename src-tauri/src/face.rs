@@ -301,6 +301,9 @@ pub fn face_scores_pending(
     conn: &rusqlite::Connection,
     cache: &crate::preview::CachePaths,
     models: Option<(&Path, &Path)>,
+    priority_hashes: &[String],
+    mut on_item: impl FnMut(&str),
+    mut on_change: impl FnMut(&str),
     mut on_progress: impl FnMut(u64, u64),
     after_hash: Option<&str>,
     stop: &dyn Fn() -> bool,
@@ -309,11 +312,19 @@ pub fn face_scores_pending(
     let Some((detector_model, emotion_model)) = models else {
         return Ok(stats);
     };
-    let pending = crate::derived_state::face_candidates(
-        conn,
-        after_hash,
-        crate::derived_state::FACE_CANDIDATE_PAGE_SIZE,
-    )?;
+    let pending = if priority_hashes.is_empty() {
+        crate::derived_state::face_candidates(
+            conn,
+            after_hash,
+            crate::derived_state::FACE_CANDIDATE_PAGE_SIZE,
+        )?
+    } else {
+        crate::derived_state::prioritized_face_candidates(
+            conn,
+            priority_hashes,
+            crate::derived_state::FACE_CANDIDATE_PAGE_SIZE,
+        )?
+    };
     if pending.is_empty() {
         return Ok(stats);
     }
@@ -330,6 +341,7 @@ pub fn face_scores_pending(
         if stop() {
             break;
         }
+        on_item(&hash);
         stats.attempted += 1;
         stats.last_attempted_hash = Some(hash.clone());
         let preview = cache.preview(&hash);
@@ -340,6 +352,7 @@ pub fn face_scores_pending(
         match outcome {
             Ok(score) => {
                 crate::derived_state::record_face_success(conn, &hash, &path, score as f64)?;
+                on_change(&hash);
                 stats.scored += 1;
             }
             Err(err) => {
@@ -348,6 +361,7 @@ pub fn face_scores_pending(
                     serde_json::json!({ "hash": hash, "error": { "message": err.clone() } }),
                 );
                 crate::derived_state::record_face_failure(conn, &hash, &path, &err)?;
+                on_change(&hash);
                 stats.failed += 1;
             }
         }

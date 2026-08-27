@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import QuickView from "../../src/components/QuickView";
+import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { resetModalStack } from "../../src/utils/modalStack";
@@ -37,6 +38,7 @@ beforeEach(() => {
         durationMs: null,
         namesDiffer: false,
         dirPaths: ["/photos"],
+        derivedWork: EMPTY_ITEM_WORK,
       },
     ],
     selectedItem: "photo-hash",

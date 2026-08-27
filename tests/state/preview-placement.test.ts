@@ -20,7 +20,7 @@ import { handleSpaceQuickView } from "../../src/workflows/quick-view";
 import { useItemsStore } from "../../src/state/items-store";
 import { togglePreview } from "../../src/workflows/preview";
 import { installItemWorkflow } from "../../src/workflows/items";
-import type { SectionItem } from "../../src/models/items";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function item(pathId: number): SectionItem {
@@ -40,6 +40,7 @@ function item(pathId: number): SectionItem {
     durationMs: null,
     namesDiffer: false,
     dirPaths: [`/Volumes/A/photos`],
+    derivedWork: EMPTY_ITEM_WORK,
   };
 }
 

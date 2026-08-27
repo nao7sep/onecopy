@@ -570,6 +570,7 @@ pub fn derive_images_pending(
         thumb_edge,
         preview_long_edge,
         ffmpeg,
+        None,
         progress,
         None,
         None,
@@ -585,6 +586,7 @@ pub(crate) fn derive_next_image(
     thumb_edge: u32,
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
+    on_item: &dyn Fn(&str),
 ) -> Result<DeriveStats, String> {
     derive_images_pending_limit(
         conn,
@@ -592,6 +594,7 @@ pub(crate) fn derive_next_image(
         thumb_edge,
         preview_long_edge,
         ffmpeg,
+        Some(on_item),
         None,
         Some(1),
         None,
@@ -615,6 +618,7 @@ pub(crate) fn derive_image_hash(
         preview_long_edge,
         ffmpeg,
         None,
+        None,
         Some(1),
         Some(hash),
     )
@@ -626,6 +630,7 @@ fn derive_images_pending_limit(
     thumb_edge: u32,
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
+    on_item: Option<&dyn Fn(&str)>,
     progress: Option<&dyn Fn(u64, u64)>,
     limit: Option<usize>,
     only_hash: Option<&str>,
@@ -642,6 +647,9 @@ fn derive_images_pending_limit(
     let mut done = 0u64;
 
     for (hash, path) in rows {
+        if let Some(report) = on_item {
+            report(&hash);
+        }
         if crate::derived_runtime::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
@@ -699,6 +707,7 @@ fn derive_images_pending_limit(
                 // keeps it inert until ffmpeg arrives and wakes the owner.
                 stats.blocked_no_ffmpeg += 1;
                 crate::derived_state::record_preview_blocked(conn, &hash)?;
+                stats.changes.push((hash.clone(), hash));
             }
             Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
                 return Err(crate::scanner::CANCELLED.to_string());
@@ -706,6 +715,7 @@ fn derive_images_pending_limit(
             Err(err) => {
                 stats.failed += 1;
                 crate::derived_state::record_preview_failure(conn, &hash, &path, &err)?;
+                stats.changes.push((hash.clone(), hash));
             }
         }
 

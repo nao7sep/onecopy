@@ -6,10 +6,12 @@ import BackgroundWorkModal from "../../src/components/BackgroundWorkModal";
 import {
   backgroundWorkLine,
   mergeBackgroundRuntime,
+  mergeActiveItemWork,
   type BackgroundClassSnapshot,
   type BackgroundWorkSnapshot,
   useDerivedWorkStore,
 } from "../../src/state/derived-work-store";
+import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const ids: BackgroundClassSnapshot["id"][] = [
@@ -46,7 +48,7 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   current = snapshot({}, { previews: { state: "queued", queued: 12 } });
   mockCommands({
-    background_work_snapshot: () => current,
+    background_work_snapshot: () => ({ ...current, activeItem: null }),
     background_work_set_paused: ({ classId, paused }) => {
       if (classId === null) current = snapshot({ masterPaused: Boolean(paused) });
       return null;
@@ -58,6 +60,7 @@ beforeEach(() => {
     loading: false,
     changing: null,
     error: null,
+    activeItem: null,
   });
 });
 
@@ -78,18 +81,45 @@ describe("Background work", () => {
     const merged = mergeBackgroundRuntime(current, {
       masterPaused: false,
       pausedClasses: [],
-      active: { id: "previews", done: 4, total: 12, stopping: false },
+      active: { id: "previews", hash: "photo-hash", done: 4, total: 12, stopping: false },
     });
 
     expect(merged?.classes[0]).toMatchObject({ state: "running", done: 4, total: 12 });
     expect(merged?.classes[0].queued).toBe(12);
   });
 
+  it("overlays live progress only on the matching item and class", () => {
+    const states = {
+      ...EMPTY_ITEM_WORK,
+      preview: {
+        state: "pending" as const,
+        hasValue: false,
+        reason: null,
+        done: null,
+        total: null,
+      },
+    };
+    const active = {
+      id: "previews" as const,
+      hash: "photo-hash",
+      done: 4,
+      total: 12,
+      stopping: false,
+    };
+
+    expect(mergeActiveItemWork(states, "photo-hash", active).preview).toMatchObject({
+      state: "running",
+      done: 4,
+      total: 12,
+    });
+    expect(mergeActiveItemWork(states, "other-hash", active)).toBe(states);
+  });
+
   it("handles live runtime events without another database snapshot command", () => {
     fireEvent("derived://state-changed", {
       masterPaused: false,
       pausedClasses: [],
-      active: { id: "previews", done: 5, total: 12, stopping: false },
+      active: { id: "previews", hash: "photo-hash", done: 5, total: 12, stopping: false },
     });
 
     expect(useDerivedWorkStore.getState().snapshot?.classes[0]).toMatchObject({

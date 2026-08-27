@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DESC,
+  EMPTY_ITEM_WORK,
   SORT_ORDERS,
   extLabel,
   extOf,
@@ -29,6 +30,7 @@ function item(overrides: Partial<SectionItem>): SectionItem {
     durationMs: null,
     namesDiffer: false,
     dirPaths: ["/files"],
+    derivedWork: EMPTY_ITEM_WORK,
     ...overrides,
   };
 }

@@ -24,6 +24,7 @@ struct RuntimeState {
     master_paused: bool,
     paused_classes: u8,
     active: Option<ActiveWorkSnapshot>,
+    active_hash: Option<String>,
     preempt_requested: bool,
     exclusive: bool,
 }
@@ -41,11 +42,12 @@ pub struct RuntimeConditions {
     pub similarity_dirty: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RuntimeSnapshot {
     pub(crate) master_paused: bool,
     pub(crate) paused_classes: u8,
     pub(crate) active: Option<ActiveWorkSnapshot>,
+    pub(crate) active_hash: Option<String>,
     pub(crate) preempt_requested: bool,
     pub(crate) busy: bool,
     pub(crate) idle: bool,
@@ -72,6 +74,7 @@ impl ActiveGuard {
             done: None,
             total: None,
         });
+        runtime.active_hash = None;
         drop(runtime);
         emit_state_changed(app);
         Some(Self {
@@ -86,6 +89,7 @@ impl Drop for ActiveGuard {
         if let Ok(mut runtime) = RUNTIME.0.lock() {
             if runtime.active.map(|active| active.class) == Some(self.class) {
                 runtime.active = None;
+                runtime.active_hash = None;
                 runtime.preempt_requested = false;
                 RUNTIME.1.notify_all();
             }
@@ -159,6 +163,7 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
         done: None,
         total: None,
     });
+    runtime.active_hash = None;
     runtime.preempt_requested = false;
     drop(runtime);
     emit_state_changed(app);
@@ -329,6 +334,15 @@ pub(crate) fn progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u
     emit_state_changed(app);
 }
 
+pub(crate) fn active_item(app: &AppHandle, class: WorkClass, hash: &str) {
+    if let Ok(mut runtime) = RUNTIME.0.lock() {
+        if runtime.active.map(|active| active.class) == Some(class) {
+            runtime.active_hash = Some(hash.to_string());
+        }
+    }
+    emit_state_changed(app);
+}
+
 pub fn report_manual_progress(app: &AppHandle, class: &str, done: u64, total: u64) {
     if let Some(class) = WorkClass::parse(class) {
         progress(app, class, Some((done, total)));
@@ -350,6 +364,7 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
                 "pausedClasses": paused_classes,
                 "active": runtime.active.map(|active| json!({
                     "id": active.class.id(),
+                    "hash": runtime.active_hash.as_deref(),
                     "done": active.done,
                     "total": active.total,
                     "stopping": runtime.preempt_requested || runtime.paused(active.class),
@@ -361,7 +376,7 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
 }
 
 pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String> {
-    let (master_paused, paused_classes, active, preempt_requested) = {
+    let (master_paused, paused_classes, active, active_hash, preempt_requested) = {
         let runtime = RUNTIME
             .0
             .lock()
@@ -370,6 +385,7 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
             runtime.master_paused,
             runtime.paused_classes,
             runtime.active,
+            runtime.active_hash.clone(),
             runtime.preempt_requested,
         )
     };
@@ -377,6 +393,7 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
         master_paused,
         paused_classes,
         active,
+        active_hash,
         preempt_requested,
         busy: conditions.busy,
         idle: conditions.idle,

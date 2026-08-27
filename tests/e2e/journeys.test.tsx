@@ -16,7 +16,7 @@ import { useItemsStore } from "../../src/state/items-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
-import type { SectionItem } from "../../src/models/items";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
   fireEvent,
   invokeCalls,
@@ -43,6 +43,7 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
     durationMs: null,
     namesDiffer: false,
     dirPaths: ["/photos"],
+    derivedWork: EMPTY_ITEM_WORK,
     ...over,
   };
 }
@@ -96,7 +97,7 @@ beforeEach(() => {
     patch_config: (args) => args.patch ?? {},
     log_event: () => null,
     logging_debug_enabled: () => false,
-    background_work_snapshot: () => ({ masterPaused: false, classes: [] }),
+    background_work_snapshot: () => ({ masterPaused: false, classes: [], activeItem: null }),
     get_item_detail: () => null,
     start_scan: () => true,
   });

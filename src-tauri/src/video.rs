@@ -145,6 +145,7 @@ pub fn derive_videos_pending(
         preview_long_edge,
         None,
         None,
+        None,
     )
 }
 
@@ -156,6 +157,7 @@ pub(crate) fn derive_next_video(
     temp_dir: &Path,
     thumb_edge: u32,
     preview_long_edge: u32,
+    on_item: &dyn Fn(&str),
 ) -> Result<VideoDeriveStats, String> {
     derive_videos_pending_limit(
         conn,
@@ -164,6 +166,7 @@ pub(crate) fn derive_next_video(
         temp_dir,
         thumb_edge,
         preview_long_edge,
+        Some(on_item),
         Some(1),
         None,
     )
@@ -186,6 +189,7 @@ pub(crate) fn derive_video_hash(
         temp_dir,
         thumb_edge,
         preview_long_edge,
+        None,
         Some(1),
         Some(hash),
     )
@@ -198,6 +202,7 @@ fn derive_videos_pending_limit(
     temp_dir: &Path,
     thumb_edge: u32,
     preview_long_edge: u32,
+    on_item: Option<&dyn Fn(&str)>,
     limit: Option<usize>,
     only_hash: Option<&str>,
 ) -> Result<VideoDeriveStats, String> {
@@ -213,6 +218,9 @@ fn derive_videos_pending_limit(
     let rows = crate::derived_state::video_candidates(conn, true, limit, only_hash)?;
 
     for (hash, path) in rows {
+        if let Some(report) = on_item {
+            report(&hash);
+        }
         let src = Path::new(&path);
         let result = (|| -> Result<u64, String> {
             let duration_ms = probe_duration_ms(ffmpeg, src)?;
@@ -255,6 +263,7 @@ fn derive_videos_pending_limit(
             Err(err) => {
                 stats.failed += 1;
                 crate::derived_state::record_poster_failure(conn, &hash, &path, &err)?;
+                stats.changed_hashes.push(hash);
             }
         }
     }
@@ -272,6 +281,9 @@ pub fn derive_strips_pending(
     ffmpeg: &Path,
     temp_dir: &Path,
     strip: &StripConfig,
+    priority_hashes: &[String],
+    on_item: &dyn Fn(&str),
+    on_change: &dyn Fn(&str),
     after_hash: Option<&str>,
     stop: &dyn Fn() -> bool,
     progress: &dyn Fn(u64, u64),
@@ -279,11 +291,19 @@ pub fn derive_strips_pending(
     // not recorded: ffmpeg strip-frame staging lives in temp/ and produces
     // reconstructible binary cache entries.
     std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
-    let rows = crate::derived_state::strip_candidates(
-        conn,
-        after_hash,
-        crate::derived_state::SNAPSHOT_CANDIDATE_PAGE_SIZE,
-    )?;
+    let rows = if priority_hashes.is_empty() {
+        crate::derived_state::strip_candidates(
+            conn,
+            after_hash,
+            crate::derived_state::SNAPSHOT_CANDIDATE_PAGE_SIZE,
+        )?
+    } else {
+        crate::derived_state::prioritized_strip_candidates(
+            conn,
+            priority_hashes,
+            crate::derived_state::SNAPSHOT_CANDIDATE_PAGE_SIZE,
+        )?
+    };
     let mut stats = StripDeriveStats {
         candidates_found: !rows.is_empty(),
         ..StripDeriveStats::default()
@@ -293,6 +313,7 @@ pub fn derive_strips_pending(
         if stop() {
             break;
         }
+        on_item(&hash);
         stats.attempted += 1;
         stats.last_attempted_hash = Some(hash.clone());
         let src = Path::new(&path);
@@ -314,6 +335,7 @@ pub fn derive_strips_pending(
         match result {
             Ok(()) => {
                 crate::derived_state::record_strip_success(conn, &hash, &path, count)?;
+                on_change(&hash);
                 stats.completed += 1;
                 progress(stats.attempted, total);
             }
@@ -331,6 +353,7 @@ pub fn derive_strips_pending(
                 // DERIVE_VERSION bump re-derives; the issue row carries the
                 // reason meanwhile.
                 crate::derived_state::record_strip_failure(conn, &hash, &path, &err)?;
+                on_change(&hash);
                 stats.failed += 1;
                 progress(stats.attempted, total);
             }

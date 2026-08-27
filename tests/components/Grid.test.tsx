@@ -10,7 +10,7 @@ import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import Grid from "../../src/components/Grid";
 import { popModal, pushModal } from "../../src/utils/modalStack";
 import { useItemsStore } from "../../src/state/items-store";
-import type { SectionItem } from "../../src/models/items";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -32,6 +32,7 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
     durationMs: null,
     namesDiffer: false,
     dirPaths: ["/photos"],
+    derivedWork: EMPTY_ITEM_WORK,
     ...over,
   };
 }

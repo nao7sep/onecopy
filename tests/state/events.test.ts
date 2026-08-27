@@ -10,6 +10,7 @@ import { useSectionsStore } from "../../src/state/sections-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
 import { installScanEventWiring } from "../../src/workflows/scan-events";
 import type { ScanProgress } from "../../src/models/scan";
+import { EMPTY_ITEM_WORK } from "../../src/models/items";
 
 // The application workflow registers event wiring once. The listener registry
 // is deliberately NOT cleared between specs — clearing it would leave this
@@ -150,6 +151,7 @@ describe("derived media events", () => {
           durationMs: null,
           namesDiffer: false,
           dirPaths: ["/photos"],
+          derivedWork: EMPTY_ITEM_WORK,
         },
       ],
     });

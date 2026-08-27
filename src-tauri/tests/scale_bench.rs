@@ -15,6 +15,18 @@ use onecopy_lib::scanner;
 use onecopy_lib::similarity::cluster_by_appearance;
 use rusqlite::params;
 
+fn item_projection() -> queries::ItemProjectionContext {
+    queries::ItemProjectionContext {
+        capabilities: derived_state::WorkCapabilities {
+            ffmpeg: true,
+            face_enabled: false,
+            face_models: false,
+            transcripts: false,
+        },
+        similarity_dirty: false,
+    }
+}
+
 #[test]
 #[ignore]
 fn six_item_section_in_a_million_row_index() {
@@ -58,7 +70,14 @@ fn six_item_section_in_a_million_row_index() {
     }
 
     let started = Instant::now();
-    let items = queries::section_items(&conn, "image", "2026-01", chrono_tz::UTC).unwrap();
+    let items = queries::section_items(
+        &conn,
+        "image",
+        "2026-01",
+        chrono_tz::UTC,
+        item_projection(),
+    )
+    .unwrap();
     eprintln!(
         "opened six items among one million logical rows in {:?}",
         started.elapsed()

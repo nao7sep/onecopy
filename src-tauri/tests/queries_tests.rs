@@ -8,6 +8,7 @@
 
 use chrono_tz::Tz;
 use rusqlite::{params, Connection};
+use onecopy_lib::derived_state;
 use onecopy_lib::index_store;
 use onecopy_lib::preview;
 use onecopy_lib::queries;
@@ -34,12 +35,25 @@ fn db() -> TestDb {
     TestDb { _dir: dir, conn }
 }
 
+fn projection() -> queries::ItemProjectionContext {
+    queries::ItemProjectionContext {
+        capabilities: derived_state::WorkCapabilities {
+            ffmpeg: true,
+            face_enabled: false,
+            face_models: false,
+            transcripts: false,
+        },
+        similarity_dirty: false,
+    }
+}
+
 /// One image content row with a live path in January 2026 UTC.
 fn seed_image(conn: &Connection, hash: &str, derived_at: Option<&str>, name: &str) {
     conn.execute(
-        "INSERT INTO contents (hash, kind, byte_size, width, height, derived_at_utc) \
-         VALUES (?1, 'image', 100, 640, 480, ?2)",
-        params![hash, derived_at],
+        "INSERT INTO contents
+           (hash, kind, byte_size, width, height, derived_at_utc, derived_version) \
+         VALUES (?1, 'image', 100, 640, 480, ?2, ?3)",
+        params![hash, derived_at, preview::DERIVE_VERSION],
     )
     .unwrap();
     conn.execute(
@@ -64,7 +78,7 @@ fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
     seed_image(&conn, "hblocked", Some(preview::NEEDS_FFMPEG), "blocked.jpg");
     seed_image(&conn, "hfailed", Some("failed"), "failed.jpg");
 
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
     let thumb_of = |hash: &str| {
         items
             .iter()
@@ -79,6 +93,138 @@ fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
     // extension placeholder belongs, for a whole HEIC library.
     assert!(!thumb_of("hblocked"), "a blocked still has no thumbnail");
     assert!(!thumb_of("hfailed"), "a failed derive has no thumbnail");
+}
+
+#[test]
+fn item_work_projection_preserves_completed_truth_without_current_tools() {
+    let conn = db();
+    seed_image(&conn, "photo", Some("2026-01-02T03:04:05.000Z"), "photo.jpg");
+    conn.execute_batch(
+        "UPDATE contents SET face_score = 0.75 WHERE hash = 'photo';
+         INSERT INTO analysis_receipts (content_hash, face_state)
+           VALUES ('photo', 'ready');
+         INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'now');
+         INSERT INTO similar_group_members (group_id, content_hash) VALUES (1, 'photo');",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO contents
+           (hash, kind, byte_size, duration_ms, derived_at_utc, derived_version, strip_frames)
+         VALUES ('video', 'video', 200, 60000, 'now', ?1, 4)",
+        [derived_state::DERIVE_VERSION],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths
+           (abs_path, dir_path, file_name, stem, ext, kind, size, mtime_ms,
+            content_hash, resolved_utc_ms, resolved_source, date_only, missing, companion_of)
+         VALUES
+           ('/root/video.mov', '/root', 'video.mov', 'video', 'mov', 'video', 200, 0,
+            'video', 1767225600000, 'metadata', 0, 0, NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO analysis_receipts (content_hash, transcript_state)
+         VALUES ('video', 'ready-text')",
+        [],
+    )
+    .unwrap();
+
+    let projection = queries::ItemProjectionContext {
+        capabilities: derived_state::WorkCapabilities {
+            ffmpeg: false,
+            face_enabled: false,
+            face_models: false,
+            transcripts: false,
+        },
+        similarity_dirty: true,
+    };
+    let photo = queries::item_by_hash(&conn, "photo", projection)
+        .unwrap()
+        .unwrap();
+    assert_eq!(photo.derived_work.preview.as_ref().unwrap().state, "ready");
+    assert_eq!(photo.derived_work.faces.as_ref().unwrap().state, "ready");
+    assert!(photo.derived_work.faces.as_ref().unwrap().has_value);
+    assert_eq!(photo.derived_work.similarity.as_ref().unwrap().state, "pending");
+    assert!(photo.derived_work.similarity.as_ref().unwrap().has_value);
+
+    let video = queries::item_by_hash(&conn, "video", projection)
+        .unwrap()
+        .unwrap();
+    assert_eq!(video.derived_work.snapshots.as_ref().unwrap().state, "ready");
+    assert!(video.derived_work.snapshots.as_ref().unwrap().has_value);
+    assert_eq!(video.derived_work.transcripts.as_ref().unwrap().state, "ready");
+    assert!(video.derived_work.transcripts.as_ref().unwrap().has_value);
+
+    conn.execute(
+        "UPDATE analysis_receipts SET transcript_state = NULL WHERE content_hash = 'video'",
+        [],
+    )
+    .unwrap();
+    let unavailable = queries::item_by_hash(&conn, "video", projection)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        unavailable.derived_work.transcripts.as_ref().unwrap().reason,
+        Some("Waiting for ffmpeg")
+    );
+    let model_missing = queries::item_by_hash(
+        &conn,
+        "video",
+        queries::ItemProjectionContext {
+            capabilities: derived_state::WorkCapabilities {
+                ffmpeg: true,
+                face_enabled: false,
+                face_models: false,
+                transcripts: false,
+            },
+            similarity_dirty: false,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        model_missing
+            .derived_work
+            .transcripts
+            .as_ref()
+            .unwrap()
+            .reason,
+        Some("Waiting for transcription model")
+    );
+}
+
+#[test]
+fn stale_preview_is_pending_everywhere_and_is_not_advertised_as_current() {
+    let conn = db();
+    seed_image(&conn, "stale", Some("2026-01-02T03:04:05.000Z"), "stale.jpg");
+    conn.execute(
+        "UPDATE contents SET derived_version = ?1 WHERE hash = 'stale'",
+        [derived_state::DERIVE_VERSION - 1],
+    )
+    .unwrap();
+
+    let item = queries::item_by_hash(
+        &conn,
+        "stale",
+        queries::ItemProjectionContext {
+            capabilities: derived_state::WorkCapabilities {
+                ffmpeg: true,
+                face_enabled: true,
+                face_models: true,
+                transcripts: true,
+            },
+            similarity_dirty: false,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(!item.has_thumb);
+    assert_eq!(item.derived_work.preview.as_ref().unwrap().state, "pending");
+    assert!(item.derived_work.preview.as_ref().unwrap().has_value);
+    assert_eq!(item.derived_work.faces.as_ref().unwrap().state, "waiting");
+    assert_eq!(item.derived_work.similarity.as_ref().unwrap().state, "waiting");
 }
 
 #[test]
@@ -101,7 +247,7 @@ fn copy_count_counts_every_live_path_for_one_content() {
         .unwrap();
     }
 
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
     let item = items
         .iter()
         .find(|i| i.hash.as_deref() == Some("hshared"))
@@ -123,11 +269,13 @@ fn one_derived_item_can_be_projected_without_reading_its_section() {
     )
     .unwrap();
 
-    let item = queries::item_by_hash(&conn, "single").unwrap().unwrap();
+    let item = queries::item_by_hash(&conn, "single", projection()).unwrap().unwrap();
     assert_eq!(item.hash.as_deref(), Some("single"));
     assert_eq!((item.width, item.height), (Some(4000), Some(3000)));
     assert_eq!(item.dir_paths, ["/root"]);
-    assert!(queries::item_by_hash(&conn, "missing").unwrap().is_none());
+    assert!(queries::item_by_hash(&conn, "missing", projection())
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -143,7 +291,7 @@ fn a_missing_copy_does_not_count_toward_the_badge() {
     )
     .unwrap();
 
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
     let item = items.iter().find(|i| i.hash.as_deref() == Some("hgone")).unwrap();
     assert_eq!(item.copy_count, 1, "a vanished copy is not a copy");
 }
@@ -161,17 +309,17 @@ fn logical_summary_tracks_path_date_name_and_presence_changes() {
     )
     .unwrap();
 
-    let january = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    let january = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
     assert_eq!(january.len(), 1);
     assert_eq!(january[0].copy_count, 2);
     assert!(january[0].names_differ);
 
     conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'early.jpg'", [])
         .unwrap();
-    assert!(queries::section_items(&conn, "image", "2026-01", Tz::UTC)
+    assert!(queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection())
         .unwrap()
         .is_empty());
-    let february = queries::section_items(&conn, "image", "2026-02", Tz::UTC).unwrap();
+    let february = queries::section_items(&conn, "image", "2026-02", Tz::UTC, projection()).unwrap();
     assert_eq!(february.len(), 1, "the remaining copy defines the logical month");
     assert_eq!(february[0].copy_count, 1);
     assert!(!february[0].names_differ);
@@ -290,7 +438,7 @@ fn section_dirs_matches_the_directories_of_section_items() {
     );
 
     for month in ["2026-01", "2026-02"] {
-        let items = queries::section_items(&conn, "image", month, tz).unwrap();
+        let items = queries::section_items(&conn, "image", month, tz, projection()).unwrap();
         let mut expected: Vec<String> = items
             .iter()
             .map(|i| {
@@ -312,7 +460,9 @@ fn section_dirs_matches_the_directories_of_section_items() {
     }
     // The boundary really did split them, or the test proves nothing.
     assert_eq!(
-        queries::section_items(&conn, "image", "2026-02", tz).unwrap().len(),
+        queries::section_items(&conn, "image", "2026-02", tz, projection())
+            .unwrap()
+            .len(),
         1,
         "the Tokyo boundary puts exactly one item in February"
     );
@@ -453,7 +603,14 @@ fn copies_under_different_names_are_flagged_case_insensitively() {
     )
     .unwrap();
 
-    let items = queries::section_items(&conn, "image", "1970-01", chrono_tz::UTC).unwrap();
+    let items = queries::section_items(
+        &conn,
+        "image",
+        "1970-01",
+        chrono_tz::UTC,
+        projection(),
+    )
+    .unwrap();
     let flag = |h: &str| {
         items
             .iter()

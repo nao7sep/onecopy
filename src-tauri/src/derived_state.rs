@@ -3,7 +3,7 @@
 //! a job queue: absence means pending, the coordinator remains the only
 //! dispatcher, and only fixed, safe classes can be retried from Issues.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::preview::CachePaths;
@@ -90,6 +90,7 @@ struct DebtCounts {
 fn work_debt_sql(ffmpeg: bool) -> String {
     let (image_pending, _) = preview_pending_predicates(ffmpeg);
     let video_pending = video_preview_pending_predicate();
+    let preview_ready = preview_available_predicate("c");
     format!(
         "SELECT
            COALESCE(SUM(l.kind = 'image' AND {image_pending}), 0),
@@ -98,11 +99,10 @@ fn work_debt_sql(ffmpeg: bool) -> String {
            COALESCE(SUM(l.kind IN ('image', 'video') AND c.derived_at_utc = '{FAILED}'), 0),
            COALESCE(SUM(l.kind = 'video' AND c.strip_frames IS NULL
                         AND c.duration_ms IS NOT NULL
-                        AND c.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}')), 0),
+                        AND {preview_ready}), 0),
            COALESCE(SUM(l.kind = 'video' AND c.strip_frames < 0), 0),
            COALESCE(SUM(l.kind = 'image' AND r.face_state IS NULL
-                        AND c.derived_at_utc IS NOT NULL
-                        AND c.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}')), 0),
+                        AND {preview_ready}), 0),
            COALESCE(SUM(r.face_state = '{FAILED}'), 0),
            COALESCE(SUM(l.kind = 'video' AND c.duration_ms IS NOT NULL
                         AND r.transcript_state IS NULL), 0),
@@ -206,7 +206,7 @@ pub(crate) fn work_debts(
             blocked: counts.transcripts,
             failed: counts.transcript_failures,
             reason: (counts.transcripts > 0)
-                .then_some("Waiting for ffmpeg and transcription model"),
+                .then_some(transcript_unavailable_reason(capabilities)),
             ..WorkDebt::default()
         }
     };
@@ -279,6 +279,282 @@ pub const SNAPSHOT_CANDIDATE_PAGE_SIZE: usize = 32;
 pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;
 pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
 
+fn transcript_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
+    if capabilities.ffmpeg {
+        "Waiting for transcription model"
+    } else {
+        "Waiting for ffmpeg"
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemWorkState {
+    pub state: &'static str,
+    pub has_value: bool,
+    pub reason: Option<&'static str>,
+    pub done: Option<u64>,
+    pub total: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemWorkStates {
+    pub preview: Option<ItemWorkState>,
+    pub snapshots: Option<ItemWorkState>,
+    pub similarity: Option<ItemWorkState>,
+    pub faces: Option<ItemWorkState>,
+    pub transcripts: Option<ItemWorkState>,
+}
+
+pub(crate) struct ItemWorkFacts<'a> {
+    pub kind: &'a str,
+    pub derived_at: Option<&'a str>,
+    pub derived_version: i64,
+    pub strip_frames: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub similar_group_id: Option<i64>,
+    pub face_state: Option<&'a str>,
+    pub face_score: Option<f64>,
+    pub transcript_state: Option<&'a str>,
+}
+
+fn item_state(
+    state: &'static str,
+    has_value: bool,
+    reason: Option<&'static str>,
+) -> ItemWorkState {
+    ItemWorkState {
+        state,
+        has_value,
+        reason,
+        done: None,
+        total: None,
+    }
+}
+
+/// One backend-authored per-item projection over existing receipts and
+/// capabilities. It creates no state: runtime overlays the active item later.
+pub(crate) fn item_work_states(
+    facts: ItemWorkFacts<'_>,
+    capabilities: WorkCapabilities,
+    similarity_dirty: bool,
+) -> ItemWorkStates {
+    let media = matches!(facts.kind, "image" | "video");
+    let preview = media.then(|| match facts.derived_at {
+        Some(FAILED) => item_state("failed", false, Some("Preview generation failed")),
+        Some(NEEDS_FFMPEG) if !capabilities.ffmpeg => {
+            item_state("unavailable", false, Some("Waiting for ffmpeg"))
+        }
+        None if facts.kind == "video" && !capabilities.ffmpeg => {
+            item_state("unavailable", false, Some("Waiting for ffmpeg"))
+        }
+        None | Some(NEEDS_FFMPEG) => item_state("pending", false, None),
+        Some(_) if facts.derived_version < DERIVE_VERSION => item_state("pending", true, None),
+        Some(_) => item_state("ready", true, None),
+    });
+    let preview_ready = preview.as_ref().is_some_and(|state| state.state == "ready");
+    let preview_failed = preview.as_ref().is_some_and(|state| state.state == "failed");
+
+    let snapshots = (facts.kind == "video").then(|| {
+        if facts.strip_frames == Some(STRIP_FAILED) {
+            item_state("failed", false, Some("Video snapshot generation failed"))
+        } else if let Some(count) = facts.strip_frames {
+            item_state("ready", count > 0, None)
+        } else if !capabilities.ffmpeg {
+            item_state("unavailable", false, Some("Waiting for ffmpeg"))
+        } else if preview_failed {
+            item_state("blocked", false, Some("Preview generation failed"))
+        } else if !preview_ready || facts.duration_ms.is_none() {
+            item_state("waiting", false, Some("Waiting for the video poster"))
+        } else {
+            item_state("pending", false, None)
+        }
+    });
+
+    let similarity = (facts.kind == "image").then(|| {
+        let has_value = facts.similar_group_id.is_some();
+        if preview_failed {
+            item_state("blocked", has_value, Some("Preview generation failed"))
+        } else if !preview_ready {
+            item_state("waiting", has_value, Some("Waiting for the preview"))
+        } else if similarity_dirty {
+            item_state("pending", has_value, None)
+        } else {
+            item_state("ready", has_value, None)
+        }
+    });
+
+    let faces = (facts.kind == "image").then(|| {
+        if facts.face_state == Some(FAILED) {
+            item_state("failed", false, Some("Face scoring failed"))
+        } else if facts.face_state == Some(READY) {
+            item_state(
+                "ready",
+                facts.face_score.is_some_and(|score| score > 0.0),
+                None,
+            )
+        } else if !capabilities.face_enabled {
+            item_state("disabled", false, Some("Face scoring is off"))
+        } else if !capabilities.face_models {
+            item_state("unavailable", false, Some("Waiting for face models"))
+        } else if preview_failed {
+            item_state("blocked", false, Some("Preview generation failed"))
+        } else if !preview_ready {
+            item_state("waiting", false, Some("Waiting for the preview"))
+        } else {
+            item_state("pending", false, None)
+        }
+    });
+
+    let transcripts = (facts.kind == "video").then(|| {
+        if facts.transcript_state == Some(FAILED) {
+            item_state("failed", false, Some("Transcription failed"))
+        } else if facts.transcript_state == Some(READY_TEXT) {
+            item_state("ready", true, None)
+        } else if facts.transcript_state == Some(READY_EMPTY) {
+            item_state("ready", false, None)
+        } else if !capabilities.transcripts {
+            item_state(
+                "unavailable",
+                false,
+                Some(transcript_unavailable_reason(capabilities)),
+            )
+        } else if preview_failed {
+            item_state("blocked", false, Some("Video poster generation failed"))
+        } else if facts.duration_ms.is_none() {
+            item_state("waiting", false, Some("Waiting for the video poster"))
+        } else {
+            item_state("pending", false, None)
+        }
+    });
+
+    ItemWorkStates {
+        preview,
+        snapshots,
+        similarity,
+        faces,
+        transcripts,
+    }
+}
+
+fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> String {
+    let preview_ready = preview_available_predicate("c");
+    match class {
+        WorkClass::Previews => {
+            let (image, video) = preview_pending_predicates(capabilities.ffmpeg);
+            format!(
+                "((l.kind = 'image' AND {image}) OR (l.kind = 'video' AND {video}))"
+            )
+        }
+        WorkClass::Snapshots if capabilities.ffmpeg => format!(
+            "l.kind = 'video' AND c.strip_frames IS NULL AND c.duration_ms IS NOT NULL \
+             AND {preview_ready}"
+        ),
+        WorkClass::Faces if capabilities.face_enabled && capabilities.face_models => format!(
+            "l.kind = 'image' AND r.face_state IS NULL AND {preview_ready}"
+        ),
+        WorkClass::Transcripts if capabilities.transcripts => {
+            "l.kind = 'video' AND c.duration_ms IS NOT NULL AND r.transcript_state IS NULL"
+                .to_string()
+        }
+        WorkClass::Similarity | WorkClass::Snapshots | WorkClass::Faces | WorkClass::Transcripts => {
+            "0".to_string()
+        }
+    }
+}
+
+/// Bounded selected/viewport/section candidates for one fixed class. This is
+/// ordering policy over existing output debt, never a persisted queue.
+pub(crate) fn priority_candidates(
+    conn: &Connection,
+    class: WorkClass,
+    capabilities: WorkCapabilities,
+    selected: Option<&str>,
+    visible: &[String],
+    section: Option<(&str, Option<i64>, Option<i64>)>,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    if class == WorkClass::Similarity || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut hinted = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(hash) = selected {
+        if seen.insert(hash) {
+            hinted.push(hash);
+        }
+    }
+    for hash in visible {
+        if seen.insert(hash.as_str()) {
+            hinted.push(hash);
+        }
+    }
+    let predicate = priority_predicate(class, capabilities);
+    let mut hashes = Vec::new();
+    if !hinted.is_empty() {
+        let values = (1..=hinted.len())
+            .map(|index| format!("(?{index}, {})", index - 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH hinted(hash, priority) AS (VALUES {values}) \
+             SELECT h.hash FROM hinted h \
+             JOIN logical_contents l ON l.content_hash = h.hash \
+             JOIN contents c ON c.hash = l.content_hash \
+             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+             WHERE {predicate} ORDER BY h.priority LIMIT {limit}"
+        );
+        let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+        hashes = statement
+            .query_map(params_from_iter(hinted), |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+    }
+    let Some((kind, start_ms, end_ms)) = section else {
+        return Ok(hashes);
+    };
+    if hashes.len() >= limit || !matches!(kind, "image" | "video") {
+        return Ok(hashes);
+    }
+    let time_clause = if start_ms.is_some() {
+        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
+    } else {
+        "AND l.resolved_utc_ms IS NULL"
+    };
+    let sql = format!(
+        "SELECT l.content_hash FROM logical_contents l \
+         JOIN contents c ON c.hash = l.content_hash \
+         LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+         WHERE l.kind = ?1 {time_clause} AND {predicate} \
+         ORDER BY l.resolved_utc_ms, l.representative_path_id LIMIT {limit}"
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let section_hashes: Vec<String> = match (start_ms, end_ms) {
+        (Some(start), Some(end)) => statement
+            .query_map(params![kind, start, end], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .collect(),
+        _ => statement
+            .query_map([kind], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .collect(),
+    };
+    let mut seen: std::collections::HashSet<String> = hashes.iter().cloned().collect();
+    for hash in section_hashes {
+        if seen.insert(hash.clone()) {
+            hashes.push(hash);
+            if hashes.len() == limit {
+                break;
+            }
+        }
+    }
+    Ok(hashes)
+}
+
 pub(crate) fn preview_pending_predicates(ffmpeg: bool) -> (String, String) {
     let stale = format!(
         "c.derived_version < {DERIVE_VERSION} \
@@ -310,7 +586,8 @@ fn video_preview_pending_predicate() -> String {
 pub(crate) fn preview_available_predicate(content_alias: &str) -> String {
     format!(
         "({content_alias}.derived_at_utc IS NOT NULL AND \
-         {content_alias}.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}'))"
+         {content_alias}.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}') AND \
+         {content_alias}.derived_version >= {DERIVE_VERSION})"
     )
 }
 
@@ -377,25 +654,58 @@ pub fn strip_candidates(
     after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, i64, String)>, String> {
+    let preview_ready = preview_available_predicate("c");
     let mut statement = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT c.hash, c.duration_ms, p.abs_path \
              FROM logical_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              WHERE l.kind = 'video' AND c.strip_frames IS NULL \
-               AND c.duration_ms IS NOT NULL \
-               AND c.derived_at_utc IS NOT NULL \
-               AND c.derived_at_utc NOT IN (?1, ?2) \
-               AND l.content_hash > ?3 AND p.missing = 0 \
-             ORDER BY l.content_hash LIMIT ?4",
-        )
+               AND c.duration_ms IS NOT NULL AND {preview_ready} \
+               AND l.content_hash > ?1 AND p.missing = 0 \
+             ORDER BY l.content_hash LIMIT ?2"
+        ))
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(
-            params![FAILED, NEEDS_FFMPEG, after_hash.unwrap_or(""), limit as i64],
+            params![after_hash.unwrap_or(""), limit as i64],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+
+pub fn prioritized_strip_candidates(
+    conn: &Connection,
+    hashes: &[String],
+    limit: usize,
+) -> Result<Vec<(String, i64, String)>, String> {
+    if hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = (1..=hashes.len())
+        .map(|index| format!("(?{index}, {})", index - 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let preview_ready = preview_available_predicate("c");
+    let sql = format!(
+        "WITH hinted(hash, priority) AS (VALUES {values}) \
+         SELECT c.hash, c.duration_ms, p.abs_path FROM hinted h \
+         JOIN logical_contents l ON l.content_hash = h.hash \
+         JOIN contents c ON c.hash = l.content_hash \
+         JOIN paths p ON p.id = l.representative_path_id \
+         WHERE l.kind = 'video' AND c.strip_frames IS NULL \
+           AND c.duration_ms IS NOT NULL AND p.missing = 0 AND {preview_ready} \
+         ORDER BY h.priority LIMIT {limit}"
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(hashes), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
@@ -407,30 +717,58 @@ pub fn face_candidates(
     after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, String)>, String> {
+    let preview_ready = preview_available_predicate("c");
     let mut statement = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT c.hash, p.abs_path \
              FROM logical_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
              WHERE l.kind = 'image' AND r.face_state IS NULL \
-               AND c.derived_at_utc IS NOT NULL \
-               AND c.derived_at_utc NOT IN (?1, ?2) \
-               AND l.content_hash > ?3 AND p.missing = 0 \
-             ORDER BY l.content_hash LIMIT ?4",
-        )
+               AND {preview_ready} \
+               AND l.content_hash > ?1 AND p.missing = 0 \
+             ORDER BY l.content_hash LIMIT ?2"
+        ))
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(
-            params![
-                FAILED,
-                NEEDS_FFMPEG,
-                after_hash.unwrap_or(""),
-                limit as i64
-            ],
+            params![after_hash.unwrap_or(""), limit as i64],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+
+pub fn prioritized_face_candidates(
+    conn: &Connection,
+    hashes: &[String],
+    limit: usize,
+) -> Result<Vec<(String, String)>, String> {
+    if hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = (1..=hashes.len())
+        .map(|index| format!("(?{index}, {})", index - 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let preview_ready = preview_available_predicate("c");
+    let sql = format!(
+        "WITH hinted(hash, priority) AS (VALUES {values}) \
+         SELECT c.hash, p.abs_path FROM hinted h \
+         JOIN logical_contents l ON l.content_hash = h.hash \
+         JOIN contents c ON c.hash = l.content_hash \
+         JOIN paths p ON p.id = l.representative_path_id \
+         LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+         WHERE l.kind = 'image' AND r.face_state IS NULL \
+           AND p.missing = 0 AND {preview_ready} \
+         ORDER BY h.priority LIMIT {limit}"
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(hashes), |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
@@ -459,6 +797,38 @@ pub fn transcript_candidates(
         .query_map(params![after_hash.unwrap_or(""), limit as i64], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+
+pub fn prioritized_transcript_candidates(
+    conn: &Connection,
+    hashes: &[String],
+    limit: usize,
+) -> Result<Vec<(String, String)>, String> {
+    if hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = (1..=hashes.len())
+        .map(|index| format!("(?{index}, {})", index - 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "WITH hinted(hash, priority) AS (VALUES {values}) \
+         SELECT c.hash, p.abs_path FROM hinted h \
+         JOIN logical_contents l ON l.content_hash = h.hash \
+         JOIN contents c ON c.hash = l.content_hash \
+         JOIN paths p ON p.id = l.representative_path_id \
+         LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+         WHERE l.kind = 'video' AND c.duration_ms IS NOT NULL \
+           AND r.transcript_state IS NULL AND p.missing = 0 \
+         ORDER BY h.priority LIMIT {limit}"
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(hashes), |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;

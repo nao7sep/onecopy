@@ -11,8 +11,20 @@ use std::sync::atomic::Ordering;
 use chrono_tz::Tz;
 use onecopy_lib::operations::{delete_item, move_out, DeleteMode, ItemRef, MoveOutMode};
 use onecopy_lib::preview::CachePaths;
-use onecopy_lib::{derived_work, index_store, preview, queries, scanner, similarity, trash};
+use onecopy_lib::{derived_state, derived_work, index_store, preview, queries, scanner, similarity, trash};
 use rusqlite::Connection;
+
+fn item_projection() -> queries::ItemProjectionContext {
+    queries::ItemProjectionContext {
+        capabilities: derived_state::WorkCapabilities {
+            ffmpeg: true,
+            face_enabled: false,
+            face_models: false,
+            transcripts: false,
+        },
+        similarity_dirty: false,
+    }
+}
 
 /// A deterministic JPEG "photo": a gradient with a per-shot brightness lift,
 /// so three shots of one scene hash differently but phash identically.
@@ -185,7 +197,8 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 
     // The section a user would open: one month, four logical items, the
     // duplicated shot reporting both copies.
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, item_projection())
+        .unwrap();
     assert_eq!(items.len(), 4);
     assert_eq!(
         items.iter().map(|i| i.copy_count).max(),
@@ -305,7 +318,8 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     }
 
     // The month view and the issues surface agree nothing is wrong.
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC).unwrap();
+    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, item_projection())
+        .unwrap();
     assert_eq!(items.len(), 1);
     let (issue_total, _) = queries::issues(&conn, 10).unwrap();
     assert_eq!(issue_total, 0, "a clean journey raises no issues");

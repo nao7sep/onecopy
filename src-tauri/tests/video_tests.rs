@@ -104,6 +104,9 @@ fn live_video_derive() {
         &ffmpeg,
         &root.join("temp"),
         &config(),
+        &[],
+        &|_| {},
+        &|_| {},
         None,
         &|| false,
         &|_, _| {},
@@ -179,4 +182,32 @@ fn videos_wait_when_ffmpeg_is_absent_and_never_get_checkpointed() {
     assert!(again.skipped_no_ffmpeg);
     assert_eq!((again.derived, again.failed), (0, 0));
     assert_eq!(issues, 0);
+}
+
+#[test]
+fn a_poster_failure_is_returned_as_an_item_transition() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-video-failure-transition-")
+        .tempdir()
+        .unwrap();
+    let conn = onecopy_lib::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 100, 'video');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing)
+           VALUES ('/root/clip.mov', '/root', 'clip.mov', 'video', 'v1', 0);",
+    )
+    .unwrap();
+
+    let stats = derive_videos_pending(
+        &conn,
+        &CachePaths::new(dir.path().join("cache")),
+        Some(&dir.path().join("missing-ffmpeg")),
+        &dir.path().join("temp"),
+        320,
+        1600,
+    )
+    .unwrap();
+
+    assert_eq!((stats.derived, stats.failed), (0, 1));
+    assert_eq!(stats.changed_hashes, ["v1"]);
 }

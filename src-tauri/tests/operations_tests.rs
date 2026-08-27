@@ -45,6 +45,18 @@ fn lists() -> ScanLists {
     }
 }
 
+fn item_projection() -> onecopy_lib::queries::ItemProjectionContext {
+    onecopy_lib::queries::ItemProjectionContext {
+        capabilities: onecopy_lib::derived_state::WorkCapabilities {
+            ffmpeg: true,
+            face_enabled: false,
+            face_models: false,
+            transcripts: false,
+        },
+        similarity_dirty: false,
+    }
+}
+
 fn scan(f: &Fixture) {
     scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
     scanner::hash_pending(&f.conn, &f.cache).unwrap();
@@ -711,7 +723,13 @@ fn copy_count_matches_the_rows_a_delete_targets() {
         )
         .unwrap();
     let items =
-        onecopy_lib::queries::section_items(&f.conn, "image", "undated", chrono_tz::Tz::UTC)
+        onecopy_lib::queries::section_items(
+            &f.conn,
+            "image",
+            "undated",
+            chrono_tz::Tz::UTC,
+            item_projection(),
+        )
             .unwrap();
     let shown = items
         .iter()
@@ -768,7 +786,13 @@ fn a_shared_hash_split_across_paired_and_unpaired_rows_still_agrees() {
     assert_eq!(paired, 1, "exactly one of the two ARWs pairs");
 
     let items =
-        onecopy_lib::queries::section_items(&f.conn, "other", "undated", chrono_tz::Tz::UTC)
+        onecopy_lib::queries::section_items(
+            &f.conn,
+            "other",
+            "undated",
+            chrono_tz::Tz::UTC,
+            item_projection(),
+        )
             .unwrap();
     let badge = items
         .iter()

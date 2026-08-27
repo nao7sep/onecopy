@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
 import { deleteSelectedItems } from "../../src/workflows/items";
-import type { SectionItem } from "../../src/models/items";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
   mockCommand,
@@ -32,6 +32,7 @@ function item(over: Partial<SectionItem> & { pathId: number }): SectionItem {
     durationMs: null,
     namesDiffer: false,
     dirPaths: ["/photos"],
+    derivedWork: EMPTY_ITEM_WORK,
     ...over,
   };
 }

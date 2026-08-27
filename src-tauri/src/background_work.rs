@@ -14,6 +14,17 @@ use crate::derived_runtime::RuntimeSnapshot;
 pub struct BackgroundWorkSnapshot {
     master_paused: bool,
     classes: Vec<BackgroundClassSnapshot>,
+    active_item: Option<BackgroundActiveItemSnapshot>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundActiveItemSnapshot {
+    id: &'static str,
+    hash: Option<String>,
+    done: Option<u64>,
+    total: Option<u64>,
+    stopping: bool,
 }
 
 #[derive(Serialize)]
@@ -76,5 +87,14 @@ pub fn snapshot(
     Ok(BackgroundWorkSnapshot {
         master_paused: runtime.master_paused,
         classes,
+        active_item: runtime.active.map(|active| BackgroundActiveItemSnapshot {
+            id: active.class.id(),
+            hash: runtime.active_hash,
+            done: active.done,
+            total: active.total,
+            stopping: runtime.preempt_requested
+                || runtime.master_paused
+                || runtime.paused_classes & active.class.bit() != 0,
+        }),
     })
 }

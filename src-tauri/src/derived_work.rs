@@ -8,12 +8,11 @@
 //! for each pass, so installing a tool or changing a feature takes effect on
 //! the next wake without restarting either indexing or the app.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
 
-use rusqlite::{params_from_iter, Connection};
+use rusqlite::Connection;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
@@ -77,6 +76,17 @@ pub struct Settings {
     pub face_enabled: bool,
     pub face_models: Option<(PathBuf, PathBuf)>,
     pub temp_dir: PathBuf,
+}
+
+impl Settings {
+    fn capabilities(&self, transcripts: bool) -> crate::derived_state::WorkCapabilities {
+        crate::derived_state::WorkCapabilities {
+            ffmpeg: self.ffmpeg.is_some(),
+            face_enabled: self.face_enabled,
+            face_models: self.face_models.is_some(),
+            transcripts,
+        }
+    }
 }
 
 pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path) -> Settings {
@@ -143,12 +153,8 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
 pub fn work_capabilities(data_root: &Path) -> Result<crate::derived_state::WorkCapabilities, String> {
     let config = crate::storage::read_config_for_setup(data_root)?;
     let settings = settings_from_config(config.as_ref(), data_root);
-    Ok(crate::derived_state::WorkCapabilities {
-        ffmpeg: settings.ffmpeg.is_some(),
-        face_enabled: settings.face_enabled,
-        face_models: settings.face_models.is_some(),
-        transcripts: settings.ffmpeg.is_some() && whisper_model(data_root).is_some(),
-    })
+    let transcripts = settings.ffmpeg.is_some() && whisper_model(data_root).is_some();
+    Ok(settings.capabilities(transcripts))
 }
 
 pub fn note_activity() {
@@ -266,20 +272,38 @@ pub fn ensure_preview(
     hash: &str,
 ) -> Result<String, String> {
     let _active = crate::derived_runtime::begin_manual(app, WorkClass::Previews.id())?;
+    crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
     let settings = settings_from_config(config, data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
-    let canonical = crate::preview::derive_one(
+    let result = crate::preview::derive_one(
         &conn,
         &cache,
         settings.thumb_edge,
         settings.preview_long_edge,
         settings.ffmpeg.as_deref(),
         hash,
-    )?;
-    SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
-    wake(false);
-    Ok(canonical)
+    );
+    if result.is_ok() {
+        SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
+        wake(false);
+    }
+    let projection = crate::queries::ItemProjectionContext {
+        capabilities: settings.capabilities(
+            settings.ffmpeg.is_some() && whisper_model(data_root).is_some(),
+        ),
+        similarity_dirty: SIMILARITY_DIRTY.load(Ordering::SeqCst),
+    };
+    notify_item_update(
+        app,
+        &conn,
+        projection,
+        "previews",
+        hash,
+        result.as_deref().unwrap_or(hash),
+    );
+    let _ = app.emit("derived://issues", json!({}));
+    result
 }
 
 /// One bounded pass. Settings and SQLite are opened once per batch, while
@@ -292,6 +316,11 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
     let settings = settings_from_config(config.as_ref(), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
+    let whisper = whisper_model(&data_root);
+    let mut projection = crate::queries::ItemProjectionContext {
+        capabilities: settings.capabilities(settings.ffmpeg.is_some() && whisper.is_some()),
+        similarity_dirty: SIMILARITY_DIRTY.load(Ordering::SeqCst),
+    };
 
     let hints = PRIORITY
         .lock()
@@ -310,6 +339,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             return Ok(false);
         }
         let image = with_active(app, WorkClass::Previews, || {
+            crate::derived_runtime::active_item(app, WorkClass::Previews, &hash);
             crate::preview::derive_image_hash(
                 &conn,
                 &cache,
@@ -323,13 +353,15 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
             if image.derived > 0 {
                 SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
+                projection.similarity_dirty = true;
             }
             emit_progress(app, WorkClass::Previews, None);
-            notify_image_changes(app, &conn, &image.changes);
+            notify_image_changes(app, &conn, projection, &image.changes);
             let _ = app.emit("derived://issues", json!({}));
             priority_done += 1;
         } else {
             let video = with_active(app, WorkClass::Previews, || {
+                crate::derived_runtime::active_item(app, WorkClass::Previews, &hash);
                 crate::video::derive_video_hash(
                     &conn,
                     &cache,
@@ -343,7 +375,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             .unwrap_or_default();
             if video.derived + video.failed > 0 {
                 emit_progress(app, WorkClass::Previews, None);
-                notify_video_changes(app, &conn, &video.changed_hashes);
+                notify_video_changes(app, &conn, projection, &video.changed_hashes);
                 let _ = app.emit("derived://issues", json!({}));
                 priority_done += 1;
             }
@@ -365,6 +397,9 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                 settings.thumb_edge,
                 settings.preview_long_edge,
                 settings.ffmpeg.as_deref(),
+                &|hash| {
+                    crate::derived_runtime::active_item(app, WorkClass::Previews, hash)
+                },
             )
         })?
         .unwrap_or_default();
@@ -373,9 +408,10 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         }
         if image.derived > 0 {
             SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
+            projection.similarity_dirty = true;
         }
         emit_progress(app, WorkClass::Previews, None);
-        notify_image_changes(app, &conn, &image.changes);
+        notify_image_changes(app, &conn, projection, &image.changes);
         let _ = app.emit("derived://issues", json!({}));
         if index + 1 == IMAGE_BATCH {
             image_budget_full = true;
@@ -395,6 +431,9 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                 &settings.temp_dir,
                 settings.thumb_edge,
                 settings.preview_long_edge,
+                &|hash| {
+                    crate::derived_runtime::active_item(app, WorkClass::Previews, hash)
+                },
             )
         })?
         .unwrap_or_default();
@@ -402,7 +441,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             break;
         }
         emit_progress(app, WorkClass::Previews, None);
-        notify_video_changes(app, &conn, &video.changed_hashes);
+        notify_video_changes(app, &conn, projection, &video.changed_hashes);
         let _ = app.emit("derived://issues", json!({}));
         if index + 1 == VIDEO_BATCH {
             video_budget_full = true;
@@ -455,6 +494,13 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
 
     let stop = || !is_idle() || cancelled();
     if !class_paused(WorkClass::Snapshots) && !cursors.snapshots.exhausted {
+        let priority = class_priority_candidates(
+            &conn,
+            &settings,
+            &hints,
+            WorkClass::Snapshots,
+            false,
+        )?;
         let stats = if let Some(ffmpeg) = settings.ffmpeg.as_deref() {
             with_active(app, WorkClass::Snapshots, || {
                 crate::video::derive_strips_pending(
@@ -463,6 +509,13 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                     ffmpeg,
                     &settings.temp_dir,
                     &settings.strip,
+                    &priority,
+                    &|hash| {
+                        crate::derived_runtime::active_item(app, WorkClass::Snapshots, hash)
+                    },
+                    &|hash| {
+                        notify_item_update(app, &conn, projection, "snapshots", hash, hash)
+                    },
                     cursors.snapshots.after_hash.as_deref(),
                     &stop,
                     &progress(app, WorkClass::Snapshots),
@@ -473,17 +526,25 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
             crate::video::StripDeriveStats::default()
         };
         if stats.attempted > 0 {
-            cursors.snapshots.after_hash = stats.last_attempted_hash;
+            if priority.is_empty() {
+                cursors.snapshots.after_hash = stats.last_attempted_hash;
+            }
             return Ok(true);
         }
-        if !stats.candidates_found {
+        if priority.is_empty() && !stats.candidates_found {
             cursors.snapshots.exhausted = true;
         }
     }
 
-    let whisper = whisper_model(&data_root);
     if !class_paused(WorkClass::Transcripts) && !cursors.transcripts.exhausted {
         if let (Some(model), Some(ffmpeg)) = (whisper.as_deref(), settings.ffmpeg.as_deref()) {
+            let priority = class_priority_candidates(
+                &conn,
+                &settings,
+                &hints,
+                WorkClass::Transcripts,
+                true,
+            )?;
             let step = with_active(app, WorkClass::Transcripts, || {
                 transcribe_next(
                     &conn,
@@ -492,25 +553,41 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                     model,
                     ffmpeg,
                     app,
+                    projection,
+                    &priority,
                     cursors.transcripts.after_hash.as_deref(),
                 )
             })?
             .unwrap_or_default();
             if step.attempted_hash.is_some() {
-                cursors.transcripts.after_hash = step.attempted_hash;
+                if priority.is_empty() {
+                    cursors.transcripts.after_hash = step.attempted_hash;
+                }
                 return Ok(true);
             }
-            cursors.transcripts.exhausted = step.exhausted;
+            if priority.is_empty() {
+                cursors.transcripts.exhausted = step.exhausted;
+            }
         }
     }
 
     if !class_paused(WorkClass::Faces) && !cursors.faces.exhausted {
         if let Some((detector, emotion)) = settings.face_models.as_ref() {
+            let priority = class_priority_candidates(
+                &conn,
+                &settings,
+                &hints,
+                WorkClass::Faces,
+                false,
+            )?;
             let result = with_active(app, WorkClass::Faces, || {
                 crate::face::face_scores_pending(
                     &conn,
                     &cache,
                     Some((detector.as_path(), emotion.as_path())),
+                    &priority,
+                    |hash| crate::derived_runtime::active_item(app, WorkClass::Faces, hash),
+                    |hash| notify_item_update(app, &conn, projection, "faces", hash, hash),
                     |done, total| emit_progress(app, WorkClass::Faces, Some((done, total))),
                     cursors.faces.after_hash.as_deref(),
                     &stop,
@@ -525,10 +602,12 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                 Err(error) => return Err(error),
             };
             if stats.attempted > 0 {
-                cursors.faces.after_hash = stats.last_attempted_hash;
+                if priority.is_empty() {
+                    cursors.faces.after_hash = stats.last_attempted_hash;
+                }
                 return Ok(true);
             }
-            if !stats.candidates_found {
+            if priority.is_empty() && !stats.candidates_found {
                 cursors.faces.exhausted = true;
             }
         }
@@ -546,100 +625,61 @@ pub fn priority_candidates(
     visible: &[String],
     section: Option<&SectionPriority>,
 ) -> Result<Vec<String>, String> {
-    let mut hinted = Vec::new();
-    let mut seen = HashSet::new();
-    let mut push = |hash: &str| {
-        if seen.insert(hash.to_string()) {
-            hinted.push(hash.to_string());
-        }
-    };
-    if let Some(selected) = selected {
-        push(selected);
-    }
-    for hash in visible {
-        push(hash);
-    }
-
-    let mut hashes = pending_hint_hashes(conn, settings, &hinted)?;
-    let mut seen: HashSet<String> = hashes.iter().cloned().collect();
-
-    let Some(section) = section else {
-        return Ok(hashes);
-    };
-    if !matches!(section.kind.as_str(), "image" | "video") {
-        return Ok(hashes);
-    }
-
-    let (image_pending, video_pending) =
-        crate::derived_state::preview_pending_predicates(settings.ffmpeg.is_some());
-    let time_clause = if section.start_ms.is_some() {
-        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
-    } else {
-        "AND l.resolved_utc_ms IS NULL"
-    };
-    let sql = format!(
-        "SELECT l.content_hash FROM logical_contents l \
-         JOIN contents c ON c.hash = l.content_hash \
-         WHERE l.kind = ?1 {time_clause} \
-           AND ((l.kind = 'image' AND {image_pending}) \
-                OR (l.kind = 'video' AND {video_pending})) \
-         ORDER BY l.resolved_utc_ms, l.representative_path_id \
-         LIMIT {SECTION_HINT_LIMIT}"
-    );
-    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
-    let section_hashes: Vec<String> = match (section.start_ms, section.end_ms) {
-        (Some(start), Some(end)) => statement
-            .query_map(rusqlite::params![section.kind, start, end], |row| {
-                row.get(0)
-            })
-            .map_err(|error| error.to_string())?
-            .filter_map(Result::ok)
-            .collect(),
-        _ => statement
-            .query_map([&section.kind], |row| row.get(0))
-            .map_err(|error| error.to_string())?
-            .filter_map(Result::ok)
-            .collect(),
-    };
-    for hash in section_hashes {
-        if seen.insert(hash.clone()) {
-            hashes.push(hash);
-        }
-    }
-    Ok(hashes)
+    priority_candidates_for_class(
+        conn,
+        settings,
+        WorkClass::Previews.id(),
+        false,
+        selected,
+        visible,
+        section,
+    )
 }
 
-fn pending_hint_hashes(
+pub fn priority_candidates_for_class(
     conn: &Connection,
     settings: &Settings,
-    hinted: &[String],
+    class: &str,
+    transcripts: bool,
+    selected: Option<&str>,
+    visible: &[String],
+    section: Option<&SectionPriority>,
 ) -> Result<Vec<String>, String> {
-    if hinted.is_empty() {
-        return Ok(Vec::new());
-    }
-    let values = (1..=hinted.len())
-        .map(|index| format!("(?{index}, {})", index - 1))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let (image_pending, video_pending) =
-        crate::derived_state::preview_pending_predicates(settings.ffmpeg.is_some());
-    let sql = format!(
-        "WITH hinted(hash, priority) AS (VALUES {values}) \
-         SELECT h.hash FROM hinted h \
-         JOIN contents c ON c.hash = h.hash \
-         WHERE EXISTS (SELECT 1 FROM paths p \
-                       WHERE p.content_hash = c.hash AND p.missing = 0) \
-           AND ((c.kind = 'image' AND {image_pending}) \
-                OR (c.kind = 'video' AND {video_pending})) \
-         ORDER BY h.priority"
-    );
-    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map(params_from_iter(hinted), |row| row.get(0))
-        .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .collect();
-    Ok(rows)
+    let class = WorkClass::parse(class)
+        .ok_or_else(|| format!("unknown background-work class: {class}"))?;
+    crate::derived_state::priority_candidates(
+        conn,
+        class,
+        settings.capabilities(transcripts),
+        selected,
+        visible,
+        section.map(|section| {
+            (
+                section.kind.as_str(),
+                section.start_ms,
+                section.end_ms,
+            )
+        }),
+        SECTION_HINT_LIMIT,
+    )
+}
+
+fn class_priority_candidates(
+    conn: &Connection,
+    settings: &Settings,
+    hints: &PriorityHints,
+    class: WorkClass,
+    transcripts: bool,
+) -> Result<Vec<String>, String> {
+    priority_candidates_for_class(
+        conn,
+        settings,
+        class.id(),
+        transcripts,
+        hints.selected.as_deref(),
+        &hints.visible,
+        hints.section.as_ref(),
+    )
 }
 
 fn emit_progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) {
@@ -666,11 +706,12 @@ pub(crate) fn pause_for_resource_safety(
 pub fn notify_item_update(
     app: &AppHandle,
     conn: &Connection,
+    projection: crate::queries::ItemProjectionContext,
     class: &str,
     previous_hash: &str,
     hash: &str,
 ) {
-    match crate::queries::item_by_hash(conn, hash) {
+    match crate::queries::item_by_hash(conn, hash, projection) {
         Ok(Some(item)) => {
             let _ = app.emit(
                 "derived://item",
@@ -685,15 +726,25 @@ pub fn notify_item_update(
     }
 }
 
-fn notify_image_changes(app: &AppHandle, conn: &Connection, changes: &[(String, String)]) {
+fn notify_image_changes(
+    app: &AppHandle,
+    conn: &Connection,
+    projection: crate::queries::ItemProjectionContext,
+    changes: &[(String, String)],
+) {
     for (previous, current) in changes {
-        notify_item_update(app, conn, "previews", previous, current);
+        notify_item_update(app, conn, projection, "previews", previous, current);
     }
 }
 
-fn notify_video_changes(app: &AppHandle, conn: &Connection, hashes: &[String]) {
+fn notify_video_changes(
+    app: &AppHandle,
+    conn: &Connection,
+    projection: crate::queries::ItemProjectionContext,
+    hashes: &[String],
+) {
     for hash in hashes {
-        notify_item_update(app, conn, "video-posters", hash, hash);
+        notify_item_update(app, conn, projection, "video-posters", hash, hash);
     }
 }
 
@@ -722,13 +773,23 @@ fn transcribe_next(
     model: &Path,
     ffmpeg: &Path,
     app: &AppHandle,
+    projection: crate::queries::ItemProjectionContext,
+    priority_hashes: &[String],
     after_hash: Option<&str>,
 ) -> Result<TranscriptStep, String> {
-    let rows = crate::derived_state::transcript_candidates(
-        conn,
-        after_hash,
-        crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
-    )?;
+    let rows = if priority_hashes.is_empty() {
+        crate::derived_state::transcript_candidates(
+            conn,
+            after_hash,
+            crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+        )?
+    } else {
+        crate::derived_state::prioritized_transcript_candidates(
+            conn,
+            priority_hashes,
+            crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+        )?
+    };
     if rows.is_empty() {
         return Ok(TranscriptStep {
             exhausted: true,
@@ -755,6 +816,7 @@ fn transcribe_next(
             }
             Err(error) => return Err(error),
         };
+        crate::derived_runtime::active_item(app, WorkClass::Transcripts, &hash);
         emit_progress(app, WorkClass::Transcripts, None);
         // Audio extraction and model loading happen before Whisper's first
         // percentage callback; publish ownership now so an open video never
@@ -816,6 +878,7 @@ fn transcribe_next(
                     &path,
                     !text.trim().is_empty(),
                 )?;
+                notify_item_update(app, conn, projection, "transcripts", &hash, &hash);
                 let _ = app.emit("transcribe://done", json!({ "hash": hash, "text": text }));
                 return Ok(TranscriptStep {
                     attempted_hash: Some(hash),
@@ -836,6 +899,7 @@ fn transcribe_next(
                     return Ok(TranscriptStep::default());
                 }
                 crate::derived_state::record_transcript_failure(conn, &hash, &path, &error)?;
+                notify_item_update(app, conn, projection, "transcripts", &hash, &hash);
                 logging::debug(
                     "derived transcription failed",
                     json!({ "hash": hash, "error": { "message": error } }),

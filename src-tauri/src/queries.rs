@@ -275,6 +275,13 @@ pub struct SectionItem {
     /// representative folder was an arbitrary MIN and sorting by it was
     /// meaningless (Phase 33 dropped folder sort with it).
     pub dir_paths: Vec<String>,
+    pub derived_work: crate::derived_state::ItemWorkStates,
+}
+
+#[derive(Clone, Copy)]
+pub struct ItemProjectionContext {
+    pub capabilities: crate::derived_state::WorkCapabilities,
+    pub similarity_dirty: bool,
 }
 
 /// Items of one (kind, month) section, oldest first; `month` is the same key
@@ -285,12 +292,13 @@ pub fn section_items(
     kind: &str,
     month: &str,
     display_tz: Tz,
+    projection: ItemProjectionContext,
 ) -> Result<Vec<SectionItem>, String> {
     if !matches!(kind, "image" | "video" | "other") {
         return Err(format!("bad section kind: {kind}"));
     }
     let bounds = month_bounds(month, display_tz)?;
-    let mut items = hashed_section_items(conn, kind, bounds)?;
+    let mut items = hashed_section_items(conn, kind, bounds, projection)?;
     let dirs_by_hash = hashed_section_dirs(conn, kind, bounds)?;
     for item in &mut items {
         if let Some(hash) = item.hash.as_ref() {
@@ -298,7 +306,7 @@ pub fn section_items(
         }
     }
     if kind == "other" {
-        items.extend(unhashed_other_items(conn, bounds)?);
+        items.extend(unhashed_other_items(conn, bounds, projection)?);
     }
     items.sort_by_key(|item| (item.resolved_utc_ms, item.path_id));
     Ok(items)
@@ -307,10 +315,14 @@ pub fn section_items(
 /// One logical row after a derived output changes. The coordinator publishes
 /// this directly so the open grid patches one item instead of re-reading a
 /// section that may contain millions of rows.
-pub fn item_by_hash(conn: &Connection, hash: &str) -> Result<Option<SectionItem>, String> {
+pub fn item_by_hash(
+    conn: &Connection,
+    hash: &str,
+    projection: ItemProjectionContext,
+) -> Result<Option<SectionItem>, String> {
     let sql = format!("{} WHERE c.hash = ?1", hashed_section_select());
     let mut item = conn
-        .query_row(&sql, [hash], section_item_from_row)
+        .query_row(&sql, [hash], |row| section_item_from_row(row, projection))
         .optional()
         .map_err(|error| error.to_string())?;
     if let Some(item) = &mut item {
@@ -341,10 +353,13 @@ fn hashed_section_select() -> String {
             EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                     WHERE pri.content_hash = c.hash AND comp.missing = 0 \
                       AND pri.missing = 0), \
-            c.duration_ms, l.names_differ \
+            c.duration_ms, l.names_differ, l.kind, c.derived_at_utc, \
+            c.derived_version, c.strip_frames, r.face_state, c.face_score, \
+            r.transcript_state \
      FROM logical_contents l \
      JOIN contents c ON c.hash = l.content_hash \
-     JOIN paths rp ON rp.id = l.representative_path_id "
+     JOIN paths rp ON rp.id = l.representative_path_id \
+     LEFT JOIN analysis_receipts r ON r.content_hash = c.hash "
     )
 }
 
@@ -352,17 +367,20 @@ fn hashed_section_items(
     conn: &Connection,
     kind: &str,
     bounds: Option<(i64, i64)>,
+    projection: ItemProjectionContext,
 ) -> Result<Vec<SectionItem>, String> {
     let sql = hashed_section_sql(bounds.is_some());
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = match bounds {
         Some((start, end)) => stmt
-            .query_map(rusqlite::params![kind, start, end], section_item_from_row)
+            .query_map(rusqlite::params![kind, start, end], |row| {
+                section_item_from_row(row, projection)
+            })
             .map_err(|e| e.to_string())?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?,
         None => stmt
-            .query_map([kind], section_item_from_row)
+            .query_map([kind], |row| section_item_from_row(row, projection))
             .map_err(|e| e.to_string())?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?,
@@ -383,7 +401,14 @@ fn hashed_section_sql(has_bounds: bool) -> String {
     )
 }
 
-fn section_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SectionItem> {
+fn section_item_from_row(
+    row: &rusqlite::Row<'_>,
+    projection: ItemProjectionContext,
+) -> rusqlite::Result<SectionItem> {
+    let kind: String = row.get(14)?;
+    let derived_at: Option<String> = row.get(15)?;
+    let face_state: Option<String> = row.get(18)?;
+    let transcript_state: Option<String> = row.get(20)?;
     Ok(SectionItem {
         hash: Some(row.get(0)?),
         path_id: row.get(1)?,
@@ -400,6 +425,21 @@ fn section_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SectionIte
         duration_ms: row.get(12)?,
         names_differ: row.get(13)?,
         dir_paths: Vec::new(),
+        derived_work: crate::derived_state::item_work_states(
+            crate::derived_state::ItemWorkFacts {
+                kind: &kind,
+                derived_at: derived_at.as_deref(),
+                derived_version: row.get(16)?,
+                strip_frames: row.get(17)?,
+                duration_ms: row.get(12)?,
+                similar_group_id: row.get(8)?,
+                face_state: face_state.as_deref(),
+                face_score: row.get(19)?,
+                transcript_state: transcript_state.as_deref(),
+            },
+            projection.capabilities,
+            projection.similarity_dirty,
+        ),
     })
 }
 
@@ -454,6 +494,7 @@ fn section_dir_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, St
 fn unhashed_other_items(
     conn: &Connection,
     bounds: Option<(i64, i64)>,
+    projection: ItemProjectionContext,
 ) -> Result<Vec<SectionItem>, String> {
     let time_clause = if bounds.is_some() {
         "AND resolved_utc_ms >= ?1 AND resolved_utc_ms < ?2"
@@ -485,6 +526,21 @@ fn unhashed_other_items(
             duration_ms: None,
             names_differ: false,
             dir_paths: vec![crate::winpath::for_display(&dir).into_owned()],
+            derived_work: crate::derived_state::item_work_states(
+                crate::derived_state::ItemWorkFacts {
+                    kind: "other",
+                    derived_at: None,
+                    derived_version: 0,
+                    strip_frames: None,
+                    duration_ms: None,
+                    similar_group_id: None,
+                    face_state: None,
+                    face_score: None,
+                    transcript_state: None,
+                },
+                projection.capabilities,
+                projection.similarity_dirty,
+            ),
         })
     };
     let rows = match bounds {
@@ -887,6 +943,18 @@ mod tests {
         (dir, conn)
     }
 
+    fn projection() -> ItemProjectionContext {
+        ItemProjectionContext {
+            capabilities: crate::derived_state::WorkCapabilities {
+                ffmpeg: true,
+                face_enabled: false,
+                face_models: false,
+                transcripts: false,
+            },
+            similarity_dirty: false,
+        }
+    }
+
     fn utc_ms(y: i32, mo: u32, d: u32, h: u32) -> i64 {
         chrono::NaiveDate::from_ymd_opt(y, mo, d)
             .unwrap()
@@ -1158,8 +1226,10 @@ mod tests {
     fn section_items_filters_by_month_and_reports_copies_and_thumbs() {
         let (_d, conn) = seeded();
         conn.execute_batch(&format!(
-            "INSERT INTO contents (hash, byte_size, kind, width, height, derived_at_utc)
-               VALUES ('march', 1, 'image', 4000, 3000, '2026-08-08T00:00:00.000Z');
+            "INSERT INTO contents
+               (hash, byte_size, kind, width, height, derived_at_utc, derived_version)
+               VALUES
+               ('march', 1, 'image', 4000, 3000, '2026-08-08T00:00:00.000Z', {version});
              INSERT INTO contents (hash, byte_size, kind) VALUES ('april', 1, 'image');
              INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
                VALUES ('/a/m.jpg', '/a', 'm.jpg', 'image', 'march', {mar}, 'metadata');
@@ -1170,21 +1240,22 @@ mod tests {
             mar = utc_ms(2016, 3, 5, 3),
             mar2 = utc_ms(2016, 3, 6, 3),
             apr = utc_ms(2016, 4, 2, 3),
+            version = crate::derived_state::DERIVE_VERSION,
         ))
         .unwrap();
 
-        let march = section_items(&conn, "image", "2016-03", chrono_tz::UTC).unwrap();
+        let march = section_items(&conn, "image", "2016-03", chrono_tz::UTC, projection()).unwrap();
         assert_eq!(march.len(), 1);
         assert_eq!(march[0].hash.as_deref(), Some("march"));
         assert_eq!(march[0].copy_count, 2);
         assert!(march[0].has_thumb);
         assert_eq!(march[0].resolved_utc_ms, Some(utc_ms(2016, 3, 5, 3)));
 
-        let april = section_items(&conn, "image", "2016-04", chrono_tz::UTC).unwrap();
+        let april = section_items(&conn, "image", "2016-04", chrono_tz::UTC, projection()).unwrap();
         assert_eq!(april.len(), 1);
         assert!(!april[0].has_thumb);
 
-        assert!(section_items(&conn, "image", "2016-05", chrono_tz::UTC)
+        assert!(section_items(&conn, "image", "2016-05", chrono_tz::UTC, projection())
             .unwrap()
             .is_empty());
     }

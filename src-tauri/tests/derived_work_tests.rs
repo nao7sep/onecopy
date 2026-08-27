@@ -2,7 +2,9 @@
 
 use onecopy_lib::background_work::snapshot;
 use onecopy_lib::derived_state;
-use onecopy_lib::derived_work::{priority_candidates, settings_from_config, SectionPriority};
+use onecopy_lib::derived_work::{
+    priority_candidates, priority_candidates_for_class, settings_from_config, SectionPriority,
+};
 use onecopy_lib::index_store;
 use rusqlite::params;
 
@@ -58,6 +60,80 @@ fn selected_visible_and_section_backlog_keep_their_priority_without_duplicates()
         priority_candidates(&conn, &settings, Some("selected"), &visible, Some(&section)).unwrap();
 
     assert_eq!(candidates, ["selected", "visible", "backlog"]);
+}
+
+#[test]
+fn every_item_class_uses_selected_visible_then_open_section_priority() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents
+           (hash, byte_size, kind, derived_at_utc, derived_version, duration_ms)
+         VALUES
+           ('image-selected', 1, 'image', 'ready', 3, NULL),
+           ('image-visible', 1, 'image', 'ready', 3, NULL),
+           ('image-section', 1, 'image', 'ready', 3, NULL),
+           ('video-selected', 1, 'video', 'ready', 3, 60000),
+           ('video-visible', 1, 'video', 'ready', 3, 60000),
+           ('video-section', 1, 'video', 'ready', 3, 60000);
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash,
+            resolved_utc_ms, resolved_source)
+         SELECT '/' || hash, '/', hash, kind, hash,
+                CASE
+                  WHEN hash LIKE '%selected' THEN 110
+                  WHEN hash LIKE '%visible' THEN 120
+                  ELSE 130
+                END,
+                'metadata'
+         FROM contents;",
+    )
+    .unwrap();
+
+    let mut settings = settings_from_config(None, dir.path());
+    settings.ffmpeg = Some(dir.path().join("ffmpeg"));
+    settings.face_enabled = true;
+    settings.face_models = Some((dir.path().join("detector"), dir.path().join("emotion")));
+    let image_section = SectionPriority {
+        kind: "image".to_string(),
+        start_ms: Some(100),
+        end_ms: Some(200),
+    };
+    let video_section = SectionPriority {
+        kind: "video".to_string(),
+        start_ms: Some(100),
+        end_ms: Some(200),
+    };
+
+    let faces = priority_candidates_for_class(
+        &conn,
+        &settings,
+        "faces",
+        false,
+        Some("image-selected"),
+        &["image-visible".to_string()],
+        Some(&image_section),
+    )
+    .unwrap();
+    assert_eq!(faces, ["image-selected", "image-visible", "image-section"]);
+
+    for class in ["snapshots", "transcripts"] {
+        let candidates = priority_candidates_for_class(
+            &conn,
+            &settings,
+            class,
+            class == "transcripts",
+            Some("video-selected"),
+            &["video-visible".to_string()],
+            Some(&video_section),
+        )
+        .unwrap();
+        assert_eq!(
+            candidates,
+            ["video-selected", "video-visible", "video-section"],
+            "{class}"
+        );
+    }
 }
 
 #[test]
@@ -229,9 +305,14 @@ fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
             let hash = format!("{kind}-{index:03}");
             conn.execute(
                 "INSERT INTO contents
-                   (hash, byte_size, kind, duration_ms, derived_at_utc)
-                 VALUES (?1, 1, ?2, ?3, 'ready')",
-                params![hash, kind, (kind == "video").then_some(30_000i64)],
+                   (hash, byte_size, kind, duration_ms, derived_at_utc, derived_version)
+                 VALUES (?1, 1, ?2, ?3, 'ready', ?4)",
+                params![
+                    hash,
+                    kind,
+                    (kind == "video").then_some(30_000i64),
+                    derived_state::DERIVE_VERSION
+                ],
             )
             .unwrap();
             conn.execute(

@@ -2,6 +2,40 @@
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+export type ItemWorkStatus =
+  | "disabled"
+  | "unavailable"
+  | "blocked"
+  | "waiting"
+  | "pending"
+  | "running"
+  | "ready"
+  | "failed";
+
+export interface ItemWorkState {
+  state: ItemWorkStatus;
+  hasValue: boolean;
+  reason: string | null;
+  done: number | null;
+  total: number | null;
+}
+
+export interface ItemWorkStates {
+  preview: ItemWorkState | null;
+  snapshots: ItemWorkState | null;
+  similarity: ItemWorkState | null;
+  faces: ItemWorkState | null;
+  transcripts: ItemWorkState | null;
+}
+
+export const EMPTY_ITEM_WORK: ItemWorkStates = {
+  preview: null,
+  snapshots: null,
+  similarity: null,
+  faces: null,
+  transcripts: null,
+};
+
 export interface SectionItem {
   hash: string | null;
   pathId: number;
@@ -21,6 +55,7 @@ export interface SectionItem {
   namesDiffer: boolean;
   /** Every live copy's directory, deduped, sorted (display form). */
   dirPaths: string[];
+  derivedWork: ItemWorkStates;
 }
 
 /** Mirrors queries::ItemDetail on the Rust side. */

@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
-import type { SectionItem } from "../../src/models/items";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import {
   confirmDestinationDeleteRest,
@@ -32,6 +32,7 @@ function item(pathId: number): SectionItem {
     namesDiffer: false,
     // copyCount is 2, so two live directories.
     dirPaths: [`/Volumes/A/photos`, `/Volumes/B/photos`],
+    derivedWork: EMPTY_ITEM_WORK,
   };
 }
 

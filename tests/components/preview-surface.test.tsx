@@ -28,7 +28,7 @@ beforeEach(() => {
   mockCommands({
     transcript_get: () => ({ status: "ready", text: "[0:01] hello", message: null }),
     open_item_externally: () => null,
-    background_work_snapshot: () => ({ masterPaused: false, classes: [] }),
+    background_work_snapshot: () => ({ masterPaused: false, classes: [], activeItem: null }),
     log_event: () => null,
   });
   useTranscriptStore.setState({ rows: {} });

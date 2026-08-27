@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
+import type { ItemWorkStates } from "../models/items";
 
 const PING_EVERY_MS = 10_000;
 
@@ -36,15 +37,22 @@ export interface BackgroundWorkSnapshot {
   classes: BackgroundClassSnapshot[];
 }
 
+interface BackgroundWorkResponse extends BackgroundWorkSnapshot {
+  activeItem: ActiveItemWork | null;
+}
+
+export interface ActiveItemWork {
+  id: BackgroundClassSnapshot["id"];
+  hash: string | null;
+  done: number | null;
+  total: number | null;
+  stopping: boolean;
+}
+
 interface BackgroundRuntimeSnapshot {
   masterPaused: boolean;
   pausedClasses: BackgroundClassSnapshot["id"][];
-  active: {
-    id: BackgroundClassSnapshot["id"];
-    done: number | null;
-    total: number | null;
-    stopping: boolean;
-  } | null;
+  active: ActiveItemWork | null;
 }
 
 interface DerivedWorkState {
@@ -53,6 +61,7 @@ interface DerivedWorkState {
   loading: boolean;
   changing: string | null;
   error: string | null;
+  activeItem: ActiveItemWork | null;
   load: () => Promise<void>;
   setOpen: (open: boolean) => void;
   setPaused: (classId: string | null, paused: boolean) => Promise<void>;
@@ -66,13 +75,17 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   loading: false,
   changing: null,
   error: null,
+  activeItem: null,
 
   load: async () => {
     const fresh = loadSequence.begin();
     set({ loading: true });
     try {
-      const snapshot = await invoke<BackgroundWorkSnapshot>("background_work_snapshot");
-      if (fresh()) set({ snapshot, loading: false, error: null });
+      const response = await invoke<BackgroundWorkResponse>("background_work_snapshot");
+      if (fresh()) {
+        const { activeItem, ...snapshot } = response;
+        set({ snapshot, activeItem, loading: false, error: null });
+      }
     } catch (error) {
       if (fresh()) set({ loading: false, error: String(error) });
       log.warn("background-work snapshot failed", toErrorFields(error));
@@ -128,6 +141,38 @@ export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): str
   }
   if (snapshot.classes.some((row) => row.queued > 0)) return "Background work";
   return "Background work: up to date";
+}
+
+const ITEM_CLASS_FIELD: Record<
+  ActiveItemWork["id"],
+  keyof ItemWorkStates
+> = {
+  previews: "preview",
+  snapshots: "snapshots",
+  similarity: "similarity",
+  faces: "faces",
+  transcripts: "transcripts",
+};
+
+export function mergeActiveItemWork(
+  states: ItemWorkStates,
+  hash: string | null,
+  active: ActiveItemWork | null,
+): ItemWorkStates {
+  if (hash === null || active?.hash !== hash) return states;
+  const field = ITEM_CLASS_FIELD[active.id];
+  const current = states[field];
+  if (current === null) return states;
+  return {
+    ...states,
+    [field]: {
+      ...current,
+      state: "running",
+      reason: active.stopping ? "Stopping" : null,
+      done: active.done,
+      total: active.total,
+    },
+  };
 }
 
 export function mergeBackgroundRuntime(
@@ -189,6 +234,7 @@ void (async () => {
     await listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
       useDerivedWorkStore.setState((state) => ({
         snapshot: mergeBackgroundRuntime(state.snapshot, event.payload),
+        activeItem: event.payload.active,
       }));
     });
     await listen("derived://quiet", () => {

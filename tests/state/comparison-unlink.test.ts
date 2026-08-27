@@ -15,7 +15,7 @@ import {
   useComparisonStore,
 } from "../../src/state/comparison-store";
 import { useItemsStore } from "../../src/state/items-store";
-import type { SectionItem } from "../../src/models/items";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { commitComparison } from "../../src/workflows/comparison";
 
@@ -158,6 +158,7 @@ describe("finishing a family", () => {
       durationMs: null,
       namesDiffer: false,
       dirPaths: [`/Volumes/A/photos`],
+      derivedWork: EMPTY_ITEM_WORK,
       ...over,
     };
   }
