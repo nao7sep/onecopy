@@ -75,6 +75,7 @@ export default function App() {
   const selected = useItemsStore((s) => s.selected);
   const items = useItemsStore((s) => s.items);
   const itemsLoading = useItemsStore((s) => s.loading);
+  const itemsLoadError = useItemsStore((s) => s.loadError);
   const detail = useItemsStore((s) => s.detail);
   const selectedItemKey = useItemsStore((s) => s.selectedItem);
   const selectedHash =
@@ -302,6 +303,7 @@ export default function App() {
             <Grid
               items={items}
               loading={itemsLoading}
+              loadError={itemsLoadError}
               layout={selected.kind === "other" ? "list" : "tiles"}
               mayClaimFocus={!wizardOpen && !gateOpen}
             />

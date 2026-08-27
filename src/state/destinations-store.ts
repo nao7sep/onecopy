@@ -17,6 +17,7 @@ export interface DirEntry {
 interface DestinationsState {
   roots: string[];
   children: Record<string, DirEntry[]>;
+  listing: Record<string, "loading" | "error">;
   expanded: Set<string>;
   emptiness: Record<string, boolean>;
   message: string;
@@ -51,6 +52,7 @@ interface DestinationsState {
 export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   roots: [],
   children: {},
+  listing: {},
   expanded: new Set<string>(),
   emptiness: {},
   message: "",
@@ -84,15 +86,20 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   },
 
   refreshNode: async (path) => {
+    set({ listing: { ...get().listing, [path]: "loading" } });
     try {
       const entries = await invoke<DirEntry[]>("list_subdirs", { path });
       const emptiness = Object.fromEntries(entries.map((entry) => [entry.path, entry.isEmpty]));
+      const listing = { ...get().listing };
+      delete listing[path];
       set({
         children: { ...get().children, [path]: entries },
         emptiness: { ...get().emptiness, ...emptiness },
+        listing,
       });
     } catch (error) {
       log.error("destination listing failed", toErrorFields(error));
+      set({ listing: { ...get().listing, [path]: "error" } });
     }
   },
 

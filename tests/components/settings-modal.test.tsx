@@ -31,6 +31,14 @@ afterEach(() => {
 });
 
 describe("Settings categories", () => {
+  it("explains how to populate an empty source-directory list", () => {
+    useSettingsStore.getState().openWith({ ...config, sourceDirs: [] });
+    render(<SettingsModal />);
+
+    expect(screen.getByText(/No source directories/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add directory" })).toBeTruthy();
+  });
+
   it("uses keyboard-operable tabs instead of one long mixed scroller", () => {
     render(<SettingsModal />);
     expect(screen.getByRole("tabpanel").getAttribute("id")).toBe("settings-panel-library");

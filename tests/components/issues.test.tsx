@@ -27,7 +27,7 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  useIssuesStore.setState({ total: 0, rows: [], open: false });
+  useIssuesStore.setState({ total: 0, rows: [], loading: false, error: null, open: false });
 });
 
 afterEach(() => cleanup());
@@ -50,6 +50,19 @@ describe("the issues modal", () => {
     // The backend orders oldest first; the list must not re-sort it.
     expect(items[0].textContent).toContain("IMG_1");
     expect(items[0].textContent).toContain("decode-error");
+  });
+
+  it("distinguishes an unavailable list from no issues", async () => {
+    mockCommands({
+      get_issues: () => {
+        throw new Error("offline");
+      },
+    });
+    render(<IssuesModal />);
+    await act(async () => useIssuesStore.getState().setOpen(true));
+
+    expect(document.body.textContent).toContain("Issues are unavailable.");
+    expect(document.body.textContent).not.toContain("No issues");
   });
 
   it("dismisses one row through the command and reloads", async () => {

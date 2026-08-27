@@ -56,6 +56,8 @@ export function nodeHasChildren(
   return listed !== undefined ? listed.length > 0 : entry.hasChildren;
 }
 
+const EMPTY_DIR_ENTRIES: DirEntry[] = [];
+
 function useDropHandlers(path: string) {
   const [dropReady, setDropReady] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -175,18 +177,38 @@ function DirNode({
         </span>
       </div>
       {isOpen ? (
-        <ul role="group">
-          {(children[entry.path] ?? []).map((child) => (
-            <DirNode key={child.path} entry={child} depth={depth + 1} />
-          ))}
-        </ul>
+        <ChildNodes path={entry.path} depth={depth + 1} />
       ) : null}
     </li>
   );
 }
 
+function ChildNodes({ path, depth }: { path: string; depth: number }) {
+  const entries = useDestinationsStore((s) => s.children[path]) ?? EMPTY_DIR_ENTRIES;
+  const status = useDestinationsStore((s) => s.listing[path]);
+  return (
+    <ul role="group">
+      {status === "loading" ? (
+        <li role="none" className="py-1 text-xs text-ink-muted" style={{ paddingLeft: `${depth * 12 + 6}px` }}>
+          {entries.length > 0 ? "Refreshing folders…" : "Reading folders…"}
+        </li>
+      ) : status === "error" ? (
+        <li role="none" className="py-1 text-xs text-danger" style={{ paddingLeft: `${depth * 12 + 6}px` }}>
+          Couldn’t read this folder.
+        </li>
+      ) : entries.length === 0 ? (
+        <li role="none" className="py-1 text-xs text-ink-muted" style={{ paddingLeft: `${depth * 12 + 6}px` }}>
+          No subfolders
+        </li>
+      ) : null}
+      {entries.map((child) => (
+        <DirNode key={child.path} entry={child} depth={depth} />
+      ))}
+    </ul>
+  );
+}
+
 function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
-  const children = useDestinationsStore((s) => s.children);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
@@ -233,11 +255,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
         </span>
       </div>
       {isOpen ? (
-        <ul>
-          {(children[root] ?? []).map((child) => (
-            <DirNode key={child.path} entry={child} depth={1} />
-          ))}
-        </ul>
+        <ChildNodes path={root} depth={1} />
       ) : null}
     </li>
   );

@@ -31,6 +31,19 @@ describe("the trash modal", () => {
     expect(document.body.textContent).toContain("5 MB");
   });
 
+  it("distinguishes a failed measurement from no trash locations", async () => {
+    mockCommands({
+      trash_overview: () => {
+        throw new Error("offline");
+      },
+    });
+    render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+
+    expect(document.body.textContent).toContain("Trash locations are unavailable.");
+    expect(document.body.textContent).not.toContain("No trash locations");
+  });
+
   it("disables Empty for a root that is already empty", async () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});

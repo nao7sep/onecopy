@@ -21,6 +21,7 @@ interface ItemsState {
   selected: SelectedSection | null;
   items: SectionItem[];
   loading: boolean;
+  loadError: string | null;
   selectedItem: string | null;
   /** The full multi-selection (always contains the anchor when non-empty). */
   selectedKeys: Set<string>;
@@ -68,6 +69,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   selected: null,
   items: [],
   loading: false,
+  loadError: null,
   selectedItem: null,
   selectedKeys: new Set<string>(),
   rangeOrigin: null,
@@ -112,6 +114,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     set({
       selected: section,
       loading: true,
+      loadError: null,
       ...(sameSection
         ? {}
         : {
@@ -134,7 +137,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         month: section.month,
       });
       if (fresh()) {
-        set({ items, loading: false });
+        set({ items, loading: false, loadError: null });
         if (sameSection) dropVanishedSelection(set, get);
       }
     } catch (error) {
@@ -142,7 +145,11 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       // Only the latest request may blank — a rejection for a section the
       // user already navigated away from must not wipe the live one.
       if (fresh()) {
-        set({ items: [], loading: false });
+        set({
+          ...(sameSection ? {} : { items: [] }),
+          loading: false,
+          loadError: "Couldn’t load this section.",
+        });
       }
     }
   },

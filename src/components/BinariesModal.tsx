@@ -190,6 +190,8 @@ function EntryRow({ entry }: { entry: DependencyState }) {
 export default function BinariesModal() {
   const open = useBinariesStore((s) => s.modalOpen);
   const entries = useBinariesStore((s) => s.entries);
+  const loading = useBinariesStore((s) => s.loading);
+  const loadError = useBinariesStore((s) => s.loadError);
   const installing = useBinariesStore((s) => s.installing);
   const setModalOpen = useBinariesStore((s) => s.setModalOpen);
   const installAll = useBinariesStore((s) => s.installAll);
@@ -207,7 +209,11 @@ export default function BinariesModal() {
   const appSelected = entries.filter((entry) => !entry.checkable);
 
   return (
-    <ModalShell title="Managed tools" onClose={() => setModalOpen(false)}>
+    <ModalShell
+      title="Managed tools"
+      onClose={() => setModalOpen(false)}
+      footerStart={entries.length > 0 ? loadError : undefined}
+    >
       {actionable > 1 ? (
         <div className="mb-3">
           <Button variant="primary" onClick={() => void installAll()}>
@@ -217,7 +223,11 @@ export default function BinariesModal() {
       ) : null}
 
       {entries.length === 0 ? (
-        <p className="py-4 text-center text-sm text-ink-muted">…</p>
+        <p className={`py-4 text-center text-sm ${loadError !== null ? "text-danger" : "text-ink-muted"}`}>
+          {loading
+            ? "Loading managed tools…"
+            : loadError ?? "No managed tools are configured."}
+        </p>
       ) : null}
 
       <div className="space-y-2">

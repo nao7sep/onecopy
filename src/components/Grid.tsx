@@ -364,11 +364,13 @@ function ListRow({
 export default function Grid({
   items,
   loading,
+  loadError,
   layout,
   mayClaimFocus,
 }: {
   items: SectionItem[];
   loading: boolean;
+  loadError: string | null;
   /** Thumbnails for images and videos; rows for other-files, which have
    * nothing to show in a tile. */
   layout: "tiles" | "list";
@@ -521,7 +523,11 @@ export default function Grid({
   // survives the reload. An empty grid keeps its focusable container too —
   // an empty composite is still reachable by Tab (composite-control rules).
   const emptyState =
-    items.length === 0 ? (loading ? "Loading…" : "Nothing in this section") : null;
+    items.length === 0
+      ? loading
+        ? "Loading…"
+        : loadError ?? "Nothing in this section"
+      : null;
   const sorted = emptyState === null ? sortItems(items, sortChoice) : [];
   const sortedKeys = sorted.map(itemKey);
   // Refs for the anchor effect, which must read current values without
@@ -671,8 +677,15 @@ export default function Grid({
         onKeyDown={onGridKeyDown}
         onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
       >
+        {loadError !== null && items.length > 0 ? (
+          <p role="alert" className="w-full shrink-0 basis-full text-center text-danger">
+            {loadError}
+          </p>
+        ) : null}
         {emptyState !== null ? (
-          <p className="m-auto text-ink-muted">{emptyState}</p>
+          <p className={`m-auto ${loadError !== null ? "text-danger" : "text-ink-muted"}`}>
+            {emptyState}
+          </p>
         ) : null}
         {/* The spacers stand in for the unmounted rows, keeping the
             scrollbar's geometry honest. basis-full forces each onto its own

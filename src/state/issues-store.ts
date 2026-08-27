@@ -24,6 +24,8 @@ export interface IssueRow {
 interface IssuesState {
   total: number;
   rows: IssueRow[];
+  loading: boolean;
+  error: string | null;
   /** The Issues modal (a plain modal, not persisted — a diagnostics window
    * is something you open, read, and close). */
   open: boolean;
@@ -40,56 +42,68 @@ const issuesLoad = requestSeq();
 export const useIssuesStore = create<IssuesState>((set, get) => ({
   total: 0,
   rows: [],
+  loading: false,
+  error: null,
   open: false,
 
   load: async () => {
     // Async command — the older of two in-flight loads must lose (request-seq.ts).
     const fresh = issuesLoad.begin();
+    set({ loading: true, error: null });
     try {
       const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", {
         limit: 500,
       });
-      if (fresh()) set({ total: result.total, rows: result.rows });
+      if (fresh()) set({ total: result.total, rows: result.rows, loading: false, error: null });
     } catch (error) {
       log.error("issues load failed", toErrorFields(error));
+      if (fresh()) set({ loading: false, error: "Issues are unavailable." });
     }
   },
 
   setOpen: (open) => set({ open }),
 
   dismiss: async (id) => {
+    set({ error: null });
     try {
       await invoke("dismiss_issue", { id });
       await get().load();
     } catch (error) {
       log.error("issue dismissal failed", toErrorFields(error));
+      set({ error: "Couldn’t dismiss the issue." });
     }
   },
 
   dismissAll: async () => {
+    set({ error: null });
     try {
       await invoke("dismiss_all_issues");
       await get().load();
     } catch (error) {
       log.error("dismiss all failed", toErrorFields(error));
+      set({ error: "Couldn’t dismiss the issues." });
     }
   },
 
   retry: async (id) => {
+    set({ error: null });
     try {
       await invoke("retry_issue", { id });
       await get().load();
     } catch (error) {
       log.error("issue retry failed", toErrorFields(error));
+      set({ error: "Couldn’t retry the issue." });
     }
   },
 
   retryAll: async () => {
+    set({ error: null });
     try {
       await invoke("retry_all_issues");
       await get().load();
     } catch (error) {
       log.error("retry all issues failed", toErrorFields(error));
+      set({ error: "Couldn’t retry the issues." });
     }
   },
 }));

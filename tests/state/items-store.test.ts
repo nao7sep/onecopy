@@ -44,6 +44,7 @@ function seed(items: SectionItem[]): void {
     selected: SECTION,
     items,
     loading: false,
+    loadError: null,
     selectedItem: null,
     selectedKeys: new Set(),
     detail: null,
@@ -57,6 +58,7 @@ beforeEach(() => {
     selected: null,
     items: [],
     loading: false,
+    loadError: null,
     selectedItem: null,
     selectedKeys: new Set(),
     detail: null,
@@ -130,6 +132,20 @@ describe("refresh", () => {
 });
 
 describe("a failed load", () => {
+  it("keeps stale rows and exposes a failed refresh", async () => {
+    const items = [item({ pathId: 1 }), item({ pathId: 2 })];
+    seed(items);
+    mockCommand("get_section_items", () => {
+      throw new Error("offline");
+    });
+
+    await useItemsStore.getState().refresh();
+
+    expect(useItemsStore.getState().items).toEqual(items);
+    expect(useItemsStore.getState().loadError).toBe("Couldn’t load this section.");
+    expect(useItemsStore.getState().loading).toBe(false);
+  });
+
   it("does not blank a section the user already moved on to", async () => {
     seed([]);
     let failMarch!: (reason: Error) => void;

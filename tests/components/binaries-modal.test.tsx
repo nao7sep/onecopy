@@ -51,6 +51,8 @@ function seed(entries: DependencyState[]): void {
     cooldownUntil: 0,
     lastCheckOutcome: null,
     entries,
+    loading: false,
+    loadError: null,
   });
   mockCommands({ binaries_state: () => entries });
 }
@@ -133,6 +135,26 @@ describe("parallel installs", () => {
 
     expect(useBinariesStore.getState().installing["whisper-large-v3-turbo"]).toBeUndefined();
     expect(document.body.textContent).not.toContain("Cancelling…");
+  });
+});
+
+describe("registry state", () => {
+  it("distinguishes loading, failure, and an ordinary empty registry", () => {
+    seed([]);
+    useBinariesStore.setState({ loading: true });
+    const loading = render(<BinariesModal />);
+    expect(document.body.textContent).toContain("Loading managed tools…");
+    loading.unmount();
+
+    useBinariesStore.setState({ loading: false, loadError: "Managed tools are unavailable." });
+    const failed = render(<BinariesModal />);
+    expect(document.body.textContent).toContain("Managed tools are unavailable.");
+    expect(document.body.textContent).not.toContain("No managed tools are configured.");
+    failed.unmount();
+
+    useBinariesStore.setState({ loadError: null });
+    render(<BinariesModal />);
+    expect(document.body.textContent).toContain("No managed tools are configured.");
   });
 });
 

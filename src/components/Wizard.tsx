@@ -73,6 +73,11 @@ export default function Wizard() {
               culling. Nothing is ever changed without you asking.
             </p>
             <ul className="mb-4 max-h-64 space-y-1.5 overflow-y-auto">
+              {dirs.length === 0 ? (
+                <li className="text-sm text-ink-muted">
+                  Add at least one directory to continue.
+                </li>
+              ) : null}
               {dirs.map((dir) => (
                 <li key={dir.path}>
                   <DirectoryRow path={dir.path} onRemove={() => removeDir(dir.path)} />

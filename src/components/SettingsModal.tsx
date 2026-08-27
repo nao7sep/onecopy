@@ -346,6 +346,11 @@ export default function SettingsModal() {
           {/* The same rows the wizard shows — one shared component, so the two
               lists cannot drift apart. */}
           <ul className="mb-3 space-y-1.5">
+            {draft.sourceDirs.length === 0 ? (
+              <li className="text-sm text-ink-muted">
+                No source directories. Add one to make files available to OneCopy.
+              </li>
+            ) : null}
             {draft.sourceDirs.map((dir) => (
               <li key={dir}>
                 <DirectoryRow path={dir} onRemove={() => removeSourceDir(dir)} />

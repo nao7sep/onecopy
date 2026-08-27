@@ -86,6 +86,8 @@ function terminalStep(
 
 interface BinariesState {
   entries: DependencyState[];
+  loading: boolean;
+  loadError: string | null;
   /** Progress line per entry currently installing — several at once is
    * normal (the whole point of per-id claims). */
   installing: Record<string, string>;
@@ -121,6 +123,8 @@ interface BinariesState {
 
 export const useBinariesStore = create<BinariesState>((set, get) => ({
   entries: [],
+  loading: false,
+  loadError: null,
   installing: {},
   installHistory: {},
   errors: {},
@@ -132,11 +136,13 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   modalOpen: false,
 
   load: async () => {
+    set({ loading: true, loadError: null });
     try {
       const entries = await invoke<DependencyState[]>("binaries_state");
-      set({ entries: Array.isArray(entries) ? entries : [] });
+      set({ entries: Array.isArray(entries) ? entries : [], loading: false, loadError: null });
     } catch (error) {
       log.error("binaries state load failed", toErrorFields(error));
+      set({ loading: false, loadError: "Managed tools are unavailable." });
     }
   },
 

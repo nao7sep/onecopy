@@ -33,15 +33,17 @@ export default function TrashModal({
   const [rows, setRows] = useState<TrashRootInfo[] | null>(null);
   const [confirm, setConfirm] = useState<TrashRootInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setRows(null);
+    setError(null);
     void invoke<TrashRootInfo[]>("trash_overview")
       .then(setRows)
       .catch((error) => {
         log.error("trash overview failed", toErrorFields(error));
-        setRows([]);
+        setError("Trash locations are unavailable.");
       });
   }, [open]);
 
@@ -49,11 +51,13 @@ export default function TrashModal({
 
   const empty = async (row: TrashRootInfo) => {
     setBusy(true);
+    setError(null);
     try {
       await invoke("trash_empty", { root: row.root });
       setRows(await invoke<TrashRootInfo[]>("trash_overview"));
     } catch (error) {
       log.error("trash empty failed", toErrorFields(error));
+      setError("Couldn’t empty this trash.");
     } finally {
       setBusy(false);
     }
@@ -64,6 +68,7 @@ export default function TrashModal({
       title="Trash"
       onClose={onClose}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
+      footerStart={rows !== null ? error : undefined}
     >
       {confirm !== null ? (
         <ConfirmDialog
@@ -88,7 +93,9 @@ export default function TrashModal({
         manager is also always safe.
       </p>
       {rows === null ? (
-        <p className="py-4 text-center text-sm text-ink-muted">Measuring…</p>
+        <p className={`py-4 text-center text-sm ${error !== null ? "text-danger" : "text-ink-muted"}`}>
+          {error ?? "Measuring…"}
+        </p>
       ) : rows.length === 0 ? (
         <p className="py-4 text-center text-sm text-ink-muted">No trash locations</p>
       ) : (

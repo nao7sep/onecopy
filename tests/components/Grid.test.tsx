@@ -43,9 +43,16 @@ function renderGrid(
   loading = false,
   layout: "tiles" | "list" = "tiles",
   mayClaimFocus = true,
+  loadError: string | null = null,
 ) {
   const view = render(
-    <Grid items={items} loading={loading} layout={layout} mayClaimFocus={mayClaimFocus} />,
+    <Grid
+      items={items}
+      loading={loading}
+      loadError={loadError}
+      layout={layout}
+      mayClaimFocus={mayClaimFocus}
+    />,
   );
   const container = view.container.querySelector<HTMLElement>("[role='listbox']");
   return { view, container: container! };
@@ -87,6 +94,7 @@ beforeEach(() => {
     selected: { kind: "image", month: "2026-01" },
     items: ITEMS,
     loading: false,
+    loadError: null,
     selectedItem: null,
     selectedKeys: new Set(),
     rangeOrigin: null,
@@ -94,6 +102,28 @@ beforeEach(() => {
     detail: null,
     sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
     message: null,
+  });
+});
+
+describe("section state", () => {
+  it("distinguishes loading, failure, and an ordinary empty section", () => {
+    const loading = renderGrid([], true);
+    expect(loading.view.container.textContent).toContain("Loading…");
+    loading.view.unmount();
+
+    const failed = renderGrid([], false, "tiles", true, "Couldn’t load this section.");
+    expect(failed.view.container.textContent).toContain("Couldn’t load this section.");
+    expect(failed.view.container.textContent).not.toContain("Nothing in this section");
+    failed.view.unmount();
+
+    const empty = renderGrid([]);
+    expect(empty.view.container.textContent).toContain("Nothing in this section");
+  });
+
+  it("keeps stale rows and reports a failed refresh", () => {
+    const { view } = renderGrid(ITEMS, false, "tiles", true, "Couldn’t load this section.");
+    expect(view.container.querySelectorAll("[role='option']").length).toBeGreaterThan(0);
+    expect(view.container.textContent).toContain("Couldn’t load this section.");
   });
 });
 

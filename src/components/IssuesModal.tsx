@@ -17,6 +17,8 @@ export default function IssuesModal() {
   const open = useIssuesStore((s) => s.open);
   const rows = useIssuesStore((s) => s.rows);
   const total = useIssuesStore((s) => s.total);
+  const loading = useIssuesStore((s) => s.loading);
+  const error = useIssuesStore((s) => s.error);
   const load = useIssuesStore((s) => s.load);
   const dismiss = useIssuesStore((s) => s.dismiss);
   const dismissAll = useIssuesStore((s) => s.dismissAll);
@@ -37,7 +39,8 @@ export default function IssuesModal() {
       onClose={() => setOpen(false)}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
       footerStart={
-        total > rows.length ? `Showing the oldest ${rows.length} of ${total}` : undefined
+        error ??
+        (total > rows.length ? `Showing the oldest ${rows.length} of ${total}` : undefined)
       }
       primaryAction={
         rows.length > 0 ? (
@@ -53,7 +56,9 @@ export default function IssuesModal() {
       }
     >
       {rows.length === 0 ? (
-        <p className="py-6 text-center text-sm text-ink-muted">No issues</p>
+        <p className={`py-6 text-center text-sm ${error !== null ? "text-danger" : "text-ink-muted"}`}>
+          {loading ? "Loading issues…" : error ?? "No issues"}
+        </p>
       ) : (
         <ul className="space-y-1.5">
           {rows.map((row) => (
