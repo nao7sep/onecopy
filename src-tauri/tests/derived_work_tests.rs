@@ -150,6 +150,74 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
 }
 
 #[test]
+fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-derived-complete-snapshot-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents
+           (hash, byte_size, kind, duration_ms, strip_frames, derived_at_utc,
+            derived_version)
+         VALUES
+           ('image-preview', 1, 'image', NULL, NULL, NULL, 0),
+           ('image-face', 1, 'image', NULL, NULL, 'ready', 3),
+           ('image-face-failed', 1, 'image', NULL, NULL, 'ready', 3),
+           ('video-preview', 1, 'video', 60000, NULL, NULL, 0),
+           ('video-snapshot', 1, 'video', 60000, NULL, 'ready', 3),
+           ('video-snapshot-failed', 1, 'video', 60000, -1, 'ready', 3),
+           ('video-transcript-failed', 1, 'video', 60000, 1, 'ready', 3);
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash,
+            resolved_utc_ms, resolved_source)
+         SELECT '/' || hash, '/', hash, kind, hash, 120, 'metadata'
+         FROM contents;
+         INSERT INTO analysis_receipts (content_hash, face_state)
+           VALUES ('image-face-failed', 'failed');
+         INSERT INTO analysis_receipts (content_hash, transcript_state)
+           VALUES ('video-transcript-failed', 'failed');",
+    )
+    .unwrap();
+
+    let value = serde_json::to_value(
+        snapshot(
+            dir.path(),
+            onecopy_lib::derived_runtime::snapshot(
+                onecopy_lib::derived_runtime::RuntimeConditions {
+                    busy: false,
+                    idle: true,
+                    similarity_dirty: false,
+                },
+            )
+            .unwrap(),
+            derived_state::WorkCapabilities {
+                ffmpeg: true,
+                face_enabled: true,
+                face_models: true,
+                transcripts: true,
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let rows = value["classes"].as_array().unwrap();
+    let debt = |id: &str| {
+        let row = rows.iter().find(|row| row["id"] == id).unwrap();
+        (
+            row["queued"].as_u64().unwrap(),
+            row["failed"].as_u64().unwrap(),
+        )
+    };
+
+    assert_eq!(debt("previews"), (2, 0));
+    assert_eq!(debt("snapshots"), (1, 1));
+    assert_eq!(debt("similarity"), (0, 0));
+    assert_eq!(debt("faces"), (1, 1));
+    assert_eq!(debt("transcripts"), (3, 1));
+}
+
+#[test]
 fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-derived-pages-")

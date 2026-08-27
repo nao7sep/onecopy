@@ -57,7 +57,7 @@ pub struct WorkCapabilities {
     pub transcripts: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct WorkDebt {
     pub runnable: u64,
     pub blocked: u64,
@@ -66,185 +66,198 @@ pub(crate) struct WorkDebt {
     pub disabled: bool,
 }
 
-fn count(conn: &Connection, sql: &str) -> Result<u64, String> {
-    conn.query_row(sql, [], |row| row.get::<_, i64>(0))
-        .map(|value| value.max(0) as u64)
-        .map_err(|error| error.to_string())
+pub(crate) struct WorkDebts([WorkDebt; 5]);
+
+impl WorkDebts {
+    pub(crate) fn get(&self, class: WorkClass) -> WorkDebt {
+        self.0[class as usize]
+    }
 }
 
-/// Durable output debt for one fixed class. This is the sole owner of the
-/// physical sentinel/receipt encoding; runtime and UI projection consume the
-/// result without repeating eligibility SQL.
-pub(crate) fn work_debt(
+struct DebtCounts {
+    image_previews: u64,
+    video_previews: u64,
+    waiting_images: u64,
+    preview_failures: u64,
+    snapshots: u64,
+    snapshot_failures: u64,
+    faces: u64,
+    face_failures: u64,
+    transcripts: u64,
+    transcript_failures: u64,
+}
+
+fn work_debt_sql(ffmpeg: bool) -> String {
+    let (image_pending, _) = preview_pending_predicates(ffmpeg);
+    let video_pending = video_preview_pending_predicate();
+    format!(
+        "SELECT
+           COALESCE(SUM(l.kind = 'image' AND {image_pending}), 0),
+           COALESCE(SUM(l.kind = 'video' AND {video_pending}), 0),
+           COALESCE(SUM(l.kind = 'image' AND c.derived_at_utc = '{NEEDS_FFMPEG}'), 0),
+           COALESCE(SUM(l.kind IN ('image', 'video') AND c.derived_at_utc = '{FAILED}'), 0),
+           COALESCE(SUM(l.kind = 'video' AND c.strip_frames IS NULL
+                        AND c.duration_ms IS NOT NULL
+                        AND c.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}')), 0),
+           COALESCE(SUM(l.kind = 'video' AND c.strip_frames < 0), 0),
+           COALESCE(SUM(l.kind = 'image' AND r.face_state IS NULL
+                        AND c.derived_at_utc IS NOT NULL
+                        AND c.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}')), 0),
+           COALESCE(SUM(r.face_state = '{FAILED}'), 0),
+           COALESCE(SUM(l.kind = 'video' AND c.duration_ms IS NOT NULL
+                        AND r.transcript_state IS NULL), 0),
+           COALESCE(SUM(r.transcript_state = '{FAILED}'), 0)
+         FROM logical_contents l
+         JOIN contents c ON c.hash = l.content_hash
+         LEFT JOIN analysis_receipts r ON r.content_hash = l.content_hash"
+    )
+}
+
+/// Durable output debt for every fixed class. This is the sole owner of the
+/// physical sentinel/receipt encoding; runtime and UI projection consume one
+/// coherent aggregate over the maintained live-item projection rather than
+/// repeatedly probing physical paths or inventing a second queue.
+pub(crate) fn work_debts(
     conn: &Connection,
-    class: WorkClass,
     capabilities: WorkCapabilities,
     similarity_dirty: bool,
-) -> Result<WorkDebt, String> {
-    let live = "EXISTS (SELECT 1 FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0)";
-    match class {
-        WorkClass::Previews => {
-            let (image_pending, _) = preview_pending_predicates(capabilities.ffmpeg);
-            let video_pending = video_preview_pending_predicate();
-            let images = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind = 'image' \
-                     AND {image_pending} AND {live}"
-                ),
-            )?;
-            let videos = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind = 'video' \
-                     AND {video_pending} AND {live}"
-                ),
-            )?;
-            let waiting_images = if capabilities.ffmpeg {
-                0
-            } else {
-                count(
-                    conn,
-                    &format!(
-                        "SELECT COUNT(*) FROM contents c WHERE c.kind = 'image' \
-                         AND c.derived_at_utc = '{}' AND {live}",
-                        NEEDS_FFMPEG,
-                    ),
-                )?
-            };
-            let failed = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind IN ('image', 'video') \
-                     AND c.derived_at_utc = '{FAILED}' AND {live}"
-                ),
-            )?;
-            Ok(if capabilities.ffmpeg {
-                WorkDebt {
-                    runnable: images + videos,
-                    failed,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    runnable: images,
-                    blocked: videos + waiting_images,
-                    failed,
-                    reason: (videos + waiting_images > 0).then_some("Waiting for ffmpeg"),
-                    disabled: false,
-                }
+) -> Result<WorkDebts, String> {
+    let sql = work_debt_sql(capabilities.ffmpeg);
+    let counts = conn
+        .query_row(&sql, [], |row| {
+            let count = |column| row.get::<_, i64>(column).map(|value| value.max(0) as u64);
+            Ok(DebtCounts {
+                image_previews: count(0)?,
+                video_previews: count(1)?,
+                waiting_images: count(2)?,
+                preview_failures: count(3)?,
+                snapshots: count(4)?,
+                snapshot_failures: count(5)?,
+                faces: count(6)?,
+                face_failures: count(7)?,
+                transcripts: count(8)?,
+                transcript_failures: count(9)?,
             })
-        }
-        WorkClass::Snapshots => {
-            let pending = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind = 'video' \
-                     AND c.strip_frames IS NULL AND c.duration_ms IS NOT NULL \
-                     AND c.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}') AND {live}",
-                ),
-            )?;
-            let failed = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c WHERE c.kind = 'video' \
-                     AND c.strip_frames < 0 AND {live}"
-                ),
-            )?;
-            Ok(if capabilities.ffmpeg {
-                WorkDebt {
-                    runnable: pending,
-                    failed,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    blocked: pending,
-                    failed,
-                    reason: (pending > 0).then_some("Waiting for ffmpeg"),
-                    ..WorkDebt::default()
-                }
-            })
-        }
-        WorkClass::Similarity => Ok(WorkDebt {
-            runnable: u64::from(similarity_dirty),
+        })
+        .map_err(|error| error.to_string())?;
+
+    let previews = if capabilities.ffmpeg {
+        WorkDebt {
+            runnable: counts.image_previews + counts.video_previews,
+            failed: counts.preview_failures,
             ..WorkDebt::default()
-        }),
-        WorkClass::Faces => {
-            if !capabilities.face_enabled {
-                return Ok(WorkDebt {
-                    disabled: true,
-                    reason: Some("Turn on face scoring in Settings"),
-                    ..WorkDebt::default()
-                });
-            }
-            let pending = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c \
-                     LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-                     WHERE c.kind = 'image' AND r.face_state IS NULL \
-                       AND c.derived_at_utc IS NOT NULL \
-                       AND c.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}') AND {live}",
-                ),
-            )?;
-            let failed = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM analysis_receipts r \
-                     JOIN contents c ON c.hash = r.content_hash \
-                     WHERE r.face_state = '{FAILED}' AND {live}"
-                ),
-            )?;
-            Ok(if capabilities.face_models {
-                WorkDebt {
-                    runnable: pending,
-                    failed,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    blocked: pending,
-                    failed,
-                    reason: (pending > 0).then_some("Waiting for face models"),
-                    ..WorkDebt::default()
-                }
-            })
         }
-        WorkClass::Transcripts => {
-            let pending = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM contents c \
-                     LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-                     WHERE c.kind = 'video' AND c.duration_ms IS NOT NULL \
-                       AND r.transcript_state IS NULL AND {live}"
-                ),
-            )?;
-            let failed = count(
-                conn,
-                &format!(
-                    "SELECT COUNT(*) FROM analysis_receipts r \
-                     JOIN contents c ON c.hash = r.content_hash \
-                     WHERE r.transcript_state = '{FAILED}' AND {live}"
-                ),
-            )?;
-            Ok(if capabilities.transcripts {
-                WorkDebt {
-                    runnable: pending,
-                    failed,
-                    ..WorkDebt::default()
-                }
-            } else {
-                WorkDebt {
-                    blocked: pending,
-                    failed,
-                    reason: (pending > 0)
-                        .then_some("Waiting for ffmpeg and transcription model"),
-                    ..WorkDebt::default()
-                }
-            })
+    } else {
+        let blocked = counts.video_previews + counts.waiting_images;
+        WorkDebt {
+            runnable: counts.image_previews,
+            blocked,
+            failed: counts.preview_failures,
+            reason: (blocked > 0).then_some("Waiting for ffmpeg"),
+            ..WorkDebt::default()
         }
+    };
+    let snapshots = if capabilities.ffmpeg {
+        WorkDebt {
+            runnable: counts.snapshots,
+            failed: counts.snapshot_failures,
+            ..WorkDebt::default()
+        }
+    } else {
+        WorkDebt {
+            blocked: counts.snapshots,
+            failed: counts.snapshot_failures,
+            reason: (counts.snapshots > 0).then_some("Waiting for ffmpeg"),
+            ..WorkDebt::default()
+        }
+    };
+    let similarity = WorkDebt {
+        runnable: u64::from(similarity_dirty),
+        ..WorkDebt::default()
+    };
+    let faces = if !capabilities.face_enabled {
+        WorkDebt {
+            disabled: true,
+            reason: Some("Turn on face scoring in Settings"),
+            ..WorkDebt::default()
+        }
+    } else if capabilities.face_models {
+        WorkDebt {
+            runnable: counts.faces,
+            failed: counts.face_failures,
+            ..WorkDebt::default()
+        }
+    } else {
+        WorkDebt {
+            blocked: counts.faces,
+            failed: counts.face_failures,
+            reason: (counts.faces > 0).then_some("Waiting for face models"),
+            ..WorkDebt::default()
+        }
+    };
+    let transcripts = if capabilities.transcripts {
+        WorkDebt {
+            runnable: counts.transcripts,
+            failed: counts.transcript_failures,
+            ..WorkDebt::default()
+        }
+    } else {
+        WorkDebt {
+            blocked: counts.transcripts,
+            failed: counts.transcript_failures,
+            reason: (counts.transcripts > 0)
+                .then_some("Waiting for ffmpeg and transcription model"),
+            ..WorkDebt::default()
+        }
+    };
+    Ok(WorkDebts([
+        previews,
+        snapshots,
+        similarity,
+        faces,
+        transcripts,
+    ]))
+}
+
+// EXCEPTION (tests-folder convention): this pins the private aggregate SQL
+// owned here, so the shipped projection and its structural assertion cannot
+// drift into different queries.
+#[cfg(test)]
+mod debt_query_tests {
+    use super::*;
+
+    #[test]
+    fn debt_snapshot_scans_one_logical_projection_and_never_probes_paths() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-debt-plan-")
+            .tempdir()
+            .unwrap();
+        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let mut statement = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", work_debt_sql(true)))
+            .unwrap();
+        let details: Vec<String> = statement
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+
+        assert_eq!(
+            details
+                .iter()
+                .filter(|line| line.starts_with("SCAN "))
+                .count(),
+            1,
+            "debt projection must aggregate one source scan: {details:?}"
+        );
+        assert!(
+            details.iter().any(|line| line.contains("logical_contents")),
+            "debt projection lost the maintained live-item truth: {details:?}"
+        );
+        assert!(
+            details.iter().all(|line| !line.contains("paths")),
+            "debt projection regressed to physical-path probes: {details:?}"
+        );
     }
 }
 

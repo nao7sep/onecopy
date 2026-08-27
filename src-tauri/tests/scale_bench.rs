@@ -6,6 +6,8 @@
 
 use std::time::Instant;
 
+use onecopy_lib::background_work;
+use onecopy_lib::derived_runtime::{self, RuntimeConditions};
 use onecopy_lib::derived_state;
 use onecopy_lib::index_store;
 use onecopy_lib::queries;
@@ -183,6 +185,71 @@ fn section_repair_collects_directories_without_materializing_one_million_items()
         started.elapsed()
     );
     assert!(dirs.is_empty());
+}
+
+#[test]
+#[ignore]
+fn background_work_snapshot_across_one_million_live_items() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-background-snapshot-")
+        .tempdir()
+        .unwrap();
+    let conn =
+        index_store::open(&dir.path().join(onecopy_lib::storage::INDEX_DB_FILE_NAME)).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, kind, missing)
+         VALUES (1, '/representative', '/', 'representative', 'other', 1);
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO contents
+           (hash, byte_size, kind, duration_ms, derived_at_utc, derived_version)
+         SELECT printf('background-work-%07d', n), 1,
+                CASE n % 4 WHEN 0 THEN 'image' WHEN 1 THEN 'image' ELSE 'video' END,
+                CASE WHEN n % 4 >= 2 THEN 60000 ELSE NULL END,
+                CASE WHEN n % 4 IN (1, 3) THEN '2026-01-01T00:00:00.000Z' ELSE NULL END,
+                CASE WHEN n % 4 IN (1, 3) THEN 3 ELSE 0 END
+         FROM seq;
+         INSERT INTO logical_contents
+           (content_hash, kind, resolved_utc_ms, representative_path_id,
+            live_copy_count, names_differ)
+         SELECT hash, kind, NULL, 1, 1, 0 FROM contents;
+         COMMIT;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let runtime = derived_runtime::snapshot(RuntimeConditions {
+        busy: false,
+        idle: true,
+        similarity_dirty: false,
+    })
+    .unwrap();
+    let started = Instant::now();
+    let snapshot = background_work::snapshot(
+        dir.path(),
+        runtime,
+        derived_state::WorkCapabilities {
+            ffmpeg: true,
+            face_enabled: true,
+            face_models: true,
+            transcripts: true,
+        },
+    )
+    .unwrap();
+    eprintln!(
+        "projected Background work across one million items in {:?}",
+        started.elapsed()
+    );
+    let value = serde_json::to_value(snapshot).unwrap();
+    let classes = value["classes"].as_array().unwrap();
+    assert_eq!(classes.len(), 5);
+    assert_eq!(classes[0]["queued"], 500_000);
+    assert_eq!(classes[1]["queued"], 250_000);
+    assert_eq!(classes[3]["queued"], 250_000);
+    assert_eq!(classes[4]["queued"], 500_000);
 }
 
 #[test]
