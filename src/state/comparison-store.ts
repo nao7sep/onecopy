@@ -598,6 +598,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   },
 
   toggleKeep: (slotIndex) => {
+    if (get().busy) return;
     const member = visibleSlots(get())[slotIndex];
     if (!member) return;
     const next = new Set(get().kept);
@@ -634,10 +635,15 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     broadcastComparison();
   },
 
-  nextPage: () => movePage(set, get, 1),
-  prevPage: () => movePage(set, get, -1),
+  nextPage: () => {
+    if (!get().busy) movePage(set, get, 1);
+  },
+  prevPage: () => {
+    if (!get().busy) movePage(set, get, -1);
+  },
 
   toggleShortlist: () => {
+    if (get().busy) return;
     set({ shortlist: !get().shortlist, shortlistPage: 0 });
     broadcastComparison();
   },
@@ -696,7 +702,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   },
 
   close: async () => {
-    if (!get().open) return;
+    if (!get().open || get().busy) return;
     const spreadCount = get().spreadCount;
     set(closedComparisonState());
     await queueComparisonLifecycle(() => teardownComparison(spreadCount));
@@ -754,44 +760,52 @@ async function doCommit(
   set({ busy: true, commitFailure: null });
   const live = state.members.filter((m): m is GroupMember => m !== null);
   const goners = live.filter((m) => !state.kept.has(m.hash));
-  let failedFiles = 0;
-  let failedItems = 0;
-  for (const member of goners) {
-    try {
-      const outcome = await invoke<{ failedFiles: number }>("delete_item", {
-        hash: member.hash,
-        pathId: null,
-        permanent,
-      });
-      if ((outcome?.failedFiles ?? 0) > 0) {
-        failedFiles += outcome.failedFiles;
-        failedItems += 1;
-        continue;
-      }
-      // Retire each success immediately. If a later item fails, Retry sees
-      // only live members and cannot replay already completed intent.
-      set({
-        members: get().members.map((candidate) =>
-          candidate !== null && candidate.hash === member.hash ? null : candidate,
-        ),
-      });
-      broadcastComparison();
-    } catch (error) {
-      failedItems += 1;
-      log.error("comparison item commit failed", {
-        hash: member.hash,
-        ...toErrorFields(error),
-      });
-    }
-  }
-  if (failedItems > 0) {
-    const detail = failedFiles > 0
-      ? `${failedFiles} file${failedFiles === 1 ? "" : "s"}`
-      : `${failedItems} item${failedItems === 1 ? "" : "s"}`;
+  let outcome: {
+    cancelled: boolean;
+    error: string | null;
+    failedFiles: number;
+    items: Array<{ item: { hash: string | null; pathId: number | null }; failedFiles: number }>;
+  };
+  try {
+    outcome = await invoke<typeof outcome>("delete_items", {
+      items: goners.map((member) => ({ hash: member.hash, pathId: null })),
+      permanent,
+    });
+  } catch (error) {
+    log.error("comparison commit failed", toErrorFields(error));
     set({
       busy: false,
       commitFailure: {
-        message: `${detail} could not be deleted. Retry targets only the remaining items.`,
+        message: "The delete operation could not finish. Retry targets the still-indexed items.",
+        permanent,
+      },
+    });
+    return { kind: "failed" };
+  }
+  const completed = new Set(
+    outcome.items
+      .filter((result) => result.failedFiles === 0 && result.item.hash !== null)
+      .map((result) => result.item.hash as string),
+  );
+  if (completed.size > 0) {
+    set({
+      members: get().members.map((candidate) =>
+        candidate !== null && completed.has(candidate.hash) ? null : candidate,
+      ),
+    });
+    broadcastComparison();
+  }
+  const remainingItems = goners.length - completed.size;
+  if (remainingItems > 0 || outcome.error !== null) {
+    const detail = outcome.failedFiles > 0
+      ? `${outcome.failedFiles} file${outcome.failedFiles === 1 ? "" : "s"} could not be deleted.`
+      : outcome.cancelled
+        ? "Deletion stopped safely."
+        : (outcome.error ?? `${remainingItems} items remain.`);
+    set({
+      busy: false,
+      commitFailure: {
+        message: `${detail} Retry targets only the remaining items.`,
         permanent,
       },
     });

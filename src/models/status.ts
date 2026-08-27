@@ -12,9 +12,10 @@
 // order below, because each is something the user needs to act on:
 //
 //   1. a delete that did not happen  — the one thing they just did that failed
-//   2. a scan in progress            — work happening now, with its own detail
-//   3. rescan needed                 — the index is knowingly incomplete
-//   4. the library totals            — the standing state, whenever nothing above
+//   2. an explicit file mutation     — the user's foreground destructive work
+//   3. a scan in progress            — work happening now, with its own detail
+//   4. rescan needed                 — the index is knowingly incomplete
+//   5. the library totals            — the standing state, whenever nothing above
 //
 // Deliberately NOT here: the app version (About owns it), the ffmpeg version
 // (the tools modal owns it, and the chip beside this line carries the states
@@ -22,6 +23,7 @@
 
 import type { SectionCounts } from "./sections";
 import { progressLine, progressTitle, type ScanProgress } from "./scan";
+import { mutationProgressLine, type MutationProgress } from "./mutation";
 
 export type StatusTone = "danger" | "warning" | "normal";
 
@@ -51,6 +53,7 @@ export function libraryLine(counts: SectionCounts): string {
 export function statusLine(input: {
   /** A failed delete or a refused command; null when the last action was clean. */
   message: string | null;
+  mutation: { progress: MutationProgress; cancelling: boolean } | null;
   scanning: boolean;
   stopping: boolean;
   progress: ScanProgress | null;
@@ -59,6 +62,17 @@ export function statusLine(input: {
 }): Status {
   if (input.message !== null && input.message !== "") {
     return { tone: "danger", text: input.message, title: input.message };
+  }
+  if (input.mutation !== null) {
+    const text = mutationProgressLine(
+      input.mutation.progress,
+      input.mutation.cancelling,
+    );
+    return {
+      tone: input.mutation.progress.failures > 0 ? "warning" : "normal",
+      text,
+      title: text,
+    };
   }
   if (input.scanning) {
     if (input.stopping) {

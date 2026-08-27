@@ -213,7 +213,7 @@ describe("Space", () => {
 
     await act(async () => press(container, " "));
 
-    expect(invokeCalls.some((c) => c.command === "delete_item")).toBe(false);
+    expect(invokeCalls.some((c) => c.command === "delete_items")).toBe(false);
   });
 });
 

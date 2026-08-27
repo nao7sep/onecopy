@@ -10,10 +10,11 @@
 //! and the cache entries are dropped synchronously (the GC's synchronous
 //! half). Trash-side history lives in the day folders' manifests, not here.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::logging;
@@ -50,6 +51,92 @@ pub enum ItemRef<'a> {
     PathId(i64),
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemIdentity {
+    pub hash: Option<String>,
+    pub path_id: Option<i64>,
+}
+
+impl ItemIdentity {
+    fn item_ref(&self) -> Result<ItemRef<'_>, String> {
+        match (&self.hash, self.path_id) {
+            (Some(hash), None) if !hash.is_empty() => Ok(ItemRef::Hash(hash)),
+            (None, Some(path_id)) => Ok(ItemRef::PathId(path_id)),
+            _ => Err("each item needs exactly one non-empty hash or pathId".to_string()),
+        }
+    }
+
+    pub fn media_key(&self) -> Result<String, String> {
+        match self.item_ref()? {
+            ItemRef::Hash(hash) => Ok(hash.to_string()),
+            ItemRef::PathId(path_id) => Ok(format!("path-{path_id}")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeleteBatchProgress {
+    Planning {
+        items_done: u64,
+        items_total: u64,
+        files_total: u64,
+        bytes_total: u64,
+    },
+    Deleting {
+        items_done: u64,
+        items_total: u64,
+        files_done: u64,
+        files_total: u64,
+        bytes_done: u64,
+        bytes_total: u64,
+        failures: u64,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteItemResult {
+    pub item: ItemIdentity,
+    pub deleted_files: u64,
+    pub failed_files: u64,
+    pub removed_rows: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteBatchOutcome {
+    pub cancelled: bool,
+    pub error: Option<String>,
+    pub items: Vec<DeleteItemResult>,
+    pub deleted_files: u64,
+    pub failed_files: u64,
+    pub removed_rows: u64,
+    pub files_total: u64,
+    pub bytes_total: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DeleteTarget {
+    path_id: i64,
+    abs_path: String,
+    content_hash: Option<String>,
+    bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DeleteUnit {
+    item: ItemIdentity,
+    targets: Vec<DeleteTarget>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DeletePlan {
+    units: Vec<DeleteUnit>,
+    files_total: u64,
+    bytes_total: u64,
+}
+
 /// Deletes one logical item: every non-missing copy plus every companion
 /// attached to any of those copies.
 pub fn delete_item(
@@ -70,52 +157,37 @@ fn delete_item_inner(
     mode: DeleteMode,
     mut before_source_claim: impl FnMut(DeleteMode, &Path),
 ) -> Result<DeleteOutcome, String> {
-    // Target rows: the item's own copies…
-    let targets: Vec<(i64, String, Option<String>)> = match &item {
-        ItemRef::Hash(hash) => collect(
-            conn,
-            "SELECT id, abs_path, content_hash FROM paths \
-             WHERE content_hash = ?1 AND missing = 0",
-            params![*hash],
-        )?,
-        ItemRef::PathId(id) => collect(
-            conn,
-            "SELECT id, abs_path, content_hash FROM paths WHERE id = ?1 AND missing = 0",
-            params![*id],
-        )?,
-    };
-    if targets.is_empty() {
-        return Ok(DeleteOutcome::default());
-    }
-    // …plus companions attached to any of them (pair = one unit).
-    let id_list = targets
-        .iter()
-        .map(|(id, _, _)| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut companions: Vec<(i64, String, Option<String>)> = collect(
+    let targets = collect_delete_targets(conn, item)?;
+    delete_targets(
         conn,
-        &format!(
-            "SELECT id, abs_path, content_hash FROM paths \
-             WHERE companion_of IN ({id_list}) AND missing = 0"
-        ),
-        params![],
-    )?;
-    // Companions delete FIRST: their rows hold a foreign key to the primary
-    // (`companion_of`), so the primary's row must outlive them.
-    companions.extend(targets);
-    let targets = companions;
+        app_root,
+        cache,
+        &targets,
+        mode,
+        &mut before_source_claim,
+        &mut |_, _| {},
+    )
+}
 
+fn delete_targets(
+    conn: &Connection,
+    app_root: &Path,
+    cache: &CachePaths,
+    targets: &[DeleteTarget],
+    mode: DeleteMode,
+    before_source_claim: &mut impl FnMut(DeleteMode, &Path),
+    on_attempt: &mut impl FnMut(u64, bool),
+) -> Result<DeleteOutcome, String> {
     let mut outcome = DeleteOutcome::default();
     let mut removed_hashes: Vec<Option<String>> = Vec::new();
 
-    for (path_id, abs_path, content_hash) in targets {
-        let file = Path::new(&abs_path);
+    for target in targets {
+        let file = Path::new(&target.abs_path);
         let result = match mode {
             DeleteMode::Trash => trash::trash_file_with_before_claim(
                 file,
                 app_root,
-                content_hash.as_deref(),
+                target.content_hash.as_deref(),
                 |path| before_source_claim(mode, path),
             )
             .map(|_| ()),
@@ -127,12 +199,13 @@ fn delete_item_inner(
         match result {
             Ok(()) => {
                 outcome.deleted_files += 1;
-                conn.execute("DELETE FROM evidence WHERE path_id = ?1", [path_id])
+                conn.execute("DELETE FROM evidence WHERE path_id = ?1", [target.path_id])
                     .map_err(|e| e.to_string())?;
-                conn.execute("DELETE FROM paths WHERE id = ?1", [path_id])
+                conn.execute("DELETE FROM paths WHERE id = ?1", [target.path_id])
                     .map_err(|e| e.to_string())?;
                 outcome.removed_rows += 1;
-                removed_hashes.push(content_hash);
+                removed_hashes.push(target.content_hash.clone());
+                on_attempt(target.bytes, false);
             }
             Err(err) => {
                 outcome.failed_files += 1;
@@ -141,9 +214,15 @@ fn delete_item_inner(
                 // raised, with its context intact.
                 logging::warn(
                     "delete failed for one copy",
-                    json!({ "path": abs_path, "error": { "message": err } }),
+                    json!({ "path": target.abs_path, "error": { "message": err } }),
                 );
-                crate::index_store::upsert_issue(conn, Some(&abs_path), "delete-error", &err)?;
+                crate::index_store::upsert_issue(
+                    conn,
+                    Some(&target.abs_path),
+                    "delete-error",
+                    &err,
+                )?;
+                on_attempt(target.bytes, true);
             }
         }
     }
@@ -189,6 +268,207 @@ fn delete_item_inner(
     );
 
     Ok(outcome)
+}
+
+fn collect_delete_targets(conn: &Connection, item: ItemRef<'_>) -> Result<Vec<DeleteTarget>, String> {
+    // Target rows: the item's own copies… plus companions attached to any of
+    // them. The companion query stays parameterized and constant-size even if
+    // one logical item has an extreme number of copies.
+    let (targets, mut companions): (Vec<_>, Vec<_>) = match item {
+        ItemRef::Hash(hash) => (
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE content_hash = ?1 AND missing = 0 ORDER BY id",
+                params![hash],
+            )?,
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE companion_of IN (\
+                   SELECT id FROM paths WHERE content_hash = ?1 AND missing = 0\
+                 ) AND missing = 0 ORDER BY id",
+                params![hash],
+            )?,
+        ),
+        ItemRef::PathId(id) => (
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE id = ?1 AND missing = 0",
+                params![id],
+            )?,
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE companion_of = ?1 AND missing = 0 ORDER BY id",
+                params![id],
+            )?,
+        ),
+    };
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Companions delete FIRST: their rows hold a foreign key to the primary
+    // (`companion_of`), so the primary's row must outlive them.
+    companions.extend(targets);
+    Ok(companions
+        .into_iter()
+        .map(|(path_id, abs_path, content_hash, indexed_bytes)| {
+            let bytes = std::fs::symlink_metadata(
+                crate::winpath::for_fs(Path::new(&abs_path)).as_ref(),
+            )
+            .ok()
+            .filter(|metadata| metadata.file_type().is_file())
+            .map(|metadata| metadata.len())
+            .unwrap_or_else(|| indexed_bytes.unwrap_or(0).max(0) as u64);
+            DeleteTarget {
+                path_id,
+                abs_path,
+                content_hash,
+                bytes,
+            }
+        })
+        .collect())
+}
+
+/// Deletes an ordered logical-item set under one already-acquired mutation and
+/// media boundary. Target membership is resolved once before the first file
+/// changes. Cancellation is observed while planning and only between complete
+/// logical units during deletion; filesystem failures remain per-file Issues.
+pub fn delete_batch(
+    conn: &Connection,
+    app_root: &Path,
+    cache: &CachePaths,
+    items: &[ItemIdentity],
+    mode: DeleteMode,
+    cancelled: &dyn Fn() -> bool,
+    mut on_progress: impl FnMut(DeleteBatchProgress),
+) -> Result<DeleteBatchOutcome, String> {
+    let mut unique = HashSet::new();
+    let mut ordered = Vec::new();
+    for item in items {
+        item.item_ref()?;
+        if unique.insert(item.clone()) {
+            ordered.push(item.clone());
+        }
+    }
+    let items_total = ordered.len() as u64;
+    on_progress(DeleteBatchProgress::Planning {
+        items_done: 0,
+        items_total,
+        files_total: 0,
+        bytes_total: 0,
+    });
+
+    let mut plan = DeletePlan::default();
+    let mut claimed_paths = HashSet::new();
+    for item in ordered {
+        if cancelled() {
+            return Ok(DeleteBatchOutcome {
+                cancelled: true,
+                files_total: plan.files_total,
+                bytes_total: plan.bytes_total,
+                ..DeleteBatchOutcome::default()
+            });
+        }
+        let mut targets = collect_delete_targets(conn, item.item_ref()?)?;
+        // A malformed caller can name overlapping identities. Physical rows
+        // still belong to exactly one unit in this immutable plan.
+        targets.retain(|target| claimed_paths.insert(target.path_id));
+        plan.files_total = plan.files_total.saturating_add(targets.len() as u64);
+        plan.bytes_total = plan
+            .bytes_total
+            .saturating_add(targets.iter().map(|target| target.bytes).sum::<u64>());
+        plan.units.push(DeleteUnit { item, targets });
+        on_progress(DeleteBatchProgress::Planning {
+            items_done: plan.units.len() as u64,
+            items_total,
+            files_total: plan.files_total,
+            bytes_total: plan.bytes_total,
+        });
+    }
+
+    let mut batch = DeleteBatchOutcome {
+        files_total: plan.files_total,
+        bytes_total: plan.bytes_total,
+        ..DeleteBatchOutcome::default()
+    };
+    let mut items_done = 0u64;
+    let mut files_done = 0u64;
+    let mut bytes_done = 0u64;
+    on_progress(DeleteBatchProgress::Deleting {
+        items_done,
+        items_total,
+        files_done,
+        files_total: plan.files_total,
+        bytes_done,
+        bytes_total: plan.bytes_total,
+        failures: 0,
+    });
+
+    for unit in plan.units {
+        if cancelled() {
+            batch.cancelled = true;
+            break;
+        }
+        let failures_before = batch.failed_files;
+        let mut failures_in_unit = 0u64;
+        let outcome = delete_targets(
+            conn,
+            app_root,
+            cache,
+            &unit.targets,
+            mode,
+            &mut |_, _| {},
+            &mut |bytes, failed| {
+                files_done = files_done.saturating_add(1);
+                bytes_done = bytes_done.saturating_add(bytes);
+                failures_in_unit = failures_in_unit.saturating_add(u64::from(failed));
+                on_progress(DeleteBatchProgress::Deleting {
+                    items_done,
+                    items_total,
+                    files_done,
+                    files_total: plan.files_total,
+                    bytes_done,
+                    bytes_total: plan.bytes_total,
+                    failures: failures_before + failures_in_unit,
+                });
+            },
+        );
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                logging::warn(
+                    "delete batch stopped inside one logical item",
+                    json!({ "error": { "message": error } }),
+                );
+                batch.error = Some(error);
+                break;
+            }
+        };
+        batch.deleted_files = batch.deleted_files.saturating_add(outcome.deleted_files);
+        batch.failed_files = batch.failed_files.saturating_add(outcome.failed_files);
+        batch.removed_rows = batch.removed_rows.saturating_add(outcome.removed_rows);
+        batch.items.push(DeleteItemResult {
+            item: unit.item,
+            deleted_files: outcome.deleted_files,
+            failed_files: outcome.failed_files,
+            removed_rows: outcome.removed_rows,
+        });
+        items_done = items_done.saturating_add(1);
+        on_progress(DeleteBatchProgress::Deleting {
+            items_done,
+            items_total,
+            files_done,
+            files_total: plan.files_total,
+            bytes_done,
+            bytes_total: plan.bytes_total,
+            failures: batch.failed_files,
+        });
+    }
+
+    Ok(batch)
 }
 
 fn permanently_delete_file(
@@ -704,6 +984,20 @@ fn collect(
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+    Ok(rows)
+}
+
+fn collect4(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<(i64, String, Option<String>, Option<i64>)>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     Ok(rows)
 }
 

@@ -229,9 +229,15 @@ describe("the culling journey", () => {
 
     // ---- Keeper key + Enter commits: losers to trash, view refreshes ----
     const deleted: string[] = [];
-    mockCommand("delete_item", (args) => {
-      deleted.push(args.hash as string);
-      return { deletedFiles: 1, failedFiles: 0, removedRows: 1 };
+    mockCommand("delete_items", (args) => {
+      const items = args.items as Array<{ hash: string | null; pathId: number | null }>;
+      deleted.push(...items.map((item) => item.hash!).filter(Boolean));
+      return {
+        cancelled: false,
+        error: null,
+        failedFiles: 0,
+        items: items.map((item) => ({ item, failedFiles: 0 })),
+      };
     });
     mockCommand("get_section_items", () => [
       item(2, { similarGroupId: null }),
@@ -279,7 +285,12 @@ describe("the failure journey", () => {
 
     // The disk says no: the outcome reports the failure, never a rejection,
     // and the issues surface starts carrying it.
-    mockCommand("delete_item", () => ({ deletedFiles: 0, failedFiles: 1, removedRows: 0 }));
+    mockCommand("delete_items", ({ items }) => ({
+      cancelled: false,
+      error: null,
+      failedFiles: 1,
+      items: [{ item: (items as unknown[])[0], failedFiles: 1 }],
+    }));
     mockCommand("get_issues", () => ({
       issues: [
         {

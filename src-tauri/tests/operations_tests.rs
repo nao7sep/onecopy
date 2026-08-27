@@ -142,6 +142,64 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
 }
 
 #[test]
+fn delete_batch_plans_once_and_cancels_only_between_logical_units() {
+    let f = fixture("delete-batch-cancel");
+    std::fs::write(f.root.join("a.jpg"), vec![1u8; 10]).unwrap();
+    std::fs::write(f.root.join("a.xmp"), vec![2u8; 20]).unwrap();
+    std::fs::write(f.root.join("b.jpg"), vec![3u8; 30]).unwrap();
+    scan(&f);
+    let hash = |name: &str| -> String {
+        f.conn
+            .query_row(
+                "SELECT content_hash FROM paths WHERE file_name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let a = hash("a.jpg");
+    let b = hash("b.jpg");
+    let cancel = std::cell::Cell::new(false);
+    let progress = std::cell::RefCell::new(Vec::new());
+
+    let outcome = delete_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[
+            ItemIdentity { hash: Some(a.clone()), path_id: None },
+            ItemIdentity { hash: Some(a), path_id: None },
+            ItemIdentity { hash: Some(b), path_id: None },
+        ],
+        DeleteMode::Permanent,
+        &|| cancel.get(),
+        |snapshot| {
+            if matches!(
+                snapshot,
+                DeleteBatchProgress::Deleting { files_done: 1, .. }
+            ) {
+                cancel.set(true);
+            }
+            progress.borrow_mut().push(snapshot);
+        },
+    )
+    .unwrap();
+
+    assert!(outcome.cancelled);
+    assert_eq!(outcome.items.len(), 1, "the duplicate request is one unit");
+    assert_eq!(outcome.files_total, 3, "primary, companion, and second item");
+    assert_eq!(outcome.bytes_total, 60);
+    assert_eq!(outcome.deleted_files, 2, "cancellation never splits a pair");
+    assert!(!f.root.join("a.jpg").exists());
+    assert!(!f.root.join("a.xmp").exists());
+    assert!(f.root.join("b.jpg").exists(), "the unstarted unit is untouched");
+    assert!(progress.borrow().iter().any(|snapshot| matches!(
+        snapshot,
+        DeleteBatchProgress::Planning { items_done: 2, items_total: 2, .. }
+    )));
+}
+
+#[test]
 fn cache_entries_go_when_the_last_copy_goes() {
     let f = fixture("cache-gc");
     std::fs::write(f.root.join("solo.jpg"), b"solo-bytes").unwrap();

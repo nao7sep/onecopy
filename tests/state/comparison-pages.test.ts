@@ -53,14 +53,23 @@ function openSession(count: number, perPage: number): void {
 
 function deleted(): unknown[] {
   return invokeCalls
-    .filter((c) => c.command === "delete_item")
-    .map((c) => c.args.hash);
+    .filter((c) => c.command === "delete_items")
+    .flatMap((c) => c.args.items as Array<{ hash: string | null }>)
+    .map((item) => item.hash);
 }
 
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
-    delete_item: () => ({ deletedFiles: 1, failedFiles: 0, removedRows: 1 }),
+    delete_items: ({ items }) => ({
+      cancelled: false,
+      error: null,
+      failedFiles: 0,
+      items: (items as Array<{ hash: string | null; pathId: number | null }>).map((item) => ({
+        item,
+        failedFiles: 0,
+      })),
+    }),
     get_section_items: () => [],
     get_section_counts: () => [],
     patch_state: () => ({}),
@@ -176,11 +185,17 @@ describe("partial commit recovery", () => {
     useComparisonStore.getState().toggleKeep(0);
     let h2Attempts = 0;
     mockCommands({
-      delete_item: ({ hash }) => {
-        if (hash === "h2" && h2Attempts++ === 0) {
-          return { deletedFiles: 0, failedFiles: 1, removedRows: 0 };
-        }
-        return { deletedFiles: 1, failedFiles: 0, removedRows: 1 };
+      delete_items: ({ items }) => {
+        const results = (items as Array<{ hash: string; pathId: null }>).map((item) => {
+          const failedFiles = item.hash === "h2" && h2Attempts++ === 0 ? 1 : 0;
+          return { item, failedFiles };
+        });
+        return {
+          cancelled: false,
+          error: null,
+          failedFiles: results.reduce((total, result) => total + result.failedFiles, 0),
+          items: results,
+        };
       },
       get_issues: () => ({ total: 1, rows: [] }),
     });
@@ -202,6 +217,22 @@ describe("partial commit recovery", () => {
 
     expect(deleted()).toEqual(["h1", "h2", "h2"]);
     expect(useComparisonStore.getState().open).toBe(false);
+  });
+});
+
+describe("an active commit owns the comparison decision state", () => {
+  it("cannot close, page, or change keepers before the batch reaches a boundary", async () => {
+    openSession(8, 4);
+    useComparisonStore.setState({ busy: true });
+
+    useComparisonStore.getState().toggleKeep(0);
+    useComparisonStore.getState().nextPage();
+    await useComparisonStore.getState().close();
+
+    const state = useComparisonStore.getState();
+    expect(state.open).toBe(true);
+    expect(state.page).toBe(0);
+    expect(state.kept.size).toBe(0);
   });
 });
 

@@ -70,7 +70,15 @@ beforeEach(() => {
   mockCommands({
     patch_state: () => ({}),
     get_item_detail: () => null,
-    delete_item: () => ({ deletedFiles: 1, failedFiles: 0 }),
+    delete_items: ({ items }) => ({
+      cancelled: false,
+      error: null,
+      failedFiles: 0,
+      items: (items as Array<{ hash: string | null; pathId: number | null }>).map((item) => ({
+        item,
+        failedFiles: 0,
+      })),
+    }),
     get_section_counts: () => [],
   });
 });
@@ -342,16 +350,23 @@ describe("deleteSelected", () => {
     await deleteSelectedItems(false);
 
     const deleted = invokeCalls
-      .filter((c) => c.command === "delete_item")
-      .map((c) => c.args.hash);
+      .filter((c) => c.command === "delete_items")
+      .flatMap((c) => c.args.items as Array<{ hash: string | null }>)
+      .map((item) => item.hash);
     expect(deleted.sort()).toEqual(["h1", "h3"]);
+    expect(invokeCalls.filter((c) => c.command === "delete_items")).toHaveLength(1);
   });
 
   it("surfaces copies that failed to delete", async () => {
     const items = [item({ pathId: 1 }), item({ pathId: 2 })];
     seed(items);
     mockCommand("get_section_items", () => items);
-    mockCommand("delete_item", () => ({ deletedFiles: 0, failedFiles: 1 }));
+    mockCommand("delete_items", ({ items }) => ({
+      cancelled: false,
+      error: null,
+      failedFiles: 1,
+      items: [{ item: (items as unknown[])[0], failedFiles: 1 }],
+    }));
 
     useItemsStore.getState().selectItem("h1");
     await deleteSelectedItems(false);
@@ -365,7 +380,7 @@ describe("deleteSelected", () => {
     const items = [item({ pathId: 1 })];
     seed(items);
     mockCommand("get_section_items", () => items);
-    mockCommand("delete_item", () => {
+    mockCommand("delete_items", () => {
       throw new Error("a source volume is not present");
     });
 

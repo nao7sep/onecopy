@@ -14,6 +14,7 @@ const COUNTS: SectionCounts = {
 
 const IDLE = {
   message: null,
+  mutation: null,
   scanning: false,
   stopping: false,
   progress: null,
@@ -85,6 +86,31 @@ describe("what the status bar shows", () => {
     });
     expect(status.tone).toBe("danger");
     expect(status.text).toContain("could not be deleted");
+  });
+
+  it("shows an explicit mutation above background indexing", () => {
+    const status = statusLine({
+      ...IDLE,
+      mutation: {
+        cancelling: false,
+        progress: {
+          operationId: 4,
+          kind: "delete",
+          phase: "deleting",
+          itemsDone: 2,
+          itemsTotal: 8,
+          filesDone: 3,
+          filesTotal: 10,
+          bytesDone: 1024,
+          bytesTotal: 2048,
+          failures: 0,
+          nextPhase: "complete",
+        },
+      },
+      scanning: true,
+      progress: HASH_PROGRESS,
+    });
+    expect(status.text).toBe("Deleting — 2/8 items · 3/10 files · 1 KB/2 KB");
   });
 
   it("prefers live scan progress over the totals it is busy changing", () => {

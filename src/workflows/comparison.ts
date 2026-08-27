@@ -15,6 +15,7 @@ import {
 } from "../state/comparison-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
+import { useMutationStore } from "../state/mutation-store";
 import { restorePreviewAfterComparison } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 import { hasOpenModal } from "../utils/modalStack";
@@ -55,6 +56,10 @@ export async function openComparison(hash: string): Promise<boolean> {
 }
 
 export async function closeComparison(): Promise<void> {
+  if (useComparisonStore.getState().busy) {
+    await useMutationStore.getState().cancel();
+    return;
+  }
   await useComparisonStore.getState().close();
   await restorePreviewAfterComparison();
   await refreshLibrary();

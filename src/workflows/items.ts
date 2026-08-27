@@ -11,8 +11,25 @@ import { itemKey, useItemsStore } from "../state/items-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 
-interface DeleteOutcome {
+interface ItemIdentity {
+  hash: string | null;
+  pathId: number | null;
+}
+
+interface DeleteItemResult {
+  item: ItemIdentity;
   failedFiles: number;
+}
+
+interface DeleteBatchOutcome {
+  cancelled: boolean;
+  error: string | null;
+  items: DeleteItemResult[];
+  failedFiles: number;
+}
+
+function identityKey(item: ItemIdentity): string {
+  return item.hash ?? `path-${item.pathId}`;
 }
 
 let installed = false;
@@ -98,24 +115,31 @@ export async function deleteItems(
       : shown.findIndex((item) => keys.has(itemKey(item)));
   useItemsStore.setState({ message: null });
   try {
-    let failed = 0;
-    for (const item of shown.filter((candidate) => keys.has(itemKey(candidate)))) {
-      const outcome = await invoke<DeleteOutcome>("delete_item", {
+    const requested = shown.filter((candidate) => keys.has(itemKey(candidate)));
+    const outcome = await invoke<DeleteBatchOutcome>("delete_items", {
+      items: requested.map((item) => ({
         hash: item.hash,
         pathId: item.hash === null ? item.pathId : null,
-        permanent,
-      });
-      failed += outcome?.failedFiles ?? 0;
-    }
+      })),
+      permanent,
+    });
+    const completed = new Set(
+      outcome.items
+        .filter((item) => item.failedFiles === 0)
+        .map((item) => identityKey(item.item)),
+    );
     const survivor =
-      shown.slice(anchorIndex + 1).find((item) => !keys.has(itemKey(item))) ??
+      shown.slice(Math.max(anchorIndex, 0)).find((item) => !completed.has(itemKey(item))) ??
       [...shown.slice(0, Math.max(anchorIndex, 0))]
         .reverse()
-        .find((item) => !keys.has(itemKey(item))) ??
+        .find((item) => !completed.has(itemKey(item))) ??
       null;
-    if (failed > 0) {
+    if (outcome.error !== null) {
+      useItemsStore.setState({ message: outcome.error });
+      await useIssuesStore.getState().load();
+    } else if (outcome.failedFiles > 0) {
       useItemsStore.setState({
-        message: `${failed} file${failed === 1 ? "" : "s"} could not be deleted — see Issues.`,
+        message: `${outcome.failedFiles} file${outcome.failedFiles === 1 ? "" : "s"} could not be deleted — see Issues.`,
       });
       await useIssuesStore.getState().load();
     }
@@ -128,6 +152,11 @@ export async function deleteItems(
     useItemsStore.setState({
       message: error instanceof Error ? error.message : String(error),
     });
+    // A structural error can arrive after earlier logical units committed.
+    // Re-read every durable owner instead of leaving removed rows projected.
+    await useItemsStore.getState().refresh();
+    await useSectionsStore.getState().loadCounts();
+    await useIssuesStore.getState().load();
   }
 }
 

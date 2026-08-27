@@ -12,6 +12,7 @@ import { installScanEventWiring } from "./scan-events";
 import { installItemWorkflow } from "./items";
 import { installPreviewPersistence } from "./preview";
 import { installComparisonEventWiring } from "./comparison";
+import { installMutationEventWiring } from "./mutation-events";
 
 export async function bootstrapApplication(): Promise<void> {
   installItemWorkflow();
@@ -19,6 +20,7 @@ export async function bootstrapApplication(): Promise<void> {
   await Promise.all([
     installScanEventWiring(),
     installComparisonEventWiring(),
+    installMutationEventWiring(),
   ]);
   const [data] = await Promise.all([
     useAppStore.getState().reload(),

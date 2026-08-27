@@ -49,6 +49,7 @@ import { useAppBootstrapAndRestore } from "./hooks/useAppBootstrapAndRestore";
 import { useGlobalCommands } from "./hooks/useGlobalCommands";
 import { useMainWindowLifecycle } from "./hooks/useMainWindowLifecycle";
 import { usePaneLayout } from "./hooks/usePaneLayout";
+import { useMutationStore } from "./state/mutation-store";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -71,6 +72,9 @@ export default function App() {
   const progress = useSectionsStore((s) => s.progress);
   const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
   const itemsMessage = useItemsStore((s) => s.message);
+  const mutationProgress = useMutationStore((s) => s.progress);
+  const mutationCancelling = useMutationStore((s) => s.cancelling);
+  const cancelMutation = useMutationStore((s) => s.cancel);
   const startScan = useSectionsStore((s) => s.startScan);
   const cancelScan = useSectionsStore((s) => s.cancelScan);
   const selected = useItemsStore((s) => s.selected);
@@ -135,6 +139,9 @@ export default function App() {
 
   const status = statusLine({
     message: itemsMessage,
+    mutation: mutationProgress === null
+      ? null
+      : { progress: mutationProgress, cancelling: mutationCancelling },
     scanning,
     stopping: stoppingScan,
     progress,
@@ -457,6 +464,16 @@ export default function App() {
           {status.text}
         </span>
         <span className="flex shrink-0 items-center gap-3">
+          {mutationProgress !== null ? (
+            <button
+              className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
+              disabled={mutationCancelling}
+              title="Stop safely after the current logical item"
+              onClick={() => void cancelMutation()}
+            >
+              {mutationCancelling ? "Stopping…" : "Stop file operation"}
+            </button>
+          ) : null}
           {scanning ? (
             <button
               className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"

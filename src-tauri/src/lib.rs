@@ -22,6 +22,7 @@ pub mod logging;
 pub mod media_protocol;
 pub mod media_use;
 pub mod metadata;
+mod mutation_runtime;
 mod nanoid;
 pub mod operations;
 pub mod paths;
@@ -197,7 +198,7 @@ fn cancel_scan() -> bool {
 // The volume-loss guard (the session gate's runtime counterpart): destructive
 // operations refuse to run while any configured source directory is absent —
 // a vanished volume must block deletes, not let them half-apply.
-fn ensure_sources_present(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn ensure_sources_present(app: &AppHandle) -> Result<(), String> {
     let status = verify_source_dirs(app)?;
     if !status.missing.is_empty() {
         return Err(format!(
@@ -271,42 +272,21 @@ fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
     Ok(status)
 }
 
-// Deletes one logical item — every copy plus companions — to trash, or
-// permanently when `permanent` is true. The item is addressed the way the grid
-// knows it: by hash, or by path id for unhashed other-files.
+// Deletes an ordered logical-item set under one mutation/media boundary. The
+// core plans every physical copy and companion before changing the first file;
+// progress and cancellation belong to the shared ephemeral mutation runtime.
 #[tauri::command(async)]
-fn delete_item(
+fn delete_items(
     app: AppHandle,
-    hash: Option<String>,
-    path_id: Option<i64>,
+    items: Vec<operations::ItemIdentity>,
     permanent: bool,
-) -> Result<operations::DeleteOutcome, String> {
-    logging::boundary(
-        "delete_item",
-        json!({ "hash": hash, "pathId": path_id, "permanent": permanent }),
-        || {
-            let key = hash
-                .clone()
-                .unwrap_or_else(|| format!("path-{}", path_id.unwrap_or_default()));
-            let _media = media_use::begin(&app, &[key])?;
-            ensure_sources_present(&app)?;
-            let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let cache = preview::CachePaths::new(data_root.join(storage::CACHE_DIR_NAME));
-            let item = match (&hash, path_id) {
-                (Some(hash), _) => operations::ItemRef::Hash(hash),
-                (None, Some(id)) => operations::ItemRef::PathId(id),
-                (None, None) => return Err("delete_item needs a hash or a pathId".to_string()),
-            };
-            let mode = if permanent {
-                operations::DeleteMode::Permanent
-            } else {
-                operations::DeleteMode::Trash
-            };
-            operations::delete_item(&conn, &data_root, &cache, item, mode)
-        },
-        |outcome| json!({ "deleted": outcome.deleted_files, "failed": outcome.failed_files }),
-    )
+) -> Result<operations::DeleteBatchOutcome, String> {
+    mutation_runtime::delete_items(&app, items, permanent)
+}
+
+#[tauri::command(async)]
+fn mutation_cancel(operation_id: u64) -> bool {
+    mutation_runtime::request_cancel(operation_id)
 }
 
 // One (kind, month) section's grid items, same month keys and timezone as the
@@ -1715,7 +1695,8 @@ pub fn run() {
             similar_unlink,
             similar_exclusions_count,
             similar_exclusions_clear,
-            delete_item,
+            delete_items,
+            mutation_cancel,
             move_item_out,
             list_subdirs,
             create_subdir,

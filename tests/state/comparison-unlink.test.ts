@@ -56,7 +56,15 @@ beforeEach(() => {
   resetTauriMocks();
   mockCommands({
     similar_unlink: () => 3,
-    delete_item: () => ({ deletedFiles: 1, failedFiles: 0, removedRows: 1 }),
+    delete_items: ({ items }) => ({
+      cancelled: false,
+      error: null,
+      failedFiles: 0,
+      items: (items as Array<{ hash: string | null; pathId: number | null }>).map((item) => ({
+        item,
+        failedFiles: 0,
+      })),
+    }),
     get_section_items: () => [],
     get_section_counts: () => [],
     patch_state: () => ({}),
@@ -133,8 +141,9 @@ describe("unlinking a slot", () => {
     await commitComparison(false);
 
     const deleted = invokeCalls
-      .filter((c) => c.command === "delete_item")
-      .map((c) => c.args.hash);
+      .filter((c) => c.command === "delete_items")
+      .flatMap((c) => c.args.items as Array<{ hash: string | null }>)
+      .map((item) => item.hash);
     // Only the unkept FAMILY member dies — never the unlinked photo.
     expect(deleted).toEqual(["h1"]);
   });

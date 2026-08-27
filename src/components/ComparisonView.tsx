@@ -12,6 +12,8 @@ import {
   useComparisonStore,
 } from "../state/comparison-store";
 import { hasOpenModal } from "../utils/modalStack";
+import { mutationProgressLine } from "../models/mutation";
+import { useMutationStore } from "../state/mutation-store";
 import ConfirmDialog from "./ConfirmDialog";
 import {
   closeComparison,
@@ -43,6 +45,9 @@ export default function ComparisonView() {
   const pendingPermanentCommit = useComparisonStore((s) => s.pendingPermanentCommit);
   const pendingCommitState = useComparisonStore((s) => s.pendingCommit);
   const commitFailure = useComparisonStore((s) => s.commitFailure);
+  const mutationProgress = useMutationStore((s) => s.progress);
+  const mutationCancelling = useMutationStore((s) => s.cancelling);
+  const cancelMutation = useMutationStore((s) => s.cancel);
 
   useEffect(() => {
     if (!open) return;
@@ -50,6 +55,13 @@ export default function ComparisonView() {
       // A modal above the comparison (help, settings) owns the keyboard:
       // its Escape must close only itself, never tear down the session.
       if (hasOpenModal()) return;
+      if (useComparisonStore.getState().busy) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          void useMutationStore.getState().cancel();
+        }
+        return;
+      }
       const unlinkIndex = slotIndexForShiftedCode(event);
       if (unlinkIndex >= 0) {
         event.preventDefault();
@@ -149,6 +161,7 @@ export default function ComparisonView() {
           </span>
           <button
             className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"
+            disabled={busy}
             onClick={() => void closeComparison()}
           >
             Close
@@ -181,8 +194,21 @@ export default function ComparisonView() {
         ) : null}
       </div>
       {busy ? (
-        <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-          Working…
+        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
+          <span>
+            {mutationProgress === null
+              ? "Preparing file operation…"
+              : mutationProgressLine(mutationProgress, mutationCancelling)}
+          </span>
+          {mutationProgress !== null ? (
+            <button
+              className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted disabled:opacity-50"
+              disabled={mutationCancelling}
+              onClick={() => void cancelMutation()}
+            >
+              {mutationCancelling ? "Stopping…" : "Stop safely"}
+            </button>
+          ) : null}
         </footer>
       ) : null}
       {commitFailure !== null ? (
