@@ -113,7 +113,9 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   return (
     <div className="rounded-xl border border-border p-3 text-sm">
       <div className="flex items-center justify-between gap-3">
-        <span className="min-w-0 truncate font-semibold text-ink-strong">{entry.label}</span>
+        <span className="min-w-0 break-words font-semibold leading-snug text-ink-strong">
+          {entry.label}
+        </span>
         <span className="shrink-0 text-xs text-ink-muted">{statusLabel(entry)}</span>
       </div>
       {fact !== null ? <p className="mt-1 text-xs text-ink-muted">{fact}</p> : null}
@@ -214,6 +216,7 @@ export default function BinariesModal() {
     <ModalShell
       title="Managed tools"
       onClose={() => setModalOpen(false)}
+      widthClass="w-[min(680px,calc(100vw-3rem))]"
       footerStart={entries.length > 0 ? loadError : undefined}
     >
       {actionable > 1 ? (

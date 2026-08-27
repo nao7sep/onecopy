@@ -23,7 +23,7 @@ export async function bootstrapApplication(): Promise<void> {
     installMutationEventWiring(),
   ]);
   const [data] = await Promise.all([
-    useAppStore.getState().reload(),
+    useAppStore.getState().initialize(),
     useSectionsStore.getState().loadCounts(),
     useIssuesStore.getState().load(),
     useBinariesStore.getState().load(),

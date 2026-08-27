@@ -27,7 +27,7 @@ interface AppState {
    * does, so the notice cannot be missed by a re-render. */
   quarantines: QuarantineRecord[];
   dismissQuarantines: () => void;
-  reload: () => Promise<LoadedAppData | null>;
+  initialize: () => Promise<LoadedAppData | null>;
   patchConfig: (patch: Record<string, unknown>) => Promise<void>;
   patchState: (patch: Record<string, unknown>) => Promise<void>;
 }
@@ -39,7 +39,13 @@ let pendingStatePatch: Record<string, unknown> | null = null;
 let stateFlushTimer: ReturnType<typeof setTimeout> | null = null;
 const STATE_FLUSH_MS = 400;
 
-export const useAppStore = create<AppState>((set) => ({
+// Startup appearance and application bootstrap both need the same document.
+// Keep that first read single-flight: load_app_data also carries one-shot
+// quarantine records, so two independent readers could let the appearance
+// probe consume a recovery notice before the main surface sees it.
+let initialization: Promise<LoadedAppData | null> | null = null;
+
+export const useAppStore = create<AppState>((set, get) => ({
   appData: null,
   loadError: null,
   quarantines: [],
@@ -82,27 +88,36 @@ export const useAppStore = create<AppState>((set) => ({
     }, STATE_FLUSH_MS);
   },
 
-  reload: async () => {
-    try {
-      const data = await loadAppData();
-      set((s) => ({
-        appData: data,
-        loadError: null,
-        // Appended, never replaced: a mid-session quarantine event may already
-        // be sitting here, and a reload must not swallow it.
-        quarantines: [...s.quarantines, ...(data.quarantines ?? [])],
-      }));
-      log.info("app data loaded", {
-        dataRoot: data.dataRoot,
-        hasConfig: data.config !== null,
-        hasState: data.state !== null,
-      });
-      return data;
-    } catch (error) {
-      set({ loadError: String(error) });
-      log.error("app data load failed", toErrorFields(error));
-      return null;
-    }
+  initialize: () => {
+    const loaded = get().appData;
+    if (loaded !== null) return Promise.resolve(loaded);
+    if (initialization !== null) return initialization;
+
+    initialization = (async () => {
+      try {
+        const data = await loadAppData();
+        set((s) => ({
+          appData: data,
+          loadError: null,
+          // Appended, never replaced: a mid-session quarantine event may already
+          // be sitting here, and initialization must not swallow it.
+          quarantines: [...s.quarantines, ...(data.quarantines ?? [])],
+        }));
+        log.info("app data loaded", {
+          dataRoot: data.dataRoot,
+          hasConfig: data.config !== null,
+          hasState: data.state !== null,
+        });
+        return data;
+      } catch (error) {
+        set({ loadError: String(error) });
+        log.error("app data load failed", toErrorFields(error));
+        return null;
+      } finally {
+        initialization = null;
+      }
+    })();
+    return initialization;
   },
 }));
 

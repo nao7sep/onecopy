@@ -11,6 +11,7 @@ import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import App from "../../src/App";
 import { useWizardStore } from "../../src/state/wizard-store";
+import { useAppStore } from "../../src/state/app-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { usePreviewStore } from "../../src/state/preview-store";
@@ -104,6 +105,7 @@ beforeEach(() => {
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
   useWizardStore.setState({ open: false, dirs: [], timezone: "UTC", timezoneValid: true });
+  useAppStore.setState({ appData: null, loadError: null, quarantines: [] });
   useSectionsStore.setState({
     counts: null,
     scanning: false,

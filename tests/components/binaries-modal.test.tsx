@@ -166,6 +166,18 @@ describe("registry state", () => {
     render(<BinariesModal />);
     expect(document.body.textContent).toContain("No managed tools are configured.");
   });
+
+  it("keeps long managed-model identities readable instead of ellipsizing them", () => {
+    const label = "Face detector (optional — Settings > Score faces)";
+    seed([entry("ultraface-rfb640", "not-installed", { label })]);
+    render(<BinariesModal />);
+
+    const renderedLabel = [...document.querySelectorAll("span")].find(
+      (element) => element.textContent === label,
+    );
+    expect(renderedLabel?.className).toContain("break-words");
+    expect(renderedLabel?.className).not.toContain("truncate");
+  });
 });
 
 describe("installing everything", () => {

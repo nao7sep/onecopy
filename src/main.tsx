@@ -6,7 +6,8 @@ import ComparisonWindow from "./windows/ComparisonWindow";
 import IdentifyWindow from "./windows/IdentifyWindow";
 import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
-import { log, toErrorFields, initLogging, loadAppData } from "./repositories";
+import { log, toErrorFields, initLogging } from "./repositories";
+import { useAppStore } from "./state/app-store";
 import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
 import { installMediaUseBoundary } from "./media-use";
 
@@ -17,8 +18,14 @@ void initLogging();
 // Theme before first meaningful paint, in EVERY window (one bundle serves
 // all); the OS-preference listener keeps "system" live.
 watchSystemTheme();
-void loadAppData()
+void useAppStore
+  .getState()
+  .initialize()
   .then((data) => {
+    if (data === null) {
+      applyTheme("system");
+      return;
+    }
     const config = data.config as { theme?: unknown; uiFontFamily?: unknown } | null;
     applyTheme(config?.theme);
     applyUiFont(config?.uiFontFamily);
