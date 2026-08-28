@@ -2,6 +2,7 @@
 
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Accessibility } from "@dnd-kit/dom";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
@@ -13,6 +14,7 @@ const dnd = vi.hoisted(() => ({
   draggables: [] as Record<string, unknown>[],
   droppables: [] as Record<string, unknown>[],
   activeDropId: null as string | null,
+  overlay: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@dnd-kit/react", async () => {
@@ -22,7 +24,10 @@ vi.mock("@dnd-kit/react", async () => {
       dnd.provider = props;
       return ReactModule.createElement(ReactModule.Fragment, null, children);
     },
-    DragOverlay: () => null,
+    DragOverlay: (props: Record<string, unknown>) => {
+      dnd.overlay = props;
+      return null;
+    },
     useDraggable: (input: Record<string, unknown>) => {
       dnd.draggables.push(input);
       return { ref: () => undefined, isDragging: false };
@@ -94,6 +99,7 @@ beforeEach(() => {
   dnd.draggables = [];
   dnd.droppables = [];
   dnd.activeDropId = null;
+  dnd.overlay = null;
   useDestinationsStore.setState({
     roots: [],
     children: {},
@@ -120,6 +126,18 @@ afterEach(() => {
 });
 
 describe("destination drag transport", () => {
+  it("keeps the listbox-safe sensor/plugin and truthful overlay overrides", () => {
+    render(<DestinationDragProvider>Content</DestinationDragProvider>);
+
+    const provider = dnd.provider!;
+    expect(provider.sensors).toHaveLength(1);
+    const retainedPlugin = {};
+    expect(provider.plugins([retainedPlugin, Accessibility])).toEqual([
+      retainedPlugin,
+    ]);
+    expect(dnd.overlay?.dropAnimation).toBeNull();
+  });
+
   it("registers only indexed items and semantic destination rows", () => {
     render(
       <DestinationDragProvider>

@@ -23,6 +23,9 @@ const ITEM_TYPE = "destination-item";
 const ITEM_ID_PREFIX = "destination-item:";
 const RECEIVER_ID_PREFIX = "destination-receiver:";
 
+// Each draggable is also the listbox's click-to-select surface. Immediate
+// pointer activation would turn an ordinary selection click into drag start;
+// this maintained sensor constraint preserves the two product gestures.
 const POINTER_SENSOR = PointerSensor.configure({
   activationConstraints: [
     new PointerActivationConstraints.Distance({ value: 6 }),
@@ -47,10 +50,14 @@ export default function DestinationDragProvider({
 }) {
   return (
     <DragDropProvider
+      // Replacing the defaults deliberately removes dnd-kit's KeyboardSensor.
+      // The virtualized grid is one active-descendant listbox, so each item
+      // must not become another tab stop; the destination action bar and its
+      // Enter/Cmd-or-Ctrl+Enter commands are the equivalent keyboard path.
       sensors={[POINTER_SENSOR]}
-      // Drag is supplementary to the destination action bar. Keeping every
-      // grid item inside the existing listbox keyboard model is more usable
-      // than dnd-kit's per-item keyboard drag affordance here.
+      // Accessibility would add button semantics, tabindex, and keyboard-drag
+      // instructions to every item. Those promises conflict with the same
+      // single-tab-stop listbox, so retain every default plugin except it.
       plugins={(defaults) =>
         defaults.filter((plugin) => plugin !== Accessibility)
       }
@@ -87,6 +94,8 @@ export default function DestinationDragProvider({
       }}
     >
       {children}
+      {/* The default return-to-source animation would imply rejection after
+          this receiver has opened Move/Copy or committed Copy. */}
       <DragOverlay dropAnimation={null}>
         {(source) => (
           <DestinationDragPreview
