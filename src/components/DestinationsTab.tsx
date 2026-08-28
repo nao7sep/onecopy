@@ -17,6 +17,7 @@ import {
 } from "../workflows/destinations";
 import type { PendingDestinationDrop } from "../models/destinationTransfer";
 import { useDestinationReceiver } from "./DestinationDragProvider";
+import Button from "./ui/Button";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -551,8 +552,6 @@ function DropChoiceModal({
   onClose: () => void;
 }) {
   const { path, selection } = drop;
-  const button =
-    "inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring";
   return (
     <ModalShell
       title={`Drop into ${leafName(path)}`}
@@ -561,8 +560,8 @@ function DropChoiceModal({
       closeLabel="Cancel"
       primaryAction={
         <>
-          <button
-            className={`${button} bg-primary-solid text-ink-inverted shadow-sm hover:bg-primary-solid-hover`}
+          <Button
+            variant="primary"
             onClick={() => {
               onClose();
               useDestinationsStore.getState().setActive(path);
@@ -570,9 +569,8 @@ function DropChoiceModal({
             }}
           >
             Move here
-          </button>
-          <button
-            className={`${button} border border-border text-ink hover:border-border-strong hover:bg-surface-muted`}
+          </Button>
+          <Button
             onClick={() => {
               onClose();
               useDestinationsStore.getState().setActive(path);
@@ -580,7 +578,7 @@ function DropChoiceModal({
             }}
           >
             Copy here
-          </button>
+          </Button>
         </>
       }
     >

@@ -249,4 +249,26 @@ describe("destination drag transport", () => {
       view.getByText("2 selected items").parentElement?.textContent,
     ).not.toMatch(/move|copy/i);
   });
+
+  it("presents the explicit Move choice as primary and Copy as secondary", () => {
+    useDestinationsStore.setState({
+      pendingDrop: {
+        path: "/keep",
+        selection: {
+          items: [{ hash: "h1", pathId: null }],
+          blockedNameCount: 0,
+          anchorKey: "h1",
+          shownKeys: ["h1"],
+        },
+      },
+    });
+
+    const view = render(<DestinationsTab />);
+    expect(view.getByRole("button", { name: "Move here" }).className).toContain(
+      "bg-primary",
+    );
+    expect(view.getByRole("button", { name: "Copy here" }).className).toContain(
+      "border-border",
+    );
+  });
 });
