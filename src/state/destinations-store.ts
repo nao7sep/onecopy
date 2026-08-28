@@ -7,7 +7,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import type {
-  DestinationDragPresentation,
   DestinationSelection,
   PendingDestinationDrop,
 } from "../models/destinationTransfer";
@@ -55,12 +54,6 @@ interface DestinationsState {
   setActive: (path: string | null) => void;
   /** Exact selected identities carried by the current internal drag. */
   dragSelection: DestinationSelection | null;
-  setDragSelection: (selection: DestinationSelection | null) => void;
-  /** Semantic receiver currently under the app-owned pointer drag. */
-  dragReceiverPath: string | null;
-  setDragReceiverPath: (path: string | null) => void;
-  /** Pointer-following payload preview; presentation only, never authority. */
-  dragPresentation: DestinationDragPresentation | null;
   /** A drop landed and awaits the Move/Copy choice. Both receiver and dragged
    * identities are frozen; the modal never rereads live grid selection. */
   pendingDrop: PendingDestinationDrop | null;
@@ -92,10 +85,6 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   setActive: (path) => set({ activePath: path }),
 
   dragSelection: null,
-  setDragSelection: (selection) => set({ dragSelection: selection }),
-  dragReceiverPath: null,
-  setDragReceiverPath: (path) => set({ dragReceiverPath: path }),
-  dragPresentation: null,
 
   pendingDrop: null,
   setPendingDrop: (drop) => set({ pendingDrop: drop }),

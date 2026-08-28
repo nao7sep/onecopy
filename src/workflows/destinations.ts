@@ -80,8 +80,6 @@ export function beginDestinationDrag(key: string): DestinationSelection | null {
   if (selection.items.length === 0) return null;
   useDestinationsStore.setState({
     dragSelection: selection,
-    dragReceiverPath: null,
-    dragPresentation: null,
   });
   log.debug("destination drag started", { items: selection.items.length });
   return selection;
@@ -92,8 +90,6 @@ export function takeDestinationDrag(): DestinationSelection | null {
   const selection = useDestinationsStore.getState().dragSelection;
   useDestinationsStore.setState({
     dragSelection: null,
-    dragReceiverPath: null,
-    dragPresentation: null,
   });
   if (selection !== null) {
     log.debug("destination drag received", { items: selection.items.length });
@@ -107,8 +103,6 @@ export function cancelDestinationDrag(): void {
   }
   useDestinationsStore.setState({
     dragSelection: null,
-    dragReceiverPath: null,
-    dragPresentation: null,
   });
 }
 

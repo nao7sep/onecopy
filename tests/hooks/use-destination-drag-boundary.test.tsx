@@ -21,8 +21,6 @@ function dragEvent(type: "dragover" | "drop", types: string[]): DragEvent {
 beforeEach(() => {
   useDestinationsStore.setState({
     dragSelection: null,
-    dragReceiverPath: null,
-    dragPresentation: null,
   });
 });
 

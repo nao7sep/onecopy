@@ -32,7 +32,7 @@ import {
   mergeActiveItemWork,
   useDerivedWorkStore,
 } from "../state/derived-work-store";
-import { useDestinationPointerDrag } from "../hooks/useDestinationPointerDrag";
+import { useDestinationItemDrag } from "./DestinationDragProvider";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -88,20 +88,20 @@ function Tile({
   presentation: ItemPresentation;
 }) {
   const facts = factsLine(item);
-  const drag = useDestinationPointerDrag({
+  const drag = useDestinationItemDrag({
     key: itemKey(item),
     label: item.fileName,
     thumbHash: item.hasThumb ? item.hash : null,
   });
   return (
     <figure
+      ref={drag.ref}
       className={`w-40 select-none transition-[opacity,transform] ${
-        drag.dragging
+        drag.isDragging
           ? "scale-[0.97] cursor-grabbing opacity-55"
           : "cursor-grab"
       }`}
       onClick={onSelect}
-      {...drag.handlers}
     >
       <div
         className={`relative flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
@@ -305,22 +305,22 @@ function ListRow({
   onSelect: (event: React.MouseEvent) => void;
   widths: Record<SizedColumn, number>;
 }) {
-  const drag = useDestinationPointerDrag({
+  const drag = useDestinationItemDrag({
     key: itemKey(item),
     label: item.fileName,
     thumbHash: item.hasThumb ? item.hash : null,
   });
   return (
     <div
+      ref={drag.ref}
       className={`flex w-full select-none items-center rounded-md border px-3 py-1.5 text-sm transition-[background-color,border-color,opacity] ${
-        drag.dragging ? "cursor-grabbing opacity-55" : "cursor-grab"
+        drag.isDragging ? "cursor-grabbing opacity-55" : "cursor-grab"
       } ${
         isSelected
           ? "border-primary-ring bg-primary-surface"
           : "border-transparent hover:bg-surface-muted"
       }`}
       onClick={onSelect}
-      {...drag.handlers}
     >
       <span
         className="shrink-0 truncate text-[11px] font-semibold text-ink-muted"

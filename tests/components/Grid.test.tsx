@@ -99,8 +99,6 @@ beforeEach(() => {
   useSectionsStore.setState({ scanning: false, stopping: false, progress: null });
   useDestinationsStore.setState({
     dragSelection: null,
-    dragReceiverPath: null,
-    dragPresentation: null,
   });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
@@ -224,39 +222,6 @@ describe("Space", () => {
 });
 
 describe("pointer selection", () => {
-  it("freezes the dragged selection after a real movement threshold", () => {
-    const { view } = renderGrid();
-    const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
-    const originalElementFromPoint = document.elementFromPoint;
-    document.elementFromPoint = () => null;
-
-    fireEvent.pointerDown(tile, {
-      button: 0,
-      isPrimary: true,
-      pointerId: 1,
-      clientX: 10,
-      clientY: 10,
-    });
-    fireEvent.pointerMove(document, {
-      pointerId: 1,
-      clientX: 13,
-      clientY: 13,
-    });
-    expect(useDestinationsStore.getState().dragSelection).toBeNull();
-    fireEvent.pointerMove(document, {
-      pointerId: 1,
-      clientX: 20,
-      clientY: 10,
-    });
-
-    expect(useDestinationsStore.getState().dragSelection?.items).toEqual([
-      { hash: "h1", pathId: null },
-    ]);
-
-    fireEvent.pointerCancel(document, { pointerId: 1 });
-    document.elementFromPoint = originalElementFromPoint;
-  });
-
   it("ordinary clicks toggle immediately", () => {
     const { view } = renderGrid();
     const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;

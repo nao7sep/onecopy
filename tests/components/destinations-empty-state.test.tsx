@@ -19,8 +19,6 @@ beforeEach(() => {
     confirmation: null,
     activePath: null,
     dragSelection: null,
-    dragReceiverPath: null,
-    dragPresentation: null,
     pendingDrop: null,
   });
 });
@@ -74,30 +72,12 @@ describe("destination folder states", () => {
     expect(view.container.textContent).not.toContain("Drop into");
   });
 
-  it("highlights only the semantic receiver owned by the pointer gesture", () => {
-    useDestinationsStore.setState({
-      roots: ["/dest", "/other"],
-      expanded: new Set(),
-      activePath: "/dest",
-      dragReceiverPath: "/other",
-      pendingDrop: null,
-    });
-    const view = render(<DestinationsTab />);
-    const dest = view.container.querySelector<HTMLElement>("[data-tree-path='/dest']")!;
-    const other = view.container.querySelector<HTMLElement>("[data-tree-path='/other']")!;
-
-    expect(dest.className).not.toContain("ring-2");
-    expect(other.className).toContain("ring-2");
-  });
-
   it("does not treat a browser payload as an internal operation", () => {
     useDestinationsStore.setState({
       roots: ["/dest"],
       expanded: new Set(),
       activePath: "/dest",
       dragSelection: null,
-      dragReceiverPath: null,
-      dragPresentation: null,
     });
     const view = render(<DestinationsTab />);
     const row = view.container.querySelector<HTMLElement>("[data-tree-path='/dest']")!;

@@ -89,8 +89,6 @@ beforeEach(() => {
     pendingDeleteRest: null,
     pendingDrop: null,
     dragSelection: null,
-    dragReceiverPath: null,
-    dragPresentation: null,
     message: "",
     result: null,
     confirmation: null,

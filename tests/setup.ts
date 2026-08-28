@@ -25,6 +25,12 @@ if (typeof globalThis.navigator === "undefined") {
   vi.stubGlobal("navigator", { platform: "", userAgent: "" });
 }
 
+// happy-dom does not expose the Web Animations document query that dnd-kit's
+// geometry snapshot uses before measuring a registered draggable.
+if (typeof document !== "undefined" && document.getAnimations === undefined) {
+  document.getAnimations = () => [];
+}
+
 // Tauri is faked for the whole suite from here, because this is the only place
 // a `vi.mock` reaches every spec file — registering them per-spec would drift.
 // The doubles and their controls live in tests/mocks/tauri.ts; each factory

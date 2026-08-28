@@ -51,7 +51,7 @@ import { useMainWindowLifecycle } from "./hooks/useMainWindowLifecycle";
 import { usePaneLayout } from "./hooks/usePaneLayout";
 import { useMutationStore } from "./state/mutation-store";
 import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
-import DestinationDragPreview from "./components/DestinationDragPreview";
+import DestinationDragProvider from "./components/DestinationDragProvider";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -163,8 +163,8 @@ export default function App() {
   const gateOpen = missingDirs.length > 0 || substitutedDirs.length > 0;
 
   return (
+    <DestinationDragProvider>
     <div className="flex h-screen flex-col bg-background text-ink">
-      <DestinationDragPreview />
       {wizardOpen && appData !== null ? (
         <Wizard />
       ) : gateOpen ? (
@@ -535,5 +535,6 @@ export default function App() {
         </span>
       </footer>
     </div>
+    </DestinationDragProvider>
   );
 }

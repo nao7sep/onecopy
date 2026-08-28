@@ -23,14 +23,3 @@ export interface PendingDestinationDrop {
   readonly path: string;
   readonly selection: DestinationSelection;
 }
-
-/** Transient visual truth for the app-owned pointer gesture. It is never
- * operation input: the immutable DestinationSelection above remains the only
- * authority for Move/Copy. */
-export interface DestinationDragPresentation {
-  readonly clientX: number;
-  readonly clientY: number;
-  readonly sourceLabel: string;
-  readonly itemCount: number;
-  readonly thumbHash: string | null;
-}

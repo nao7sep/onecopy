@@ -16,6 +16,7 @@ import {
   type MoveMode,
 } from "../workflows/destinations";
 import type { PendingDestinationDrop } from "../models/destinationTransfer";
+import { useDestinationReceiver } from "./DestinationDragProvider";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -78,9 +79,7 @@ function DirNode({
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const isActive = activePath === entry.path;
-  const dropReady = useDestinationsStore(
-    (state) => state.dragReceiverPath === entry.path,
-  );
+  const receiver = useDestinationReceiver(entry.path);
 
   return (
     <li
@@ -90,10 +89,10 @@ function DirNode({
       aria-expanded={hasChildren ? isOpen : undefined}
     >
       <div
+        ref={receiver.ref}
         data-tree-path={entry.path}
-        data-destination-receiver={entry.path}
         className={`flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
-          dropReady
+          receiver.isDropTarget
             ? "bg-primary-surface ring-2 ring-primary"
             : isActive
               ? "bg-primary-surface ring-1 ring-primary-ring"
@@ -156,9 +155,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const isActive = activePath === root;
-  const dropReady = useDestinationsStore(
-    (state) => state.dragReceiverPath === root,
-  );
+  const receiver = useDestinationReceiver(root);
   return (
     <li
       id={`tree-${encodeURIComponent(root)}`}
@@ -168,10 +165,10 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
       aria-expanded={isOpen}
     >
       <div
+        ref={receiver.ref}
         data-tree-path={root}
-        data-destination-receiver={root}
         className={`flex items-start rounded-md px-1.5 py-1 text-sm transition-colors ${
-          dropReady
+          receiver.isDropTarget
             ? "bg-primary-surface ring-2 ring-primary"
             : isActive
               ? "bg-primary-surface ring-1 ring-primary-ring"
@@ -466,7 +463,6 @@ export default function DestinationsTab() {
           roots — an empty composite is still a landing place. */}
       <ul
         role="tree"
-        data-destination-scroll
         aria-label="Destination folders"
         aria-activedescendant={
           activePath !== null ? `tree-${encodeURIComponent(activePath)}` : undefined
