@@ -7,7 +7,7 @@ import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { cancelDestinationDrag } from "../../src/workflows/destinations";
-import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const dnd = vi.hoisted(() => ({
   provider: null as Record<string, (...args: any[]) => void> | null,
@@ -157,7 +157,7 @@ describe("destination drag transport", () => {
     });
   });
 
-  it("freezes selection at activation and gives a valid release to the workflow", () => {
+  it("freezes selection and gives every valid release to the explicit choice", () => {
     render(
       <DestinationDragProvider>
         <RegistrationHarness />
@@ -180,7 +180,8 @@ describe("destination drag transport", () => {
     act(() => {
       provider.onDragEnd({
         canceled: false,
-        nativeEvent: new PointerEvent("pointerup"),
+        // A modifier no longer makes a silent product decision at release.
+        nativeEvent: { metaKey: true, ctrlKey: false },
         operation: { target: { data: { path: "/keep" } } },
       });
     });
@@ -189,6 +190,9 @@ describe("destination drag transport", () => {
       selection: { items: [{ hash: "h1", pathId: null }] },
     });
     expect(useDestinationsStore.getState().dragSelection).toBeNull();
+    expect(invokeCalls.some(({ command }) => command === "move_items_out")).toBe(
+      false,
+    );
   });
 
   it("cancels silently when release has no semantic receiver", () => {

@@ -14,7 +14,6 @@ import { useDestinationsStore } from "../state/destinations-store";
 import {
   beginDestinationDrag,
   cancelDestinationDrag,
-  moveDestinationSelectionTo,
   takeDestinationDrag,
 } from "../workflows/destinations";
 import DestinationDragPreview from "./DestinationDragPreview";
@@ -79,23 +78,15 @@ export default function DestinationDragProvider({
         const selection = takeDestinationDrag();
         if (selection === null) return;
         useDestinationsStore.getState().setActive(path);
-
-        const nativeEvent = event.nativeEvent as
-          | Pick<MouseEvent, "ctrlKey" | "metaKey">
-          | undefined;
-        if (nativeEvent?.metaKey || nativeEvent?.ctrlKey) {
-          void moveDestinationSelectionTo(path, "copy", selection);
-        } else {
-          useDestinationsStore.getState().setPendingDrop({
-            path,
-            selection,
-          });
-        }
+        useDestinationsStore.getState().setPendingDrop({
+          path,
+          selection,
+        });
       }}
     >
       {children}
       {/* The default return-to-source animation would imply rejection after
-          this receiver has opened Move/Copy or committed Copy. */}
+          this receiver has opened the accepted Move/Copy choice. */}
       <DragOverlay dropAnimation={null}>
         {(source) => (
           <DestinationDragPreview
