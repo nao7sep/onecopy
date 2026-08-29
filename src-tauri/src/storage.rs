@@ -479,8 +479,15 @@ fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), S
     }
 
     // Best-effort: persist the rename itself by fsyncing the directory.
-    if let Ok(dir) = std::fs::File::open(parent) {
-        crate::fs_recovery::sync_all(&dir, parent, "atomic store directory sync");
+    match std::fs::File::open(parent) {
+        Ok(dir) => crate::fs_recovery::sync_all(&dir, parent, "atomic store directory sync"),
+        Err(error) => crate::logging::warn(
+            "atomic store directory could not be opened for sync",
+            serde_json::json!({
+                "path": parent,
+                "error": { "message": error.to_string() },
+            }),
+        ),
     }
 
     if record {

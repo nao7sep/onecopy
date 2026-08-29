@@ -14,6 +14,8 @@ use serde_json::json;
 use tauri::AppHandle;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+const STATE_UNAVAILABLE: &str =
+    "File-operation state is unavailable. Restart OneCopy before changing files.";
 
 struct Active {
     id: u64,
@@ -49,11 +51,16 @@ impl Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        if let Ok(mut active) = RUNTIME.active.lock() {
-            if active.as_ref().map(|entry| entry.id) == Some(self.id) {
-                *active = None;
-                RUNTIME.idle.notify_all();
+        let mut active = match RUNTIME.active.lock() {
+            Ok(active) => active,
+            Err(poisoned) => {
+                crate::logging::error("file-operation state was recovered", json!({}));
+                poisoned.into_inner()
             }
+        };
+        if active.as_ref().map(|entry| entry.id) == Some(self.id) {
+            *active = None;
+            RUNTIME.idle.notify_all();
         }
     }
 }
@@ -65,7 +72,7 @@ fn begin() -> Result<Claim, String> {
     let mut active = RUNTIME
         .active
         .lock()
-        .map_err(|_| "file-operation state is unavailable".to_string())?;
+        .map_err(|_| STATE_UNAVAILABLE.to_string())?;
     if RUNTIME.shutting_down.load(Ordering::SeqCst) {
         return Err("OneCopy is closing; no new file operation can start.".to_string());
     }
@@ -81,39 +88,74 @@ fn begin() -> Result<Claim, String> {
     Ok(Claim { id, cancelled })
 }
 
-pub(crate) fn begin_rebuild() -> Result<impl Drop, String> {
-    begin()
+fn begin_reported(app: &AppHandle) -> Result<Claim, String> {
+    begin().map_err(|error| {
+        if error == STATE_UNAVAILABLE {
+            crate::failure_runtime::report(app, "file-operation-state-failed", None, &error)
+                .err()
+                .unwrap_or(error)
+        } else {
+            error
+        }
+    })
 }
 
-pub(crate) fn request_cancel(id: u64) -> bool {
-    let Ok(active) = RUNTIME.active.lock() else {
-        return false;
+pub(crate) fn begin_rebuild(app: &AppHandle) -> Result<impl Drop, String> {
+    begin_reported(app)
+}
+
+pub(crate) fn request_cancel(id: u64) -> Result<bool, String> {
+    let active = match RUNTIME.active.lock() {
+        Ok(active) => active,
+        Err(poisoned) => {
+            let active = poisoned.into_inner();
+            if let Some(active) = active.as_ref().filter(|active| active.id == id) {
+                active.cancelled.store(true, Ordering::SeqCst);
+            }
+            return Err("file-operation state was recovered; cancellation was requested".to_string());
+        }
     };
     let Some(active) = active.as_ref().filter(|active| active.id == id) else {
-        return false;
+        return Ok(false);
     };
     active.cancelled.store(true, Ordering::SeqCst);
-    true
+    Ok(true)
 }
 
-pub(crate) fn request_shutdown() {
+pub(crate) fn request_shutdown() -> Result<(), String> {
     RUNTIME.shutting_down.store(true, Ordering::SeqCst);
-    if let Ok(active) = RUNTIME.active.lock() {
-        if let Some(active) = active.as_ref() {
-            active.cancelled.store(true, Ordering::SeqCst);
-        }
+    let (active, recovered) = match RUNTIME.active.lock() {
+        Ok(active) => (active, false),
+        Err(poisoned) => (poisoned.into_inner(), true),
+    };
+    if let Some(active) = active.as_ref() {
+        active.cancelled.store(true, Ordering::SeqCst);
+    }
+    if recovered {
+        Err("file-operation state was recovered during shutdown".to_string())
+    } else {
+        Ok(())
     }
 }
 
-pub(crate) fn wait_for_idle() {
-    let Ok(mut active) = RUNTIME.active.lock() else {
-        return;
+pub(crate) fn wait_for_idle() -> Result<(), String> {
+    let (mut active, mut recovered) = match RUNTIME.active.lock() {
+        Ok(active) => (active, false),
+        Err(poisoned) => (poisoned.into_inner(), true),
     };
     while active.is_some() {
-        match RUNTIME.idle.wait(active) {
-            Ok(next) => active = next,
-            Err(_) => return,
-        }
+        active = match RUNTIME.idle.wait(active) {
+            Ok(next) => next,
+            Err(poisoned) => {
+                recovered = true;
+                poisoned.into_inner()
+            }
+        };
+    }
+    if recovered {
+        Err("file-operation state was recovered while waiting for shutdown".to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -216,7 +258,7 @@ pub(crate) fn delete_items(
 ) -> Result<crate::operations::DeleteBatchOutcome, String> {
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
-    let mutation = begin()?;
+    let mutation = begin_reported(app)?;
     let _index = crate::scan_runtime::begin_foreground(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
@@ -371,7 +413,7 @@ pub(crate) fn move_items_out(
     };
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
-    let mutation = begin()?;
+    let mutation = begin_reported(app)?;
     let _index = crate::scan_runtime::begin_foreground(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
@@ -532,6 +574,8 @@ fn mode_string(mode: crate::operations::MoveOutMode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: the process-wide mutation claim
+    // is private lifecycle state and has no public application contract.
     use super::*;
 
     #[test]
@@ -539,13 +583,13 @@ mod tests {
         let first = begin().unwrap();
         let first_id = first.id();
         assert!(begin().is_err());
-        assert!(request_cancel(first_id));
+        assert!(request_cancel(first_id).unwrap());
         assert!(first.cancelled());
         drop(first);
 
         let second = begin().unwrap();
         assert_ne!(second.id(), first_id);
-        assert!(!request_cancel(first_id));
+        assert!(!request_cancel(first_id).unwrap());
         assert!(!second.cancelled());
     }
 }

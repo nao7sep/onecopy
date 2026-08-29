@@ -497,12 +497,19 @@ pub(crate) fn publish_staged(staged: &Path, target: &Path) -> Result<(), String>
     // directory entry too where the platform permits opening a directory; this
     // mirrors storage::write_atomic and is deliberately best-effort.
     if let Some(parent) = target.parent() {
-        if let Ok(directory) = std::fs::File::open(parent) {
-            crate::fs_recovery::sync_all(
+        match std::fs::File::open(parent) {
+            Ok(directory) => crate::fs_recovery::sync_all(
                 &directory,
                 parent,
                 "managed dependency publication sync",
-            );
+            ),
+            Err(error) => crate::logging::warn(
+                "managed dependency directory could not be opened for sync",
+                serde_json::json!({
+                    "path": parent,
+                    "error": { "message": error.to_string() },
+                }),
+            ),
         }
     }
     Ok(())

@@ -85,8 +85,18 @@ pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
         "media-use://release",
         json!({ "token": token, "keys": keys }),
     ) {
-        if let Ok(mut releases) = RELEASES.0.lock() {
-            releases.remove(&token);
+        match RELEASES.0.lock() {
+            Ok(mut releases) => {
+                releases.remove(&token);
+            }
+            Err(_) => {
+                let _ = crate::failure_runtime::report(
+                    app,
+                    "media-use-state-failed",
+                    None,
+                    "Media ownership state is unavailable. Restart OneCopy before changing files.",
+                );
+            }
         }
         return Err(format!("could not request media release: {error}"));
     }

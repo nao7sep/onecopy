@@ -271,8 +271,17 @@ fn fail(app: &AppHandle, error: &str) {
 }
 
 fn emit_state(app: &AppHandle) {
-    let Ok(data_root) = crate::paths::data_root(app) else {
-        return;
+    let data_root = match crate::paths::data_root(app) {
+        Ok(data_root) => data_root,
+        Err(error) => {
+            let _ = crate::failure_runtime::report(
+                app,
+                "file-information-state-failed",
+                None,
+                &format!("File-information state is unavailable: {error}"),
+            );
+            return;
+        }
     };
     emit(app, "file-information://state", snapshot(&data_root));
 }

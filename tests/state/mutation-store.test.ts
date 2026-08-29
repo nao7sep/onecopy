@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { MutationProgress } from "../../src/models/mutation";
+import { useItemsStore } from "../../src/state/items-store";
 import { useMutationStore } from "../../src/state/mutation-store";
 import { installMutationEventWiring } from "../../src/workflows/mutation-events";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -23,6 +24,7 @@ const PROGRESS: MutationProgress = {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   useMutationStore.setState({ progress: null, cancelling: false });
+  useItemsStore.setState({ message: "" });
 });
 
 describe("the shared mutation activity projection", () => {
@@ -46,5 +48,15 @@ describe("the shared mutation activity projection", () => {
       progress: null,
       cancelling: false,
     });
+  });
+
+  it("keeps a cancellation command failure visible", async () => {
+    mockCommands({ mutation_cancel: () => Promise.reject(new Error("runtime unavailable")) });
+    useMutationStore.setState({ progress: PROGRESS });
+
+    await useMutationStore.getState().cancel();
+
+    expect(useMutationStore.getState().cancelling).toBe(false);
+    expect(useItemsStore.getState().message).toBe("Couldn’t cancel the file operation.");
   });
 });

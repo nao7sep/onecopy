@@ -56,15 +56,30 @@ pub struct RuntimeSnapshot {
 
 static RUNTIME: LazyLock<(Mutex<RuntimeState>, Condvar)> =
     LazyLock::new(|| (Mutex::new(RuntimeState::default()), Condvar::new()));
-static POISON_REPORTED: std::sync::atomic::AtomicBool =
+static POISON_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static POISON_ISSUE_REPORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-fn report_poison_once() {
-    if !POISON_REPORTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+fn report_poison_once(app: Option<&AppHandle>) {
+    if !POISON_LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         crate::logging::error(
             "background-work state is unavailable",
             serde_json::json!({}),
         );
+    }
+    if let Some(app) = app {
+        if !POISON_ISSUE_REPORTED.load(std::sync::atomic::Ordering::SeqCst)
+            && crate::failure_runtime::report(
+                app,
+                "background-work-state-failed",
+                None,
+                "Background-work state is unavailable. Restart OneCopy to repair it.",
+            )
+            .is_ok()
+        {
+            POISON_ISSUE_REPORTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 }
 
@@ -76,7 +91,7 @@ struct ActiveGuard {
 impl ActiveGuard {
     fn begin(app: &AppHandle, class: WorkClass) -> Result<Option<Self>, String> {
         let mut runtime = RUNTIME.0.lock().map_err(|_| {
-            report_poison_once();
+            report_poison_once(Some(app));
             "background-work state is unavailable".to_string()
         })?;
         if runtime.exclusive || runtime.paused(class) || runtime.active.is_some() {
@@ -108,7 +123,7 @@ impl Drop for ActiveGuard {
                 RUNTIME.1.notify_all();
             }
         } else {
-            report_poison_once();
+            report_poison_once(Some(&self.app));
         }
         emit_state_changed(&self.app);
     }
@@ -135,7 +150,10 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
     let mut runtime = RUNTIME
         .0
         .lock()
-        .map_err(|_| "background-work state is unavailable".to_string())?;
+        .map_err(|_| {
+            report_poison_once(Some(app));
+            "background-work state is unavailable".to_string()
+        })?;
     if runtime.exclusive {
         return Err("A file operation is using the media boundary.".to_string());
     }
@@ -155,13 +173,19 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
         runtime = RUNTIME
             .0
             .lock()
-            .map_err(|_| "background-work state is unavailable".to_string())?;
+            .map_err(|_| {
+                report_poison_once(Some(app));
+                "background-work state is unavailable".to_string()
+            })?;
         let (next, waited) = RUNTIME
             .1
             .wait_timeout_while(runtime, Duration::from_secs(10), |state| {
                 state.active.is_some()
             })
-            .map_err(|_| "background-work state is unavailable".to_string())?;
+            .map_err(|_| {
+                report_poison_once(Some(app));
+                "background-work state is unavailable".to_string()
+            })?;
         runtime = next;
         if waited.timed_out() && runtime.active.is_some() {
             return Err("Background work is still stopping. Try again shortly.".to_string());
@@ -206,7 +230,7 @@ impl Drop for ExclusiveGuard {
             runtime.preempt_requested = false;
             RUNTIME.1.notify_all();
         } else {
-            report_poison_once();
+            report_poison_once(Some(&self.app));
         }
         emit_state_changed(&self.app);
     }
@@ -216,7 +240,10 @@ pub fn begin_exclusive(app: &AppHandle) -> Result<ExclusiveGuard, String> {
     let mut runtime = RUNTIME
         .0
         .lock()
-        .map_err(|_| "background-work state is unavailable".to_string())?;
+        .map_err(|_| {
+            report_poison_once(Some(app));
+            "background-work state is unavailable".to_string()
+        })?;
     if runtime.exclusive {
         return Err("Another file operation is already running.".to_string());
     }
@@ -231,13 +258,19 @@ pub fn begin_exclusive(app: &AppHandle) -> Result<ExclusiveGuard, String> {
         runtime = RUNTIME
             .0
             .lock()
-            .map_err(|_| "background-work state is unavailable".to_string())?;
+            .map_err(|_| {
+                report_poison_once(Some(app));
+                "background-work state is unavailable".to_string()
+            })?;
         let (next, waited) = RUNTIME
             .1
             .wait_timeout_while(runtime, Duration::from_secs(10), |state| {
                 state.active.is_some()
             })
-            .map_err(|_| "background-work state is unavailable".to_string())?;
+            .map_err(|_| {
+                report_poison_once(Some(app));
+                "background-work state is unavailable".to_string()
+            })?;
         runtime = next;
         if waited.timed_out() && runtime.active.is_some() {
             runtime.exclusive = false;
@@ -258,7 +291,10 @@ pub(crate) fn exclusive() -> bool {
         .0
         .lock()
         .map(|runtime| runtime.exclusive)
-        .unwrap_or(true)
+        .unwrap_or_else(|_| {
+            report_poison_once(None);
+            true
+        })
 }
 
 fn paused_message(class: WorkClass) -> String {
@@ -273,7 +309,10 @@ pub(crate) fn is_paused(class: WorkClass) -> bool {
         .0
         .lock()
         .map(|runtime| runtime.paused(class))
-        .unwrap_or(true)
+        .unwrap_or_else(|_| {
+            report_poison_once(None);
+            true
+        })
 }
 
 /// Shared by every owned ffmpeg process. A pause kills its child within the
@@ -293,7 +332,7 @@ pub fn cancelled() -> bool {
                     .unwrap_or(false)
         })
         .unwrap_or_else(|_| {
-            report_poison_once();
+            report_poison_once(None);
             true
         })
 }
@@ -303,7 +342,10 @@ pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<
         let mut runtime = RUNTIME
             .0
             .lock()
-            .map_err(|_| "background-work state is unavailable".to_string())?;
+            .map_err(|_| {
+                report_poison_once(Some(app));
+                "background-work state is unavailable".to_string()
+            })?;
         match class {
             None => runtime.master_paused = paused,
             Some(id) => {
@@ -346,6 +388,8 @@ pub(crate) fn progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u
             active.done = done;
             active.total = total;
         }
+    } else {
+        report_poison_once(Some(app));
     }
     crate::failure_runtime::emit_or_record(
         app,
@@ -360,6 +404,8 @@ pub(crate) fn active_item(app: &AppHandle, class: WorkClass, hash: &str) {
         if runtime.active.map(|active| active.class) == Some(class) {
             runtime.active_hash = Some(hash.to_string());
         }
+    } else {
+        report_poison_once(Some(app));
     }
     emit_state_changed(app);
 }
@@ -371,10 +417,8 @@ pub fn report_manual_progress(app: &AppHandle, class: &str, done: u64, total: u6
 }
 
 pub(crate) fn emit_state_changed(app: &AppHandle) {
-    let payload = RUNTIME
-        .0
-        .lock()
-        .map(|runtime| {
+    let payload = match RUNTIME.0.lock() {
+        Ok(runtime) => {
             let paused_classes = WorkClass::ALL
                 .into_iter()
                 .filter(|class| runtime.paused_classes & class.bit() != 0)
@@ -391,8 +435,12 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
                     "stopping": runtime.preempt_requested || runtime.paused(active.class),
                 })),
             })
-        })
-        .unwrap_or_else(|_| json!({}));
+        }
+        Err(_) => {
+            report_poison_once(Some(app));
+            return;
+        }
+    };
     crate::failure_runtime::emit_or_record(app, "derived://state-changed", payload);
 }
 
@@ -401,7 +449,10 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
         let runtime = RUNTIME
             .0
             .lock()
-            .map_err(|_| "background-work state is unavailable".to_string())?;
+            .map_err(|_| {
+                report_poison_once(None);
+                "background-work state is unavailable".to_string()
+            })?;
         (
             runtime.master_paused,
             runtime.paused_classes,

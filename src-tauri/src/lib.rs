@@ -273,7 +273,7 @@ fn rebuild_library_index(app: AppHandle) -> Result<(), String> {
             // The mutation claim makes the contract race-free: an active file
             // operation rejects this command, and no new one can begin while
             // the reconstructible database facts are being cleared.
-            let _rebuild = mutation_runtime::begin_rebuild()?;
+            let _rebuild = mutation_runtime::begin_rebuild(&app)?;
             let _media = media_use::begin(&app, &[])?;
             scan_runtime::run_foreground(&app, || {
                 let data_root = paths::data_root(&app)?;
@@ -354,8 +354,17 @@ fn delete_items(
 }
 
 #[tauri::command(async)]
-fn mutation_cancel(operation_id: u64) -> bool {
-    mutation_runtime::request_cancel(operation_id)
+fn mutation_cancel(app: AppHandle, operation_id: u64) -> Result<bool, String> {
+    mutation_runtime::request_cancel(operation_id).map_err(|error| {
+        failure_runtime::report(
+            &app,
+            "file-operation-state-failed",
+            None,
+            &error,
+        )
+        .err()
+        .unwrap_or(error)
+    })
 }
 
 // One (kind, month) section's grid items, same month keys and timezone as the
@@ -1964,7 +1973,14 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { api, .. } => {
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
-            mutation_runtime::request_shutdown();
+            if let Err(error) = mutation_runtime::request_shutdown() {
+                let _ = failure_runtime::report(
+                    app_handle,
+                    "shutdown-worker-failed",
+                    None,
+                    &error,
+                );
+            }
             api.prevent_exit();
             if !EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 let handle = app_handle.clone();
@@ -1975,7 +1991,14 @@ pub fn run() {
                         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             source_check_runtime::join();
                             file_information_runtime::join();
-                            mutation_runtime::wait_for_idle();
+                            if let Err(error) = mutation_runtime::wait_for_idle() {
+                                let _ = failure_runtime::report(
+                                    &handle,
+                                    "shutdown-worker-failed",
+                                    None,
+                                    &error,
+                                );
+                            }
                             let media = media_use::begin(&handle, &[]);
                             if let Err(error) = &media {
                                 let _ = failure_runtime::report(

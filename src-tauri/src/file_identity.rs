@@ -194,8 +194,20 @@ pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::pat
 /// Best-effort cleanup of a private staging pathname. Callers never use this
 /// for a public committed target; public targets are never unlinked as rollback.
 pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
-    if let Ok(hold) = claim_private(path, expected) {
-        crate::fs_recovery::remove_file(&hold, "private staging cleanup");
+    match claim_private(path, expected) {
+        Ok(hold) => crate::fs_recovery::remove_file(&hold, "private staging cleanup"),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::AlreadyExists
+            ) => {}
+        Err(error) => crate::logging::warn(
+            "private staging claim failed during cleanup",
+            serde_json::json!({
+                "path": path,
+                "error": { "message": error.to_string() },
+            }),
+        ),
     }
 }
 

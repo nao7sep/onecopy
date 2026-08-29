@@ -783,11 +783,36 @@ pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, Strin
 
     for sub in ["thumbs", "previews", "fullres", "transcripts"] {
         let tree = cache.root.join(sub);
-        if !tree.exists() {
+        let tree_exists = match tree.try_exists() {
+            Ok(exists) => exists,
+            Err(error) => {
+                crate::logging::warn(
+                    "cache tree inspection failed",
+                    serde_json::json!({
+                        "path": tree,
+                        "error": { "message": error.to_string() },
+                    }),
+                );
+                continue;
+            }
+        };
+        if !tree_exists {
             continue;
         }
         for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
-            let Ok(entry) = entry else { continue };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    crate::logging::warn(
+                        "cache tree traversal failed",
+                        serde_json::json!({
+                            "path": tree,
+                            "error": { "message": error.to_string() },
+                        }),
+                    );
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -806,8 +831,18 @@ pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, Strin
                 // Stranded temps (or anything foreign) in a reconstructible tree.
                 name.ends_with(".tmp")
             };
-            if orphan && std::fs::remove_file(entry.path()).is_ok() {
-                removed += 1;
+            if orphan {
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => removed = removed.saturating_add(1),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => crate::logging::warn(
+                        "stale cache entry removal failed",
+                        serde_json::json!({
+                            "path": entry.path(),
+                            "error": { "message": error.to_string() },
+                        }),
+                    ),
+                }
             }
         }
     }
