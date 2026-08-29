@@ -11,8 +11,10 @@ import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
 
 export async function saveSettings(): Promise<void> {
-  const { draft, timezoneValid, timezonePending } = useSettingsStore.getState();
+  const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
   if (!draft || !timezoneValid || timezonePending) return;
+  const sourceDirsChanged =
+    opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
   useSettingsStore.setState({ saving: true, message: "" });
   // Config publication is the Save transaction's commit point. Index
   // projection is durable follow-up work: once publication succeeds, close
@@ -52,6 +54,13 @@ export async function saveSettings(): Promise<void> {
     ]);
   } catch (error) {
     log.error("settings projections refresh failed", toErrorFields(error));
+  }
+  if (sourceDirsChanged) {
+    try {
+      await useSectionsStore.getState().startSourceCheck();
+    } catch (error) {
+      log.error("source-folder check failed to start after settings save", toErrorFields(error));
+    }
   }
   log.info("settings saved", { resolved });
 }

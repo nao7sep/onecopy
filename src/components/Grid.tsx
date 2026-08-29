@@ -397,7 +397,7 @@ export default function Grid({
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
   const selectedSection = useItemsStore((s) => s.selected);
-  const scanning = useSectionsStore((s) => s.scanning);
+  const sourceChecking = useSectionsStore((s) => s.sourceCheck.running);
   const activeWork = useDerivedWorkStore((s) => s.activeItem);
   const showFaceStars = useAppStore(
     (state) => state.appData?.config?.showFaceStars !== false,
@@ -644,10 +644,10 @@ export default function Grid({
         <button
           className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
           title="Re-check only the directories this section's files came from"
-          disabled={scanning}
+          disabled={sourceChecking}
           onClick={() => void rescanCurrentSection()}
         >
-          {scanning ? "Indexing…" : "Rescan section"}
+          {sourceChecking ? "Unavailable while checking source folders" : "Recheck this section"}
         </button>
         <label htmlFor="grid-sort">Sort</label>
         <select

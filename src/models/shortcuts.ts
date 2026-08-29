@@ -86,6 +86,7 @@ export function shortcutGroups(): ShortcutGroup[] {
       title: "App",
       context: "anywhere",
       rows: [
+        { chord: `${mod}+R`, action: "Recheck this section" },
         { chord: `${mod}+Comma`, action: "Settings" },
         { chord: `${mod}+Slash / Question`, action: "This help" },
         { chord: `${mod}+Equal/Plus/Semicolon`, action: "Zoom in" },

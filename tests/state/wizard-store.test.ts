@@ -17,7 +17,7 @@ beforeEach(() => {
     patch_config: () => ({}),
     patch_state: () => ({}),
     check_source_dirs: () => ({ missing: [], substituted: [] }),
-    start_scan: () => true,
+    start_source_check: () => true,
     get_section_counts: () => [],
   });
   useWizardStore.setState({

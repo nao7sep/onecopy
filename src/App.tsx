@@ -70,16 +70,18 @@ export default function App() {
   const appData = useAppStore((s) => s.appData);
   const loadError = useAppStore((s) => s.loadError);
   const counts = useSectionsStore((s) => s.counts);
-  const scanning = useSectionsStore((s) => s.scanning);
-  const stoppingScan = useSectionsStore((s) => s.stopping);
-  const progress = useSectionsStore((s) => s.progress);
+  const sourceCheck = useSectionsStore((s) => s.sourceCheck);
+  const fileInformation = useSectionsStore((s) => s.fileInformation);
+  const scanning = sourceCheck.running || fileInformation.running;
+  const stoppingScan = sourceCheck.stopping || fileInformation.stopping;
+  const progress = sourceCheck.progress ?? fileInformation.progress;
   const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
   const itemsMessage = useItemsStore((s) => s.message);
   const mutationProgress = useMutationStore((s) => s.progress);
   const mutationCancelling = useMutationStore((s) => s.cancelling);
   const cancelMutation = useMutationStore((s) => s.cancel);
-  const startScan = useSectionsStore((s) => s.startScan);
-  const cancelScan = useSectionsStore((s) => s.cancelScan);
+  const startSourceCheck = useSectionsStore((s) => s.startSourceCheck);
+  const stopSourceCheck = useSectionsStore((s) => s.stopSourceCheck);
   const selected = useItemsStore((s) => s.selected);
   const items = useItemsStore((s) => s.items);
   const itemsLoading = useItemsStore((s) => s.loading);
@@ -146,6 +148,7 @@ export default function App() {
       ? null
       : { progress: mutationProgress, cancelling: mutationCancelling },
     scanning,
+    workKind: sourceCheck.running ? "source-check" : "file-information",
     stopping: stoppingScan,
     progress,
     rescanNeeded,
@@ -233,8 +236,11 @@ export default function App() {
                 </button>
               )}
             >
-              <MenuItem disabled={scanning} onSelect={() => void startScan()}>
-                {scanning ? "Scanning…" : "Scan all sources"}
+              <MenuItem
+                disabled={sourceCheck.running}
+                onSelect={() => void startSourceCheck()}
+              >
+                {sourceCheck.running ? "Checking source folders…" : "Check source folders"}
               </MenuItem>
               <MenuItem
                 onSelect={() =>
@@ -324,11 +330,10 @@ export default function App() {
               mayClaimFocus={!wizardOpen && !gateOpen}
             />
           ) : allEmpty ? (
-            // Mid-scan the counts are empty because nothing has been indexed
-            // YET, not because there is nothing — the same distinction the
-            // sidebar's empty state makes.
+            // While library work is active, empty counts do not yet prove the
+            // configured sources have nothing to handle.
             <p className="m-auto text-ink-muted">
-              {scanning ? "Scanning…" : "Nothing to handle"}
+              {scanning ? "Updating library…" : "Nothing to handle"}
             </p>
           ) : (
             <p className="m-auto text-ink-muted">Select a month</p>
@@ -478,14 +483,14 @@ export default function App() {
               {mutationCancelling ? "Stopping…" : "Stop file operation"}
             </button>
           ) : null}
-          {scanning ? (
+          {sourceCheck.running ? (
             <button
               className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
-              disabled={stoppingScan}
+              disabled={sourceCheck.stopping}
               title="Stop safely after the current cancellable read, file, or durable step"
-              onClick={() => void cancelScan()}
+              onClick={() => void stopSourceCheck()}
             >
-              {stoppingScan ? "Stopping…" : "Stop indexing"}
+              {sourceCheck.stopping ? "Stopping…" : "Stop checking source folders"}
             </button>
           ) : null}
           {/* Why the fans spin while work runs in the background. */}

@@ -11,6 +11,7 @@ mod binaries_acquisition;
 pub mod binaries_manager;
 pub mod extensions;
 pub mod file_identity;
+pub mod file_information_runtime;
 pub mod fs_publish;
 pub mod hashing;
 pub mod face;
@@ -35,6 +36,7 @@ pub mod scanner;
 pub mod scan_runtime;
 pub mod similarity;
 pub mod similar_exclusions;
+pub mod source_check_runtime;
 pub mod storage;
 pub mod subprocess;
 pub mod timestamps;
@@ -139,6 +141,12 @@ fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
         "patch_config",
         json!({}),
         || {
+            let previous_source_dirs = if patch.get("sourceDirs").is_some() {
+                let data_root = paths::data_root(&app)?;
+                Some(storage::load_config_source_dirs(&data_root)?)
+            } else {
+                None
+            };
             if let Some(value) = patch.get_mut("defaultTimezone") {
                 let name = value
                     .as_str()
@@ -147,6 +155,23 @@ fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
             }
             let outcome = storage::patch_config(&app, &patch)?;
             report_quarantine(&app, outcome.quarantined);
+            let current_source_dirs = outcome
+                .merged
+                .get("sourceDirs")
+                .and_then(Value::as_array)
+                .map(|dirs| {
+                    dirs.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if previous_source_dirs
+                .as_ref()
+                .is_some_and(|previous| previous != &current_source_dirs)
+            {
+                watcher::start(app.clone(), current_source_dirs);
+            }
             Ok(outcome.merged)
         },
         |_| json!({}),
@@ -178,21 +203,58 @@ fn cache_root() -> Option<std::path::PathBuf> {
         .map(|root| root.join(storage::CACHE_DIR_NAME))
 }
 
-// Launches the index pipeline (walk → hash → extract → resolve → pair) on a
-// worker thread. Progress arrives as `scan://progress` events,
-// completion as `scan://done` (with the summary) or `scan://error`. Returns
-// false when a scan is already running.
 #[tauri::command(async)]
-fn start_scan(app: AppHandle) -> Result<bool, String> {
-    scan_runtime::start(app, true)
+fn start_source_check(app: AppHandle) -> Result<bool, String> {
+    source_check_runtime::start(app)
 }
 
-// Requests cooperative cancellation. The worker stops at the current
-// cancellable read or independently safe file/row boundary, emits
-// `scan://done { cancelled: true }`, and leaves unfinished checkpoints owed.
 #[tauri::command(async)]
-fn cancel_scan() -> bool {
-    scan_runtime::request_cancel()
+fn stop_source_check(app: AppHandle) -> bool {
+    source_check_runtime::stop(&app)
+}
+
+#[tauri::command]
+fn set_file_information_paused(app: AppHandle, paused: bool) {
+    file_information_runtime::set_paused(app, paused);
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexWorkSnapshot {
+    source_check: source_check_runtime::Snapshot,
+    file_information: file_information_runtime::Snapshot,
+}
+
+#[tauri::command(async)]
+fn index_work_snapshot(app: AppHandle) -> Result<IndexWorkSnapshot, String> {
+    let data_root = paths::data_root(&app)?;
+    Ok(IndexWorkSnapshot {
+        source_check: source_check_runtime::snapshot(),
+        file_information: file_information_runtime::snapshot(&data_root),
+    })
+}
+
+#[tauri::command(async)]
+fn rebuild_library_index(app: AppHandle) -> Result<(), String> {
+    logging::boundary(
+        "rebuild_library_index",
+        json!({}),
+        || {
+            // The mutation claim makes the contract race-free: an active file
+            // operation rejects this command, and no new one can begin while
+            // the reconstructible database facts are being cleared.
+            let _rebuild = mutation_runtime::begin_rebuild()?;
+            let _media = media_use::begin(&app, &[])?;
+            scan_runtime::run_foreground(&app, || {
+                let data_root = paths::data_root(&app)?;
+                let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+                index_store::clear_reconstructible(&conn)
+            })?;
+            let _ = source_check_runtime::start(app.clone())?;
+            Ok(())
+        },
+        |_| json!({}),
+    )
 }
 
 #[derive(serde::Serialize, Default)]
@@ -510,7 +572,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
     logging::boundary(
         "re_resolve_all",
         json!({}),
-        || scan_runtime::run_inline(&app, |progress| {
+        || scan_runtime::run_foreground(&app, || {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
@@ -523,13 +585,12 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
             // atomic projection, so retain the existing coarse dirty-root
             // receipt across the whole Settings rebuild; cancellation before
             // publication must make a later index repair retry it.
-            let repair_roots =
-                scanner::begin_scoped_index_repair(&conn, &settings.source_dirs)?;
+            let repair_roots = scanner::begin_scoped_index_repair(&conn, &settings.source_dirs)?;
             let stats = scanner::re_resolve_all_with_progress(
                 &conn,
                 &settings.resolution,
                 settings.pairing_enabled,
-                progress,
+                &|_| {},
             )?;
             scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
             derived_work::wake(true);
@@ -547,7 +608,7 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
     logging::boundary(
         "rescan_section",
         json!({ "kind": kind, "month": month }),
-        || scan_runtime::run_inline(&app, |progress| {
+        || scan_runtime::run_section(&app, || {
             let data_root = paths::data_root(&app)?;
             let config = storage::read_config_for_setup(&data_root)?;
             let settings = scanner::settings_from_config(
@@ -559,33 +620,13 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
             let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
             let repair_roots = scanner::begin_scoped_index_repair(&conn, &dirs)?;
             let mut changed = 0u64;
-            let total = dirs.len() as u64;
-            for (index, dir) in dirs.iter().enumerate() {
-                progress(scanner::ScanProgress::directory_walk(
-                    index as u64,
-                    total,
-                    dir,
-                    0,
-                    scanner::ScanPhase::Hash,
-                ));
+            for dir in &dirs {
                 changed += watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists)?;
             }
             // Finish any interrupted index checkpoints too. Derived media is
             // woken after the index tail instead of being smuggled into the
             // rescan command.
             let tail_owed = changed > 0 || scanner::pending_index_work_exists(&conn)?;
-            if total > 0 {
-                progress(scanner::ScanProgress::phase_completed(
-                    scanner::ScanPhase::Walk,
-                    total,
-                    0,
-                    Some(if tail_owed {
-                        scanner::ScanPhase::Hash
-                    } else {
-                        scanner::ScanPhase::Indexed
-                    }),
-                ));
-            }
             if tail_owed {
                 let mut summary = scanner::ScanSummary::default();
                 scanner::run_index_tail_for_dirs(
@@ -596,13 +637,6 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
                     &mut summary,
                 )?;
                 derived_work::wake(true);
-            } else {
-                progress(scanner::ScanProgress::phase_completed(
-                    scanner::ScanPhase::Indexed,
-                    1,
-                    0,
-                    None,
-                ));
             }
             scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
             Ok(changed)
@@ -1103,7 +1137,11 @@ fn recheck_issue(app: AppHandle, id: i64) -> Result<issue_recovery::RecheckResul
             // Recheck itself is one bounded path/directory probe. Any durable
             // index debt it reveals resumes through the one existing worker,
             // with its normal cancellation and progress surface.
-            let _ = scan_runtime::start(app.clone(), include_walk)?;
+            if include_walk {
+                let _ = source_check_runtime::start(app.clone())?;
+            } else {
+                file_information_runtime::wake(app.clone());
+            }
             Ok(issue_recovery::RecheckResult::Started)
         },
         |result| json!({ "result": result }),
@@ -1544,35 +1582,23 @@ pub fn run() {
                 }
             }
 
-            // Auto-resume: an interrupted scan leaves checkpointed pending
-            // rows (unhashed media, underived images/videos); pick the work
-            // back up without waiting for the user to press Scan. Includes the
-            // WALK when a root was never walked to completion — the tail alone
-            // cannot recover directories that have no rows at all, and would
-            // otherwise report clean forever over a half-indexed library.
-            // ALWAYS walk at startup when roots are configured. The watcher
-            // only runs while the app runs, so anything added while it was
-            // closed has no row at all — and every row-level probe is blind to
-            // a file it has never seen. Without this the app opens on a
-            // silently incomplete library and nothing on screen says so, which
-            // is precisely the daily case in the Goal: an inflow directory
-            // fills up while the app is not running.
-            //
-            // The cost is bounded by what already exists: the walk is
-            // stat-only (unchanged size+mtime skips all content work), runs on
-            // a worker thread, reports progress in the footer, and is
-            // cancellable — quitting stops it and the next launch resumes.
+            // Pending rows are independent of source discovery and always get
+            // an opportunity to finish. The stat-only source walk is a
+            // separate optional launch job because it exists to discover work
+            // performed while OneCopy was closed.
+            file_information_runtime::wake(app.handle().clone());
             let configured = storage::load_config_source_dirs(&data_root).unwrap_or_default();
-            if !configured.is_empty() {
-                logging::info("scan started at launch", json!({ "roots": configured.len() }));
-                let _ = scan_runtime::start(app.handle().clone(), true);
-            } else {
-                // No roots yet (first run): only finish work already begun.
-                let (resume, needs_walk) = scan_runtime::resume_plan(&data_root);
-                if resume {
-                    logging::info("scan resumed at startup", json!({ "walk": needs_walk }));
-                    let _ = scan_runtime::start(app.handle().clone(), needs_walk);
-                }
+            let check_sources_at_launch = setup_config
+                .as_ref()
+                .and_then(|config| config.get("checkSourceFoldersAtLaunch"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            if check_sources_at_launch && !configured.is_empty() {
+                logging::info(
+                    "source-folder check started at launch",
+                    json!({ "roots": configured.len() }),
+                );
+                let _ = source_check_runtime::start(app.handle().clone());
             }
 
             logging::info(
@@ -1595,8 +1621,11 @@ pub fn run() {
             load_app_data,
             patch_config,
             patch_state,
-            start_scan,
-            cancel_scan,
+            start_source_check,
+            stop_source_check,
+            set_file_information_paused,
+            index_work_snapshot,
+            rebuild_library_index,
             get_section_counts,
             get_section_items,
             get_item_detail,
@@ -1675,13 +1704,15 @@ pub fn run() {
         // the worker starts winding down, then join it at Exit — bounded by
         // the per-item cancel checks — so no SQLite write is killed halfway.
         tauri::RunEvent::ExitRequested { api, .. } => {
-            scan_runtime::request_cancel();
+            source_check_runtime::shutdown(app_handle);
+            file_information_runtime::shutdown(app_handle);
             mutation_runtime::request_shutdown();
             api.prevent_exit();
             if !EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 let handle = app_handle.clone();
                 std::thread::spawn(move || {
-                    scan_runtime::join();
+                    source_check_runtime::join();
+                    file_information_runtime::join();
                     mutation_runtime::wait_for_idle();
                     let media = media_use::begin(&handle, &[]);
                     if let Err(error) = &media {
@@ -1696,8 +1727,10 @@ pub fn run() {
             }
         }
         tauri::RunEvent::Exit => {
-            scan_runtime::request_cancel();
-            scan_runtime::join();
+            source_check_runtime::shutdown(app_handle);
+            file_information_runtime::shutdown(app_handle);
+            source_check_runtime::join();
+            file_information_runtime::join();
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
         _ => {}

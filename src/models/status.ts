@@ -55,6 +55,7 @@ export function statusLine(input: {
   message: string | null;
   mutation: { progress: MutationProgress; cancelling: boolean } | null;
   scanning: boolean;
+  workKind?: "source-check" | "file-information";
   stopping: boolean;
   progress: ScanProgress | null;
   rescanNeeded: boolean;
@@ -75,15 +76,21 @@ export function statusLine(input: {
     };
   }
   if (input.scanning) {
+    const sourceCheck = input.workKind === "source-check";
     if (input.stopping) {
       return {
         tone: "normal",
-        text: "Stopping indexing…",
-        title: "Finishing the current cancellable read, file, or durable step; unfinished work remains owed for the next scan.",
+        text: sourceCheck
+          ? "Stopping source-folder check…"
+          : "Pausing file-information work…",
+        title: "Finishing the current safe step; unfinished work remains queued.",
       };
     }
     return input.progress === null
-      ? { tone: "normal", text: "Scanning…" }
+      ? {
+          tone: "normal",
+          text: sourceCheck ? "Checking source folders…" : "Completing file information…",
+        }
       : {
           tone: "normal",
           text: progressLine(input.progress),
@@ -93,8 +100,8 @@ export function statusLine(input: {
   if (input.rescanNeeded) {
     return {
       tone: "warning",
-      text: "Rescan needed",
-      title: "Indexing stopped before the library was fully repaired — run Scan all sources to finish it",
+      text: "Source-folder check needed",
+      title: "OneCopy may have missed filesystem changes — run Check source folders to reconcile them",
     };
   }
   if (input.counts === null) {

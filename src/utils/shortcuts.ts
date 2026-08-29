@@ -53,6 +53,11 @@ export function isSettingsShortcut(event: KeyboardEvent): boolean {
   return hasMod(event) && event.key === ",";
 }
 
+/** Cmd/Ctrl+R — recheck the filesystem locations in the open section. */
+export function isSectionRecheckShortcut(event: KeyboardEvent): boolean {
+  return hasMod(event) && event.key.toLowerCase() === "r" && !event.shiftKey;
+}
+
 /** INPUT types that consume printable keys. A checkbox, radio, range, button
  * or file picker does not, so a chord must NOT stand down over one (the
  * keyboard-shortcut-conventions name these explicitly). The empty string is

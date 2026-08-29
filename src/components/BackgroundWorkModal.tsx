@@ -1,4 +1,4 @@
-import { Pause, Play } from "lucide-react";
+import { Pause, Play, Square } from "lucide-react";
 import {
   backgroundClassLabel,
   type BackgroundClassSnapshot,
@@ -6,6 +6,7 @@ import {
 } from "../state/derived-work-store";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
+import { useSectionsStore } from "../state/sections-store";
 
 function stateText(row: BackgroundClassSnapshot): string {
   switch (row.state) {
@@ -48,6 +49,13 @@ export default function BackgroundWorkModal() {
   const error = useDerivedWorkStore((state) => state.error);
   const setOpen = useDerivedWorkStore((state) => state.setOpen);
   const setPaused = useDerivedWorkStore((state) => state.setPaused);
+  const sourceCheck = useSectionsStore((state) => state.sourceCheck);
+  const fileInformation = useSectionsStore((state) => state.fileInformation);
+  const startSourceCheck = useSectionsStore((state) => state.startSourceCheck);
+  const stopSourceCheck = useSectionsStore((state) => state.stopSourceCheck);
+  const setFileInformationPaused = useSectionsStore(
+    (state) => state.setFileInformationPaused,
+  );
 
   if (!open) return null;
 
@@ -66,15 +74,80 @@ export default function BackgroundWorkModal() {
             onClick={() => void setPaused(null, !snapshot.masterPaused)}
           >
             {snapshot.masterPaused ? <Play size={14} /> : <Pause size={14} />}
-            {snapshot.masterPaused ? "Resume all" : "Pause all"}
+            {snapshot.masterPaused
+              ? "Resume previews and analysis"
+              : "Pause previews and analysis"}
           </Button>
         ) : undefined
       }
     >
       <p className="mb-4 text-sm text-ink-muted">
-        Pause frees owned processes and models, then keeps unfinished work queued for later.
-        Pausing never changes or deletes a family file.
+        These jobs may run while you use OneCopy. Stopping or pausing keeps every fact already
+        saved and never changes your files.
       </p>
+      <ul className="mb-4 space-y-2">
+        <li className="flex items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3">
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-ink-strong">
+              Check source folders
+            </span>
+            <span className="mt-0.5 block text-xs text-ink-muted">
+              Finds files added, removed, or changed since OneCopy last saw each folder.
+            </span>
+            <span className="mt-1 block text-xs text-ink">
+              {sourceCheck.stopping
+                ? "Stopping after the current safe step…"
+                : sourceCheck.running
+                  ? "Running…"
+                  : "Stopped"}
+            </span>
+          </span>
+          <Button
+            size="sm"
+            disabled={sourceCheck.stopping}
+            onClick={() =>
+              void (sourceCheck.running ? stopSourceCheck() : startSourceCheck())
+            }
+          >
+            {sourceCheck.running ? <Square size={13} /> : <Play size={13} />}
+            {sourceCheck.running ? "Stop" : "Start"}
+          </Button>
+        </li>
+        <li className="flex items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3">
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-ink-strong">
+              Complete file information
+            </span>
+            <span className="mt-0.5 block text-xs text-ink-muted">
+              Completes missing identity, metadata, dates, and companion relationships.
+            </span>
+            <span className="mt-1 block text-xs text-ink">
+              {fileInformation.stopping
+                ? "Pausing after the current safe step…"
+                : fileInformation.paused
+                  ? fileInformation.queued
+                    ? "Work queued — paused"
+                    : "Paused"
+                  : fileInformation.running
+                    ? "Running…"
+                    : fileInformation.queued
+                      ? "Queued"
+                      : "Up to date"}
+            </span>
+          </span>
+          <Button
+            size="sm"
+            disabled={fileInformation.stopping}
+            onClick={() => void setFileInformationPaused(!fileInformation.paused)}
+          >
+            {fileInformation.paused ? <Play size={13} /> : <Pause size={13} />}
+            {fileInformation.paused ? "Resume" : "Pause"}
+          </Button>
+        </li>
+      </ul>
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+        Previews and analysis
+      </h2>
       {snapshot === null ? (
         <p className="py-6 text-center text-sm text-ink-muted">
           {loading ? "Reading background work…" : "Background-work status is unavailable."}

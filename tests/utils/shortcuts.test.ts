@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hasMod, isHelpShortcut, isSettingsShortcut } from "../../src/utils/shortcuts";
+import {
+  hasMod,
+  isHelpShortcut,
+  isSectionRecheckShortcut,
+  isSettingsShortcut,
+} from "../../src/utils/shortcuts";
 import { isZoomIn, isZoomOut, isZoomReset } from "../../src/utils/zoom";
 
 // The detectors only read key/modifier fields, so a plain stub suffices in
@@ -100,5 +105,20 @@ describe("the settings chord", () => {
     expect(isSettingsShortcut(key({ key: "," }))).toBe(false);
     expect(isSettingsShortcut(key({ key: ".", metaKey: true }))).toBe(false);
     expect(isSettingsShortcut(key({ key: ",", ctrlKey: true, altKey: true }))).toBe(false);
+  });
+});
+
+describe("the section recheck chord", () => {
+  it("binds Cmd/Ctrl+R without stealing modified variants", () => {
+    expect(isSectionRecheckShortcut(key({ key: "r", metaKey: true }))).toBe(true);
+    expect(isSectionRecheckShortcut(key({ key: "R", ctrlKey: true }))).toBe(true);
+    expect(isSectionRecheckShortcut(key({ key: "r" }))).toBe(false);
+    expect(isSectionRecheckShortcut(key({ key: "r", ctrlKey: true, altKey: true }))).toBe(false);
+    expect(
+      isSectionRecheckShortcut({
+        ...key({ key: "r", metaKey: true }),
+        shiftKey: true,
+      }),
+    ).toBe(false);
   });
 });

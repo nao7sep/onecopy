@@ -12,6 +12,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -20,6 +21,15 @@ use serde_json::json;
 
 use crate::logging;
 use crate::scanner::{self, ScanLists};
+
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn restart_from_config(app: tauri::AppHandle) -> Result<(), String> {
+    let data_root = crate::paths::data_root(&app)?;
+    let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
+    start(app, source_dirs);
+    Ok(())
+}
 
 /// Re-stats ONE directory (non-recursive): upserts its current files and marks
 /// rows for vanished files missing — the walk logic scoped to a single dir.
@@ -132,79 +142,158 @@ pub fn restat_dir(
 /// a watcher that cannot start logs one warn and the app continues (rescan
 /// remains the manual path).
 pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) {
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     if source_dirs.is_empty() {
         return;
     }
-    std::thread::spawn(move || {
-        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = match notify::recommended_watcher(tx) {
-            Ok(w) => w,
+    let handle = app.clone();
+    let started = std::thread::Builder::new()
+        .name("onecopy-watcher".to_string())
+        .spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(handle.clone(), source_dirs, generation)
+            }));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => report_failure(&handle, &error),
+                Err(payload) => {
+                    let error = payload
+                        .downcast_ref::<&str>()
+                        .map(|value| (*value).to_string())
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "watcher stopped unexpectedly".to_string());
+                    report_failure(&handle, &error);
+                }
+            }
+        });
+    if let Err(error) = started {
+        report_failure(&app, &format!("could not start watcher thread: {error}"));
+    }
+}
+
+fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Result<(), String> {
+    let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = notify::recommended_watcher(tx).map_err(|error| error.to_string())?;
+    let mut watched = 0usize;
+    for root in &source_dirs {
+        if let Err(err) = watcher.watch(Path::new(root), notify::RecursiveMode::Recursive) {
+            logging::warn(
+                "watcher could not watch a root",
+                json!({ "root": root, "error": { "message": err.to_string() } }),
+            );
+            record_root_condition(&app, root, Some(&err.to_string()));
+        } else {
+            record_root_condition(&app, root, None);
+            watched += 1;
+        }
+    }
+    if watched == 0 {
+        return Err("none of the configured source folders could be watched".to_string());
+    }
+    logging::info("watcher started", json!({ "roots": source_dirs.len() }));
+
+    let mut dirty: HashSet<PathBuf> = HashSet::new();
+    let mut overflowed = false;
+    loop {
+        if GENERATION.load(Ordering::SeqCst) != generation {
+            return Ok(());
+        }
+        // Wake periodically so a settings-driven watcher replacement can
+        // retire this generation even on a completely quiet filesystem.
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(event) => collect(event, &mut dirty, &mut overflowed),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("watcher event channel disconnected".to_string())
+            }
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while let Ok(event) =
+            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            collect(event, &mut dirty, &mut overflowed);
+        }
+
+        if overflowed {
+            overflowed = false;
+            dirty.clear();
+            if let Err(error) = tauri::Emitter::emit(
+                &app,
+                "watch://rescan-needed",
+                json!({ "reason": "event overflow" }),
+            ) {
+                logging::warn(
+                    "watcher overflow event failed",
+                    json!({ "error": { "message": error.to_string() } }),
+                );
+            }
+            logging::warn("watcher overflow; roots flagged rescan-needed", json!({}));
+            continue;
+        }
+        if dirty.is_empty() {
+            continue;
+        }
+        let dirs: Vec<PathBuf> = dirty.drain().collect();
+        match process_dirty(&app, &dirs) {
+            Ok(0) => {}
+            Ok(changed) => {
+                if let Err(error) =
+                    tauri::Emitter::emit(&app, "watch://updated", json!({ "changed": changed }))
+                {
+                    logging::warn(
+                        "watcher update event failed",
+                        json!({ "error": { "message": error.to_string() } }),
+                    );
+                }
+            }
             Err(err) => {
                 logging::warn(
-                    "watcher could not start; manual rescan remains",
-                    json!({ "error": { "message": err.to_string() } }),
+                    "watcher pass failed",
+                    json!({ "error": { "message": &err } }),
                 );
-                return;
-            }
-        };
-        for root in &source_dirs {
-            if let Err(err) = watcher.watch(Path::new(root), notify::RecursiveMode::Recursive) {
-                logging::warn(
-                    "watcher could not watch a root",
-                    json!({ "root": root, "error": { "message": err.to_string() } }),
-                );
+                report_failure(&app, &err);
             }
         }
-        logging::info("watcher started", json!({ "roots": source_dirs.len() }));
+    }
+}
 
-        let mut dirty: HashSet<PathBuf> = HashSet::new();
-        let mut overflowed = false;
-        loop {
-            // Block for the first event, then drain for a debounce window.
-            match rx.recv() {
-                Ok(event) => collect(event, &mut dirty, &mut overflowed),
-                Err(_) => break, // watcher dropped; thread ends
-            }
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while let Ok(event) = rx.recv_timeout(
-                deadline.saturating_duration_since(std::time::Instant::now()),
-            ) {
-                collect(event, &mut dirty, &mut overflowed);
-            }
-
-            if overflowed {
-                overflowed = false;
-                dirty.clear();
-                let _ = tauri::Emitter::emit(
-                    &app,
-                    "watch://rescan-needed",
-                    json!({ "reason": "event overflow" }),
-                );
-                logging::warn("watcher overflow; roots flagged rescan-needed", json!({}));
-                continue;
-            }
-            if dirty.is_empty() {
-                continue;
-            }
-            let dirs: Vec<PathBuf> = dirty.drain().collect();
-            match process_dirty(&app, &dirs) {
-                Ok(0) => {}
-                Ok(changed) => {
-                    let _ = tauri::Emitter::emit(
-                        &app,
-                        "watch://updated",
-                        json!({ "changed": changed }),
-                    );
-                }
-                Err(err) => {
-                    logging::warn(
-                        "watcher pass failed",
-                        json!({ "error": { "message": err } }),
-                    );
-                }
-            }
+fn report_failure(app: &tauri::AppHandle, error: &str) {
+    logging::error("watcher failed", json!({ "error": { "message": error } }));
+    crate::scan_runtime::record_runtime_failure(app, "watcher-failed", error);
+    for event in ["watch://failed", "watch://rescan-needed"] {
+        if let Err(emit_error) = tauri::Emitter::emit(app, event, json!({ "reason": error })) {
+            logging::warn(
+                "watcher failure event failed",
+                json!({
+                    "event": event,
+                    "error": { "message": emit_error.to_string() },
+                }),
+            );
         }
-    });
+    }
+}
+
+fn record_root_condition(app: &tauri::AppHandle, root: &str, error: Option<&str>) {
+    let result = crate::paths::data_root(app)
+        .and_then(|data_root| {
+            crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))
+        })
+        .and_then(|conn| match error {
+            Some(message) => {
+                crate::index_store::upsert_issue(&conn, Some(root), "watcher-root-failed", message)
+            }
+            None => crate::index_store::clear_issues(&conn, root, &["watcher-root-failed"]),
+        });
+    if let Err(record_error) = result {
+        logging::error(
+            "watcher root issue could not be saved",
+            json!({
+                "root": root,
+                "failure": error,
+                "error": { "message": record_error },
+            }),
+        );
+    }
 }
 
 /// Folds one watcher event into the dirty-directory set.
@@ -242,11 +331,11 @@ pub fn collect(
     }
 }
 
-/// Re-stats the dirty directories and runs the pending index tail. The shared
-/// index claim retains this event batch until any in-flight scan or section
-/// repair finishes; a scan may have passed this directory before the event.
+/// Re-stats the dirty directories and leaves durable index debt for the
+/// independent file-information owner. The shared index claim retains this
+/// event batch until any active projection reaches a safe boundary.
 fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
-    crate::scan_runtime::with_index_claim(|| process_dirty_claimed(app, dirs))
+    crate::scan_runtime::with_watcher_claim(|| process_dirty_claimed(app, dirs))
 }
 
 fn process_dirty_claimed(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
@@ -269,17 +358,13 @@ fn process_dirty_claimed(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64
         changed += restat_dir(&conn, dir, &settings.lists)?;
     }
     if changed > 0 {
-        // Every owed row is still drained, but relationship repair is limited
-        // to this batch plus the directories whose pending receipts are about
-        // to disappear in that tail.
-        let mut summary = scanner::ScanSummary::default();
-        scanner::run_index_tail_for_dirs(&conn, &settings, &affected_dirs, &|_| {}, &mut summary)?;
-        crate::derived_work::wake(true);
         logging::info(
             "watcher pass",
             json!({ "dirs": dirs.len(), "changed": changed }),
         );
+        crate::file_information_runtime::wake(app.clone());
+    } else {
+        scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
     }
-    scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
     Ok(changed)
 }

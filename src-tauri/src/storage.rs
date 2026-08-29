@@ -90,6 +90,8 @@ pub struct DefaultConfig {
     /// The managed-runtime-dependencies conventions' one update switch:
     /// check installed tools for updates at launch (throttled to ~daily).
     pub check_updates_at_launch: bool,
+    /// Run the stat-only configured-source reconciliation after launch.
+    pub check_source_folders_at_launch: bool,
     pub keep_awake_during_indexing: bool,
     /// Face scoring for comparison-group ordering: OPT-IN (Phase 33). Off
     /// means the models are not even downloaded by any automatic path, and
@@ -134,6 +136,7 @@ impl Default for DefaultConfig {
             // only a real user override here, never CSS implementation detail.
             ui_font_family: String::new(),
             check_updates_at_launch: false,
+            check_source_folders_at_launch: true,
             keep_awake_during_indexing: true,
             score_faces: false,
             show_face_stars: true,

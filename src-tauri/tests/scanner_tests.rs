@@ -551,7 +551,7 @@ fn scoped_pairing_repairs_only_the_affected_directory() {
 }
 
 #[test]
-fn scoped_repair_uses_walk_debt_as_its_crash_receipt() {
+fn scoped_repair_debt_is_independent_from_walk_debt() {
     let f = fixture("pairing-recovery");
     std::fs::write(f.root.join("IMG.JPG"), b"jpeg").unwrap();
     let settled = settled_root(&f.conn, &f.root).unwrap();
@@ -561,19 +561,50 @@ fn scoped_repair_uses_walk_debt_as_its_crash_receipt() {
 
     let marked = begin_scoped_index_repair(&f.conn, &roots).unwrap();
     assert_eq!(marked.len(), 1);
-    assert!(
-        walk_owed(&f.conn, &roots).unwrap(),
-        "an interrupted repair is owed"
+    assert!(!walk_owed(&f.conn, &roots).unwrap());
+    assert_eq!(
+        count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"),
+        1
     );
 
     // A second operation did not create this debt and must never clear it.
     let inherited = begin_scoped_index_repair(&f.conn, &roots).unwrap();
     assert!(inherited.is_empty());
     complete_scoped_index_repair(&f.conn, &inherited).unwrap();
-    assert!(walk_owed(&f.conn, &roots).unwrap());
+    assert_eq!(
+        count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"),
+        1
+    );
 
     complete_scoped_index_repair(&f.conn, &marked).unwrap();
     assert!(!walk_owed(&f.conn, &roots).unwrap());
+    assert_eq!(
+        count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"),
+        0
+    );
+}
+
+#[test]
+fn source_check_leaves_relationship_work_for_the_independent_tail() {
+    let f = fixture("split-source-tail");
+    std::fs::write(f.root.join("IMG.JPG"), b"jpeg").unwrap();
+    let settings = ScanSettings {
+        source_dirs: vec![f.root.to_string_lossy().to_string()],
+        lists: lists(),
+        resolution: resolution_config(),
+        pairing_enabled: true,
+        keep_awake: false,
+        cache_root: f._dir.path().join("cache"),
+    };
+
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    assert!(pending_index_work_exists(&f.conn).unwrap());
+    assert!(!walk_owed(&f.conn, &settings.source_dirs).unwrap());
+
+    let mut summary = ScanSummary::default();
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut summary).unwrap();
+    assert!(!pending_index_work_exists(&f.conn).unwrap());
+    assert!(!walk_owed(&f.conn, &settings.source_dirs).unwrap());
 }
 
 #[test]

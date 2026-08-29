@@ -307,29 +307,6 @@ impl ScanProgress {
         progress.failures = failures;
         progress
     }
-
-    pub(crate) fn directory_walk(
-        done: u64,
-        total: u64,
-        path: &str,
-        failures: u64,
-        next_phase: ScanPhase,
-    ) -> Self {
-        let mut progress = Self::phase(ScanPhase::Walk, total, Some(next_phase));
-        progress.done = done;
-        progress.current_path = Some(crate::winpath::for_display(path).to_string());
-        progress.failures = failures;
-        progress
-    }
-
-    pub(crate) fn phase_completed(
-        phase: ScanPhase,
-        total: u64,
-        failures: u64,
-        next_phase: Option<ScanPhase>,
-    ) -> Self {
-        Self::completed(phase, total, failures, next_phase)
-    }
 }
 
 pub fn settings_from_config(
@@ -432,12 +409,11 @@ fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
                 .is_some_and(|separator| *separator == b'/'))
 }
 
-/// Marks the already-complete scan roots touched by a scoped repair. The
-/// marker is deliberately coarse and already part of the walk checkpoint: a
-/// crash before local pairing completes makes startup run one full repairing
-/// walk, without adding a directory job table or a second relationship truth.
-/// Roots that were dirty before this repair are never returned and therefore
-/// never cleared by its success path.
+/// Marks roots whose companion projection needs repair. This receipt is
+/// separate from `dirty`, which means a source walk itself was interrupted;
+/// completing relationships must never claim that unread directories were
+/// walked. Roots already carrying relationship debt are not returned, so a
+/// scoped caller cannot clear debt it did not create.
 pub fn begin_scoped_index_repair(
     conn: &Connection,
     dirs: &[String],
@@ -451,7 +427,7 @@ pub fn begin_scoped_index_repair(
     let mut statement = transaction
         .prepare(
             "SELECT root FROM scan_dirs
-             WHERE last_completed_at_utc IS NOT NULL AND dirty = 0",
+             WHERE last_completed_at_utc IS NOT NULL AND relationship_dirty = 0",
         )
         .map_err(|error| error.to_string())?;
     let clean_roots = statement
@@ -483,8 +459,9 @@ pub fn begin_scoped_index_repair(
     for root in &roots {
         transaction
             .execute(
-                "UPDATE scan_dirs SET dirty = 1
-             WHERE root = ?1 AND last_completed_at_utc IS NOT NULL AND dirty = 0",
+                "UPDATE scan_dirs SET relationship_dirty = 1
+             WHERE root = ?1 AND last_completed_at_utc IS NOT NULL
+               AND relationship_dirty = 0",
                 [root],
             )
             .map_err(|error| error.to_string())?;
@@ -498,8 +475,11 @@ pub fn complete_scoped_index_repair(
     roots_marked_by_repair: &[String],
 ) -> Result<(), String> {
     for root in roots_marked_by_repair {
-        conn.execute("UPDATE scan_dirs SET dirty = 0 WHERE root = ?1", [root])
-            .map_err(|error| error.to_string())?;
+        conn.execute(
+            "UPDATE scan_dirs SET relationship_dirty = 0 WHERE root = ?1",
+            [root],
+        )
+        .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -677,10 +657,11 @@ pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, Str
     Ok(canonical)
 }
 
-/// One full index run over every configured root: walk → hash → extract →
-/// resolve → pair, reporting typed durable progress. Derived media
-/// is deliberately owned by `derived_work`, which wakes after this returns.
-pub fn run_full_scan(
+/// Reconciles configured source folders without completing newly discovered
+/// file information. Each successful walk is durable, and the later
+/// file-information owner consumes the resulting pending rows and dirty
+/// relationship receipts.
+pub fn run_source_check(
     conn: &Connection,
     settings: &ScanSettings,
     progress: &dyn Fn(ScanProgress),
@@ -695,11 +676,7 @@ pub fn run_full_scan(
 
     let root_total = settings.source_dirs.len() as u64;
     let mut walk_failures = 0u64;
-    progress(ScanProgress::phase(
-        ScanPhase::Walk,
-        root_total,
-        Some(ScanPhase::Hash),
-    ));
+    progress(ScanProgress::phase(ScanPhase::Walk, root_total, None));
     for (root_index, root) in settings.source_dirs.iter().enumerate() {
         // One settled spelling per root, so a re-typed capitalisation cannot
         // index the same files a second time.
@@ -722,12 +699,22 @@ pub fn run_full_scan(
         summary.failures += stats.errors;
     }
 
-    // Each root's walk checkpoint is independently complete above. Mark the
-    // roots again for the projection tail so a crash after rows go missing but
-    // before pairing commits cannot leave stale relationships looking final.
-    let tail_roots = begin_scoped_index_repair(conn, &settings.source_dirs)?;
+    // Force one later companion projection even when a walk changed only
+    // absence or relationships rather than creating ordinary pending rows.
+    begin_scoped_index_repair(conn, &settings.source_dirs)?;
+    Ok(summary)
+}
+
+/// One full index run over every configured root: source check followed by
+/// missing file-information completion. Retained as a direct scanner-level
+/// composition for deterministic tests; shipped lifecycle ownership is split.
+pub fn run_full_scan(
+    conn: &Connection,
+    settings: &ScanSettings,
+    progress: &dyn Fn(ScanProgress),
+) -> Result<ScanSummary, String> {
+    let mut summary = run_source_check(conn, settings, progress)?;
     run_index_tail(conn, settings, progress, &mut summary)?;
-    complete_scoped_index_repair(conn, &tail_roots)?;
     Ok(summary)
 }
 
@@ -795,6 +782,9 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     )? {
         return Ok(true);
     }
+    if probe("SELECT EXISTS(SELECT 1 FROM scan_dirs WHERE relationship_dirty = 1)")? {
+        return Ok(true);
+    }
     Ok(false)
 }
 
@@ -808,7 +798,10 @@ pub fn run_index_tail(
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
     let recovery_dirs = pending_index_dirs(conn)?;
-    let repair_roots = begin_scoped_index_repair(conn, &recovery_dirs)?;
+    let mut repair_roots = pending_relationship_roots(conn)?;
+    repair_roots.extend(begin_scoped_index_repair(conn, &recovery_dirs)?);
+    repair_roots.sort();
+    repair_roots.dedup();
     run_index_tail_scoped(conn, settings, None, progress, summary)?;
     complete_scoped_index_repair(conn, &repair_roots)
 }
@@ -885,12 +878,27 @@ fn pending_index_dirs(conn: &Connection) -> Result<Vec<String>, String> {
              )",
         )
         .map_err(|error| error.to_string())?;
-    let dirs = statement
+    let mut dirs = statement
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
+    dirs.extend(pending_relationship_roots(conn)?);
+    dirs.sort();
+    dirs.dedup();
     Ok(dirs)
+}
+
+fn pending_relationship_roots(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare("SELECT root FROM scan_dirs WHERE relationship_dirty = 1 ORDER BY root")
+        .map_err(|error| error.to_string())?;
+    let roots = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(roots)
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]

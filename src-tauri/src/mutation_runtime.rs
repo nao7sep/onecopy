@@ -81,6 +81,10 @@ fn begin() -> Result<Claim, String> {
     Ok(Claim { id, cancelled })
 }
 
+pub(crate) fn begin_rebuild() -> Result<impl Drop, String> {
+    begin()
+}
+
 pub(crate) fn request_cancel(id: u64) -> bool {
     let Ok(active) = RUNTIME.active.lock() else {
         return false;
@@ -211,6 +215,7 @@ pub(crate) fn delete_items(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin()?;
+    let _index = crate::scan_runtime::begin_foreground(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
     let mut last_progress = Progress {
@@ -365,6 +370,7 @@ pub(crate) fn move_items_out(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin()?;
+    let _index = crate::scan_runtime::begin_foreground(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
     let mut last_progress = Progress {

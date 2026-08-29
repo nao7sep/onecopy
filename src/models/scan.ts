@@ -14,7 +14,7 @@ export interface ScanProgress {
 }
 
 const PHASE_LABELS: Record<string, string> = {
-  walk: "Scanning",
+  walk: "Checking source folders",
   hash: "Reading files",
   extract: "Reading metadata",
   resolve: "Working out dates",

@@ -95,7 +95,16 @@ beforeEach(() => {
   });
   useQuickViewStore.setState({ open: false });
   useDerivedWorkStore.setState({ activeItem: null });
-  useSectionsStore.setState({ scanning: false, stopping: false, progress: null });
+  useSectionsStore.setState({
+    sourceCheck: { running: false, stopping: false, progress: null },
+    fileInformation: {
+      running: false,
+      paused: false,
+      stopping: false,
+      queued: false,
+      progress: null,
+    },
+  });
   useDestinationsStore.setState({
     dragSelection: null,
   });
@@ -116,11 +125,13 @@ beforeEach(() => {
 
 describe("section repair admission", () => {
   it("does not admit a second section repair while indexing owns the runtime", () => {
-    useSectionsStore.setState({ scanning: true });
+    useSectionsStore.setState({
+      sourceCheck: { running: true, stopping: false, progress: null },
+    });
     renderGrid();
 
     const button = [...document.querySelectorAll("button")].find(
-      (candidate) => candidate.textContent === "Indexing…",
+      (candidate) => candidate.textContent === "Unavailable while checking source folders",
     );
     expect(button?.disabled).toBe(true);
   });

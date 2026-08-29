@@ -53,6 +53,7 @@ beforeEach(() => {
       if (classId === null) current = snapshot({ masterPaused: Boolean(paused) });
       return null;
     },
+    set_file_information_paused: () => null,
   });
   useDerivedWorkStore.setState({
     snapshot: current,
@@ -143,7 +144,10 @@ describe("Background work", () => {
       expect(document.body.textContent).toContain(label);
     }
 
-    const pause = [...document.querySelectorAll("button")].find(
+    const previews = [...document.querySelectorAll("li")].find((row) =>
+      row.textContent?.includes("Previews and posters"),
+    );
+    const pause = [...(previews?.querySelectorAll("button") ?? [])].find(
       (button) => button.textContent === "Pause",
     );
     await act(async () => pause!.click());
@@ -158,6 +162,24 @@ describe("Background work", () => {
     ).toBe(true);
   });
 
+  it("keeps the existing master control scoped to previews and analysis", async () => {
+    render(<BackgroundWorkModal />);
+
+    const pauseAll = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Pause previews and analysis",
+    );
+    await act(async () => pauseAll!.click());
+
+    expect(
+      invokeCalls.some(
+        (call) =>
+          call.command === "background_work_set_paused" &&
+          call.args.classId === null &&
+          call.args.paused === true,
+      ),
+    ).toBe(true);
+  });
+
   it("does not allow resume to race a class that is still stopping", () => {
     useDerivedWorkStore.setState({
       snapshot: snapshot(
@@ -167,10 +189,13 @@ describe("Background work", () => {
     });
     render(<BackgroundWorkModal />);
 
-    const resumeAll = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Resume all",
+    const transcript = [...document.querySelectorAll("li")].find((row) =>
+      row.textContent?.includes("Transcription"),
     );
-    expect(resumeAll?.disabled).toBe(true);
+    const resume = [...(transcript?.querySelectorAll("button") ?? [])].find(
+      (button) => button.textContent === "Resume",
+    );
+    expect(resume?.disabled).toBe(true);
     expect(document.body.textContent).toContain("Stopping and releasing resources…");
   });
 });

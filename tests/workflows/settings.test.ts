@@ -18,6 +18,7 @@ beforeEach(() => {
     patch_config: () => ({}),
     log_event: () => null,
     re_resolve_all: () => 0,
+    start_source_check: () => true,
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     check_source_dirs: () => ({ missing: [], substituted: [] }),
   });
@@ -68,5 +69,21 @@ describe("Settings save boundary", () => {
     expect(useItemsStore.getState().message).toContain(
       "Settings were saved, but re-indexing failed",
     );
+  });
+
+  it("does not check sources after saving unrelated settings", async () => {
+    useSettingsStore.getState().update({ theme: "dark" });
+
+    await saveSettings();
+
+    expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(false);
+  });
+
+  it("checks sources when the saved source-folder list changed", async () => {
+    useSettingsStore.getState().update({ sourceDirs: ["/photos"] });
+
+    await saveSettings();
+
+    expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
   });
 });

@@ -64,6 +64,7 @@ const EVIDENCE: Record<string, () => boolean> = {
   "Shift+1–9/0/A–F": () => handles("slotIndexForShiftedCode"),
   "Shift+Enter": () => handles("shiftKey"),
   Escape: () => handles('"Escape"'),
+  R: () => handles("isSectionRecheckShortcut"),
   Comma: () => handles("isSettingsShortcut"),
   "Slash / Question": () => handles("isHelpShortcut"),
   "Equal/Plus/Semicolon": () => handles("isZoomIn"),

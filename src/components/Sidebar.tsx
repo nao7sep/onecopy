@@ -173,7 +173,9 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   };
 
   const allEmpty = tree.every((node) => node.count === 0);
-  const scanning = useSectionsStore((s) => s.scanning);
+  const libraryWorking = useSectionsStore(
+    (s) => s.sourceCheck.running || s.fileInformation.running,
+  );
 
   return (
     <div
@@ -239,7 +241,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       })}
 
       {allEmpty ? (
-        // A scan in flight and a finished scan that found nothing look
+        // Background reconciliation and a settled empty library look
         // IDENTICAL from the counts alone — both are an empty tree. Saying
         // "Nothing to handle" during the first scan of a large library tells
         // the user their photos were not found, which is the one thing they
@@ -247,7 +249,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
         // status bar carries the detailed progress, so this only has to stop
         // asserting a verdict the app does not have yet.
         <p className="mt-2 px-2 text-sm text-ink-muted">
-          {scanning ? "Scanning…" : "Nothing to handle"}
+          {libraryWorking ? "Updating library…" : "Nothing to handle"}
         </p>
       ) : null}
 

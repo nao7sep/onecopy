@@ -22,7 +22,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 3;
+const SCHEMA_REVISION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -258,7 +258,8 @@ CREATE TABLE IF NOT EXISTS scan_dirs (
   root                  TEXT NOT NULL UNIQUE,
   volume_id             INTEGER REFERENCES volumes(id),
   last_completed_at_utc TEXT,
-  dirty                 INTEGER NOT NULL DEFAULT 0
+  dirty                 INTEGER NOT NULL DEFAULT 0,
+  relationship_dirty    INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -408,6 +409,30 @@ pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<(),
 pub fn any_issues(conn: &Connection) -> bool {
     conn.query_row("SELECT EXISTS (SELECT 1 FROM issues)", [], |r| r.get(0))
         .unwrap_or(true)
+}
+
+/// Clears only reconstructible library facts. Durable configuration, managed
+/// tools, and authored similarity exclusions live in separate stores and are
+/// deliberately outside this transaction.
+pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute_batch(
+            "DELETE FROM analysis_receipts;
+             DELETE FROM similar_group_members;
+             DELETE FROM similar_groups;
+             DELETE FROM evidence;
+             DELETE FROM logical_contents;
+             DELETE FROM paths;
+             DELETE FROM contents;
+             DELETE FROM scan_dirs;
+             DELETE FROM issues;
+             DELETE FROM volumes;",
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 // which has no public seam. The copy-count semantics it used to sit beside

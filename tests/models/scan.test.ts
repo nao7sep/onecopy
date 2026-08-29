@@ -48,7 +48,7 @@ describe("scan phase labels", () => {
       progressLine(
         progress({ total: 2, currentPath: "/photos", discovered: 812 }),
       ),
-    ).toBe("Scanning \u2014 source 1/2 · 812 files found · /photos");
+    ).toBe("Checking source folders \u2014 source 1/2 · 812 files found · /photos");
   });
 
   it("shows streamed byte percentage, failures, and the explicit next phase", () => {

@@ -27,6 +27,7 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
         serde_json::json!(true)
     );
     assert_eq!(value["pairingEnabled"], serde_json::json!(true));
+    assert_eq!(value["checkSourceFoldersAtLaunch"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert!(value.get("verifyAfterCopy").is_none());
     assert_eq!(value["showFaceStars"], serde_json::json!(true));
@@ -148,7 +149,6 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
     assert_eq!(fresh.merged, serde_json::json!({ "zoomLevel": 1.2 }));
     assert!(fresh.quarantined.is_none(), "a missing file is first-run, not corruption");
 }
-
 #[test]
 #[serial(backup_store)]
 fn patching_corrupt_config_reseeds_before_merging() {
@@ -189,7 +189,6 @@ fn patching_non_object_config_preserves_it_before_seeding_and_merging() {
     );
 }
 
-
 #[test]
 #[serial(backup_store)]
 fn materialize_writes_only_when_absent() {
@@ -223,8 +222,6 @@ fn write_atomic_replaces_and_leaves_no_temps() {
         .collect();
     assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
 }
-
-
 // A corrupt store's recovery, end to end: branch, preserved bytes and report.
 #[test]
 #[serial(quarantine_journal)]

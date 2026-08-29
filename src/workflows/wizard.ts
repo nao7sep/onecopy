@@ -20,7 +20,7 @@ export async function finishWizard(): Promise<void> {
     await useWizardStore.getState().recheckPresence();
     useWizardStore.setState({ open: false });
     log.info("wizard finished", { sourceDirs: dirs.length });
-    await useSectionsStore.getState().startScan();
+    await useSectionsStore.getState().startSourceCheck();
   } catch (error) {
     log.error("wizard save failed", toErrorFields(error));
   }

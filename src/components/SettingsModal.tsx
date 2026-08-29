@@ -4,6 +4,9 @@ import { useSettingsStore } from "../state/settings-store";
 import { saveSettings } from "../workflows/settings";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
+import { useItemsStore } from "../state/items-store";
+import { useIssuesStore } from "../state/issues-store";
+import { useSectionsStore } from "../state/sections-store";
 import {
   describePosition,
   monitorKey,
@@ -293,6 +296,8 @@ export default function SettingsModal() {
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [confirmRebuild, setConfirmRebuild] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
 
   if (!open || draft === null) return null;
 
@@ -331,6 +336,36 @@ export default function SettingsModal() {
             close();
           }}
           onCancel={() => setConfirmDiscard(false)}
+        />
+      ) : null}
+      {confirmRebuild ? (
+        <ConfirmDialog
+          title="Rebuild library index?"
+          message="OneCopy will clear rebuildable library information and Issues, then check your source folders again. Your files, settings, managed tools, and choices will not change."
+          confirmLabel="Rebuild"
+          onConfirm={() => {
+            setConfirmRebuild(false);
+            setRebuilding(true);
+            useSettingsStore.setState({ message: "Rebuilding library index…" });
+            void invoke("rebuild_library_index")
+              .then(async () => {
+                await Promise.all([
+                  useSectionsStore.getState().loadCounts(),
+                  useItemsStore.getState().refresh(),
+                  useIssuesStore.getState().load(),
+                  useSectionsStore.getState().loadIndexWork(),
+                ]);
+                useSettingsStore.setState({
+                  message: "Library index cleared. Checking source folders…",
+                });
+              })
+              .catch((error) => {
+                useSettingsStore.setState({ message: String(error) });
+                log.error("library index rebuild failed", toErrorFields(error));
+              })
+              .finally(() => setRebuilding(false));
+          }}
+          onCancel={() => setConfirmRebuild(false)}
         />
       ) : null}
       <SettingsTabList active={activeTab} onChange={setActiveTab} />
@@ -423,6 +458,20 @@ export default function SettingsModal() {
             <Button onClick={resetSimilarPhotoSettings}>Reset similar photo settings</Button>
           </div>
           <UnlinkedPairsRow />
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Library maintenance
+          </h2>
+          <Row
+            label="Rebuild library index"
+            hint="Clears rebuildable library information and Issues, then checks every source folder again. Your files and choices are preserved."
+          >
+            <Button
+              disabled={dirty || saving || rebuilding}
+              onClick={() => setConfirmRebuild(true)}
+            >
+              {rebuilding ? "Rebuilding…" : "Rebuild…"}
+            </Button>
+          </Row>
         </div>
       ) : null}
 
@@ -531,6 +580,11 @@ export default function SettingsModal() {
             label="Keep the system awake while indexing"
             checked={draft.keepAwakeDuringIndexing}
             onChange={(v) => update({ keepAwakeDuringIndexing: v })}
+          />
+          <CheckField
+            label="Check source folders after OneCopy opens"
+            checked={draft.checkSourceFoldersAtLaunch}
+            onChange={(v) => update({ checkSourceFoldersAtLaunch: v })}
           />
           <CheckField
             label="Score faces for photo ordering (background, needs the face models)"

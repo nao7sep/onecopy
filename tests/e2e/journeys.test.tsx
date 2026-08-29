@@ -99,17 +99,26 @@ beforeEach(() => {
     log_event: () => null,
     logging_debug_enabled: () => false,
     background_work_snapshot: () => ({ masterPaused: false, classes: [], activeItem: null }),
+    index_work_snapshot: () => ({
+      sourceCheck: { running: false, stopping: false },
+      fileInformation: { running: false, paused: false, stopping: false, queued: false },
+    }),
     get_item_detail: () => null,
-    start_scan: () => true,
+    start_source_check: () => true,
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
   useWizardStore.setState({ open: false, dirs: [], timezone: "UTC", timezoneValid: true });
   useAppStore.setState({ appData: null, loadError: null, quarantines: [] });
   useSectionsStore.setState({
     counts: null,
-    scanning: false,
-    stopping: false,
-    progress: null,
+    sourceCheck: { running: false, stopping: false, progress: null },
+    fileInformation: {
+      running: false,
+      paused: false,
+      stopping: false,
+      queued: false,
+      progress: null,
+    },
     rescanNeeded: false,
   });
   useItemsStore.setState({
@@ -144,12 +153,12 @@ describe("the culling journey", () => {
       await finishWizard();
     });
     expect(invokeCalls.map((c) => c.command)).toContain("patch_config");
-    expect(invokeCalls.map((c) => c.command)).toContain("start_scan");
-    expect(useSectionsStore.getState().scanning).toBe(true);
+    expect(invokeCalls.map((c) => c.command)).toContain("start_source_check");
+    expect(useSectionsStore.getState().sourceCheck.running).toBe(true);
 
     // ---- Scan events: progress is visible, done populates the tree ----
     await act(async () => {
-      fireEvent("scan://progress", {
+      fireEvent("source-check://progress", {
         phase: "walk",
         done: 0,
         total: 1,
@@ -161,7 +170,7 @@ describe("the culling journey", () => {
         nextPhase: "hash",
       });
     });
-    expect(useSectionsStore.getState().progress?.phase).toBe("walk");
+    expect(useSectionsStore.getState().sourceCheck.progress?.phase).toBe("walk");
 
     mockCommand("get_section_counts", () => ({
       images: [{ month: "2026-01", count: 4 }],
@@ -170,10 +179,10 @@ describe("the culling journey", () => {
     }));
     mockCommand("get_section_items", () => SCENE);
     await act(async () => {
-      fireEvent("scan://done", {});
+      fireEvent("source-check://done", {});
     });
     await settle();
-    expect(useSectionsStore.getState().scanning).toBe(false);
+    expect(useSectionsStore.getState().sourceCheck.running).toBe(false);
 
     // The sidebar tree: kind rows are open by default, years are closed —
     // the year appears, the month only after the year is opened.

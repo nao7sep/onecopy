@@ -28,6 +28,7 @@ export interface SettingsDraft {
   theme: "system" | "light" | "dark";
   uiFontFamily: string;
   keepAwakeDuringIndexing: boolean;
+  checkSourceFoldersAtLaunch: boolean;
   confirmTrashDelete: boolean;
   scoreFaces: boolean;
   showFaceStars: boolean;
@@ -84,6 +85,7 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
       config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",
     uiFontFamily: normalizeUiFontPreference(config?.uiFontFamily),
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
+    checkSourceFoldersAtLaunch: config?.checkSourceFoldersAtLaunch !== false,
     // Opt-in, so absence means OFF — the opposite polarity of the two above.
     confirmTrashDelete: config?.confirmTrashDelete === true,
     // Opt-in (Phase 33): absence means OFF.

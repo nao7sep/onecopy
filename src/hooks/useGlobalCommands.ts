@@ -7,15 +7,17 @@ import { useAppStore } from "../state/app-store";
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useSettingsStore } from "../state/settings-store";
+import { useSectionsStore } from "../state/sections-store";
 import { hasOpenModal } from "../utils/modalStack";
 import {
   isEditableTarget,
   isHelpShortcut,
+  isSectionRecheckShortcut,
   isSettingsShortcut,
   shadowsMacTextEditing,
 } from "../utils/shortcuts";
 import { openComparison } from "../workflows/comparison";
-import { deleteSelectedItems } from "../workflows/items";
+import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
 import { handleSpaceQuickView } from "../workflows/quick-view";
 
 export function useGlobalCommands() {
@@ -47,7 +49,12 @@ export function useGlobalCommands() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (hasOpenModal() || useComparisonStore.getState().open) return;
       if (event.defaultPrevented || isEditableTarget(event.target)) return;
-      if (event.key === "Delete" || event.key === "Backspace") {
+      if (isSectionRecheckShortcut(event)) {
+        event.preventDefault();
+        if (!useSectionsStore.getState().sourceCheck.running) {
+          void rescanCurrentSection();
+        }
+      } else if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
         const { selectedKeys, selectedItem } = useItemsStore.getState();
         const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;

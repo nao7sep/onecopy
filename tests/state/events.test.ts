@@ -1,6 +1,6 @@
 // The backend event channels.
 //
-// These listeners are the ONLY paths that clear `scanning` and `installing`,
+// These listeners are the ONLY paths that clear library work and installs,
 // so a payload or channel-name drift does not fail loudly — it leaves the
 // footer permanently claiming work is in flight. Nothing exercised them.
 
@@ -52,68 +52,68 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
-  sections.setState({ scanning: false, stopping: false, progress: null, rescanNeeded: false });
+  sections.setState({
+    sourceCheck: { running: false, stopping: false, progress: null },
+    fileInformation: {
+      running: false,
+      paused: false,
+      stopping: false,
+      queued: false,
+      progress: null,
+    },
+    rescanNeeded: false,
+  });
   mockCommands({
     get_section_counts: () => [],
     get_section_items: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
+    index_work_snapshot: () => ({
+      sourceCheck: { running: false, stopping: false },
+      fileInformation: { running: false, paused: false, stopping: false, queued: false },
+    }),
     patch_state: () => ({}),
     binaries_state: () => ({ status: "up-to-date" }),
   });
   await settle();
 });
 
-describe("scan events", () => {
-  it("shows an admitted scoped repair while it waits for the index claim", async () => {
-    fireEvent("scan://waiting", {});
-
-    expect(sections.getState().scanning).toBe(true);
-    expect(sections.getState().stopping).toBe(false);
-    expect(sections.getState().progress).toBeNull();
-  });
-
-  it("reports progress and marks the scan running", async () => {
+describe("library work events", () => {
+  it("reports file-information progress independently", async () => {
     const progress = scanProgress({ phase: "hashing", done: 12, total: 40 });
-    fireEvent("scan://progress", progress);
+    fireEvent("file-information://progress", progress);
 
-    expect(sections.getState().scanning).toBe(true);
-    // Event wiring projects typed backend facts; presentation owns the words.
-    expect(sections.getState().progress).toEqual(progress);
+    expect(sections.getState().fileInformation.running).toBe(true);
+    expect(sections.getState().sourceCheck.running).toBe(false);
+    expect(sections.getState().fileInformation.progress).toEqual(progress);
   });
 
-  it("clears the scan on a clean finish", async () => {
-    const indexed = scanProgress({
-      phase: "indexed",
-      done: 1,
-      total: 1,
-      currentPath: null,
-      nextPhase: null,
+  it("clears file-information work on a clean finish", async () => {
+    fireEvent("file-information://progress", scanProgress());
+    fireEvent("file-information://done", {});
+    expect(sections.getState().fileInformation.running).toBe(false);
+    expect(sections.getState().fileInformation.progress).toBeNull();
+  });
+
+  it("marks a stopped source check as still needing reconciliation", async () => {
+    sections.setState({
+      sourceCheck: { running: true, stopping: true, progress: scanProgress() },
+      rescanNeeded: false,
     });
-    fireEvent("scan://progress", indexed);
 
-    fireEvent("scan://done", {});
-    expect(sections.getState().scanning).toBe(false);
-    expect(sections.getState().progress).toEqual(indexed);
-  });
-
-  it("distinguishes a cancelled finish from a clean one", async () => {
-    sections.setState({ scanning: true, rescanNeeded: false });
-
-    fireEvent("scan://done", { cancelled: true });
-    expect(sections.getState().scanning).toBe(false);
-    expect(sections.getState().stopping).toBe(false);
-    // A cancelled walk may have left whole directories unread, so the counts
-    // understate the library — it must not read as a clean finish.
+    fireEvent("source-check://done", { stopped: true });
+    expect(sections.getState().sourceCheck.running).toBe(false);
+    expect(sections.getState().sourceCheck.stopping).toBe(false);
     expect(sections.getState().rescanNeeded).toBe(true);
   });
 
-  it("clears the scan on an error rather than leaving the footer stuck", async () => {
-    sections.setState({ scanning: true, progress: scanProgress() });
+  it("clears a failed source check rather than leaving the footer stuck", async () => {
+    sections.setState({
+      sourceCheck: { running: true, stopping: false, progress: scanProgress() },
+    });
 
-    fireEvent("scan://error", { message: "index open failed" });
-    expect(sections.getState().scanning).toBe(false);
-    expect(sections.getState().stopping).toBe(false);
-    expect(sections.getState().progress).toBeNull();
+    fireEvent("source-check://done", { error: "index open failed" });
+    expect(sections.getState().sourceCheck.running).toBe(false);
+    expect(sections.getState().sourceCheck.progress).toBeNull();
   });
 });
 
@@ -125,14 +125,11 @@ describe("watcher events", () => {
     expect(sections.getState().rescanNeeded).toBe(true);
   });
 
-  it("clears the flag when a scan STARTS, not when one finishes", async () => {
-    // The repair is the scan itself, so the flag drops as the walk begins.
-    // A finish event must not clear it — a cancelled run reaches `done` too,
-    // and clearing there would hide a half-indexed library.
-    sections.setState({ rescanNeeded: true, scanning: false });
-    mockCommands({ start_scan: () => true });
+  it("clears the flag when a source-folder check starts", async () => {
+    sections.setState({ rescanNeeded: true });
+    mockCommands({ start_source_check: () => true });
 
-    await sections.getState().startScan();
+    await sections.getState().startSourceCheck();
     expect(sections.getState().rescanNeeded).toBe(false);
   });
 });

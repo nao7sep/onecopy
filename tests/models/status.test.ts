@@ -121,8 +121,10 @@ describe("what the status bar shows", () => {
     expect(status.title).toContain("Cloud placeholders");
   });
 
-  it("still says something while a scan has yet to report a phase", () => {
-    expect(statusLine({ ...IDLE, scanning: true, progress: null }).text).toBe("Scanning…");
+  it("names file-information work before it reports a phase", () => {
+    expect(statusLine({ ...IDLE, scanning: true, progress: null }).text).toBe(
+      "Completing file information…",
+    );
   });
 
   it("shows cooperative stopping instead of stale phase progress", () => {
@@ -132,8 +134,8 @@ describe("what the status bar shows", () => {
       stopping: true,
       progress: HASH_PROGRESS,
     });
-    expect(status.text).toBe("Stopping indexing…");
-    expect(status.title).toContain("current cancellable read, file, or durable step");
+    expect(status.text).toBe("Pausing file-information work…");
+    expect(status.title).toContain("current safe step");
   });
 
   it("keeps an indexed terminal state beside the standing totals", () => {
@@ -174,7 +176,7 @@ describe("what the status bar shows", () => {
   it("warns that the index is knowingly incomplete", () => {
     const status = statusLine({ ...IDLE, rescanNeeded: true });
     expect(status.tone).toBe("warning");
-    expect(status.title).toContain("Scan all sources");
+    expect(status.title).toContain("Check source folders");
   });
 
   it("distinguishes an empty library from one that has not loaded", () => {

@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import SettingsModal from "../../src/components/SettingsModal";
 import { useSettingsStore } from "../../src/state/settings-store";
-import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const config = {
   sourceDirs: ["C:\\Photos"],
@@ -16,6 +16,13 @@ beforeEach(() => {
   resetTauriMocks();
   mockCommands({
     similar_exclusions_count: () => 0,
+    rebuild_library_index: () => null,
+    get_section_counts: () => ({ images: [], videos: [], others: [] }),
+    get_issues: () => ({ total: 0, rows: [] }),
+    index_work_snapshot: () => ({
+      sourceCheck: { running: true, stopping: false },
+      fileInformation: { running: false, paused: false, stopping: false, queued: false },
+    }),
   });
   useSettingsStore.getState().openWith(config);
 });
@@ -77,6 +84,18 @@ describe("Settings categories", () => {
       similarityPhashMaxDistanceBurst: 10,
       similarityDiameterMultiplier: 2,
     });
+  });
+
+  it("confirms library reconstruction from Settings", async () => {
+    render(<SettingsModal />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
+    expect(screen.getByText(/Your files, settings, managed tools, and choices/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
+
+    await waitFor(() =>
+      expect(invokeCalls.some((call) => call.command === "rebuild_library_index")).toBe(true),
+    );
   });
 
   it("puts video playback choices together and face scoring before trash behavior", () => {
