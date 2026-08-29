@@ -37,7 +37,6 @@ beforeEach(() => {
         byteSize: 10,
         hasCompanions: false,
         durationMs: null,
-        namesDiffer: false,
         dirPaths: ["/photos"],
         derivedWork: EMPTY_ITEM_WORK,
       },

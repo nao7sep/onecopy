@@ -64,7 +64,6 @@ export function captureDestinationSelection(): DestinationSelection {
       hash: item.hash,
       pathId: item.hash === null ? item.pathId : null,
     })),
-    blockedNameCount: targets.filter((item) => item.namesDiffer).length,
     anchorKey: state.selectedItem,
     shownKeys: sortItems(state.items, state.currentSort()).map(itemKey),
   };
@@ -157,20 +156,7 @@ export async function moveDestinationSelectionTo(
   mode: MoveMode,
   selection: DestinationSelection,
 ): Promise<void> {
-  const operationKey = moveOperationKey(destDir, mode, selection.items);
   useDestinationsStore.setState({ confirmation: null });
-  // Fail the whole multi-selection before moving anything if copy names
-  // disagree. The core enforces the same rule per operation.
-  if (selection.blockedNameCount > 0) {
-    useDestinationsStore.setState({
-      result: {
-        severity: "warning",
-        message: `${selection.blockedNameCount} selected item${selection.blockedNameCount === 1 ? "" : "s"} have copies under different names — Move/Copy is disabled for them. Reveal the copies (Details) to resolve the names first.`,
-        operationKey,
-      },
-    });
-    return;
-  }
   if (selection.items.length === 0) {
     useDestinationsStore.setState({
       result: {

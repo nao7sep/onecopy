@@ -254,8 +254,8 @@ fn copy_count_counts_every_live_path_for_one_content() {
         .iter()
         .find(|i| i.hash.as_deref() == Some("hshared"))
         .expect("the logical item");
-    // One logical row, three paths — the badge that doubles as a backup health
-    // check. Asserted through the real GROUP BY, not a SELECT the test wrote.
+    // One logical row, three physical copies. Asserted through the real
+    // projection rather than a count query owned by the test.
     assert_eq!(items.len(), 1, "copies collapse into ONE logical item");
     assert_eq!(item.copy_count, 3);
 }
@@ -281,7 +281,7 @@ fn one_derived_item_can_be_projected_without_reading_its_section() {
 }
 
 #[test]
-fn a_missing_copy_does_not_count_toward_the_badge() {
+fn a_missing_copy_does_not_count_toward_the_logical_item() {
     let conn = db();
     seed_image(&conn, "hgone", Some("2026-01-02T03:04:05.000Z"), "a.jpg");
     conn.execute(
@@ -299,22 +299,27 @@ fn a_missing_copy_does_not_count_toward_the_badge() {
 }
 
 #[test]
-fn logical_summary_tracks_path_date_name_and_presence_changes() {
+fn logical_summary_tracks_representative_date_name_and_presence_changes() {
     let conn = db();
-    seed_image(&conn, "hmoving", Some("2026-01-02T03:04:05.000Z"), "early.jpg");
+    seed_image(&conn, "hmoving", Some("2026-02-01T00:00:00.000Z"), "later.jpg");
+    conn.execute(
+        "UPDATE paths SET resolved_utc_ms = ?1 WHERE content_hash = 'hmoving'",
+        [1_769_904_000_000i64],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, mtime_ms, \
          content_hash, resolved_utc_ms, resolved_source, date_only, missing, companion_of) \
-         VALUES ('/backup/later.jpg', '/backup', 'later.jpg', 'later', 'jpg', 'image', 100, 0, \
+         VALUES ('/backup/early.jpg', '/backup', 'early.jpg', 'early', 'jpg', 'image', 100, 0, \
                  'hmoving', ?1, 'metadata', 0, 0, NULL)",
-        params![1_769_904_000_000i64], // 2026-02-01T00:00:00Z
+        params![1_767_225_600_000i64],
     )
     .unwrap();
 
     let january = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
     assert_eq!(january.len(), 1);
     assert_eq!(january[0].copy_count, 2);
-    assert!(january[0].names_differ);
+    assert_eq!(january[0].file_name, "early.jpg", "the oldest copy supplies the name");
 
     conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'early.jpg'", [])
         .unwrap();
@@ -324,7 +329,7 @@ fn logical_summary_tracks_path_date_name_and_presence_changes() {
     let february = queries::section_items(&conn, "image", "2026-02", Tz::UTC, projection()).unwrap();
     assert_eq!(february.len(), 1, "the remaining copy defines the logical month");
     assert_eq!(february[0].copy_count, 1);
-    assert!(!february[0].names_differ);
+    assert_eq!(february[0].file_name, "later.jpg");
 }
 
 #[test]
@@ -614,19 +619,16 @@ fn the_stored_issue_path_stays_verbatim_so_clearing_still_matches() {
 }
 
 #[test]
-fn copies_under_different_names_are_flagged_case_insensitively() {
+fn equal_dates_choose_the_case_insensitive_path_order_then_exact_path() {
     let conn = db();
     conn.execute_batch(
-        "INSERT INTO contents (hash, byte_size, kind) VALUES ('same', 9, 'image');
-         INSERT INTO contents (hash, byte_size, kind) VALUES ('diff', 9, 'image');
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('tied', 9, 'image');
          INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
-           VALUES ('/a/IMG.JPG', '/a', 'IMG.JPG', 'image', 'same', 1000);
+           VALUES ('/z/first-inserted.jpg', '/z', 'first-inserted.jpg', 'image', 'tied', 1000);
          INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
-           VALUES ('/b/img.jpg', '/b', 'img.jpg', 'image', 'same', 1000);
+           VALUES ('/A/Photo.jpg', '/A', 'Photo.jpg', 'image', 'tied', 1000);
          INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
-           VALUES ('/a/beach.jpg', '/a', 'beach.jpg', 'image', 'diff', 1000);
-         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
-           VALUES ('/b/renamed.jpg', '/b', 'renamed.jpg', 'image', 'diff', 1000);",
+           VALUES ('/a/photo.jpg', '/a', 'photo.jpg', 'image', 'tied', 1000);",
     )
     .unwrap();
 
@@ -638,17 +640,7 @@ fn copies_under_different_names_are_flagged_case_insensitively() {
         projection(),
     )
     .unwrap();
-    let flag = |h: &str| {
-        items
-            .iter()
-            .find(|i| i.hash.as_deref() == Some(h))
-            .map(|i| i.names_differ)
-    };
-    // IMG.JPG vs img.jpg is ONE name on the fleet's volumes — no conflict.
-    assert_eq!(flag("same"), Some(false), "case-only difference is not a conflict");
-    // beach.jpg vs renamed.jpg is a real divergence: move/copy must block.
-    assert_eq!(flag("diff"), Some(true));
-    // And the Folders column carries BOTH directories for both items.
-    let diff = items.iter().find(|i| i.hash.as_deref() == Some("diff")).unwrap();
-    assert_eq!(diff.dir_paths, vec!["/a".to_string(), "/b".to_string()]);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].file_name, "Photo.jpg");
+    assert_eq!(items[0].dir_paths, vec!["/A", "/a", "/z"]);
 }

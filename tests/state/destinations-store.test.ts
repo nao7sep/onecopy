@@ -32,7 +32,6 @@ function item(pathId: number): SectionItem {
     byteSize: 1000,
     hasCompanions: false,
     durationMs: null,
-    namesDiffer: false,
     // copyCount is 2, so two live directories.
     dirPaths: [`/Volumes/A/photos`, `/Volumes/B/photos`],
     derivedWork: EMPTY_ITEM_WORK,
@@ -164,7 +163,6 @@ describe("staging a permanent move", () => {
         count: 3,
         selection: {
           items: [{ hash: "h1", pathId: null }],
-          blockedNameCount: 0,
           anchorKey: "h1",
           shownKeys: ["h1"],
         },

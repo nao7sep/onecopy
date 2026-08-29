@@ -39,7 +39,6 @@ function item(pathId: number): SectionItem {
     byteSize: 10,
     hasCompanions: false,
     durationMs: null,
-    namesDiffer: false,
     dirPaths: [`/Volumes/A/photos`],
     derivedWork: EMPTY_ITEM_WORK,
   };

@@ -165,14 +165,7 @@ export function itemPresentation(
               : "Selected",
         };
 
-  const status = item.namesDiffer
-    ? {
-        text: "≠ name",
-        label:
-          "Copies have different names; Move and Copy are unavailable until the names are resolved",
-        tone: "warning" as const,
-      }
-    : workStatus(item.derivedWork);
+  const status = workStatus(item.derivedWork);
 
   const relationshipText: string[] = [];
   const relationshipLabels: string[] = [];

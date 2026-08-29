@@ -282,14 +282,16 @@ fn collect_delete_targets(
             collect4(
                 conn,
                 "SELECT id, abs_path, content_hash, size FROM paths \
-                 WHERE content_hash = ?1 AND missing = 0 ORDER BY id",
+                 WHERE content_hash = ?1 AND missing = 0 \
+                   AND companion_of IS NULL ORDER BY id",
                 params![hash],
             )?,
             collect4(
                 conn,
                 "SELECT id, abs_path, content_hash, size FROM paths \
                  WHERE companion_of IN (\
-                   SELECT id FROM paths WHERE content_hash = ?1 AND missing = 0\
+                   SELECT id FROM paths WHERE content_hash = ?1 AND missing = 0 \
+                     AND companion_of IS NULL\
                  ) AND missing = 0 ORDER BY id",
                 params![hash],
             )?,
@@ -928,36 +930,25 @@ fn collect_move_unit(
     dest_dir: &Path,
     mode: MoveOutMode,
 ) -> Result<MoveUnit, String> {
-    let item_ref = item.item_ref()?;
-    if let ItemRef::Hash(hash) = item_ref {
-        let distinct: i64 = conn
-            .query_row(
-                "SELECT COUNT(DISTINCT lower(file_name)) FROM paths \
-                 WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL",
-                [hash],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if distinct > 1 {
-            return Err(format!(
-                "one selected item's copies carry {distinct} different names — reveal the copies and resolve the names first"
-            ));
-        }
-    }
-
     let (primary_rows, companion_rows): (Vec<_>, Vec<_>) = match item.item_ref()? {
         ItemRef::Hash(hash) => (
             collect4(
                 conn,
                 "SELECT id, abs_path, content_hash, size FROM paths \
-                 WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL ORDER BY id",
+                 WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL \
+                 ORDER BY resolved_utc_ms IS NULL, resolved_utc_ms, \
+                          abs_path COLLATE onecopy_nocase, abs_path",
                 params![hash],
             )?,
             collect4(
                 conn,
-                "SELECT id, abs_path, content_hash, size FROM paths \
-                 WHERE companion_of IN (SELECT id FROM paths WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL) \
-                   AND missing = 0 ORDER BY id",
+                "SELECT comp.id, comp.abs_path, comp.content_hash, comp.size \
+                 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
+                 WHERE pri.content_hash = ?1 AND pri.missing = 0 \
+                   AND pri.companion_of IS NULL AND comp.missing = 0 \
+                 ORDER BY pri.resolved_utc_ms IS NULL, pri.resolved_utc_ms, \
+                          pri.abs_path COLLATE onecopy_nocase, pri.abs_path, \
+                          comp.abs_path COLLATE onecopy_nocase, comp.abs_path",
                 params![hash],
             )?,
         ),
@@ -1003,7 +994,7 @@ fn collect_move_unit(
     let mut companions = std::collections::BTreeMap::<String, Vec<DeliverySource>>::new();
     for source in delivery_sources(companion_rows) {
         companions
-            .entry(file_name(&source.abs_path)?.to_lowercase())
+            .entry(file_name(&source.abs_path)?.to_string())
             .or_default()
             .push(source);
     }

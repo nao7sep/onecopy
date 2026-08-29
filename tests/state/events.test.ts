@@ -158,7 +158,6 @@ describe("derived media events", () => {
           byteSize: 1,
           hasCompanions: false,
           durationMs: null,
-          namesDiffer: false,
           dirPaths: ["/photos"],
           derivedWork: EMPTY_ITEM_WORK,
         },

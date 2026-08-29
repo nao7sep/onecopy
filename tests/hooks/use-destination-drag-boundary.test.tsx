@@ -57,7 +57,6 @@ describe("the app-wide drag boundary", () => {
     useDestinationsStore.setState({
       dragSelection: {
         items: [{ hash: "h1", pathId: null }],
-        blockedNameCount: 0,
         anchorKey: "h1",
         shownKeys: ["h1"],
       },

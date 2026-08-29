@@ -30,7 +30,6 @@ function item(overrides: Partial<SectionItem>): SectionItem {
     byteSize: null,
     hasCompanions: false,
     durationMs: null,
-    namesDiffer: false,
     dirPaths: ["/files"],
     derivedWork: EMPTY_ITEM_WORK,
     ...overrides,

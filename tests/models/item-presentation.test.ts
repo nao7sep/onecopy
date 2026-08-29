@@ -41,7 +41,6 @@ function item(over: Partial<SectionItem> = {}): SectionItem {
     byteSize: 100,
     hasCompanions: false,
     durationMs: null,
-    namesDiffer: false,
     dirPaths: ["/photos"],
     derivedWork: EMPTY_ITEM_WORK,
     ...over,
@@ -58,16 +57,12 @@ function presentation(over: Partial<SectionItem> = {}) {
 }
 
 describe("item presentation priority", () => {
-  it("keeps the destructive name warning above failures and ordinary work", () => {
+  it("keeps failures above ordinary work", () => {
     const work: ItemWorkStates = {
       ...EMPTY_ITEM_WORK,
       preview: state("failed"),
       faces: state("running", { done: 4, total: 10 }),
     };
-    expect(presentation({ namesDiffer: true, derivedWork: work }).status).toMatchObject({
-      text: "≠ name",
-      tone: "warning",
-    });
     expect(presentation({ derivedWork: work }).status).toMatchObject({
       text: "Preview failed",
       tone: "danger",

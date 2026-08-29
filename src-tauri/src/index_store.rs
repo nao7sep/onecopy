@@ -22,7 +22,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 2;
+const SCHEMA_REVISION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -101,8 +101,7 @@ CREATE TABLE IF NOT EXISTS logical_contents (
   kind                   TEXT NOT NULL,
   resolved_utc_ms        INTEGER,
   representative_path_id INTEGER NOT NULL REFERENCES paths(id),
-  live_copy_count        INTEGER NOT NULL,
-  names_differ           INTEGER NOT NULL
+  live_copy_count        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_logical_contents_section
   ON logical_contents (kind, resolved_utc_ms, content_hash);
@@ -120,13 +119,19 @@ WHEN NEW.content_hash IS NOT NULL
 BEGIN
   INSERT OR REPLACE INTO logical_contents
     (content_hash, kind, resolved_utc_ms, representative_path_id,
-     live_copy_count, names_differ)
+     live_copy_count)
   SELECT c.hash,
          CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         MIN(p.resolved_utc_ms), MIN(p.id),
+         MIN(p.resolved_utc_ms),
+         (SELECT ranked.id FROM paths ranked
+          WHERE ranked.content_hash = c.hash
+            AND ranked.missing = 0 AND ranked.companion_of IS NULL
+          ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                   ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+         LIMIT 1),
          (SELECT COUNT(*) FROM paths cp
-          WHERE cp.content_hash = c.hash AND cp.missing = 0),
-         COUNT(DISTINCT lower(p.file_name)) > 1
+          WHERE cp.content_hash = c.hash AND cp.missing = 0
+            AND cp.companion_of IS NULL)
   FROM contents c JOIN paths p ON p.content_hash = c.hash
   WHERE c.hash = NEW.content_hash AND p.missing = 0 AND p.companion_of IS NULL
   GROUP BY c.hash, c.kind;
@@ -141,13 +146,19 @@ BEGIN
 
   INSERT OR REPLACE INTO logical_contents
     (content_hash, kind, resolved_utc_ms, representative_path_id,
-     live_copy_count, names_differ)
+     live_copy_count)
   SELECT c.hash,
          CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         MIN(p.resolved_utc_ms), MIN(p.id),
+         MIN(p.resolved_utc_ms),
+         (SELECT ranked.id FROM paths ranked
+          WHERE ranked.content_hash = c.hash
+            AND ranked.missing = 0 AND ranked.companion_of IS NULL
+          ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                   ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+         LIMIT 1),
          (SELECT COUNT(*) FROM paths cp
-          WHERE cp.content_hash = c.hash AND cp.missing = 0),
-         COUNT(DISTINCT lower(p.file_name)) > 1
+          WHERE cp.content_hash = c.hash AND cp.missing = 0
+            AND cp.companion_of IS NULL)
   FROM contents c JOIN paths p ON p.content_hash = c.hash
   WHERE c.hash IN (OLD.content_hash, NEW.content_hash)
     AND p.missing = 0 AND p.companion_of IS NULL
@@ -162,13 +173,19 @@ BEGIN
 
   INSERT OR REPLACE INTO logical_contents
     (content_hash, kind, resolved_utc_ms, representative_path_id,
-     live_copy_count, names_differ)
+     live_copy_count)
   SELECT c.hash,
          CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         MIN(p.resolved_utc_ms), MIN(p.id),
+         MIN(p.resolved_utc_ms),
+         (SELECT ranked.id FROM paths ranked
+          WHERE ranked.content_hash = c.hash
+            AND ranked.missing = 0 AND ranked.companion_of IS NULL
+          ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                   ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+         LIMIT 1),
          (SELECT COUNT(*) FROM paths cp
-          WHERE cp.content_hash = c.hash AND cp.missing = 0),
-         COUNT(DISTINCT lower(p.file_name)) > 1
+          WHERE cp.content_hash = c.hash AND cp.missing = 0
+            AND cp.companion_of IS NULL)
   FROM contents c JOIN paths p ON p.content_hash = c.hash
   WHERE c.hash = OLD.content_hash AND p.missing = 0 AND p.companion_of IS NULL
   GROUP BY c.hash, c.kind;
@@ -254,6 +271,10 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let conn = Connection::open(db_file).map_err(|e| e.to_string())?;
+    conn.create_collation("onecopy_nocase", |left, right| {
+        left.to_lowercase().cmp(&right.to_lowercase())
+    })
+    .map_err(|error| error.to_string())?;
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| e.to_string())?;
     conn.pragma_update(None, "busy_timeout", 5000)
@@ -277,6 +298,24 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
             "index schema revision {schema_revision} is newer than this app supports ({SCHEMA_REVISION})"
         ));
     }
+    if schema_revision > 0 && schema_revision < SCHEMA_REVISION {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE IF EXISTS analysis_receipts;
+             DROP TABLE IF EXISTS similar_group_members;
+             DROP TABLE IF EXISTS similar_groups;
+             DROP TABLE IF EXISTS evidence;
+             DROP TABLE IF EXISTS logical_contents;
+             DROP TABLE IF EXISTS paths;
+             DROP TABLE IF EXISTS contents;
+             DROP TABLE IF EXISTS scan_dirs;
+             DROP TABLE IF EXISTS issues;
+             DROP TABLE IF EXISTS volumes;
+             PRAGMA user_version = 0;
+             PRAGMA foreign_keys = ON;",
+        )
+        .map_err(|error| error.to_string())?;
+    }
     if schema_revision < SCHEMA_REVISION || needs_logical_hydration {
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())?;
@@ -289,13 +328,19 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 conn.execute_batch(
                     "INSERT INTO logical_contents
            (content_hash, kind, resolved_utc_ms, representative_path_id,
-            live_copy_count, names_differ)
+            live_copy_count)
          SELECT c.hash,
                 CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-                MIN(p.resolved_utc_ms), MIN(p.id),
+                MIN(p.resolved_utc_ms),
+                (SELECT ranked.id FROM paths ranked
+                 WHERE ranked.content_hash = c.hash
+                   AND ranked.missing = 0 AND ranked.companion_of IS NULL
+                 ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                          ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+                LIMIT 1),
                 (SELECT COUNT(*) FROM paths cp
-                 WHERE cp.content_hash = c.hash AND cp.missing = 0),
-                COUNT(DISTINCT lower(p.file_name)) > 1
+                 WHERE cp.content_hash = c.hash AND cp.missing = 0
+                   AND cp.companion_of IS NULL)
          FROM contents c JOIN paths p ON p.content_hash = c.hash
          WHERE p.missing = 0 AND p.companion_of IS NULL
          GROUP BY c.hash, c.kind",

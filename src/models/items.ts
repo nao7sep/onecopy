@@ -51,9 +51,6 @@ export interface SectionItem {
   byteSize: number | null;
   hasCompanions: boolean;
   durationMs: number | null;
-  /** This binary exists under more than one file name across its copies —
-   * move/copy are blocked (which name lands cannot be a surprise). */
-  namesDiffer: boolean;
   /** Every live copy's directory, deduped, sorted (display form). */
   dirPaths: string[];
   derivedWork: ItemWorkStates;

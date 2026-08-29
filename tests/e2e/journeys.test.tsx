@@ -43,7 +43,6 @@ function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
     byteSize: 1000,
     hasCompanions: false,
     durationMs: null,
-    namesDiffer: false,
     dirPaths: ["/photos"],
     derivedWork: EMPTY_ITEM_WORK,
     ...over,

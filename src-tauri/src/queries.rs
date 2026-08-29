@@ -268,10 +268,6 @@ pub struct SectionItem {
     pub byte_size: Option<i64>,
     pub has_companions: bool,
     pub duration_ms: Option<i64>,
-    /// This binary exists under MORE THAN ONE file name across its copies
-    /// (case-insensitive). Move and copy are blocked for such items — which
-    /// name lands cannot be a surprise — so every list badges them.
-    pub names_differ: bool,
     /// EVERY live copy's directory, deduped, sorted, display-stripped
     /// (`for_display`, like copy_paths). The other-files table shows them
     /// all in one Folders column — copies merge into one row, so a single
@@ -356,7 +352,7 @@ fn hashed_section_select() -> String {
             EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                     WHERE pri.content_hash = c.hash AND comp.missing = 0 \
                       AND pri.missing = 0), \
-            c.duration_ms, l.names_differ, l.kind, c.derived_at_utc, \
+            c.duration_ms, l.kind, c.derived_at_utc, \
             c.derived_version, c.strip_frames, r.face_state, c.face_score, \
             r.transcript_state \
      FROM logical_contents l \
@@ -408,10 +404,10 @@ fn section_item_from_row(
     row: &rusqlite::Row<'_>,
     projection: ItemProjectionContext,
 ) -> rusqlite::Result<SectionItem> {
-    let kind: String = row.get(14)?;
-    let derived_at: Option<String> = row.get(15)?;
-    let face_state: Option<String> = row.get(18)?;
-    let transcript_state: Option<String> = row.get(20)?;
+    let kind: String = row.get(13)?;
+    let derived_at: Option<String> = row.get(14)?;
+    let face_state: Option<String> = row.get(17)?;
+    let transcript_state: Option<String> = row.get(19)?;
     Ok(SectionItem {
         hash: Some(row.get(0)?),
         path_id: row.get(1)?,
@@ -423,22 +419,21 @@ fn section_item_from_row(
         has_thumb: row.get(7)?,
         similar_group_id: row.get(8)?,
         sharpness: row.get(9)?,
-        face_score: row.get(19)?,
+        face_score: row.get(18)?,
         byte_size: row.get(10)?,
         has_companions: row.get(11)?,
         duration_ms: row.get(12)?,
-        names_differ: row.get(13)?,
         dir_paths: Vec::new(),
         derived_work: crate::derived_state::item_work_states(
             crate::derived_state::ItemWorkFacts {
                 kind: &kind,
                 derived_at: derived_at.as_deref(),
-                derived_version: row.get(16)?,
-                strip_frames: row.get(17)?,
+                derived_version: row.get(15)?,
+                strip_frames: row.get(16)?,
                 duration_ms: row.get(12)?,
                 similar_group_id: row.get(8)?,
                 face_state: face_state.as_deref(),
-                face_score: row.get(19)?,
+                face_score: row.get(18)?,
                 transcript_state: transcript_state.as_deref(),
             },
             projection.capabilities,
@@ -529,7 +524,6 @@ fn unhashed_other_items(
             byte_size: row.get(3)?,
             has_companions: false,
             duration_ms: None,
-            names_differ: false,
             dir_paths: vec![crate::winpath::for_display(&dir).into_owned()],
             derived_work: crate::derived_state::item_work_states(
                 crate::derived_state::ItemWorkFacts {

@@ -69,7 +69,6 @@ function item(
     byteSize: 100,
     hasCompanions: false,
     durationMs: null,
-    namesDiffer: false,
     dirPaths: ["/library"],
     derivedWork: EMPTY_ITEM_WORK,
   };
@@ -222,7 +221,6 @@ describe("destination drag transport", () => {
           { hash: "h1", pathId: null },
           { hash: "h2", pathId: null },
         ],
-        blockedNameCount: 0,
         anchorKey: "h1",
         shownKeys: ["h1", "h2"],
       },
@@ -256,7 +254,6 @@ describe("destination drag transport", () => {
         path: "/keep",
         selection: {
           items: [{ hash: "h1", pathId: null }],
-          blockedNameCount: 0,
           anchorKey: "h1",
           shownKeys: ["h1"],
         },

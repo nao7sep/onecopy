@@ -347,14 +347,6 @@ function ListRow({
             ×{item.copyCount}
           </span>
         ) : null}
-        {item.namesDiffer ? (
-          <span
-            className="ml-2 rounded-md bg-warning-surface px-1.5 py-0.5 text-[11px] text-warning"
-            title="Copies carry different names — Move and Copy are disabled until resolved"
-          >
-            ≠name
-          </span>
-        ) : null}
       </span>
       <span
         className="shrink-0 text-right tabular-nums text-xs text-ink-muted"

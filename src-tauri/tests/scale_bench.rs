@@ -47,8 +47,8 @@ fn six_item_section_in_a_million_row_index() {
            SELECT printf('background-%07d', n), 100, 'image' FROM seq;
          INSERT INTO logical_contents
            (content_hash, kind, resolved_utc_ms, representative_path_id,
-            live_copy_count, names_differ)
-           SELECT hash, 'image', 1735689600000, 1, 1, 0 FROM contents
+            live_copy_count)
+           SELECT hash, 'image', 1735689600000, 1, 1 FROM contents
            WHERE hash LIKE 'background-%';
          COMMIT;",
     )
@@ -108,10 +108,10 @@ fn section_counts_across_one_million_logical_items() {
          FROM seq;
          INSERT INTO logical_contents
            (content_hash, kind, resolved_utc_ms, representative_path_id,
-            live_copy_count, names_differ)
+            live_copy_count)
          SELECT hash, kind,
                 1262304000000 + (CAST(substr(hash, 7) AS INTEGER) % 5844) * 86400000,
-                1, 1, 0
+                1, 1
          FROM contents;
          COMMIT;",
     )
@@ -191,8 +191,8 @@ fn section_repair_collects_directories_without_materializing_one_million_items()
          SELECT printf('repair-section-%07d', n), 1, 'image' FROM seq;
          INSERT INTO logical_contents
            (content_hash, kind, resolved_utc_ms, representative_path_id,
-            live_copy_count, names_differ)
-         SELECT hash, 'image', 1735689600000, 1, 1, 0 FROM contents;
+            live_copy_count)
+         SELECT hash, 'image', 1735689600000, 1, 1 FROM contents;
          COMMIT;",
     )
     .unwrap();
@@ -233,8 +233,8 @@ fn background_work_snapshot_across_one_million_live_items() {
          FROM seq;
          INSERT INTO logical_contents
            (content_hash, kind, resolved_utc_ms, representative_path_id,
-            live_copy_count, names_differ)
-         SELECT hash, kind, NULL, 1, 1, 0 FROM contents;
+            live_copy_count)
+         SELECT hash, kind, NULL, 1, 1 FROM contents;
          COMMIT;",
     )
     .unwrap();
@@ -296,8 +296,8 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
          FROM seq;
          INSERT INTO logical_contents
            (content_hash, kind, resolved_utc_ms, representative_path_id,
-            live_copy_count, names_differ)
-         SELECT hash, kind, CAST(substr(hash, 9) AS INTEGER), 1, 1, 0
+            live_copy_count)
+         SELECT hash, kind, CAST(substr(hash, 9) AS INTEGER), 1, 1
          FROM contents;
          WITH RECURSIVE seq(n) AS (
            VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
