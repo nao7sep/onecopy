@@ -10,6 +10,7 @@ import { log, toErrorFields, initLogging } from "./repositories";
 import { useAppStore } from "./state/app-store";
 import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
 import { installMediaUseBoundary } from "./media-use";
+import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
 // already works before this resolves (defaulting to the dev-build gate).
@@ -49,16 +50,22 @@ window.addEventListener("contextmenu", (event) => {
 // Global last-resort handlers — catch anything that slips past React's error
 // handling and record it before the page can tear down.
 window.addEventListener("error", (event) => {
+  const message = event.error instanceof Error ? event.error.message : String(event.message);
   log.error("uncaught error", {
     ...toErrorFields(event.error ?? event.message),
     source: event.filename,
     line: event.lineno,
     column: event.colno,
   });
+  recordInterfaceFailure(message);
+  presentEscapedFailure(`This window stopped unexpectedly: ${message}`);
 });
 
 window.addEventListener("unhandledrejection", (event) => {
   log.error("unhandled promise rejection", toErrorFields(event.reason));
+  const message = event.reason instanceof Error ? event.reason.message : String(event.reason);
+  recordInterfaceFailure(message);
+  presentEscapedFailure(`This window could not finish an action: ${message}`);
 });
 
 // One bundle serves every window; the `view` query parameter routes.
@@ -86,4 +93,7 @@ void installMediaUseBoundary()
   })
   .catch((error) => {
     log.error("media ownership bootstrap failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    recordInterfaceFailure(message);
+    presentEscapedFailure(`This window could not start safely: ${message}`);
   });

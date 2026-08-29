@@ -8,13 +8,13 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 static PREEMPTED: AtomicBool = AtomicBool::new(false);
-static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +56,9 @@ pub fn wake(app: AppHandle) {
         return;
     }
     if let Err(error) = start_worker(app.clone()) {
+        PAUSED.store(true, Ordering::SeqCst);
         fail(&app, &error);
+        emit_state(&app);
         emit(&app, "file-information://done", json!({ "error": error }));
     }
 }
@@ -76,19 +78,19 @@ fn start_worker(app: AppHandle) -> Result<(), String> {
         .name("onecopy-file-information".to_string())
         .spawn(move || {
             if wait_for_registration.recv().is_ok() {
-                worker(handle);
+                worker_entry(handle);
             }
         })
         .map_err(|error| {
             RUNNING.store(false, Ordering::SeqCst);
             format!("could not start file-information completion: {error}")
         })?;
-    let mut slot = WORKER.lock().map_err(|_| {
+    let mut workers = WORKERS.lock().map_err(|_| {
         RUNNING.store(false, Ordering::SeqCst);
         "file-information worker state is unavailable".to_string()
     })?;
-    *slot = Some(worker);
-    drop(slot);
+    workers.push(worker);
+    drop(workers);
     emit_state(&app);
     if release.send(()).is_err() {
         RUNNING.store(false, Ordering::SeqCst);
@@ -98,9 +100,22 @@ fn start_worker(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn worker_entry(app: AppHandle) {
+    let handle = app.clone();
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| worker(handle))) {
+        RUNNING.store(false, Ordering::SeqCst);
+        PREEMPTED.store(false, Ordering::SeqCst);
+        REQUESTED.store(true, Ordering::SeqCst);
+        PAUSED.store(true, Ordering::SeqCst);
+        let error = crate::failure_runtime::panic_message(payload);
+        fail(&app, &error);
+        emit_state(&app);
+        emit(&app, "file-information://done", json!({ "error": error }));
+    }
+}
+
 fn worker(app: AppHandle) {
     let outcome = catch_unwind(AssertUnwindSafe(|| run_requested(&app)));
-    RUNNING.store(false, Ordering::SeqCst);
     let terminal = match outcome {
         Ok(Ok(summary)) => {
             if summary.is_some() {
@@ -117,15 +132,20 @@ fn worker(app: AppHandle) {
             json!({ "paused": PAUSED.load(Ordering::SeqCst), "preempted": true })
         }
         Ok(Err(error)) => {
+            REQUESTED.store(true, Ordering::SeqCst);
+            PAUSED.store(true, Ordering::SeqCst);
             fail(&app, &error);
             json!({ "error": error })
         }
         Err(payload) => {
-            let error = panic_message(payload);
+            REQUESTED.store(true, Ordering::SeqCst);
+            PAUSED.store(true, Ordering::SeqCst);
+            let error = crate::failure_runtime::panic_message(payload);
             fail(&app, &error);
             json!({ "error": error })
         }
     };
+    RUNNING.store(false, Ordering::SeqCst);
     PREEMPTED.store(false, Ordering::SeqCst);
     emit_state(&app);
     emit(&app, "file-information://done", terminal);
@@ -135,7 +155,9 @@ fn worker(app: AppHandle) {
         && !crate::source_check_runtime::running()
     {
         if let Err(error) = start_worker(app.clone()) {
+            PAUSED.store(true, Ordering::SeqCst);
             fail(&app, &error);
+            emit_state(&app);
             emit(&app, "file-information://done", json!({ "error": error }));
         }
     }
@@ -156,10 +178,10 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
     let progress =
         crate::scan_runtime::progress_emitter(app.clone(), "file-information://progress");
-    crate::scan_runtime::with_owner(
+    let summary = crate::scan_runtime::with_owner(
         crate::scan_runtime::Owner::FileInformation,
         PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst),
-        || {
+        || -> Result<Option<crate::scanner::ScanSummary>, String> {
             let conn = crate::index_store::open(&db_file)?;
             if !crate::scanner::pending_index_work_exists(&conn)? {
                 return Ok(None);
@@ -168,7 +190,9 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
             crate::scanner::run_index_tail(&conn, &settings, &progress, &mut summary)?;
             Ok(Some(summary))
         },
-    )
+    )?;
+    crate::failure_runtime::clear(app, "file-information-failed", None)?;
+    Ok(summary)
 }
 
 pub fn set_paused(app: AppHandle, paused: bool) {
@@ -198,7 +222,14 @@ pub fn shutdown(app: &AppHandle) {
 }
 
 pub fn join() {
-    if let Some(worker) = WORKER.lock().ok().and_then(|mut slot| slot.take()) {
+    let workers = match WORKERS.lock() {
+        Ok(mut workers) => workers.drain(..).collect::<Vec<_>>(),
+        Err(_) => {
+            crate::logging::error("file-information worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    for worker in workers {
         if worker.join().is_err() {
             crate::logging::error("file-information worker join failed", json!({}));
         }
@@ -206,13 +237,28 @@ pub fn join() {
 }
 
 fn join_finished() {
-    let finished = WORKER
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-        .filter(|worker| worker.is_finished());
-    if let Some(worker) = finished {
-        let _ = worker.join();
+    let finished = match WORKERS.lock() {
+        Ok(mut workers) => {
+            let mut finished = Vec::new();
+            let mut index = 0;
+            while index < workers.len() {
+                if workers[index].is_finished() {
+                    finished.push(workers.swap_remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            finished
+        }
+        Err(_) => {
+            crate::logging::error("file-information worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    for worker in finished {
+        if worker.join().is_err() {
+            crate::logging::error("file-information worker join failed", json!({}));
+        }
     }
 }
 
@@ -232,18 +278,5 @@ fn emit_state(app: &AppHandle) {
 }
 
 fn emit<T: Clone + Serialize>(app: &AppHandle, event: &str, payload: T) {
-    if let Err(error) = app.emit(event, payload) {
-        crate::logging::warn(
-            "file-information event failed",
-            json!({ "event": event, "error": { "message": error.to_string() } }),
-        );
-    }
-}
-
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|value| (*value).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "file-information worker stopped unexpectedly".to_string())
+    crate::failure_runtime::emit_or_record(app, event, payload);
 }

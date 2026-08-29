@@ -5,6 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 import type { MutationKind, MutationProgress } from "../models/mutation";
 import { log, toErrorFields } from "../repositories";
 import { useMutationStore } from "../state/mutation-store";
+import { useItemsStore } from "../state/items-store";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
 let installation: Promise<void> | null = null;
 
@@ -39,6 +41,12 @@ async function install(): Promise<void> {
     );
   } catch (error) {
     log.warn("file operation event wiring failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    recordInterfaceFailure(message);
+    useMutationStore.setState({ progress: null, cancelling: false });
+    useItemsStore.setState({
+      message: "Live file-operation status is unavailable. Restart OneCopy before changing more files.",
+    });
   }
 }
 

@@ -47,6 +47,7 @@ export default function BackgroundWorkModal() {
   const loading = useDerivedWorkStore((state) => state.loading);
   const changing = useDerivedWorkStore((state) => state.changing);
   const error = useDerivedWorkStore((state) => state.error);
+  const indexError = useSectionsStore((state) => state.error);
   const setOpen = useDerivedWorkStore((state) => state.setOpen);
   const setPaused = useDerivedWorkStore((state) => state.setPaused);
   const sourceCheck = useSectionsStore((state) => state.sourceCheck);
@@ -64,7 +65,7 @@ export default function BackgroundWorkModal() {
       title="Background work"
       onClose={() => setOpen(false)}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
-      footerStart={error}
+      footerStart={indexError ?? error}
       primaryAction={
         snapshot !== null ? (
           <Button

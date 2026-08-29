@@ -14,6 +14,7 @@ beforeEach(() => {
     timezoneValid: true,
     timezonePending: false,
     reconfigure: false,
+    error: null,
   });
 });
 

@@ -47,6 +47,7 @@ function VideoSurface({
   autoplayImmediately?: boolean;
 }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [externalError, setExternalError] = useState<string | null>(null);
   const [inspectPositionState, setInspectPositionState] = useState<InspectPosition>({
     x: 0.5,
     y: 0.5,
@@ -196,9 +197,11 @@ function VideoSurface({
           <button
             className="absolute right-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
             onClick={() => {
-              void invoke("open_item_externally", { hash }).catch((error) =>
-                log.warn("open in player failed", toErrorFields(error)),
-              );
+              setExternalError(null);
+              void invoke("open_item_externally", { hash }).catch((error) => {
+                log.warn("open in player failed", toErrorFields(error));
+                setExternalError("Couldn’t open this video in the external player.");
+              });
             }}
           >
             <ExternalLink size={13} /> Open in player
@@ -235,6 +238,9 @@ function VideoSurface({
         <p className="shrink-0 text-xs text-ink-muted">
           This codec does not play in the app. Open it in your player instead.
         </p>
+      ) : null}
+      {externalError !== null ? (
+        <p className="shrink-0 text-xs text-danger">{externalError}</p>
       ) : null}
       <div className="max-h-[35%] shrink-0 overflow-hidden">
         <TranscriptBlock hash={hash} />

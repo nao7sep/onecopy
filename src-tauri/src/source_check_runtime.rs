@@ -6,12 +6,12 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
-static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +50,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
         .name("onecopy-source-check".to_string())
         .spawn(move || {
             if wait_for_registration.recv().is_ok() {
-                worker(handle);
+                worker_entry(handle);
             }
         })
         .map_err(|error| {
@@ -58,12 +58,12 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
             crate::file_information_runtime::wake(app.clone());
             format!("could not start source-folder check: {error}")
         })?;
-    let mut slot = WORKER.lock().map_err(|_| {
+    let mut workers = WORKERS.lock().map_err(|_| {
         RUNNING.store(false, Ordering::SeqCst);
         "source-folder worker state is unavailable".to_string()
     })?;
-    *slot = Some(worker);
-    drop(slot);
+    workers.push(worker);
+    drop(workers);
     emit_state(&app);
     if release.send(()).is_err() {
         RUNNING.store(false, Ordering::SeqCst);
@@ -73,9 +73,22 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+fn worker_entry(app: AppHandle) {
+    let handle = app.clone();
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| worker(handle))) {
+        RUNNING.store(false, Ordering::SeqCst);
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
+        RESTART_REQUESTED.store(false, Ordering::SeqCst);
+        let error = crate::failure_runtime::panic_message(payload);
+        fail(&app, &error);
+        emit_state(&app);
+        emit(&app, "source-check://done", json!({ "error": error }));
+        crate::file_information_runtime::wake(app);
+    }
+}
+
 fn worker(app: AppHandle) {
     let outcome = catch_unwind(AssertUnwindSafe(|| run(&app)));
-    RUNNING.store(false, Ordering::SeqCst);
     let terminal = match outcome {
         Ok(Ok(summary)) => {
             RESTART_REQUESTED.store(false, Ordering::SeqCst);
@@ -102,11 +115,12 @@ fn worker(app: AppHandle) {
         }
         Err(payload) => {
             RESTART_REQUESTED.store(false, Ordering::SeqCst);
-            let error = panic_message(payload);
+            let error = crate::failure_runtime::panic_message(payload);
             fail(&app, &error);
             json!({ "error": error })
         }
     };
+    RUNNING.store(false, Ordering::SeqCst);
     STOP_REQUESTED.store(false, Ordering::SeqCst);
     emit_state(&app);
     emit(&app, "source-check://done", terminal);
@@ -132,14 +146,16 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     );
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
     let progress = crate::scan_runtime::progress_emitter(app.clone(), "source-check://progress");
-    crate::scan_runtime::with_owner(
+    let summary = crate::scan_runtime::with_owner(
         crate::scan_runtime::Owner::SourceCheck,
         STOP_REQUESTED.load(Ordering::SeqCst),
         || {
             crate::index_store::open(&db_file)
                 .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &progress))
         },
-    )
+    )?;
+    crate::failure_runtime::clear(app, "source-check-failed", None)?;
+    Ok(summary)
 }
 
 pub fn stop(app: &AppHandle) -> bool {
@@ -175,7 +191,14 @@ pub fn shutdown(app: &AppHandle) {
 }
 
 pub fn join() {
-    if let Some(worker) = WORKER.lock().ok().and_then(|mut slot| slot.take()) {
+    let workers = match WORKERS.lock() {
+        Ok(mut workers) => workers.drain(..).collect::<Vec<_>>(),
+        Err(_) => {
+            crate::logging::error("source-folder worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    for worker in workers {
         if worker.join().is_err() {
             crate::logging::error("source-folder worker join failed", json!({}));
         }
@@ -183,13 +206,28 @@ pub fn join() {
 }
 
 fn join_finished() {
-    let finished = WORKER
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-        .filter(|worker| worker.is_finished());
-    if let Some(worker) = finished {
-        let _ = worker.join();
+    let finished = match WORKERS.lock() {
+        Ok(mut workers) => {
+            let mut finished = Vec::new();
+            let mut index = 0;
+            while index < workers.len() {
+                if workers[index].is_finished() {
+                    finished.push(workers.swap_remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            finished
+        }
+        Err(_) => {
+            crate::logging::error("source-folder worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    for worker in finished {
+        if worker.join().is_err() {
+            crate::logging::error("source-folder worker join failed", json!({}));
+        }
     }
 }
 
@@ -206,18 +244,5 @@ fn emit_state(app: &AppHandle) {
 }
 
 fn emit<T: Clone + Serialize>(app: &AppHandle, event: &str, payload: T) {
-    if let Err(error) = app.emit(event, payload) {
-        crate::logging::warn(
-            "source-folder event failed",
-            json!({ "event": event, "error": { "message": error.to_string() } }),
-        );
-    }
-}
-
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|value| (*value).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "source-folder worker stopped unexpectedly".to_string())
+    crate::failure_runtime::emit_or_record(app, event, payload);
 }

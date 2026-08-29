@@ -19,6 +19,7 @@ import {
 } from "../repositories";
 import { applyTheme, applyUiFont } from "../utils/theme";
 import { listen } from "@tauri-apps/api/event";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
 interface AppState {
   appData: LoadedAppData | null;
@@ -133,5 +134,6 @@ void (async () => {
     });
   } catch (error) {
     log.warn("quarantine event wiring failed", toErrorFields(error));
+    recordInterfaceFailure(error instanceof Error ? error.message : String(error));
   }
 })();

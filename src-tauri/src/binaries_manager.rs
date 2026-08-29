@@ -521,7 +521,7 @@ pub fn install_entry_started(
             let pinned = spec.pinned.as_ref().ok_or("model entry carries no pin")?;
             let temp = root.join(TEMP_DIR_NAME);
             std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
-            let partial = temp.join(format!("{id}-{}.partial", nanoid::generate()));
+            let partial = temp.join(format!("{id}-{}.partial", nanoid::generate()?));
             let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone()]);
             let result = (|| -> Result<BinaryFacts, String> {
                 on_progress(InstallProgress::bytes(
@@ -565,7 +565,10 @@ pub fn install_entry_started(
                     ));
                 }
                 let target = installed_path(root, spec);
-                std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+                let parent = target
+                    .parent()
+                    .ok_or_else(|| format!("installed path has no parent: {}", target.display()))?;
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 acquisition::check_cancelled(&guard.cancelled)?;
                 on_progress(InstallProgress::fixed(
                     InstallPhase::Install,
@@ -625,8 +628,8 @@ fn install_ffmpeg_started(
         Some(InstallPhase::Download),
     ));
 
-    let partial = temp.join(format!("ffmpeg-{}.partial", nanoid::generate()));
-    let staged = temp.join(format!("ffmpeg-{}.staged", nanoid::generate()));
+    let partial = temp.join(format!("ffmpeg-{}.partial", nanoid::generate()?));
+    let staged = temp.join(format!("ffmpeg-{}.staged", nanoid::generate()?));
     let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]);
     let result = (|| -> Result<BinaryFacts, String> {
         guard.deadline.check(&guard.cancelled)?;
@@ -687,7 +690,10 @@ fn install_ffmpeg_started(
         acquisition::make_runnable(&staged, &guard.cancelled, &guard.deadline)?;
 
         let target = ffmpeg_path(root);
-        std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("installed path has no parent: {}", target.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         guard.deadline.check(&guard.cancelled)?;
         // Replace-in-place: rename over any previous install (same volume).
         // not recorded: the installed executable is a re-downloadable binary.

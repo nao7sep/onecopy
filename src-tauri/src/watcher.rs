@@ -125,8 +125,8 @@ pub fn restat_dir(
     let known: Vec<String> = stmt
         .query_map([&dir_str], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     drop(stmt);
     for path in known {
         if !present.contains(&path) {
@@ -181,15 +181,16 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                 "watcher could not watch a root",
                 json!({ "root": root, "error": { "message": err.to_string() } }),
             );
-            record_root_condition(&app, root, Some(&err.to_string()));
+            record_root_condition(&app, root, Some(&err.to_string()))?;
         } else {
-            record_root_condition(&app, root, None);
+            record_root_condition(&app, root, None)?;
             watched += 1;
         }
     }
     if watched == 0 {
         return Err("none of the configured source folders could be watched".to_string());
     }
+    crate::failure_runtime::clear(&app, "watcher-failed", None)?;
     logging::info("watcher started", json!({ "roots": source_dirs.len() }));
 
     let mut dirty: HashSet<PathBuf> = HashSet::new();
@@ -217,16 +218,11 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         if overflowed {
             overflowed = false;
             dirty.clear();
-            if let Err(error) = tauri::Emitter::emit(
+            crate::failure_runtime::emit_or_record(
                 &app,
                 "watch://rescan-needed",
                 json!({ "reason": "event overflow" }),
-            ) {
-                logging::warn(
-                    "watcher overflow event failed",
-                    json!({ "error": { "message": error.to_string() } }),
-                );
-            }
+            );
             logging::warn("watcher overflow; roots flagged rescan-needed", json!({}));
             continue;
         }
@@ -235,16 +231,14 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         }
         let dirs: Vec<PathBuf> = dirty.drain().collect();
         match process_dirty(&app, &dirs) {
-            Ok(0) => {}
+            Ok(0) => crate::failure_runtime::clear(&app, "watcher-failed", None)?,
             Ok(changed) => {
-                if let Err(error) =
-                    tauri::Emitter::emit(&app, "watch://updated", json!({ "changed": changed }))
-                {
-                    logging::warn(
-                        "watcher update event failed",
-                        json!({ "error": { "message": error.to_string() } }),
-                    );
-                }
+                crate::failure_runtime::clear(&app, "watcher-failed", None)?;
+                crate::failure_runtime::emit_or_record(
+                    &app,
+                    "watch://updated",
+                    json!({ "changed": changed }),
+                );
             }
             Err(err) => {
                 logging::warn(
@@ -261,38 +255,19 @@ fn report_failure(app: &tauri::AppHandle, error: &str) {
     logging::error("watcher failed", json!({ "error": { "message": error } }));
     crate::scan_runtime::record_runtime_failure(app, "watcher-failed", error);
     for event in ["watch://failed", "watch://rescan-needed"] {
-        if let Err(emit_error) = tauri::Emitter::emit(app, event, json!({ "reason": error })) {
-            logging::warn(
-                "watcher failure event failed",
-                json!({
-                    "event": event,
-                    "error": { "message": emit_error.to_string() },
-                }),
-            );
-        }
+        crate::failure_runtime::emit_or_record(app, event, json!({ "reason": error }));
     }
 }
 
-fn record_root_condition(app: &tauri::AppHandle, root: &str, error: Option<&str>) {
-    let result = crate::paths::data_root(app)
-        .and_then(|data_root| {
-            crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))
-        })
-        .and_then(|conn| match error {
-            Some(message) => {
-                crate::index_store::upsert_issue(&conn, Some(root), "watcher-root-failed", message)
-            }
-            None => crate::index_store::clear_issues(&conn, root, &["watcher-root-failed"]),
-        });
-    if let Err(record_error) = result {
-        logging::error(
-            "watcher root issue could not be saved",
-            json!({
-                "root": root,
-                "failure": error,
-                "error": { "message": record_error },
-            }),
-        );
+fn record_root_condition(
+    app: &tauri::AppHandle,
+    root: &str,
+    error: Option<&str>,
+) -> Result<(), String> {
+    if let Some(message) = error {
+        crate::failure_runtime::report(app, "watcher-root-failed", Some(root), message)
+    } else {
+        crate::failure_runtime::clear(app, "watcher-root-failed", Some(root))
     }
 }
 

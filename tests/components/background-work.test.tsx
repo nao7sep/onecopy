@@ -13,6 +13,7 @@ import {
 } from "../../src/state/derived-work-store";
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { useSectionsStore } from "../../src/state/sections-store";
 
 const ids: BackgroundClassSnapshot["id"][] = [
   "previews",
@@ -63,6 +64,7 @@ beforeEach(() => {
     error: null,
     activeItem: null,
   });
+  useSectionsStore.setState({ error: null });
 });
 
 afterEach(cleanup);

@@ -509,8 +509,8 @@ pub(crate) fn priority_candidates(
         hashes = statement
             .query_map(params_from_iter(hinted), |row| row.get(0))
             .map_err(|error| error.to_string())?
-            .filter_map(Result::ok)
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
     }
     let Some((kind, start_ms, end_ms)) = section else {
         return Ok(hashes);
@@ -535,13 +535,13 @@ pub(crate) fn priority_candidates(
         (Some(start), Some(end)) => statement
             .query_map(params![kind, start, end], |row| row.get(0))
             .map_err(|error| error.to_string())?
-            .filter_map(Result::ok)
-            .collect(),
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?,
         _ => statement
             .query_map([kind], |row| row.get(0))
             .map_err(|error| error.to_string())?
-            .filter_map(Result::ok)
-            .collect(),
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?,
     };
     let mut seen: std::collections::HashSet<String> = hashes.iter().cloned().collect();
     for hash in section_hashes {
@@ -1360,15 +1360,19 @@ pub(crate) fn take_all_resource_issues(conn: &Connection) -> Result<Vec<WorkClas
     let mut statement = conn
         .prepare("SELECT DISTINCT kind FROM issues WHERE kind LIKE 'resource-limit-%'")
         .map_err(|error| error.to_string())?;
-    let classes = statement
+    let kinds = statement
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .filter_map(|kind| {
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    let classes = kinds
+        .iter()
+        .map(|kind| {
             kind.strip_prefix(RESOURCE_ISSUE_PREFIX)
                 .and_then(WorkClass::parse)
+                .ok_or_else(|| format!("unknown resource issue kind: {kind}"))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     conn.execute("DELETE FROM issues WHERE kind LIKE 'resource-limit-%'", [])
         .map_err(|error| error.to_string())?;

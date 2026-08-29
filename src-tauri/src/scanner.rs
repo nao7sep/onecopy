@@ -509,8 +509,8 @@ pub fn forget_unconfigured_roots(
     let recorded: Vec<String> = stmt
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     drop(stmt);
 
     // Settle each configured root to the spelling the INDEX would use before
@@ -558,8 +558,8 @@ pub fn forget_unconfigured_roots(
         let touched: Vec<String> = hashes_stmt
             .query_map([like_prefix(&root)], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
         drop(hashes_stmt);
 
         // Companions first: their rows hold a foreign key to the primary.
@@ -645,8 +645,8 @@ pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, Str
     let known: Vec<String> = stmt
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     drop(stmt);
 
     for root in known {
@@ -1080,7 +1080,7 @@ fn walk_root_with_progress(
     let mut walk_incomplete = false;
     let mut current_stat_failures = std::collections::HashSet::<String>::new();
     // One probe up front so a clean index never pays a per-file DELETE.
-    let issues_present = crate::index_store::any_issues(conn);
+    let issues_present = crate::index_store::any_issues(conn)?;
 
     // The walk root carries the long-path form so every entry beneath it
     // inherits it; without this a deep tree is simply invisible on Windows.
@@ -1170,8 +1170,8 @@ fn walk_root_with_progress(
         let known: Vec<String> = select
             .query_map([&placeholders_root], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
         let present_set: std::collections::HashSet<&String> = present.iter().collect();
         for path in known {
             if !present_set.contains(&path) {
@@ -1204,7 +1204,9 @@ fn walk_root_with_progress(
                 row.get::<_, String>(0)
             })
             .map_err(|error| error.to_string())?
-            .filter_map(|row| row.ok())
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?
+            .into_iter()
             .filter(|path| !current_stat_failures.contains(path))
             .collect::<Vec<_>>();
         drop(statement);
@@ -1381,8 +1383,8 @@ fn hash_pending_with_progress(
             })
         })
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     drop(stmt);
     let total = rows.len() as u64;
     let mut done = 0u64;
@@ -1416,8 +1418,8 @@ fn hash_pending_with_progress(
     let known_sizes: std::collections::HashSet<i64> = known_stmt
         .query_map([], |r| r.get::<_, i64>(0))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+        .map_err(|e| e.to_string())?;
     drop(known_stmt);
 
     let is_media = |kind: &str| kind == "image" || kind == "video";
@@ -1450,7 +1452,7 @@ fn hash_pending_with_progress(
     // Full-hashes one row and lands its identity (promotion for provisional
     // rows, creation/collapse otherwise). Returns the hash for disagreement
     // accounting.
-    let issues_present = crate::index_store::any_issues(conn);
+    let issues_present = crate::index_store::any_issues(conn)?;
     let land_full_hash =
         |row: &Row, stats: &mut HashStats, done_before: u64| -> Result<Option<String>, String> {
         let byte_progress = |bytes_done: u64, bytes_total: u64| {
@@ -2331,8 +2333,8 @@ fn collect_rows_4(
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     Ok(rows)
 }
 

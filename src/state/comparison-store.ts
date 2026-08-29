@@ -326,7 +326,7 @@ async function resolveSpread(
       await availableMonitors(),
       priorityFromState(screenState),
     );
-    const hosting = await currentMonitor().catch(() => null);
+    const hosting = await currentMonitor();
     const hostKey = hosting !== null ? monitorKey(hosting) : null;
     const eligible =
       hostKey === null
@@ -431,7 +431,10 @@ async function openSpread(
  * existing Preview window only after the session is published, immediately
  * before spread creation; an invalid/stale group must never flicker Preview. */
 async function hidePreviewWindowForComparison(): Promise<void> {
-  const preview = await WebviewWindow.getByLabel("preview").catch(() => null);
+  const preview = await WebviewWindow.getByLabel("preview").catch((error) => {
+    reportWindowCall("preview lookup")(error);
+    return null;
+  });
   if (preview !== null) {
     await preview.hide().catch(reportWindowCall("preview hide"));
   }
@@ -456,7 +459,10 @@ function recoverSingleWindowComparison(): void {
 async function closeSpread(spreadCount: number): Promise<void> {
   for (let i = 1; i <= spreadCount; i += 1) {
     const label = `comparison-${i}`;
-    const window = await WebviewWindow.getByLabel(label).catch(() => null);
+    const window = await WebviewWindow.getByLabel(label).catch((error) => {
+      reportWindowCall("comparison window lookup")(error);
+      return null;
+    });
     if (window !== null) {
       // Leave simple fullscreen BEFORE hiding: a hidden simple-fullscreen
       // window reappears in a broken half-state on macOS.

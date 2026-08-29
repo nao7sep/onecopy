@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -184,20 +184,22 @@ impl Publisher {
             self.last_emit = now;
             self.last_phase = Some(progress.phase);
             self.last_failures = progress.failures;
-            let _ = self.app.emit("mutation://progress", progress);
+            crate::failure_runtime::emit_or_record(&self.app, "mutation://progress", progress);
         }
     }
 
     fn done(&mut self, progress: &Progress, cancelled: bool) {
         self.progress(progress);
-        let _ = self.app.emit(
+        crate::failure_runtime::emit_or_record(
+            &self.app,
             "mutation://done",
             json!({ "progress": progress, "cancelled": cancelled }),
         );
     }
 
     fn error(&self, operation_id: u64, kind: Kind, error: &str) {
-        let _ = self.app.emit(
+        crate::failure_runtime::emit_or_record(
+            &self.app,
             "mutation://error",
             json!({ "operationId": operation_id, "kind": kind, "error": error }),
         );

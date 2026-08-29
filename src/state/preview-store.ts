@@ -179,7 +179,10 @@ async function raisePulse(window: WebviewWindow): Promise<void> {
  * refocus-main dance raised MAIN over an overlapping preview and made Space
  * look dead. */
 async function frontPreviewWindow(): Promise<void> {
-  const existing = await WebviewWindow.getByLabel("preview").catch(() => null);
+  const existing = await WebviewWindow.getByLabel("preview").catch((error) => {
+    reportWindowCall("preview lookup")(error);
+    return null;
+  });
   if (existing === null) return;
   await existing.show().catch(reportWindowCall("preview show"));
   await raisePulse(existing);

@@ -25,6 +25,7 @@ export default function Wizard() {
   const timezone = useWizardStore((s) => s.timezone);
   const timezoneValid = useWizardStore((s) => s.timezoneValid);
   const timezonePending = useWizardStore((s) => s.timezonePending);
+  const error = useWizardStore((s) => s.error);
   const reconfigure = useWizardStore((s) => s.reconfigure);
   const addDirs = useWizardStore((s) => s.addDirs);
   const removeDir = useWizardStore((s) => s.removeDir);
@@ -62,6 +63,7 @@ export default function Wizard() {
         <p className="mt-1 mb-6 text-sm text-ink-muted">
           {`Step ${step} of ${WIZARD_STEPS}`}
         </p>
+        {error !== null ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
 
         {step === 1 ? (
           <section>

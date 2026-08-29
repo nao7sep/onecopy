@@ -498,7 +498,11 @@ pub(crate) fn publish_staged(staged: &Path, target: &Path) -> Result<(), String>
     // mirrors storage::write_atomic and is deliberately best-effort.
     if let Some(parent) = target.parent() {
         if let Ok(directory) = std::fs::File::open(parent) {
-            let _ = directory.sync_all();
+            crate::fs_recovery::sync_all(
+                &directory,
+                parent,
+                "managed dependency publication sync",
+            );
         }
     }
     Ok(())
@@ -559,11 +563,19 @@ pub(crate) fn make_runnable(
     {
         let mut command = std::process::Command::new("xattr");
         command.args(["-d", "com.apple.quarantine"]).arg(staged);
-        let _ = crate::subprocess::run_bounded_idle(
+        if let Err(error) = crate::subprocess::run_bounded_idle(
             command,
             &|| deadline.check(cancelled).is_err(),
             Duration::from_secs(10),
-        );
+        ) {
+            crate::logging::warn(
+                "managed dependency quarantine cleanup failed",
+                serde_json::json!({
+                    "path": staged,
+                    "error": { "message": error },
+                }),
+            );
+        }
     }
     deadline.check(cancelled)
 }

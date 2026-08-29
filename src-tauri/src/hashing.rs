@@ -211,7 +211,7 @@ fn hash_while_copying_detailed(
         Ok(identity) => identity,
         Err(error) => {
             drop(writer);
-            let _ = std::fs::remove_file(dst);
+            crate::fs_recovery::remove_file(dst, "failed copy staging cleanup");
             return Err(CopyFailure::Destination(error));
         }
     };

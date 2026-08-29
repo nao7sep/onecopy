@@ -29,6 +29,7 @@ interface IndexWorkSnapshot {
 
 interface SectionsState {
   counts: SectionCounts | null;
+  error: string | null;
   sourceCheck: SourceCheckState;
   fileInformation: FileInformationState;
   /** Watcher overflow or a stopped source walk requires explicit discovery. */
@@ -59,6 +60,7 @@ const initialFileInformation: FileInformationState = {
 
 export const useSectionsStore = create<SectionsState>((set) => ({
   counts: null,
+  error: null,
   sourceCheck: initialSourceCheck,
   fileInformation: initialFileInformation,
   rescanNeeded: false,
@@ -67,9 +69,10 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     const fresh = countsLoad.begin();
     try {
       const counts = await invoke<SectionCounts>("get_section_counts");
-      if (fresh()) set({ counts });
+      if (fresh()) set({ counts, error: null });
     } catch (error) {
       log.error("section counts load failed", toErrorFields(error));
+      if (fresh()) set({ error: "Couldn’t read the library sections." });
     }
   },
 
@@ -79,6 +82,7 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       const snapshot = await invoke<IndexWorkSnapshot>("index_work_snapshot");
       if (!fresh()) return;
       set((state) => ({
+        error: null,
         sourceCheck: { ...snapshot.sourceCheck, progress: state.sourceCheck.progress },
         fileInformation: {
           ...snapshot.fileInformation,
@@ -87,10 +91,12 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       }));
     } catch (error) {
       log.error("library background-work status failed", toErrorFields(error));
+      if (fresh()) set({ error: "Couldn’t read library background-work status." });
     }
   },
 
   startSourceCheck: async () => {
+    set({ error: null });
     try {
       const started = await invoke<boolean>("start_source_check");
       if (started) {
@@ -102,10 +108,12 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       }
     } catch (error) {
       log.error("source-folder check start failed", toErrorFields(error));
+      set({ error: "Couldn’t start checking source folders." });
     }
   },
 
   stopSourceCheck: async () => {
+    set({ error: null });
     try {
       const accepted = await invoke<boolean>("stop_source_check");
       if (accepted) {
@@ -115,10 +123,12 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       }
     } catch (error) {
       log.error("source-folder stop failed", toErrorFields(error));
+      set({ error: "Couldn’t stop checking source folders." });
     }
   },
 
   setFileInformationPaused: async (paused) => {
+    set({ error: null });
     try {
       await invoke("set_file_information_paused", { paused });
       set((state) => ({
@@ -130,6 +140,7 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       }));
     } catch (error) {
       log.error("file-information pause change failed", toErrorFields(error));
+      set({ error: "Couldn’t change file-information background work." });
     }
   },
 }));

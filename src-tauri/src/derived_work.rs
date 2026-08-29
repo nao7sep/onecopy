@@ -14,7 +14,7 @@ use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
 
 use rusqlite::Connection;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::derived_runtime::{
     cancelled, emit_state_changed, is_paused as class_paused, progress as record_progress,
@@ -189,9 +189,12 @@ pub fn wake(index_changed: bool) {
         SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
     }
     let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
-    if let Ok(mut value) = generation.lock() {
-        *value = value.wrapping_add(1);
-        ready.notify_one();
+    match generation.lock() {
+        Ok(mut value) => {
+            *value = value.wrapping_add(1);
+            ready.notify_one();
+        }
+        Err(_) => logging::error("derived-work wake state is unavailable", json!({})),
     }
 }
 
@@ -202,64 +205,114 @@ pub fn set_priority(
     visible: Vec<String>,
     section: Option<SectionPriority>,
 ) {
-    if let Ok(mut hints) = PRIORITY.lock() {
-        hints.selected = selected;
-        hints.visible = visible.into_iter().take(SECTION_HINT_LIMIT).collect();
-        hints.section = section;
+    match PRIORITY.lock() {
+        Ok(mut hints) => {
+            hints.selected = selected;
+            hints.visible = visible.into_iter().take(SECTION_HINT_LIMIT).collect();
+            hints.section = section;
+        }
+        Err(_) => logging::error("derived-work priority state is unavailable", json!({})),
     }
     wake(false);
 }
 
-pub fn start(app: AppHandle) {
+pub fn start(app: AppHandle) -> Result<bool, String> {
     if STARTED.swap(true, Ordering::SeqCst) {
-        return;
+        return Ok(false);
     }
-    std::thread::spawn(move || {
-        let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
-        let mut observed = 0u64;
-        let mut run_again = true;
-        let mut cursors = CandidateCursors::default();
-        loop {
-            if !run_again {
-                if let Ok(value) = generation.lock() {
-                    let waited = ready
-                        .wait_timeout_while(
-                            value,
-                            std::time::Duration::from_secs(POLL_SECONDS),
-                            |current| *current == observed,
-                        )
-                        .map(|(current, _)| *current);
-                    if let Ok(current) = waited {
-                        if current != observed {
-                            cursors = CandidateCursors::default();
-                        }
-                        observed = current;
-                    }
-                }
-            } else if let Ok(current) = generation.lock().map(|current| *current) {
-                if current != observed {
-                    observed = current;
-                    cursors = CandidateCursors::default();
-                }
+    let handle = app.clone();
+    std::thread::Builder::new()
+        .name("onecopy-derived-work".to_string())
+        .spawn(move || derived_worker(handle))
+        .map_err(|error| {
+            STARTED.store(false, Ordering::SeqCst);
+            format!("could not start previews-and-analysis worker: {error}")
+        })?;
+    wake(true);
+    Ok(true)
+}
+
+pub fn started() -> bool {
+    STARTED.load(Ordering::SeqCst)
+}
+
+fn derived_worker(app: AppHandle) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_worker_loop(&app)
+    }));
+    STARTED.store(false, Ordering::SeqCst);
+    let failure = match outcome {
+        Ok(Ok(())) => return,
+        Ok(Err(error)) => error,
+        Err(payload) => crate::failure_runtime::panic_message(payload),
+    };
+    let _ = crate::failure_runtime::report(
+        &app,
+        crate::issue_recovery::DERIVED_WORKER_FAILED,
+        None,
+        &failure,
+    );
+    crate::failure_runtime::emit_or_record(
+        &app,
+        "derived://worker-failed",
+        json!({ "message": failure }),
+    );
+}
+
+fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
+    let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
+    let mut observed = 0u64;
+    let mut run_again = true;
+    let mut cursors = CandidateCursors::default();
+    let mut cleared_previous_failure = false;
+    loop {
+        if !run_again {
+            let value = generation
+                .lock()
+                .map_err(|_| "derived-work wake state is unavailable".to_string())?;
+            let (current, _) = ready
+                .wait_timeout_while(
+                    value,
+                    std::time::Duration::from_secs(POLL_SECONDS),
+                    |current| *current == observed,
+                )
+                .map_err(|_| "derived-work wake state is unavailable".to_string())?;
+            if *current != observed {
+                cursors = CandidateCursors::default();
             }
-            run_again = false;
-            if !available() {
-                continue;
-            }
-            match run_one_pass(&app, &mut cursors) {
-                Ok(did_work) => run_again = did_work,
-                Err(error) if error.starts_with(crate::scanner::CANCELLED) => logging::debug(
-                    "derived work stopped",
-                    json!({ "reason": "cancelled" }),
-                ),
-                Err(error) => logging::warn(
-                    "derived work pass failed",
-                    json!({ "error": { "message": error } }),
-                ),
+            observed = *current;
+        } else {
+            let current = *generation
+                .lock()
+                .map_err(|_| "derived-work wake state is unavailable".to_string())?;
+            if current != observed {
+                cursors = CandidateCursors::default();
+                observed = current;
             }
         }
-    });
-    wake(true);
+        run_again = false;
+        if !available() {
+            continue;
+        }
+        match run_one_pass(app, &mut cursors) {
+            Ok(did_work) => {
+                if !cleared_previous_failure {
+                    crate::failure_runtime::clear(
+                        app,
+                        crate::issue_recovery::DERIVED_WORKER_FAILED,
+                        None,
+                    )?;
+                    cleared_previous_failure = true;
+                }
+                run_again = did_work;
+            }
+            Err(error) if error.starts_with(crate::scanner::CANCELLED) => logging::debug(
+                "derived work stopped",
+                json!({ "reason": "cancelled" }),
+            ),
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Synchronously produces the selected preview through the same ownership
@@ -324,8 +377,8 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
 
     let hints = PRIORITY
         .lock()
-        .map(|hints| hints.clone())
-        .unwrap_or_default();
+        .map_err(|_| "derived-work priority state is unavailable".to_string())?
+        .clone();
     let priority = priority_candidates(
         &conn,
         &settings,
@@ -468,7 +521,11 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         match result {
             Ok(Some(stats)) => {
                 emit_progress(app, WorkClass::Similarity, None);
-                let _ = app.emit("derived://similarity-updated", json!({}));
+                crate::failure_runtime::emit_or_record(
+                    app,
+                    "derived://similarity-updated",
+                    json!({}),
+                );
                 logging::info(
                     "similarity rebuilt",
                     json!({ "groups": stats.groups, "items": stats.grouped_items }),
@@ -488,7 +545,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
     }
 
     if !is_idle() {
-        let _ = app.emit("derived://quiet", json!({}));
+        crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
         return Ok(false);
     }
 
@@ -616,7 +673,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         }
     }
 
-    let _ = app.emit("derived://quiet", json!({}));
+    crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
     emit_state_changed(app);
     Ok(false)
 }
@@ -693,7 +750,7 @@ fn emit_progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u64)>) 
 /// attempted batch keeps every frontend surface on that authority without a
 /// polling loop or class-specific issue store.
 fn notify_issues(app: &AppHandle) {
-    let _ = app.emit("derived://issues", json!({}));
+    crate::failure_runtime::emit_or_record(app, "derived://issues", json!({}));
 }
 
 pub(crate) fn pause_for_resource_safety(
@@ -723,7 +780,8 @@ pub fn notify_item_update(
 ) {
     match crate::queries::item_by_hash(conn, hash, projection) {
         Ok(Some(item)) => {
-            let _ = app.emit(
+            crate::failure_runtime::emit_or_record(
+                app,
                 "derived://item",
                 json!({ "class": class, "previousHash": previous_hash, "item": item }),
             );
@@ -774,6 +832,14 @@ fn whisper_model(data_root: &Path) -> Option<PathBuf> {
 struct TranscriptStep {
     attempted_hash: Option<String>,
     exhausted: bool,
+}
+
+struct FinishSignal(std::sync::Arc<AtomicBool>);
+
+impl Drop for FinishSignal {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 fn transcribe_next(
@@ -831,24 +897,29 @@ fn transcribe_next(
         // Audio extraction and model loading happen before Whisper's first
         // percentage callback; publish ownership now so an open video never
         // looks pending while its expensive work is already underway.
-        let _ = app.emit(
+        crate::failure_runtime::emit_or_record(
+            app,
             "transcribe://progress",
             json!({ "hash": hash, "percent": 0 }),
         );
         let finished = std::sync::Arc::new(AtomicBool::new(false));
-        let watch = std::thread::spawn({
-            let finished = std::sync::Arc::clone(&finished);
-            move || loop {
-                if finished.load(Ordering::SeqCst) {
-                    return;
+        let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
+        let watch = std::thread::Builder::new()
+            .name("onecopy-transcription-cancel-watch".to_string())
+            .spawn({
+                let finished = std::sync::Arc::clone(&finished);
+                move || loop {
+                    if finished.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if !is_idle() || cancelled() {
+                        crate::transcription::request_cancel();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
                 }
-                if !is_idle() || cancelled() {
-                    crate::transcription::request_cancel();
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-        });
+            })
+            .map_err(|error| format!("could not start transcription cancel watcher: {error}"))?;
         let result = crate::transcription::transcribe_to_cache_claimed(
             &claim,
             cache,
@@ -867,15 +938,18 @@ fn transcribe_next(
                         WorkClass::Transcripts,
                         Some((percent as u64, 100)),
                     );
-                    let _ = progress_handle.emit(
+                    crate::failure_runtime::emit_or_record(
+                        &progress_handle,
                         "transcribe://progress",
                         json!({ "hash": progress_hash, "percent": percent }),
                     );
                 }
             },
         );
-        finished.store(true, Ordering::SeqCst);
-        let _ = watch.join();
+        drop(finish_signal);
+        watch
+            .join()
+            .map_err(|payload| crate::failure_runtime::panic_message(payload))?;
         // The claim resets cancellation when dropped, so classify this run
         // while it still owns the Whisper slot.
         let was_cancelled = crate::transcription::is_cancelled();
@@ -889,7 +963,11 @@ fn transcribe_next(
                     !text.trim().is_empty(),
                 )?;
                 notify_item_update(app, conn, projection, "transcripts", &hash, &hash);
-                let _ = app.emit("transcribe://done", json!({ "hash": hash, "text": text }));
+                crate::failure_runtime::emit_or_record(
+                    app,
+                    "transcribe://done",
+                    json!({ "hash": hash, "text": text }),
+                );
                 return Ok(TranscriptStep {
                     attempted_hash: Some(hash),
                     exhausted: false,
@@ -901,7 +979,11 @@ fn transcribe_next(
                         "derived transcription stopped",
                         json!({ "hash": hash, "reason": "cancelled" }),
                     );
-                    let _ = app.emit("transcribe://cancelled", json!({ "hash": hash }));
+                    crate::failure_runtime::emit_or_record(
+                        app,
+                        "transcribe://cancelled",
+                        json!({ "hash": hash }),
+                    );
                     return Ok(TranscriptStep::default());
                 }
                 if crate::resource_limits::is_safety_error(&error) {
@@ -914,7 +996,8 @@ fn transcribe_next(
                     "derived transcription failed",
                     json!({ "hash": hash, "error": { "message": error } }),
                 );
-                let _ = app.emit(
+                crate::failure_runtime::emit_or_record(
+                    app,
                     "transcribe://error",
                     json!({ "hash": hash, "message": error }),
                 );

@@ -513,7 +513,7 @@ fn similarity_candidates_by_bucket_size() {
             times.push(Some(1_700_000_000_000 + (i % 86_400) as i64 * 30_000));
         }
         let started = Instant::now();
-        let clusters = cluster_by_appearance(&phashes, &times, 4, 10, 90, 2);
+        let clusters = cluster_by_appearance(&phashes, &times, 4, 10, 90, 2).unwrap();
         eprintln!(
             "exact similarity candidates at n={n}: {:?} ({} clusters)",
             started.elapsed(),

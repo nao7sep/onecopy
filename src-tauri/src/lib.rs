@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 pub mod backup_store;
 pub mod background_work;
@@ -10,8 +10,10 @@ pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;
 pub mod extensions;
+pub mod failure_runtime;
 pub mod file_identity;
 pub mod file_information_runtime;
+pub mod fs_recovery;
 pub mod fs_publish;
 pub mod hashing;
 pub mod face;
@@ -127,8 +129,25 @@ fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
 /// surface, so the rule ("every quarantine reaches the user") has no hole.
 fn report_quarantine(app: &AppHandle, record: Option<storage::QuarantineRecord>) {
     if let Some(record) = record {
-        let _ = app.emit("storage://quarantined", json!({ "quarantines": [record] }));
+        failure_runtime::emit_or_record(
+            app,
+            "storage://quarantined",
+            json!({ "quarantines": [record] }),
+        );
     }
+}
+
+#[tauri::command]
+fn record_interface_failure(
+    window: tauri::WebviewWindow,
+    message: String,
+) -> Result<(), String> {
+    failure_runtime::report(
+        window.app_handle(),
+        "interface-failed",
+        Some(window.label()),
+        &message,
+    )
 }
 
 // Config and state saves are PATCHES merged core-side: the core holds the
@@ -137,7 +156,7 @@ fn report_quarantine(app: &AppHandle, record: Option<storage::QuarantineRecord>)
 // merged document so the caller can publish it without a second read.
 #[tauri::command(async)]
 fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
-    logging::boundary(
+    let result = logging::boundary(
         "patch_config",
         json!({}),
         || {
@@ -175,12 +194,16 @@ fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
             Ok(outcome.merged)
         },
         |_| json!({}),
-    )
+    );
+    if let Err(error) = &result {
+        let _ = failure_runtime::report(&app, "config-save-failed", None, error);
+    }
+    result
 }
 
 #[tauri::command(async)]
 fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
-    logging::boundary(
+    let result = logging::boundary(
         "patch_state",
         json!({}),
         || {
@@ -189,7 +212,11 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
             Ok(outcome.merged)
         },
         |_| json!({}),
-    )
+    );
+    if let Err(error) = &result {
+        let _ = failure_runtime::report(&app, "state-save-failed", None, error);
+    }
+    result
 }
 
 // The storage root, for the mediafile protocol's hash→path lookups.
@@ -205,7 +232,10 @@ fn cache_root() -> Option<std::path::PathBuf> {
 
 #[tauri::command(async)]
 fn start_source_check(app: AppHandle) -> Result<bool, String> {
-    source_check_runtime::start(app)
+    source_check_runtime::start(app.clone()).map_err(|error| {
+        let _ = failure_runtime::report(&app, "source-check-failed", None, &error);
+        error
+    })
 }
 
 #[tauri::command(async)]
@@ -398,8 +428,9 @@ fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
 fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
     let mut entries: Vec<DirEntry> = Vec::new();
     let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
-    for entry in read.flatten() {
-        let Ok(file_type) = entry.file_type() else { continue };
+    for entry in read {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
         if !file_type.is_dir() {
             continue;
         }
@@ -408,7 +439,7 @@ fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
             continue; // dotfolders (incl. .onecopy-trash) stay out of the tree
         }
         let child_path = entry.path();
-        let (has_children, is_empty) = child_directory_facts(&child_path);
+        let (has_children, is_empty) = child_directory_facts(&child_path)?;
         entries.push(DirEntry {
             name,
             path: child_path.to_string_lossy().to_string(),
@@ -420,18 +451,21 @@ fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
-fn child_directory_facts(path: &std::path::Path) -> (bool, bool) {
-    let Ok(children) = std::fs::read_dir(path) else {
-        return (false, false);
-    };
+fn child_directory_facts(path: &std::path::Path) -> Result<(bool, bool), String> {
+    let children = std::fs::read_dir(path).map_err(|error| error.to_string())?;
     let mut is_empty = true;
     for child in children {
+        let child = child.map_err(|error| error.to_string())?;
         is_empty = false;
-        if child.is_ok_and(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir())) {
-            return (true, false);
+        if child
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            return Ok((true, false));
         }
     }
-    (false, is_empty)
+    Ok((false, is_empty))
 }
 
 // EXCEPTION (tests-folder convention): destination listing is a private Tauri
@@ -485,13 +519,13 @@ fn create_subdir(parent: String, name: String) -> Result<String, String> {
             }
             let parent_path = std::path::Path::new(&parent);
             let lower = trimmed.to_lowercase();
-            if let Ok(read) = std::fs::read_dir(parent_path) {
-                for entry in read.flatten() {
-                    if entry.file_name().to_string_lossy().to_lowercase() == lower {
-                        return Err(format!(
-                            "\"{trimmed}\" already exists here (names are case-insensitively unique)"
-                        ));
-                    }
+            let read = std::fs::read_dir(parent_path).map_err(|error| error.to_string())?;
+            for entry in read {
+                let entry = entry.map_err(|error| error.to_string())?;
+                if entry.file_name().to_string_lossy().to_lowercase() == lower {
+                    return Err(format!(
+                        "\"{trimmed}\" already exists here (names are case-insensitively unique)"
+                    ));
                 }
             }
             let target = parent_path.join(trimmed);
@@ -718,129 +752,198 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
     derived_runtime::active_item(&app, derived_state::WorkClass::Transcripts, &hash);
     let claim = transcription::claim()?;
     let handle = app.clone();
-    std::thread::spawn(move || {
-        let _work = work;
-        let result = (|| -> Result<String, String> {
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let projection = queries::ItemProjectionContext {
-                capabilities: derived_work::work_capabilities(&data_root)?,
-                similarity_dirty: derived_work::similarity_dirty(),
-            };
-            let video: String = conn
-                .query_row(
-                    "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-                    [&hash],
-                    |r| r.get(0),
-                )
-                .map_err(|_| "no live copy of this video".to_string())?;
-            let cache = preview::CachePaths::new(cache_root);
-            let model_spec = binaries_manager::spec_of("whisper-large-v3-turbo")
-                .expect("whisper model is registered");
-            let model_state = binaries_manager::state_of(&data_root, model_spec);
-            let model = (model_state.status != binaries::BinaryStatus::NotInstalled)
-                .then(|| binaries_manager::installed_path(&data_root, model_spec));
-            let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
-            let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
-            let tools_available = model.is_some() && ffmpeg.is_some();
-            let progress_handle = handle.clone();
-            let progress_hash = hash.clone();
-            let text = transcription::transcribe_to_cache_claimed(
-                &claim,
-                &cache,
-                &data_root.join(binaries_manager::TEMP_DIR_NAME),
-                model.as_deref(),
-                ffmpeg.as_deref(),
-                std::path::Path::new(&video),
-                &hash,
-                move |percent| {
-                    let percent = percent.clamp(0, 100);
-                    derived_runtime::report_manual_progress(
-                        &progress_handle,
-                        "transcripts",
-                        percent as u64,
-                        100,
-                    );
-                    let _ = progress_handle.emit(
-                        "transcribe://progress",
-                        json!({ "hash": progress_hash, "percent": percent }),
-                    );
-                },
-            );
-            match text {
-                Ok(text) => {
-                    derived_state::record_transcript_success(
-                        &conn,
+    let start_hash = hash.clone();
+    let started = std::thread::Builder::new()
+        .name("onecopy-manual-transcription".to_string())
+        .spawn(move || {
+            let panic_handle = handle.clone();
+            let panic_hash = hash.clone();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _work = work;
+                let result = (|| -> Result<String, String> {
+                    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+                    let projection = queries::ItemProjectionContext {
+                        capabilities: derived_work::work_capabilities(&data_root)?,
+                        similarity_dirty: derived_work::similarity_dirty(),
+                    };
+                    let video: String = conn
+                        .query_row(
+                            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
+                            [&hash],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| match error {
+                            rusqlite::Error::QueryReturnedNoRows => {
+                                "no live copy of this video".to_string()
+                            }
+                            other => format!("could not read the video path: {other}"),
+                        })?;
+                    let cache = preview::CachePaths::new(cache_root);
+                    let model_spec = binaries_manager::spec_of("whisper-large-v3-turbo")
+                        .ok_or("whisper model is not registered")?;
+                    let model_state = binaries_manager::state_of(&data_root, model_spec);
+                    let model = (model_state.status != binaries::BinaryStatus::NotInstalled)
+                        .then(|| binaries_manager::installed_path(&data_root, model_spec));
+                    let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
+                    let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
+                    let tools_available = model.is_some() && ffmpeg.is_some();
+                    let progress_handle = handle.clone();
+                    let progress_hash = hash.clone();
+                    let text = transcription::transcribe_to_cache_claimed(
+                        &claim,
+                        &cache,
+                        &data_root.join(binaries_manager::TEMP_DIR_NAME),
+                        model.as_deref(),
+                        ffmpeg.as_deref(),
+                        std::path::Path::new(&video),
                         &hash,
-                        &video,
-                        !text.trim().is_empty(),
-                    )?;
-                    derived_work::notify_item_update(
+                        move |percent| {
+                            let percent = percent.clamp(0, 100);
+                            derived_runtime::report_manual_progress(
+                                &progress_handle,
+                                "transcripts",
+                                percent as u64,
+                                100,
+                            );
+                            failure_runtime::emit_or_record(
+                                &progress_handle,
+                                "transcribe://progress",
+                                json!({ "hash": progress_hash, "percent": percent }),
+                            );
+                        },
+                    );
+                    match text {
+                        Ok(text) => {
+                            derived_state::record_transcript_success(
+                                &conn,
+                                &hash,
+                                &video,
+                                !text.trim().is_empty(),
+                            )?;
+                            derived_work::notify_item_update(
+                                &handle,
+                                &conn,
+                                projection,
+                                "transcripts",
+                                &hash,
+                                &hash,
+                            );
+                            Ok(text)
+                        }
+                        Err(error)
+                            if error == scanner::CANCELLED
+                                || transcription::is_cancelled() =>
+                        {
+                            // Preserve a typed cancellation after the claim resets its
+                            // process-wide flag at the end of this worker.
+                            Err(scanner::CANCELLED.to_string())
+                        }
+                        Err(error) if !tools_available => {
+                            derived_work::notify_item_update(
+                                &handle,
+                                &conn,
+                                projection,
+                                "transcripts",
+                                &hash,
+                                &hash,
+                            );
+                            Err(error)
+                        }
+                        Err(error) if resource_limits::is_safety_error(&error) => {
+                            derived_work::pause_for_resource_safety(
+                                &handle,
+                                &conn,
+                                derived_state::WorkClass::Transcripts,
+                                &error,
+                            )?;
+                            Err(error)
+                        }
+                        Err(error) => {
+                            derived_state::record_transcript_failure(
+                                &conn,
+                                &hash,
+                                &video,
+                                &error,
+                            )?;
+                            derived_work::notify_item_update(
+                                &handle,
+                                &conn,
+                                projection,
+                                "transcripts",
+                                &hash,
+                                &hash,
+                            );
+                            Err(error)
+                        }
+                    }
+                })();
+                match result {
+                    Ok(text) => failure_runtime::emit_checked(
                         &handle,
-                        &conn,
-                        projection,
-                        "transcripts",
-                        &hash,
-                        &hash,
-                    );
-                    Ok(text)
-                }
-                Err(error)
-                    if error == scanner::CANCELLED || transcription::is_cancelled() =>
-                {
-                    // Preserve a typed cancellation after the claim resets its
-                    // process-wide flag at the end of this worker.
-                    Err(scanner::CANCELLED.to_string())
-                }
-                Err(error) if !tools_available => {
-                    derived_work::notify_item_update(
+                        "transcribe://done",
+                        json!({ "hash": hash, "text": text }),
+                    ),
+                    Err(err) if err == scanner::CANCELLED => failure_runtime::emit_checked(
                         &handle,
-                        &conn,
-                        projection,
-                        "transcripts",
-                        &hash,
-                        &hash,
-                    );
-                    Err(error)
+                        "transcribe://cancelled",
+                        json!({ "hash": hash }),
+                    ),
+                    Err(err) => {
+                        logging::warn(
+                            "transcription failed",
+                            json!({ "hash": hash, "error": { "message": err.clone() } }),
+                        );
+                        failure_runtime::emit_checked(
+                            &handle,
+                            "transcribe://error",
+                            json!({ "hash": hash, "message": err }),
+                        )
+                    }
                 }
-                Err(error) if resource_limits::is_safety_error(&error) => {
-                    derived_work::pause_for_resource_safety(
-                        &handle,
-                        &conn,
-                        derived_state::WorkClass::Transcripts,
+            }));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let _ = failure_runtime::report(
+                        &panic_handle,
+                        "event-delivery-failed",
+                        Some(&panic_hash),
                         &error,
-                    )?;
-                    Err(error)
-                }
-                Err(error) => {
-                    derived_state::record_transcript_failure(&conn, &hash, &video, &error)?;
-                    derived_work::notify_item_update(
-                        &handle,
-                        &conn,
-                        projection,
-                        "transcripts",
-                        &hash,
-                        &hash,
                     );
-                    Err(error)
+                }
+                Err(payload) => {
+                    let error = failure_runtime::panic_message(payload);
+                    let _ = failure_runtime::report(
+                        &panic_handle,
+                        "transcription-worker-failed",
+                        Some(&panic_hash),
+                        &error,
+                    );
+                    if let Err(emit_error) = failure_runtime::emit_checked(
+                        &panic_handle,
+                        "transcribe://error",
+                        json!({ "hash": panic_hash, "message": error }),
+                    ) {
+                        let _ = failure_runtime::report(
+                            &panic_handle,
+                            "event-delivery-failed",
+                            Some("transcribe://error"),
+                            &emit_error,
+                        );
+                    }
                 }
             }
-        })();
-        match result {
-            Ok(text) => {
-                let _ = handle.emit("transcribe://done", json!({ "hash": hash, "text": text }));
-            }
-            Err(err) if err == scanner::CANCELLED => {
-                let _ = handle.emit("transcribe://cancelled", json!({ "hash": hash }));
-            }
-            Err(err) => {
-                logging::warn(
-                    "transcription failed",
-                    json!({ "hash": hash, "error": { "message": err.clone() } }),
-                );
-                let _ = handle.emit("transcribe://error", json!({ "hash": hash, "message": err }));
-            }
-        }
-    });
+        });
+    if let Err(error) = started {
+        let message = format!("could not start transcription worker: {error}");
+        let _ = failure_runtime::report(
+            &app,
+            "transcription-worker-failed",
+            Some(&start_hash),
+            &message,
+        );
+        return Err(message);
+    }
     Ok(())
 }
 
@@ -878,7 +981,7 @@ fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> 
     }
 }
 
-    // The frontend's throttled input ping — the coordinator's whole view
+// The frontend's throttled input ping — the coordinator's whole view
 // of the user. Atomic store; keeping it plain (main-thread) is deliberate,
 // it must never queue behind async work.
 #[tauri::command]
@@ -887,12 +990,12 @@ fn note_user_activity() {
 }
 
 #[tauri::command]
-fn media_use_current(window: tauri::WebviewWindow) -> Option<Value> {
+fn media_use_current(window: tauri::WebviewWindow) -> Result<Option<Value>, String> {
     media_use::current(window.label())
 }
 
 #[tauri::command]
-fn media_use_released(window: tauri::WebviewWindow, token: u64) -> bool {
+fn media_use_released(window: tauri::WebviewWindow, token: u64) -> Result<bool, String> {
     media_use::acknowledge(token, window.label())
 }
 
@@ -919,6 +1022,9 @@ fn background_work_set_paused(
     paused: bool,
 ) -> Result<(), String> {
     derived_runtime::set_paused(&app, class_id.as_deref(), paused)?;
+    if !paused {
+        derived_work::start(app.clone())?;
+    }
     derived_work::wake(false);
     Ok(())
 }
@@ -953,7 +1059,7 @@ fn transcribe_cancel() -> bool {
     transcription::request_cancel()
 }
 
-// The Trash surface: standing sizes per trash root// The Trash surface: standing sizes per trash root, and the one deliberately
+// The Trash surface: standing sizes per trash root and the one deliberately
 // destructive convenience — emptying a root. The trash is otherwise
 // write-only; these are the only two readers the design allows.
 #[tauri::command(async)]
@@ -1006,7 +1112,8 @@ fn trash_empty(app: AppHandle, root: String) -> Result<trash::EmptyOutcome, Stri
                     {
                         last_emit.set(now);
                         last_failures.set(progress.failures);
-                        let _ = app.emit(
+                        failure_runtime::emit_or_record(
+                            &app,
                             "trash://progress",
                             json!({ "root": root, "progress": progress }),
                         );
@@ -1067,6 +1174,15 @@ fn retry_issue(app: AppHandle, id: i64) -> Result<bool, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            if issue_recovery::issue_has_kind(
+                &conn,
+                id,
+                issue_recovery::DERIVED_WORKER_FAILED,
+            )? {
+                derived_work::start(app.clone())?;
+                derived_work::wake(false);
+                return Ok(true);
+            }
             if let Some(class) = derived_state::take_resource_issue(&conn, id)? {
                 derived_runtime::set_paused(&app, Some(class.id()), false)?;
                 derived_work::wake(false);
@@ -1090,9 +1206,17 @@ fn retry_all_issues(app: AppHandle) -> Result<u64, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let restart_derived = issue_recovery::contains_kind(
+                &conn,
+                issue_recovery::DERIVED_WORKER_FAILED,
+            )?;
             let mut retried = derived_state::retry_all(&conn)?;
             for class in derived_state::take_all_resource_issues(&conn)? {
                 derived_runtime::set_paused(&app, Some(class.id()), false)?;
+                retried += 1;
+            }
+            if restart_derived {
+                derived_work::start(app.clone())?;
                 retried += 1;
             }
             if retried > 0 {
@@ -1121,7 +1245,7 @@ fn recheck_issue(app: AppHandle, id: i64) -> Result<issue_recovery::RecheckResul
             let outcome = scan_runtime::try_with_recheck_claim(id, || {
                 let conn = index_store::open(&db_file)?;
                 scanner::recheck_filesystem_issue(&conn, id, &settings.lists)
-            });
+            })?;
             let Some(outcome) = outcome else {
                 return Ok(issue_recovery::RecheckResult::Busy);
             };
@@ -1165,75 +1289,164 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let started = binaries_manager::begin_install(&id)?;
     let handle = app.clone();
-    std::thread::spawn(move || {
-        let progress_id = id.clone();
-        let progress_handle = handle.clone();
-        let last_phase = std::cell::Cell::new(None::<binaries_manager::InstallPhase>);
-        let last_emit = std::cell::Cell::new(
-            std::time::Instant::now() - std::time::Duration::from_secs(1),
-        );
-        let emit = move |progress: binaries_manager::InstallProgress| {
-            let now = std::time::Instant::now();
-            let phase_changed = last_phase.get() != Some(progress.phase);
-            let completed = progress.total.is_some_and(|total| progress.done >= total);
-            if !phase_changed
-                && !completed
-                && now.duration_since(last_emit.get()) < std::time::Duration::from_millis(125)
-            {
-                return;
-            }
-            last_phase.set(Some(progress.phase));
-            last_emit.set(now);
-            let _ = progress_handle.emit(
-                "binaries://progress",
-                json!({
-                    "id": progress_id,
-                    "phase": progress.phase,
-                    "done": progress.done,
-                    "total": progress.total,
-                    "nextPhase": progress.next_phase,
-                }),
+    let start_id = id.clone();
+    let thread = std::thread::Builder::new()
+        .name(format!("onecopy-install-{id}"))
+        .spawn(move || {
+            let progress_id = id.clone();
+            let progress_handle = handle.clone();
+            let progress_event_failed = std::cell::Cell::new(false);
+            let last_phase = std::cell::Cell::new(None::<binaries_manager::InstallPhase>);
+            let last_emit = std::cell::Cell::new(
+                std::time::Instant::now() - std::time::Duration::from_secs(1),
             );
-        };
-        let is_ffmpeg = id == "ffmpeg";
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            binaries_manager::install_entry_started(&data_root, started, emit)
-        }));
-        match outcome {
-            Ok(Ok(facts)) => {
-                let _ = handle.emit("binaries://done", json!({ "id": id, "facts": facts }));
-                if is_ffmpeg {
-                    // Tool installation changes derived-work eligibility, not
-                    // index debt. The coordinator re-reads the tool state on
-                    // this wake; no scan restart or captured config is involved.
-                    derived_work::wake(false);
-                }
-            }
-            Ok(Err(err)) => {
-                if binaries_manager::is_cancelled_error(&err) {
-                    logging::info("dependency install cancelled", json!({ "id": id }));
-                    let _ = handle.emit("binaries://cancelled", json!({ "id": id }));
+            let emit = move |progress: binaries_manager::InstallProgress| {
+                let now = std::time::Instant::now();
+                let phase_changed = last_phase.get() != Some(progress.phase);
+                let completed = progress.total.is_some_and(|total| progress.done >= total);
+                if !phase_changed
+                    && !completed
+                    && now.duration_since(last_emit.get()) < std::time::Duration::from_millis(125)
+                {
                     return;
                 }
-                logging::warn(
-                    "dependency install failed",
-                    json!({ "id": id, "error": { "message": err.clone() } }),
-                );
-                let _ = handle.emit("binaries://error", json!({ "id": id, "message": err }));
+                last_phase.set(Some(progress.phase));
+                last_emit.set(now);
+                if let Err(error) = failure_runtime::emit_checked(
+                    &progress_handle,
+                    "binaries://progress",
+                    json!({
+                        "id": progress_id,
+                        "phase": progress.phase,
+                        "done": progress.done,
+                        "total": progress.total,
+                        "nextPhase": progress.next_phase,
+                    }),
+                ) {
+                    if !progress_event_failed.replace(true) {
+                        let _ = failure_runtime::report(
+                            &progress_handle,
+                            "event-delivery-failed",
+                            Some(&progress_id),
+                            &error,
+                        );
+                    }
+                }
+            };
+            let is_ffmpeg = id == "ffmpeg";
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                binaries_manager::install_entry_started(&data_root, started, emit)
+            }));
+            match outcome {
+                Ok(Ok(facts)) => {
+                    if let Err(error) = failure_runtime::clear(
+                        &handle,
+                        "dependency-install-failed",
+                        Some(&id),
+                    ) {
+                        let _ = failure_runtime::report(
+                            &handle,
+                            "issue-recovery-failed",
+                            Some(&id),
+                            &error,
+                        );
+                    }
+                    if let Err(error) = failure_runtime::emit_checked(
+                        &handle,
+                        "binaries://done",
+                        json!({ "id": id, "facts": facts }),
+                    ) {
+                        let _ = failure_runtime::report(
+                            &handle,
+                            "event-delivery-failed",
+                            Some(&id),
+                            &error,
+                        );
+                    }
+                    if is_ffmpeg {
+                        // Tool installation changes derived-work eligibility, not
+                        // index debt. The coordinator re-reads the tool state on
+                        // this wake; no scan restart or captured config is involved.
+                        derived_work::wake(false);
+                    }
+                }
+                Ok(Err(err)) => {
+                    if binaries_manager::is_cancelled_error(&err) {
+                        logging::info("dependency install cancelled", json!({ "id": id }));
+                        if let Err(error) = failure_runtime::emit_checked(
+                            &handle,
+                            "binaries://cancelled",
+                            json!({ "id": id }),
+                        ) {
+                            let _ = failure_runtime::report(
+                                &handle,
+                                "event-delivery-failed",
+                                Some(&id),
+                                &error,
+                            );
+                        }
+                        return;
+                    }
+                    logging::warn(
+                        "dependency install failed",
+                        json!({ "id": id, "error": { "message": err.clone() } }),
+                    );
+                    let _ = failure_runtime::report(
+                        &handle,
+                        "dependency-install-failed",
+                        Some(&id),
+                        &err,
+                    );
+                    if let Err(error) = failure_runtime::emit_checked(
+                        &handle,
+                        "binaries://error",
+                        json!({ "id": id, "message": err }),
+                    ) {
+                        let _ = failure_runtime::report(
+                            &handle,
+                            "event-delivery-failed",
+                            Some("binaries://error"),
+                            &error,
+                        );
+                    }
+                }
+                Err(payload) => {
+                    let message = failure_runtime::panic_message(payload);
+                    logging::error(
+                        "dependency install panicked",
+                        json!({ "id": id, "error": { "message": message.clone() } }),
+                    );
+                    let _ = failure_runtime::report(
+                        &handle,
+                        "dependency-install-failed",
+                        Some(&id),
+                        &message,
+                    );
+                    if let Err(error) = failure_runtime::emit_checked(
+                        &handle,
+                        "binaries://error",
+                        json!({ "id": id, "message": message }),
+                    ) {
+                        let _ = failure_runtime::report(
+                            &handle,
+                            "event-delivery-failed",
+                            Some("binaries://error"),
+                            &error,
+                        );
+                    }
+                }
             }
-            Err(_) => {
-                let message = "dependency install stopped unexpectedly";
-                logging::error(
-                    "dependency install panicked",
-                    json!({ "id": id, "error": { "message": message } }),
-                );
-                let _ = handle.emit(
-                    "binaries://error",
-                    json!({ "id": id, "message": message }),
-                );
-            }
-        }
-    });
+        });
+    if let Err(error) = thread {
+        let message = format!("could not start dependency install worker: {error}");
+        let _ = failure_runtime::report(
+            &app,
+            "dependency-install-failed",
+            Some(&start_id),
+            &message,
+        );
+        return Err(message);
+    }
     Ok(())
 }
 
@@ -1491,10 +1704,19 @@ pub fn run() {
             // untouched; they are reconstructible and no longer referenced.
             let setup_config = storage::read_config_for_setup(&data_root)?;
             let cache_root = data_root.join(storage::CACHE_DIR_NAME);
-            let _ = DATA_ROOT.set(data_root.clone());
+            DATA_ROOT
+                .set(data_root.clone())
+                .map_err(|_| "data root was initialized more than once".to_string())?;
             // One coordinator owns reconstructible media work; its optional
             // heavy classes run only while the user is away.
-            derived_work::start(app.handle().clone());
+            if let Err(error) = derived_work::start(app.handle().clone()) {
+                let _ = failure_runtime::report(
+                    app.handle(),
+                    issue_recovery::DERIVED_WORKER_FAILED,
+                    None,
+                    &error,
+                );
+            }
             // The sweep walks the ENTIRE cache tree, which grows with the
             // library — it was the launch's biggest fixed cost, paid before
             // the window could appear. It maintains a reconstructible cache
@@ -1504,29 +1726,33 @@ pub fn run() {
             {
                 let db_path = data_root.join(storage::INDEX_DB_FILE_NAME);
                 let cache = preview::CachePaths::new(cache_root);
-                std::thread::spawn(move || {
-                    let started = std::time::Instant::now();
-                    if let Ok(conn) = index_store::open(&db_path) {
-                        match preview::startup_sweep(&conn, &cache) {
-                            Ok(0) => {}
-                            Ok(removed) => {
-                                logging::info(
-                                    "cache sweep",
-                                    json!({ "removed": removed, "ms": started.elapsed().as_millis() as u64 }),
-                                );
-                            }
-                            Err(err) => {
-                                logging::warn("cache sweep failed", json!({ "error": { "message": err } }));
-                            }
+                let handle = app.handle().clone();
+                let clear_handle = handle.clone();
+                let _ = failure_runtime::spawn_reported(
+                    handle,
+                    "onecopy-cache-sweep",
+                    "cache-sweep-failed",
+                    move || {
+                        let started = std::time::Instant::now();
+                        let conn = index_store::open(&db_path)?;
+                        let removed = preview::startup_sweep(&conn, &cache)?;
+                        if removed > 0 {
+                            logging::info(
+                                "cache sweep",
+                                json!({ "removed": removed, "ms": started.elapsed().as_millis() as u64 }),
+                            );
                         }
-                    }
-                });
+                        failure_runtime::clear(&clear_handle, "cache-sweep-failed", None)?;
+                        Ok(())
+                    },
+                );
             }
 
             // The watcher: ON by default, best-effort, over the configured
             // source roots (the Camera Roll inflow case). Restart picks up
             // source-dir changes; correctness never depends on it.
             let watch_settings = scanner::settings_from_config(setup_config.as_ref(), &data_root, 0);
+            let configured = watch_settings.source_dirs.clone();
             watcher::start(app.handle().clone(), watch_settings.source_dirs);
 
             // The one update switch (managed-runtime-dependencies): when ON,
@@ -1564,21 +1790,46 @@ pub fn run() {
                     .map(|entry| entry.id)
                     .collect();
                 if !stale_ids.is_empty() {
-                    std::thread::spawn(move || {
-                        for id in stale_ids {
-                            match binaries_manager::check_entry(&root, &id) {
-                                Ok(facts) => logging::info(
-                                    "launch update check",
-                                    json!({ "id": id, "latestKnown": facts.latest_known_version }),
-                                ),
-                                Err(err) => logging::warn(
-                                    "launch update check failed",
-                                    json!({ "id": id, "error": { "message": err } }),
-                                ),
+                    let report_handle = handle.clone();
+                    let _ = failure_runtime::spawn_reported(
+                        handle,
+                        "onecopy-update-check",
+                        "update-check-worker-failed",
+                        move || {
+                            for id in stale_ids {
+                                match binaries_manager::check_entry(&root, &id) {
+                                    Ok(facts) => {
+                                        failure_runtime::clear(
+                                            &report_handle,
+                                            "update-check-failed",
+                                            Some(&id),
+                                        )?;
+                                        logging::info(
+                                            "launch update check",
+                                            json!({ "id": id, "latestKnown": facts.latest_known_version }),
+                                        );
+                                    }
+                                    Err(error) => failure_runtime::report(
+                                        &report_handle,
+                                        "update-check-failed",
+                                        Some(&id),
+                                        &error,
+                                    )?,
+                                }
                             }
-                        }
-                        let _ = handle.emit("binaries://changed", json!({}));
-                    });
+                            failure_runtime::emit_checked(
+                                &report_handle,
+                                "binaries://changed",
+                                json!({}),
+                            )?;
+                            failure_runtime::clear(
+                                &report_handle,
+                                "update-check-worker-failed",
+                                None,
+                            )?;
+                            Ok(())
+                        },
+                    );
                 }
             }
 
@@ -1587,7 +1838,6 @@ pub fn run() {
             // separate optional launch job because it exists to discover work
             // performed while OneCopy was closed.
             file_information_runtime::wake(app.handle().clone());
-            let configured = storage::load_config_source_dirs(&data_root).unwrap_or_default();
             let check_sources_at_launch = setup_config
                 .as_ref()
                 .and_then(|config| config.get("checkSourceFoldersAtLaunch"))
@@ -1598,7 +1848,14 @@ pub fn run() {
                     "source-folder check started at launch",
                     json!({ "roots": configured.len() }),
                 );
-                let _ = source_check_runtime::start(app.handle().clone());
+                if let Err(error) = source_check_runtime::start(app.handle().clone()) {
+                    let _ = failure_runtime::report(
+                        app.handle(),
+                        "source-check-failed",
+                        None,
+                        &error,
+                    );
+                }
             }
 
             logging::info(
@@ -1621,6 +1878,7 @@ pub fn run() {
             load_app_data,
             patch_config,
             patch_state,
+            record_interface_failure,
             start_source_check,
             stop_source_check,
             set_file_information_paused,
@@ -1710,20 +1968,46 @@ pub fn run() {
             api.prevent_exit();
             if !EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 let handle = app_handle.clone();
-                std::thread::spawn(move || {
-                    source_check_runtime::join();
-                    file_information_runtime::join();
-                    mutation_runtime::wait_for_idle();
-                    let media = media_use::begin(&handle, &[]);
-                    if let Err(error) = &media {
-                        logging::warn(
-                            "shutdown media release failed",
-                            json!({ "error": { "message": error } }),
-                        );
-                    }
-                    handle.exit(0);
-                    drop(media);
-                });
+                let exit_handle = handle.clone();
+                let started = std::thread::Builder::new()
+                    .name("onecopy-exit-quiescence".to_string())
+                    .spawn(move || {
+                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            source_check_runtime::join();
+                            file_information_runtime::join();
+                            mutation_runtime::wait_for_idle();
+                            let media = media_use::begin(&handle, &[]);
+                            if let Err(error) = &media {
+                                let _ = failure_runtime::report(
+                                    &handle,
+                                    "shutdown-media-release-failed",
+                                    None,
+                                    error,
+                                );
+                            }
+                            drop(media);
+                        }));
+                        if let Err(payload) = outcome {
+                            let error = failure_runtime::panic_message(payload);
+                            let _ = failure_runtime::report(
+                                &handle,
+                                "shutdown-worker-failed",
+                                None,
+                                &error,
+                            );
+                        }
+                        handle.exit(0);
+                    });
+                if let Err(error) = started {
+                    let message = format!("could not start shutdown worker: {error}");
+                    let _ = failure_runtime::report(
+                        &exit_handle,
+                        "shutdown-worker-failed",
+                        None,
+                        &message,
+                    );
+                    exit_handle.exit(1);
+                }
             }
         }
         tauri::RunEvent::Exit => {

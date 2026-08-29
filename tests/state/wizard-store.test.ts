@@ -27,6 +27,7 @@ beforeEach(() => {
     timezone: "Asia/Tokyo",
     timezoneValid: true,
     timezonePending: false,
+    error: null,
   });
 });
 

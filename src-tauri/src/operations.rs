@@ -1224,7 +1224,7 @@ fn stage_delivery(
     on_progress: &mut dyn FnMut(MoveUnitProgress),
 ) -> Result<StageResult, String> {
     for source in &delivery.sources {
-        let staged = output_stage_path(&delivery.target);
+        let staged = output_stage_path(&delivery.target)?;
         let copied = crate::hashing::hash_while_copying_cancellable_detailed(
             Path::new(&source.abs_path),
             &staged,
@@ -1277,12 +1277,15 @@ fn stage_delivery(
     Ok(StageResult::Failed)
 }
 
-fn output_stage_path(target: &Path) -> std::path::PathBuf {
+fn output_stage_path(target: &Path) -> Result<std::path::PathBuf, String> {
     let stem = target
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("output");
-    target.with_file_name(format!("{stem}-{}.tmp", crate::nanoid::generate()))
+    Ok(target.with_file_name(format!(
+        "{stem}-{}.tmp",
+        crate::nanoid::generate()?
+    )))
 }
 
 

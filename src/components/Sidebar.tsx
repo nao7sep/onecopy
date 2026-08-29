@@ -49,6 +49,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   const select = useItemsStore((s) => s.select);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(defaultExpanded);
+  const error = useSectionsStore((state) => state.error);
 
   const tree = buildSectionTree(counts);
 
@@ -240,7 +241,9 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
         ];
       })}
 
-      {allEmpty ? (
+      {error !== null ? (
+        <p className="mt-2 px-2 text-sm text-danger">{error}</p>
+      ) : allEmpty ? (
         // Background reconciliation and a settled empty library look
         // IDENTICAL from the counts alone — both are an empty tree. Saying
         // "Nothing to handle" during the first scan of a large library tells

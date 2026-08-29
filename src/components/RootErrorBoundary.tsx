@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { log, toErrorFields } from "../repositories";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
 interface Props {
   children: ReactNode;
@@ -22,6 +23,7 @@ export default class RootErrorBoundary extends Component<Props, State> {
       ...toErrorFields(error),
       componentStack: info.componentStack,
     });
+    recordInterfaceFailure(error instanceof Error ? error.message : String(error));
   }
 
   render(): ReactNode {

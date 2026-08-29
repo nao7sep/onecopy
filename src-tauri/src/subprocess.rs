@@ -131,43 +131,82 @@ fn run_bounded_idle_output(
         let buf = Arc::clone(&stdout_buf);
         let seen = Arc::clone(&last_output);
         let overflow = Arc::clone(&stdout_overflow);
-        readers.push(std::thread::spawn(move || {
-            let mut chunk = [0u8; 64 * 1024];
-            while let Ok(n) = out.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                if let Ok(mut b) = buf.lock() {
-                    if b.len().saturating_add(n) > max_stdout {
-                        overflow.store(true, Ordering::Relaxed);
-                    } else if !overflow.load(Ordering::Relaxed) {
-                        b.extend_from_slice(&chunk[..n]);
+        let reader = std::thread::Builder::new()
+            .name("onecopy-subprocess-stdout".to_string())
+            .spawn(move || -> Result<(), String> {
+                let mut chunk = [0u8; 64 * 1024];
+                loop {
+                    let n = out.read(&mut chunk).map_err(|error| error.to_string())?;
+                    if n == 0 {
+                        return Ok(());
+                    }
+                    seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    if let Ok(mut b) = buf.lock() {
+                        if b.len().saturating_add(n) > max_stdout {
+                            overflow.store(true, Ordering::Relaxed);
+                        } else if !overflow.load(Ordering::Relaxed) {
+                            b.extend_from_slice(&chunk[..n]);
+                        }
                     }
                 }
+            });
+        match reader {
+            Ok(reader) => readers.push(reader),
+            Err(error) => {
+                kill_owned(&mut child);
+                return Err(format!("could not start subprocess stdout reader: {error}"));
             }
-        }));
+        }
     }
     if let Some(mut err) = child.stderr.take() {
         let buf = Arc::clone(&stderr_buf);
         let seen = Arc::clone(&last_output);
         let overflow = Arc::clone(&stderr_overflow);
-        readers.push(std::thread::spawn(move || {
-            let mut chunk = [0u8; 16 * 1024];
-            while let Ok(n) = err.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                if let Ok(mut b) = buf.lock() {
-                    if b.len().saturating_add(n) > STDERR_BYTES {
-                        overflow.store(true, Ordering::Relaxed);
-                    } else if !overflow.load(Ordering::Relaxed) {
-                        b.extend_from_slice(&chunk[..n]);
+        let reader = std::thread::Builder::new()
+            .name("onecopy-subprocess-stderr".to_string())
+            .spawn(move || -> Result<(), String> {
+                let mut chunk = [0u8; 16 * 1024];
+                loop {
+                    let n = err.read(&mut chunk).map_err(|error| error.to_string())?;
+                    if n == 0 {
+                        return Ok(());
+                    }
+                    seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    if let Ok(mut b) = buf.lock() {
+                        if b.len().saturating_add(n) > STDERR_BYTES {
+                            overflow.store(true, Ordering::Relaxed);
+                        } else if !overflow.load(Ordering::Relaxed) {
+                            b.extend_from_slice(&chunk[..n]);
+                        }
                     }
                 }
+            });
+        match reader {
+            Ok(reader) => readers.push(reader),
+            Err(error) => {
+                kill_owned(&mut child);
+                for reader in readers {
+                    match reader.join() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(read_error)) => crate::logging::warn(
+                            "subprocess reader cleanup failed",
+                            serde_json::json!({
+                                "error": { "message": read_error },
+                            }),
+                        ),
+                        Err(payload) => crate::logging::warn(
+                            "subprocess reader cleanup panicked",
+                            serde_json::json!({
+                                "error": {
+                                    "message": crate::failure_runtime::panic_message(payload),
+                                },
+                            }),
+                        ),
+                    }
+                }
+                return Err(format!("could not start subprocess stderr reader: {error}"));
             }
-        }));
+        }
     }
 
     let outcome = loop {
@@ -204,12 +243,28 @@ fn run_bounded_idle_output(
     };
 
     // Joining after the child is gone: the readers end when their pipes close.
+    let mut reader_failure = None;
     for reader in readers {
-        let _ = reader.join();
+        let result = reader
+            .join()
+            .map_err(crate::failure_runtime::panic_message)
+            .and_then(|result| result);
+        if reader_failure.is_none() {
+            reader_failure = result.err();
+        }
     }
-    let stdout = stdout_buf.lock().map(|b| b.clone()).unwrap_or_default();
-    let stderr = String::from_utf8_lossy(&stderr_buf.lock().map(|b| b.clone()).unwrap_or_default())
-        .into_owned();
+    if let Some(error) = reader_failure {
+        return Err(error);
+    }
+    let stdout = stdout_buf
+        .lock()
+        .map_err(|_| "subprocess stdout buffer is unavailable".to_string())?
+        .clone();
+    let stderr_bytes = stderr_buf
+        .lock()
+        .map_err(|_| "subprocess stderr buffer is unavailable".to_string())?
+        .clone();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
 
     if stdout_overflow.load(Ordering::Relaxed) {
         return Err(format!(
@@ -241,14 +296,38 @@ fn kill_owned(child: &mut std::process::Child) {
     // reaches ffmpeg and anything it spawned without touching unrelated app
     // or external-player processes.
     // SAFETY: kill has no memory preconditions; the PID is the owned child.
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    if killed != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            crate::logging::warn(
+                "subprocess group termination failed",
+                serde_json::json!({ "error": { "message": error.to_string() } }),
+            );
+        }
     }
-    let _ = child.wait();
+    if let Err(error) = child.wait() {
+        crate::logging::warn(
+            "subprocess reap failed",
+            serde_json::json!({ "error": { "message": error.to_string() } }),
+        );
+    }
 }
 
 #[cfg(not(unix))]
 fn kill_owned(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+    if let Err(error) = child.kill() {
+        if error.kind() != std::io::ErrorKind::InvalidInput {
+            crate::logging::warn(
+                "subprocess termination failed",
+                serde_json::json!({ "error": { "message": error.to_string() } }),
+            );
+        }
+    }
+    if let Err(error) = child.wait() {
+        crate::logging::warn(
+            "subprocess reap failed",
+            serde_json::json!({ "error": { "message": error.to_string() } }),
+        );
+    }
 }

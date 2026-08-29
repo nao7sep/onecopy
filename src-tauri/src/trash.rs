@@ -23,6 +23,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -199,7 +201,15 @@ fn commit_trash(
             source.display()
         )
     })?;
-    let _ = crate::fs_publish::sync_directory(&plan.day_dir);
+    if let Err(error) = crate::fs_publish::sync_directory(&plan.day_dir) {
+        crate::logging::warn(
+            "trash directory sync failed after the move completed",
+            json!({
+                "path": plan.day_dir,
+                "error": { "message": error.to_string() },
+            }),
+        );
+    }
 
     #[cfg(windows)]
     hide_windows(&plan.trash_root);
@@ -357,12 +367,13 @@ pub struct TrashRootInfo {
 pub fn overview(source_dirs: &[String], app_root: &Path) -> Vec<TrashRootInfo> {
     let mut roots: Vec<PathBuf> = Vec::new();
     for dir in source_dirs {
-        if let Ok(volume) = volume_root_of(Path::new(dir)) {
-            if let Ok(root) = trash_root_for(&volume, app_root) {
-                if !roots.contains(&root) {
-                    roots.push(root);
-                }
-            }
+        match volume_root_of(Path::new(dir)).and_then(|volume| trash_root_for(&volume, app_root)) {
+            Ok(root) if !roots.contains(&root) => roots.push(root),
+            Ok(_) => {}
+            Err(error) => crate::logging::warn(
+                "trash root resolution failed",
+                json!({ "path": dir, "error": { "message": error } }),
+            ),
         }
     }
     let home = app_root.join(HOME_TRASH_SUBDIR);
@@ -396,21 +407,46 @@ pub fn overview(source_dirs: &[String], app_root: &Path) -> Vec<TrashRootInfo> {
 /// (macOS keeps a boot-volume symlink in /Volumes, and the boot volume's
 /// trash lives in the app root, not at `/`). Sorted for a stable overview.
 pub fn discover_in_volumes_dir(volumes: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(volumes) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(volumes) {
+        Ok(entries) => entries,
+        Err(error) => {
+            crate::logging::warn(
+                "mounted-volume discovery failed",
+                json!({ "path": volumes, "error": { "message": error.to_string() } }),
+            );
+            return Vec::new();
+        }
     };
-    let mut roots: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .path()
-                .symlink_metadata()
-                .map(|meta| meta.file_type().is_dir())
-                .unwrap_or(false)
-        })
-        .map(|entry| entry.path().join(TRASH_DIR_NAME))
-        .filter(|candidate| candidate.is_dir())
-        .collect();
+    let mut roots = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                crate::logging::warn(
+                    "mounted-volume entry read failed",
+                    json!({ "path": volumes, "error": { "message": error.to_string() } }),
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        let is_directory = match path.symlink_metadata() {
+            Ok(metadata) => metadata.file_type().is_dir(),
+            Err(error) => {
+                crate::logging::warn(
+                    "mounted-volume metadata read failed",
+                    json!({ "path": path, "error": { "message": error.to_string() } }),
+                );
+                continue;
+            }
+        };
+        if is_directory {
+            let candidate = path.join(TRASH_DIR_NAME);
+            if candidate.is_dir() {
+                roots.push(candidate);
+            }
+        }
+    }
     roots.sort();
     roots
 }
@@ -525,8 +561,15 @@ pub fn empty_root_with_progress(
                 failures: snapshot.failures,
             });
         }
-        if std::fs::remove_file(&path).is_err() {
+        if let Err(error) = std::fs::remove_file(&path) {
             snapshot.failures += 1;
+            crate::logging::warn(
+                "trash entry removal failed",
+                serde_json::json!({
+                    "path": path,
+                    "error": { "message": error.to_string() },
+                }),
+            );
         }
         if recoverable {
             snapshot.done += 1;
@@ -535,7 +578,20 @@ pub fn empty_root_with_progress(
         }
     }
     for directory in directories {
-        let _ = std::fs::remove_dir(directory);
+        if let Err(error) = std::fs::remove_dir(&directory) {
+            if !matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+            ) {
+                crate::logging::warn(
+                    "trash directory cleanup failed",
+                    serde_json::json!({
+                        "path": directory,
+                        "error": { "message": error.to_string() },
+                    }),
+                );
+            }
+        }
     }
     Ok(EmptyOutcome {
         cancelled: false,
@@ -555,10 +611,26 @@ pub fn empty_root_with_progress(
 fn tree_size(root: &Path) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut files = 0u64;
-    for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().flatten() {
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                crate::logging::warn(
+                    "trash size walk failed",
+                    json!({ "path": root, "error": { "message": error.to_string() } }),
+                );
+                continue;
+            }
+        };
         if entry.file_type().is_file() && entry.file_name() != MANIFEST_FILE_NAME {
             files += 1;
-            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            match entry.metadata() {
+                Ok(metadata) => bytes += metadata.len(),
+                Err(error) => crate::logging::warn(
+                    "trash file metadata read failed",
+                    json!({ "path": entry.path(), "error": { "message": error.to_string() } }),
+                ),
+            }
         }
     }
     (bytes, files)
@@ -640,8 +712,22 @@ fn nearest_existing(path: &Path) -> PathBuf {
 fn hide_windows(trash_root: &Path) {
     // Best-effort: mark the trash root hidden (dot-prefix means nothing to
     // Explorer). attrib +h via cmd avoids a winapi dependency for one flag.
-    let _ = std::process::Command::new("attrib")
+    match std::process::Command::new("attrib")
         .arg("+h")
         .arg(trash_root)
-        .status();
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => crate::logging::warn(
+            "trash directory could not be hidden",
+            serde_json::json!({ "path": trash_root, "status": status.code() }),
+        ),
+        Err(error) => crate::logging::warn(
+            "trash directory could not be hidden",
+            serde_json::json!({
+                "path": trash_root,
+                "error": { "message": error.to_string() },
+            }),
+        ),
+    }
 }

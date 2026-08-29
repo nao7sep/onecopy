@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
 export type TranscriptStatus =
   | "loading"
@@ -175,5 +176,16 @@ void (async () => {
     });
   } catch (error) {
     log.warn("transcript event wiring failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    recordInterfaceFailure(message);
+    const interrupted = active as { hash: string; percent: number } | null;
+    if (interrupted !== null) {
+      publishIfLoaded(interrupted.hash, {
+        status: "failed",
+        message: "Live transcription updates are unavailable. Restart OneCopy to repair them.",
+        percent: null,
+      });
+      active = null;
+    }
   }
 })();

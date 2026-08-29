@@ -413,12 +413,31 @@ fn filesystem_recovery_is_backend_authored_and_projects_active_work_as_running()
     let running = onecopy_lib::scan_runtime::try_with_recheck_claim(issue_id, || {
         queries::issues(&conn, 10).unwrap().1
     })
+    .unwrap()
     .unwrap();
     assert_eq!(
         running[0].recovery.as_ref().unwrap().status,
         "running",
         "the backend projection follows the admitted index claim"
     );
+}
+
+#[test]
+fn terminal_derived_worker_failure_offers_an_explicit_restart() {
+    let conn = db();
+    index_store::upsert_issue(
+        &conn,
+        None,
+        onecopy_lib::issue_recovery::DERIVED_WORKER_FAILED,
+        "worker stopped",
+    )
+    .unwrap();
+
+    let (_, rows) = queries::issues(&conn, 10).unwrap();
+    let recovery = rows[0].recovery.as_ref().unwrap();
+    assert_eq!(recovery.action, "retry");
+    assert_eq!(recovery.label, "Restart");
+    assert_eq!(recovery.status, "available");
 }
 
 /// Seeds an image in a specific directory at a specific instant.

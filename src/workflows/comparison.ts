@@ -5,6 +5,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { log, toErrorFields } from "../repositories";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 import { useAppStore } from "../state/app-store";
 import {
   broadcastComparison,
@@ -130,6 +131,11 @@ async function installEvents(): Promise<void> {
     });
   } catch (error) {
     log.warn("comparison spread wiring failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    recordInterfaceFailure(message);
+    useItemsStore.setState({
+      message: "Comparison-window controls are unavailable. Restart OneCopy to repair them.",
+    });
   }
 }
 

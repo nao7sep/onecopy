@@ -4,15 +4,15 @@
 
 use std::io::{Read, Seek, SeekFrom};
 
+use rusqlite::OptionalExtension;
 use serde_json::json;
 
 use crate::extensions;
 
 fn not_found() -> tauri::http::Response<Vec<u8>> {
-    tauri::http::Response::builder()
-        .status(404)
-        .body(Vec::new())
-        .expect("static response")
+    let mut response = tauri::http::Response::new(Vec::new());
+    *response.status_mut() = tauri::http::StatusCode::NOT_FOUND;
+    response
 }
 
 /// Serves an original by indexed content hash or `path-<id>`. The webview
@@ -42,22 +42,28 @@ pub(crate) fn serve_original(
         Ok(conn) => conn,
         Err(error) => return warn_404("index open failed", error),
     };
-    let path: Option<String> = match key.strip_prefix("path-") {
-        Some(id) => id.parse::<i64>().ok().and_then(|id| {
-            conn.query_row(
+    let path: rusqlite::Result<Option<String>> = match key.strip_prefix("path-") {
+        Some(id) => match id.parse::<i64>() {
+            Ok(id) => conn
+                .query_row(
                 "SELECT abs_path FROM paths WHERE id = ?1 AND missing = 0",
                 [id],
-                |row| row.get(0),
+                |row| row.get::<_, String>(0),
             )
-            .ok()
-        }),
+                .optional(),
+            Err(_) => return not_found(),
+        },
         None => conn
             .query_row(
                 "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
                 [key],
-                |row| row.get(0),
+                |row| row.get::<_, String>(0),
             )
-            .ok(),
+            .optional(),
+    };
+    let path = match path {
+        Ok(path) => path,
+        Err(error) => return warn_404("path lookup failed", error.to_string()),
     };
     let Some(path) = path else {
         return warn_404("no live path for key", key.to_string());

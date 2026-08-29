@@ -107,7 +107,13 @@ beforeEach(() => {
     start_source_check: () => true,
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
-  useWizardStore.setState({ open: false, dirs: [], timezone: "UTC", timezoneValid: true });
+  useWizardStore.setState({
+    open: false,
+    dirs: [],
+    timezone: "UTC",
+    timezoneValid: true,
+    error: null,
+  });
   useAppStore.setState({ appData: null, loadError: null, quarantines: [] });
   useSectionsStore.setState({
     counts: null,

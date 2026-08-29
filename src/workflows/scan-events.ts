@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { SectionItem } from "../models/items";
 import type { ScanProgress } from "../models/scan";
 import { log, toErrorFields } from "../repositories";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import {
@@ -123,6 +124,12 @@ async function install(): Promise<void> {
       },
     );
     await listen("derived://issues", refreshDerivedIssues);
+    await listen<{ message: string }>("derived://worker-failed", (event) => {
+      useItemsStore.setState({
+        message: `Previews and analysis stopped: ${event.payload.message}`,
+      });
+      void useIssuesStore.getState().load();
+    });
     await listen("derived://similarity-updated", () => {
       void useItemsStore.getState().refresh();
     });
@@ -136,9 +143,20 @@ async function install(): Promise<void> {
       });
       void useIssuesStore.getState().load();
     });
+    await listen("failure://reported", () => {
+      void useIssuesStore.getState().load();
+    });
+    await listen<{ message: string }>("failure://direct", (event) => {
+      useItemsStore.setState({ message: event.payload.message });
+    });
     await useSectionsStore.getState().loadIndexWork();
   } catch (error) {
     log.warn("library event wiring failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    recordInterfaceFailure(message);
+    useItemsStore.setState({
+      message: "Live library updates are unavailable. Restart OneCopy to repair them.",
+    });
   }
 }
 

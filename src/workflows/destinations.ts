@@ -113,9 +113,10 @@ export async function addDestinationRoot(): Promise<void> {
     if (roots.includes(picked)) return;
     const next = [...roots, picked];
     await useAppStore.getState().patchConfig({ destinationRoots: next });
-    useDestinationsStore.setState({ roots: next });
+    useDestinationsStore.setState({ roots: next, message: "" });
   } catch (error) {
     log.error("destination root add failed", toErrorFields(error));
+    useDestinationsStore.setState({ message: "Couldn’t add that destination." });
   }
 }
 
@@ -125,9 +126,10 @@ export async function removeDestinationRoot(root: string): Promise<void> {
       .getState()
       .roots.filter((candidate) => candidate !== root);
     await useAppStore.getState().patchConfig({ destinationRoots: next });
-    useDestinationsStore.setState({ roots: next });
+    useDestinationsStore.setState({ roots: next, message: "" });
   } catch (error) {
     log.error("destination root remove failed", toErrorFields(error));
+    useDestinationsStore.setState({ message: "Couldn’t remove that destination." });
   }
 }
 

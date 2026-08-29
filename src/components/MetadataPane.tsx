@@ -40,6 +40,7 @@ import {
  * meant. */
 function PathRow({ path }: { path: string }) {
   const word = fileManagerWord();
+  const [error, setError] = useState(false);
   return (
     <dd className="group flex items-start gap-1.5 py-0.5">
       {/* A leading glyph plus a hanging indent: paths WRAP, and without a
@@ -58,11 +59,13 @@ function PathRow({ path }: { path: string }) {
             // A copy on an unplugged drive is the ordinary failure here, and
             // it is worth a log line rather than silence.
             log.warn("reveal failed", { path, ...toErrorFields(error) });
+            setError(true);
           });
         }}
       >
         <FolderOpen size={13} />
       </button>
+      {error ? <span className="text-xs text-danger">Couldn’t reveal</span> : null}
     </dd>
   );
 }
@@ -74,20 +77,29 @@ function PathRow({ path }: { path: string }) {
  * pane could not show at all. */
 function SimilarSection({ hash }: { hash: string }) {
   const [members, setMembers] = useState<GroupMember[]>([]);
+  const [error, setError] = useState<string | null>(null);
   // Bumped after an unlink so the list refetches without an anchor move.
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
     let stale = false;
     void invoke<GroupMember[]>("get_similar_group", { hash })
       .then((rows) => {
-        if (!stale) setMembers(rows);
+        if (!stale) {
+          setMembers(rows);
+          setError(null);
+        }
       })
-      .catch((error) => log.error("similar group load failed", toErrorFields(error)));
+      .catch((failure) => {
+        log.error("similar group load failed", toErrorFields(failure));
+        if (!stale) setError("Couldn’t load similar photos.");
+      });
     return () => {
       stale = true;
     };
   }, [hash, generation]);
-  if (members.length < 2) return null;
+  if (members.length < 2) {
+    return error === null ? null : <p className="mt-3 text-xs text-danger">{error}</p>;
+  }
   return (
     <div className="mb-1 mt-3">
       <div className="flex items-center justify-between gap-2">
@@ -129,11 +141,12 @@ function SimilarSection({ hash }: { hash: string }) {
               onClick={() => {
                 void invoke("similar_unlink", { hash: member.hash })
                   .then(() => setGeneration((n) => n + 1))
-                  .catch((error) => {
+                  .catch((failure) => {
                     log.warn("similar unlink failed", {
                       hash: member.hash,
-                      ...toErrorFields(error),
+                      ...toErrorFields(failure),
                     });
+                    setError("Couldn’t unlink this photo.");
                   });
               }}
             >
@@ -142,6 +155,7 @@ function SimilarSection({ hash }: { hash: string }) {
           </span>
         ))}
       </dd>
+      {error !== null ? <p className="mt-1 text-xs text-danger">{error}</p> : null}
     </div>
   );
 }

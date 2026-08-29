@@ -302,5 +302,8 @@ function loadAnchorDetail(key: string | null): void {
     })
     .catch((error) => {
       log.error("item detail load failed", toErrorFields(error));
+      if (fresh() && useItemsStore.getState().selectedItem === key) {
+        useItemsStore.setState({ message: "Couldn’t load details for this item." });
+      }
     });
 }

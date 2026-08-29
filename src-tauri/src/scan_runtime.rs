@@ -7,10 +7,10 @@
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 static INDEXING: Mutex<()> = Mutex::new(());
 static ACTIVE_OWNER: AtomicU8 = AtomicU8::new(0);
@@ -66,6 +66,20 @@ fn enter(owner: Owner, already_cancelled: bool) -> ActiveOwner {
     ActiveOwner
 }
 
+fn lock_index() -> MutexGuard<'static, ()> {
+    match INDEXING.lock() {
+        Ok(index) => index,
+        Err(poisoned) => {
+            crate::logging::error(
+                "index admission state recovered after a panic",
+                serde_json::json!({}),
+            );
+            INDEXING.clear_poison();
+            poisoned.into_inner()
+        }
+    }
+}
+
 pub(crate) fn request_cancel(owner: Owner) {
     if ACTIVE_OWNER.load(Ordering::SeqCst) == owner as u8 {
         crate::scanner::SCAN_CANCEL.store(true, Ordering::SeqCst);
@@ -73,9 +87,7 @@ pub(crate) fn request_cancel(owner: Owner) {
 }
 
 pub(crate) fn with_owner<T>(owner: Owner, already_cancelled: bool, work: impl FnOnce() -> T) -> T {
-    let _index = INDEXING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _index = lock_index();
     let _active = enter(owner, already_cancelled);
     work()
 }
@@ -113,9 +125,7 @@ pub(crate) fn begin_foreground(app: &AppHandle) -> ForegroundGuard {
     let waiting = ForegroundWait { app: app.clone() };
     crate::source_check_runtime::preempt();
     crate::file_information_runtime::preempt();
-    let index = INDEXING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = lock_index();
     let active = enter(Owner::Foreground, false);
     ForegroundGuard {
         active: Some(active),
@@ -134,27 +144,48 @@ impl Drop for RecheckClaim {
     fn drop(&mut self) {
         if let Ok(mut active) = ACTIVE_RECHECK_ISSUE.lock() {
             *active = None;
+        } else {
+            crate::logging::error("issue-recheck state is unavailable", serde_json::json!({}));
         }
     }
 }
 
 /// An issue recheck is deliberately non-queuing. The Issues surface already
 /// has an explicit Busy result and can be retried after the active safe step.
-pub fn try_with_recheck_claim<T>(issue_id: i64, work: impl FnOnce() -> T) -> Option<T> {
+pub fn try_with_recheck_claim<T>(
+    issue_id: i64,
+    work: impl FnOnce() -> T,
+) -> Result<Option<T>, String> {
     if crate::source_check_runtime::running() {
-        return None;
+        return Ok(None);
     }
-    let _index = INDEXING.try_lock().ok()?;
+    let _index = match INDEXING.try_lock() {
+        Ok(index) => index,
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Poisoned(poisoned)) => {
+            crate::logging::error(
+                "index admission state recovered after a panic",
+                serde_json::json!({}),
+            );
+            INDEXING.clear_poison();
+            poisoned.into_inner()
+        }
+    };
     let _active_owner = enter(Owner::Foreground, false);
-    let mut active = ACTIVE_RECHECK_ISSUE.lock().ok()?;
+    let mut active = ACTIVE_RECHECK_ISSUE
+        .lock()
+        .map_err(|_| "issue-recheck state is unavailable".to_string())?;
     *active = Some(issue_id);
     drop(active);
     let _active_recheck = RecheckClaim;
-    Some(work())
+    Ok(Some(work()))
 }
 
-pub fn active_recheck_issue() -> Option<i64> {
-    ACTIVE_RECHECK_ISSUE.lock().ok().and_then(|active| *active)
+pub fn active_recheck_issue() -> Result<Option<i64>, String> {
+    ACTIVE_RECHECK_ISSUE
+        .lock()
+        .map(|active| *active)
+        .map_err(|_| "issue-recheck state is unavailable".to_string())
 }
 
 pub fn running() -> bool {
@@ -179,28 +210,11 @@ pub(crate) fn progress_emitter(
         {
             last_phase.set(Some(progress.phase));
             last_emit.set(now);
-            if let Err(error) = handle.emit(event, progress) {
-                crate::logging::warn(
-                    "index progress event failed",
-                    serde_json::json!({ "event": event, "error": { "message": error.to_string() } }),
-                );
-            }
+            crate::failure_runtime::emit_or_record(&handle, event, progress);
         }
     }
 }
 
 pub(crate) fn record_runtime_failure(app: &AppHandle, kind: &str, message: &str) {
-    let saved = crate::paths::data_root(app)
-        .and_then(|root| crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME)))
-        .and_then(|conn| crate::index_store::upsert_issue(&conn, None, kind, message));
-    if let Err(error) = saved {
-        crate::logging::error(
-            "background failure issue could not be saved",
-            serde_json::json!({
-                "kind": kind,
-                "failure": { "message": message },
-                "error": { "message": error },
-            }),
-        );
-    }
+    let _ = crate::failure_runtime::report(app, kind, None, message);
 }

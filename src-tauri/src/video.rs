@@ -260,7 +260,7 @@ fn derive_videos_pending_limit(
             let duration_ms = probe_duration_ms(ffmpeg, src)?;
 
             // Poster at 15% through the shared image pipeline.
-            let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()));
+            let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()?));
             let poster_result = extract_frame(ffmpeg, src, duration_ms * 15 / 100, &staged)
                 .and_then(|()| {
                     // The staged poster is a plain JPEG, so the image crate
@@ -275,7 +275,7 @@ fn derive_videos_pending_limit(
                     )
                     .map(|_| ())
                 });
-            let _ = std::fs::remove_file(&staged);
+            crate::fs_recovery::remove_file(&staged, "video poster staging cleanup");
             poster_result?;
             Ok(duration_ms)
         })();
@@ -355,13 +355,14 @@ pub fn derive_strips_pending(
         let count = strip_frame_count(duration_ms, strip);
         let result = (|| -> Result<(), String> {
             for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
-                let staged = temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()));
+                let staged =
+                    temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()?));
                 let frame_result = extract_frame(ffmpeg, src, *at_ms, &staged).and_then(|()| {
                     let img = crate::resource_limits::decode_file(&staged)?;
                     let target = strip_path(cache, &hash, index as u32);
                     preview::write_webp(&img, &target, 76.0)
                 });
-                let _ = std::fs::remove_file(&staged);
+                crate::fs_recovery::remove_file(&staged, "video snapshot staging cleanup");
                 frame_result?;
             }
             Ok(())
@@ -375,7 +376,10 @@ pub fn derive_strips_pending(
             }
             Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
                 for index in 0..count {
-                    let _ = std::fs::remove_file(strip_path(cache, &hash, index));
+                    crate::fs_recovery::remove_file(
+                        &strip_path(cache, &hash, index),
+                        "cancelled video snapshot cleanup",
+                    );
                 }
                 return Err(crate::scanner::CANCELLED.to_string());
             }

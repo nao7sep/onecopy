@@ -80,6 +80,7 @@ export default function TrashModal({
       else stop();
     }).catch((error) => {
       log.warn("trash progress wiring failed", toErrorFields(error));
+      if (alive) setError("Live trash progress is unavailable.");
     });
     return () => {
       alive = false;
@@ -132,6 +133,7 @@ export default function TrashModal({
     } catch (error) {
       setCancelling(false);
       log.error("trash empty cancellation failed", toErrorFields(error));
+      setError("Couldn’t cancel emptying this trash.");
     }
   };
 
@@ -198,6 +200,7 @@ export default function TrashModal({
                 onClick={() => {
                   void revealItemInDir(row.root).catch((error) => {
                     log.warn("trash reveal failed", { root: row.root, ...toErrorFields(error) });
+                    setError("Couldn’t reveal this trash location.");
                   });
                 }}
               >

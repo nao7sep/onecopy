@@ -8,6 +8,8 @@
 use rusqlite::Connection;
 use serde::Serialize;
 
+pub const DERIVED_WORKER_FAILED: &str = "derived-worker-failed";
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueRecovery {
@@ -32,6 +34,17 @@ pub fn projection(
     has_path: bool,
     active_recheck_issue: Option<i64>,
 ) -> Result<Option<IssueRecovery>, String> {
+    if kind == DERIVED_WORKER_FAILED {
+        return Ok(Some(IssueRecovery {
+            action: "retry",
+            label: "Restart",
+            status: if crate::derived_work::started() {
+                "running"
+            } else {
+                "available"
+            },
+        }));
+    }
     if has_path && crate::scanner::filesystem_issue_recheckable(kind) {
         return Ok(Some(IssueRecovery {
             action: "recheck",
@@ -44,4 +57,22 @@ pub fn projection(
         }));
     }
     crate::derived_state::issue_recovery(conn, issue_id)
+}
+
+pub fn issue_has_kind(conn: &Connection, issue_id: i64, kind: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM issues WHERE id = ?1 AND kind = ?2)",
+        rusqlite::params![issue_id, kind],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub fn contains_kind(conn: &Connection, kind: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM issues WHERE kind = ?1)",
+        [kind],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
 }

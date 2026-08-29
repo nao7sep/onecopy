@@ -214,7 +214,7 @@ fn a_chain_cannot_glue_dissimilar_photos_into_one_family() {
         0b0000_1111_1111,          // c: d4 from b, d8 from a  (still within 2d)
         0b1111_1111_1111,          // d: d4 from c, d12 from a (chained past 2d)
     ];
-    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2);
+    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2).unwrap();
     assert_eq!(clusters.len(), 2, "the chain must split");
     // Split at the seam, not scattered: sorted-by-hash leaders keep the near
     // pairs together.
@@ -232,7 +232,7 @@ fn a_tight_family_with_spread_ends_stays_whole() {
         0b0000_0011, // middle (d2 from both ends)
         0b0011_0011, // end two: d4 from middle, d6 from end one (≤ 2d)
     ];
-    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2);
+    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2).unwrap();
     assert_eq!(clusters.len(), 1, "within-diameter components stand whole");
     assert_eq!(clusters[0].len(), 3);
 }
@@ -249,7 +249,7 @@ fn identical_twins_survive_a_hairball_split() {
         0b0000_0000_0000, // twin 2
         0b0000_0000_1111, // chain link
     ];
-    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2);
+    let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2).unwrap();
     let twins: Vec<&Vec<usize>> =
         clusters.iter().filter(|c| c.contains(&1) || c.contains(&3)).collect();
     assert_eq!(twins.len(), 1, "distance-0 twins must share a cluster");
@@ -398,7 +398,7 @@ fn burst_close_pairs_group_at_the_relaxed_distance() {
     let (a, b) = apart(8); // past strict 3, inside burst 10
     let hashes = vec![a, b];
     let times = vec![Some(1_000_000), Some(1_005_000)]; // 5 s apart
-    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2);
+    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2).unwrap();
     assert_eq!(clusters, vec![vec![0, 1]], "a real burst pair must group");
 }
 
@@ -407,7 +407,7 @@ fn the_same_distance_an_hour_apart_stays_split() {
     let (a, b) = apart(8);
     let hashes = vec![a, b];
     let times = vec![Some(1_000_000), Some(4_600_000_000)];
-    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2);
+    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2).unwrap();
     assert_eq!(clusters.len(), 2, "far apart in time means the strict line");
 }
 
@@ -417,7 +417,7 @@ fn undated_pairs_never_get_the_relaxed_allowance() {
     // to the icon corpus, whose files carry no times at all.
     let (a, b) = apart(8);
     let hashes = vec![a, b];
-    let clusters = cluster_by_appearance(&hashes, &[None, None], 3, 10, 90, 2);
+    let clusters = cluster_by_appearance(&hashes, &[None, None], 3, 10, 90, 2).unwrap();
     assert_eq!(clusters.len(), 2);
 }
 
@@ -430,7 +430,7 @@ fn a_burst_cannot_chain_into_a_far_photo() {
     let c = b ^ ((1i64 << 8) - 1) << 20; // 8 bits from b, 16 from a
     let hashes = vec![a, b, c];
     let times = vec![Some(1_000_000), Some(1_005_000), Some(9_000_000_000)];
-    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2);
+    let clusters = cluster_by_appearance(&hashes, &times, 3, 10, 90, 2).unwrap();
     assert!(
         clusters.contains(&vec![0, 1]),
         "the burst survives: {clusters:?}"
@@ -463,7 +463,7 @@ fn exact_candidates_match_exhaustive_pairing_across_strict_and_burst_rules() {
             });
         }
 
-        let mut actual = cluster_by_appearance(&hashes, &times, 4, 10, 90, 64);
+        let mut actual = cluster_by_appearance(&hashes, &times, 4, 10, 90, 64).unwrap();
         let mut expected = exhaustive_components(&hashes, &times, 4, 10, 90);
         normalize_components(&mut actual);
         normalize_components(&mut expected);

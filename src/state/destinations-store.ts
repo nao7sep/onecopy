@@ -151,6 +151,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
         message: "",
       });
     } catch (error) {
+      log.error("destination folder creation failed", toErrorFields(error));
       set({ message: String(error) });
     }
   },
@@ -161,6 +162,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       await get().refreshNode(parent);
       set({ message: "" });
     } catch (error) {
+      log.error("destination folder deletion failed", toErrorFields(error));
       set({ message: String(error) });
     }
   },

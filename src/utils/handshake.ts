@@ -13,6 +13,8 @@
 // that never cleared. It is one bug, so it gets one implementation.
 
 import { emit, listen } from "@tauri-apps/api/event";
+import { log, toErrorFields } from "../repositories";
+import { presentEscapedFailure, recordInterfaceFailure } from "./failureSurface";
 
 /** Registers `handler` for `channel`, and only then announces on `ready`.
  *
@@ -33,10 +35,16 @@ export function listenThenAnnounce<T>(
         return;
       }
       unlisten = fn;
-      void emit(ready, {});
-    } catch {
-      // A window that cannot listen also cannot usefully ask; it renders its
-      // placeholder, which is the honest result.
+      await emit(ready, {});
+    } catch (error) {
+      log.error("secondary-window handshake failed", {
+        channel,
+        ready,
+        ...toErrorFields(error),
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      recordInterfaceFailure(message);
+      presentEscapedFailure(`This window could not connect to OneCopy: ${message}`);
     }
   })();
   return () => {

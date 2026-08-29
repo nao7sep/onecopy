@@ -153,7 +153,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   validateTimezone: async (name) => {
     const fresh = timezoneValidation.begin();
     get().update({ defaultTimezone: name });
-    set({ timezoneValid: false, timezonePending: true });
+    set({ timezoneValid: false, timezonePending: true, message: "" });
     if (name.trim() === "") {
       if (fresh()) set({ timezonePending: false });
       return;
@@ -161,8 +161,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       const valid = await invoke<boolean>("validate_timezone", { name });
       if (fresh()) set({ timezoneValid: valid, timezonePending: false });
-    } catch {
-      if (fresh()) set({ timezoneValid: false, timezonePending: false });
+    } catch (error) {
+      log.error("settings timezone validation failed", toErrorFields(error));
+      if (fresh()) {
+        set({
+          timezoneValid: false,
+          timezonePending: false,
+          message: "Couldn’t check this timezone.",
+        });
+      }
     }
   },
 
@@ -179,6 +186,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       get().update({ sourceDirs: merged });
     } catch (error) {
       log.error("settings source dir picker failed", toErrorFields(error));
+      set({ message: "Couldn’t open the directory picker." });
     }
   },
 

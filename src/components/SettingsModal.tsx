@@ -34,12 +34,23 @@ function ScreensSection() {
       scaleFactor?: number;
     }[]
   >([]);
+  const [screenError, setScreenError] = useState<string | null>(null);
   const priority = priorityFromState(useAppStore((s) => s.appData?.state) ?? null);
   useEffect(() => {
-    void import("@tauri-apps/api/window").then(async ({ availableMonitors }) => {
-      setMonitors(await availableMonitors().catch(() => []));
-    });
+    void import("@tauri-apps/api/window")
+      .then(({ availableMonitors }) => availableMonitors())
+      .then((available) => {
+        setMonitors(available);
+        setScreenError(null);
+      })
+      .catch((error) => {
+        log.warn("settings monitor query failed", toErrorFields(error));
+        setScreenError("Couldn’t read the connected screens.");
+      });
   }, []);
+  if (screenError !== null) {
+    return <p className="mt-6 text-xs text-danger">{screenError}</p>;
+  }
   if (monitors.length < 2) return null;
 
   const ordered = orderMonitors(monitors, priority);
@@ -65,24 +76,35 @@ function ScreensSection() {
         onClick={() => {
           // One self-closing flash per monitor, showing its ordinal — the
           // only way to tell a matched pair apart beyond "left"/"right".
-          void import("@tauri-apps/api/webviewWindow").then(({ WebviewWindow }) => {
-            ordered.forEach((monitor, index) => {
-              const scale = monitor.scaleFactor || 1;
-              new WebviewWindow(`identify-${index + 1}`, {
-                url: `index.html?view=identify&slice=${index + 1}`,
-                title: "OneCopy",
-                x: monitor.position.x / scale + monitor.size.width / scale / 2 - 110,
-                y: monitor.position.y / scale + monitor.size.height / scale / 2 - 110,
-                width: 220,
-                height: 220,
-                decorations: false,
-                alwaysOnTop: true,
-                skipTaskbar: true,
-                resizable: false,
-                focus: false,
+          void import("@tauri-apps/api/webviewWindow")
+            .then(({ WebviewWindow }) => {
+              ordered.forEach((monitor, index) => {
+                const scale = monitor.scaleFactor || 1;
+                const window = new WebviewWindow(`identify-${index + 1}`, {
+                  url: `index.html?view=identify&slice=${index + 1}`,
+                  title: "OneCopy",
+                  x: monitor.position.x / scale + monitor.size.width / scale / 2 - 110,
+                  y: monitor.position.y / scale + monitor.size.height / scale / 2 - 110,
+                  width: 220,
+                  height: 220,
+                  decorations: false,
+                  alwaysOnTop: true,
+                  skipTaskbar: true,
+                  resizable: false,
+                  focus: false,
+                });
+                void window.once("tauri://error", (event) => {
+                  const failure = new Error(String(event.payload));
+                  log.warn("screen identification failed", toErrorFields(failure));
+                  setScreenError("Couldn’t identify the connected screens.");
+                });
               });
+              setScreenError(null);
+            })
+            .catch((error) => {
+              log.warn("screen identification failed", toErrorFields(error));
+              setScreenError("Couldn’t identify the connected screens.");
             });
-          });
         }}
       >
         Identify screens
@@ -178,12 +200,19 @@ function NumberField({
  * no recovery from an accidental unlink. */
 function UnlinkedPairsRow() {
   const [count, setCount] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     void invoke<number>("similar_exclusions_count")
       .then(setCount)
-      .catch((error) => log.warn("exclusions count failed", toErrorFields(error)));
+      .catch((failure) => {
+        log.warn("exclusions count failed", toErrorFields(failure));
+        setError("Couldn’t read unlinked pairs.");
+      });
   }, []);
-  if (count === null || count === 0) return null;
+  if (count === null) {
+    return error === null ? null : <p className="text-xs text-danger">{error}</p>;
+  }
+  if (count === 0) return null;
   return (
     <Row
       label={`Unlinked pairs (${count})`}
@@ -192,12 +221,19 @@ function UnlinkedPairsRow() {
       <Button
         onClick={() => {
           void invoke("similar_exclusions_clear")
-            .then(() => setCount(0))
-            .catch((error) => log.warn("exclusions clear failed", toErrorFields(error)));
+            .then(() => {
+              setCount(0);
+              setError(null);
+            })
+            .catch((failure) => {
+              log.warn("exclusions clear failed", toErrorFields(failure));
+              setError("Couldn’t forget unlinked pairs.");
+            });
         }}
       >
         Forget all
       </Button>
+      {error !== null ? <span className="text-xs text-danger">{error}</span> : null}
     </Row>
   );
 }

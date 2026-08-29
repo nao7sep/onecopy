@@ -16,7 +16,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, Runtime};
+use tauri::Manager;
 
 const LOCK_FILE_NAME: &str = "instance.lock";
 const ENDPOINT_FILE_NAME: &str = "instance.endpoint";
@@ -107,24 +107,75 @@ fn notify_primary(endpoint_path: &Path) -> Result<(), String> {
     }
 }
 
-fn listen<R: Runtime>(listener: TcpListener, app: tauri::AppHandle<R>) {
-    std::thread::spawn(move || loop {
+fn listen(listener: TcpListener, app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    std::thread::Builder::new()
+        .name("onecopy-instance-listener".to_string())
+        .spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_listener(listener, &handle)
+            }));
+            let failure = match outcome {
+                Ok(Ok(())) => return,
+                Ok(Err(error)) => error,
+                Err(payload) => crate::failure_runtime::panic_message(payload),
+            };
+            let failure = format!(
+                "{failure} Restart OneCopy to restore second-launch activation."
+            );
+            let _ = crate::failure_runtime::report(
+                &handle,
+                "instance-listener-failed",
+                None,
+                &failure,
+            );
+        })
+        .map_err(|error| format!("could not start instance listener: {error}"))?;
+    Ok(())
+}
+
+fn run_listener(listener: TcpListener, app: &tauri::AppHandle) -> Result<(), String> {
+    loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 let mut request = [0u8; 8];
                 if stream.read(&mut request).is_ok() && request.starts_with(b"activate") {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        let activation = window
+                            .show()
+                            .and_then(|()| window.set_focus())
+                            .map_err(|error| error.to_string());
+                        match activation {
+                            Ok(()) => {
+                                if let Err(error) = crate::failure_runtime::clear(
+                                    app,
+                                    "instance-activation-failed",
+                                    Some("main"),
+                                ) {
+                                    let _ = crate::failure_runtime::report(
+                                        app,
+                                        "issue-recovery-failed",
+                                        Some("main"),
+                                        &error,
+                                    );
+                                }
+                            }
+                            Err(error) => crate::failure_runtime::report(
+                                app,
+                                "instance-activation-failed",
+                                Some("main"),
+                                &error,
+                            )?,
+                        }
                     }
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(RETRY_DELAY);
             }
-            Err(_) => break,
+            Err(error) => return Err(format!("instance listener stopped: {error}")),
         }
-    });
+    }
 }
 
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -133,12 +184,12 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             let root = crate::paths::data_root(app.app_handle())?;
             match claim(&root)? {
                 Claim::Primary { lock, listener } => {
-                    listen(listener, app.app_handle().clone());
+                    listen(listener, app.app_handle().clone())?;
                     app.manage(Owner { _lock: lock });
                     Ok(())
                 }
                 Claim::Secondary { endpoint_path } => {
-                    let _ = notify_primary(&endpoint_path);
+                    notify_primary(&endpoint_path)?;
                     std::process::exit(0);
                 }
             }

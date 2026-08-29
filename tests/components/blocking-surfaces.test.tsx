@@ -49,7 +49,7 @@ describe("the presence gate", () => {
 
 describe("the setup wizard", () => {
   beforeEach(() => {
-    useWizardStore.setState({ step: 1, dirs: [], timezone: "UTC" });
+    useWizardStore.setState({ step: 1, dirs: [], timezone: "UTC", error: null });
   });
 
   it("is exactly two steps, ending in Finish and scan — no install page", () => {

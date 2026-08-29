@@ -286,9 +286,10 @@ export default function App() {
                   // the opener plugin's empty path scope. "Reveal app home"
                   // was dropped with the fix — the data root is
                   // machine-managed and no fleet app reveals its own innards.
-                  void invoke("reveal_data_subdir", { name: "logs" }).catch((error) =>
-                    log.warn("reveal logs failed", toErrorFields(error)),
-                  );
+                  void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
+                    log.warn("reveal logs failed", toErrorFields(error));
+                    useItemsStore.setState({ message: "Couldn’t reveal the logs folder." });
+                  });
                 }}
               >
                 Reveal logs folder

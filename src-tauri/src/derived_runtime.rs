@@ -7,7 +7,7 @@ use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::derived_state::WorkClass;
 
@@ -56,6 +56,17 @@ pub struct RuntimeSnapshot {
 
 static RUNTIME: LazyLock<(Mutex<RuntimeState>, Condvar)> =
     LazyLock::new(|| (Mutex::new(RuntimeState::default()), Condvar::new()));
+static POISON_REPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn report_poison_once() {
+    if !POISON_REPORTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        crate::logging::error(
+            "background-work state is unavailable",
+            serde_json::json!({}),
+        );
+    }
+}
 
 struct ActiveGuard {
     app: AppHandle,
@@ -63,10 +74,13 @@ struct ActiveGuard {
 }
 
 impl ActiveGuard {
-    fn begin(app: &AppHandle, class: WorkClass) -> Option<Self> {
-        let mut runtime = RUNTIME.0.lock().ok()?;
+    fn begin(app: &AppHandle, class: WorkClass) -> Result<Option<Self>, String> {
+        let mut runtime = RUNTIME.0.lock().map_err(|_| {
+            report_poison_once();
+            "background-work state is unavailable".to_string()
+        })?;
         if runtime.exclusive || runtime.paused(class) || runtime.active.is_some() {
-            return None;
+            return Ok(None);
         }
         runtime.active = Some(ActiveWorkSnapshot {
             class,
@@ -77,10 +91,10 @@ impl ActiveGuard {
         runtime.active_hash = None;
         drop(runtime);
         emit_state_changed(app);
-        Some(Self {
+        Ok(Some(Self {
             app: app.clone(),
             class,
-        })
+        }))
     }
 }
 
@@ -93,6 +107,8 @@ impl Drop for ActiveGuard {
                 runtime.preempt_requested = false;
                 RUNTIME.1.notify_all();
             }
+        } else {
+            report_poison_once();
         }
         emit_state_changed(&self.app);
     }
@@ -103,7 +119,7 @@ pub(crate) fn with_active<T>(
     class: WorkClass,
     work: impl FnOnce() -> Result<T, String>,
 ) -> Result<Option<T>, String> {
-    let Some(_active) = ActiveGuard::begin(app, class) else {
+    let Some(_active) = ActiveGuard::begin(app, class)? else {
         return Ok(None);
     };
     work().map(Some)
@@ -189,6 +205,8 @@ impl Drop for ExclusiveGuard {
             runtime.exclusive = false;
             runtime.preempt_requested = false;
             RUNTIME.1.notify_all();
+        } else {
+            report_poison_once();
         }
         emit_state_changed(&self.app);
     }
@@ -267,7 +285,6 @@ pub fn cancelled() -> bool {
     RUNTIME
         .0
         .lock()
-        .ok()
         .map(|runtime| {
             runtime.preempt_requested
                 || runtime
@@ -275,7 +292,10 @@ pub fn cancelled() -> bool {
                     .map(|active| runtime.paused(active.class))
                     .unwrap_or(false)
         })
-        .unwrap_or(false)
+        .unwrap_or_else(|_| {
+            report_poison_once();
+            true
+        })
 }
 
 pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<(), String> {
@@ -327,7 +347,8 @@ pub(crate) fn progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u
             active.total = total;
         }
     }
-    let _ = app.emit(
+    crate::failure_runtime::emit_or_record(
+        app,
         "derived://progress",
         json!({ "class": class.id(), "done": done, "total": total }),
     );
@@ -372,7 +393,7 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
             })
         })
         .unwrap_or_else(|_| json!({}));
-    let _ = app.emit("derived://state-changed", payload);
+    crate::failure_runtime::emit_or_record(app, "derived://state-changed", payload);
 }
 
 pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String> {

@@ -200,7 +200,7 @@ pub fn cluster_by_appearance(
     burst_distance: u32,
     burst_gap_seconds: u32,
     diameter_multiplier: u32,
-) -> Vec<Vec<usize>> {
+) -> Result<Vec<Vec<usize>>, String> {
     cluster_by_appearance_cancellable(
         phashes,
         times_ms,
@@ -210,7 +210,6 @@ pub fn cluster_by_appearance(
         diameter_multiplier,
         &|| false,
     )
-    .expect("the non-cancellable cluster cannot stop")
 }
 
 fn cluster_by_appearance_cancellable(
@@ -422,8 +421,8 @@ pub fn unlink_from_group(
         let rows = stmt
             .query_map(rusqlite::params![group_id, hash], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
         rows
     };
     let written = crate::similar_exclusions::add_for_peers(root, hash, &others)?;
@@ -479,8 +478,8 @@ fn rebuild_groups_with_exclusions(
             })
         })
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     drop(stmt);
     if stop() {
         return Err(crate::scanner::CANCELLED.to_string());
@@ -657,8 +656,8 @@ pub fn group_members(conn: &Connection, group_id: i64) -> Result<Vec<String>, St
     let members = stmt
         .query_map([group_id], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     Ok(members)
 }
 

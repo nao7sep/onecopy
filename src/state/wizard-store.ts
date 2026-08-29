@@ -21,6 +21,7 @@ interface WizardState {
   timezone: string;
   timezoneValid: boolean;
   timezonePending: boolean;
+  error: string | null;
   /** True when the wizard was RE-RUN over an existing setup. A first run has
    * nothing to return to, so only a re-run offers Cancel. */
   reconfigure: boolean;
@@ -48,6 +49,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   timezone: "",
   timezoneValid: true,
   timezonePending: false,
+  error: null,
   reconfigure: false,
   missingDirs: [],
   substitutedDirs: [],
@@ -58,9 +60,9 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
     if (sourceDirs.length === 0) {
-      set({ open: true, step: 1, dirs: [], timezone, timezoneValid: true, timezonePending: false, reconfigure: false });
+      set({ open: true, step: 1, dirs: [], timezone, timezoneValid: true, timezonePending: false, error: null, reconfigure: false });
     } else {
-      set({ open: false, timezone, timezoneValid: true, timezonePending: false, reconfigure: false });
+      set({ open: false, timezone, timezoneValid: true, timezonePending: false, error: null, reconfigure: false });
       await get().recheckPresence();
     }
   },
@@ -76,12 +78,14 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       timezone,
       timezoneValid: true,
       timezonePending: false,
+      error: null,
       reconfigure: true,
       dirs: sourceDirs.map((path) => ({ path })),
     });
   },
 
   addDirs: async () => {
+    set({ error: null });
     try {
       const picked = await openDialog({ directory: true, multiple: true });
       const paths = (Array.isArray(picked) ? picked : picked ? [picked] : []).filter(
@@ -93,6 +97,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       set({ dirs: [...get().dirs, ...fresh.map((path) => ({ path }))] });
     } catch (error) {
       log.error("directory picker failed", toErrorFields(error));
+      set({ error: "Couldn’t open the directory picker." });
     }
   },
 
@@ -104,7 +109,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
 
   setTimezone: async (name) => {
     const fresh = timezoneValidation.begin();
-    set({ timezone: name, timezoneValid: false, timezonePending: true });
+    set({ timezone: name, timezoneValid: false, timezonePending: true, error: null });
     if (name.trim() === "") {
       if (fresh()) set({ timezonePending: false });
       return;
@@ -112,8 +117,15 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     try {
       const valid = await invoke<boolean>("validate_timezone", { name });
       if (fresh()) set({ timezoneValid: valid, timezonePending: false });
-    } catch {
-      if (fresh()) set({ timezoneValid: false, timezonePending: false });
+    } catch (error) {
+      log.error("wizard timezone validation failed", toErrorFields(error));
+      if (fresh()) {
+        set({
+          timezoneValid: false,
+          timezonePending: false,
+          error: "Couldn’t check this timezone.",
+        });
+      }
     }
   },
 
@@ -129,9 +141,10 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       const status = await invoke<{ missing: string[]; substituted: string[] }>(
         "check_source_dirs",
       );
-      set({ missingDirs: status.missing, substitutedDirs: status.substituted });
+      set({ missingDirs: status.missing, substitutedDirs: status.substituted, error: null });
     } catch (error) {
       log.error("presence check failed", toErrorFields(error));
+      set({ error: "Couldn’t check the configured source folders." });
     }
   },
 }));

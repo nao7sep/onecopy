@@ -239,11 +239,10 @@ pub fn cached_section_counts(db_file: &Path, display_tz: Tz) -> Result<SectionCo
     if needs_connection {
         *cache = Some(SectionCountsCache::open(db_file)?);
     }
-    cache
+    let cache = cache
         .as_mut()
-        .expect("section count cache was initialized")
-        .load(display_tz)
-        .map(|(counts, _)| counts)
+        .ok_or_else(|| "section count cache could not be initialized".to_string())?;
+    cache.load(display_tz).map(|(counts, _)| counts)
 }
 
 /// One grid row: a logical file within a section. `hash` is None for
@@ -624,7 +623,9 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
             })
         })
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?
+        .into_iter()
         .filter(|m| m.copy_count > 0)
         .collect();
     Ok(members)
@@ -669,8 +670,8 @@ pub fn item_detail(
                 let rows = stmt
                     .query_map([hash], row_to_copy)
                     .map_err(|e| e.to_string())?
-                    .filter_map(|r| r.ok())
-                    .collect();
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| e.to_string())?;
                 rows
             }
             (None, Some(id)) => {
@@ -684,8 +685,8 @@ pub fn item_detail(
                 let rows = stmt
                     .query_map([id], row_to_copy)
                     .map_err(|e| e.to_string())?
-                    .filter_map(|r| r.ok())
-                    .collect();
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| e.to_string())?;
                 rows
             }
             (None, None) => return Err("item_detail needs a hash or a pathId".to_string()),
@@ -703,6 +704,8 @@ pub fn item_detail(
                 [hash],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
+            .optional()
+            .map_err(|e| e.to_string())?
             .unwrap_or((None, None, None, first.4, None)),
         None => (None, None, None, first.4, None),
     };
@@ -721,7 +724,9 @@ pub fn item_detail(
     let companion_paths: Vec<String> = stmt
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?
+        .into_iter()
         .map(|path| crate::winpath::for_display(&path).into_owned())
         .collect();
     drop(stmt);
@@ -877,9 +882,9 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
             })
         })
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    let active_recheck_issue = crate::scan_runtime::active_recheck_issue();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let active_recheck_issue = crate::scan_runtime::active_recheck_issue()?;
     for row in &mut rows {
         row.recovery = crate::issue_recovery::projection(
             conn,

@@ -122,7 +122,10 @@ fn expand_env_references(value: &str) -> String {
             }
         }
         let mut chars = rest.chars();
-        out.push(chars.next().unwrap());
+        let Some(next) = chars.next() else {
+            break;
+        };
+        out.push(next);
         rest = chars.as_str();
     }
     out

@@ -78,7 +78,7 @@ struct RemoveFile(PathBuf);
 
 impl Drop for RemoveFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        crate::fs_recovery::remove_file(&self.0, "transcription audio staging cleanup");
     }
 }
 
@@ -92,7 +92,7 @@ pub fn extract_pcm(ffmpeg: &Path, video: &Path, temp_dir: &Path) -> Result<Vec<f
         "Audio extraction",
     )?;
     std::fs::create_dir_all(temp_dir).map_err(|error| error.to_string())?;
-    let staged = temp_dir.join(format!("pcm-{}.f32le", crate::nanoid::generate()));
+    let staged = temp_dir.join(format!("pcm-{}.f32le", crate::nanoid::generate()?));
     let _cleanup = RemoveFile(staged.clone());
     let mut command = std::process::Command::new(ffmpeg);
     command.args([
@@ -305,13 +305,13 @@ pub(crate) fn transcribe_to_cache_claimed(
     }
     // not recorded: a transcript is a re-derivable cache artifact colocated
     // with binary preview media.
-    let tmp = target.with_extension(format!("{}.tmp", crate::nanoid::generate()));
+    let tmp = target.with_extension(format!("{}.tmp", crate::nanoid::generate()?));
     std::fs::write(&tmp, text.as_bytes()).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "transcript staging write cleanup");
         e.to_string()
     })?;
     std::fs::rename(&tmp, &target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "transcript publication cleanup");
         e.to_string()
     })?;
     Ok(text)

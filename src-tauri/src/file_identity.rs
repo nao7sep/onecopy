@@ -154,7 +154,10 @@ pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::pat
         ));
     };
     for _ in 0..4 {
-        let hold = parent.join(format!(".onecopy-claim-{}.tmp", crate::nanoid::generate()));
+        let hold = parent.join(format!(
+            ".onecopy-claim-{}.tmp",
+            crate::nanoid::generate().map_err(io::Error::other)?
+        ));
         match crate::fs_publish::rename_no_replace(path, &hold) {
             Ok(()) => {
                 if path_names(&hold, expected) {
@@ -163,11 +166,19 @@ pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::pat
                     // The pathname was replaced before our claim. Put that
                     // file back when possible; otherwise leave it recoverable
                     // under the private hold rather than deleting a winner.
-                    let _ = crate::fs_publish::rename_no_replace(&hold, path);
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "private staging pathname was replaced",
-                    ));
+                    return match crate::fs_publish::rename_no_replace(&hold, path) {
+                        Ok(()) => Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "private staging pathname was replaced",
+                        )),
+                        Err(restore_error) => Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!(
+                                "private staging pathname was replaced; the replacement remains at {} because restoring it failed: {restore_error}",
+                                hold.display()
+                            ),
+                        )),
+                    };
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -184,7 +195,7 @@ pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::pat
 /// for a public committed target; public targets are never unlinked as rollback.
 pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
     if let Ok(hold) = claim_private(path, expected) {
-        let _ = std::fs::remove_file(hold);
+        crate::fs_recovery::remove_file(&hold, "private staging cleanup");
     }
 }
 

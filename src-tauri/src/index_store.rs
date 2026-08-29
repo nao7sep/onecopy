@@ -355,7 +355,18 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         match setup {
             Ok(()) => conn.execute_batch("COMMIT").map_err(|e| e.to_string())?,
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                if let Err(rollback_error) = conn.execute_batch("ROLLBACK") {
+                    crate::logging::error(
+                        "index setup rollback failed",
+                        serde_json::json!({
+                            "failure": { "message": &error },
+                            "error": { "message": rollback_error.to_string() },
+                        }),
+                    );
+                    return Err(format!(
+                        "{error}; index setup rollback also failed: {rollback_error}"
+                    ));
+                }
                 return Err(error);
             }
         }
@@ -406,9 +417,9 @@ pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<(),
 /// Whether any issue rows exist at all — the walk and the passes consult this
 /// once so a clean index never pays a per-file DELETE for conditions that were
 /// never recorded.
-pub fn any_issues(conn: &Connection) -> bool {
+pub fn any_issues(conn: &Connection) -> Result<bool, String> {
     conn.query_row("SELECT EXISTS (SELECT 1 FROM issues)", [], |r| r.get(0))
-        .unwrap_or(true)
+        .map_err(|error| error.to_string())
 }
 
 /// Clears only reconstructible library facts. Durable configuration, managed

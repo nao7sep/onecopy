@@ -16,6 +16,7 @@ import {
   type ManagedInstallProgress,
 } from "../models/dependencyProgress";
 import { log, toErrorFields } from "../repositories";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
 export type DependencyStatus =
   | "not-installed"
@@ -430,6 +431,11 @@ void (async () => {
     });
   } catch (error) {
     log.warn("binaries event wiring failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    recordInterfaceFailure(message);
+    useBinariesStore.setState({
+      loadError: "Live managed-tool status is unavailable. Restart OneCopy to repair it.",
+    });
   }
 })();
 

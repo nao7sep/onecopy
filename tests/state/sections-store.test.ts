@@ -31,6 +31,7 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   useSectionsStore.setState({
     counts: null,
+    error: null,
     sourceCheck: { running: false, stopping: false, progress: null },
     fileInformation: {
       running: false,
@@ -65,6 +66,14 @@ describe("out-of-order count snapshots", () => {
 });
 
 describe("independent index work", () => {
+  it("keeps a failed background command visible", async () => {
+    mockCommands({ start_source_check: () => Promise.reject(new Error("busy")) });
+
+    await useSectionsStore.getState().startSourceCheck();
+
+    expect(useSectionsStore.getState().error).toBe("Couldn’t start checking source folders.");
+  });
+
   it("coalesces rapid file-information progress into one refresh", async () => {
     let loads = 0;
     mockCommands({

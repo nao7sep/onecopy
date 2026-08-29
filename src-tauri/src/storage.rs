@@ -460,7 +460,7 @@ fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), S
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| "path has no file name".to_string())?;
-    let tmp = parent.join(atomic_temp_name(file_name));
+    let tmp = parent.join(atomic_temp_name(file_name)?);
 
     let write_tmp = (|| -> std::io::Result<()> {
         let mut file = std::fs::File::create(&tmp)?;
@@ -469,18 +469,18 @@ fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), S
         Ok(())
     })();
     if let Err(e) = write_tmp {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "atomic store write cleanup");
         return Err(e.to_string());
     }
 
     if let Err(e) = std::fs::rename(&tmp, target) {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "atomic store publication cleanup");
         return Err(e.to_string());
     }
 
     // Best-effort: persist the rename itself by fsyncing the directory.
     if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
+        crate::fs_recovery::sync_all(&dir, parent, "atomic store directory sync");
     }
 
     if record {
@@ -493,12 +493,12 @@ fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), S
 /// The staging temp-file name an atomic write renames into place:
 /// `<stem>-<nanoid>.tmp` (one final extension; the target's extension is
 /// dropped, never dot-appended after).
-fn atomic_temp_name(file_name: &str) -> String {
+fn atomic_temp_name(file_name: &str) -> Result<String, String> {
     let stem = Path::new(file_name)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(file_name);
-    format!("{}-{}.tmp", stem, nanoid::generate())
+    Ok(format!("{}-{}.tmp", stem, nanoid::generate()?))
 }
 
 #[cfg(test)]
@@ -568,12 +568,15 @@ mod tests {
 
     #[test]
     fn atomic_temp_name_is_stem_plus_nanoid_dot_tmp() {
-        let name = atomic_temp_name("config.json");
+        let name = atomic_temp_name("config.json").unwrap();
         assert!(name.starts_with("config-"), "{name:?}");
         assert!(name.ends_with(".tmp"), "{name:?}");
         let discriminator = &name["config-".len()..name.len() - ".tmp".len()];
         assert_eq!(discriminator.len(), 21);
-        assert_ne!(atomic_temp_name("config.json"), atomic_temp_name("config.json"));
+        assert_ne!(
+            atomic_temp_name("config.json").unwrap(),
+            atomic_temp_name("config.json").unwrap()
+        );
     }
 
 }

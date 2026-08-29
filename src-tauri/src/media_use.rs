@@ -37,10 +37,19 @@ impl Drop for Guard {
         if let Ok(mut releases) = RELEASES.0.lock() {
             releases.remove(&self.token);
             RELEASES.1.notify_all();
+        } else {
+            let _ = crate::failure_runtime::report(
+                &self.app,
+                "media-use-state-failed",
+                None,
+                "Media ownership state is unavailable. Restart OneCopy before changing files.",
+            );
         }
-        let _ = self
-            .app
-            .emit("media-use://resume", json!({ "token": self.token }));
+        crate::failure_runtime::emit_or_record(
+            &self.app,
+            "media-use://resume",
+            json!({ "token": self.token }),
+        );
         self.exclusive.take();
         crate::derived_work::wake(false);
     }
@@ -110,7 +119,11 @@ pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
                 .join(", ");
             releases.remove(&token);
             drop(releases);
-            let _ = app.emit("media-use://resume", json!({ "token": token }));
+            crate::failure_runtime::emit_or_record(
+                app,
+                "media-use://resume",
+                json!({ "token": token }),
+            );
             return Err(format!(
                 "Media is still in use in {pending}; no files were changed."
             ));
@@ -126,22 +139,29 @@ pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
 /// Registers a bootstrapping webview in an already-active release before that
 /// webview is allowed to render. Keeping the release record for the guard's
 /// full lifetime closes the create-window-after-broadcast race.
-pub fn current(window_label: &str) -> Option<serde_json::Value> {
-    let mut releases = RELEASES.0.lock().ok()?;
-    let (&token, release) = releases.iter_mut().next()?;
+pub fn current(window_label: &str) -> Result<Option<serde_json::Value>, String> {
+    let mut releases = RELEASES
+        .0
+        .lock()
+        .map_err(|_| "media-use state is unavailable".to_string())?;
+    let Some((&token, release)) = releases.iter_mut().next() else {
+        return Ok(None);
+    };
     release.pending.insert(window_label.to_string());
-    Some(json!({ "token": token, "keys": release.keys }))
+    Ok(Some(json!({ "token": token, "keys": release.keys })))
 }
 
 /// Returns whether this release is still active. A webview uses the answer to
 /// recover if the matching resume event raced ahead of its acknowledgement.
-pub fn acknowledge(token: u64, window_label: &str) -> bool {
-    if let Ok(mut releases) = RELEASES.0.lock() {
-        if let Some(release) = releases.get_mut(&token) {
-            release.pending.remove(window_label);
-            RELEASES.1.notify_all();
-            return true;
-        }
+pub fn acknowledge(token: u64, window_label: &str) -> Result<bool, String> {
+    let mut releases = RELEASES
+        .0
+        .lock()
+        .map_err(|_| "media-use state is unavailable".to_string())?;
+    if let Some(release) = releases.get_mut(&token) {
+        release.pending.remove(window_label);
+        RELEASES.1.notify_all();
+        return Ok(true);
     }
-    false
+    Ok(false)
 }

@@ -331,13 +331,13 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("cache");
-    let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()));
+    let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()?));
     std::fs::copy(src, &tmp).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "preview copy staging cleanup");
         e.to_string()
     })?;
     std::fs::rename(&tmp, target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "preview copy publication cleanup");
         e.to_string()
     })?;
     Ok(())
@@ -437,13 +437,13 @@ pub fn ensure_fullres(
         .map_err(|e| e.to_string())?;
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("cache");
     let parent = target.parent().ok_or("cache path has no parent")?;
-    let tmp = parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()));
+    let tmp = parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()?));
     std::fs::write(&tmp, &bytes).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "full-resolution staging write cleanup");
         e.to_string()
     })?;
     std::fs::rename(&tmp, &target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "full-resolution publication cleanup");
         e.to_string()
     })?;
     Ok(())
@@ -518,13 +518,7 @@ pub fn derive_one(
             ffmpeg,
         )
         .map_err(|err| {
-            let _ = crate::derived_state::record_preview_failure(
-                conn,
-                hash,
-                &path,
-                &err,
-            );
-            err
+            record_preview_failure_or_combine(conn, hash, &path, err)
         })?;
         crate::scanner::promote_identity(conn, cache, hash, &real)?;
         crate::derived_state::record_preview_success(
@@ -542,13 +536,7 @@ pub fn derive_one(
         .map_err(|err| {
             // The same honesty as the bulk pass: a broken file is recorded,
             // not silently retried on every click.
-            let _ = crate::derived_state::record_preview_failure(
-                conn,
-                hash,
-                &path,
-                &err,
-            );
-            err
+            record_preview_failure_or_combine(conn, hash, &path, err)
         })?;
     crate::derived_state::record_preview_success(
         conn,
@@ -560,6 +548,20 @@ pub fn derive_one(
         facts.phash,
     )?;
     Ok(hash.to_string())
+}
+
+fn record_preview_failure_or_combine(
+    conn: &Connection,
+    hash: &str,
+    path: &str,
+    failure: String,
+) -> String {
+    match crate::derived_state::record_preview_failure(conn, hash, path, &failure) {
+        Ok(()) => failure,
+        Err(record_error) => {
+            format!("{failure}; OneCopy also could not record the preview failure: {record_error}")
+        }
+    }
 }
 
 pub fn derive_images_pending(
@@ -737,8 +739,8 @@ fn derive_images_pending_limit(
 /// Best-effort removal of one hash's cache entries — the synchronous half of
 /// cache GC, called when the last path bearing the hash leaves the index.
 pub fn remove_entries(cache: &CachePaths, hash: &str) {
-    let _ = std::fs::remove_file(cache.thumb(hash));
-    let _ = std::fs::remove_file(cache.preview(hash));
+    crate::fs_recovery::remove_file(&cache.thumb(hash), "thumbnail cache cleanup");
+    crate::fs_recovery::remove_file(&cache.preview(hash), "preview cache cleanup");
 }
 
 /// Moves one identity's cache entries to a new key (provisional→real
@@ -760,9 +762,11 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
     for (from, to) in moves {
         if from.exists() {
             if let Some(parent) = to.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                if !crate::fs_recovery::create_dir_all(parent, "cache identity promotion") {
+                    continue;
+                }
             }
-            let _ = std::fs::rename(&from, &to);
+            crate::fs_recovery::rename(&from, &to, "cache identity promotion");
         }
     }
 }
@@ -889,13 +893,13 @@ pub fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(),
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("cache");
-    let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()));
+    let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()?));
     std::fs::write(&tmp, &*encoded).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "WebP staging write cleanup");
         e.to_string()
     })?;
     std::fs::rename(&tmp, target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        crate::fs_recovery::remove_file(&tmp, "WebP publication cleanup");
         e.to_string()
     })?;
     Ok(())

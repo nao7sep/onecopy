@@ -8,6 +8,7 @@ import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
 import type { ItemWorkStates } from "../models/items";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
 const PING_EVERY_MS = 10_000;
 
@@ -245,5 +246,10 @@ void (async () => {
     await useDerivedWorkStore.getState().load();
   } catch (error) {
     log.warn("derived-work event wiring failed", toErrorFields(error));
+    const message = error instanceof Error ? error.message : String(error);
+    recordInterfaceFailure(message);
+    useDerivedWorkStore.setState({
+      error: "Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.",
+    });
   }
 })();

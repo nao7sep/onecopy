@@ -14,17 +14,16 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 // Matches the frontend nanoid's default length.
 const LENGTH: usize = 21;
 
-// Generates a fresh 21-character nanoid. The only failure mode is the
-// system's random source being unavailable, which is unrecoverable for a
-// process that needs randomness to safely name a temp file, so this panics
-// rather than returning a `Result` callers would have no good way to handle.
-pub fn generate() -> String {
+// Generates a fresh 21-character nanoid. A missing system random source stops
+// only the operation that needed a collision-resistant private filename.
+pub fn generate() -> Result<String, String> {
     let mut bytes = [0u8; LENGTH];
-    getrandom::fill(&mut bytes).expect("system random source unavailable");
-    bytes
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("system random source unavailable: {error}"))?;
+    Ok(bytes
         .iter()
         .map(|b| ALPHABET[(b & 0x3F) as usize] as char)
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -33,12 +32,12 @@ mod tests {
 
     #[test]
     fn generate_produces_the_documented_length() {
-        assert_eq!(generate().len(), LENGTH);
+        assert_eq!(generate().unwrap().len(), LENGTH);
     }
 
     #[test]
     fn generate_uses_only_the_documented_alphabet() {
-        let id = generate();
+        let id = generate().unwrap();
         assert!(id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
@@ -48,7 +47,8 @@ mod tests {
     fn generate_yields_distinct_values_across_calls() {
         // Not a proof of uniqueness, just a sanity check that the RNG is
         // actually wired up rather than, say, always returning zero bytes.
-        let ids: std::collections::HashSet<String> = (0..1000).map(|_| generate()).collect();
+        let ids: std::collections::HashSet<String> =
+            (0..1000).map(|_| generate().unwrap()).collect();
         assert_eq!(ids.len(), 1000);
     }
 
@@ -57,7 +57,7 @@ mod tests {
         // These would be significant if embedded in a filename; the alphabet
         // simply does not contain them, so this should hold trivially.
         for _ in 0..1000 {
-            let id = generate();
+            let id = generate().unwrap();
             assert!(!id.contains('.'));
             assert!(!id.contains('/'));
             assert!(!id.contains('\\'));
