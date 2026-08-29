@@ -91,8 +91,6 @@ pub struct DefaultConfig {
     /// check installed tools for updates at launch (throttled to ~daily).
     pub check_updates_at_launch: bool,
     pub keep_awake_during_indexing: bool,
-    /// Read-back verification of every copy/move-out against the indexed hash.
-    pub verify_after_copy: bool,
     /// Face scoring for comparison-group ordering: OPT-IN (Phase 33). Off
     /// means the models are not even downloaded by any automatic path, and
     /// the coordinator never runs the pass; ordering falls back to sharpness.
@@ -137,7 +135,6 @@ impl Default for DefaultConfig {
             ui_font_family: String::new(),
             check_updates_at_launch: false,
             keep_awake_during_indexing: true,
-            verify_after_copy: true,
             score_faces: false,
             show_face_stars: true,
             confirm_trash_delete: false,
@@ -352,7 +349,16 @@ fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
 }
 
 fn read_config_optional(path: &Path) -> Result<JsonRead, String> {
-    read_json_optional_with_envelope(path, true)
+    let mut read = read_json_optional_with_envelope(path, true)?;
+    if let Some(value) = read.value.as_mut() {
+        let removed = value
+            .as_object_mut()
+            .is_some_and(|fields| fields.remove("verifyAfterCopy").is_some());
+        if removed {
+            atomic_write_json(path, value)?;
+        }
+    }
+    Ok(read)
 }
 
 fn read_json_optional_with_envelope(

@@ -28,7 +28,7 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     );
     assert_eq!(value["pairingEnabled"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
-    assert_eq!(value["verifyAfterCopy"], serde_json::json!(true));
+    assert!(value.get("verifyAfterCopy").is_none());
     assert_eq!(value["showFaceStars"], serde_json::json!(true));
     assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(value.get("cacheDir").is_none());
@@ -45,6 +45,25 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     ] {
         assert!(value.get(absent).is_none(), "{absent} must not be seeded");
     }
+}
+
+#[test]
+#[serial(backup_store)]
+fn loading_config_removes_the_obsolete_copy_verification_preference() {
+    let root = temp_dir("obsolete-copy-verification");
+    let path = root.join(CONFIG_FILE_NAME);
+    std::fs::write(
+        &path,
+        "{\"verifyAfterCopy\":false,\"pairingEnabled\":true}\n",
+    )
+    .unwrap();
+
+    let loaded = read_config_for_setup(&root).unwrap().unwrap();
+    assert!(loaded.get("verifyAfterCopy").is_none());
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(stored.get("verifyAfterCopy").is_none());
+    assert_eq!(stored["pairingEnabled"], true);
 }
 
 #[test]

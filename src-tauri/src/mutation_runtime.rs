@@ -6,7 +6,7 @@
 //! batches. Nothing here survives a process exit or represents durable intent.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -20,7 +20,17 @@ struct Active {
     cancelled: Arc<AtomicBool>,
 }
 
-static ACTIVE: LazyLock<Mutex<Option<Active>>> = LazyLock::new(|| Mutex::new(None));
+struct Runtime {
+    active: Mutex<Option<Active>>,
+    idle: Condvar,
+    shutting_down: AtomicBool,
+}
+
+static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime {
+    active: Mutex::new(None),
+    idle: Condvar::new(),
+    shutting_down: AtomicBool::new(false),
+});
 
 struct Claim {
     id: u64,
@@ -39,18 +49,26 @@ impl Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        if let Ok(mut active) = ACTIVE.lock() {
+        if let Ok(mut active) = RUNTIME.active.lock() {
             if active.as_ref().map(|entry| entry.id) == Some(self.id) {
                 *active = None;
+                RUNTIME.idle.notify_all();
             }
         }
     }
 }
 
 fn begin() -> Result<Claim, String> {
-    let mut active = ACTIVE
+    if RUNTIME.shutting_down.load(Ordering::SeqCst) {
+        return Err("OneCopy is closing; no new file operation can start.".to_string());
+    }
+    let mut active = RUNTIME
+        .active
         .lock()
         .map_err(|_| "file-operation state is unavailable".to_string())?;
+    if RUNTIME.shutting_down.load(Ordering::SeqCst) {
+        return Err("OneCopy is closing; no new file operation can start.".to_string());
+    }
     if active.is_some() {
         return Err("Another file operation is already running.".to_string());
     }
@@ -64,7 +82,7 @@ fn begin() -> Result<Claim, String> {
 }
 
 pub(crate) fn request_cancel(id: u64) -> bool {
-    let Ok(active) = ACTIVE.lock() else {
+    let Ok(active) = RUNTIME.active.lock() else {
         return false;
     };
     let Some(active) = active.as_ref().filter(|active| active.id == id) else {
@@ -72,6 +90,27 @@ pub(crate) fn request_cancel(id: u64) -> bool {
     };
     active.cancelled.store(true, Ordering::SeqCst);
     true
+}
+
+pub(crate) fn request_shutdown() {
+    RUNTIME.shutting_down.store(true, Ordering::SeqCst);
+    if let Ok(active) = RUNTIME.active.lock() {
+        if let Some(active) = active.as_ref() {
+            active.cancelled.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+pub(crate) fn wait_for_idle() {
+    let Ok(mut active) = RUNTIME.active.lock() else {
+        return;
+    };
+    while active.is_some() {
+        match RUNTIME.idle.wait(active) {
+            Ok(next) => active = next,
+            Err(_) => return,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -202,7 +241,6 @@ pub(crate) fn delete_items(
                 .map(crate::operations::ItemIdentity::media_key)
                 .collect::<Result<Vec<_>, _>>()?;
             let _media = crate::media_use::begin(app, &keys)?;
-            crate::ensure_sources_present(app)?;
             let data_root = crate::paths::data_root(app)?;
             let conn =
                 crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
@@ -362,7 +400,6 @@ pub(crate) fn move_items_out(
                 .map(crate::operations::ItemIdentity::media_key)
                 .collect::<Result<Vec<_>, _>>()?;
             let _media = crate::media_use::begin(app, &keys)?;
-            crate::ensure_sources_present(app)?;
             let data_root = crate::paths::data_root(app)?;
             let config = crate::storage::read_config_for_setup(&data_root)?;
             let settings = crate::scanner::settings_from_config(config.as_ref(), &data_root, 0);

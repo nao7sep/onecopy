@@ -1,8 +1,10 @@
-//! Physical file identity used at destructive cleanup and publication edges.
+//! Physical file identity for app-created private files, published outputs,
+//! and filesystem alias checks.
 //!
 //! A pathname is only a lookup. Once this operation creates or opens a file,
-//! cleanup and commit verification bind to the filesystem identity returned by
-//! that handle so an external replacement is never mistaken for ours.
+//! private cleanup and verified publication bind to the filesystem identity
+//! returned by that handle so an unrelated replacement is never treated as an
+//! app-created temporary output.
 
 #[cfg(not(windows))]
 use std::fs::Metadata;
@@ -184,38 +186,6 @@ pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
     if let Ok(hold) = claim_private(path, expected) {
         let _ = std::fs::remove_file(hold);
     }
-}
-
-/// Restores an owned private claim to its original public name without ever
-/// replacing an occupant. Failure leaves the claim recoverable at `claimed`.
-pub fn restore_private_claim(
-    claimed: &Path,
-    original: &Path,
-    expected: FileIdentity,
-) -> io::Result<()> {
-    if !path_names(claimed, expected) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("private claim was replaced: {}", claimed.display()),
-        ));
-    }
-    crate::fs_publish::rename_no_replace(claimed, original).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "could not restore {} to {}; recoverable claim remains: {error}",
-                claimed.display(),
-                original.display(),
-            ),
-        )
-    })?;
-    if !path_names(original, expected) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("restored source was replaced: {}", original.display()),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -533,11 +533,6 @@ export default function SettingsModal() {
             onChange={(v) => update({ keepAwakeDuringIndexing: v })}
           />
           <CheckField
-            label="Read-back verify every copy out"
-            checked={draft.verifyAfterCopy}
-            onChange={(v) => update({ verifyAfterCopy: v })}
-          />
-          <CheckField
             label="Score faces for photo ordering (background, needs the face models)"
             checked={draft.scoreFaces}
             onChange={(v) => update({ scoreFaces: v })}

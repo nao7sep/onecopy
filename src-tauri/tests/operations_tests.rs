@@ -141,7 +141,7 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
 }
 
 #[test]
-fn delete_batch_plans_once_and_cancels_only_between_logical_units() {
+fn delete_batch_plans_once_and_cancels_between_physical_files() {
     let f = fixture("delete-batch-cancel");
     std::fs::write(f.root.join("a.jpg"), vec![1u8; 10]).unwrap();
     std::fs::write(f.root.join("a.xmp"), vec![2u8; 20]).unwrap();
@@ -194,14 +194,14 @@ fn delete_batch_plans_once_and_cancels_only_between_logical_units() {
     .unwrap();
 
     assert!(outcome.cancelled);
-    assert_eq!(outcome.items.len(), 1, "the duplicate request is one unit");
+    assert!(outcome.items.is_empty(), "the interrupted logical item is partial");
     assert_eq!(
         outcome.files_total, 3,
         "primary, companion, and second item"
     );
     assert_eq!(outcome.bytes_total, 60);
-    assert_eq!(outcome.deleted_files, 2, "cancellation never splits a pair");
-    assert!(!f.root.join("a.jpg").exists());
+    assert_eq!(outcome.deleted_files, 1);
+    assert!(f.root.join("a.jpg").exists(), "the next physical step is not started");
     assert!(!f.root.join("a.xmp").exists());
     assert!(
         f.root.join("b.jpg").exists(),
@@ -438,7 +438,68 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
 }
 
 #[test]
-fn destination_batch_reserves_colliding_names_before_publishing_either_item() {
+fn companion_name_collisions_follow_the_destination_filesystem_and_representative_priority() {
+    let f = fixture("natural-companion-case");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("x.jpg"), b"same-primary").unwrap();
+    }
+    std::fs::write(f.root.join("a").join("x.xmp"), b"representative-sidecar").unwrap();
+    std::fs::write(f.root.join("b").join("x.XMP"), b"later-sidecar").unwrap();
+    scan(&f);
+    f.conn
+        .execute(
+            "UPDATE paths SET resolved_utc_ms = CASE dir_path WHEN ?1 THEN 1000 ELSE 2000 END \
+             WHERE file_name = 'x.jpg'",
+            rusqlite::params![f.root.join("a").to_string_lossy()],
+        )
+        .unwrap();
+
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let lower_probe = dest.join("case-probe");
+    let upper_probe = dest.join("CASE-PROBE");
+    std::fs::write(&lower_probe, b"probe").unwrap();
+    let case_sensitive = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&upper_probe)
+        .is_ok();
+    std::fs::remove_file(&lower_probe).unwrap();
+    if case_sensitive {
+        std::fs::remove_file(&upper_probe).unwrap();
+    }
+
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let outcome = move_out(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        &dest,
+        MoveOutMode::MoveDeleteRest,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.post_action.deleted_files, 4);
+    assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"representative-sidecar");
+    if case_sensitive {
+        assert_eq!(std::fs::read(dest.join("x.XMP")).unwrap(), b"later-sidecar");
+        assert_eq!(outcome.exported, 3);
+    } else {
+        assert_eq!(outcome.exported, 2, "the natural collision publishes one sidecar");
+    }
+}
+
+#[test]
+fn destination_batch_publishes_the_first_colliding_name_and_reports_the_later_one() {
     let f = fixture("batch-name-collision");
     for (dir, bytes) in [("a", b"first".as_slice()), ("b", b"second".as_slice())] {
         std::fs::create_dir_all(f.root.join(dir)).unwrap();
@@ -474,9 +535,9 @@ fn destination_batch_reserves_colliding_names_before_publishing_either_item() {
     .unwrap();
 
     assert_eq!(outcome.items.len(), 2);
-    assert_eq!(outcome.exported, 0);
-    assert_eq!(outcome.conflicts.len(), 2);
-    assert!(!dest.join("same.jpg").exists());
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(outcome.conflicts.len(), 1);
+    assert!(dest.join("same.jpg").is_file());
 }
 
 #[test]
@@ -535,7 +596,7 @@ fn cancellation_during_private_streaming_publishes_nothing() {
 }
 
 #[test]
-fn cancellation_after_publication_waits_for_post_action_then_stops_between_items() {
+fn cancellation_after_publication_stops_before_the_next_physical_source_action() {
     let f = fixture("batch-commit-boundary");
     for name in ["a.jpg", "b.jpg"] {
         std::fs::write(f.root.join(name), name.as_bytes()).unwrap();
@@ -578,11 +639,11 @@ fn cancellation_after_publication_waits_for_post_action_then_stops_between_items
     .unwrap();
 
     assert!(outcome.cancelled);
-    assert_eq!(outcome.items.len(), 1, "only the committed unit retires");
+    assert_eq!(outcome.items.len(), 1, "the published partial result is reported");
     assert!(dest.join("a.jpg").exists());
     assert!(
-        !f.root.join("a.jpg").exists(),
-        "post-action completed despite stop"
+        f.root.join("a.jpg").exists(),
+        "cancellation takes effect before source cleanup"
     );
     assert!(!dest.join("b.jpg").exists());
     assert!(f.root.join("b.jpg").exists(), "next unit stayed untouched");
@@ -680,7 +741,7 @@ fn conflicting_destination_blocks_and_withholds_the_post_action() {
 }
 
 #[test]
-fn a_rotted_copy_is_skipped_and_the_next_copy_delivers() {
+fn a_changed_copy_is_delivered_as_it_exists_when_the_operation_runs() {
     let f = fixture("rot");
     for sub in ["a", "b"] {
         std::fs::create_dir_all(f.root.join(sub)).unwrap();
@@ -695,7 +756,7 @@ fn a_rotted_copy_is_skipped_and_the_next_copy_delivers() {
             |r| r.get(0),
         )
         .unwrap();
-    // Rot copy a AFTER indexing: same length, different bytes.
+    // Change representative copy a after indexing: same length, different bytes.
     std::fs::write(f.root.join("a").join("r.jpg"), b"rotten!-bytes").unwrap();
 
     let dest = f._dir.path().join("dest");
@@ -711,17 +772,16 @@ fn a_rotted_copy_is_skipped_and_the_next_copy_delivers() {
     .unwrap();
 
     assert_eq!(outcome.exported, 1);
-    // The delivered bytes are the healthy ones, never the rotted ones.
-    assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
+    assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"rotten!-bytes");
     let issues: i64 = f
         .conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE kind = 'copy-verify-mismatch'",
+            "SELECT COUNT(*) FROM issues",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(issues, 1, "the rotted copy is surfaced");
+    assert_eq!(issues, 0, "the operation does not enforce the older indexed bytes");
 }
 
 #[test]
@@ -767,13 +827,11 @@ fn a_failed_copy_keeps_its_row_and_records_an_issue() {
     assert_eq!(issues, 1);
 }
 
-// A companion that does not reach the destination must withhold the
-// post-action. Companions are RAW files and sidecars, never their own grid
-// row, so deleting the source of one that was never delivered destroys it
-// with nothing in the UI to reveal the loss.
+// Each verified output releases only its own source group. A failed companion
+// does not roll the primary back and is itself preserved for a later retry.
 
 #[test]
-fn companion_conflict_withholds_the_post_action() {
+fn companion_conflict_preserves_that_companion_without_rolling_back_the_primary() {
     let f = fixture("companion-conflict");
     std::fs::write(f.root.join("x.jpg"), b"primary-bytes").unwrap();
     std::fs::write(f.root.join("x.arw"), b"raw-bytes").unwrap();
@@ -808,11 +866,9 @@ fn companion_conflict_withholds_the_post_action() {
         "the companion conflict must be reported, got {:?}",
         outcome.conflicts
     );
-    assert_eq!(
-        outcome.post_action.deleted_files, 0,
-        "nothing may be deleted while a companion is undelivered"
-    );
-    assert!(f.root.join("x.jpg").exists(), "primary must survive");
+    assert_eq!(outcome.post_action.deleted_files, 1);
+    assert!(dest.join("x.jpg").is_file(), "the primary output completes");
+    assert!(!f.root.join("x.jpg").exists(), "the delivered primary is cleaned");
     assert!(f.root.join("x.arw").exists(), "the RAW must survive");
 }
 
@@ -822,7 +878,7 @@ fn companion_conflict_withholds_the_post_action() {
 // on that staging.
 #[cfg(unix)]
 #[test]
-fn companion_copy_failure_withholds_the_post_action() {
+fn companion_copy_failure_preserves_that_companion_without_rolling_back_the_primary() {
     let f = fixture("companion-copy-fail");
     std::fs::write(f.root.join("x.jpg"), b"primary-bytes").unwrap();
     std::fs::write(f.root.join("x.arw"), b"raw-bytes").unwrap();
@@ -831,9 +887,7 @@ fn companion_copy_failure_withholds_the_post_action() {
     let dest = f._dir.path().join("dest");
     std::fs::create_dir_all(&dest).unwrap();
 
-    // Make the source RAW unreadable so every copy attempt fails. This is the
-    // ENOSPC shape: deliver_one returns not-ok having pushed NO conflict, so
-    // it is the failure the outcome could not previously express at all.
+    // Make the source RAW unreadable so its output alone cannot be staged.
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(f.root.join("x.arw"), std::fs::Permissions::from_mode(0o000))
@@ -859,20 +913,72 @@ fn companion_copy_failure_withholds_the_post_action() {
     )
     .unwrap();
 
-    assert_eq!(
-        outcome.post_action.deleted_files, 0,
-        "nothing may be deleted while a companion could not be copied"
-    );
+    assert_eq!(outcome.post_action.deleted_files, 1);
     assert!(
         !outcome.undelivered.is_empty(),
         "an undeliverable companion must be reported, not silently dropped"
     );
     assert!(
-        !dest.join("x.jpg").exists(),
-        "the verified primary remains private when its companion cannot stage"
+        dest.join("x.jpg").exists(),
+        "the verified primary remains published"
     );
-    assert!(f.root.join("x.jpg").exists(), "primary must survive");
+    assert!(!f.root.join("x.jpg").exists(), "the delivered primary is cleaned");
     assert!(f.root.join("x.arw").exists(), "the RAW must survive");
+}
+
+#[cfg(unix)]
+#[test]
+fn destination_write_failure_stops_the_unstarted_remainder_and_records_an_issue() {
+    let f = fixture("destination-write-failure");
+    for name in ["a.jpg", "b.jpg"] {
+        std::fs::write(f.root.join(name), name.as_bytes()).unwrap();
+    }
+    scan(&f);
+    let mut statement = f
+        .conn
+        .prepare("SELECT content_hash FROM paths ORDER BY file_name")
+        .unwrap();
+    let items = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|hash| ItemIdentity {
+            hash: Some(hash.unwrap()),
+            path_id: None,
+        })
+        .collect::<Vec<_>>();
+    drop(statement);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o500)).unwrap();
+    }
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert!(outcome.error.is_some());
+    assert!(outcome.items.is_empty());
+    assert!(f.root.join("a.jpg").exists());
+    assert!(f.root.join("b.jpg").exists());
+    let issues: i64 = f
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE kind = 'copy-error'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(issues, 1);
 }
 
 #[test]

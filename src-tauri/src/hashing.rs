@@ -5,9 +5,9 @@
 //! same-size-same-prehash-different-hash surfaces as the copies-disagree
 //! anomaly upstream.
 //!
-//! `hash_while_copying` is the move/copy-out primitive: the copy reads the
-//! source anyway, so teeing the stream through blake3 verifies the chosen copy
-//! against the indexed hash at zero extra I/O.
+//! `hash_while_copying` is the move/copy-out primitive: it hashes the current
+//! source bytes while writing, then reads the private output back before the
+//! caller publishes it.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -72,12 +72,12 @@ pub(crate) fn full_hash_file_cancellable(
                 "cancelled",
             ));
         }
-        let n = file.read(&mut buf)?;
-        if n == 0 {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
-        done = done.saturating_add(n as u64);
+        hasher.update(&buf[..read]);
+        done = done.saturating_add(read as u64);
         progress(done, total);
     }
     Ok(hasher.finalize().to_hex().to_string())
@@ -124,8 +124,7 @@ pub fn full_hash_cancellable_with_progress(
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Copies `src` to `dst` while hashing the bytes read — the tee that gives
-/// move/copy-out its free source verification. Returns (hash, bytes copied).
+/// Copies `src` to `dst` while hashing the bytes read. Returns (hash, bytes copied).
 /// not recorded: this writes the user's own media into a destination root —
 /// OUTPUT, not app-managed text (data-backup conventions).
 /// The destination is created fresh (never clobbering an existing file: the
@@ -135,7 +134,8 @@ pub fn hash_while_copying(
     src: &Path,
     dst: &Path,
 ) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
-    hash_while_copying_inner(src, dst, &|| false, &mut |_, _| {}, |_| {})
+    hash_while_copying_detailed(src, dst, &|| false, &mut |_, _| {}, |_| {})
+        .map_err(CopyFailure::into_io)
 }
 
 #[cfg(test)]
@@ -144,77 +144,119 @@ fn hash_while_copying_with_after_sync(
     dst: &Path,
     after_sync: impl FnOnce(&Path),
 ) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
-    hash_while_copying_inner(src, dst, &|| false, &mut |_, _| {}, after_sync)
+    hash_while_copying_detailed(src, dst, &|| false, &mut |_, _| {}, after_sync)
+        .map_err(CopyFailure::into_io)
 }
 
 /// The destination-batch variant may stop while the bytes are still private.
-/// Its caller deliberately stops consulting cancellation once publication of
-/// one logical item begins, so this helper never creates a half-public unit.
+/// Publication is a later step, so cancellation here never creates a partial
+/// public output.
 pub fn hash_while_copying_cancellable(
     src: &Path,
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
-    hash_while_copying_inner(src, dst, cancelled, progress, |_| {})
+    hash_while_copying_detailed(src, dst, cancelled, progress, |_| {})
+        .map_err(CopyFailure::into_io)
 }
 
-fn hash_while_copying_inner(
+#[derive(Debug)]
+pub(crate) enum CopyFailure {
+    Cancelled,
+    Source(std::io::Error),
+    Destination(std::io::Error),
+}
+
+impl CopyFailure {
+    fn into_io(self) -> std::io::Error {
+        match self {
+            Self::Cancelled => {
+                std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
+            }
+            Self::Source(error) | Self::Destination(error) => error,
+        }
+    }
+}
+
+pub(crate) fn hash_while_copying_cancellable_detailed(
+    src: &Path,
+    dst: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<(String, u64, crate::file_identity::FileIdentity), CopyFailure> {
+    hash_while_copying_detailed(src, dst, cancelled, progress, |_| {})
+}
+
+fn hash_while_copying_detailed(
     src: &Path,
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
     after_sync: impl FnOnce(&Path),
-) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
-    let mut reader = File::open(crate::winpath::for_fs(src).as_ref())?;
-    let expected_total = reader.metadata()?.len();
+) -> Result<(String, u64, crate::file_identity::FileIdentity), CopyFailure> {
+    let mut reader = File::open(crate::winpath::for_fs(src).as_ref())
+        .map_err(CopyFailure::Source)?;
+    let expected_total = reader
+        .metadata()
+        .map_err(CopyFailure::Source)?
+        .len();
     let mut writer = File::options()
         .read(true)
         .write(true)
         .create_new(true)
-        .open(dst)?;
-    let identity = crate::file_identity::FileIdentity::from_file(&writer)?;
+        .open(dst)
+        .map_err(CopyFailure::Destination)?;
+    let identity = match crate::file_identity::FileIdentity::from_file(&writer) {
+        Ok(identity) => identity,
+        Err(error) => {
+            drop(writer);
+            let _ = std::fs::remove_file(dst);
+            return Err(CopyFailure::Destination(error));
+        }
+    };
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
     let mut total: u64 = 0;
     progress(total, expected_total);
 
-    let copied = (|| -> std::io::Result<(String, u64)> {
+    let copied = (|| -> Result<(String, u64), CopyFailure> {
         loop {
             if cancelled() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "cancelled",
-                ));
+                return Err(CopyFailure::Cancelled);
             }
-            let n = reader.read(&mut buf)?;
+            let n = reader.read(&mut buf).map_err(CopyFailure::Source)?;
             if n == 0 {
                 break;
             }
             hasher.update(&buf[..n]);
-            writer.write_all(&buf[..n])?;
+            writer
+                .write_all(&buf[..n])
+                .map_err(CopyFailure::Destination)?;
             total += n as u64;
             progress(total, expected_total);
         }
-        writer.sync_all()?;
+        writer.sync_all().map_err(CopyFailure::Destination)?;
         after_sync(dst);
         let streamed_hash = hasher.finalize().to_hex().to_string();
 
         // Verify through the same descriptor that received the bytes. Reopening
         // `dst` would make a pathname replacement the object being verified.
-        writer.seek(SeekFrom::Start(0))?;
+        writer
+            .seek(SeekFrom::Start(0))
+            .map_err(CopyFailure::Destination)?;
         let mut read_back = blake3::Hasher::new();
         loop {
-            let n = writer.read(&mut buf)?;
+            let n = writer.read(&mut buf).map_err(CopyFailure::Destination)?;
             if n == 0 {
                 break;
             }
             read_back.update(&buf[..n]);
         }
         if read_back.finalize().to_hex().as_str() != streamed_hash {
-            return Err(std::io::Error::other(
+            return Err(CopyFailure::Destination(std::io::Error::other(
                 "staged destination read-back did not match the copied bytes",
-            ));
+            )));
         }
         Ok((streamed_hash, total))
     })();

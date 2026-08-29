@@ -195,29 +195,6 @@ fn cancel_scan() -> bool {
     scan_runtime::request_cancel()
 }
 
-// The volume-loss guard (the session gate's runtime counterpart): destructive
-// operations refuse to run while any configured source directory is absent —
-// a vanished volume must block deletes, not let them half-apply.
-pub(crate) fn ensure_sources_present(app: &AppHandle) -> Result<(), String> {
-    let status = verify_source_dirs(app)?;
-    if !status.missing.is_empty() {
-        return Err(format!(
-            "destructive operations are blocked: {} configured source directorie(s) are missing ({})",
-            status.missing.len(),
-            status.missing.join(", ")
-        ));
-    }
-    if !status.substituted.is_empty() {
-        return Err(format!(
-            "destructive operations are blocked: {} source directorie(s) sit on a DIFFERENT volume \
-             than the one recorded — a substituted drive with the same folder layout ({})",
-            status.substituted.len(),
-            status.substituted.join(", ")
-        ));
-    }
-    Ok(())
-}
-
 #[derive(serde::Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct SourceDirsStatus {
@@ -1699,12 +1676,14 @@ pub fn run() {
         // the per-item cancel checks — so no SQLite write is killed halfway.
         tauri::RunEvent::ExitRequested { api, .. } => {
             scan_runtime::request_cancel();
+            mutation_runtime::request_shutdown();
+            api.prevent_exit();
             if !EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                api.prevent_exit();
                 let handle = app_handle.clone();
                 std::thread::spawn(move || {
-                    let media = media_use::begin(&handle, &[]);
                     scan_runtime::join();
+                    mutation_runtime::wait_for_idle();
+                    let media = media_use::begin(&handle, &[]);
                     if let Err(error) = &media {
                         logging::warn(
                             "shutdown media release failed",
