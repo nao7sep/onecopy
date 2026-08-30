@@ -13,6 +13,7 @@ fn lists() -> ScanLists {
     ScanLists {
         images: owned(extensions::IMAGE_EXTENSIONS),
         videos: owned(extensions::VIDEO_EXTENSIONS),
+        audio: owned(extensions::AUDIO_EXTENSIONS),
         companions: owned(extensions::COMPANION_EXTENSIONS),
     }
 }

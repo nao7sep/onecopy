@@ -13,6 +13,7 @@ fn lists() -> ScanLists {
     ScanLists {
         images: owned(extensions::IMAGE_EXTENSIONS),
         videos: owned(extensions::VIDEO_EXTENSIONS),
+        audio: owned(extensions::AUDIO_EXTENSIONS),
         companions: owned(extensions::COMPANION_EXTENSIONS),
     }
 }
@@ -277,6 +278,32 @@ fn the_ladder_collapses_copies_and_identifies_unique_media_without_reading() {
         )
         .unwrap();
     assert_eq!(copies, 3);
+}
+
+#[test]
+fn supported_audio_gets_content_identity_but_stays_in_the_other_section() {
+    let f = fixture("audio-identity");
+    std::fs::write(f.root.join("voice.m4a"), b"audio-bytes").unwrap();
+
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
+
+    assert_eq!(stats.provisional_created, 1);
+    let (path_kind, content_kind, section_kind): (String, String, String) = f
+        .conn
+        .query_row(
+            "SELECT p.kind, c.kind, l.kind
+             FROM paths p
+             JOIN contents c ON c.hash = p.content_hash
+             JOIN logical_contents l ON l.content_hash = c.hash
+             WHERE p.file_name = 'voice.m4a'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(path_kind, "audio");
+    assert_eq!(content_kind, "audio");
+    assert_eq!(section_kind, "other");
 }
 
 #[test]

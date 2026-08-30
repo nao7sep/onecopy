@@ -8,18 +8,20 @@ fn owned(list: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn classify_covers_all_four_kinds() {
-    let (i, v, c) = (
+fn classify_covers_every_kind() {
+    let (i, v, a, c) = (
         owned(IMAGE_EXTENSIONS),
         owned(VIDEO_EXTENSIONS),
+        owned(AUDIO_EXTENSIONS),
         owned(COMPANION_EXTENSIONS),
     );
-    assert_eq!(classify("jpg", &i, &v, &c), Kind::Image);
-    assert_eq!(classify("hif", &i, &v, &c), Kind::Image);
-    assert_eq!(classify("mov", &i, &v, &c), Kind::Video);
-    assert_eq!(classify("arw", &i, &v, &c), Kind::Companion);
-    assert_eq!(classify("pdf", &i, &v, &c), Kind::Other);
-    assert_eq!(classify("", &i, &v, &c), Kind::Other);
+    assert_eq!(classify("jpg", &i, &v, &a, &c), Kind::Image);
+    assert_eq!(classify("hif", &i, &v, &a, &c), Kind::Image);
+    assert_eq!(classify("mov", &i, &v, &a, &c), Kind::Video);
+    assert_eq!(classify("m4a", &i, &v, &a, &c), Kind::Audio);
+    assert_eq!(classify("arw", &i, &v, &a, &c), Kind::Companion);
+    assert_eq!(classify("pdf", &i, &v, &a, &c), Kind::Other);
+    assert_eq!(classify("", &i, &v, &a, &c), Kind::Other);
 }
 
 #[test]
@@ -27,6 +29,7 @@ fn built_in_lists_are_lowercase_and_disjoint() {
     let all: Vec<&&str> = IMAGE_EXTENSIONS
         .iter()
         .chain(VIDEO_EXTENSIONS)
+        .chain(AUDIO_EXTENSIONS)
         .chain(COMPANION_EXTENSIONS)
         .collect();
     for ext in &all {

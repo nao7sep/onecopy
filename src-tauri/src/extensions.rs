@@ -12,6 +12,10 @@ pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "m4v", "avi", "mts", "m2ts", "mkv", "webm", "3gp", "wmv", "mpg", "mpeg",
 ];
 
+pub const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "oga", "opus", "amr",
+];
+
 pub const COMPANION_EXTENSIONS: &[&str] = &[
     "thm", "lrv", "xmp", "aae", "arw", "cr2", "cr3", "dng", "nef", "orf", "rw2", "raf",
 ];
@@ -21,6 +25,7 @@ pub const COMPANION_EXTENSIONS: &[&str] = &[
 pub enum Kind {
     Image,
     Video,
+    Audio,
     Companion,
     Other,
 }
@@ -30,20 +35,31 @@ impl Kind {
         match self {
             Kind::Image => "image",
             Kind::Video => "video",
+            Kind::Audio => "audio",
             Kind::Companion => "companion",
             Kind::Other => "other",
         }
     }
 }
 
-/// Classifies a lowercase extension against explicit lists (normally the
-/// config's editable copies; the built-ins above are their first-run values).
-pub fn classify(ext: &str, images: &[String], videos: &[String], companions: &[String]) -> Kind {
+/// Classifies a lowercase extension against OneCopy's supported media and
+/// companion lists. Audio remains in the user-facing Other section, but its
+/// distinct internal kind gives byte-identical copies one shared identity for
+/// playback and transcription.
+pub fn classify(
+    ext: &str,
+    images: &[String],
+    videos: &[String],
+    audio: &[String],
+    companions: &[String],
+) -> Kind {
     let matches = |list: &[String]| list.iter().any(|e| e == ext);
     if matches(images) {
         Kind::Image
     } else if matches(videos) {
         Kind::Video
+    } else if matches(audio) {
+        Kind::Audio
     } else if matches(companions) {
         Kind::Companion
     } else {

@@ -202,6 +202,7 @@ fn check_cancel() -> Result<(), String> {
 pub struct ScanLists {
     pub images: Vec<String>,
     pub videos: Vec<String>,
+    pub audio: Vec<String>,
     pub companions: Vec<String>,
 }
 
@@ -331,6 +332,7 @@ pub fn settings_from_config(
         lists: ScanLists {
             images: owned(extensions::IMAGE_EXTENSIONS),
             videos: owned(extensions::VIDEO_EXTENSIONS),
+            audio: owned(extensions::AUDIO_EXTENSIONS),
             companions: owned(extensions::COMPANION_EXTENSIONS),
         },
         resolution: ResolutionConfig {
@@ -754,7 +756,7 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     };
     if probe(
         "SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 AND content_hash IS NULL \
-         AND kind IN ('image', 'video'))",
+         AND kind IN ('image', 'video', 'audio'))",
     )? {
         return Ok(true);
     }
@@ -869,7 +871,7 @@ fn pending_index_dirs(conn: &Connection) -> Result<Vec<String>, String> {
         .prepare(
             "SELECT DISTINCT p.dir_path FROM paths p
              WHERE p.missing = 0 AND (
-               (p.content_hash IS NULL AND p.kind IN ('image', 'video'))
+               (p.content_hash IS NULL AND p.kind IN ('image', 'video', 'audio'))
                OR p.indexed_at_utc IS NULL
                OR (p.indexed_at_utc IS NOT NULL AND p.resolved_source IS NULL)
                OR (p.kind IN ('image', 'video') AND NOT EXISTS (
@@ -946,7 +948,14 @@ pub fn upsert_file(
         .map(|d| d.as_millis() as i64);
 
     let ext = extensions::lowercase_ext(&file_name);
-    let kind = extensions::classify(&ext, &lists.images, &lists.videos, &lists.companions).as_str();
+    let kind = extensions::classify(
+        &ext,
+        &lists.images,
+        &lists.videos,
+        &lists.audio,
+        &lists.companions,
+    )
+    .as_str();
     let stem = Path::new(&file_name)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1422,14 +1431,14 @@ fn hash_pending_with_progress(
         .map_err(|e| e.to_string())?;
     drop(known_stmt);
 
-    let is_media = |kind: &str| kind == "image" || kind == "video";
+    let needs_content_identity = |kind: &str| matches!(kind, "image" | "video" | "audio");
 
     // Assigns the resting identity of a row that nothing collides with.
     let settle_unique = |row: &Row, stats: &mut HashStats| -> Result<(), String> {
         if row.provisional.is_some() {
             return Ok(()); // already identified, still unique
         }
-        if is_media(&row.kind) {
+        if needs_content_identity(&row.kind) {
             let key = provisional_key(row.id);
             conn.execute(
                 "INSERT INTO contents (hash, byte_size, kind) VALUES (?1, ?2, ?3) \
