@@ -14,6 +14,8 @@ import { installPreviewCommandWiring, installPreviewPersistence } from "./previe
 import { installComparisonEventWiring } from "./comparison";
 import { installMutationEventWiring } from "./mutation-events";
 import { installViewerWorkflow } from "./quick-view";
+import { installPlaybackWorkflow } from "./playback";
+import { installContentSessionWorkflow } from "./content-session";
 
 export async function bootstrapApplication(): Promise<void> {
   installItemWorkflow();
@@ -24,6 +26,8 @@ export async function bootstrapApplication(): Promise<void> {
     installMutationEventWiring(),
     installViewerWorkflow(),
     installPreviewCommandWiring(),
+    installPlaybackWorkflow(),
+    installContentSessionWorkflow(),
   ]);
   const [data] = await Promise.all([
     useAppStore.getState().initialize(),

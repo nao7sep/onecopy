@@ -34,11 +34,7 @@ export interface PreviewPayload {
 
 export interface PreviewShowMessage extends PreviewPayload {
   detail: ItemDetail | null;
-  seekMs?: number;
-  playAfterSeek?: boolean;
 }
-
-export type PreviewIntent = Pick<PreviewShowMessage, "seekMs" | "playAfterSeek">;
 
 /** Where the user wants the preview; `null` means never chosen, which is the
  * in-window pane. Purely the user's statement — monitor counting left this
@@ -60,13 +56,10 @@ interface PreviewState {
   placementPreference: PlacementPreference;
   /** What the side pane renders (the window renders from events). */
   current: PreviewShowMessage | null;
-  /** Opens the surface for the payload and turns follow on. Presentation
-   * intent is one named object so adding another medium-specific action does
-   * not grow a positional-argument protocol. */
+  /** Opens the surface for the payload and turns follow on. */
   open: (
     payload: PreviewPayload,
     detail: ItemDetail | null,
-    intent?: PreviewIntent,
     windowState?: Record<string, unknown>,
   ) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
@@ -234,12 +227,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   placementPreference: null,
   current: null,
 
-  open: async (payload, detail, intent = {}, windowState = {}) => {
+  open: async (payload, detail, windowState = {}) => {
     try {
       const placement = resolvePlacement(get().placementPreference);
       // State FIRST: the side pane renders `current` the moment this lands,
       // which is what makes the image appear immediately on activation.
-      const message = { ...payload, detail, ...intent };
+      const message = { ...payload, detail };
       set({ follow: true, placement, current: message });
       if (placement === "window") {
         await ensurePreviewWindow(windowState);

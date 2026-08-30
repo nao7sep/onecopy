@@ -7,12 +7,13 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createViewerSession, type ViewerMove, type ViewerPresentation } from "../models/viewerSession";
 import type { ItemDetail, SectionItem } from "../models/items";
-import { sortItems } from "../models/items";
+import { isAudioFile, sortItems } from "../models/items";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import { deleteItems } from "./items";
+import { toggleMainPlayback } from "./playback";
 import {
   enterViewerFullscreen,
   exitViewerFullscreen,
@@ -70,6 +71,17 @@ function broadcastViewer(): void {
   );
 }
 
+function clearFullscreenSurface(): void {
+  void emit("viewer://state", {
+    item: null,
+    detail: null,
+    index: 0,
+    length: 0,
+    pendingDelete: null,
+    sectionKind: null,
+  } satisfies ViewerBroadcast).catch(reportWindowCall("viewer clear broadcast"));
+}
+
 function syncMainAnchor(): void {
   const viewer = useQuickViewStore.getState();
   const key = viewer.currentKey();
@@ -118,6 +130,7 @@ function recoverFullscreenFailure(
     }
     useItemsStore.setState({ message: "Couldn’t open full screen." });
   }
+  clearFullscreenSurface();
   void exitViewerFullscreen().then(restoreMainFocus);
 }
 
@@ -227,6 +240,7 @@ export async function setViewerPresentation(presentation: ViewerPresentation): P
     beginFullscreen("quick");
   } else {
     fullscreenRequest += 1;
+    clearFullscreenSurface();
     await exitViewerFullscreen();
     await restoreMainFocus();
   }
@@ -236,7 +250,10 @@ export async function closeViewer(): Promise<void> {
   const presentation = useQuickViewStore.getState().session?.presentation;
   useQuickViewStore.getState().close();
   fullscreenRequest += 1;
-  if (presentation === "fullscreen") await exitViewerFullscreen();
+  if (presentation === "fullscreen") {
+    clearFullscreenSurface();
+    await exitViewerFullscreen();
+  }
   await restoreMainFocus();
 }
 
@@ -290,6 +307,12 @@ export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> 
     moveViewer("first");
   } else if (message.key === "End" && useItemsStore.getState().selected?.kind !== "other") {
     moveViewer("last");
+  } else if (message.key === "Enter") {
+    const item = currentItem();
+    const kind = useItemsStore.getState().selected?.kind;
+    if (item !== null && (kind === "video" || isAudioFile(item.fileName))) {
+      toggleMainPlayback(itemKey(item));
+    }
   } else if (message.key === "Delete" || message.key === "Backspace") {
     await requestViewerDelete(message.shiftKey === true);
   }

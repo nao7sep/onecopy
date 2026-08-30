@@ -1,10 +1,11 @@
-//! Atomic no-clobber publication for a completed same-volume file.
+//! Atomic publication for completed same-volume files.
 //!
 //! macOS and Windows are OneCopy's shipped platforms. macOS exposes
 //! `renamex_np(RENAME_EXCL)`; Windows exposes `MoveFileExW` without
 //! `MOVEFILE_REPLACE_EXISTING`. Both move the exact staged file into the final
 //! directory entry in one atomic commit, so a crash cannot expose partial bytes
-//! and an existing winner is untouched.
+//! and an existing public-destination winner is untouched. Private rebuildable
+//! cache entries also use an explicit atomic replacement path.
 
 use std::io;
 use std::path::Path;
@@ -38,6 +39,47 @@ pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+/// Atomically publishes a private same-volume staging file over an existing
+/// rebuildable cache artifact. Public user destinations never use this.
+#[cfg(not(windows))]
+pub fn replace_existing(source: &Path, target: &Path) -> io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(windows)]
+pub fn replace_existing(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = crate::winpath::for_fs(source)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let target: Vec<u16> = crate::winpath::for_fs(target)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: both path buffers are NUL-terminated and remain alive for the
+    // call. The flags request a write-through replacement of this private,
+    // rebuildable cache entry.
+    let succeeded = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if succeeded == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -107,5 +149,19 @@ mod tests {
         assert!(rename_no_replace(&staged, &target).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"winner");
         assert_eq!(std::fs::read(&staged).unwrap(), b"ours");
+    }
+
+    #[test]
+    fn private_cache_replacement_keeps_one_complete_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path().join("transcript-random.tmp");
+        let target = dir.path().join("transcript.txt");
+        std::fs::write(&staged, b"replacement").unwrap();
+        std::fs::write(&target, b"previous").unwrap();
+
+        replace_existing(&staged, &target).unwrap();
+
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
     }
 }

@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import InspectableImage from "../../src/components/InspectableImage";
 
@@ -14,8 +20,27 @@ afterEach(() => {
 });
 
 describe("momentary original-pixel inspection", () => {
+  it("does not enlarge the fitted image when the setting is off", () => {
+    render(
+      <InspectableImage
+        hash="photo-hash"
+        fileName="family.jpg"
+        enlargeSmall={false}
+        sourceWidth={640}
+        sourceHeight={480}
+      />,
+    );
+
+    const image = screen.getByAltText("family.jpg");
+    expect(image.className).toContain("h-full w-full");
+    expect(image.getAttribute("style")).toContain("max-width: 640px");
+    expect(image.getAttribute("style")).toContain("max-height: 480px");
+  });
+
   it("starts only after the hold threshold and returns on release", () => {
-    render(<InspectableImage hash="photo-hash" fileName="family.jpg" />);
+    render(
+      <InspectableImage hash="photo-hash" fileName="family.jpg" enlargeSmall />,
+    );
     const viewport = screen.getByTitle("Press and hold for original pixels");
 
     fireEvent.pointerDown(viewport, {
@@ -39,11 +64,19 @@ describe("momentary original-pixel inspection", () => {
     const activate = vi.fn();
     render(
       <div onClick={activate}>
-        <InspectableImage hash="photo-hash" fileName="family.jpg" />
+        <InspectableImage
+          hash="photo-hash"
+          fileName="family.jpg"
+          enlargeSmall
+        />
       </div>,
     );
     const viewport = screen.getByTitle("Press and hold for original pixels");
-    fireEvent.pointerDown(viewport, { pointerId: 2, button: 0, isPrimary: true });
+    fireEvent.pointerDown(viewport, {
+      pointerId: 2,
+      button: 0,
+      isPrimary: true,
+    });
     act(() => vi.advanceTimersByTime(135));
     fireEvent.pointerUp(window, { pointerId: 2 });
     fireEvent.click(viewport, { detail: 1 });
@@ -52,9 +85,15 @@ describe("momentary original-pixel inspection", () => {
   });
 
   it("cancels immediately on window blur", () => {
-    render(<InspectableImage hash="photo-hash" fileName="family.jpg" />);
+    render(
+      <InspectableImage hash="photo-hash" fileName="family.jpg" enlargeSmall />,
+    );
     const viewport = screen.getByTitle("Press and hold for original pixels");
-    fireEvent.pointerDown(viewport, { pointerId: 3, button: 0, isPrimary: true });
+    fireEvent.pointerDown(viewport, {
+      pointerId: 3,
+      button: 0,
+      isPrimary: true,
+    });
     act(() => vi.advanceTimersByTime(135));
     expect(screen.getByAltText("family.jpg at original size")).toBeTruthy();
 
@@ -64,9 +103,15 @@ describe("momentary original-pixel inspection", () => {
   });
 
   it("shows a readable result when the original cannot be decoded", () => {
-    render(<InspectableImage hash="photo-hash" fileName="family.jpg" />);
+    render(
+      <InspectableImage hash="photo-hash" fileName="family.jpg" enlargeSmall />,
+    );
     const viewport = screen.getByTitle("Press and hold for original pixels");
-    fireEvent.pointerDown(viewport, { pointerId: 5, button: 0, isPrimary: true });
+    fireEvent.pointerDown(viewport, {
+      pointerId: 5,
+      button: 0,
+      isPrimary: true,
+    });
     act(() => vi.advanceTimersByTime(135));
 
     fireEvent.error(screen.getByAltText("family.jpg at original size"));

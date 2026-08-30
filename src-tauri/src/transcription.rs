@@ -242,9 +242,9 @@ pub fn render(segments: &[Segment]) -> String {
     out
 }
 
-/// The whole job: short-circuit on an existing transcript, honest errors for
-/// the missing pieces, extract → transcribe → write ONCE atomically (a
-/// cancelled or failed run leaves no partial cache entry by construction).
+/// The ordinary job short-circuits on an existing transcript. Generation has
+/// honest errors for missing pieces and publishes one complete staged result;
+/// cancellation or failure leaves no partial cache entry.
 pub fn transcribe_to_cache(
     cache: &CachePaths,
     temp_dir: &Path,
@@ -267,6 +267,7 @@ pub fn transcribe_to_cache(
         ffmpeg,
         media,
         hash,
+        false,
         on_progress,
     )
 }
@@ -279,11 +280,14 @@ pub(crate) fn transcribe_to_cache_claimed(
     ffmpeg: Option<&Path>,
     media: &Path,
     hash: &str,
+    replace_existing: bool,
     on_progress: impl FnMut(i32) + 'static,
 ) -> Result<String, String> {
     let target = cache.transcript(hash);
-    if let Ok(existing) = std::fs::read_to_string(&target) {
-        return Ok(existing);
+    if !replace_existing {
+        if let Ok(existing) = std::fs::read_to_string(&target) {
+            return Ok(existing);
+        }
     }
     let Some(model) = model else {
         return Err(
@@ -310,7 +314,7 @@ pub(crate) fn transcribe_to_cache_claimed(
         crate::fs_recovery::remove_file(&tmp, "transcript staging write cleanup");
         e.to_string()
     })?;
-    std::fs::rename(&tmp, &target).map_err(|e| {
+    crate::fs_publish::replace_existing(&tmp, &target).map_err(|e| {
         crate::fs_recovery::remove_file(&tmp, "transcript publication cleanup");
         e.to_string()
     })?;

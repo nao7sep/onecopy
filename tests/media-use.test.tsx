@@ -54,4 +54,24 @@ describe("media-use boundary", () => {
     act(() => fireEvent("media-use://resume", { token: 7 }));
     expect(video.getAttribute("src")).toBe("mediafile://localhost/item");
   });
+
+  it("restores an externally delegated player paused", async () => {
+    const view = render(<Player />);
+    const video = view.container.querySelector("video")!;
+    Object.defineProperty(video, "paused", { configurable: true, get: () => false });
+    const play = vi.spyOn(video, "play").mockResolvedValue();
+
+    await act(async () => {
+      fireEvent("media-use://release", {
+        token: 8,
+        keys: ["item"],
+        restorePlayback: false,
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+    });
+    act(() => fireEvent("media-use://resume", { token: 8, restorePlayback: false }));
+    video.dispatchEvent(new Event("loadedmetadata"));
+
+    expect(play).not.toHaveBeenCalled();
+  });
 });

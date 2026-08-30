@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAppStore } from "../state/app-store";
-import { useItemsStore } from "../state/items-store";
+import { itemKey, useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useSectionsStore } from "../state/sections-store";
@@ -18,6 +18,8 @@ import {
 import { requestComparisonFromMain } from "../workflows/comparison";
 import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
 import { handleFViewer, handleSpaceQuickView } from "../workflows/quick-view";
+import { isAudioFile } from "../models/items";
+import { toggleMainPlayback } from "../workflows/playback";
 
 export function useGlobalCommands() {
   const [helpOpen, setHelpOpen] = useState(false);
@@ -25,13 +27,16 @@ export function useGlobalCommands() {
   const [confirmTrash, setConfirmTrash] = useState<number | null>(null);
 
   const openSettings = useCallback(() => {
-    useSettingsStore.getState().openWith(useAppStore.getState().appData?.config ?? null);
+    useSettingsStore
+      .getState()
+      .openWith(useAppStore.getState().appData?.config ?? null);
   }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const editable = isEditableTarget(event.target);
-      if (editable && (event.key === "?" || shadowsMacTextEditing(event))) return;
+      if (editable && (event.key === "?" || shadowsMacTextEditing(event)))
+        return;
       if (isHelpShortcut(event)) {
         event.preventDefault();
         setHelpOpen((open) => (open ? false : hasOpenModal() ? open : true));
@@ -54,16 +59,26 @@ export function useGlobalCommands() {
           void rescanCurrentSection();
         }
       } else if (event.key === "Delete" || event.key === "Backspace") {
-        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+        if (
+          !(event.target instanceof Element) ||
+          event.target.closest("#main-item-area") === null
+        ) {
           return;
         }
         event.preventDefault();
         const { selectedKeys, selectedItem } = useItemsStore.getState();
-        const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;
+        const count =
+          selectedKeys.size > 0
+            ? selectedKeys.size
+            : selectedItem !== null
+              ? 1
+              : 0;
         if (count === 0) return;
         if (event.shiftKey) {
           setConfirmPermanent(count);
-        } else if (useAppStore.getState().appData?.config?.confirmTrashDelete === true) {
+        } else if (
+          useAppStore.getState().appData?.config?.confirmTrashDelete === true
+        ) {
           setConfirmTrash(count);
         } else {
           void deleteSelectedItems(false);
@@ -74,7 +89,10 @@ export function useGlobalCommands() {
         !event.ctrlKey &&
         !event.altKey
       ) {
-        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+        if (
+          !(event.target instanceof Element) ||
+          event.target.closest("#main-item-area") === null
+        ) {
           return;
         }
         handleSpaceQuickView(event);
@@ -84,17 +102,43 @@ export function useGlobalCommands() {
         !event.ctrlKey &&
         !event.altKey
       ) {
-        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+        if (
+          !(event.target instanceof Element) ||
+          event.target.closest("#main-item-area") === null
+        ) {
           return;
         }
         handleFViewer(event);
       } else if (event.key === "Enter") {
-        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+        if (
+          !(event.target instanceof Element) ||
+          event.target.closest("#main-item-area") === null
+        ) {
           return;
         }
-        if (useItemsStore.getState().selected?.kind !== "image") return;
-        event.preventDefault();
-        void requestComparisonFromMain();
+        const items = useItemsStore.getState();
+        if (items.selected?.kind === "image") {
+          event.preventDefault();
+          void requestComparisonFromMain();
+          return;
+        }
+        const anchor = items.items.find(
+          (item) => itemKey(item) === items.selectedItem,
+        );
+        if (
+          items.selected?.kind === "video" ||
+          (anchor !== undefined && isAudioFile(anchor.fileName))
+        ) {
+          event.preventDefault();
+          if (
+            items.selectedItem !== null &&
+            !toggleMainPlayback(items.selectedItem)
+          ) {
+            useItemsStore.setState({
+              message: "This item is not playable in OneCopy right now.",
+            });
+          }
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);

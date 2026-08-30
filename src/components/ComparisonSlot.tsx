@@ -1,9 +1,12 @@
 import { factsLine } from "../models/items";
 import { faceStarLabel, faceStarRating } from "../models/itemPresentation";
 import type { GroupMember } from "../state/comparison-store";
-import { Focus } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink, Focus } from "lucide-react";
 import InspectableImage from "./InspectableImage";
 import { useAppStore } from "../state/app-store";
+import { openInDefaultApp } from "../workflows/external-open";
+import { log, toErrorFields } from "../repositories";
 
 // One comparison slot, shared by the main comparison surface and the
 // secondary per-monitor windows: preview image, the GLOBAL slot key, keeper
@@ -25,6 +28,7 @@ export default function ComparisonSlot({
    * mutate the session (the secondary windows forward keys instead). */
   onUnlink?: () => void;
 }) {
+  const [externalError, setExternalError] = useState(false);
   const facts = factsLine(member);
   const showFaceStars = useAppStore(
     (state) => state.appData?.config?.showFaceStars !== false,
@@ -50,7 +54,7 @@ export default function ComparisonSlot({
       title="Click or double-click: toggle keep"
     >
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
-        <InspectableImage hash={member.hash} fileName={member.fileName} />
+        <InspectableImage hash={member.hash} fileName={member.fileName} enlargeSmall />
       </div>
       <span
         className={`absolute left-2 top-2 flex h-8 w-8 items-center justify-center rounded text-lg font-bold ${
@@ -75,6 +79,26 @@ export default function ComparisonSlot({
         >
           Not similar
         </button>
+      ) : null}
+      <button
+        className="absolute bottom-8 left-2 hidden rounded-md bg-surface-muted p-1 text-ink-muted hover:text-ink focus-visible:block group-hover/slot:block"
+        aria-label={`Open ${member.fileName} in default app`}
+        title="Open in default app"
+        onClick={(event) => {
+          event.stopPropagation();
+          setExternalError(false);
+          void openInDefaultApp(member.hash, null).catch((error) => {
+            log.warn("comparison external open failed", toErrorFields(error));
+            setExternalError(true);
+          });
+        }}
+      >
+        <ExternalLink size={14} />
+      </button>
+      {externalError ? (
+        <span className="absolute bottom-8 left-10 rounded bg-background px-1 text-xs text-danger">
+          Couldn’t open
+        </span>
       ) : null}
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">

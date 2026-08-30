@@ -21,6 +21,7 @@ static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 struct Release {
     pending: HashSet<String>,
     keys: Vec<String>,
+    restore_playback: bool,
 }
 
 static RELEASES: LazyLock<(Mutex<HashMap<u64, Release>>, Condvar)> =
@@ -30,6 +31,7 @@ pub struct Guard {
     app: AppHandle,
     token: u64,
     exclusive: Option<crate::derived_runtime::ExclusiveGuard>,
+    restore_playback: bool,
 }
 
 impl Drop for Guard {
@@ -48,7 +50,7 @@ impl Drop for Guard {
         crate::failure_runtime::emit_or_record(
             &self.app,
             "media-use://resume",
-            json!({ "token": self.token }),
+            json!({ "token": self.token, "restorePlayback": self.restore_playback }),
         );
         self.exclusive.take();
         crate::derived_work::wake(false);
@@ -59,6 +61,21 @@ impl Drop for Guard {
 /// handles in every webview. An empty `keys` list means every displayed item
 /// (used for shutdown and Trash-root operations).
 pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
+    begin_with_resume_policy(app, keys, true)
+}
+
+/// External applications own an independent session. Readers are released
+/// exactly as for a mutation, but an in-app player that had been running is
+/// restored paused when the launch call returns.
+pub fn begin_external(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
+    begin_with_resume_policy(app, keys, false)
+}
+
+fn begin_with_resume_policy(
+    app: &AppHandle,
+    keys: &[String],
+    restore_playback: bool,
+) -> Result<Guard, String> {
     let exclusive = crate::derived_runtime::begin_exclusive(app)?;
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     let windows: HashSet<String> = app.webview_windows().into_keys().collect();
@@ -67,6 +84,7 @@ pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
             app: app.clone(),
             token,
             exclusive: Some(exclusive),
+            restore_playback,
         });
     }
 
@@ -79,6 +97,7 @@ pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
             Release {
                 pending: windows,
                 keys: keys.to_vec(),
+                restore_playback,
             },
         );
     if let Err(error) = app.emit(
@@ -117,6 +136,7 @@ pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
                 app: app.clone(),
                 token,
                 exclusive: Some(exclusive),
+                restore_playback,
             });
         }
         let now = Instant::now();
@@ -158,7 +178,11 @@ pub fn current(window_label: &str) -> Result<Option<serde_json::Value>, String> 
         return Ok(None);
     };
     release.pending.insert(window_label.to_string());
-    Ok(Some(json!({ "token": token, "keys": release.keys })))
+    Ok(Some(json!({
+        "token": token,
+        "keys": release.keys,
+        "restorePlayback": release.restore_playback,
+    })))
 }
 
 /// Returns whether this release is still active. A webview uses the answer to

@@ -52,6 +52,7 @@ import { usePaneLayout } from "./hooks/usePaneLayout";
 import { useMutationStore } from "./state/mutation-store";
 import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
 import DestinationDragProvider from "./components/DestinationDragProvider";
+import { setMediumAutoplay, setSoundEnabled } from "./workflows/playback";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -68,6 +69,9 @@ function ZoomInIcon() {
 export default function App() {
   useDestinationDragBoundary();
   const appData = useAppStore((s) => s.appData);
+  const soundEnabled = appData?.config?.soundEnabled !== false;
+  const videoAutoplay = appData?.config?.videoAutoplay !== false;
+  const audioAutoplay = appData?.config?.audioAutoplay !== false;
   const loadError = useAppStore((s) => s.loadError);
   const counts = useSectionsStore((s) => s.counts);
   const sourceCheck = useSectionsStore((s) => s.sourceCheck);
@@ -362,11 +366,10 @@ export default function App() {
               className="relative shrink-0 overflow-hidden bg-surface"
             >
               <PreviewSurface
+                surface="preview-split"
                 hash={previewCurrent?.hash ?? null}
                 detail={previewCurrent?.detail ?? null}
                 pathId={previewCurrent?.pathId ?? null}
-                seekMs={previewCurrent?.seekMs}
-                playAfterSeek={previewCurrent?.playAfterSeek}
               />
               <button
                 aria-label="Close preview"
@@ -475,6 +478,45 @@ export default function App() {
           {status.text}
         </span>
         <span className="flex shrink-0 items-center gap-3">
+          <button
+            className={soundEnabled ? "text-ink" : "text-ink-muted"}
+            aria-pressed={soundEnabled}
+            title="Toggle sound for every OneCopy player"
+            onClick={() => {
+              void setSoundEnabled(!soundEnabled).catch((error) => {
+                log.error("sound setting failed", toErrorFields(error));
+                useItemsStore.setState({ message: "Couldn’t change Sound." });
+              });
+            }}
+          >
+            Sound {soundEnabled ? "on" : "off"}
+          </button>
+          <button
+            className={videoAutoplay ? "text-ink" : "text-ink-muted"}
+            aria-pressed={videoAutoplay}
+            title="Toggle automatic video playback"
+            onClick={() => {
+              void setMediumAutoplay("video", !videoAutoplay).catch((error) => {
+                log.error("video autoplay setting failed", toErrorFields(error));
+                useItemsStore.setState({ message: "Couldn’t change video autoplay." });
+              });
+            }}
+          >
+            Video autoplay {videoAutoplay ? "on" : "off"}
+          </button>
+          <button
+            className={audioAutoplay ? "text-ink" : "text-ink-muted"}
+            aria-pressed={audioAutoplay}
+            title="Toggle automatic audio playback"
+            onClick={() => {
+              void setMediumAutoplay("audio", !audioAutoplay).catch((error) => {
+                log.error("audio autoplay setting failed", toErrorFields(error));
+                useItemsStore.setState({ message: "Couldn’t change audio autoplay." });
+              });
+            }}
+          >
+            Audio autoplay {audioAutoplay ? "on" : "off"}
+          </button>
           {mutationProgress !== null ? (
             <button
               className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"

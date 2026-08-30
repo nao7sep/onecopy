@@ -21,8 +21,23 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["goodRangeStartYear"], serde_json::json!(1995));
     assert_eq!(value["similarityMaxGapSeconds"], serde_json::json!(90));
     assert_eq!(value["previewLongEdgePx"], serde_json::json!(1600));
-    assert_eq!(value["videoAutoplayOnShow"], serde_json::json!(true));
-    assert_eq!(value["videoAutoplayAfterSnapshot"], serde_json::json!(true));
+    assert_eq!(value["videoAutoplay"], serde_json::json!(true));
+    assert_eq!(value["audioAutoplay"], serde_json::json!(true));
+    assert_eq!(value["soundEnabled"], serde_json::json!(true));
+    assert_eq!(value["playbackVolume"], serde_json::json!(1.0));
+    assert_eq!(
+        value["enlargeSmallImagesInPreview"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        value["enlargeSmallImagesInQuickView"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        value["textPreviewMaxBytes"],
+        serde_json::json!(2 * 1024 * 1024)
+    );
+    assert_eq!(value["textFallbackEncoding"], serde_json::json!("utf-8"));
     assert_eq!(value["pairingEnabled"], serde_json::json!(true));
     assert_eq!(value["videoSnapshotsEnabled"], serde_json::json!(true));
     assert_eq!(
@@ -212,7 +227,6 @@ fn materialize_writes_only_when_absent() {
     materialize_config_if_missing(&dir).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"custom\": true}\n");
 }
-
 
 #[test]
 #[serial(backup_store)]

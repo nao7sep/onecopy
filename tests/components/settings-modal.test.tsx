@@ -19,6 +19,7 @@ beforeEach(() => {
     rebuild_library_index: () => null,
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ total: 0, rows: [] }),
+    text_encodings: () => ["utf-8", "shift_jis"],
     index_work_snapshot: () => ({
       sourceCheck: { running: true, stopping: false },
       fileInformation: { running: false, paused: false, stopping: false, queued: false },
@@ -98,13 +99,15 @@ describe("Settings categories", () => {
     );
   });
 
-  it("puts video playback choices together and face scoring before trash behavior", () => {
+  it("keeps video and audio policy separate and face scoring before trash behavior", () => {
     render(<SettingsModal />);
     fireEvent.click(screen.getByRole("tab", { name: "Media" }));
     expect(screen.getByLabelText("Play videos automatically when shown")).toBeTruthy();
-    expect(screen.getByLabelText("Play after choosing a snapshot")).toBeTruthy();
+    expect(screen.getByLabelText("Play audio automatically when shown")).toBeTruthy();
+    expect(screen.queryByLabelText("Play after choosing a snapshot")).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
+    expect(screen.getByLabelText("Sound")).toBeTruthy();
     const labels = Array.from(screen.getByRole("tabpanel").querySelectorAll("label")).map(
       (label) => label.textContent,
     );

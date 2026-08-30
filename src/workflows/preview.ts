@@ -9,7 +9,6 @@ import { reportWindowCall } from "../repositories";
 import { itemKey, useItemsStore } from "../state/items-store";
 import {
   type PlacementPreference,
-  type PreviewIntent,
   type PreviewPayload,
   usePreviewStore,
 } from "../state/preview-store";
@@ -79,9 +78,8 @@ export async function installPreviewCommandWiring(): Promise<void> {
 export async function openPreview(
   payload: PreviewPayload,
   detail: ReturnType<typeof useItemsStore.getState>["detail"],
-  intent: PreviewIntent = {},
 ): Promise<void> {
-  await usePreviewStore.getState().open(payload, detail, intent, windowState());
+  await usePreviewStore.getState().open(payload, detail, windowState());
 }
 
 export function closePreview(): void {

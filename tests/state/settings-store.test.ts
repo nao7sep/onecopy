@@ -47,23 +47,33 @@ describe("settings timezone validation", () => {
   });
 });
 
-describe("video playback preferences", () => {
-  it("defaults both independent autoplay choices on", () => {
+describe("playback preferences", () => {
+  it("defaults separate autoplay and app-wide sound on", () => {
     expect(useSettingsStore.getState().draft).toMatchObject({
-      videoAutoplayOnShow: true,
-      videoAutoplayAfterSnapshot: true,
+      videoAutoplay: true,
+      audioAutoplay: true,
+      soundEnabled: true,
+      playbackVolume: 1,
+      enlargeSmallImagesInPreview: true,
+      enlargeSmallImagesInQuickView: true,
+      textPreviewMaxBytes: 2 * 1024 * 1024,
+      textFallbackEncoding: "utf-8",
     });
   });
 
   it("preserves explicit off choices", () => {
     useSettingsStore.getState().openWith({
       ...config,
-      videoAutoplayOnShow: false,
-      videoAutoplayAfterSnapshot: false,
+      videoAutoplay: false,
+      audioAutoplay: false,
+      soundEnabled: false,
+      playbackVolume: 0.4,
     });
     expect(useSettingsStore.getState().draft).toMatchObject({
-      videoAutoplayOnShow: false,
-      videoAutoplayAfterSnapshot: false,
+      videoAutoplay: false,
+      audioAutoplay: false,
+      soundEnabled: false,
+      playbackVolume: 0.4,
     });
   });
 });

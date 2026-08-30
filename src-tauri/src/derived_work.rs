@@ -1170,6 +1170,7 @@ fn transcribe_next(
         Some(context.ffmpeg),
         Path::new(&path),
         &hash,
+        false,
         {
             let progress_handle = context.app.clone();
             let progress_hash = hash.clone();

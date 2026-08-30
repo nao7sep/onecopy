@@ -18,6 +18,7 @@ pub mod fs_publish;
 pub mod fs_recovery;
 pub mod hashing;
 pub mod index_store;
+pub mod indexed_file;
 mod instance_owner;
 pub mod issue_recovery;
 pub mod live_photo;
@@ -41,6 +42,7 @@ pub mod similarity;
 pub mod source_check_runtime;
 pub mod storage;
 pub mod subprocess;
+pub mod text_preview;
 pub mod timestamps;
 pub mod transcription;
 pub mod trash;
@@ -582,21 +584,90 @@ fn reveal_data_subdir(app: AppHandle, name: String) -> Result<(), String> {
 // opener: the JS route was scope-rejected into a silent no-op, which left the
 // fallback button for unplayable codecs doing nothing at all.
 #[tauri::command(async)]
-fn open_item_externally(app: AppHandle, hash: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    let data_root = paths::data_root(&app)?;
-    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-    let path: String = conn
-        .query_row(
-            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-            [&hash],
-            |r| r.get(0),
-        )
-        .map_err(|_| "no live copy of this item".to_string())?;
-    let _media = media_use::begin(&app, std::slice::from_ref(&hash))?;
-    app.opener()
-        .open_path(path, None::<&str>)
-        .map_err(|e| e.to_string())
+fn open_item_externally(
+    app: AppHandle,
+    hash: Option<String>,
+    path_id: Option<i64>,
+) -> Result<(), String> {
+    let result = logging::boundary(
+        "open_item_externally",
+        json!({ "hash": hash, "pathId": path_id }),
+        || {
+            use tauri_plugin_opener::OpenerExt;
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let path = indexed_file::live_path(&conn, hash.as_deref(), path_id)?;
+            let key = hash
+                .as_ref()
+                .cloned()
+                .or_else(|| path_id.map(|id| format!("path-{id}")))
+                .ok_or_else(|| "item needs exactly one hash or pathId".to_string())?;
+            let _media = media_use::begin_external(&app, &[key])?;
+            app.opener()
+                .open_path(path.to_string_lossy(), None::<&str>)
+                .map_err(|error| error.to_string())
+        },
+        |_| json!({}),
+    );
+    if let Err(error) = &result {
+        let _ = failure_runtime::report(&app, "external-open-failed", None, error);
+    }
+    result
+}
+
+#[tauri::command(async)]
+fn text_preview(
+    app: AppHandle,
+    hash: Option<String>,
+    path_id: Option<i64>,
+    encoding: Option<String>,
+) -> Result<text_preview::PreviewBody, String> {
+    let result = logging::boundary(
+        "text_preview",
+        json!({ "hash": hash, "pathId": path_id, "encoding": encoding }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let path = indexed_file::live_path(&conn, hash.as_deref(), path_id)?;
+            let config = storage::read_config_for_setup(&data_root)?;
+            let max_bytes = config
+                .as_ref()
+                .and_then(|value| value.get("textPreviewMaxBytes"))
+                .and_then(Value::as_u64)
+                .unwrap_or(text_preview::DEFAULT_MAX_BYTES)
+                .max(1);
+            let fallback = config
+                .as_ref()
+                .and_then(|value| value.get("textFallbackEncoding"))
+                .and_then(Value::as_str)
+                .unwrap_or(text_preview::DEFAULT_FALLBACK_ENCODING);
+            text_preview::preview_file(&path, max_bytes, fallback, encoding.as_deref())
+        },
+        |body| match body {
+            text_preview::PreviewBody::Text {
+                byte_size,
+                encoding,
+                ..
+            } => {
+                json!({ "body": "text", "byteSize": byte_size, "encoding": encoding })
+            }
+            text_preview::PreviewBody::Attributes { byte_size, reason } => {
+                json!({ "body": "attributes", "byteSize": byte_size, "reason": reason })
+            }
+            text_preview::PreviewBody::DecodeError {
+                byte_size, reason, ..
+            } => json!({ "body": "decodeError", "byteSize": byte_size, "reason": reason }),
+        },
+    );
+    if let Err(error) = &result {
+        let _ = failure_runtime::report(&app, "text-preview-failed", None, error);
+    }
+    result
+}
+
+#[tauri::command]
+fn text_encodings() -> &'static [&'static str] {
+    text_preview::encodings()
 }
 
 // Re-resolves every indexed item from stored evidence. Similarity is marked
@@ -753,7 +824,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 // manual run and coordinated background work from loading two models. Manual
 // requests queue in submission order; cancellation applies to the active run.
 #[tauri::command(async)]
-fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
+fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
     let class = {
@@ -838,6 +909,7 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                         ffmpeg.as_deref(),
                         std::path::Path::new(&source_path),
                         &exact_hash,
+                        replace.unwrap_or(false),
                         move |percent| {
                             let percent = percent.clamp(0, 100);
                             derived_runtime::report_manual_progress(
@@ -900,12 +972,20 @@ fn transcribe(app: AppHandle, hash: String) -> Result<(), String> {
                             Err(error)
                         }
                         Err(error) => {
-                            derived_state::record_transcript_failure(
-                                &conn,
-                                &exact_hash,
-                                &source_path,
-                                &error,
-                            )?;
+                            if replace.unwrap_or(false) {
+                                derived_state::record_transcript_replacement_failure(
+                                    &conn,
+                                    &source_path,
+                                    &error,
+                                )?;
+                            } else {
+                                derived_state::record_transcript_failure(
+                                    &conn,
+                                    &exact_hash,
+                                    &source_path,
+                                    &error,
+                                )?;
+                            }
                             derived_work::notify_item_update(
                                 &handle,
                                 &conn,
@@ -1924,6 +2004,8 @@ pub fn run() {
             delete_empty_dir,
             reveal_data_subdir,
             open_item_externally,
+            text_preview,
+            text_encodings,
             media_use_current,
             media_use_released,
             note_user_activity,
@@ -2016,27 +2098,27 @@ pub fn run() {
                     .name("onecopy-exit-quiescence".to_string())
                     .spawn(move || {
                         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            source_check_runtime::join();
-                            file_information_runtime::join();
-                            if let Err(error) = mutation_runtime::wait_for_idle() {
-                                let _ = failure_runtime::report(
-                                    &handle,
-                                    "shutdown-worker-failed",
-                                    None,
-                                    &error,
-                                );
-                            }
-                            let media = media_use::begin(&handle, &[]);
-                            if let Err(error) = &media {
-                                let _ = failure_runtime::report(
-                                    &handle,
-                                    "shutdown-media-release-failed",
-                                    None,
-                                    error,
-                                );
-                            }
-                            drop(media);
-                        }));
+                                source_check_runtime::join();
+                                file_information_runtime::join();
+                                if let Err(error) = mutation_runtime::wait_for_idle() {
+                                    let _ = failure_runtime::report(
+                                        &handle,
+                                        "shutdown-worker-failed",
+                                        None,
+                                        &error,
+                                    );
+                                }
+                                let media = media_use::begin(&handle, &[]);
+                                if let Err(error) = &media {
+                                    let _ = failure_runtime::report(
+                                        &handle,
+                                        "shutdown-media-release-failed",
+                                        None,
+                                        error,
+                                    );
+                                }
+                                drop(media);
+                            }));
                         if let Err(payload) = outcome {
                             let error = failure_runtime::panic_message(payload);
                             let _ = failure_runtime::report(

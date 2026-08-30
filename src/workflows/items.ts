@@ -37,7 +37,7 @@ function projectAnchor(): void {
   };
   const preview = usePreviewStore.getState();
   if (preview.follow && preview.placement === null) {
-    void preview.open(payload, detail, {}, appWindowState());
+    void preview.open(payload, detail, appWindowState());
   } else {
     preview.anchorChanged(payload, detail);
   }

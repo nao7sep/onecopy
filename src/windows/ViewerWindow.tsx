@@ -6,6 +6,7 @@ import type { ViewerBroadcast } from "../workflows/quick-view";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PreviewSurface from "../components/PreviewSurface";
 import { reportWindowCall } from "../repositories";
+import { isAudioFile } from "../models/items";
 
 function sendKey(key: string, shiftKey = false): void {
   void emit("viewer://key", { key, shiftKey }).catch(reportWindowCall("viewer key forward"));
@@ -15,8 +16,10 @@ export default function ViewerWindow() {
   const [state, setState] = useState<ViewerBroadcast | null>(null);
   const pendingDeleteRef = useRef<ViewerBroadcast["pendingDelete"]>(null);
   const sectionKindRef = useRef<ViewerBroadcast["sectionKind"]>(null);
+  const itemRef = useRef<ViewerBroadcast["item"]>(null);
   pendingDeleteRef.current = state?.pendingDelete ?? null;
   sectionKindRef.current = state?.sectionKind ?? null;
+  itemRef.current = state?.item ?? null;
 
   useEffect(() => {
     const unlisten = listenThenAnnounce<ViewerBroadcast>(
@@ -35,7 +38,10 @@ export default function ViewerWindow() {
           "Delete",
           "Backspace",
         ].includes(event.key) ||
-        (sectionKindRef.current !== "other" && ["PageUp", "PageDown", "Home", "End"].includes(event.key));
+        (sectionKindRef.current !== "other" && ["PageUp", "PageDown", "Home", "End"].includes(event.key)) ||
+        (event.key === "Enter" &&
+          (sectionKindRef.current === "video" ||
+            (itemRef.current !== null && isAudioFile(itemRef.current.fileName))));
       if (!handled) return;
       if (pendingDeleteRef.current !== null) return;
       event.preventDefault();
@@ -87,11 +93,11 @@ export default function ViewerWindow() {
           <div className="flex h-full items-center justify-center text-sm text-white/60">Loading…</div>
         ) : (
           <PreviewSurface
+            surface="viewer"
             hash={item.hash}
             pathId={item.hash === null ? item.pathId : null}
             detail={state.detail}
             keyboardActive
-            autoplayImmediately
           />
         )}
       </div>

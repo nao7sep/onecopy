@@ -24,7 +24,8 @@ export function intrinsicOffset(
   viewportExtent: number,
   fraction: number,
 ): number {
-  if (sourceExtent <= viewportExtent) return (viewportExtent - sourceExtent) / 2;
+  if (sourceExtent <= viewportExtent)
+    return (viewportExtent - sourceExtent) / 2;
   return -(sourceExtent - viewportExtent) * fraction;
 }
 
@@ -52,10 +53,16 @@ export function inspectPosition(
 export default function InspectableImage({
   hash,
   fileName,
+  enlargeSmall,
+  sourceWidth = null,
+  sourceHeight = null,
   onError,
 }: {
   hash: string;
   fileName: string;
+  enlargeSmall: boolean;
+  sourceWidth?: number | null;
+  sourceHeight?: number | null;
   onError?: () => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -98,7 +105,7 @@ export default function InspectableImage({
   return (
     <div
       ref={viewportRef}
-      className="relative h-full w-full overflow-hidden"
+      className="relative flex h-full w-full items-center justify-center overflow-hidden"
       title="Press and hold for original pixels"
       onPointerDown={hold.onPointerDown}
       onClickCapture={hold.onClickCapture}
@@ -106,16 +113,29 @@ export default function InspectableImage({
       <img
         src={previewUrl(hash)}
         alt={fileName}
-        className="h-full w-full cursor-zoom-in object-contain"
+        className={`${
+          enlargeSmall || (sourceWidth !== null && sourceHeight !== null)
+            ? "h-full w-full"
+            : "max-h-full max-w-full"
+        } cursor-zoom-in object-contain`}
+        style={
+          !enlargeSmall && sourceWidth !== null && sourceHeight !== null
+            ? { maxWidth: `${sourceWidth}px`, maxHeight: `${sourceHeight}px` }
+            : undefined
+        }
         draggable={false}
         onError={onError}
       />
       {hold.inspecting ? (
         <div className="absolute inset-0 cursor-crosshair overflow-hidden bg-background">
           {originalFailed ? (
-            <p className="p-4 text-sm text-ink-muted">Original pixels unavailable.</p>
+            <p className="p-4 text-sm text-ink-muted">
+              Original pixels unavailable.
+            </p>
           ) : source === null ? (
-            <p className="p-4 text-sm text-ink-muted">Preparing original pixels…</p>
+            <p className="p-4 text-sm text-ink-muted">
+              Preparing original pixels…
+            </p>
           ) : (
             <img
               src={source}

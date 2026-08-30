@@ -9,18 +9,18 @@ import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 
 export type TranscriptStatus =
-  | "loading"
-  | "pending"
-  | "queued"
-  | "running"
-  | "ready"
-  | "failed";
+  "loading" | "pending" | "queued" | "running" | "ready" | "failed";
 
 export interface TranscriptView {
   status: TranscriptStatus;
   text: string | null;
   message: string | null;
   percent: number | null;
+  replacement: {
+    status: "queued" | "running" | "failed";
+    message: string | null;
+    percent: number | null;
+  } | null;
 }
 
 interface TranscriptResult {
@@ -32,7 +32,7 @@ interface TranscriptResult {
 interface TranscriptState {
   rows: Record<string, TranscriptView>;
   load: (hash: string) => Promise<void>;
-  start: (hash: string) => Promise<void>;
+  start: (hash: string, replace?: boolean) => Promise<void>;
   cancel: () => Promise<void>;
 }
 
@@ -47,6 +47,7 @@ const EMPTY: TranscriptView = {
   text: null,
   message: null,
   percent: null,
+  replacement: null,
 };
 
 function patch(hash: string, value: Partial<TranscriptView>): void {
@@ -80,9 +81,9 @@ function publish(hash: string, value: Partial<TranscriptView>): void {
   patch(hash, value);
 }
 
-
 function publishIfLoaded(hash: string, value: Partial<TranscriptView>): void {
-  if (useTranscriptStore.getState().rows[hash] !== undefined) publish(hash, value);
+  if (useTranscriptStore.getState().rows[hash] !== undefined)
+    publish(hash, value);
 }
 
 export const useTranscriptStore = create<TranscriptState>(() => ({
@@ -119,12 +120,32 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
     }
   },
 
-  start: async (hash) => {
-    publish(hash, { status: "queued", message: null, percent: null });
+  start: async (hash, replace = false) => {
+    if (replace) {
+      publish(hash, {
+        replacement: { status: "queued", message: null, percent: null },
+      });
+    } else {
+      publish(hash, { status: "queued", message: null, percent: null });
+    }
     try {
-      await invoke("transcribe", { hash });
+      await invoke("transcribe", { hash, replace });
     } catch (error) {
-      publish(hash, { status: "failed", message: String(error), percent: null });
+      if (replace) {
+        publish(hash, {
+          replacement: {
+            status: "failed",
+            message: String(error),
+            percent: null,
+          },
+        });
+      } else {
+        publish(hash, {
+          status: "failed",
+          message: String(error),
+          percent: null,
+        });
+      }
       log.error("transcribe start failed", toErrorFields(error));
     }
   },
@@ -140,38 +161,81 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
 
 void (async () => {
   try {
-    await listen<{ hash: string; percent: number }>("transcribe://progress", (event) => {
-      active = event.payload;
-      publishIfLoaded(event.payload.hash, {
-        status: "running",
-        percent: event.payload.percent,
-        message: null,
-      });
-    });
-    await listen<{ hash: string; text: string }>("transcribe://done", (event) => {
-      if (active?.hash === event.payload.hash) active = null;
-      publishIfLoaded(event.payload.hash, {
-        status: "ready",
-        text: event.payload.text,
-        message: null,
-        percent: null,
-      });
-    });
-    await listen<{ hash: string; message: string }>("transcribe://error", (event) => {
-      if (active?.hash === event.payload.hash) active = null;
-      publishIfLoaded(event.payload.hash, {
-        status: "failed",
-        message: event.payload.message,
-        percent: null,
-      });
-    });
+    await listen<{ hash: string; percent: number }>(
+      "transcribe://progress",
+      (event) => {
+        active = event.payload;
+        const current = useTranscriptStore.getState().rows[event.payload.hash];
+        if (
+          current?.replacement !== null &&
+          current?.replacement !== undefined
+        ) {
+          publishIfLoaded(event.payload.hash, {
+            replacement: {
+              status: "running",
+              percent: event.payload.percent,
+              message: null,
+            },
+          });
+        } else {
+          publishIfLoaded(event.payload.hash, {
+            status: "running",
+            percent: event.payload.percent,
+            message: null,
+          });
+        }
+      },
+    );
+    await listen<{ hash: string; text: string }>(
+      "transcribe://done",
+      (event) => {
+        if (active?.hash === event.payload.hash) active = null;
+        publishIfLoaded(event.payload.hash, {
+          status: "ready",
+          text: event.payload.text,
+          message: null,
+          percent: null,
+          replacement: null,
+        });
+      },
+    );
+    await listen<{ hash: string; message: string }>(
+      "transcribe://error",
+      (event) => {
+        if (active?.hash === event.payload.hash) active = null;
+        const current = useTranscriptStore.getState().rows[event.payload.hash];
+        if (
+          current?.replacement !== null &&
+          current?.replacement !== undefined
+        ) {
+          publishIfLoaded(event.payload.hash, {
+            replacement: {
+              status: "failed",
+              message: event.payload.message,
+              percent: null,
+            },
+          });
+        } else {
+          publishIfLoaded(event.payload.hash, {
+            status: "failed",
+            message: event.payload.message,
+            percent: null,
+          });
+        }
+      },
+    );
     await listen<{ hash: string }>("transcribe://cancelled", (event) => {
       if (active?.hash === event.payload.hash) active = null;
-      publishIfLoaded(event.payload.hash, {
-        status: "pending",
-        message: null,
-        percent: null,
-      });
+      const current = useTranscriptStore.getState().rows[event.payload.hash];
+      if (current?.replacement !== null && current?.replacement !== undefined) {
+        publishIfLoaded(event.payload.hash, { replacement: null });
+      } else {
+        publishIfLoaded(event.payload.hash, {
+          status: "pending",
+          message: null,
+          percent: null,
+        });
+      }
     });
   } catch (error) {
     log.warn("transcript event wiring failed", toErrorFields(error));
@@ -181,7 +245,8 @@ void (async () => {
     if (interrupted !== null) {
       publishIfLoaded(interrupted.hash, {
         status: "failed",
-        message: "Live transcription updates are unavailable. Restart OneCopy to repair them.",
+        message:
+          "Live transcription updates are unavailable. Restart OneCopy to repair them.",
         percent: null,
       });
       active = null;

@@ -11,6 +11,7 @@ import { log, toErrorFields } from "./repositories";
 interface ReleaseMessage {
   token: number;
   keys: string[];
+  restorePlayback?: boolean;
 }
 
 interface SavedMedia {
@@ -27,6 +28,12 @@ let installation: Promise<void> | null = null;
 let lifecycle: Promise<void> = Promise.resolve();
 const operations = new Map<number, Promise<void>>();
 const resumeWaiters = new Map<number, () => void>();
+
+/** Media pause/load events raised while a backend operation owns the readers
+ * are release mechanics, not user playback decisions. */
+export function mediaUseActive(): boolean {
+  return activeToken !== null;
+}
 
 function clearElement(element: HTMLMediaElement): SavedMedia {
   const saved: SavedMedia = {
@@ -77,11 +84,11 @@ async function release(message: ReleaseMessage): Promise<void> {
   const stillActive = await invoke<boolean>("media_use_released", {
     token: message.token,
   });
-  if (!stillActive) resume(message.token);
+  if (!stillActive) resume(message.token, message.restorePlayback !== false);
   await resumed;
 }
 
-function resume(token: number): void {
+function resume(token: number, restorePlayback = true): void {
   if (activeToken === token) {
     const saved = released;
     released = [];
@@ -97,7 +104,9 @@ function resume(token: number): void {
             // A removed item or unsupported codec has no seekable timeline.
           }
         }
-        if (playing) void element.play().catch(() => undefined);
+        if (playing && restorePlayback) {
+          void element.play().catch(() => undefined);
+        }
       };
       element.addEventListener("loadedmetadata", restore, { once: true });
       try {
@@ -129,9 +138,12 @@ export function installMediaUseBoundary(): Promise<void> {
     await listen<ReleaseMessage>("media-use://release", ({ payload }) => {
       void enqueueRelease(payload);
     });
-    await listen<{ token: number }>("media-use://resume", ({ payload }) => {
-      resume(payload.token);
-    });
+    await listen<{ token: number; restorePlayback?: boolean }>(
+      "media-use://resume",
+      ({ payload }) => {
+        resume(payload.token, payload.restorePlayback !== false);
+      },
+    );
     const current = await invoke<ReleaseMessage | null>("media_use_current");
     if (current !== null) await enqueueRelease(current);
   })();

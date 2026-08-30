@@ -141,11 +141,10 @@ export default function PreviewWindow() {
     <div className="flex h-screen flex-col bg-background">
       <div className="min-h-0 flex-1">
         <PreviewSurface
+          surface="preview-window"
           hash={message.hash}
           detail={message.detail}
           pathId={message.pathId}
-          seekMs={message.seekMs}
-          playAfterSeek={message.playAfterSeek}
         />
       </div>
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">

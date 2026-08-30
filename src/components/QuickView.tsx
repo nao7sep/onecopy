@@ -12,6 +12,7 @@ import {
 } from "../workflows/quick-view";
 import ConfirmDialog from "./ConfirmDialog";
 import PreviewSurface from "./PreviewSurface";
+import { isAudioFile } from "../models/items";
 
 export default function QuickView() {
   const session = useQuickViewStore((state) => state.session);
@@ -51,7 +52,10 @@ export default function QuickView() {
           "Backspace",
         ]).has(event.key) ||
           (sectionKind !== "other" && ["PageUp", "PageDown", "Home", "End"].includes(event.key));
-        if (!handled) return;
+        const mediaEnter =
+          event.key === "Enter" &&
+          (sectionKind === "video" || isAudioFile(item.fileName));
+        if (!handled && !mediaEnter) return;
         event.preventDefault();
         event.stopPropagation();
         void handleViewerKey(event);
@@ -103,11 +107,11 @@ export default function QuickView() {
           </div>
         ) : (
           <PreviewSurface
+            surface="quick"
             hash={item.hash}
             pathId={item.hash === null ? item.pathId : null}
             detail={currentDetail}
             keyboardActive
-            autoplayImmediately
           />
         )}
       </div>

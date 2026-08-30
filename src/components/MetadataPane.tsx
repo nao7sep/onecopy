@@ -18,7 +18,7 @@ import Button from "./ui/Button";
 import TranscriptBlock from "./TranscriptBlock";
 import { openPreview } from "../workflows/preview";
 import { openComparison } from "../workflows/comparison";
-import { useAppStore } from "../state/app-store";
+import { seekMainPlayback } from "../workflows/playback";
 import {
   mergeActiveItemWork,
   useDerivedWorkStore,
@@ -211,9 +211,6 @@ export default function MetadataPane({
   hash: string | null;
   item: SectionItem | null;
 }) {
-  const playAfterSnapshot = useAppStore(
-    (state) => state.appData?.config?.videoAutoplayAfterSnapshot !== false,
-  );
   const activeWork = useDerivedWorkStore((state) => state.activeItem);
   const projectedWork =
     item === null ? null : mergeActiveItemWork(item.derivedWork, item.hash, activeWork);
@@ -254,13 +251,11 @@ export default function MetadataPane({
                   className="relative h-20 w-20 shrink-0 overflow-hidden rounded border border-border bg-background hover:border-border-strong"
                   title={`Show video at ${timestampLabel(atMs)}`}
                   aria-label={`Show video at ${timestampLabel(atMs)}`}
-                  onClick={() =>
-                    void openPreview(
-                      { hash, pathId: null },
-                      detail,
-                      { seekMs: atMs, playAfterSeek: playAfterSnapshot },
-                    )
-                  }
+                  onClick={() => {
+                    void openPreview({ hash, pathId: null }, detail).then(() => {
+                      seekMainPlayback(hash, atMs / 1000);
+                    });
+                  }}
                 >
                   <img
                     src={stripUrl(hash, i)}

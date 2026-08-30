@@ -35,7 +35,9 @@ function ScreensSection() {
     }[]
   >([]);
   const [screenError, setScreenError] = useState<string | null>(null);
-  const priority = priorityFromState(useAppStore((s) => s.appData?.state) ?? null);
+  const priority = priorityFromState(
+    useAppStore((s) => s.appData?.state) ?? null,
+  );
   useEffect(() => {
     void import("@tauri-apps/api/window")
       .then(({ availableMonitors }) => availableMonitors())
@@ -66,10 +68,12 @@ function ScreensSection() {
 
   return (
     <>
-      <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">Screens</h2>
+      <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+        Screens
+      </h2>
       <p className="mb-1 text-xs text-ink-muted">
-        Order decides the role: 1 = main window, 2 = preview, the rest join
-        the comparison spread. Applies immediately.
+        Order decides the role: 1 = main window, 2 = preview, the rest join the
+        comparison spread. Applies immediately.
       </p>
       <Button
         className="mb-2"
@@ -83,8 +87,14 @@ function ScreensSection() {
                 const window = new WebviewWindow(`identify-${index + 1}`, {
                   url: `index.html?view=identify&slice=${index + 1}`,
                   title: "OneCopy",
-                  x: monitor.position.x / scale + monitor.size.width / scale / 2 - 110,
-                  y: monitor.position.y / scale + monitor.size.height / scale / 2 - 110,
+                  x:
+                    monitor.position.x / scale +
+                    monitor.size.width / scale / 2 -
+                    110,
+                  y:
+                    monitor.position.y / scale +
+                    monitor.size.height / scale / 2 -
+                    110,
                   width: 220,
                   height: 220,
                   decorations: false,
@@ -95,7 +105,10 @@ function ScreensSection() {
                 });
                 void window.once("tauri://error", (event) => {
                   const failure = new Error(String(event.payload));
-                  log.warn("screen identification failed", toErrorFields(failure));
+                  log.warn(
+                    "screen identification failed",
+                    toErrorFields(failure),
+                  );
                   setScreenError("Couldn’t identify the connected screens.");
                 });
               });
@@ -122,8 +135,8 @@ function ScreensSection() {
               {index + 1}. {describePosition(monitor, ordered) || "Display"}
             </span>
             <span className="block truncate text-xs text-ink-muted">
-              {monitor.name ?? "Display"} · {monitor.size.width}×{monitor.size.height} ·{" "}
-              {role(index)}
+              {monitor.name ?? "Display"} · {monitor.size.width}×
+              {monitor.size.height} · {role(index)}
             </span>
           </span>
           <span className="flex gap-1">
@@ -210,7 +223,9 @@ function UnlinkedPairsRow() {
       });
   }, []);
   if (count === null) {
-    return error === null ? null : <p className="text-xs text-danger">{error}</p>;
+    return error === null ? null : (
+      <p className="text-xs text-danger">{error}</p>
+    );
   }
   if (count === 0) return null;
   return (
@@ -233,7 +248,9 @@ function UnlinkedPairsRow() {
       >
         Forget all
       </Button>
-      {error !== null ? <span className="text-xs text-danger">{error}</span> : null}
+      {error !== null ? (
+        <span className="text-xs text-danger">{error}</span>
+      ) : null}
     </Row>
   );
 }
@@ -272,12 +289,15 @@ function SettingsTabList({
 }) {
   const moveFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
     const tabs = Array.from(
-      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role='tab']") ?? [],
+      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+        "[role='tab']",
+      ) ?? [],
     );
     const current = tabs.indexOf(event.currentTarget);
     let next = current;
     if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
-    else if (event.key === "ArrowLeft") next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key === "ArrowLeft")
+      next = (current - 1 + tabs.length) % tabs.length;
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = tabs.length - 1;
     else return;
@@ -327,13 +347,28 @@ export default function SettingsModal() {
   const message = useSettingsStore((s) => s.message);
   const close = useSettingsStore((s) => s.close);
   const update = useSettingsStore((s) => s.update);
-  const resetSimilarPhotoSettings = useSettingsStore((s) => s.resetSimilarPhotoSettings);
+  const resetSimilarPhotoSettings = useSettingsStore(
+    (s) => s.resetSimilarPhotoSettings,
+  );
   const validateTimezone = useSettingsStore((s) => s.validateTimezone);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
+  const [textEncodings, setTextEncodings] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!open || textEncodings.length > 0) return;
+    void invoke<string[]>("text_encodings")
+      .then(setTextEncodings)
+      .catch((error) => {
+        log.warn("text encoding list failed", toErrorFields(error));
+        useSettingsStore.setState({
+          message: "Couldn’t read the supported text encodings.",
+        });
+      });
+  }, [open, textEncodings.length]);
 
   if (!open || draft === null) return null;
 
@@ -419,12 +454,16 @@ export default function SettingsModal() {
           <ul className="mb-3 space-y-1.5">
             {draft.sourceDirs.length === 0 ? (
               <li className="text-sm text-ink-muted">
-                No source directories. Add one to make files available to OneCopy.
+                No source directories. Add one to make files available to
+                OneCopy.
               </li>
             ) : null}
             {draft.sourceDirs.map((dir) => (
               <li key={dir}>
-                <DirectoryRow path={dir} onRemove={() => removeSourceDir(dir)} />
+                <DirectoryRow
+                  path={dir}
+                  onRemove={() => removeSourceDir(dir)}
+                />
               </li>
             ))}
           </ul>
@@ -493,10 +532,14 @@ export default function SettingsModal() {
             hint="How far one family may spread. 1 means every photo must resemble the family's first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family."
             value={draft.similarityDiameterMultiplier}
             min={1}
-            onChange={(v) => update({ similarityDiameterMultiplier: Math.min(4, v) })}
+            onChange={(v) =>
+              update({ similarityDiameterMultiplier: Math.min(4, v) })
+            }
           />
           <div className="mt-3 flex justify-end">
-            <Button onClick={resetSimilarPhotoSettings}>Reset similar photo settings</Button>
+            <Button onClick={resetSimilarPhotoSettings}>
+              Reset similar photo settings
+            </Button>
           </div>
           <UnlinkedPairsRow />
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
@@ -517,7 +560,11 @@ export default function SettingsModal() {
       ) : null}
 
       {activeTab === "media" ? (
-        <div id="settings-panel-media" role="tabpanel" aria-labelledby="settings-tab-media">
+        <div
+          id="settings-panel-media"
+          role="tabpanel"
+          aria-labelledby="settings-tab-media"
+        >
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Previews
           </h2>
@@ -533,18 +580,47 @@ export default function SettingsModal() {
             min={96}
             onChange={(v) => update({ thumbnailEdgePx: v })}
           />
+          <CheckField
+            label="Enlarge small images in Preview"
+            checked={draft.enlargeSmallImagesInPreview}
+            onChange={(v) => update({ enlargeSmallImagesInPreview: v })}
+          />
+          <CheckField
+            label="Enlarge small images in Quick View"
+            checked={draft.enlargeSmallImagesInQuickView}
+            onChange={(v) => update({ enlargeSmallImagesInQuickView: v })}
+          />
+          <NumberField
+            label="Text preview limit (KiB)"
+            hint="Files above this whole-file limit show attributes instead of partial text."
+            value={Math.max(1, Math.round(draft.textPreviewMaxBytes / 1024))}
+            min={1}
+            onChange={(v) => update({ textPreviewMaxBytes: v * 1024 })}
+          />
+          <Row label="Fallback text encoding">
+            <Select
+              value={draft.textFallbackEncoding}
+              onChange={(event) =>
+                update({ textFallbackEncoding: event.target.value })
+              }
+            >
+              {(textEncodings.length > 0
+                ? textEncodings
+                : [draft.textFallbackEncoding]
+              ).map((encoding) => (
+                <option key={encoding} value={encoding}>
+                  {encoding}
+                </option>
+              ))}
+            </Select>
+          </Row>
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Videos
           </h2>
           <CheckField
             label="Play videos automatically when shown"
-            checked={draft.videoAutoplayOnShow}
-            onChange={(v) => update({ videoAutoplayOnShow: v })}
-          />
-          <CheckField
-            label="Play after choosing a snapshot"
-            checked={draft.videoAutoplayAfterSnapshot}
-            onChange={(v) => update({ videoAutoplayAfterSnapshot: v })}
+            checked={draft.videoAutoplay}
+            onChange={(v) => update({ videoAutoplay: v })}
           />
           <CheckField
             label="Generate scene snapshots"
@@ -577,6 +653,11 @@ export default function SettingsModal() {
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Audio
           </h2>
+          <CheckField
+            label="Play audio automatically when shown"
+            checked={draft.audioAutoplay}
+            onChange={(v) => update({ audioAutoplay: v })}
+          />
           <CheckField
             label="Transcribe audio automatically"
             checked={draft.audioTranscriptionEnabled}
@@ -630,6 +711,17 @@ export default function SettingsModal() {
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Behavior
           </h2>
+          <CheckField
+            label="Sound"
+            checked={draft.soundEnabled}
+            onChange={(v) => update({ soundEnabled: v })}
+          />
+          <NumberField
+            label="Playback volume (%)"
+            value={Math.round(draft.playbackVolume * 100)}
+            min={1}
+            onChange={(v) => update({ playbackVolume: Math.min(100, v) / 100 })}
+          />
           <CheckField
             label="Pair companion files (Live Photos, RAW, sidecars)"
             checked={draft.pairingEnabled}

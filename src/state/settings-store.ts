@@ -26,8 +26,14 @@ export interface SettingsDraft {
   similarPhotoAnalysisEnabled: boolean;
   videoTranscriptionEnabled: boolean;
   audioTranscriptionEnabled: boolean;
-  videoAutoplayOnShow: boolean;
-  videoAutoplayAfterSnapshot: boolean;
+  videoAutoplay: boolean;
+  audioAutoplay: boolean;
+  soundEnabled: boolean;
+  playbackVolume: number;
+  enlargeSmallImagesInPreview: boolean;
+  enlargeSmallImagesInQuickView: boolean;
+  textPreviewMaxBytes: number;
+  textFallbackEncoding: string;
   pairingEnabled: boolean;
   theme: "system" | "light" | "dark";
   uiFontFamily: string;
@@ -86,8 +92,17 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     similarPhotoAnalysisEnabled: config?.similarPhotoAnalysisEnabled !== false,
     videoTranscriptionEnabled: config?.videoTranscriptionEnabled !== false,
     audioTranscriptionEnabled: config?.audioTranscriptionEnabled !== false,
-    videoAutoplayOnShow: config?.videoAutoplayOnShow !== false,
-    videoAutoplayAfterSnapshot: config?.videoAutoplayAfterSnapshot !== false,
+    videoAutoplay: config?.videoAutoplay !== false,
+    audioAutoplay: config?.audioAutoplay !== false,
+    soundEnabled: config?.soundEnabled !== false,
+    playbackVolume: Math.min(1, Math.max(0.01, numberOr(config?.playbackVolume, 1))),
+    enlargeSmallImagesInPreview: config?.enlargeSmallImagesInPreview !== false,
+    enlargeSmallImagesInQuickView: config?.enlargeSmallImagesInQuickView !== false,
+    textPreviewMaxBytes: Math.max(1, numberOr(config?.textPreviewMaxBytes, 2 * 1024 * 1024)),
+    textFallbackEncoding:
+      typeof config?.textFallbackEncoding === "string"
+        ? config.textFallbackEncoding
+        : "utf-8",
     pairingEnabled: config?.pairingEnabled !== false,
     theme:
       config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",
