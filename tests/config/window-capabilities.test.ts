@@ -1,11 +1,8 @@
 // Every window call the app makes must be a capability it was granted.
 //
-// This exists because of a real, silent failure: `PreviewWindow` called
-// `setFullscreen()` while `capabilities/default.json` granted only
-// `core:window:allow-is-fullscreen`. Tauri rejected the call, a
-// `.catch(() => {})` swallowed the rejection, and the preview footer went on
-// advertising "F: fullscreen" — a key that did nothing, through a release
-// build, past every green suite, until a person pressed it.
+// This exists because window capabilities are runtime data: a call compiles
+// even when its permission is absent. OneCopy's true fullscreen deliberately
+// uses its app command rather than Tauri's native Spaces fullscreen.
 //
 // Nothing else can catch this: the call compiles, the permission is data in a
 // JSON file, and the failure is a runtime rejection on a machine nobody
@@ -19,7 +16,10 @@ const SOURCES = [
   "src/hooks/useMainWindowLifecycle.ts",
   "src/state/preview-store.ts",
   "src/state/comparison-store.ts",
+  "src/workflows/quick-view.ts",
+  "src/workflows/viewer-window.ts",
   "src/windows/PreviewWindow.tsx",
+  "src/windows/ViewerWindow.tsx",
   "src/windows/ComparisonWindow.tsx",
   "src/windows/IdentifyWindow.tsx",
   "src/utils/windowSizing.ts",
@@ -34,9 +34,7 @@ const capabilities = JSON.parse(
  * of the method name is Tauri's own convention, so the mapping is mechanical —
  * what matters is that a method appearing in the source has its row here. */
 const NEEDS: Record<string, string> = {
-  "setFullscreen(": "core:window:allow-set-fullscreen",
   "setAlwaysOnTop(": "core:window:allow-set-always-on-top",
-  "isFullscreen(": "core:window:allow-is-fullscreen",
   "setFocus(": "core:window:allow-set-focus",
   "setMinSize(": "core:window:allow-set-min-size",
   "setSize(": "core:window:allow-set-size",
@@ -69,11 +67,10 @@ describe("window calls and granted capabilities", () => {
     expect(capabilities.permissions).toContain(permission);
   });
 
-  it("grants fullscreen in BOTH directions, the pair that broke", () => {
-    // Reading the state without being able to change it is the exact shape of
-    // the original defect.
-    expect(capabilities.permissions).toContain("core:window:allow-is-fullscreen");
-    expect(capabilities.permissions).toContain("core:window:allow-set-fullscreen");
+  it("does not grant or call native Spaces fullscreen", () => {
+    expect(ALL_SOURCE).not.toContain("setFullscreen(");
+    expect(capabilities.permissions).not.toContain("core:window:allow-set-fullscreen");
+    expect(capabilities.permissions).not.toContain("core:window:allow-is-fullscreen");
   });
 });
 

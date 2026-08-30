@@ -3,6 +3,9 @@
 // item selection, and persists public Preview choices one way.
 
 import { useAppStore } from "../state/app-store";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { reportWindowCall } from "../repositories";
 import { itemKey, useItemsStore } from "../state/items-store";
 import {
   type PlacementPreference,
@@ -12,6 +15,16 @@ import {
 } from "../state/preview-store";
 
 let persistenceInstalled = false;
+let commandsInstalled = false;
+
+interface PreviewKeyMessage {
+  key: string;
+  code?: string;
+  shiftKey?: boolean;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+}
 
 function windowState(): Record<string, unknown> {
   return useAppStore.getState().appData?.state ?? {};
@@ -29,6 +42,37 @@ export function installPreviewPersistence(): void {
     if (Object.keys(patch).length > 0) {
       void useAppStore.getState().patchState(patch);
     }
+  });
+}
+
+/** The separate Preview is a follower, so it forwards library commands to
+ * the Main grid instead of maintaining a second navigation implementation. */
+export async function installPreviewCommandWiring(): Promise<void> {
+  if (commandsInstalled) return;
+  commandsInstalled = true;
+  await listen<PreviewKeyMessage>("preview://key", async (event) => {
+    const message = event.payload;
+    const area = document.getElementById("main-item-area");
+    if (area === null) return;
+    const needsConfirmation =
+      (message.key === "Delete" || message.key === "Backspace") &&
+      (message.shiftKey === true ||
+        useAppStore.getState().appData?.config?.confirmTrashDelete === true);
+    if (needsConfirmation) {
+      await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+    }
+    area.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: message.key,
+        code: message.code,
+        shiftKey: message.shiftKey,
+        metaKey: message.metaKey,
+        ctrlKey: message.ctrlKey,
+        altKey: message.altKey,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
   });
 }
 

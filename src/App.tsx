@@ -112,7 +112,9 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   /** Transient media inspection lives in the main webview. */
-  const quickViewOpen = useQuickViewStore((state) => state.open);
+  const quickViewOpen = useQuickViewStore(
+    (state) => state.session?.presentation === "quick",
+  );
   const previewFollow = usePreviewStore((s) => s.follow);
   const previewPlacement = usePreviewStore((s) => s.placement);
   const previewCurrent = usePreviewStore((s) => s.current);

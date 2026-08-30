@@ -10,15 +10,23 @@ import { resetModalStack } from "../../src/utils/modalStack";
 import { mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function Host() {
-  const open = useQuickViewStore((state) => state.open);
-  return open ? <QuickView /> : null;
+  const session = useQuickViewStore((state) => state.session);
+  return session?.presentation === "quick" ? <QuickView /> : null;
 }
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   resetModalStack();
   mockCommands({ patch_state: () => null });
-  useQuickViewStore.setState({ open: true });
+  useQuickViewStore.setState({
+    session: {
+      presentation: "quick",
+      members: [{ key: "photo-hash", pathId: 1 }],
+      index: 0,
+      scope: "section",
+    },
+    pendingDelete: null,
+  });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: [
@@ -77,7 +85,7 @@ describe("Quick View", () => {
 
     await act(async () => fireEvent.keyDown(window, { key: "Escape" }));
 
-    expect(useQuickViewStore.getState().open).toBe(false);
+    expect(useQuickViewStore.getState().session).toBeNull();
     expect(document.activeElement).toBe(opener);
     opener.remove();
   });

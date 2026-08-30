@@ -1000,12 +1000,11 @@ fn transcript_get(app: AppHandle, hash: String) -> Result<derived_state::Transcr
     derived_state::transcript_result(&conn, &cache, &hash)
 }
 
-// Comparison-mode fullscreen for the spread windows (Phase 33). macOS only:
+// Borderless presentation windows use macOS simple fullscreen so they cover
+// system chrome without moving into a Space. Elsewhere their exact monitor
+// bounds already cover the taskbar, so the command is deliberately a no-op.
 // simple fullscreen (the pre-Lion kind) hides the menu bar and dock WITHOUT
 // the Spaces animation that made real fullscreen unusable at keystroke pace.
-// Elsewhere a borderless window at exact monitor bounds already covers the
-// taskbar, so the command is a no-op — never tauri's fullscreen fallback,
-// which would change proven Windows behaviour.
 #[tauri::command(async)]
 fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<(), String> {
     let window = app
@@ -1988,6 +1987,22 @@ pub fn run() {
         // the worker starts winding down, then join it at Exit — bounded by
         // the per-item cancel checks — so no SQLite write is killed halfway.
         tauri::RunEvent::ExitRequested { api, .. } => {
+            // A hidden or abruptly destroyed simple-fullscreen window can
+            // leave macOS system chrome suppressed. Leave presentation mode
+            // synchronously before the longer worker-quiescence shutdown.
+            #[cfg(target_os = "macos")]
+            for (label, window) in app_handle.webview_windows() {
+                if label == "viewer" || label.starts_with("comparison-") {
+                    if let Err(error) = window.set_simple_fullscreen(false) {
+                        let _ = failure_runtime::report(
+                            app_handle,
+                            "shutdown-window-recovery-failed",
+                            None,
+                            &error.to_string(),
+                        );
+                    }
+                }
+            }
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
             if let Err(error) = mutation_runtime::request_shutdown() {

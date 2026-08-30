@@ -15,7 +15,7 @@ import {
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useAppStore } from "../state/app-store";
-import { handleSpaceQuickView, openQuickViewFromMain } from "../workflows/quick-view";
+import { handleSpaceQuickView, openViewerFromMain } from "../workflows/quick-view";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
 import PreviewControl from "./PreviewControl";
@@ -107,7 +107,7 @@ function Tile({
       onClick={onSelect}
       onDoubleClick={() => {
         useItemsStore.getState().selectItem(itemKey(item));
-        openQuickViewFromMain();
+        openViewerFromMain("quick");
       }}
     >
       <div
@@ -333,7 +333,7 @@ function ListRow({
       onClick={onSelect}
       onDoubleClick={() => {
         useItemsStore.getState().selectItem(itemKey(item));
-        openQuickViewFromMain();
+        openViewerFromMain("quick");
       }}
     >
       <span

@@ -78,6 +78,7 @@ export const setZoom = vi.fn(async () => {});
 export const setMinSize = vi.fn(async (_size: LogicalSize) => {});
 
 export const show = vi.fn(async () => {});
+export const close = vi.fn(async () => {});
 export const setPosition = vi.fn(async () => {});
 export const setSize = vi.fn(async () => {});
 export const innerSize = vi.fn(async () => ({ width: 1400, height: 900 }));
@@ -95,6 +96,7 @@ export const getCurrentWindow = vi.fn(() => ({
   setFocus,
   setMinSize,
   show,
+  close,
   setPosition,
   setSize,
   innerSize,
@@ -249,6 +251,7 @@ export function resetTauriMocks(
     setZoom,
     setMinSize,
     setTheme,
+    close,
     getCurrentWindow,
     currentMonitor,
     getCurrentWebview,

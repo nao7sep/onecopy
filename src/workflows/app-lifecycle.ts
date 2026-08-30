@@ -10,9 +10,10 @@ import { useSectionsStore } from "../state/sections-store";
 import { useWizardStore } from "../state/wizard-store";
 import { installScanEventWiring } from "./scan-events";
 import { installItemWorkflow } from "./items";
-import { installPreviewPersistence } from "./preview";
+import { installPreviewCommandWiring, installPreviewPersistence } from "./preview";
 import { installComparisonEventWiring } from "./comparison";
 import { installMutationEventWiring } from "./mutation-events";
+import { installViewerWorkflow } from "./quick-view";
 
 export async function bootstrapApplication(): Promise<void> {
   installItemWorkflow();
@@ -21,6 +22,8 @@ export async function bootstrapApplication(): Promise<void> {
     installScanEventWiring(),
     installComparisonEventWiring(),
     installMutationEventWiring(),
+    installViewerWorkflow(),
+    installPreviewCommandWiring(),
   ]);
   const [data] = await Promise.all([
     useAppStore.getState().initialize(),

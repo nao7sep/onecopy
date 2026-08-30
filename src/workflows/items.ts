@@ -12,25 +12,9 @@ import { itemKey, useItemsStore } from "../state/items-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 
-interface ItemIdentity {
-  hash: string | null;
-  pathId: number | null;
-}
-
-interface DeleteItemResult {
-  item: ItemIdentity;
-  failedFiles: number;
-}
-
 interface DeleteBatchOutcome {
-  cancelled: boolean;
   error: string | null;
-  items: DeleteItemResult[];
   failedFiles: number;
-}
-
-function identityKey(item: ItemIdentity): string {
-  return item.hash ?? `path-${item.pathId}`;
 }
 
 let installed = false;
@@ -116,12 +100,7 @@ export async function deleteItems(
 ): Promise<void> {
   const store = useItemsStore.getState();
   if (keys.size === 0) return;
-  // Recovery follows the displayed order, not the backend's natural order.
   const shown = sortItems(store.items, store.currentSort());
-  const anchorIndex =
-    store.selectedItem !== null
-      ? shown.findIndex((item) => itemKey(item) === store.selectedItem)
-      : shown.findIndex((item) => keys.has(itemKey(item)));
   useItemsStore.setState({ message: null });
   try {
     const requested = shown.filter((candidate) => keys.has(itemKey(candidate)));
@@ -132,17 +111,6 @@ export async function deleteItems(
       })),
       permanent,
     });
-    const completed = new Set(
-      outcome.items
-        .filter((item) => item.failedFiles === 0)
-        .map((item) => identityKey(item.item)),
-    );
-    const survivor =
-      shown.slice(Math.max(anchorIndex, 0)).find((item) => !completed.has(itemKey(item))) ??
-      [...shown.slice(0, Math.max(anchorIndex, 0))]
-        .reverse()
-        .find((item) => !completed.has(itemKey(item))) ??
-      null;
     if (outcome.error !== null) {
       useItemsStore.setState({ message: outcome.error });
       await useIssuesStore.getState().load();
@@ -152,9 +120,10 @@ export async function deleteItems(
       });
       await useIssuesStore.getState().load();
     }
-    // Rows vanish first; then the anchor lands beside the removed run.
+    // The item store reconciles selection against the prior displayed order:
+    // surviving selected members remain selected, then next/previous recovery
+    // applies. A second hand-written recovery here used to erase that result.
     await useItemsStore.getState().refresh();
-    useItemsStore.getState().selectItem(survivor ? itemKey(survivor) : null);
     await useSectionsStore.getState().loadCounts();
   } catch (error) {
     log.error("delete failed", toErrorFields(error));

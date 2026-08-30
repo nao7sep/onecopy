@@ -17,7 +17,7 @@ import {
 } from "../utils/shortcuts";
 import { requestComparisonFromMain } from "../workflows/comparison";
 import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
-import { handleSpaceQuickView } from "../workflows/quick-view";
+import { handleFViewer, handleSpaceQuickView } from "../workflows/quick-view";
 
 export function useGlobalCommands() {
   const [helpOpen, setHelpOpen] = useState(false);
@@ -78,6 +78,16 @@ export function useGlobalCommands() {
           return;
         }
         handleSpaceQuickView(event);
+      } else if (
+        event.key.toLowerCase() === "f" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+          return;
+        }
+        handleFViewer(event);
       } else if (event.key === "Enter") {
         if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
           return;

@@ -62,6 +62,30 @@ describe("the preview window", () => {
     expect(img).not.toBeNull();
     expect(img?.getAttribute("src")).toContain("preview-abc");
   });
+
+  it("forwards navigation, keeps Space inert, and requests shared fullscreen with F", async () => {
+    render(<PreviewWindow />);
+    await act(async () => {});
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " " }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "f" }));
+    await act(async () => {});
+
+    expect(emitCalls).toContainEqual({
+      event: "preview://key",
+      payload: {
+        key: "ArrowRight",
+        code: "",
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+      },
+    });
+    expect(emitCalls.some((call) => call.event === "preview://key" && (call.payload as { key?: string }).key === " ")).toBe(false);
+    expect(emitCalls.some((call) => call.event === "preview://fullscreen")).toBe(true);
+  });
 });
 
 describe("a comparison window", () => {

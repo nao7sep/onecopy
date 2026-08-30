@@ -90,7 +90,7 @@ beforeEach(() => {
     placementPreference: null,
     current: null,
   });
-  useQuickViewStore.setState({ open: false });
+  useQuickViewStore.setState({ session: null, pendingDelete: null });
   useDerivedWorkStore.setState({ activeItem: null });
   useSectionsStore.setState({
     sourceCheck: { running: false, stopping: false, progress: null },
@@ -209,14 +209,14 @@ describe("Space", () => {
 
     await act(async () => press(container, " "));
 
-    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
     expect(usePreviewStore.getState().follow).toBe(false);
     expect(useItemsStore.getState().selectedKeys.has("h3")).toBe(true);
     expect(useItemsStore.getState().selectedItem).toBe("h3");
 
     // A second Space is not a hidden Preview toggle.
     await act(async () => press(container, " "));
-    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
@@ -261,7 +261,7 @@ describe("pointer selection", () => {
     fireEvent.doubleClick(tile, { detail: 2 });
 
     expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
-    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
   });
 });
 

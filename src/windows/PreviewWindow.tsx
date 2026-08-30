@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { listenThenAnnounce } from "../utils/handshake";
+import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import PreviewSurface from "../components/PreviewSurface";
 import type { PreviewShowMessage } from "../state/preview-store";
@@ -10,9 +12,8 @@ import { reportWindowCall } from "../repositories";
 // from `preview://show` messages — payload AND detail arrive together from
 // the anchor owner, so this window queries nothing and can never race a
 // stale response. The previous message keeps rendering until the next one
-// arrives (no blank flash between keystrokes). F toggles fullscreen; Escape
-// leaves fullscreen, then closes (the main window observes the destroy and
-// clears the follow flag).
+// arrives (no blank flash between keystrokes). Library commands go back to
+// Main, which remains their one owner.
 
 export default function PreviewWindow() {
   const [message, setMessage] = useState<PreviewShowMessage | null>(null);
@@ -72,39 +73,59 @@ export default function PreviewWindow() {
       setMessage,
     );
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === "f") {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === " ") {
+        // Persistent Preview never reinterprets Space as playback or as a
+        // second transient-viewer toggle.
         event.preventDefault();
-        void (async () => {
-          const window = getCurrentWindow();
-          // Defaults to "not fullscreen" so a failed READ still lets F enter
-          // and Escape close, rather than trapping the user in a surface
-          // whose exit key does nothing — but the reason is logged, not lost.
-          const full = await window.isFullscreen().catch((error: unknown) => {
-            reportWindowCall("isFullscreen")(error);
-            return false;
-          });
-          await window.setFullscreen(!full).catch(reportWindowCall("setFullscreen"));
-        })();
+        event.stopPropagation();
+      } else if (event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        event.stopPropagation();
+        void currentMonitor()
+          .then((monitor) => emit("preview://fullscreen", monitor))
+          .catch(reportWindowCall("preview current monitor"));
       } else if (event.key === "Escape") {
         event.preventDefault();
-        void (async () => {
-          const window = getCurrentWindow();
-          // Defaults to "not fullscreen" so a failed READ still lets F enter
-          // and Escape close, rather than trapping the user in a surface
-          // whose exit key does nothing — but the reason is logged, not lost.
-          const full = await window.isFullscreen().catch((error: unknown) => {
-            reportWindowCall("isFullscreen")(error);
-            return false;
-          });
-          if (full) await window.setFullscreen(false).catch(reportWindowCall("setFullscreen"));
-          else await window.close();
-        })();
+        event.stopPropagation();
+        void getCurrentWindow().close().catch(reportWindowCall("preview close"));
+      } else if (
+        [
+          "ArrowLeft",
+          "ArrowRight",
+          "ArrowUp",
+          "ArrowDown",
+          "PageUp",
+          "PageDown",
+          "Home",
+          "End",
+          "Enter",
+          "Delete",
+          "Backspace",
+        ].includes(event.key)
+      ) {
+        if (
+          event.target instanceof Element &&
+          event.target.closest("button, input, select, textarea, [contenteditable='true']") !== null
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void emit("preview://key", {
+          key: event.key,
+          code: event.code,
+          shiftKey: event.shiftKey,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+        }).catch(reportWindowCall("preview key forward"));
       }
     };
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
     return () => {
       unlisten();
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
 
@@ -131,7 +152,7 @@ export default function PreviewWindow() {
         <span className="truncate" title={message.detail?.fileName ?? ""}>
           {message.detail?.fileName ?? "…"}
         </span>
-        <span>Hold: original pixels · F: fullscreen · Escape: close</span>
+        <span>Hold: original pixels · F: full screen · Escape: close</span>
       </footer>
     </div>
   );

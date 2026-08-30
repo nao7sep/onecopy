@@ -137,7 +137,7 @@ beforeEach(() => {
     message: null,
   });
   usePreviewStore.setState({ follow: false, current: null });
-  useQuickViewStore.setState({ open: false });
+  useQuickViewStore.setState({ session: null, pendingDelete: null });
   useComparisonStore.setState({ open: false, members: [], kept: new Set() });
 });
 
@@ -223,11 +223,11 @@ describe("the culling journey", () => {
       grid.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
     });
     await settle();
-    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
     expect(usePreviewStore.getState().follow).toBe(false);
     await act(async () => pressWindow("Escape"));
     await settle();
-    expect(useQuickViewStore.getState().open).toBe(false);
+    expect(useQuickViewStore.getState().session).toBeNull();
 
     // ---- Enter on a ≈ item opens the comparison over the whole scene ----
     mockCommand("get_similar_group", () => [

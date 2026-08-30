@@ -4,6 +4,7 @@ import App from "./App";
 import PreviewWindow from "./windows/PreviewWindow";
 import ComparisonWindow from "./windows/ComparisonWindow";
 import IdentifyWindow from "./windows/IdentifyWindow";
+import ViewerWindow from "./windows/ViewerWindow";
 import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
 import { log, toErrorFields, initLogging } from "./repositories";
@@ -84,6 +85,8 @@ void installMediaUseBoundary()
             <ComparisonWindow slice={slice} />
           ) : view === "identify" ? (
             <IdentifyWindow number={slice} />
+          ) : view === "viewer" ? (
+            <ViewerWindow />
           ) : (
             <App />
           )}

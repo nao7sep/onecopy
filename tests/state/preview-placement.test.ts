@@ -55,7 +55,7 @@ beforeEach(() => {
     placementPreference: null,
     current: null,
   });
-  useQuickViewStore.setState({ open: false });
+  useQuickViewStore.setState({ session: null, pendingDelete: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: [item(1), item(2)],
@@ -72,7 +72,7 @@ describe("the Space model", () => {
     const claimed = handleSpaceQuickView({ preventDefault: () => (prevented = true) });
     expect(claimed).toBe(true);
     expect(prevented).toBe(true);
-    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
@@ -85,7 +85,7 @@ describe("the Space model", () => {
     let prevented = false;
     expect(handleSpaceQuickView({ preventDefault: () => (prevented = true) })).toBe(true);
     expect(prevented).toBe(true);
-    expect(useQuickViewStore.getState().open).toBe(true);
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
   });
 });
 
