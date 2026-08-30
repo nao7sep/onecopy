@@ -24,7 +24,13 @@ export type BackgroundClassState =
   | "up-to-date";
 
 export interface BackgroundClassSnapshot {
-  id: "previews" | "snapshots" | "similarity" | "faces" | "transcripts";
+  id:
+    | "previews"
+    | "snapshots"
+    | "similarity"
+    | "faces"
+    | "video-transcripts"
+    | "audio-transcripts";
   state: BackgroundClassState;
   queued: number;
   failed: number;
@@ -114,11 +120,12 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
 }));
 
 const CLASS_LABELS: Record<BackgroundClassSnapshot["id"], string> = {
-  previews: "Previews and posters",
+  previews: "Thumbnails, previews, and posters",
   snapshots: "Video snapshots",
   similarity: "Similar photos",
   faces: "Face scoring",
-  transcripts: "Transcription",
+  "video-transcripts": "Video transcription",
+  "audio-transcripts": "Audio transcription",
 };
 
 export function backgroundClassLabel(id: BackgroundClassSnapshot["id"]): string {
@@ -152,7 +159,8 @@ const ITEM_CLASS_FIELD: Record<
   snapshots: "snapshots",
   similarity: "similarity",
   faces: "faces",
-  transcripts: "transcripts",
+  "video-transcripts": "transcripts",
+  "audio-transcripts": "transcripts",
 };
 
 export function mergeActiveItemWork(

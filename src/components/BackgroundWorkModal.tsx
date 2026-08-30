@@ -38,7 +38,8 @@ const DESCRIPTIONS: Record<BackgroundClassSnapshot["id"], string> = {
   snapshots: "Timestamped scene frames for quickly understanding a video.",
   similarity: "Rebuilds similar-photo families after preview facts change.",
   faces: "Optional face and expression scoring used to order comparison groups.",
-  transcripts: "Optional speech-to-text for videos with audio.",
+  "video-transcripts": "Optional speech-to-text for videos with audio.",
+  "audio-transcripts": "Optional speech-to-text for audio files.",
 };
 
 export default function BackgroundWorkModal() {
@@ -76,8 +77,8 @@ export default function BackgroundWorkModal() {
           >
             {snapshot.masterPaused ? <Play size={14} /> : <Pause size={14} />}
             {snapshot.masterPaused
-              ? "Resume previews and analysis"
-              : "Pause previews and analysis"}
+              ? "Resume preparation and enrichment"
+              : "Pause preparation and enrichment"}
           </Button>
         ) : undefined
       }
@@ -147,7 +148,7 @@ export default function BackgroundWorkModal() {
         </li>
       </ul>
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-        Previews and analysis
+        Preparation and enrichment
       </h2>
       {snapshot === null ? (
         <p className="py-6 text-center text-sm text-ink-muted">

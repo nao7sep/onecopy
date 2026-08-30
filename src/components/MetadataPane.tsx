@@ -233,7 +233,9 @@ export default function MetadataPane({
       {projectedWork !== null ? (
         <WorkSection
           states={projectedWork}
-          transcriptHasOwnSection={detail.kind === "video" && hash !== null}
+          transcriptHasOwnSection={
+            (detail.kind === "video" || detail.kind === "audio") && hash !== null
+          }
         />
       ) : null}
       {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
@@ -275,9 +277,10 @@ export default function MetadataPane({
           </dd>
         </div>
       ) : null}
-      {detail.kind === "video" && hash !== null ? (
+      {(detail.kind === "video" || detail.kind === "audio") && hash !== null ? (
         <TranscriptBlock
           hash={hash}
+          medium={detail.kind}
           variant="compact"
           work={projectedWork?.transcripts ?? null}
         />

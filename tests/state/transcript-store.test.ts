@@ -28,4 +28,21 @@ describe("transcript projection", () => {
       text: "hello",
     });
   });
+
+  it("keeps a second manual request queued until its own progress begins", async () => {
+    mockCommands({
+      transcript_get: () => ({ status: "pending", text: null, message: null }),
+      transcribe: () => null,
+    });
+
+    await useTranscriptStore.getState().start("first");
+    await useTranscriptStore.getState().start("second");
+
+    expect(useTranscriptStore.getState().rows.first?.status).toBe("queued");
+    expect(useTranscriptStore.getState().rows.second?.status).toBe("queued");
+
+    fireEvent("transcribe://progress", { hash: "first", percent: 0 });
+    expect(useTranscriptStore.getState().rows.first?.status).toBe("running");
+    expect(useTranscriptStore.getState().rows.second?.status).toBe("queued");
+  });
 });

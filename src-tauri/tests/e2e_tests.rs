@@ -11,16 +11,22 @@ use std::sync::atomic::Ordering;
 use chrono_tz::Tz;
 use onecopy_lib::operations::{delete_item, move_out, DeleteMode, ItemRef, MoveOutMode};
 use onecopy_lib::preview::CachePaths;
-use onecopy_lib::{derived_state, derived_work, index_store, preview, queries, scanner, similarity, trash};
+use onecopy_lib::{
+    derived_state, derived_work, index_store, preview, queries, scanner, similarity, trash,
+};
 use rusqlite::Connection;
 
 fn item_projection() -> queries::ItemProjectionContext {
     queries::ItemProjectionContext {
         capabilities: derived_state::WorkCapabilities {
             ffmpeg: true,
+            video_snapshots_enabled: true,
+            similarity_enabled: true,
             face_enabled: false,
             face_models: false,
-            transcripts: false,
+            transcription_model: false,
+            video_transcription_enabled: true,
+            audio_transcription_enabled: true,
         },
         similarity_dirty: false,
     }
@@ -77,7 +83,11 @@ fn world(label: &str) -> World {
     )
     .unwrap();
     shoot(&corpus, "IMG_20260110_130000.jpg", 0, true);
-    World { _dir: dir, home, corpus }
+    World {
+        _dir: dir,
+        home,
+        corpus,
+    }
 }
 
 /// A fixed "now" after the corpus's shooting dates — resolution's
@@ -117,7 +127,12 @@ fn derive_all(conn: &Connection, world: &World) {
 fn live_files(corpus: &Path) -> Vec<String> {
     let mut names: Vec<String> = walkdir(corpus)
         .into_iter()
-        .map(|p| p.strip_prefix(corpus).unwrap().to_string_lossy().to_string())
+        .map(|p| {
+            p.strip_prefix(corpus)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
     names.sort();
     names
@@ -208,7 +223,9 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 
     // The scene grouped; the stripes did not.
     let grouped: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(grouped, 3, "the three shots of one scene, nothing else");
 
@@ -227,9 +244,14 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
         .sum();
 
     for loser in &members[1..] {
-        let outcome =
-            delete_item(&conn, &w.home, &cache, ItemRef::Hash(&loser.hash), DeleteMode::Trash)
-                .expect("losers trash cleanly");
+        let outcome = delete_item(
+            &conn,
+            &w.home,
+            &cache,
+            ItemRef::Hash(&loser.hash),
+            DeleteMode::Trash,
+        )
+        .expect("losers trash cleanly");
         assert_eq!(outcome.failed_files, 0);
     }
     let dest = w.home.join("keepers");
@@ -299,18 +321,27 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     // DB: the scene is gone as a unit — contents, paths, membership — and the
     // survivor is intact.
     let (contents, live_paths, memberships): (i64, i64, i64) = (
-        conn.query_row("SELECT COUNT(*) FROM contents", [], |r| r.get(0)).unwrap(),
-        conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0)).unwrap(),
-        conn.query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0)).unwrap(),
+        conn.query_row("SELECT COUNT(*) FROM contents", [], |r| r.get(0))
+            .unwrap(),
+        conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| {
+            r.get(0)
+        })
+        .unwrap(),
+        conn.query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
+            r.get(0)
+        })
+        .unwrap(),
     );
     assert_eq!((contents, live_paths, memberships), (1, 1, 0));
 
     // Cache: culled contents swept, the survivor still served.
     for hash in &hashes {
         let expect = conn
-            .query_row("SELECT COUNT(*) FROM contents WHERE hash = ?1", [hash], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM contents WHERE hash = ?1",
+                [hash],
+                |r| r.get::<_, i64>(0),
+            )
             .unwrap()
             == 1;
         assert_eq!(cache.thumb(hash).is_file(), expect, "thumb presence follows the DB");

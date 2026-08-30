@@ -14,16 +14,18 @@ pub(crate) enum WorkClass {
     Snapshots,
     Similarity,
     Faces,
-    Transcripts,
+    VideoTranscripts,
+    AudioTranscripts,
 }
 
 impl WorkClass {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Previews,
         Self::Snapshots,
         Self::Similarity,
         Self::Faces,
-        Self::Transcripts,
+        Self::VideoTranscripts,
+        Self::AudioTranscripts,
     ];
 
     pub(crate) fn id(self) -> &'static str {
@@ -32,7 +34,8 @@ impl WorkClass {
             Self::Snapshots => "snapshots",
             Self::Similarity => "similarity",
             Self::Faces => "faces",
-            Self::Transcripts => "transcripts",
+            Self::VideoTranscripts => "video-transcripts",
+            Self::AudioTranscripts => "audio-transcripts",
         }
     }
 
@@ -44,17 +47,29 @@ impl WorkClass {
         Self::ALL.into_iter().find(|class| class.id() == id)
     }
 
-    pub(crate) fn idle_only(self) -> bool {
-        matches!(self, Self::Snapshots | Self::Faces | Self::Transcripts)
+    pub(crate) fn is_transcription(self) -> bool {
+        matches!(self, Self::VideoTranscripts | Self::AudioTranscripts)
+    }
+
+    pub(crate) fn content_kind(self) -> Option<&'static str> {
+        match self {
+            Self::VideoTranscripts => Some("video"),
+            Self::AudioTranscripts => Some("audio"),
+            _ => None,
+        }
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct WorkCapabilities {
     pub ffmpeg: bool,
+    pub video_snapshots_enabled: bool,
+    pub similarity_enabled: bool,
     pub face_enabled: bool,
     pub face_models: bool,
-    pub transcripts: bool,
+    pub transcription_model: bool,
+    pub video_transcription_enabled: bool,
+    pub audio_transcription_enabled: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -64,9 +79,10 @@ pub(crate) struct WorkDebt {
     pub failed: u64,
     pub reason: Option<&'static str>,
     pub disabled: bool,
+    pub unavailable: bool,
 }
 
-pub(crate) struct WorkDebts([WorkDebt; 5]);
+pub(crate) struct WorkDebts([WorkDebt; 6]);
 
 impl WorkDebts {
     pub(crate) fn get(&self, class: WorkClass) -> WorkDebt {
@@ -83,8 +99,10 @@ struct DebtCounts {
     snapshot_failures: u64,
     faces: u64,
     face_failures: u64,
-    transcripts: u64,
-    transcript_failures: u64,
+    video_transcripts: u64,
+    video_transcript_failures: u64,
+    audio_transcripts: u64,
+    audio_transcript_failures: u64,
 }
 
 fn work_debt_sql(ffmpeg: bool) -> String {
@@ -104,9 +122,11 @@ fn work_debt_sql(ffmpeg: bool) -> String {
            COALESCE(SUM(l.kind = 'image' AND r.face_state IS NULL
                         AND {preview_ready}), 0),
            COALESCE(SUM(r.face_state = '{FAILED}'), 0),
-           COALESCE(SUM(l.kind = 'video' AND c.duration_ms IS NOT NULL
+           COALESCE(SUM(c.kind = 'video' AND c.duration_ms IS NOT NULL
                         AND r.transcript_state IS NULL), 0),
-           COALESCE(SUM(r.transcript_state = '{FAILED}'), 0)
+           COALESCE(SUM(c.kind = 'video' AND r.transcript_state = '{FAILED}'), 0),
+           COALESCE(SUM(c.kind = 'audio' AND r.transcript_state IS NULL), 0),
+           COALESCE(SUM(c.kind = 'audio' AND r.transcript_state = '{FAILED}'), 0)
          FROM logical_contents l
          JOIN contents c ON c.hash = l.content_hash
          LEFT JOIN analysis_receipts r ON r.content_hash = l.content_hash"
@@ -135,8 +155,10 @@ pub(crate) fn work_debts(
                 snapshot_failures: count(5)?,
                 faces: count(6)?,
                 face_failures: count(7)?,
-                transcripts: count(8)?,
-                transcript_failures: count(9)?,
+                video_transcripts: count(8)?,
+                video_transcript_failures: count(9)?,
+                audio_transcripts: count(10)?,
+                audio_transcript_failures: count(11)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -157,7 +179,13 @@ pub(crate) fn work_debts(
             ..WorkDebt::default()
         }
     };
-    let snapshots = if capabilities.ffmpeg {
+    let snapshots = if !capabilities.video_snapshots_enabled {
+        WorkDebt {
+            disabled: true,
+            reason: Some("Turn on video snapshots in Settings"),
+            ..WorkDebt::default()
+        }
+    } else if capabilities.ffmpeg {
         WorkDebt {
             runnable: counts.snapshots,
             failed: counts.snapshot_failures,
@@ -167,13 +195,22 @@ pub(crate) fn work_debts(
         WorkDebt {
             blocked: counts.snapshots,
             failed: counts.snapshot_failures,
-            reason: (counts.snapshots > 0).then_some("Waiting for ffmpeg"),
+            reason: Some("Waiting for ffmpeg"),
+            unavailable: true,
             ..WorkDebt::default()
         }
     };
-    let similarity = WorkDebt {
-        runnable: u64::from(similarity_dirty),
-        ..WorkDebt::default()
+    let similarity = if capabilities.similarity_enabled {
+        WorkDebt {
+            runnable: u64::from(similarity_dirty),
+            ..WorkDebt::default()
+        }
+    } else {
+        WorkDebt {
+            disabled: true,
+            reason: Some("Turn on similar-photo analysis in Settings"),
+            ..WorkDebt::default()
+        }
     };
     let faces = if !capabilities.face_enabled {
         WorkDebt {
@@ -191,31 +228,53 @@ pub(crate) fn work_debts(
         WorkDebt {
             blocked: counts.faces,
             failed: counts.face_failures,
-            reason: (counts.faces > 0).then_some("Waiting for face models"),
+            reason: Some("Waiting for face models"),
+            unavailable: true,
             ..WorkDebt::default()
         }
     };
-    let transcripts = if capabilities.transcripts {
-        WorkDebt {
-            runnable: counts.transcripts,
-            failed: counts.transcript_failures,
-            ..WorkDebt::default()
-        }
-    } else {
-        WorkDebt {
-            blocked: counts.transcripts,
-            failed: counts.transcript_failures,
-            reason: (counts.transcripts > 0)
-                .then_some(transcript_unavailable_reason(capabilities)),
-            ..WorkDebt::default()
+    let transcript_debt = |enabled: bool, runnable: u64, failed: u64, setting: &'static str| {
+        if !enabled {
+            WorkDebt {
+                disabled: true,
+                reason: Some(setting),
+                ..WorkDebt::default()
+            }
+        } else if capabilities.ffmpeg && capabilities.transcription_model {
+            WorkDebt {
+                runnable,
+                failed,
+                ..WorkDebt::default()
+            }
+        } else {
+            WorkDebt {
+                blocked: runnable,
+                failed,
+                reason: Some(transcript_unavailable_reason(capabilities)),
+                unavailable: true,
+                ..WorkDebt::default()
+            }
         }
     };
+    let video_transcripts = transcript_debt(
+        capabilities.video_transcription_enabled,
+        counts.video_transcripts,
+        counts.video_transcript_failures,
+        "Turn on video transcription in Settings",
+    );
+    let audio_transcripts = transcript_debt(
+        capabilities.audio_transcription_enabled,
+        counts.audio_transcripts,
+        counts.audio_transcript_failures,
+        "Turn on audio transcription in Settings",
+    );
     Ok(WorkDebts([
         previews,
         snapshots,
         similarity,
         faces,
-        transcripts,
+        video_transcripts,
+        audio_transcripts,
     ]))
 }
 
@@ -280,7 +339,7 @@ pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;
 pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
 
 fn transcript_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
-    if capabilities.ffmpeg {
+    if capabilities.ffmpeg && !capabilities.transcription_model {
         "Waiting for transcription model"
     } else {
         "Waiting for ffmpeg"
@@ -319,11 +378,7 @@ pub(crate) struct ItemWorkFacts<'a> {
     pub transcript_state: Option<&'a str>,
 }
 
-fn item_state(
-    state: &'static str,
-    has_value: bool,
-    reason: Option<&'static str>,
-) -> ItemWorkState {
+fn item_state(state: &'static str, has_value: bool, reason: Option<&'static str>) -> ItemWorkState {
     ItemWorkState {
         state,
         has_value,
@@ -361,6 +416,8 @@ pub(crate) fn item_work_states(
             item_state("failed", false, Some("Video snapshot generation failed"))
         } else if let Some(count) = facts.strip_frames {
             item_state("ready", count > 0, None)
+        } else if !capabilities.video_snapshots_enabled {
+            item_state("disabled", false, Some("Video snapshots are off"))
         } else if !capabilities.ffmpeg {
             item_state("unavailable", false, Some("Waiting for ffmpeg"))
         } else if preview_failed {
@@ -374,7 +431,9 @@ pub(crate) fn item_work_states(
 
     let similarity = (facts.kind == "image").then(|| {
         let has_value = facts.similar_group_id.is_some();
-        if preview_failed {
+        if !capabilities.similarity_enabled {
+            item_state("disabled", has_value, Some("Similar-photo analysis is off"))
+        } else if preview_failed {
             item_state("blocked", has_value, Some("Preview generation failed"))
         } else if !preview_ready {
             item_state("waiting", has_value, Some("Waiting for the preview"))
@@ -407,22 +466,29 @@ pub(crate) fn item_work_states(
         }
     });
 
-    let transcripts = (facts.kind == "video").then(|| {
+    let transcripts = matches!(facts.kind, "video" | "audio").then(|| {
+        let enabled = if facts.kind == "video" {
+            capabilities.video_transcription_enabled
+        } else {
+            capabilities.audio_transcription_enabled
+        };
         if facts.transcript_state == Some(FAILED) {
             item_state("failed", false, Some("Transcription failed"))
         } else if facts.transcript_state == Some(READY_TEXT) {
             item_state("ready", true, None)
         } else if facts.transcript_state == Some(READY_EMPTY) {
             item_state("ready", false, None)
-        } else if !capabilities.transcripts {
+        } else if !enabled {
+            item_state("disabled", false, Some("Automatic transcription is off"))
+        } else if !capabilities.ffmpeg || !capabilities.transcription_model {
             item_state(
                 "unavailable",
                 false,
                 Some(transcript_unavailable_reason(capabilities)),
             )
-        } else if preview_failed {
+        } else if facts.kind == "video" && preview_failed {
             item_state("blocked", false, Some("Video poster generation failed"))
-        } else if facts.duration_ms.is_none() {
+        } else if facts.kind == "video" && facts.duration_ms.is_none() {
             item_state("waiting", false, Some("Waiting for the video poster"))
         } else {
             item_state("pending", false, None)
@@ -443,24 +509,38 @@ fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> Strin
     match class {
         WorkClass::Previews => {
             let (image, video) = preview_pending_predicates(capabilities.ffmpeg);
+            format!("((l.kind = 'image' AND {image}) OR (l.kind = 'video' AND {video}))")
+        }
+        WorkClass::Snapshots if capabilities.video_snapshots_enabled && capabilities.ffmpeg => {
             format!(
-                "((l.kind = 'image' AND {image}) OR (l.kind = 'video' AND {video}))"
+                "l.kind = 'video' AND c.strip_frames IS NULL AND c.duration_ms IS NOT NULL \
+             AND {preview_ready}"
             )
         }
-        WorkClass::Snapshots if capabilities.ffmpeg => format!(
-            "l.kind = 'video' AND c.strip_frames IS NULL AND c.duration_ms IS NOT NULL \
-             AND {preview_ready}"
-        ),
-        WorkClass::Faces if capabilities.face_enabled && capabilities.face_models => format!(
-            "l.kind = 'image' AND r.face_state IS NULL AND {preview_ready}"
-        ),
-        WorkClass::Transcripts if capabilities.transcripts => {
-            "l.kind = 'video' AND c.duration_ms IS NOT NULL AND r.transcript_state IS NULL"
+        WorkClass::Faces if capabilities.face_enabled && capabilities.face_models => {
+            format!("l.kind = 'image' AND r.face_state IS NULL AND {preview_ready}")
+        }
+        WorkClass::VideoTranscripts
+            if capabilities.video_transcription_enabled
+                && capabilities.ffmpeg
+                && capabilities.transcription_model =>
+        {
+            "c.kind = 'video' AND c.duration_ms IS NOT NULL AND r.transcript_state IS NULL"
                 .to_string()
         }
-        WorkClass::Similarity | WorkClass::Snapshots | WorkClass::Faces | WorkClass::Transcripts => {
-            "0".to_string()
+        WorkClass::AudioTranscripts
+            if capabilities.audio_transcription_enabled
+                && capabilities.ffmpeg
+                && capabilities.transcription_model =>
+        {
+            "c.kind = 'audio' AND r.transcript_state IS NULL".to_string()
         }
+        WorkClass::Similarity if capabilities.similarity_enabled => "l.kind = 'image'".to_string(),
+        WorkClass::Similarity
+        | WorkClass::Snapshots
+        | WorkClass::Faces
+        | WorkClass::VideoTranscripts
+        | WorkClass::AudioTranscripts => "0".to_string(),
     }
 }
 
@@ -475,7 +555,7 @@ pub(crate) fn priority_candidates(
     section: Option<(&str, Option<i64>, Option<i64>)>,
     limit: usize,
 ) -> Result<Vec<String>, String> {
-    if class == WorkClass::Similarity || limit == 0 {
+    if limit == 0 {
         return Ok(Vec::new());
     }
     let mut hinted = Vec::new();
@@ -515,7 +595,7 @@ pub(crate) fn priority_candidates(
     let Some((kind, start_ms, end_ms)) = section else {
         return Ok(hashes);
     };
-    if hashes.len() >= limit || !matches!(kind, "image" | "video") {
+    if hashes.len() >= limit || !matches!(kind, "image" | "video" | "other") {
         return Ok(hashes);
     }
     let time_clause = if start_ms.is_some() {
@@ -668,10 +748,9 @@ pub fn strip_candidates(
         ))
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map(
-            params![after_hash.unwrap_or(""), limit as i64],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
+        .query_map(params![after_hash.unwrap_or(""), limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
@@ -732,10 +811,9 @@ pub fn face_candidates(
         ))
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map(
-            params![after_hash.unwrap_or(""), limit as i64],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_map(params![after_hash.unwrap_or(""), limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
@@ -768,33 +846,7 @@ pub fn prioritized_face_candidates(
     );
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map(params_from_iter(hashes), |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-    Ok(rows)
-}
-
-pub fn transcript_candidates(
-    conn: &Connection,
-    after_hash: Option<&str>,
-    limit: usize,
-) -> Result<Vec<(String, String)>, String> {
-    let mut statement = conn
-        .prepare(
-            "SELECT c.hash, p.abs_path \
-             FROM logical_contents l \
-             JOIN contents c ON c.hash = l.content_hash \
-             JOIN paths p ON p.id = l.representative_path_id \
-             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-             WHERE l.kind = 'video' AND c.duration_ms IS NOT NULL \
-               AND r.transcript_state IS NULL AND p.missing = 0 \
-               AND l.content_hash > ?1 \
-             ORDER BY l.content_hash LIMIT ?2",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map(params![after_hash.unwrap_or(""), limit as i64], |row| {
+        .query_map(params_from_iter(hashes), |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
         .map_err(|error| error.to_string())?
@@ -803,11 +855,48 @@ pub fn transcript_candidates(
     Ok(rows)
 }
 
+pub fn transcript_candidates(
+    conn: &Connection,
+    kind: &str,
+    after_hash: Option<&str>,
+    limit: usize,
+) -> Result<Vec<(String, String)>, String> {
+    if !matches!(kind, "video" | "audio") {
+        return Err(format!("unsupported transcription kind: {kind}"));
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT c.hash, p.abs_path \
+             FROM logical_contents l \
+             JOIN contents c ON c.hash = l.content_hash \
+             JOIN paths p ON p.id = l.representative_path_id \
+             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+             WHERE c.kind = ?1 AND (?1 = 'audio' OR c.duration_ms IS NOT NULL) \
+               AND r.transcript_state IS NULL AND p.missing = 0 \
+               AND l.content_hash > ?2 \
+             ORDER BY l.content_hash LIMIT ?3",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![kind, after_hash.unwrap_or(""), limit as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+
 pub fn prioritized_transcript_candidates(
     conn: &Connection,
+    kind: &str,
     hashes: &[String],
     limit: usize,
 ) -> Result<Vec<(String, String)>, String> {
+    if !matches!(kind, "video" | "audio") {
+        return Err(format!("unsupported transcription kind: {kind}"));
+    }
     if hashes.is_empty() {
         return Ok(Vec::new());
     }
@@ -822,13 +911,15 @@ pub fn prioritized_transcript_candidates(
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
          LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-         WHERE l.kind = 'video' AND c.duration_ms IS NOT NULL \
+         WHERE c.kind = '{kind}' AND ('{kind}' = 'audio' OR c.duration_ms IS NOT NULL) \
            AND r.transcript_state IS NULL AND p.missing = 0 \
          ORDER BY h.priority LIMIT {limit}"
     );
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map(params_from_iter(hashes), |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(params_from_iter(hashes), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
@@ -1335,7 +1426,9 @@ pub(crate) fn resource_class_for_issue(
     issue_id: i64,
 ) -> Result<Option<WorkClass>, String> {
     let kind: Option<String> = conn
-        .query_row("SELECT kind FROM issues WHERE id = ?1", [issue_id], |row| row.get(0))
+        .query_row("SELECT kind FROM issues WHERE id = ?1", [issue_id], |row| {
+            row.get(0)
+        })
         .optional()
         .map_err(|error| error.to_string())?;
     Ok(kind

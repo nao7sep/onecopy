@@ -6,8 +6,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::derived_state::{WorkCapabilities, WorkClass};
 use crate::derived_runtime::RuntimeSnapshot;
+use crate::derived_state::{WorkCapabilities, WorkClass};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,14 +61,12 @@ pub fn snapshot(
             ("paused", None)
         } else if debt.disabled {
             ("disabled", debt.reason)
-        } else if debt.runnable == 0 && debt.blocked > 0 {
+        } else if debt.unavailable || (debt.runnable == 0 && debt.blocked > 0) {
             ("unavailable", debt.reason)
         } else if debt.runnable == 0 && debt.failed > 0 {
             ("failed", Some("Open Issues to retry failed work"))
         } else if debt.runnable > 0 && runtime.busy {
             ("waiting", Some("Waiting for indexing or a file operation"))
-        } else if debt.runnable > 0 && class.idle_only() && !runtime.idle {
-            ("waiting", Some("Waiting until the app is idle"))
         } else if debt.runnable > 0 {
             ("queued", debt.reason)
         } else {

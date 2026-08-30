@@ -1,7 +1,7 @@
-//! On-demand transcription (Design: Video handling) — whisper.cpp linked into
-//! the app via `whisper-rs`, the large-v3-turbo model provisioned by the
-//! managed-dependency registry. Work starts either from the shared media surface's
-//! Transcribe control or from the derived-work coordinator.
+//! Shared video/audio transcription — whisper.cpp linked into the app via
+//! `whisper-rs`, with the large-v3-turbo model provisioned by the managed
+//! dependency registry. The two media kinds keep separate product policy and
+//! queues while this module owns their common extraction and inference engine.
 //!
 //! The transcript is DERIVED data keyed by content hash, cached in the
 //! `transcripts/` subtree like every other derived entry — reconstructible,
@@ -82,11 +82,11 @@ impl Drop for RemoveFile {
     }
 }
 
-/// Extracts a video's audio track as 16 kHz mono f32 PCM through the managed
+/// Extracts a media file's audio track as 16 kHz mono f32 PCM through the managed
 /// ffmpeg (bounded, cancellable — the same subprocess rules every ffmpeg call
 /// obeys). ~3.8 MB per minute of audio in memory, transient. An empty result
 /// is a successful no-audio finding, not a failure to retry forever.
-pub fn extract_pcm(ffmpeg: &Path, video: &Path, temp_dir: &Path) -> Result<Vec<f32>, String> {
+pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f32>, String> {
     crate::resource_limits::require_available(
         crate::resource_limits::PCM_REQUIRED_AVAILABLE,
         "Audio extraction",
@@ -107,7 +107,7 @@ pub fn extract_pcm(ffmpeg: &Path, video: &Path, temp_dir: &Path) -> Result<Vec<f
         "pipe:1",
         "-i",
     ]);
-    command.arg(video);
+    command.arg(media);
     command.args([
         "-map",
         "0:a:0",
@@ -250,7 +250,7 @@ pub fn transcribe_to_cache(
     temp_dir: &Path,
     model: Option<&Path>,
     ffmpeg: Option<&Path>,
-    video: &Path,
+    media: &Path,
     hash: &str,
     on_progress: impl FnMut(i32) + 'static,
 ) -> Result<String, String> {
@@ -265,7 +265,7 @@ pub fn transcribe_to_cache(
         temp_dir,
         model,
         ffmpeg,
-        video,
+        media,
         hash,
         on_progress,
     )
@@ -277,7 +277,7 @@ pub(crate) fn transcribe_to_cache_claimed(
     temp_dir: &Path,
     model: Option<&Path>,
     ffmpeg: Option<&Path>,
-    video: &Path,
+    media: &Path,
     hash: &str,
     on_progress: impl FnMut(i32) + 'static,
 ) -> Result<String, String> {
@@ -294,7 +294,7 @@ pub(crate) fn transcribe_to_cache_claimed(
     let Some(ffmpeg) = ffmpeg else {
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
-    let pcm = extract_pcm(ffmpeg, video, temp_dir)?;
+    let pcm = extract_pcm(ffmpeg, media, temp_dir)?;
     let text = if pcm.is_empty() {
         String::new()
     } else {

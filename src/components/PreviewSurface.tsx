@@ -243,7 +243,7 @@ function VideoSurface({
         <p className="shrink-0 text-xs text-danger">{externalError}</p>
       ) : null}
       <div className="max-h-[35%] shrink-0 overflow-hidden">
-        <TranscriptBlock hash={hash} />
+        <TranscriptBlock hash={hash} medium="video" />
       </div>
     </div>
   );
@@ -323,26 +323,35 @@ function ImageSurface({
  * streams over the mediafile protocol — by hash when one exists, by path id
  * otherwise (a memo with a unique size is never content-read). */
 function AudioSurface({
+  hash,
   src,
   fileName,
 }: {
+  hash: string | null;
   src: string;
   fileName: string;
 }) {
   const [, setAudioRef] = useOwnedMedia<HTMLAudioElement>();
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-4">
-      <p className="max-w-full truncate text-sm text-ink" title={fileName}>
-        {fileName}
-      </p>
-      {/* Keyed by src so playback state never carries across files. */}
-      <audio
-        ref={setAudioRef}
-        key={src}
-        controls
-        src={src}
-        className="w-full max-w-[420px]"
-      />
+    <div className="flex h-full min-h-0 w-full flex-col justify-center gap-5 p-4">
+      <div className="flex shrink-0 flex-col items-center gap-3">
+        <p className="max-w-full truncate text-sm text-ink" title={fileName}>
+          {fileName}
+        </p>
+        {/* Keyed by src so playback state never carries across files. */}
+        <audio
+          ref={setAudioRef}
+          key={src}
+          controls
+          src={src}
+          className="w-full max-w-[420px]"
+        />
+      </div>
+      {hash !== null ? (
+        <div className="max-h-[45%] shrink-0 overflow-hidden">
+          <TranscriptBlock hash={hash} medium="audio" />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -373,7 +382,7 @@ export default function PreviewSurface({
     const src =
       hash !== null ? originalUrl(hash) : pathId !== null ? originalUrlByPath(pathId) : null;
     if (src !== null) {
-      return <AudioSurface src={src} fileName={detail.fileName} />;
+      return <AudioSurface hash={hash} src={src} fileName={detail.fileName} />;
     }
   }
   if (hash === null && detail === null) {

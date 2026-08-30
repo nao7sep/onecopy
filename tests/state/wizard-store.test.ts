@@ -32,7 +32,16 @@ beforeEach(() => {
 });
 
 describe("finish", () => {
-  it("saves the directories and timezone", async () => {
+  it("saves the directories, timezone, and optional feature choices", async () => {
+    useWizardStore.setState({
+      optionalFeatures: {
+        videoSnapshotsEnabled: true,
+        similarPhotoAnalysisEnabled: false,
+        scoreFaces: true,
+        videoTranscriptionEnabled: false,
+        audioTranscriptionEnabled: true,
+      },
+    });
     await finishWizard();
 
     const merged = Object.assign({}, ...patchConfigPayloads()) as Record<
@@ -41,6 +50,13 @@ describe("finish", () => {
     >;
     expect(merged.sourceDirs).toEqual(["/root"]);
     expect(merged.defaultTimezone).toBe("Asia/Tokyo");
+    expect(merged).toMatchObject({
+      videoSnapshotsEnabled: true,
+      similarPhotoAnalysisEnabled: false,
+      scoreFaces: true,
+      videoTranscriptionEnabled: false,
+      audioTranscriptionEnabled: true,
+    });
   });
 
   it("does not save while timezone validation is pending or invalid", async () => {

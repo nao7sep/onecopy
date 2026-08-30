@@ -7,13 +7,14 @@ import { useSectionsStore } from "../state/sections-store";
 import { useWizardStore } from "../state/wizard-store";
 
 export async function finishWizard(): Promise<void> {
-  const { dirs, timezone, timezoneValid, timezonePending } =
+  const { dirs, timezone, timezoneValid, timezonePending, optionalFeatures } =
     useWizardStore.getState();
   if (!timezoneValid || timezonePending || timezone.trim() === "") return;
   try {
     await useAppStore.getState().patchConfig({
       sourceDirs: dirs.map((dir) => dir.path),
       defaultTimezone: timezone,
+      ...optionalFeatures,
     });
     // Rechecking after persistence prunes trust for removed roots; a later
     // re-add is first sight rather than a false substitution.

@@ -2,15 +2,18 @@ import { useEffect } from "react";
 import { useBinariesStore } from "../state/binaries-store";
 import { useDerivedWorkStore } from "../state/derived-work-store";
 import { useTranscriptStore } from "../state/transcript-store";
+import { useAppStore } from "../state/app-store";
 import Button from "./ui/Button";
 import type { ItemWorkState } from "../models/items";
 
 export default function TranscriptBlock({
   hash,
+  medium,
   variant = "full",
   work = null,
 }: {
   hash: string;
+  medium: "video" | "audio";
   variant?: "full" | "compact";
   /** Backend-authored item projection when the owning surface has it. The
    * transcript store still owns content and manual-action lifecycle. */
@@ -22,9 +25,15 @@ export default function TranscriptBlock({
   const cancel = useTranscriptStore((state) => state.cancel);
   const tools = useBinariesStore((state) => state.entries);
   const transcriptWork = useDerivedWorkStore((state) =>
-    state.snapshot?.classes.find((row) => row.id === "transcripts"),
+    state.snapshot?.classes.find((row) => row.id === `${medium}-transcripts`),
   );
   const masterPaused = useDerivedWorkStore((state) => state.snapshot?.masterPaused === true);
+  const automaticEnabled = useAppStore((state) => {
+    const config = state.appData?.config;
+    return medium === "video"
+      ? config?.videoTranscriptionEnabled !== false
+      : config?.audioTranscriptionEnabled !== false;
+  });
 
   useEffect(() => {
     void load(hash);
@@ -94,10 +103,14 @@ export default function TranscriptBlock({
         Not available — {work?.reason ?? "install ffmpeg and the transcription model from Managed tools"}.
       </p>
     );
+  } else if (state.status === "queued") {
+    content = <p className="text-xs text-ink-muted">Queued for transcription.</p>;
   } else if (waiting) {
     content = <p className="text-xs text-ink-muted">{work?.reason ?? "Queued — transcription is paused."}</p>;
   } else if (state.status === "loading") {
     content = <p className="text-xs text-ink-muted">Loading transcript…</p>;
+  } else if (automaticEnabled && work?.state !== "disabled") {
+    content = <p className="text-xs text-ink-muted">Queued for transcription.</p>;
   } else {
     content = <p className="text-xs text-ink-muted">Not transcribed yet.</p>;
   }
@@ -122,10 +135,14 @@ export default function TranscriptBlock({
           Managed tools
         </Button>
       );
-    } else {
+    } else if (
+      state.status === "failed" ||
+      work?.state === "disabled" ||
+      (!automaticEnabled && work === null)
+    ) {
       action = (
         <Button onClick={() => void start(hash)}>
-          {state.status === "failed" ? "Retry" : "Transcribe"}
+          {state.status === "failed" ? "Retry" : "Transcribe this file"}
         </Button>
       );
     }

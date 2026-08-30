@@ -11,6 +11,7 @@ import { recordInterfaceFailure } from "../utils/failureSurface";
 export type TranscriptStatus =
   | "loading"
   | "pending"
+  | "queued"
   | "running"
   | "ready"
   | "failed";
@@ -119,12 +120,10 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
   },
 
   start: async (hash) => {
-    active = { hash, percent: 0 };
-    publish(hash, { status: "running", message: null, percent: 0 });
+    publish(hash, { status: "queued", message: null, percent: null });
     try {
       await invoke("transcribe", { hash });
     } catch (error) {
-      if (active?.hash === hash) active = null;
       publish(hash, { status: "failed", message: String(error), percent: null });
       log.error("transcribe start failed", toErrorFields(error));
     }

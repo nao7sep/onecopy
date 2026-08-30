@@ -75,6 +75,10 @@ pub struct DefaultConfig {
     pub video_strip_seconds_per_frame: u32,
     pub video_strip_min_frames: u32,
     pub video_strip_max_frames: u32,
+    pub video_snapshots_enabled: bool,
+    pub similar_photo_analysis_enabled: bool,
+    pub video_transcription_enabled: bool,
+    pub audio_transcription_enabled: bool,
     /// Selection-follow playback and scene-click playback are separate user
     /// intents; both default on, but neither should force the other on.
     pub video_autoplay_on_show: bool,
@@ -93,9 +97,8 @@ pub struct DefaultConfig {
     /// Run the stat-only configured-source reconciliation after launch.
     pub check_source_folders_at_launch: bool,
     pub keep_awake_during_indexing: bool,
-    /// Face scoring for comparison-group ordering: OPT-IN (Phase 33). Off
-    /// means the models are not even downloaded by any automatic path, and
-    /// the coordinator never runs the pass; ordering falls back to sharpness.
+    /// Face scoring for comparison-group ordering. Off means the coordinator
+    /// does not run the optional pass; ordering falls back to sharpness.
     pub score_faces: bool,
     /// Show an existing face score as a subtle thumbnail/comparison hint.
     /// This is presentation-only and never causes scoring or model downloads.
@@ -128,6 +131,10 @@ impl Default for DefaultConfig {
             video_strip_seconds_per_frame: 20,
             video_strip_min_frames: 5,
             video_strip_max_frames: 40,
+            video_snapshots_enabled: true,
+            similar_photo_analysis_enabled: true,
+            video_transcription_enabled: true,
+            audio_transcription_enabled: true,
             video_autoplay_on_show: true,
             video_autoplay_after_snapshot: true,
             pairing_enabled: true,
@@ -138,7 +145,7 @@ impl Default for DefaultConfig {
             check_updates_at_launch: false,
             check_source_folders_at_launch: true,
             keep_awake_during_indexing: true,
-            score_faces: false,
+            score_faces: true,
             show_face_stars: true,
             confirm_trash_delete: false,
             source_dirs: Vec::new(),
@@ -585,5 +592,4 @@ mod tests {
             atomic_temp_name("config.json").unwrap()
         );
     }
-
 }

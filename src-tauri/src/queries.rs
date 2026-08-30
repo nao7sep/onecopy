@@ -352,7 +352,7 @@ fn hashed_section_select() -> String {
             EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                     WHERE pri.content_hash = c.hash AND comp.missing = 0 \
                       AND pri.missing = 0), \
-            c.duration_ms, l.kind, c.derived_at_utc, \
+            c.duration_ms, c.kind, c.derived_at_utc, \
             c.derived_version, c.strip_frames, r.face_state, c.face_score, \
             r.transcript_state \
      FROM logical_contents l \
@@ -462,10 +462,7 @@ fn hashed_section_dirs(
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows: Vec<(String, String)> = match bounds {
         Some((start, end)) => stmt
-            .query_map(
-                rusqlite::params![kind, start, end],
-                section_dir_from_row,
-            )
+            .query_map(rusqlite::params![kind, start, end], section_dir_from_row)
             .map_err(|e| e.to_string())?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?,
@@ -658,12 +655,20 @@ pub fn item_detail(
     hash: Option<&str>,
     path_id: Option<i64>,
 ) -> Result<ItemDetail, String> {
-    let copies: Vec<(i64, String, String, String, Option<i64>, Option<i64>, Option<String>, i64)> =
-        match (hash, path_id) {
-            (Some(hash), _) => {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
+    let copies: Vec<(
+        i64,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        i64,
+    )> = match (hash, path_id) {
+        (Some(hash), _) => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
                          p.resolved_utc_ms, p.resolved_source, p.date_only \
                          FROM paths p WHERE p.content_hash = ?1 AND p.missing = 0 \
                          ORDER BY p.resolved_utc_ms IS NULL, p.resolved_utc_ms, \
@@ -925,7 +930,16 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
 #[allow(clippy::type_complexity)]
 fn row_to_copy(
     r: &rusqlite::Row,
-) -> rusqlite::Result<(i64, String, String, String, Option<i64>, Option<i64>, Option<String>, i64)> {
+) -> rusqlite::Result<(
+    i64,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    i64,
+)> {
     Ok((
         r.get(0)?,
         r.get(1)?,
@@ -983,9 +997,13 @@ mod tests {
         ItemProjectionContext {
             capabilities: crate::derived_state::WorkCapabilities {
                 ffmpeg: true,
+                video_snapshots_enabled: true,
+                similarity_enabled: true,
                 face_enabled: false,
                 face_models: false,
-                transcripts: false,
+                transcription_model: false,
+                video_transcription_enabled: true,
+                audio_transcription_enabled: true,
             },
             similarity_dirty: false,
         }

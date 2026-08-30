@@ -24,6 +24,16 @@ const DETAIL = {
   stripFrames: 4,
 };
 
+const AUDIO_DETAIL = {
+  ...DETAIL,
+  fileName: "interview.m4a",
+  kind: "audio",
+  width: null,
+  height: null,
+  durationMs: 30_000,
+  stripFrames: null,
+};
+
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
@@ -169,5 +179,14 @@ describe("shared video presentation", () => {
     fireEvent.pointerUp(window, { pointerId: 10 });
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce();
     vi.useRealTimers();
+  });
+
+  it("shows audio playback and the shared content-owned transcript", async () => {
+    const view = render(
+      <PreviewSurface hash="audio-hash" detail={AUDIO_DETAIL} />,
+    );
+
+    expect(view.container.querySelector("audio")).not.toBeNull();
+    expect(await screen.findByText("[0:01] hello")).toBeTruthy();
   });
 });

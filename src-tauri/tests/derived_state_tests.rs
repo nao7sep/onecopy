@@ -78,7 +78,7 @@ fn resource_safety_pause_offers_resume_without_attaching_to_one_file() {
     index_store::upsert_issue(
         &conn,
         None,
-        "resource-limit-transcripts",
+        "resource-limit-video-transcripts",
         "Transcription needs more available memory",
     )
     .unwrap();
@@ -86,7 +86,7 @@ fn resource_safety_pause_offers_resume_without_attaching_to_one_file() {
     let (_, rows) = queries::issues(&conn, 20).unwrap();
     let issue = rows
         .iter()
-        .find(|row| row.kind == "resource-limit-transcripts")
+        .find(|row| row.kind == "resource-limit-video-transcripts")
         .unwrap();
     assert!(issue.path.is_none());
     assert_eq!(issue.recovery.as_ref().unwrap().label, "Resume");
@@ -168,16 +168,8 @@ fn successful_analysis_records_value_or_empty_and_retires_its_issue() {
 fn preview_poster_and_snapshot_transitions_retire_their_current_issue() {
     let (_dir, conn) = seeded();
 
-    derived_state::record_preview_success(
-        &conn,
-        "image",
-        "/image.jpg",
-        4000,
-        3000,
-        12.5,
-        42,
-    )
-    .unwrap();
+    derived_state::record_preview_success(&conn, "image", "/image.jpg", 4000, 3000, 12.5, 42)
+        .unwrap();
     derived_state::record_poster_success(&conn, "poster", "/poster.mov", 30_000).unwrap();
     derived_state::record_strip_success(&conn, "strip", "/strip.mov", 8).unwrap();
 

@@ -274,8 +274,9 @@ export default function BinariesModal() {
         </Row>
       </div>
       <p className="mt-2 text-xs text-ink-muted">
-        Videos and HEIC photos need ffmpeg; the models power transcription and
-        smarter similar-photo matching. Everything else works without them.
+        Video, audio transcription, and HEIC photos need ffmpeg; the models
+        power transcription and smarter similar-photo matching. Everything
+        else works without them.
       </p>
     </ModalShell>
   );

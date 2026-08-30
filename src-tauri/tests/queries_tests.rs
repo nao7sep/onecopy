@@ -7,11 +7,11 @@
 // comparison surface renders.
 
 use chrono_tz::Tz;
-use rusqlite::{params, Connection};
 use onecopy_lib::derived_state;
 use onecopy_lib::index_store;
 use onecopy_lib::preview;
 use onecopy_lib::queries;
+use rusqlite::{params, Connection};
 
 struct TestDb {
     _dir: tempfile::TempDir,
@@ -39,9 +39,13 @@ fn projection() -> queries::ItemProjectionContext {
     queries::ItemProjectionContext {
         capabilities: derived_state::WorkCapabilities {
             ffmpeg: true,
+            video_snapshots_enabled: true,
+            similarity_enabled: true,
             face_enabled: false,
             face_models: false,
-            transcripts: false,
+            transcription_model: false,
+            video_transcription_enabled: true,
+            audio_transcription_enabled: true,
         },
         similarity_dirty: false,
     }
@@ -75,7 +79,12 @@ fn seed_image(conn: &Connection, hash: &str, derived_at: Option<&str>, name: &st
 fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
     let conn = db();
     seed_image(&conn, "hdone", Some("2026-01-02T03:04:05.000Z"), "done.jpg");
-    seed_image(&conn, "hblocked", Some(preview::NEEDS_FFMPEG), "blocked.jpg");
+    seed_image(
+        &conn,
+        "hblocked",
+        Some(preview::NEEDS_FFMPEG),
+        "blocked.jpg",
+    );
     seed_image(&conn, "hfailed", Some("failed"), "failed.jpg");
 
     let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
@@ -98,7 +107,12 @@ fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
 #[test]
 fn item_work_projection_preserves_completed_truth_without_current_tools() {
     let conn = db();
-    seed_image(&conn, "photo", Some("2026-01-02T03:04:05.000Z"), "photo.jpg");
+    seed_image(
+        &conn,
+        "photo",
+        Some("2026-01-02T03:04:05.000Z"),
+        "photo.jpg",
+    );
     conn.execute_batch(
         "UPDATE contents SET face_score = 0.75 WHERE hash = 'photo';
          INSERT INTO analysis_receipts (content_hash, face_state)
@@ -134,9 +148,13 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
     let projection = queries::ItemProjectionContext {
         capabilities: derived_state::WorkCapabilities {
             ffmpeg: false,
+            video_snapshots_enabled: true,
+            similarity_enabled: true,
             face_enabled: false,
             face_models: false,
-            transcripts: false,
+            transcription_model: false,
+            video_transcription_enabled: true,
+            audio_transcription_enabled: true,
         },
         similarity_dirty: true,
     };
@@ -177,9 +195,13 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
         queries::ItemProjectionContext {
             capabilities: derived_state::WorkCapabilities {
                 ffmpeg: true,
+                video_snapshots_enabled: true,
+                similarity_enabled: true,
                 face_enabled: false,
                 face_models: false,
-                transcripts: false,
+                transcription_model: false,
+                video_transcription_enabled: true,
+                audio_transcription_enabled: true,
             },
             similarity_dirty: false,
         },
@@ -200,7 +222,12 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
 #[test]
 fn stale_preview_is_pending_everywhere_and_is_not_advertised_as_current() {
     let conn = db();
-    seed_image(&conn, "stale", Some("2026-01-02T03:04:05.000Z"), "stale.jpg");
+    seed_image(
+        &conn,
+        "stale",
+        Some("2026-01-02T03:04:05.000Z"),
+        "stale.jpg",
+    );
     conn.execute(
         "UPDATE contents SET derived_version = ?1 WHERE hash = 'stale'",
         [derived_state::DERIVE_VERSION - 1],
@@ -213,9 +240,13 @@ fn stale_preview_is_pending_everywhere_and_is_not_advertised_as_current() {
         queries::ItemProjectionContext {
             capabilities: derived_state::WorkCapabilities {
                 ffmpeg: true,
+                video_snapshots_enabled: true,
+                similarity_enabled: true,
                 face_enabled: true,
                 face_models: true,
-                transcripts: true,
+                transcription_model: true,
+                video_transcription_enabled: true,
+                audio_transcription_enabled: true,
             },
             similarity_dirty: false,
         },
@@ -409,7 +440,12 @@ fn fully_checked_copies_without_an_acceptable_date_are_completed_undated() {
 #[test]
 fn logical_summary_tracks_representative_date_name_and_presence_changes() {
     let conn = db();
-    seed_image(&conn, "hmoving", Some("2026-02-01T00:00:00.000Z"), "later.jpg");
+    seed_image(
+        &conn,
+        "hmoving",
+        Some("2026-02-01T00:00:00.000Z"),
+        "later.jpg",
+    );
     conn.execute(
         "UPDATE paths SET resolved_utc_ms = ?1 WHERE content_hash = 'hmoving'",
         [1_769_904_000_000i64],
@@ -429,13 +465,23 @@ fn logical_summary_tracks_representative_date_name_and_presence_changes() {
     assert_eq!(january[0].copy_count, 2);
     assert_eq!(january[0].file_name, "early.jpg", "the oldest copy supplies the name");
 
-    conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'early.jpg'", [])
-        .unwrap();
-    assert!(queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection())
-        .unwrap()
-        .is_empty());
-    let february = queries::section_items(&conn, "image", "2026-02", Tz::UTC, projection()).unwrap();
-    assert_eq!(february.len(), 1, "the remaining copy defines the logical month");
+    conn.execute(
+        "UPDATE paths SET missing = 1 WHERE file_name = 'early.jpg'",
+        [],
+    )
+    .unwrap();
+    assert!(
+        queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection())
+            .unwrap()
+            .is_empty()
+    );
+    let february =
+        queries::section_items(&conn, "image", "2026-02", Tz::UTC, projection()).unwrap();
+    assert_eq!(
+        february.len(),
+        1,
+        "the remaining copy defines the logical month"
+    );
     assert_eq!(february[0].copy_count, 1);
     assert_eq!(february[0].file_name, "later.jpg");
 }
@@ -471,10 +517,14 @@ fn a_recurring_issue_is_one_row_whose_last_seen_moves() {
     // every scan piled up identical rows. Identity is (kind, path) — a
     // recurrence UPDATES, and first-seen keeps the original onset.
     let conn = db();
-    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "decode-error", "first failure")
-        .unwrap();
-    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "decode-error", "same failure again")
-        .unwrap();
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "decode-error", "first failure").unwrap();
+    index_store::upsert_issue(
+        &conn,
+        Some("/root/a.jpg"),
+        "decode-error",
+        "same failure again",
+    )
+    .unwrap();
     // A different KIND on the same path is a different condition.
     index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "unrelated").unwrap();
 
@@ -588,13 +638,7 @@ fn section_dirs_matches_the_directories_of_section_items() {
     seed_at(&conn, "hjan", "/root/jan", "b.jpg", 1_769_853_600_000);
     // Rescan consumes filesystem identity, not display text. Windows stores
     // the verbatim spelling and must receive it back unchanged.
-    seed_at(
-        &conn,
-        "hwin",
-        r"\\?\C:\photos",
-        "c.jpg",
-        1_769_853_600_000,
-    );
+    seed_at(&conn, "hwin", r"\\?\C:\photos", "c.jpg", 1_769_853_600_000);
 
     for month in ["2026-01", "2026-02"] {
         let items = queries::section_items(&conn, "image", month, tz, projection()).unwrap();
@@ -665,18 +709,35 @@ fn section_dirs_cover_hashed_and_unhashed_other_files_when_dated_or_undated() {
 fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
     // What the entire keep-one-delete-the-rest surface renders. Zero tests.
     let conn = db();
-    seed_image(&conn, "sharp", Some("2026-01-02T03:04:05.000Z"), "sharp.jpg");
+    seed_image(
+        &conn,
+        "sharp",
+        Some("2026-01-02T03:04:05.000Z"),
+        "sharp.jpg",
+    );
     seed_image(&conn, "soft", Some("2026-01-02T03:04:05.000Z"), "soft.jpg");
     seed_image(&conn, "gone", Some("2026-01-02T03:04:05.000Z"), "gone.jpg");
-    conn.execute("UPDATE contents SET sharpness = 9.0 WHERE hash = 'sharp'", [])
-        .unwrap();
-    conn.execute("UPDATE contents SET sharpness = 1.0 WHERE hash = 'soft'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE contents SET sharpness = 9.0 WHERE hash = 'sharp'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE contents SET sharpness = 1.0 WHERE hash = 'soft'",
+        [],
+    )
+    .unwrap();
     // Every path of this member vanished from disk.
-    conn.execute("UPDATE paths SET missing = 1 WHERE content_hash = 'gone'", [])
-        .unwrap();
-    conn.execute("INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x')", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE paths SET missing = 1 WHERE content_hash = 'gone'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x')",
+        [],
+    )
+    .unwrap();
     for hash in ["sharp", "soft", "gone"] {
         conn.execute(
             "INSERT INTO similar_group_members (group_id, content_hash) VALUES (1, ?1)",
@@ -705,10 +766,20 @@ fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
 #[test]
 fn issue_rows_never_carry_the_verbatim_prefix() {
     let conn = db();
-    index_store::upsert_issue(&conn, Some(r"\\?\C:\photos\broken.heic"), "decode-error", "x")
-        .unwrap();
-    index_store::upsert_issue(&conn, Some(r"\\?\UNC\nas\media\clip.mov"), "video-poster-error", "y")
-        .unwrap();
+    index_store::upsert_issue(
+        &conn,
+        Some(r"\\?\C:\photos\broken.heic"),
+        "decode-error",
+        "x",
+    )
+    .unwrap();
+    index_store::upsert_issue(
+        &conn,
+        Some(r"\\?\UNC\nas\media\clip.mov"),
+        "video-poster-error",
+        "y",
+    )
+    .unwrap();
     // A rootless issue keeps its empty path as None, which the prefix strip
     // must not disturb.
     index_store::upsert_issue(&conn, None, "walk-error", "z").unwrap();
@@ -765,14 +836,8 @@ fn equal_dates_choose_the_case_insensitive_path_order_then_exact_path() {
     )
     .unwrap();
 
-    let items = queries::section_items(
-        &conn,
-        "image",
-        "1970-01",
-        chrono_tz::UTC,
-        projection(),
-    )
-    .unwrap();
+    let items =
+        queries::section_items(&conn, "image", "1970-01", chrono_tz::UTC, projection()).unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].file_name, "Photo.jpg");
     assert_eq!(items[0].dir_paths, vec!["/A", "/a", "/z"]);

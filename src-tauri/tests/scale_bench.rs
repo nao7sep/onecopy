@@ -19,9 +19,13 @@ fn item_projection() -> queries::ItemProjectionContext {
     queries::ItemProjectionContext {
         capabilities: derived_state::WorkCapabilities {
             ffmpeg: true,
+            video_snapshots_enabled: true,
+            similarity_enabled: true,
             face_enabled: false,
             face_models: false,
-            transcripts: false,
+            transcription_model: false,
+            video_transcription_enabled: true,
+            audio_transcription_enabled: true,
         },
         similarity_dirty: false,
     }
@@ -70,14 +74,9 @@ fn six_item_section_in_a_million_row_index() {
     }
 
     let started = Instant::now();
-    let items = queries::section_items(
-        &conn,
-        "image",
-        "2026-01",
-        chrono_tz::UTC,
-        item_projection(),
-    )
-    .unwrap();
+    let items =
+        queries::section_items(&conn, "image", "2026-01", chrono_tz::UTC, item_projection())
+            .unwrap();
     eprintln!(
         "opened six items among one million logical rows in {:?}",
         started.elapsed()
@@ -242,7 +241,6 @@ fn background_work_snapshot_across_one_million_live_items() {
 
     let runtime = derived_runtime::snapshot(RuntimeConditions {
         busy: false,
-        idle: true,
         similarity_dirty: false,
     })
     .unwrap();
@@ -252,9 +250,13 @@ fn background_work_snapshot_across_one_million_live_items() {
         runtime,
         derived_state::WorkCapabilities {
             ffmpeg: true,
+            video_snapshots_enabled: true,
+            similarity_enabled: true,
             face_enabled: true,
             face_models: true,
-            transcripts: true,
+            transcription_model: true,
+            video_transcription_enabled: true,
+            audio_transcription_enabled: true,
         },
     )
     .unwrap();
@@ -349,6 +351,7 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
     loop {
         let rows = derived_state::transcript_candidates(
             &conn,
+            "video",
             transcript_after.as_deref(),
             derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
         )

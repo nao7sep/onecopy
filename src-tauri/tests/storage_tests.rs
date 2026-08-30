@@ -22,11 +22,16 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["similarityMaxGapSeconds"], serde_json::json!(90));
     assert_eq!(value["previewLongEdgePx"], serde_json::json!(1600));
     assert_eq!(value["videoAutoplayOnShow"], serde_json::json!(true));
+    assert_eq!(value["videoAutoplayAfterSnapshot"], serde_json::json!(true));
+    assert_eq!(value["pairingEnabled"], serde_json::json!(true));
+    assert_eq!(value["videoSnapshotsEnabled"], serde_json::json!(true));
     assert_eq!(
-        value["videoAutoplayAfterSnapshot"],
+        value["similarPhotoAnalysisEnabled"],
         serde_json::json!(true)
     );
-    assert_eq!(value["pairingEnabled"], serde_json::json!(true));
+    assert_eq!(value["scoreFaces"], serde_json::json!(true));
+    assert_eq!(value["videoTranscriptionEnabled"], serde_json::json!(true));
+    assert_eq!(value["audioTranscriptionEnabled"], serde_json::json!(true));
     assert_eq!(value["checkSourceFoldersAtLaunch"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert!(value.get("verifyAfterCopy").is_none());
@@ -145,7 +150,11 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
     assert!(after3.get("a").is_some());
 
     // A missing file starts from an empty document.
-    let fresh = patch_json_store(&dir.join("state.json"), &serde_json::json!({ "zoomLevel": 1.2 })).unwrap();
+    let fresh = patch_json_store(
+        &dir.join("state.json"),
+        &serde_json::json!({ "zoomLevel": 1.2 }),
+    )
+    .unwrap();
     assert_eq!(fresh.merged, serde_json::json!({ "zoomLevel": 1.2 }));
     assert!(fresh.quarantined.is_none(), "a missing file is first-run, not corruption");
 }

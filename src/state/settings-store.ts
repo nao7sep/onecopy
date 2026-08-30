@@ -22,6 +22,10 @@ export interface SettingsDraft {
   videoStripSecondsPerFrame: number;
   videoStripMinFrames: number;
   videoStripMaxFrames: number;
+  videoSnapshotsEnabled: boolean;
+  similarPhotoAnalysisEnabled: boolean;
+  videoTranscriptionEnabled: boolean;
+  audioTranscriptionEnabled: boolean;
   videoAutoplayOnShow: boolean;
   videoAutoplayAfterSnapshot: boolean;
   pairingEnabled: boolean;
@@ -78,6 +82,10 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     videoStripSecondsPerFrame: numberOr(config?.videoStripSecondsPerFrame, 20),
     videoStripMinFrames: numberOr(config?.videoStripMinFrames, 5),
     videoStripMaxFrames: numberOr(config?.videoStripMaxFrames, 40),
+    videoSnapshotsEnabled: config?.videoSnapshotsEnabled !== false,
+    similarPhotoAnalysisEnabled: config?.similarPhotoAnalysisEnabled !== false,
+    videoTranscriptionEnabled: config?.videoTranscriptionEnabled !== false,
+    audioTranscriptionEnabled: config?.audioTranscriptionEnabled !== false,
     videoAutoplayOnShow: config?.videoAutoplayOnShow !== false,
     videoAutoplayAfterSnapshot: config?.videoAutoplayAfterSnapshot !== false,
     pairingEnabled: config?.pairingEnabled !== false,
@@ -88,8 +96,7 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     checkSourceFoldersAtLaunch: config?.checkSourceFoldersAtLaunch !== false,
     // Opt-in, so absence means OFF — the opposite polarity of the two above.
     confirmTrashDelete: config?.confirmTrashDelete === true,
-    // Opt-in (Phase 33): absence means OFF.
-    scoreFaces: config?.scoreFaces === true,
+    scoreFaces: config?.scoreFaces !== false,
     // Presentation is independent of scoring: existing results remain useful
     // after the optional background analysis is turned off.
     showFaceStars: config?.showFaceStars !== false,

@@ -2,11 +2,11 @@
 //! time facts, then wakes this coordinator; previews, video posters, scene
 //! strips, transcripts, face scores, and similarity are never scan phases.
 //!
-//! Preview/poster work runs one item at a time in bounded fair batches and may run while the
-//! user is active so newly indexed media becomes visible. Expensive optional
-//! work runs only after a minute without input. All classes re-read settings
-//! for each pass, so installing a tool or changing a feature takes effect on
-//! the next wake without restarting either indexing or the app.
+//! Preview/poster work runs one item at a time in bounded fair batches. Work
+//! near the selected and visible items may run while the user is active;
+//! global backlogs wait for idle time. All classes re-read settings for each
+//! pass, so installing a tool or changing a feature takes effect on the next
+//! wake without restarting either indexing or the app.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -33,10 +33,16 @@ static PRIORITY: LazyLock<Mutex<PriorityHints>> =
 
 const IDLE_AFTER_MS: i64 = 60_000;
 const POLL_SECONDS: u64 = 15;
-const IMAGE_BATCH: usize = 64;
-const VIDEO_BATCH: usize = 8;
-const PRIORITY_BATCH: usize = 64;
+const VISIBLE_PREVIEW_TURN: usize = 8;
+const SECTION_PREVIEW_TURN: usize = 1;
 const SECTION_HINT_LIMIT: usize = 256;
+const OPTIONAL_CLASSES: [WorkClass; 5] = [
+    WorkClass::Similarity,
+    WorkClass::Snapshots,
+    WorkClass::VideoTranscripts,
+    WorkClass::AudioTranscripts,
+    WorkClass::Faces,
+];
 
 #[derive(Clone, Default)]
 struct PriorityHints {
@@ -54,8 +60,10 @@ struct CandidateCursor {
 #[derive(Default)]
 struct CandidateCursors {
     snapshots: CandidateCursor,
-    transcripts: CandidateCursor,
     faces: CandidateCursor,
+    video_transcripts: CandidateCursor,
+    audio_transcripts: CandidateCursor,
+    next_optional: usize,
 }
 
 #[derive(Clone)]
@@ -73,18 +81,27 @@ pub struct Settings {
     pub thumb_edge: u32,
     pub preview_long_edge: u32,
     pub ffmpeg: Option<PathBuf>,
+    pub video_snapshots_enabled: bool,
+    pub similarity_enabled: bool,
     pub face_enabled: bool,
     pub face_models: Option<(PathBuf, PathBuf)>,
+    pub transcription_model: Option<PathBuf>,
+    pub video_transcription_enabled: bool,
+    pub audio_transcription_enabled: bool,
     pub temp_dir: PathBuf,
 }
 
 impl Settings {
-    fn capabilities(&self, transcripts: bool) -> crate::derived_state::WorkCapabilities {
+    fn capabilities(&self) -> crate::derived_state::WorkCapabilities {
         crate::derived_state::WorkCapabilities {
             ffmpeg: self.ffmpeg.is_some(),
+            video_snapshots_enabled: self.video_snapshots_enabled,
+            similarity_enabled: self.similarity_enabled,
             face_enabled: self.face_enabled,
             face_models: self.face_models.is_some(),
-            transcripts,
+            transcription_model: self.transcription_model.is_some(),
+            video_transcription_enabled: self.video_transcription_enabled,
+            audio_transcription_enabled: self.audio_transcription_enabled,
         }
     }
 }
@@ -105,7 +122,14 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
                 .then(|| crate::binaries_manager::installed_path(data_root, spec))
         })
     };
-    let score_faces = get("scoreFaces").and_then(|v| v.as_bool()).unwrap_or(false);
+    let score_faces = get("scoreFaces")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(defaults.score_faces);
+    let bool_of = |key: &str, fallback: bool| {
+        get(key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(fallback)
+    };
 
     Settings {
         data_root: data_root.to_path_buf(),
@@ -142,19 +166,34 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
             let path = crate::binaries_manager::ffmpeg_path(data_root);
             path.is_file().then_some(path)
         },
+        video_snapshots_enabled: bool_of("videoSnapshotsEnabled", defaults.video_snapshots_enabled),
+        similarity_enabled: bool_of(
+            "similarPhotoAnalysisEnabled",
+            defaults.similar_photo_analysis_enabled,
+        ),
         face_enabled: score_faces,
         face_models: score_faces
             .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
             .flatten(),
+        transcription_model: installed("whisper-large-v3-turbo"),
+        video_transcription_enabled: bool_of(
+            "videoTranscriptionEnabled",
+            defaults.video_transcription_enabled,
+        ),
+        audio_transcription_enabled: bool_of(
+            "audioTranscriptionEnabled",
+            defaults.audio_transcription_enabled,
+        ),
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
     }
 }
 
-pub fn work_capabilities(data_root: &Path) -> Result<crate::derived_state::WorkCapabilities, String> {
+pub fn work_capabilities(
+    data_root: &Path,
+) -> Result<crate::derived_state::WorkCapabilities, String> {
     let config = crate::storage::read_config_for_setup(data_root)?;
     let settings = settings_from_config(config.as_ref(), data_root);
-    let transcripts = settings.ffmpeg.is_some() && whisper_model(data_root).is_some();
-    Ok(settings.capabilities(transcripts))
+    Ok(settings.capabilities())
 }
 
 pub fn note_activity() {
@@ -205,6 +244,8 @@ pub fn set_priority(
     visible: Vec<String>,
     section: Option<SectionPriority>,
 ) {
+    let required_changed = crate::derived_runtime::automatic_optional_active()
+        && required_priority_pending(selected.as_deref(), &visible);
     match PRIORITY.lock() {
         Ok(mut hints) => {
             hints.selected = selected;
@@ -213,7 +254,33 @@ pub fn set_priority(
         }
         Err(_) => logging::error("derived-work priority state is unavailable", json!({})),
     }
+    if required_changed {
+        crate::derived_runtime::preempt_automatic_optional_for_required();
+    }
     wake(false);
+}
+
+fn required_priority_pending(selected: Option<&str>, visible: &[String]) -> bool {
+    let Some(data_root) = crate::DATA_ROOT.get() else {
+        return false;
+    };
+    let Ok(config) = crate::storage::read_config_for_setup(data_root) else {
+        return false;
+    };
+    let settings = settings_from_config(config.as_ref(), data_root);
+    let Ok(conn) = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))
+    else {
+        return false;
+    };
+    priority_candidates_for_class(
+        &conn,
+        &settings,
+        WorkClass::Previews.id(),
+        selected,
+        visible,
+        None,
+    )
+    .is_ok_and(|candidates| !candidates.is_empty())
 }
 
 pub fn start(app: AppHandle) -> Result<bool, String> {
@@ -237,9 +304,7 @@ pub fn started() -> bool {
 }
 
 fn derived_worker(app: AppHandle) {
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_worker_loop(&app)
-    }));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_worker_loop(&app)));
     STARTED.store(false, Ordering::SeqCst);
     let failure = match outcome {
         Ok(Ok(())) => return,
@@ -306,10 +371,9 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
                 }
                 run_again = did_work;
             }
-            Err(error) if error.starts_with(crate::scanner::CANCELLED) => logging::debug(
-                "derived work stopped",
-                json!({ "reason": "cancelled" }),
-            ),
+            Err(error) if error.starts_with(crate::scanner::CANCELLED) => {
+                logging::debug("derived work stopped", json!({ "reason": "cancelled" }))
+            }
             Err(error) => return Err(error),
         }
     }
@@ -342,9 +406,7 @@ pub fn ensure_preview(
         wake(false);
     }
     let projection = crate::queries::ItemProjectionContext {
-        capabilities: settings.capabilities(
-            settings.ffmpeg.is_some() && whisper_model(data_root).is_some(),
-        ),
+        capabilities: settings.capabilities(),
         similarity_dirty: SIMILARITY_DIRTY.load(Ordering::SeqCst),
     };
     notify_item_update(
@@ -369,9 +431,8 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
     let settings = settings_from_config(config.as_ref(), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
-    let whisper = whisper_model(&data_root);
     let mut projection = crate::queries::ItemProjectionContext {
-        capabilities: settings.capabilities(settings.ffmpeg.is_some() && whisper.is_some()),
+        capabilities: settings.capabilities(),
         similarity_dirty: SIMILARITY_DIRTY.load(Ordering::SeqCst),
     };
 
@@ -379,27 +440,112 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         .lock()
         .map_err(|_| "derived-work priority state is unavailable".to_string())?
         .clone();
-    let priority = priority_candidates(
+    let visible_previews = priority_candidates_for_class(
         &conn,
         &settings,
+        WorkClass::Previews.id(),
         hints.selected.as_deref(),
         &hints.visible,
+        None,
+    )?;
+    if derive_priority_previews(
+        app,
+        &conn,
+        &cache,
+        &settings,
+        &mut projection,
+        &visible_previews,
+        VISIBLE_PREVIEW_TURN,
+    )? {
+        return Ok(true);
+    }
+
+    if run_priority_optional_turn(
+        app,
+        &conn,
+        &cache,
+        &settings,
+        projection,
+        cursors,
+        hints.selected.as_deref(),
+        &hints.visible,
+        None,
+    )? {
+        return Ok(true);
+    }
+
+    let section_previews = priority_candidates_for_class(
+        &conn,
+        &settings,
+        WorkClass::Previews.id(),
+        None,
+        &[],
         hints.section.as_ref(),
     )?;
-    let mut priority_done = 0usize;
-    for hash in priority {
+    if derive_priority_previews(
+        app,
+        &conn,
+        &cache,
+        &settings,
+        &mut projection,
+        &section_previews,
+        SECTION_PREVIEW_TURN,
+    )? {
+        return Ok(true);
+    }
+
+    if run_priority_optional_turn(
+        app,
+        &conn,
+        &cache,
+        &settings,
+        projection,
+        cursors,
+        None,
+        &[],
+        hints.section.as_ref(),
+    )? {
+        return Ok(true);
+    }
+
+    if !is_idle() {
+        crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
+        return Ok(false);
+    }
+
+    let required = derive_global_required(app, &conn, &cache, &settings, &mut projection)?;
+    let optional = run_global_optional_turn(app, &conn, &cache, &settings, projection, cursors)?;
+    let did_work = required || optional;
+    if !did_work {
+        crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
+        emit_state_changed(app);
+    }
+    Ok(did_work)
+}
+
+fn derive_priority_previews(
+    app: &AppHandle,
+    conn: &Connection,
+    cache: &CachePaths,
+    settings: &Settings,
+    projection: &mut crate::queries::ItemProjectionContext,
+    hashes: &[String],
+    limit: usize,
+) -> Result<bool, String> {
+    let mut did_work = false;
+    for hash in hashes.iter().take(limit) {
         if !available() {
-            return Ok(false);
+            break;
         }
         let image = with_active(app, WorkClass::Previews, || {
-            crate::derived_runtime::active_item(app, WorkClass::Previews, &hash);
+            crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
             crate::preview::derive_image_hash(
-                &conn,
-                &cache,
+                conn,
+                cache,
                 settings.thumb_edge,
                 settings.preview_long_edge,
                 settings.ffmpeg.as_deref(),
-                &hash,
+                hash,
             )
         })?
         .unwrap_or_default();
@@ -409,273 +555,357 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
                 projection.similarity_dirty = true;
             }
             emit_progress(app, WorkClass::Previews, None);
-            notify_image_changes(app, &conn, projection, &image.changes);
+            notify_image_changes(app, conn, *projection, &image.changes);
             notify_issues(app);
-            priority_done += 1;
-        } else {
-            let video = with_active(app, WorkClass::Previews, || {
-                crate::derived_runtime::active_item(app, WorkClass::Previews, &hash);
-                crate::video::derive_video_hash(
-                    &conn,
-                    &cache,
-                    settings.ffmpeg.as_deref(),
-                    &settings.temp_dir,
-                    settings.thumb_edge,
-                    settings.preview_long_edge,
-                    &hash,
-                )
-            })?
-            .unwrap_or_default();
-            if video.derived + video.failed > 0 {
-                emit_progress(app, WorkClass::Previews, None);
-                notify_video_changes(app, &conn, projection, &video.changed_hashes);
-                notify_issues(app);
-                priority_done += 1;
-            }
+            did_work = true;
+            continue;
         }
-        if priority_done == PRIORITY_BATCH {
-            return Ok(true);
-        }
-    }
-
-    let mut image_budget_full = false;
-    for index in 0..IMAGE_BATCH {
-        if !available() {
-            return Ok(false);
-        }
-        let image = with_active(app, WorkClass::Previews, || {
-            crate::preview::derive_next_image(
-                &conn,
-                &cache,
+        let video = with_active(app, WorkClass::Previews, || {
+            crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
+            crate::video::derive_video_hash(
+                conn,
+                cache,
+                settings.ffmpeg.as_deref(),
+                &settings.temp_dir,
                 settings.thumb_edge,
                 settings.preview_long_edge,
-                settings.ffmpeg.as_deref(),
-                &|hash| {
-                    crate::derived_runtime::active_item(app, WorkClass::Previews, hash)
-                },
+                hash,
             )
         })?
         .unwrap_or_default();
-        if image.derived + image.failed + image.blocked_no_ffmpeg == 0 {
-            break;
+        if video.derived + video.failed > 0 {
+            emit_progress(app, WorkClass::Previews, None);
+            notify_video_changes(app, conn, *projection, &video.changed_hashes);
+            notify_issues(app);
+            did_work = true;
         }
+    }
+    Ok(did_work)
+}
+
+fn derive_global_required(
+    app: &AppHandle,
+    conn: &Connection,
+    cache: &CachePaths,
+    settings: &Settings,
+    projection: &mut crate::queries::ItemProjectionContext,
+) -> Result<bool, String> {
+    if !available() {
+        return Ok(false);
+    }
+    let image = with_active(app, WorkClass::Previews, || {
+        crate::preview::derive_next_image(
+            conn,
+            cache,
+            settings.thumb_edge,
+            settings.preview_long_edge,
+            settings.ffmpeg.as_deref(),
+            &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
+        )
+    })?
+    .unwrap_or_default();
+    let mut did_work = image.derived + image.failed + image.blocked_no_ffmpeg > 0;
+    if did_work {
         if image.derived > 0 {
             SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
             projection.similarity_dirty = true;
         }
         emit_progress(app, WorkClass::Previews, None);
-        notify_image_changes(app, &conn, projection, &image.changes);
+        notify_image_changes(app, conn, *projection, &image.changes);
         notify_issues(app);
-        if index + 1 == IMAGE_BATCH {
-            image_budget_full = true;
-        }
     }
-
-    let mut video_budget_full = false;
-    for index in 0..VIDEO_BATCH {
-        if !available() {
-            return Ok(false);
-        }
-        let video = with_active(app, WorkClass::Previews, || {
-            crate::video::derive_next_video(
-                &conn,
-                &cache,
-                settings.ffmpeg.as_deref(),
-                &settings.temp_dir,
-                settings.thumb_edge,
-                settings.preview_long_edge,
-                &|hash| {
-                    crate::derived_runtime::active_item(app, WorkClass::Previews, hash)
-                },
-            )
-        })?
-        .unwrap_or_default();
-        if video.derived + video.failed == 0 {
-            break;
-        }
+    if !available() {
+        return Ok(did_work);
+    }
+    let video = with_active(app, WorkClass::Previews, || {
+        crate::video::derive_next_video(
+            conn,
+            cache,
+            settings.ffmpeg.as_deref(),
+            &settings.temp_dir,
+            settings.thumb_edge,
+            settings.preview_long_edge,
+            &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
+        )
+    })?
+    .unwrap_or_default();
+    if video.derived + video.failed > 0 {
         emit_progress(app, WorkClass::Previews, None);
-        notify_video_changes(app, &conn, projection, &video.changed_hashes);
+        notify_video_changes(app, conn, *projection, &video.changed_hashes);
         notify_issues(app);
-        if index + 1 == VIDEO_BATCH {
-            video_budget_full = true;
+        did_work = true;
+    }
+    Ok(did_work)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_priority_optional_turn(
+    app: &AppHandle,
+    conn: &Connection,
+    cache: &CachePaths,
+    settings: &Settings,
+    projection: crate::queries::ItemProjectionContext,
+    cursors: &mut CandidateCursors,
+    selected: Option<&str>,
+    visible: &[String],
+    section: Option<&SectionPriority>,
+) -> Result<bool, String> {
+    for class in OPTIONAL_CLASSES {
+        let mut candidates =
+            priority_candidates_for_class(conn, settings, class.id(), selected, visible, section)?;
+        candidates.truncate(1);
+        if !candidates.is_empty()
+            && run_optional_class(
+                app,
+                conn,
+                cache,
+                settings,
+                projection,
+                cursors,
+                class,
+                &candidates,
+                true,
+            )?
+        {
+            return Ok(true);
         }
     }
+    Ok(false)
+}
 
-    if image_budget_full || video_budget_full {
-        return Ok(true);
-    }
-
-    if !class_paused(WorkClass::Similarity) && SIMILARITY_DIRTY.load(Ordering::SeqCst) {
-        let result = with_active(app, WorkClass::Similarity, || {
-            // Clear only after claiming the owner. Preview work that completes
-            // during this rebuild sets the bit again and therefore cannot be
-            // lost behind this cohort's result.
-            SIMILARITY_DIRTY.store(false, Ordering::SeqCst);
-            crate::similarity::rebuild_groups_for_root_cancellable(
-                &conn,
-                &settings.similarity,
-                &settings.data_root,
-                &cancelled,
-            )
-        });
-        match result {
-            Ok(Some(stats)) => {
-                emit_progress(app, WorkClass::Similarity, None);
-                crate::failure_runtime::emit_or_record(
-                    app,
-                    "derived://similarity-updated",
-                    json!({}),
-                );
-                logging::info(
-                    "similarity rebuilt",
-                    json!({ "groups": stats.groups, "items": stats.grouped_items }),
-                );
-                return Ok(true);
-            }
-            Ok(None) => return Ok(false),
-            Err(error) => {
-                SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
-                if crate::resource_limits::is_safety_error(&error) {
-                    pause_for_resource_safety(app, &conn, WorkClass::Similarity, &error)?;
-                    return Ok(false);
-                }
-                return Err(error);
-            }
+fn run_global_optional_turn(
+    app: &AppHandle,
+    conn: &Connection,
+    cache: &CachePaths,
+    settings: &Settings,
+    projection: crate::queries::ItemProjectionContext,
+    cursors: &mut CandidateCursors,
+) -> Result<bool, String> {
+    for offset in 0..OPTIONAL_CLASSES.len() {
+        let index = (cursors.next_optional + offset) % OPTIONAL_CLASSES.len();
+        let class = OPTIONAL_CLASSES[index];
+        if run_optional_class(
+            app,
+            conn,
+            cache,
+            settings,
+            projection,
+            cursors,
+            class,
+            &[],
+            false,
+        )? {
+            cursors.next_optional = (index + 1) % OPTIONAL_CLASSES.len();
+            return Ok(true);
         }
     }
+    Ok(false)
+}
 
-    if !is_idle() {
-        crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
+#[allow(clippy::too_many_arguments)]
+fn run_optional_class(
+    app: &AppHandle,
+    conn: &Connection,
+    cache: &CachePaths,
+    settings: &Settings,
+    projection: crate::queries::ItemProjectionContext,
+    cursors: &mut CandidateCursors,
+    class: WorkClass,
+    priority: &[String],
+    foreground: bool,
+) -> Result<bool, String> {
+    if class_paused(class) || !optional_enabled(settings, class) {
         return Ok(false);
     }
-
-    let stop = || !is_idle() || cancelled();
-    if !class_paused(WorkClass::Snapshots) && !cursors.snapshots.exhausted {
-        let priority = class_priority_candidates(
-            &conn,
-            &settings,
-            &hints,
-            WorkClass::Snapshots,
-            false,
-        )?;
-        let stats = if let Some(ffmpeg) = settings.ffmpeg.as_deref() {
-            with_active(app, WorkClass::Snapshots, || {
+    let stop = || cancelled() || (!foreground && !is_idle());
+    match class {
+        WorkClass::Similarity => {
+            if !SIMILARITY_DIRTY.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            let result = with_active(app, class, || {
+                SIMILARITY_DIRTY.store(false, Ordering::SeqCst);
+                crate::similarity::rebuild_groups_for_root_cancellable(
+                    conn,
+                    &settings.similarity,
+                    &settings.data_root,
+                    &stop,
+                )
+            });
+            match result {
+                Ok(Some(stats)) => {
+                    emit_progress(app, class, None);
+                    crate::failure_runtime::emit_or_record(
+                        app,
+                        "derived://similarity-updated",
+                        json!({}),
+                    );
+                    logging::info(
+                        "similarity rebuilt",
+                        json!({ "groups": stats.groups, "items": stats.grouped_items }),
+                    );
+                    Ok(true)
+                }
+                Ok(None) => Ok(false),
+                Err(error) => {
+                    SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
+                    if crate::resource_limits::is_safety_error(&error) {
+                        pause_for_resource_safety(app, conn, class, &error)?;
+                        Ok(false)
+                    } else {
+                        Err(error)
+                    }
+                }
+            }
+        }
+        WorkClass::Snapshots => {
+            let cursor = &mut cursors.snapshots;
+            if !foreground && cursor.exhausted {
+                return Ok(false);
+            }
+            let Some(ffmpeg) = settings.ffmpeg.as_deref() else {
+                return Ok(false);
+            };
+            let stats = with_active(app, class, || {
                 crate::video::derive_strips_pending(
-                    &conn,
-                    &cache,
+                    conn,
+                    cache,
                     ffmpeg,
                     &settings.temp_dir,
                     &settings.strip,
-                    &priority,
-                    &|hash| {
-                        crate::derived_runtime::active_item(app, WorkClass::Snapshots, hash)
+                    priority,
+                    &|hash| crate::derived_runtime::active_item(app, class, hash),
+                    &|hash| notify_item_update(app, conn, projection, "snapshots", hash, hash),
+                    if foreground {
+                        None
+                    } else {
+                        cursor.after_hash.as_deref()
                     },
-                    &|hash| {
-                        notify_item_update(app, &conn, projection, "snapshots", hash, hash)
-                    },
-                    cursors.snapshots.after_hash.as_deref(),
                     &stop,
-                    &progress(app, WorkClass::Snapshots),
-                )
-            })?
-            .unwrap_or_default()
-        } else {
-            crate::video::StripDeriveStats::default()
-        };
-        if stats.attempted > 0 {
-            notify_issues(app);
-            if priority.is_empty() {
-                cursors.snapshots.after_hash = stats.last_attempted_hash;
-            }
-            return Ok(true);
-        }
-        if priority.is_empty() && !stats.candidates_found {
-            cursors.snapshots.exhausted = true;
-        }
-    }
-
-    if !class_paused(WorkClass::Transcripts) && !cursors.transcripts.exhausted {
-        if let (Some(model), Some(ffmpeg)) = (whisper.as_deref(), settings.ffmpeg.as_deref()) {
-            let priority = class_priority_candidates(
-                &conn,
-                &settings,
-                &hints,
-                WorkClass::Transcripts,
-                true,
-            )?;
-            let step = with_active(app, WorkClass::Transcripts, || {
-                transcribe_next(
-                    &conn,
-                    &cache,
-                    &settings.temp_dir,
-                    model,
-                    ffmpeg,
-                    app,
-                    projection,
-                    &priority,
-                    cursors.transcripts.after_hash.as_deref(),
+                    &progress(app, class),
                 )
             })?
             .unwrap_or_default();
-            if step.attempted_hash.is_some() {
+            if stats.attempted > 0 {
                 notify_issues(app);
-                if priority.is_empty() {
-                    cursors.transcripts.after_hash = step.attempted_hash;
+                if !foreground {
+                    cursor.after_hash = stats.last_attempted_hash;
                 }
                 return Ok(true);
             }
-            if priority.is_empty() {
-                cursors.transcripts.exhausted = step.exhausted;
+            if !foreground && !stats.candidates_found {
+                cursor.exhausted = true;
             }
+            Ok(false)
         }
-    }
-
-    if !class_paused(WorkClass::Faces) && !cursors.faces.exhausted {
-        if let Some((detector, emotion)) = settings.face_models.as_ref() {
-            let priority = class_priority_candidates(
-                &conn,
-                &settings,
-                &hints,
-                WorkClass::Faces,
-                false,
-            )?;
-            let result = with_active(app, WorkClass::Faces, || {
+        WorkClass::Faces => {
+            let cursor = &mut cursors.faces;
+            if !foreground && cursor.exhausted {
+                return Ok(false);
+            }
+            let Some((detector, emotion)) = settings.face_models.as_ref() else {
+                return Ok(false);
+            };
+            let result = with_active(app, class, || {
                 crate::face::face_scores_pending(
-                    &conn,
-                    &cache,
+                    conn,
+                    cache,
                     Some((detector.as_path(), emotion.as_path())),
-                    &priority,
-                    |hash| crate::derived_runtime::active_item(app, WorkClass::Faces, hash),
-                    |hash| notify_item_update(app, &conn, projection, "faces", hash, hash),
-                    |done, total| emit_progress(app, WorkClass::Faces, Some((done, total))),
-                    cursors.faces.after_hash.as_deref(),
+                    priority,
+                    |hash| crate::derived_runtime::active_item(app, class, hash),
+                    |hash| notify_item_update(app, conn, projection, "faces", hash, hash),
+                    |done, total| emit_progress(app, class, Some((done, total))),
+                    if foreground {
+                        None
+                    } else {
+                        cursor.after_hash.as_deref()
+                    },
                     &stop,
                 )
             });
             let stats = match result {
                 Ok(value) => value.unwrap_or_default(),
                 Err(error) if crate::resource_limits::is_safety_error(&error) => {
-                    pause_for_resource_safety(app, &conn, WorkClass::Faces, &error)?;
+                    pause_for_resource_safety(app, conn, class, &error)?;
                     return Ok(false);
                 }
                 Err(error) => return Err(error),
             };
             if stats.attempted > 0 {
                 notify_issues(app);
-                if priority.is_empty() {
-                    cursors.faces.after_hash = stats.last_attempted_hash;
+                if !foreground {
+                    cursor.after_hash = stats.last_attempted_hash;
                 }
                 return Ok(true);
             }
-            if priority.is_empty() && !stats.candidates_found {
-                cursors.faces.exhausted = true;
+            if !foreground && !stats.candidates_found {
+                cursor.exhausted = true;
             }
+            Ok(false)
         }
+        WorkClass::VideoTranscripts | WorkClass::AudioTranscripts => {
+            let cursor = match class {
+                WorkClass::VideoTranscripts => &mut cursors.video_transcripts,
+                WorkClass::AudioTranscripts => &mut cursors.audio_transcripts,
+                _ => unreachable!(),
+            };
+            if !foreground && cursor.exhausted {
+                return Ok(false);
+            }
+            let (Some(model), Some(ffmpeg)) = (
+                settings.transcription_model.as_deref(),
+                settings.ffmpeg.as_deref(),
+            ) else {
+                return Ok(false);
+            };
+            let context = TranscriptContext {
+                conn,
+                cache,
+                temp_dir: &settings.temp_dir,
+                model,
+                ffmpeg,
+                app,
+                projection,
+            };
+            let step = with_active(app, class, || {
+                transcribe_next(
+                    class,
+                    &context,
+                    priority,
+                    if foreground {
+                        None
+                    } else {
+                        cursor.after_hash.as_deref()
+                    },
+                    foreground,
+                )
+            })?
+            .unwrap_or_default();
+            if step.attempted_hash.is_some() {
+                notify_issues(app);
+                if !foreground {
+                    cursor.after_hash = step.attempted_hash;
+                }
+                return Ok(true);
+            }
+            if !foreground {
+                cursor.exhausted = step.exhausted;
+            }
+            Ok(false)
+        }
+        WorkClass::Previews => Ok(false),
     }
+}
 
-    crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
-    emit_state_changed(app);
-    Ok(false)
+fn optional_enabled(settings: &Settings, class: WorkClass) -> bool {
+    match class {
+        WorkClass::Snapshots => settings.video_snapshots_enabled,
+        WorkClass::Similarity => settings.similarity_enabled,
+        WorkClass::Faces => settings.face_enabled,
+        WorkClass::VideoTranscripts => settings.video_transcription_enabled,
+        WorkClass::AudioTranscripts => settings.audio_transcription_enabled,
+        WorkClass::Previews => true,
+    }
 }
 
 pub fn priority_candidates(
@@ -689,7 +919,6 @@ pub fn priority_candidates(
         conn,
         settings,
         WorkClass::Previews.id(),
-        false,
         selected,
         visible,
         section,
@@ -700,7 +929,6 @@ pub fn priority_candidates_for_class(
     conn: &Connection,
     settings: &Settings,
     class: &str,
-    transcripts: bool,
     selected: Option<&str>,
     visible: &[String],
     section: Option<&SectionPriority>,
@@ -710,35 +938,11 @@ pub fn priority_candidates_for_class(
     crate::derived_state::priority_candidates(
         conn,
         class,
-        settings.capabilities(transcripts),
+        settings.capabilities(),
         selected,
         visible,
-        section.map(|section| {
-            (
-                section.kind.as_str(),
-                section.start_ms,
-                section.end_ms,
-            )
-        }),
+        section.map(|section| (section.kind.as_str(), section.start_ms, section.end_ms)),
         SECTION_HINT_LIMIT,
-    )
-}
-
-fn class_priority_candidates(
-    conn: &Connection,
-    settings: &Settings,
-    hints: &PriorityHints,
-    class: WorkClass,
-    transcripts: bool,
-) -> Result<Vec<String>, String> {
-    priority_candidates_for_class(
-        conn,
-        settings,
-        class.id(),
-        transcripts,
-        hints.selected.as_deref(),
-        &hints.visible,
-        hints.section.as_ref(),
     )
 }
 
@@ -820,18 +1024,20 @@ fn progress(app: &AppHandle, class: WorkClass) -> impl Fn(u64, u64) + '_ {
     move |done, total| emit_progress(app, class, Some((done, total)))
 }
 
-fn whisper_model(data_root: &Path) -> Option<PathBuf> {
-    crate::binaries_manager::spec_of("whisper-large-v3-turbo").and_then(|spec| {
-        let state = crate::binaries_manager::state_of(data_root, spec);
-        (state.status != crate::binaries::BinaryStatus::NotInstalled)
-            .then(|| crate::binaries_manager::installed_path(data_root, spec))
-    })
-}
-
 #[derive(Default)]
 struct TranscriptStep {
     attempted_hash: Option<String>,
     exhausted: bool,
+}
+
+struct TranscriptContext<'a> {
+    conn: &'a Connection,
+    cache: &'a CachePaths,
+    temp_dir: &'a Path,
+    model: &'a Path,
+    ffmpeg: &'a Path,
+    app: &'a AppHandle,
+    projection: crate::queries::ItemProjectionContext,
 }
 
 struct FinishSignal(std::sync::Arc<AtomicBool>);
@@ -842,171 +1048,215 @@ impl Drop for FinishSignal {
     }
 }
 
-fn transcribe_next(
+pub fn ensure_exact_identity(
     conn: &Connection,
     cache: &CachePaths,
-    temp_dir: &Path,
-    model: &Path,
-    ffmpeg: &Path,
-    app: &AppHandle,
-    projection: crate::queries::ItemProjectionContext,
+    hash: &str,
+    path: &Path,
+) -> Result<String, String> {
+    if !crate::scanner::is_provisional(hash) {
+        return Ok(hash.to_string());
+    }
+    let real = crate::hashing::full_hash_with_cancel(path, &cancelled).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            crate::scanner::CANCELLED.to_string()
+        } else {
+            format!("could not identify the file before transcription: {error}")
+        }
+    })?;
+    crate::scanner::promote_identity(conn, cache, hash, &real)?;
+    Ok(real)
+}
+
+fn transcribe_next(
+    class: WorkClass,
+    context: &TranscriptContext<'_>,
     priority_hashes: &[String],
     after_hash: Option<&str>,
+    foreground: bool,
 ) -> Result<TranscriptStep, String> {
+    let kind = class
+        .content_kind()
+        .ok_or_else(|| "transcription work has no media kind".to_string())?;
     let rows = if priority_hashes.is_empty() {
         crate::derived_state::transcript_candidates(
-            conn,
+            context.conn,
+            kind,
             after_hash,
             crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
         )?
     } else {
         crate::derived_state::prioritized_transcript_candidates(
-            conn,
+            context.conn,
+            kind,
             priority_hashes,
             crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
         )?
     };
-    if rows.is_empty() {
+    let Some((candidate_hash, path)) = rows.into_iter().next() else {
         return Ok(TranscriptStep {
             exhausted: true,
             ..TranscriptStep::default()
         });
-    }
+    };
 
-    for (hash, path) in rows {
-        if crate::derived_state::transcript_result(conn, cache, &hash)?.status
-            == crate::derived_state::READY
+    let hash = ensure_exact_identity(
+        context.conn,
+        context.cache,
+        &candidate_hash,
+        Path::new(&path),
+    )?;
+    if crate::derived_state::transcript_result(context.conn, context.cache, &hash)?.status
+        == crate::derived_state::READY
+    {
+        return Ok(TranscriptStep {
+            attempted_hash: Some(hash),
+            exhausted: false,
+        });
+    }
+    if !foreground && !is_idle() {
+        return Ok(TranscriptStep::default());
+    }
+    let claim = match crate::transcription::claim() {
+        Ok(claim) => claim,
+        Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
+            return Ok(TranscriptStep::default())
+        }
+        Err(error) => return Err(error),
+    };
+    crate::derived_runtime::active_item(context.app, class, &hash);
+    if candidate_hash != hash {
+        notify_item_update(
+            context.app,
+            context.conn,
+            context.projection,
+            class.id(),
+            &candidate_hash,
+            &hash,
+        );
+    }
+    emit_progress(context.app, class, None);
+    // Audio extraction and model loading happen before Whisper's first
+    // percentage callback; publish ownership now so an open video never
+    // looks pending while its expensive work is already underway.
+    crate::failure_runtime::emit_or_record(
+        context.app,
+        "transcribe://progress",
+        json!({ "hash": hash, "percent": 0 }),
+    );
+    let finished = std::sync::Arc::new(AtomicBool::new(false));
+    let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
+    let watch = std::thread::Builder::new()
+        .name("onecopy-transcription-cancel-watch".to_string())
+        .spawn({
+            let finished = std::sync::Arc::clone(&finished);
+            move || loop {
+                if finished.load(Ordering::SeqCst) {
+                    return;
+                }
+                if (!foreground && !is_idle()) || cancelled() {
+                    crate::transcription::request_cancel();
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        })
+        .map_err(|error| format!("could not start transcription cancel watcher: {error}"))?;
+    let result = crate::transcription::transcribe_to_cache_claimed(
+        &claim,
+        context.cache,
+        context.temp_dir,
+        Some(context.model),
+        Some(context.ffmpeg),
+        Path::new(&path),
+        &hash,
         {
-            return Ok(TranscriptStep {
+            let progress_handle = context.app.clone();
+            let progress_hash = hash.clone();
+            move |percent| {
+                let percent = percent.clamp(0, 100);
+                record_progress(&progress_handle, class, Some((percent as u64, 100)));
+                crate::failure_runtime::emit_or_record(
+                    &progress_handle,
+                    "transcribe://progress",
+                    json!({ "hash": progress_hash, "percent": percent }),
+                );
+            }
+        },
+    );
+    drop(finish_signal);
+    watch
+        .join()
+        .map_err(crate::failure_runtime::panic_message)?;
+    // The claim resets cancellation when dropped, so classify this run while
+    // it still owns the Whisper slot.
+    let was_cancelled = crate::transcription::is_cancelled();
+    drop(claim);
+    match result {
+        Ok(text) => {
+            crate::derived_state::record_transcript_success(
+                context.conn,
+                &hash,
+                &path,
+                !text.trim().is_empty(),
+            )?;
+            notify_item_update(
+                context.app,
+                context.conn,
+                context.projection,
+                "transcripts",
+                &hash,
+                &hash,
+            );
+            crate::failure_runtime::emit_or_record(
+                context.app,
+                "transcribe://done",
+                json!({ "hash": hash, "text": text }),
+            );
+            Ok(TranscriptStep {
                 attempted_hash: Some(hash),
                 exhausted: false,
-            });
-        }
-        if !is_idle() {
-            return Ok(TranscriptStep::default());
-        }
-        let claim = match crate::transcription::claim() {
-            Ok(claim) => claim,
-            Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
-                return Ok(TranscriptStep::default())
-            }
-            Err(error) => return Err(error),
-        };
-        crate::derived_runtime::active_item(app, WorkClass::Transcripts, &hash);
-        emit_progress(app, WorkClass::Transcripts, None);
-        // Audio extraction and model loading happen before Whisper's first
-        // percentage callback; publish ownership now so an open video never
-        // looks pending while its expensive work is already underway.
-        crate::failure_runtime::emit_or_record(
-            app,
-            "transcribe://progress",
-            json!({ "hash": hash, "percent": 0 }),
-        );
-        let finished = std::sync::Arc::new(AtomicBool::new(false));
-        let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
-        let watch = std::thread::Builder::new()
-            .name("onecopy-transcription-cancel-watch".to_string())
-            .spawn({
-                let finished = std::sync::Arc::clone(&finished);
-                move || loop {
-                    if finished.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    if !is_idle() || cancelled() {
-                        crate::transcription::request_cancel();
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
             })
-            .map_err(|error| format!("could not start transcription cancel watcher: {error}"))?;
-        let result = crate::transcription::transcribe_to_cache_claimed(
-            &claim,
-            cache,
-            temp_dir,
-            Some(model),
-            Some(ffmpeg),
-            Path::new(&path),
-            &hash,
-            {
-                let progress_handle = app.clone();
-                let progress_hash = hash.clone();
-                move |percent| {
-                    let percent = percent.clamp(0, 100);
-                    record_progress(
-                        &progress_handle,
-                        WorkClass::Transcripts,
-                        Some((percent as u64, 100)),
-                    );
-                    crate::failure_runtime::emit_or_record(
-                        &progress_handle,
-                        "transcribe://progress",
-                        json!({ "hash": progress_hash, "percent": percent }),
-                    );
-                }
-            },
-        );
-        drop(finish_signal);
-        watch
-            .join()
-            .map_err(|payload| crate::failure_runtime::panic_message(payload))?;
-        // The claim resets cancellation when dropped, so classify this run
-        // while it still owns the Whisper slot.
-        let was_cancelled = crate::transcription::is_cancelled();
-        drop(claim);
-        match result {
-            Ok(text) => {
-                crate::derived_state::record_transcript_success(
-                    conn,
-                    &hash,
-                    &path,
-                    !text.trim().is_empty(),
-                )?;
-                notify_item_update(app, conn, projection, "transcripts", &hash, &hash);
-                crate::failure_runtime::emit_or_record(
-                    app,
-                    "transcribe://done",
-                    json!({ "hash": hash, "text": text }),
-                );
-                return Ok(TranscriptStep {
-                    attempted_hash: Some(hash),
-                    exhausted: false,
-                });
-            }
-            Err(error) => {
-                if error == crate::scanner::CANCELLED || was_cancelled {
-                    logging::debug(
-                        "derived transcription stopped",
-                        json!({ "hash": hash, "reason": "cancelled" }),
-                    );
-                    crate::failure_runtime::emit_or_record(
-                        app,
-                        "transcribe://cancelled",
-                        json!({ "hash": hash }),
-                    );
-                    return Ok(TranscriptStep::default());
-                }
-                if crate::resource_limits::is_safety_error(&error) {
-                    pause_for_resource_safety(app, conn, WorkClass::Transcripts, &error)?;
-                    return Ok(TranscriptStep::default());
-                }
-                crate::derived_state::record_transcript_failure(conn, &hash, &path, &error)?;
-                notify_item_update(app, conn, projection, "transcripts", &hash, &hash);
-                logging::debug(
-                    "derived transcription failed",
-                    json!({ "hash": hash, "error": { "message": error } }),
-                );
-                crate::failure_runtime::emit_or_record(
-                    app,
-                    "transcribe://error",
-                    json!({ "hash": hash, "message": error }),
-                );
-                return Ok(TranscriptStep {
-                    attempted_hash: Some(hash),
-                    exhausted: false,
-                });
-            }
+        }
+        Err(error) if error == crate::scanner::CANCELLED || was_cancelled => {
+            logging::debug(
+                "derived transcription stopped",
+                json!({ "hash": hash, "reason": "cancelled" }),
+            );
+            crate::failure_runtime::emit_or_record(
+                context.app,
+                "transcribe://cancelled",
+                json!({ "hash": hash }),
+            );
+            Ok(TranscriptStep::default())
+        }
+        Err(error) if crate::resource_limits::is_safety_error(&error) => {
+            pause_for_resource_safety(context.app, context.conn, class, &error)?;
+            Ok(TranscriptStep::default())
+        }
+        Err(error) => {
+            crate::derived_state::record_transcript_failure(context.conn, &hash, &path, &error)?;
+            notify_item_update(
+                context.app,
+                context.conn,
+                context.projection,
+                "transcripts",
+                &hash,
+                &hash,
+            );
+            logging::debug(
+                "derived transcription failed",
+                json!({ "hash": hash, "error": { "message": error } }),
+            );
+            crate::failure_runtime::emit_or_record(
+                context.app,
+                "transcribe://error",
+                json!({ "hash": hash, "message": error }),
+            );
+            Ok(TranscriptStep {
+                attempted_hash: Some(hash),
+                exhausted: false,
+            })
         }
     }
-    Ok(TranscriptStep::default())
 }

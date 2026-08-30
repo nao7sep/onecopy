@@ -9,6 +9,13 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { requestSeq } from "./request-seq";
+import {
+  optionalFeatureSetup,
+  type OptionalFeatureChoices,
+  type OptionalFeatureId,
+  type OptionalFeatureReasons,
+} from "../models/optionalFeatures";
+import { useBinariesStore } from "./binaries-store";
 
 export interface WizardDir {
   path: string;
@@ -16,7 +23,7 @@ export interface WizardDir {
 
 interface WizardState {
   open: boolean;
-  step: 1 | 2;
+  step: 1 | 2 | 3;
   dirs: WizardDir[];
   timezone: string;
   timezoneValid: boolean;
@@ -25,6 +32,8 @@ interface WizardState {
   /** True when the wizard was RE-RUN over an existing setup. A first run has
    * nothing to return to, so only a re-run offers Cancel. */
   reconfigure: boolean;
+  optionalFeatures: OptionalFeatureChoices;
+  optionalFeatureReasons: OptionalFeatureReasons;
   missingDirs: string[];
   substitutedDirs: string[];
   init: (config: Record<string, unknown> | null) => Promise<void>;
@@ -33,7 +42,8 @@ interface WizardState {
   reopen: (config: Record<string, unknown> | null) => void;
   addDirs: () => Promise<void>;
   removeDir: (path: string) => void;
-  setStep: (step: 1 | 2) => void;
+  setStep: (step: 1 | 2 | 3) => void;
+  setOptionalFeature: (id: OptionalFeatureId, enabled: boolean) => void;
   setTimezone: (name: string) => Promise<void>;
   /** Abandons a re-run, changing nothing. Never available on a first run. */
   cancel: () => void;
@@ -51,6 +61,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   timezonePending: false,
   error: null,
   reconfigure: false,
+  optionalFeatures: optionalFeatureSetup(null, [], true).choices,
+  optionalFeatureReasons: {},
   missingDirs: [],
   substitutedDirs: [],
 
@@ -60,9 +72,32 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
     if (sourceDirs.length === 0) {
-      set({ open: true, step: 1, dirs: [], timezone, timezoneValid: true, timezonePending: false, error: null, reconfigure: false });
+      const optional = optionalFeatureSetup(
+        config,
+        useBinariesStore.getState().entries,
+        true,
+      );
+      set({
+        open: true,
+        step: 1,
+        dirs: [],
+        timezone,
+        timezoneValid: true,
+        timezonePending: false,
+        error: null,
+        reconfigure: false,
+        optionalFeatures: optional.choices,
+        optionalFeatureReasons: optional.reasons,
+      });
     } else {
-      set({ open: false, timezone, timezoneValid: true, timezonePending: false, error: null, reconfigure: false });
+      set({
+        open: false,
+        timezone,
+        timezoneValid: true,
+        timezonePending: false,
+        error: null,
+        reconfigure: false,
+      });
       await get().recheckPresence();
     }
   },
@@ -72,6 +107,11 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
+    const optional = optionalFeatureSetup(
+      config,
+      useBinariesStore.getState().entries,
+      false,
+    );
     set({
       open: true,
       step: 1,
@@ -81,6 +121,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       error: null,
       reconfigure: true,
       dirs: sourceDirs.map((path) => ({ path })),
+      optionalFeatures: optional.choices,
+      optionalFeatureReasons: optional.reasons,
     });
   },
 
@@ -106,6 +148,10 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   },
 
   setStep: (step) => set({ step }),
+
+  setOptionalFeature: (id, enabled) => {
+    set({ optionalFeatures: { ...get().optionalFeatures, [id]: enabled } });
+  },
 
   setTimezone: async (name) => {
     const fresh = timezoneValidation.begin();

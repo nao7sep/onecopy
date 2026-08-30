@@ -4,10 +4,12 @@ import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Plus } from "lucide-react";
+import { Row, Toggle } from "./ui/Field";
+import type { OptionalFeatureId } from "../models/optionalFeatures";
 
-const WIZARD_STEPS = 2;
+const WIZARD_STEPS = 3;
 
-// The Setup surface: two steps, blocking by design. There is deliberately
+// The Setup surface is a blocking root launch gate. There is deliberately
 // NO install page (developer, 2026-08-17): Managed tools is the app's one
 // install surface, and the warning-tinted footer chip funnels there the
 // moment the scan meets a video or HEIC it cannot decode — a second install
@@ -27,9 +29,12 @@ export default function Wizard() {
   const timezonePending = useWizardStore((s) => s.timezonePending);
   const error = useWizardStore((s) => s.error);
   const reconfigure = useWizardStore((s) => s.reconfigure);
+  const optionalFeatures = useWizardStore((s) => s.optionalFeatures);
+  const optionalFeatureReasons = useWizardStore((s) => s.optionalFeatureReasons);
   const addDirs = useWizardStore((s) => s.addDirs);
   const removeDir = useWizardStore((s) => s.removeDir);
   const setStep = useWizardStore((s) => s.setStep);
+  const setOptionalFeature = useWizardStore((s) => s.setOptionalFeature);
   const setTimezone = useWizardStore((s) => s.setTimezone);
   const cancel = useWizardStore((s) => s.cancel);
 
@@ -47,7 +52,7 @@ export default function Wizard() {
         </Button>
       ) : null}
       {step > 1 ? (
-        <Button variant="ghost" onClick={() => setStep((step - 1) as 1 | 2)}>
+        <Button variant="ghost" onClick={() => setStep((step - 1) as 1 | 2 | 3)}>
           Back
         </Button>
       ) : null}
@@ -123,8 +128,49 @@ export default function Wizard() {
               <Button
                 variant="primary"
                 disabled={timezonePending || !timezoneValid || timezone.trim() === ""}
-                onClick={() => void finishWizard()}
+                onClick={() => setStep(3)}
               >
+                Next
+              </Button>
+            </div>
+          </section>
+        ) : null}
+
+        {step === 3 ? (
+          <section>
+            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
+              OneCopy always prepares
+            </h2>
+            <p className="mb-2 text-sm text-ink-muted">
+              OneCopy checks file identity, dates, companions, and live folder changes. It
+              also prepares thumbnails, image previews, video posters, and supported file
+              presentation. These are required for the library to work and have no off switch.
+            </p>
+            <h2 className="mb-1 mt-5 text-sm font-semibold text-ink-strong">
+              Additional features
+            </h2>
+            <p className="mb-2 text-sm text-ink-muted">
+              These can use substantial processing time. Change them now or later in Settings.
+            </p>
+            {(
+              [
+                ["videoSnapshotsEnabled", "Video scene snapshots"],
+                ["similarPhotoAnalysisEnabled", "Similar-photo analysis"],
+                ["scoreFaces", "Face scoring"],
+                ["videoTranscriptionEnabled", "Video transcription"],
+                ["audioTranscriptionEnabled", "Audio transcription"],
+              ] as const satisfies readonly [OptionalFeatureId, string][]
+            ).map(([id, label]) => (
+              <Row key={id} label={label} hint={optionalFeatureReasons[id]}>
+                <Toggle
+                  checked={optionalFeatures[id]}
+                  onChange={(enabled) => setOptionalFeature(id, enabled)}
+                />
+              </Row>
+            ))}
+            <div className="mt-6 flex items-center justify-between">
+              {leading}
+              <Button variant="primary" onClick={() => void finishWizard()}>
                 Finish and scan
               </Button>
             </div>

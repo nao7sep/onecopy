@@ -89,7 +89,29 @@ pub fn full_hash_cancellable(
     path: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> std::io::Result<String> {
-    full_hash_cancellable_with_progress(path, cancel, &|_, _| {})
+    full_hash_with_cancel(path, &|| cancel.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Full hash with caller-owned cancellation. Derived work uses its combined
+/// pause/preemption boundary; scanner work keeps using its atomic token.
+pub fn full_hash_with_cancel(path: &Path, cancel: &dyn Fn() -> bool) -> std::io::Result<String> {
+    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; BUF_SIZE];
+    loop {
+        if cancel() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// The scan-progress variant reports bytes after each bounded read. The
@@ -171,9 +193,7 @@ pub(crate) enum CopyFailure {
 impl CopyFailure {
     fn into_io(self) -> std::io::Error {
         match self {
-            Self::Cancelled => {
-                std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
-            }
+            Self::Cancelled => std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"),
             Self::Source(error) | Self::Destination(error) => error,
         }
     }

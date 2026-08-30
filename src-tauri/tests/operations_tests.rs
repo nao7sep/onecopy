@@ -50,9 +50,13 @@ fn item_projection() -> onecopy_lib::queries::ItemProjectionContext {
     onecopy_lib::queries::ItemProjectionContext {
         capabilities: onecopy_lib::derived_state::WorkCapabilities {
             ffmpeg: true,
+            video_snapshots_enabled: true,
+            similarity_enabled: true,
             face_enabled: false,
             face_models: false,
-            transcripts: false,
+            transcription_model: false,
+            video_transcription_enabled: true,
+            audio_transcription_enabled: true,
         },
         similarity_dirty: false,
     }
@@ -776,11 +780,7 @@ fn a_changed_copy_is_delivered_as_it_exists_when_the_operation_runs() {
     assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"rotten!-bytes");
     let issues: i64 = f
         .conn
-        .query_row(
-            "SELECT COUNT(*) FROM issues",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
         .unwrap();
     assert_eq!(issues, 0, "the operation does not enforce the older indexed bytes");
 }

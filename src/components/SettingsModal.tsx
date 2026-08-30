@@ -463,6 +463,11 @@ export default function SettingsModal() {
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Similar photos
           </h2>
+          <CheckField
+            label="Find similar photos automatically"
+            checked={draft.similarPhotoAnalysisEnabled}
+            onChange={(v) => update({ similarPhotoAnalysisEnabled: v })}
+          />
           <NumberField
             label="Max gap between spares (seconds)"
             value={draft.similarityMaxGapSeconds}
@@ -541,6 +546,16 @@ export default function SettingsModal() {
             checked={draft.videoAutoplayAfterSnapshot}
             onChange={(v) => update({ videoAutoplayAfterSnapshot: v })}
           />
+          <CheckField
+            label="Generate scene snapshots"
+            checked={draft.videoSnapshotsEnabled}
+            onChange={(v) => update({ videoSnapshotsEnabled: v })}
+          />
+          <CheckField
+            label="Transcribe videos automatically"
+            checked={draft.videoTranscriptionEnabled}
+            onChange={(v) => update({ videoTranscriptionEnabled: v })}
+          />
           <NumberField
             label="Seconds per snapshot frame"
             value={draft.videoStripSecondsPerFrame}
@@ -558,6 +573,14 @@ export default function SettingsModal() {
             value={draft.videoStripMaxFrames}
             min={1}
             onChange={(v) => update({ videoStripMaxFrames: v })}
+          />
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Audio
+          </h2>
+          <CheckField
+            label="Transcribe audio automatically"
+            checked={draft.audioTranscriptionEnabled}
+            onChange={(v) => update({ audioTranscriptionEnabled: v })}
           />
         </div>
       ) : null}

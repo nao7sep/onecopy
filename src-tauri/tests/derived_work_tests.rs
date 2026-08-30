@@ -3,10 +3,55 @@
 use onecopy_lib::background_work::snapshot;
 use onecopy_lib::derived_state;
 use onecopy_lib::derived_work::{
-    priority_candidates, priority_candidates_for_class, settings_from_config, SectionPriority,
+    ensure_exact_identity, priority_candidates, priority_candidates_for_class,
+    settings_from_config, SectionPriority,
 };
 use onecopy_lib::index_store;
 use rusqlite::params;
+
+#[test]
+fn transcription_promotes_a_provisional_identity_before_owning_a_result() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-transcript-identity-")
+        .tempdir()
+        .unwrap();
+    let media = dir.path().join("voice.m4a");
+    std::fs::write(&media, b"the exact audio bytes").unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('p1', ?1, 'audio')",
+        [std::fs::metadata(&media).unwrap().len() as i64],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, missing)
+         VALUES (?1, ?2, 'voice.m4a', 'audio', 'p1', 0)",
+        params![media.to_string_lossy(), dir.path().to_string_lossy()],
+    )
+    .unwrap();
+
+    let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+    let exact = ensure_exact_identity(&conn, &cache, "p1", &media).unwrap();
+
+    assert_eq!(exact, onecopy_lib::hashing::full_hash(&media).unwrap());
+    let path_hash: String = conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'voice.m4a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(path_hash, exact);
+    let provisional_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contents WHERE hash = 'p1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provisional_rows, 0);
+}
 
 #[test]
 fn selected_visible_and_section_backlog_keep_their_priority_without_duplicates() {
@@ -75,7 +120,10 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
            ('image-section', 1, 'image', 'ready', 3, NULL),
            ('video-selected', 1, 'video', 'ready', 3, 60000),
            ('video-visible', 1, 'video', 'ready', 3, 60000),
-           ('video-section', 1, 'video', 'ready', 3, 60000);
+           ('video-section', 1, 'video', 'ready', 3, 60000),
+           ('audio-selected', 1, 'audio', NULL, 0, NULL),
+           ('audio-visible', 1, 'audio', NULL, 0, NULL),
+           ('audio-section', 1, 'audio', NULL, 0, NULL);
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash,
             resolved_utc_ms, resolved_source)
@@ -94,6 +142,7 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
     settings.ffmpeg = Some(dir.path().join("ffmpeg"));
     settings.face_enabled = true;
     settings.face_models = Some((dir.path().join("detector"), dir.path().join("emotion")));
+    settings.transcription_model = Some(dir.path().join("whisper"));
     let image_section = SectionPriority {
         kind: "image".to_string(),
         start_ms: Some(100),
@@ -109,7 +158,6 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
         &conn,
         &settings,
         "faces",
-        false,
         Some("image-selected"),
         &["image-visible".to_string()],
         Some(&image_section),
@@ -117,12 +165,11 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
     .unwrap();
     assert_eq!(faces, ["image-selected", "image-visible", "image-section"]);
 
-    for class in ["snapshots", "transcripts"] {
+    for class in ["snapshots", "video-transcripts"] {
         let candidates = priority_candidates_for_class(
             &conn,
             &settings,
             class,
-            class == "transcripts",
             Some("video-selected"),
             &["video-visible".to_string()],
             Some(&video_section),
@@ -134,6 +181,22 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
             "{class}"
         );
     }
+
+    let audio_section = SectionPriority {
+        kind: "other".to_string(),
+        start_ms: Some(100),
+        end_ms: Some(200),
+    };
+    let audio = priority_candidates_for_class(
+        &conn,
+        &settings,
+        "audio-transcripts",
+        Some("audio-selected"),
+        &["audio-visible".to_string()],
+        Some(&audio_section),
+    )
+    .unwrap();
+    assert_eq!(audio, ["audio-selected", "audio-visible", "audio-section"]);
 }
 
 #[test]
@@ -162,7 +225,6 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
-                    idle: true,
                     similarity_dirty: false,
                 },
             )
@@ -179,7 +241,7 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
     assert_eq!(previews["queued"], 1);
     assert_eq!(previews["failed"], 1);
     assert_eq!(previews["state"], "queued");
-    assert_eq!(faces["state"], "disabled");
+    assert_eq!(faces["state"], "unavailable");
 }
 
 #[test]
@@ -203,7 +265,6 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
-                    idle: true,
                     similarity_dirty: false,
                 },
             )
@@ -243,7 +304,9 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
            ('video-preview', 1, 'video', 60000, NULL, NULL, 0),
            ('video-snapshot', 1, 'video', 60000, NULL, 'ready', 3),
            ('video-snapshot-failed', 1, 'video', 60000, -1, 'ready', 3),
-           ('video-transcript-failed', 1, 'video', 60000, 1, 'ready', 3);
+           ('video-transcript-failed', 1, 'video', 60000, 1, 'ready', 3),
+           ('audio-transcript', 1, 'audio', NULL, NULL, NULL, 0),
+           ('audio-transcript-failed', 1, 'audio', NULL, NULL, NULL, 0);
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash,
             resolved_utc_ms, resolved_source)
@@ -252,7 +315,9 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
          INSERT INTO analysis_receipts (content_hash, face_state)
            VALUES ('image-face-failed', 'failed');
          INSERT INTO analysis_receipts (content_hash, transcript_state)
-           VALUES ('video-transcript-failed', 'failed');",
+           VALUES ('video-transcript-failed', 'failed');
+         INSERT INTO analysis_receipts (content_hash, transcript_state)
+           VALUES ('audio-transcript-failed', 'failed');",
     )
     .unwrap();
 
@@ -262,16 +327,19 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
-                    idle: true,
                     similarity_dirty: false,
                 },
             )
             .unwrap(),
             derived_state::WorkCapabilities {
                 ffmpeg: true,
+                video_snapshots_enabled: true,
+                similarity_enabled: true,
                 face_enabled: true,
                 face_models: true,
-                transcripts: true,
+                transcription_model: true,
+                video_transcription_enabled: true,
+                audio_transcription_enabled: true,
             },
         )
         .unwrap(),
@@ -290,7 +358,8 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
     assert_eq!(debt("snapshots"), (1, 1));
     assert_eq!(debt("similarity"), (0, 0));
     assert_eq!(debt("faces"), (1, 1));
-    assert_eq!(debt("transcripts"), (3, 1));
+    assert_eq!(debt("video-transcripts"), (3, 1));
+    assert_eq!(debt("audio-transcripts"), (1, 1));
 }
 
 #[test]
@@ -334,7 +403,7 @@ fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
 
     let strips = derived_state::strip_candidates(&conn, None, 7).unwrap();
     let faces = derived_state::face_candidates(&conn, None, 9).unwrap();
-    let transcripts = derived_state::transcript_candidates(&conn, None, 11).unwrap();
+    let transcripts = derived_state::transcript_candidates(&conn, "video", None, 11).unwrap();
 
     assert_eq!(strips.len(), 7);
     assert_eq!(faces.len(), 9);
@@ -347,9 +416,13 @@ fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
         derived_state::strip_candidates(&conn, Some(&strips.last().unwrap().0), 7).unwrap();
     let next_faces =
         derived_state::face_candidates(&conn, Some(&faces.last().unwrap().0), 9).unwrap();
-    let next_transcripts =
-        derived_state::transcript_candidates(&conn, Some(&transcripts.last().unwrap().0), 11)
-            .unwrap();
+    let next_transcripts = derived_state::transcript_candidates(
+        &conn,
+        "video",
+        Some(&transcripts.last().unwrap().0),
+        11,
+    )
+    .unwrap();
     assert_eq!(next_strips[0].0, "video-007");
     assert_eq!(next_faces[0].0, "image-009");
     assert_eq!(next_transcripts[0].0, "video-011");

@@ -27,6 +27,8 @@ struct RuntimeState {
     active_hash: Option<String>,
     preempt_requested: bool,
     exclusive: bool,
+    next_manual_ticket: u64,
+    serving_manual_ticket: u64,
 }
 
 impl RuntimeState {
@@ -38,7 +40,6 @@ impl RuntimeState {
 #[derive(Clone, Copy)]
 pub struct RuntimeConditions {
     pub busy: bool,
-    pub idle: bool,
     pub similarity_dirty: bool,
 }
 
@@ -50,7 +51,6 @@ pub struct RuntimeSnapshot {
     pub(crate) active_hash: Option<String>,
     pub(crate) preempt_requested: bool,
     pub(crate) busy: bool,
-    pub(crate) idle: bool,
     pub(crate) similarity_dirty: bool,
 }
 
@@ -86,6 +86,7 @@ fn report_poison_once(app: Option<&AppHandle>) {
 struct ActiveGuard {
     app: AppHandle,
     class: WorkClass,
+    manual_ticket: Option<u64>,
 }
 
 impl ActiveGuard {
@@ -109,6 +110,7 @@ impl ActiveGuard {
         Ok(Some(Self {
             app: app.clone(),
             class,
+            manual_ticket: None,
         }))
     }
 }
@@ -120,6 +122,9 @@ impl Drop for ActiveGuard {
                 runtime.active = None;
                 runtime.active_hash = None;
                 runtime.preempt_requested = false;
+                if self.manual_ticket == Some(runtime.serving_manual_ticket) {
+                    runtime.serving_manual_ticket = runtime.serving_manual_ticket.wrapping_add(1);
+                }
                 RUNTIME.1.notify_all();
             }
         } else {
@@ -166,7 +171,7 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
     if let Some(active) = runtime.active {
         runtime.preempt_requested = true;
         drop(runtime);
-        if active.class == WorkClass::Transcripts {
+        if active.class.is_transcription() {
             crate::transcription::request_cancel();
         }
         emit_state_changed(app);
@@ -211,6 +216,76 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
         _guard: ActiveGuard {
             app: app.clone(),
             class,
+            manual_ticket: None,
+        },
+    })
+}
+
+/// Waits in FIFO order for the shared media boundary. Manual transcription
+/// commands return to the UI before entering this wait, so a second request is
+/// a real queued job rather than a rejected or blocking command.
+pub fn begin_manual_queued(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, String> {
+    let class =
+        WorkClass::parse(class).ok_or_else(|| format!("unknown background-work class: {class}"))?;
+    let mut runtime = RUNTIME
+        .0
+        .lock()
+        .map_err(|_| {
+            report_poison_once(Some(app));
+            "background-work state is unavailable".to_string()
+        })?;
+    let ticket = runtime.next_manual_ticket;
+    runtime.next_manual_ticket = runtime.next_manual_ticket.wrapping_add(1);
+
+    if runtime.active.is_some_and(|active| !active.manual) {
+        let cancel_transcription = runtime
+            .active
+            .is_some_and(|active| active.class.is_transcription());
+        runtime.preempt_requested = true;
+        drop(runtime);
+        if cancel_transcription {
+            crate::transcription::request_cancel();
+        }
+        emit_state_changed(app);
+        runtime = RUNTIME
+            .0
+            .lock()
+            .map_err(|_| {
+                report_poison_once(Some(app));
+                "background-work state is unavailable".to_string()
+            })?;
+    }
+
+    runtime = RUNTIME
+        .1
+        .wait_while(runtime, |state| {
+            state.exclusive || state.active.is_some() || state.serving_manual_ticket != ticket
+        })
+        .map_err(|_| {
+            report_poison_once(Some(app));
+            "background-work state is unavailable".to_string()
+        })?;
+
+    if runtime.paused(class) {
+        runtime.serving_manual_ticket = runtime.serving_manual_ticket.wrapping_add(1);
+        RUNTIME.1.notify_all();
+        return Err(paused_message(class));
+    }
+    runtime.active = Some(ActiveWorkSnapshot {
+        class,
+        manual: true,
+        done: None,
+        total: None,
+    });
+    runtime.active_hash = None;
+    runtime.preempt_requested = false;
+    drop(runtime);
+    emit_state_changed(app);
+    Ok(ManualWorkGuard {
+        _guard: ActiveGuard {
+            app: app.clone(),
+            class,
+            manual_ticket: Some(ticket),
         },
     })
 }
@@ -251,7 +326,7 @@ pub fn begin_exclusive(app: &AppHandle) -> Result<ExclusiveGuard, String> {
     if let Some(active) = runtime.active {
         runtime.preempt_requested = true;
         drop(runtime);
-        if active.class == WorkClass::Transcripts {
+        if active.class.is_transcription() {
             crate::transcription::request_cancel();
         }
         emit_state_changed(app);
@@ -295,6 +370,34 @@ pub(crate) fn exclusive() -> bool {
             report_poison_once(None);
             true
         })
+}
+
+pub(crate) fn automatic_optional_active() -> bool {
+    RUNTIME
+        .0
+        .lock()
+        .map(|runtime| {
+            runtime
+                .active
+                .is_some_and(|active| !active.manual && active.class != WorkClass::Previews)
+        })
+        .unwrap_or_else(|_| {
+            report_poison_once(None);
+            false
+        })
+}
+
+pub(crate) fn preempt_automatic_optional_for_required() {
+    let transcript = RUNTIME.0.lock().ok().and_then(|mut runtime| {
+        let active = runtime
+            .active
+            .filter(|active| !active.manual && active.class != WorkClass::Previews)?;
+        runtime.preempt_requested = true;
+        Some(active.class.is_transcription())
+    });
+    if transcript == Some(true) {
+        crate::transcription::request_cancel();
+    }
 }
 
 fn paused_message(class: WorkClass) -> String {
@@ -358,6 +461,7 @@ pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<
                 }
             }
         }
+        RUNTIME.1.notify_all();
         runtime.active
     };
 
@@ -365,7 +469,7 @@ pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<
         && active
             .map(|active| class.is_none() || class == Some(active.class.id()))
             .unwrap_or(false)
-        && active.map(|active| active.class) == Some(WorkClass::Transcripts)
+        && active.map(|active| active.class.is_transcription()) == Some(true)
     {
         crate::transcription::request_cancel();
     }
@@ -468,7 +572,6 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
         active_hash,
         preempt_requested,
         busy: conditions.busy,
-        idle: conditions.idle,
         similarity_dirty: conditions.similarity_dirty,
     })
 }

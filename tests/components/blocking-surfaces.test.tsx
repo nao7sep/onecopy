@@ -52,17 +52,18 @@ describe("the setup wizard", () => {
     useWizardStore.setState({ step: 1, dirs: [], timezone: "UTC", error: null });
   });
 
-  it("is exactly two steps, ending in Finish and scan — no install page", () => {
-    // The offer page is deliberately GONE (developer, 2026-08-17): Managed
-    // tools is the one install surface, funnelled to by the warning chip. A
-    // wizard install row would be a second UI drifting from it.
+  it("separates required preparation from optional features without adding an install page", () => {
     const view = render(<Wizard />);
-    expect(view.container.textContent).toContain("Step 1 of 2");
+    expect(view.container.textContent).toContain("Step 1 of 3");
 
     act(() => useWizardStore.setState({ step: 2 }));
-    expect(view.container.textContent).toContain("Step 2 of 2");
+    expect(view.container.textContent).toContain("Step 2 of 3");
+
+    act(() => useWizardStore.setState({ step: 3 }));
+    expect(view.container.textContent).toContain("Step 3 of 3");
+    expect(view.container.textContent).toContain("OneCopy always prepares");
+    expect(view.container.textContent).toContain("Additional features");
     expect(view.container.textContent).toContain("Finish and scan");
-    expect(view.container.textContent).not.toContain("ffmpeg");
   });
 
   it("offers Cancel on every page of a re-run, and never on a first run", () => {
@@ -70,7 +71,7 @@ describe("the setup wizard", () => {
     // 2026-08-17). A FIRST run stays completable-only: nothing exists behind
     // it to cancel back to.
     const view = render(<Wizard />);
-    for (const step of [1, 2] as const) {
+    for (const step of [1, 2, 3] as const) {
       act(() => useWizardStore.setState({ step, reconfigure: true }));
       expect(view.container.textContent).toContain("Cancel");
       act(() => useWizardStore.setState({ step, reconfigure: false }));

@@ -20,7 +20,8 @@ const ids: BackgroundClassSnapshot["id"][] = [
   "snapshots",
   "similarity",
   "faces",
-  "transcripts",
+  "video-transcripts",
+  "audio-transcripts",
 ];
 
 function snapshot(
@@ -74,9 +75,9 @@ describe("Background work", () => {
     expect(backgroundWorkLine(current)).toBe("Background work");
     expect(
       backgroundWorkLine(
-        snapshot({}, { transcripts: { state: "running", queued: 1, done: 42, total: 100 } }),
+        snapshot({}, { "video-transcripts": { state: "running", queued: 1, done: 42, total: 100 } }),
       ),
-    ).toBe("Transcription 42/100");
+    ).toBe("Video transcription 42/100");
     expect(backgroundWorkLine(snapshot())).toBe("Background work: up to date");
   });
 
@@ -137,17 +138,18 @@ describe("Background work", () => {
     render(<BackgroundWorkModal />);
 
     for (const label of [
-      "Previews and posters",
+      "Thumbnails, previews, and posters",
       "Video snapshots",
       "Similar photos",
       "Face scoring",
-      "Transcription",
+      "Video transcription",
+      "Audio transcription",
     ]) {
       expect(document.body.textContent).toContain(label);
     }
 
     const previews = [...document.querySelectorAll("li")].find((row) =>
-      row.textContent?.includes("Previews and posters"),
+      row.textContent?.includes("Thumbnails, previews, and posters"),
     );
     const pause = [...(previews?.querySelectorAll("button") ?? [])].find(
       (button) => button.textContent === "Pause",
@@ -164,11 +166,11 @@ describe("Background work", () => {
     ).toBe(true);
   });
 
-  it("keeps the existing master control scoped to previews and analysis", async () => {
+  it("keeps the master control scoped to preparation and enrichment", async () => {
     render(<BackgroundWorkModal />);
 
     const pauseAll = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Pause previews and analysis",
+      (button) => button.textContent === "Pause preparation and enrichment",
     );
     await act(async () => pauseAll!.click());
 
@@ -186,13 +188,13 @@ describe("Background work", () => {
     useDerivedWorkStore.setState({
       snapshot: snapshot(
         { masterPaused: true },
-        { transcripts: { state: "stopping", queued: 3 } },
+        { "video-transcripts": { state: "stopping", queued: 3 } },
       ),
     });
     render(<BackgroundWorkModal />);
 
     const transcript = [...document.querySelectorAll("li")].find((row) =>
-      row.textContent?.includes("Transcription"),
+      row.textContent?.includes("Video transcription"),
     );
     const resume = [...(transcript?.querySelectorAll("button") ?? [])].find(
       (button) => button.textContent === "Resume",
