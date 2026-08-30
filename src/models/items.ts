@@ -64,6 +64,7 @@ export interface ItemDetail {
   width: number | null;
   height: number | null;
   durationMs: number | null;
+  dateState: "pending" | "dated" | "undated";
   resolvedUtcMs: number | null;
   resolvedSource: string | null;
   dateOnly: boolean;

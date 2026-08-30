@@ -12,7 +12,6 @@ import {
 import { itemKey, useItemsStore } from "../state/items-store";
 import type { ItemDetail, ItemWorkStates, SectionItem } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
-import { formatLocalMinute } from "../utils/displayTime";
 import { fileManagerWord } from "../utils/shortcuts";
 import { log, toErrorFields } from "../repositories";
 import Button from "./ui/Button";
@@ -25,6 +24,7 @@ import {
   useDerivedWorkStore,
 } from "../state/derived-work-store";
 import {
+  takenPresentation,
   workPresentationRows,
   type PresentationTone,
 } from "../models/itemPresentation";
@@ -160,14 +160,6 @@ function SimilarSection({ hash }: { hash: string }) {
   );
 }
 
-function formatTaken(detail: ItemDetail): string {
-  if (detail.resolvedUtcMs === null) return "Undated";
-  const stamp = formatLocalMinute(detail.resolvedUtcMs);
-  const suffix = detail.dateOnly ? " (date only)" : "";
-  const source = detail.resolvedSource ? ` · ${detail.resolvedSource}` : "";
-  return `${stamp}${suffix}${source}`;
-}
-
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="mb-1">
@@ -233,7 +225,7 @@ export default function MetadataPane({
   return (
     <dl className="p-3">
       <Row label="Name" value={detail.fileName} />
-      <Row label="Taken" value={formatTaken(detail)} />
+      <Row label="Taken" value={takenPresentation(detail)} />
       <Row
         label="Size"
         value={detail.byteSize !== null ? formatBytes(detail.byteSize) : "—"}

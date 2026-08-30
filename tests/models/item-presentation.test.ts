@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   faceStarRating,
   itemPresentation,
+  takenPresentation,
   workPresentationRows,
 } from "../../src/models/itemPresentation";
 import {
   EMPTY_ITEM_WORK,
   type ItemWorkState,
   type ItemWorkStates,
+  type ItemDetail,
   type SectionItem,
 } from "../../src/models/items";
 
@@ -55,6 +57,40 @@ function presentation(over: Partial<SectionItem> = {}) {
     showFaceStars: true,
   });
 }
+
+function detail(over: Partial<ItemDetail> = {}): ItemDetail {
+  return {
+    fileName: "photo.jpg",
+    kind: "image",
+    byteSize: 100,
+    width: 100,
+    height: 100,
+    durationMs: null,
+    dateState: "dated",
+    resolvedUtcMs: 0,
+    resolvedSource: "metadata",
+    dateOnly: false,
+    copyPaths: ["/photos/photo.jpg"],
+    companionPaths: [],
+    stripFrames: null,
+    ...over,
+  };
+}
+
+describe("date presentation", () => {
+  it("distinguishes unfinished date work from completed Undated", () => {
+    expect(
+      takenPresentation(
+        detail({ dateState: "pending", resolvedUtcMs: null, resolvedSource: null }),
+      ),
+    ).toBe("Date pending");
+    expect(
+      takenPresentation(
+        detail({ dateState: "undated", resolvedUtcMs: null, resolvedSource: "undated" }),
+      ),
+    ).toBe("Undated");
+  });
+});
 
 describe("item presentation priority", () => {
   it("keeps failures above ordinary work", () => {

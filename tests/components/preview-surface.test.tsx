@@ -15,6 +15,7 @@ const DETAIL = {
   width: 1920,
   height: 1080,
   durationMs: 30_000,
+  dateState: "dated" as const,
   resolvedUtcMs: 0,
   resolvedSource: "metadata",
   dateOnly: false,

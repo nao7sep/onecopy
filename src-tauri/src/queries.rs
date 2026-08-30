@@ -1,7 +1,8 @@
 //! Read-model queries for the UI. The unit everywhere is the LOGICAL file:
 //! hashed rows collapse by content hash (a logical item's display time is the
-//! earliest resolved time among its copies), and unhashed rows (unique-size
-//! other-files, which by construction have no duplicates) each stand alone.
+//! earliest acceptable time after every live copy has completed date
+//! checking), and unhashed rows (unique-size other-files, which by
+//! construction have no duplicates) each stand alone.
 //! Companions never appear — they ride with their primary.
 //!
 //! Month bucketing happens in Rust under the given display timezone, not in
@@ -643,6 +644,7 @@ pub struct ItemDetail {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub duration_ms: Option<i64>,
+    pub date_state: String,
     pub resolved_utc_ms: Option<i64>,
     pub resolved_source: Option<String>,
     pub date_only: bool,
@@ -664,7 +666,8 @@ pub fn item_detail(
                         "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
                          p.resolved_utc_ms, p.resolved_source, p.date_only \
                          FROM paths p WHERE p.content_hash = ?1 AND p.missing = 0 \
-                         ORDER BY p.resolved_utc_ms, p.id",
+                         ORDER BY p.resolved_utc_ms IS NULL, p.resolved_utc_ms, \
+                                  p.abs_path COLLATE onecopy_nocase, p.abs_path",
                     )
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
@@ -694,6 +697,22 @@ pub fn item_detail(
 
     let Some(first) = copies.first() else {
         return Err("item not found".to_string());
+    };
+
+    let (date_state, resolved_utc_ms) = match hash {
+        Some(hash) => conn
+            .query_row(
+                "SELECT date_state, resolved_utc_ms FROM logical_contents \
+                 WHERE content_hash = ?1",
+                [hash],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(|error| error.to_string())?,
+        None => match (&first.6, first.5) {
+            (None, _) => ("pending".to_string(), None),
+            (Some(_), Some(value)) => ("dated".to_string(), Some(value)),
+            (Some(_), None) => ("undated".to_string(), None),
+        },
     };
 
     let (width, height, duration_ms, byte_size, strip_frames) = match hash {
@@ -730,6 +749,11 @@ pub fn item_detail(
         .map(|path| crate::winpath::for_display(&path).into_owned())
         .collect();
     drop(stmt);
+    let resolved_source = if date_state == "pending" {
+        None
+    } else {
+        first.6.clone()
+    };
 
     Ok(ItemDetail {
         file_name: first.2.clone(),
@@ -738,9 +762,10 @@ pub fn item_detail(
         width,
         height,
         duration_ms,
-        resolved_utc_ms: first.5,
-        resolved_source: first.6.clone(),
-        date_only: first.7 != 0,
+        date_state,
+        resolved_utc_ms,
+        resolved_source,
+        date_only: resolved_utc_ms.is_some() && first.7 != 0,
         // Keep the verbatim spelling in SQLite for filesystem work, but never
         // make the Windows implementation detail part of a user-facing path.
         copy_paths: copies

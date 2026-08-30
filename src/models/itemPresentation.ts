@@ -1,4 +1,5 @@
-import type { ItemWorkState, ItemWorkStates, SectionItem } from "./items";
+import { formatLocalMinute } from "../utils/displayTime";
+import type { ItemDetail, ItemWorkState, ItemWorkStates, SectionItem } from "./items";
 
 export type PresentationTone = "muted" | "primary" | "warning" | "danger";
 
@@ -50,6 +51,14 @@ const WORK_ORDER = [
   "faces",
   "transcripts",
 ] as const satisfies readonly (keyof ItemWorkStates)[];
+
+export function takenPresentation(detail: ItemDetail): string {
+  if (detail.dateState === "pending") return "Date pending";
+  if (detail.resolvedUtcMs === null) return "Undated";
+  const suffix = detail.dateOnly ? " (date only)" : "";
+  const source = detail.resolvedSource ? ` · ${detail.resolvedSource}` : "";
+  return `${formatLocalMinute(detail.resolvedUtcMs)}${suffix}${source}`;
+}
 
 function progressSuffix(state: ItemWorkState): string {
   if (state.done === null || state.total === null || state.total <= 0) return "";

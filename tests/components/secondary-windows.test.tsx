@@ -22,6 +22,7 @@ const DETAIL = {
   width: 4000,
   height: 3000,
   durationMs: null,
+  dateState: "undated" as const,
   resolvedUtcMs: null,
   resolvedSource: null,
   dateOnly: false,

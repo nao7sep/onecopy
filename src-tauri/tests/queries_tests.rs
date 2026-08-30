@@ -299,6 +299,114 @@ fn a_missing_copy_does_not_count_toward_the_logical_item() {
 }
 
 #[test]
+fn logical_date_waits_for_every_live_copy_to_finish_date_checking() {
+    let conn = db();
+    seed_image(
+        &conn,
+        "hpending",
+        Some("2026-01-02T03:04:05.000Z"),
+        "dated.jpg",
+    );
+    conn.execute(
+        "INSERT INTO paths
+           (abs_path, dir_path, file_name, stem, ext, kind, size, mtime_ms,
+            content_hash, resolved_utc_ms, resolved_source, date_only, missing, companion_of)
+         VALUES
+           ('/backup/pending.jpg', '/backup', 'pending.jpg', 'pending', 'jpg',
+            'image', 100, 0, 'hpending', NULL, NULL, 0, 0, NULL)",
+        [],
+    )
+    .unwrap();
+
+    let state: (String, Option<i64>) = conn
+        .query_row(
+            "SELECT date_state, resolved_utc_ms FROM logical_contents
+             WHERE content_hash = 'hpending'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("pending".to_string(), None));
+    assert!(queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection())
+        .unwrap()
+        .is_empty());
+    let undated =
+        queries::section_items(&conn, "image", "undated", Tz::UTC, projection()).unwrap();
+    assert_eq!(undated.len(), 1, "pending items remain visible in Undated");
+    assert_eq!(undated[0].file_name, "dated.jpg");
+
+    let detail = queries::item_detail(&conn, Some("hpending"), None).unwrap();
+    assert_eq!(detail.date_state, "pending");
+    assert_eq!(detail.resolved_utc_ms, None);
+    assert_eq!(detail.resolved_source, None);
+
+    conn.execute(
+        "UPDATE paths SET missing = 1
+         WHERE content_hash = 'hpending' AND file_name = 'pending.jpg'",
+        [],
+    )
+    .unwrap();
+    let state_without_missing_copy: String = conn
+        .query_row(
+            "SELECT date_state FROM logical_contents WHERE content_hash = 'hpending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state_without_missing_copy, "dated");
+    conn.execute(
+        "UPDATE paths SET missing = 0
+         WHERE content_hash = 'hpending' AND file_name = 'pending.jpg'",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "UPDATE paths SET resolved_source = 'undated'
+         WHERE content_hash = 'hpending' AND file_name = 'pending.jpg'",
+        [],
+    )
+    .unwrap();
+
+    let completed =
+        queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
+    assert_eq!(completed.len(), 1);
+    assert_eq!(completed[0].file_name, "dated.jpg");
+    let detail = queries::item_detail(&conn, Some("hpending"), None).unwrap();
+    assert_eq!(detail.date_state, "dated");
+    assert_eq!(detail.resolved_utc_ms, Some(1_767_225_600_000));
+    assert_eq!(detail.resolved_source.as_deref(), Some("metadata"));
+}
+
+#[test]
+fn fully_checked_copies_without_an_acceptable_date_are_completed_undated() {
+    let conn = db();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('hundated', 100, 'image');
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, resolved_source)
+         VALUES
+           ('/a/photo.jpg', '/a', 'photo.jpg', 'image', 'hundated', 'undated'),
+           ('/b/photo.jpg', '/b', 'photo.jpg', 'image', 'hundated', 'undated');",
+    )
+    .unwrap();
+
+    let state: (String, Option<i64>, i64) = conn
+        .query_row(
+            "SELECT date_state, resolved_utc_ms, live_copy_count
+             FROM logical_contents WHERE content_hash = 'hundated'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("undated".to_string(), None, 2));
+    let detail = queries::item_detail(&conn, Some("hundated"), None).unwrap();
+    assert_eq!(detail.date_state, "undated");
+    assert_eq!(detail.resolved_utc_ms, None);
+    assert_eq!(detail.file_name, "photo.jpg");
+}
+
+#[test]
 fn logical_summary_tracks_representative_date_name_and_presence_changes() {
     let conn = db();
     seed_image(&conn, "hmoving", Some("2026-02-01T00:00:00.000Z"), "later.jpg");
@@ -648,6 +756,12 @@ fn equal_dates_choose_the_case_insensitive_path_order_then_exact_path() {
            VALUES ('/A/Photo.jpg', '/A', 'Photo.jpg', 'image', 'tied', 1000);
          INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms)
            VALUES ('/a/photo.jpg', '/a', 'photo.jpg', 'image', 'tied', 1000);",
+    )
+    .unwrap();
+
+    conn.execute(
+        "UPDATE paths SET resolved_source = 'metadata' WHERE content_hash = 'tied'",
+        [],
     )
     .unwrap();
 

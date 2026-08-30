@@ -221,6 +221,7 @@ describe("rangeSelect", () => {
       width: 100,
       height: 100,
       durationMs: null,
+      dateState: "dated" as const,
       resolvedUtcMs: 0,
       resolvedSource: "metadata",
       dateOnly: false,

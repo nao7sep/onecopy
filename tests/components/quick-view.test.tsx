@@ -50,6 +50,7 @@ beforeEach(() => {
       width: 4000,
       height: 3000,
       durationMs: null,
+      dateState: "dated" as const,
       resolvedUtcMs: 0,
       resolvedSource: "metadata",
       dateOnly: false,

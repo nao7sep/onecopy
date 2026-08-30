@@ -21,6 +21,7 @@ function detailFor(name: string) {
     width: 1,
     height: 1,
     durationMs: null,
+    dateState: "dated" as const,
     resolvedUtcMs: 0,
     resolvedSource: "metadata",
     dateOnly: false,

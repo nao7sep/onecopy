@@ -12,7 +12,8 @@
 //! N of which share a `content_hash` — the copy count is a COUNT over this
 //! join. Timestamp evidence lands per path (filename and filesystem sources
 //! differ per copy) with content-level EXIF evidence keyed by hash; a logical
-//! item's display time is the earliest resolved time among its paths.
+//! item's display time becomes the earliest acceptable resolved time only
+//! after every live path has completed date checking.
 
 use std::path::Path;
 
@@ -22,7 +23,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 4;
+const SCHEMA_REVISION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -99,9 +100,15 @@ CREATE INDEX IF NOT EXISTS idx_paths_unhashed_other_section
 CREATE TABLE IF NOT EXISTS logical_contents (
   content_hash           TEXT PRIMARY KEY REFERENCES contents(hash),
   kind                   TEXT NOT NULL,
+  date_state             TEXT NOT NULL
+                           CHECK (date_state IN ('pending', 'dated', 'undated')),
   resolved_utc_ms        INTEGER,
   representative_path_id INTEGER NOT NULL REFERENCES paths(id),
-  live_copy_count        INTEGER NOT NULL
+  live_copy_count        INTEGER NOT NULL,
+  CHECK (
+    (date_state = 'dated' AND resolved_utc_ms IS NOT NULL) OR
+    (date_state IN ('pending', 'undated') AND resolved_utc_ms IS NULL)
+  )
 );
 CREATE INDEX IF NOT EXISTS idx_logical_contents_section
   ON logical_contents (kind, resolved_utc_ms, content_hash);
@@ -118,11 +125,21 @@ AFTER INSERT ON paths
 WHEN NEW.content_hash IS NOT NULL
 BEGIN
   INSERT OR REPLACE INTO logical_contents
-    (content_hash, kind, resolved_utc_ms, representative_path_id,
+    (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
   SELECT c.hash,
          CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         MIN(p.resolved_utc_ms),
+         CASE
+           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
+             THEN 'pending'
+           WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
+           ELSE 'dated'
+         END,
+         CASE
+           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
+             THEN MIN(p.resolved_utc_ms)
+           ELSE NULL
+         END,
          (SELECT ranked.id FROM paths ranked
           WHERE ranked.content_hash = c.hash
             AND ranked.missing = 0 AND ranked.companion_of IS NULL
@@ -145,11 +162,21 @@ BEGIN
   WHERE content_hash IN (OLD.content_hash, NEW.content_hash);
 
   INSERT OR REPLACE INTO logical_contents
-    (content_hash, kind, resolved_utc_ms, representative_path_id,
+    (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
   SELECT c.hash,
          CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         MIN(p.resolved_utc_ms),
+         CASE
+           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
+             THEN 'pending'
+           WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
+           ELSE 'dated'
+         END,
+         CASE
+           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
+             THEN MIN(p.resolved_utc_ms)
+           ELSE NULL
+         END,
          (SELECT ranked.id FROM paths ranked
           WHERE ranked.content_hash = c.hash
             AND ranked.missing = 0 AND ranked.companion_of IS NULL
@@ -172,11 +199,21 @@ BEGIN
   DELETE FROM logical_contents WHERE content_hash = OLD.content_hash;
 
   INSERT OR REPLACE INTO logical_contents
-    (content_hash, kind, resolved_utc_ms, representative_path_id,
+    (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
   SELECT c.hash,
          CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         MIN(p.resolved_utc_ms),
+         CASE
+           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
+             THEN 'pending'
+           WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
+           ELSE 'dated'
+         END,
+         CASE
+           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
+             THEN MIN(p.resolved_utc_ms)
+           ELSE NULL
+         END,
          (SELECT ranked.id FROM paths ranked
           WHERE ranked.content_hash = c.hash
             AND ranked.missing = 0 AND ranked.companion_of IS NULL
@@ -328,11 +365,21 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
             if needs_logical_hydration {
                 conn.execute_batch(
                     "INSERT INTO logical_contents
-           (content_hash, kind, resolved_utc_ms, representative_path_id,
+           (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
             live_copy_count)
          SELECT c.hash,
                 CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-                MIN(p.resolved_utc_ms),
+                CASE
+                  WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
+                    THEN 'pending'
+                  WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
+                  ELSE 'dated'
+                END,
+                CASE
+                  WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
+                    THEN MIN(p.resolved_utc_ms)
+                  ELSE NULL
+                END,
                 (SELECT ranked.id FROM paths ranked
                  WHERE ranked.content_hash = c.hash
                    AND ranked.missing = 0 AND ranked.companion_of IS NULL
@@ -547,14 +594,14 @@ mod tests {
         drop(conn);
 
         let conn = open(&db).unwrap();
-        let summary: (i64, i64) = conn
+        let summary: (String, i64, i64) = conn
             .query_row(
-                "SELECT resolved_utc_ms, live_copy_count FROM logical_contents \
+                "SELECT date_state, resolved_utc_ms, live_copy_count FROM logical_contents \
                  WHERE content_hash = 'h1'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(summary, (1000, 1));
+        assert_eq!(summary, ("dated".to_string(), 1000, 1));
     }
 }
