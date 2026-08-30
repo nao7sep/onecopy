@@ -1,18 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
-  chunkSlots,
-  perScreenCapacity,
-  turnSize,
-  type GroupMember,
-} from "../../src/state/comparison-store";
+  COMPARISON_DIRECT_KEYS,
+  chunkMembers,
+  comparisonPages,
+  directKeyIndex,
+  displayCapacities,
+  gridFor,
+  spatialTarget,
+  type ComparisonMember,
+} from "../../src/models/comparisonSession";
 
-function member(hash: string): GroupMember {
+function member(index: number, portrait = false): ComparisonMember {
   return {
-    hash,
-    fileName: `${hash}.jpg`,
-    width: null,
-    height: null,
-  byteSize: null,
+    hash: `h${index}`,
+    fileName: `image-${index}.jpg`,
+    width: portrait ? 3000 : 4000,
+    height: portrait ? 4000 : 3000,
+    byteSize: 1000,
     sharpness: null,
     faceScore: null,
     copyCount: 1,
@@ -20,66 +24,93 @@ function member(hash: string): GroupMember {
   };
 }
 
-describe("chunkSlots", () => {
-  const eight = ["a", "b", "c", "d", "e", "f", "g", "h"].map(member);
-
-  it("keeps one global key space across capacity-weighted screens", () => {
-    // The developer's three-screen layout: a portrait-ish top screen (3) and
-    // two landscape screens (4 each) — but with 8 members the fill is 3/4/1.
-    const chunks = chunkSlots(eight, new Set(), [3, 4, 4]);
-    expect(chunks).toHaveLength(3);
-    expect(chunks[0].map((s) => s.slotKey)).toEqual(["1", "2", "3"]);
-    expect(chunks[1].map((s) => s.slotKey)).toEqual(["4", "5", "6", "7"]);
-    expect(chunks[2].map((s) => s.slotKey)).toEqual(["8"]);
+describe("comparison capacity", () => {
+  it("limits a visible page without limiting the group", () => {
+    const pages = comparisonPages(
+      Array.from({ length: 41 }, (_, index) => member(index)),
+      16,
+      10,
+    );
+    expect(pages.map((page) => page.members.length)).toEqual([16, 16, 9]);
+    expect(pages.flatMap((page) => page.members)).toHaveLength(41);
   });
 
-  it("single screen holds everything", () => {
-    const chunks = chunkSlots(eight, new Set(), [16]);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toHaveLength(8);
+  it("uses three portrait cards or four landscape cards per display", () => {
+    expect(comparisonPages([member(0), member(1)], 16, 1)[0]?.perDisplay).toBe(
+      4,
+    );
+    expect(
+      comparisonPages([member(0, true), member(1, true)], 16, 1)[0]?.perDisplay,
+    ).toBe(3);
+    expect(displayCapacities(10, 4, 8)).toEqual([4, 4, 4]);
   });
 
-  it("marks keepers inside the chunks", () => {
-    const chunks = chunkSlots(eight, new Set(["d"]), [4, 4]);
-    const flat = chunks.flat();
-    expect(flat.find((s) => s.member!.hash === "d")?.kept).toBe(true);
-    expect(flat.filter((s) => s.kept)).toHaveLength(1);
+  it("does not count unknown dimensions as landscape votes", () => {
+    const unknown = { ...member(2), width: null, height: null };
+    expect(
+      comparisonPages([member(0, true), unknown], 16, 1)[0]?.perDisplay,
+    ).toBe(3);
   });
 
-  it("letters appear past slot ten", () => {
-    const many = Array.from({ length: 12 }, (_, i) => member(`m${i}`));
-    const chunks = chunkSlots(many, new Set(), [16]);
-    expect(chunks[0][9].slotKey).toBe("0");
-    expect(chunks[0][10].slotKey).toBe("a");
-    expect(chunks[0][11].slotKey).toBe("b");
+  it("chunks in configured display order", () => {
+    expect(chunkMembers([0, 1, 2, 3, 4, 5], [4, 4])).toEqual([
+      [0, 1, 2, 3],
+      [4, 5],
+    ]);
+  });
+});
+
+describe("comparison card order and navigation", () => {
+  it("flows landscape cards top-to-bottom then left-to-right", () => {
+    expect(gridFor(4, false)).toEqual({ count: 4, columns: 2, rows: 2 });
+    expect(spatialTarget(0, "down", [4], false)).toBe(1);
+    expect(spatialTarget(0, "right", [4], false)).toBe(2);
   });
 
-  it("turn size is the capacity sum capped by the sixteen keys", () => {
-    expect(turnSize([3, 4, 4])).toBe(11);
-    expect(turnSize([16])).toBe(16);
-    expect(turnSize([9, 9])).toBe(16);
-    expect(turnSize([])).toBe(1);
+  it("adapts the grid to a portrait display", () => {
+    expect(gridFor(4, false, 9 / 16)).toEqual({
+      count: 4,
+      columns: 1,
+      rows: 4,
+    });
+    expect(gridFor(3, true, 9 / 16)).toEqual({
+      count: 3,
+      columns: 2,
+      rows: 2,
+    });
   });
 
-  it("chunking and turn size agree for the same capacities", () => {
-    // These were asserted in isolation, so the fact that they DISAGREE for []
-    // — turnSize returns 1 while chunkSlots falls back to [slots.length] —
-    // could not be seen. Unreachable today (capacities initialises to [16]),
-    // so this pins a latent trap rather than a live bug.
-    const slots = Array.from({ length: 20 }, (_, i) => member(`h${i}`));
-    for (const capacities of [[], [4], [4, 4], [16], [3, 4, 4]]) {
-      const size = turnSize(capacities);
-      const chunked = chunkSlots(slots.slice(0, size), new Set(), capacities);
-      expect(chunked.flat()).toHaveLength(size);
-    }
+  it("crosses display edges without wrapping the outer bounds", () => {
+    expect(spatialTarget(2, "right", [4, 4], false)).toBe(4);
+    expect(spatialTarget(4, "left", [4, 4], false)).toBe(2);
+    expect(spatialTarget(0, "left", [4, 4], false)).toBe(0);
+  });
+});
+
+describe("direct image keys", () => {
+  it("assigns 0-9 then A-Z and leaves later cards unassigned", () => {
+    expect(COMPARISON_DIRECT_KEYS).toHaveLength(36);
+    expect(COMPARISON_DIRECT_KEYS.slice(0, 11)).toEqual([
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "a",
+    ]);
   });
 
-  it("per-screen capacity follows the group's dominant image orientation", () => {
-    const portrait = (h: string) => ({ ...member(h), width: 3000, height: 4000 });
-    const landscape = (h: string) => ({ ...member(h), width: 4000, height: 3000 });
-    expect(perScreenCapacity([portrait("a"), portrait("b"), landscape("c")])).toBe(3);
-    expect(perScreenCapacity([portrait("a"), landscape("b"), landscape("c")])).toBe(4);
-    // Unknown dimensions count as landscape (the roomier default).
-    expect(perScreenCapacity([member("a"), member("b")])).toBe(4);
+  it("accepts only a bare non-repeating assigned key", () => {
+    expect(directKeyIndex({ key: "0" })).toBe(0);
+    expect(directKeyIndex({ key: "F" })).toBe(15);
+    expect(directKeyIndex({ key: "z" })).toBe(35);
+    expect(directKeyIndex({ key: "f", shiftKey: true })).toBe(-1);
+    expect(directKeyIndex({ key: "f", ctrlKey: true })).toBe(-1);
+    expect(directKeyIndex({ key: "f", repeat: true })).toBe(-1);
   });
 });

@@ -72,7 +72,9 @@ const SCENE = [
 ];
 
 const pressWindow = (key: string, init: KeyboardEventInit = {}) =>
-  window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", { key, bubbles: true, ...init }),
+  );
 
 /** One macrotask drain — lets workflow-coordinated, void-awaited refreshes
  * land before the next assertion. */
@@ -98,10 +100,19 @@ beforeEach(() => {
     patch_config: (args) => args.patch ?? {},
     log_event: () => null,
     logging_debug_enabled: () => false,
-    background_work_snapshot: () => ({ masterPaused: false, classes: [], activeItem: null }),
+    background_work_snapshot: () => ({
+      masterPaused: false,
+      classes: [],
+      activeItem: null,
+    }),
     index_work_snapshot: () => ({
       sourceCheck: { running: false, stopping: false },
-      fileInformation: { running: false, paused: false, stopping: false, queued: false },
+      fileInformation: {
+        running: false,
+        paused: false,
+        stopping: false,
+        queued: false,
+      },
     }),
     get_item_detail: () => null,
     start_source_check: () => true,
@@ -138,13 +149,19 @@ beforeEach(() => {
   });
   usePreviewStore.setState({ follow: false, current: null });
   useQuickViewStore.setState({ session: null, pendingDelete: null });
-  useComparisonStore.setState({ open: false, members: [], kept: new Set() });
+  useComparisonStore.setState({
+    open: false,
+    members: [],
+    selected: new Set(),
+    anchors: new Set(),
+    anchor: null,
+  });
 });
 
 afterEach(() => cleanup());
 
 describe("the culling journey", () => {
-  it("runs wizard finish → scan → tree → month → arrows → Space → Enter → keeper commit → refresh", async () => {
+  it("runs wizard finish → scan → tree → month → arrows → Space → Enter → page decision → refresh", async () => {
     const view = render(<App />);
     await settle();
 
@@ -176,7 +193,9 @@ describe("the culling journey", () => {
         nextPhase: "hash",
       });
     });
-    expect(useSectionsStore.getState().sourceCheck.progress?.phase).toBe("walk");
+    expect(useSectionsStore.getState().sourceCheck.progress?.phase).toBe(
+      "walk",
+    );
 
     mockCommand("get_section_counts", () => ({
       images: [{ month: "2026-01", count: 4 }],
@@ -193,9 +212,11 @@ describe("the culling journey", () => {
     // The sidebar tree: kind rows are open by default, years are closed —
     // the year appears, the month only after the year is opened.
     const rowByText = (text: string) =>
-      [...view.container.querySelectorAll<HTMLElement>("[role='treeitem'], button")].find(
-        (el) => el.textContent?.trim().startsWith(text),
-      );
+      [
+        ...view.container.querySelectorAll<HTMLElement>(
+          "[role='treeitem'], button",
+        ),
+      ].find((el) => el.textContent?.trim().startsWith(text));
     expect(rowByText("2026")).toBeTruthy();
     expect(rowByText("2026-01")).toBeFalsy();
     await act(async () => rowByText("2026")!.click());
@@ -214,13 +235,17 @@ describe("the culling journey", () => {
       useItemsStore.getState().selectItem("h1");
     });
     await act(async () => {
-      grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      grid.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
     });
     expect(useItemsStore.getState().selectedItem).toBe("h2");
 
     // ---- Space opens transient Quick View without changing Preview ----
     await act(async () => {
-      grid.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      grid.dispatchEvent(
+        new KeyboardEvent("keydown", { key: " ", bubbles: true }),
+      );
     });
     await settle();
     expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
@@ -237,17 +262,22 @@ describe("the culling journey", () => {
     ]);
     await act(async () => {
       grid.focus();
-      grid.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      grid.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
     });
     await settle();
     const comparison = useComparisonStore.getState();
     expect(comparison.open).toBe(true);
     expect(comparison.members.map((m) => m!.hash)).toEqual(["h2", "h1", "h3"]);
 
-    // ---- Keeper key + Enter commits: losers to trash, view refreshes ----
+    // ---- Entry selection + Enter decides the visible page ----
     const deleted: string[] = [];
     mockCommand("delete_items", (args) => {
-      const items = args.items as Array<{ hash: string | null; pathId: number | null }>;
+      const items = args.items as Array<{
+        hash: string | null;
+        pathId: number | null;
+      }>;
       deleted.push(...items.map((item) => item.hash!).filter(Boolean));
       return {
         cancelled: false,
@@ -260,21 +290,21 @@ describe("the culling journey", () => {
       item(2, { similarGroupId: null }),
       item(4),
     ]);
-    await act(async () => {
-      pressWindow("1"); // keep slot 1 (h2, the sharpest)
-    });
-    expect(useComparisonStore.getState().kept.has("h2")).toBe(true);
+    expect(useComparisonStore.getState().selected.has("h2")).toBe(true);
     await act(async () => {
       pressWindow("Enter");
     });
     await settle();
 
-    // The core was told to trash exactly the non-kept slots, the comparison
+    // The core was told to trash exactly the non-selected slots, the comparison
     // closed (nothing left to decide), and the month view refreshed to what
     // survived.
     expect(deleted.sort()).toEqual(["h1", "h3"]);
     expect(useComparisonStore.getState().open).toBe(false);
-    expect(useItemsStore.getState().items.map((i) => i.hash)).toEqual(["h2", "h4"]);
+    expect(useItemsStore.getState().items.map((i) => i.hash)).toEqual([
+      "h2",
+      "h4",
+    ]);
   }, 30_000);
 });
 
@@ -294,7 +324,9 @@ describe("the failure journey", () => {
 
     // A loaded month with the anchor on the first item.
     await act(async () => {
-      await useItemsStore.getState().select({ kind: "image", month: "2026-01" });
+      await useItemsStore
+        .getState()
+        .select({ kind: "image", month: "2026-01" });
     });
     await act(async () => {
       useItemsStore.getState().selectItem("h1");
@@ -323,9 +355,12 @@ describe("the failure journey", () => {
       total: 1,
     }));
     await act(async () => {
-      const grid = view.container.querySelector<HTMLElement>("[role='listbox']")!;
+      const grid =
+        view.container.querySelector<HTMLElement>("[role='listbox']")!;
       grid.focus();
-      grid.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+      grid.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
     });
     await settle();
 

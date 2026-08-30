@@ -1,397 +1,357 @@
-// The comparison view's turn machinery. A similar group opens into up to 16
-// slots (keys 1–9, 0, a–f); slot keys toggle keepers; Enter commits the turn —
-// non-kept slots are deleted (trash, or permanently with Shift), keepers stay
-// pinned, and freed slots refill from the queue, which is exactly the
-// "remaining photos coming in" the design asks for. Committing with no keeper
-// skips the turn: those photos stay in the app, undecided, and the next batch
-// flows in. The group is done when the queue is empty and every slot is kept
-// (or skipped) — the view closes and the grid refreshes.
-
-import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
-import { requestSeq } from "./request-seq";
 import { emit } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import {
-  getCurrentWindow,
   availableMonitors,
   currentMonitor,
+  getCurrentWindow,
   PhysicalPosition,
   PhysicalSize,
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { log, toErrorFields, reportWindowCall } from "../repositories";
+import { create } from "zustand";
+import {
+  COMPARISON_DIRECT_KEYS,
+  activateSelection,
+  activePage,
+  activeSelection,
+  chunkMembers,
+  comparisonPages,
+  directKeyIndex,
+  displayCapacities,
+  spatialTarget,
+  updateSelection,
+  type ComparisonMember,
+  type ComparisonSelection,
+  type ComparisonSelectionMode,
+} from "../models/comparisonSession";
+import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
+import { requestSeq } from "./request-seq";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
-export interface GroupMember {
-  hash: string;
-  fileName: string;
-  width: number | null;
-  height: number | null;
-  byteSize: number | null;
-  sharpness: number | null;
-  faceScore: number | null;
-  copyCount: number;
-  hasThumb: boolean;
+export type GroupMember = ComparisonMember;
+export type ComparisonOpenResult = "opened" | "unavailable" | "failed";
+
+export function slotIndexForKey(
+  event: Parameters<typeof directKeyIndex>[0],
+): number {
+  return directKeyIndex(event);
 }
 
-export const SLOT_KEYS = [
-  "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-  "a", "b", "c", "d", "e", "f",
-] as const;
-
-/** The slot a keydown selects, or -1 for "not a slot key".
- *
- * Slot keys are bare single characters, so several collide with app commands:
- * SLOT_KEYS[9] is "0" (Cmd/Ctrl+0 resets zoom) and "a" is a slot (Ctrl+A). A
- * modified key always belongs to the other command — flipping a keeper flag
- * there is silent, because the zoom relayout in the same frame hides the badge
- * change, and the next Enter deletes the photo the user meant to keep.
- *
- * Both key paths route through this one function: the local handler in the
- * comparison view, and keys forwarded from a secondary comparison window. */
-export function slotIndexForKey(event: {
-  key: string;
-  metaKey?: boolean;
-  ctrlKey?: boolean;
-  altKey?: boolean;
-}): number {
-  if (event.metaKey === true || event.ctrlKey === true || event.altKey === true) {
-    return -1;
-  }
-  return (SLOT_KEYS as readonly string[]).indexOf(event.key.toLowerCase());
+export interface ComparisonSlotState {
+  member: GroupMember;
+  slotKey: string | null;
+  selected: boolean;
+  anchor: boolean;
 }
 
-/** The slot a SHIFTED keydown unlinks, or -1. Matched on `event.code` — the
- * layout-independent physical key — because Shift+1 delivers `key: "!"` on
- * US layouts and other symbols elsewhere; the physical digit row is the one
- * thing every layout shares. Bare `event.key` matching (the keeper path)
- * cannot express this, which is why the two resolvers stay separate. */
-export function slotIndexForShiftedCode(event: {
-  code?: string;
-  shiftKey?: boolean;
-  metaKey?: boolean;
-  ctrlKey?: boolean;
-  altKey?: boolean;
-}): number {
-  if (event.shiftKey !== true) return -1;
-  if (event.metaKey === true || event.ctrlKey === true || event.altKey === true) {
-    return -1;
-  }
-  const code = event.code ?? "";
-  if (code.startsWith("Digit")) {
-    const digit = code.slice(5);
-    if (digit === "0") return 9;
-    const n = Number.parseInt(digit, 10);
-    return n >= 1 && n <= 9 ? n - 1 : -1;
-  }
-  if (code.startsWith("Key")) {
-    const index = (SLOT_KEYS as readonly string[]).indexOf(code.slice(3).toLowerCase());
-    return index >= 10 ? index : -1;
-  }
-  return -1;
-}
-
-/** What the secondary windows render: contiguous chunks of the slot list,
- * each entry carrying its GLOBAL slot key so 1–9/0/A–F stay one key space. */
 export interface ComparisonBroadcast {
-  /** `member: null` is an unlinked slot — rendered as an empty cell so the
-   * other slots keep their key numbers for the rest of the turn. */
-  chunks: { member: GroupMember | null; slotKey: string; kept: boolean }[][];
-  queueCount: number;
-  /** The group's dominant image orientation, driving each window's grid. */
+  chunks: ComparisonSlotState[][];
+  page: number;
+  pageCount: number;
+  remainingCount: number;
   portraitDominant: boolean;
 }
 
-interface ComparisonState {
+export type ComparisonActionKind = "page" | "selection";
+
+interface ComparisonAction {
+  kind: ComparisonActionKind;
+  permanent: boolean;
+  keepHashes: string[];
+  targetHashes: string[];
+}
+
+interface ComparisonFailure extends ComparisonAction {
+  message: string;
+}
+
+interface ComparisonState extends ComparisonSelection {
+  sessionId: number;
   open: boolean;
-  /** EVERY member of the group, in session order (best-first). null = a slot
-   * unlinked this session — the hole keeps page geometry and key numbers
-   * stable. Pages are a VIEWPORT over this list; nothing else is state. */
-  members: (GroupMember | null)[];
-  /** Keep marks, by hash — they persist across pages (the paged model,
-   * Phase 33: viewing and deciding are decoupled; navigation never deletes). */
-  kept: Set<string>;
-  /** Pages the user has SEEN. The safety rule of the whole design: nothing
-   * from an unvisited page can ever be deleted, guaranteed by Enter
-   * advancing through unseen pages before it will commit. */
-  visited: Set<number>;
+  members: GroupMember[];
+  originalMemberHashes: string[];
   page: number;
-  /** The shortlist view (S): the current marks as their own paged viewport —
-   * the passport-photo finale, candidates compared side by side at the END. */
-  shortlist: boolean;
-  shortlistPage: number;
-  busy: boolean;
-  /** A partially completed commit stays in-session so Retry can target only
-   * the logical items whose files remain. */
-  commitFailure: { message: string; permanent: boolean } | null;
-  /** Permanent commits confirm ONCE per comparison session (a per-turn
-   * prompt would destroy the keystroke rhythm the view exists for). */
-  permanentArmed: boolean;
-  /** A Shift+Enter awaiting that one confirmation. */
-  pendingPermanentCommit: boolean;
-  /** A commit awaiting its count confirmation — zero marks (trash ALL), a
-   * multi-page group, or the confirmTrashDelete config. Single-page commits
-   * with at least one mark stay two keystrokes with no dialog. */
-  pendingCommit: { keepCount: number; trashCount: number; permanent: boolean } | null;
-  confirmPendingCommit: () => Promise<ComparisonCommitResult | null>;
-  cancelPendingCommit: () => void;
-  confirmPermanentCommit: (
-    configConfirms?: boolean,
-  ) => Promise<ComparisonCommitResult | null>;
-  cancelPermanentCommit: () => void;
-  /** Secondary comparison windows currently open (monitors beyond the first). */
-  spreadCount: number;
-  /** Per-screen slot capacities (screen 0 = the main window). The page size
-   * is their sum, capped by the 16 slot keys. */
+  maximumImages: number;
+  displayCount: number;
+  displayAspects: number[];
   capacities: number[];
-  /** The group's dominant image orientation (drives the slot grids). */
   portraitDominant: boolean;
-  /** Every original member hash still in the family — what the finish
-   * advances past. Unlinking removes the image here too. */
-  sessionMembers: string[];
+  spreadCount: number;
+  busy: boolean;
+  message: string | null;
+  pendingAction: ComparisonAction | null;
+  failure: ComparisonFailure | null;
   openGroup: (
     hash: string,
+    initialSelection?: Iterable<string>,
+    entryAnchor?: string | null,
+    maximumImages?: number,
     screenState?: Record<string, unknown>,
-  ) => Promise<boolean>;
-  /** Toggles the keep mark of a slot ON THE VISIBLE PAGE. */
-  toggleKeep: (slotIndex: number) => void;
-  /** The unlink: this visible slot's image is NOT the same subject.
-   * Persistent core-side; the slot becomes a hole. */
-  unlinkSlot: (slotIndex: number) => Promise<void>;
+  ) => Promise<ComparisonOpenResult>;
+  selectSlot: (slotIndex: number, mode: ComparisonSelectionMode) => void;
+  moveSelection: (
+    direction: "left" | "right" | "up" | "down",
+    extend: boolean,
+  ) => void;
+  selectBound: (bound: "first" | "last", extend: boolean) => void;
+  selectAll: () => void;
   nextPage: () => void;
   prevPage: () => void;
-  toggleShortlist: () => void;
-  /** Enter: advance to the next unseen page, or — once every page has been
-   * seen — commit the whole group (keep the marked, trash the rest),
-   * confirming by the policy above. */
-  commitTurn: (
+  unlinkSelected: () => Promise<"open" | "closed" | null>;
+  requestPageDecision: (
+    permanent: boolean,
+    configConfirms?: boolean,
+    trashAll?: boolean,
+  ) => Promise<ComparisonCommitResult | null>;
+  requestSelectionDelete: (
     permanent: boolean,
     configConfirms?: boolean,
   ) => Promise<ComparisonCommitResult | null>;
+  confirmPendingAction: () => Promise<ComparisonCommitResult | null>;
+  cancelPendingAction: () => void;
+  retryFailure: (
+    configConfirms?: boolean,
+  ) => Promise<ComparisonCommitResult | null>;
+  reconcileLiveMembers: (liveHashes: Iterable<string>) => Promise<boolean>;
   close: () => Promise<void>;
 }
 
 export type ComparisonCommitResult =
   | { kind: "failed" }
+  | { kind: "continued" }
   | { kind: "completed"; family: string[] };
 
-/** The page geometry: fixed windows of `pageSize` over the member list. */
-export function pageCountOf(memberCount: number, pageSize: number): number {
-  return Math.max(1, Math.ceil(memberCount / Math.max(1, pageSize)));
+type MonitorList = Awaited<ReturnType<typeof availableMonitors>>;
+
+let sessionOtherMonitors: MonitorList = [];
+
+function selectionFrom(state: ComparisonState): ComparisonSelection {
+  return {
+    selected: state.selected,
+    anchors: state.anchors,
+    anchor: state.anchor,
+    rangeOrigin: state.rangeOrigin,
+    rangeBase: state.rangeBase,
+  };
 }
 
-/** What the screens show right now: the current page, or the current
- * shortlist page (marks only, live members, re-sliced by the same size). */
-export function visibleSlots(state: {
-  members: (GroupMember | null)[];
-  kept: Set<string>;
-  page: number;
-  shortlist: boolean;
-  shortlistPage: number;
-  capacities: number[];
-}): (GroupMember | null)[] {
-  const size = turnSize(state.capacities);
-  if (state.shortlist) {
-    const marked = state.members.filter(
-      (m): m is GroupMember => m !== null && state.kept.has(m.hash),
+export function visibleMembers(
+  state: Pick<
+    ComparisonState,
+    "members" | "page" | "maximumImages" | "displayCount"
+  >,
+): GroupMember[] {
+  return activePage(
+    state.members,
+    state.page,
+    state.maximumImages,
+    state.displayCount,
+  ).members;
+}
+
+function viewPatch(
+  state: ComparisonState,
+  members = state.members,
+  requestedPage = state.page,
+  preferredSelected: Iterable<string> = [],
+  preferredAnchor: string | null = null,
+): Partial<ComparisonState> {
+  const live = new Set(members.map((member) => member.hash));
+  const liveSelection: ComparisonSelection = {
+    selected: new Set([...state.selected].filter((hash) => live.has(hash))),
+    anchors: new Set([...state.anchors].filter((hash) => live.has(hash))),
+    anchor:
+      state.anchor !== null && live.has(state.anchor) ? state.anchor : null,
+    rangeOrigin:
+      state.rangeOrigin !== null && live.has(state.rangeOrigin)
+        ? state.rangeOrigin
+        : null,
+    rangeBase: new Set([...state.rangeBase].filter((hash) => live.has(hash))),
+  };
+  const pages = comparisonPages(
+    members,
+    state.maximumImages,
+    state.displayCount,
+  );
+  const page = Math.min(
+    Math.max(0, requestedPage),
+    Math.max(0, pages.length - 1),
+  );
+  const active = pages[page] ?? {
+    members: [],
+    portraitDominant: false,
+    perDisplay: 4,
+  };
+  let recoveredAnchor = preferredAnchor;
+  if (
+    recoveredAnchor === null &&
+    state.anchor !== null &&
+    !live.has(state.anchor)
+  ) {
+    const oldIndex = state.members.findIndex(
+      (member) => member.hash === state.anchor,
     );
-    return marked.slice(state.shortlistPage * size, (state.shortlistPage + 1) * size);
+    const visible = new Set(active.members.map((member) => member.hash));
+    const next = state.members.slice(oldIndex + 1).map((member) => member.hash);
+    const previous = state.members
+      .slice(0, Math.max(0, oldIndex))
+      .reverse()
+      .map((member) => member.hash);
+    recoveredAnchor =
+      next.find(
+        (hash) => visible.has(hash) && liveSelection.selected.has(hash),
+      ) ??
+      previous.find(
+        (hash) => visible.has(hash) && liveSelection.selected.has(hash),
+      ) ??
+      next.find((hash) => visible.has(hash)) ??
+      previous.find((hash) => visible.has(hash)) ??
+      null;
   }
-  return state.members.slice(state.page * size, (state.page + 1) * size);
+  const selection = activateSelection(
+    liveSelection,
+    active.members,
+    preferredSelected,
+    recoveredAnchor,
+  );
+  const capacities = displayCapacities(
+    active.members.length,
+    active.perDisplay,
+    state.displayCount,
+  );
+  return {
+    members,
+    page,
+    ...selection,
+    capacities,
+    portraitDominant: active.portraitDominant,
+    spreadCount: Math.max(0, capacities.length - 1),
+  };
 }
 
-/** How many photos the user is actually looking at. NOT `slots.length`: an
- * unlinked slot stays in the array as a hole so the keys after it keep their
- * numbers, and counting holes made the header claim photos that are not on
- * screen ("2 kept · 4 shown" over three photos and a gap). */
-export function liveSlotCount(slots: (GroupMember | null)[]): number {
-  return slots.reduce((n, slot) => (slot === null ? n : n + 1), 0);
+function slotsFor(state: ComparisonState): ComparisonSlotState[] {
+  return visibleMembers(state).map((member, index) => ({
+    member,
+    slotKey: COMPARISON_DIRECT_KEYS[index] ?? null,
+    selected: state.selected.has(member.hash),
+    anchor: state.anchor === member.hash,
+  }));
 }
 
-/** Chunks the slots across screens by their capacities, contiguous, keeping
- * ONE global key space (the design's 3-vertical / 4-horizontal per screen). */
-export function chunkSlots(
-  slots: (GroupMember | null)[],
-  kept: Set<string>,
-  capacities: number[],
-): ComparisonBroadcast["chunks"] {
-  const caps = capacities.length > 0 ? capacities : [slots.length];
-  const chunks: ComparisonBroadcast["chunks"] = [];
-  let offset = 0;
-  for (const capacity of caps) {
-    chunks.push(
-      slots.slice(offset, offset + capacity).map((member, i) => ({
-        member,
-        slotKey: SLOT_KEYS[offset + i] ?? "?",
-        kept: member !== null && kept.has(member.hash),
-      })),
-    );
-    offset += capacity;
-  }
-  return chunks;
-}
-
-export function turnSize(capacities: number[]): number {
-  const sum = capacities.reduce((a, b) => a + b, 0);
-  return Math.min(SLOT_KEYS.length, Math.max(1, sum));
+export function comparisonChunks(
+  state: ComparisonState,
+): ComparisonSlotState[][] {
+  return chunkMembers(slotsFor(state), state.capacities);
 }
 
 export function broadcastComparison(): void {
   const state = useComparisonStore.getState();
-  const visible = visibleSlots(state);
-  const size = turnSize(state.capacities);
+  if (!state.open) return;
+  const pages = comparisonPages(
+    state.members,
+    state.maximumImages,
+    state.displayCount,
+  );
   const payload: ComparisonBroadcast = {
-    chunks: chunkSlots(visible, state.kept, state.capacities),
-    // For the windows' footer: photos living on OTHER pages of this view.
-    queueCount: Math.max(
-      0,
-      (state.shortlist
-        ? state.members.filter((m) => m !== null && state.kept.has(m.hash)).length
-        : state.members.length) - visible.length - (state.shortlist ? state.shortlistPage : state.page) * size,
-    ),
+    chunks: comparisonChunks(state),
+    page: state.page,
+    pageCount: pages.length,
+    remainingCount: state.members.length,
     portraitDominant: state.portraitDominant,
   };
   void emit("comparison://state", payload);
 }
 
-/** How many COLUMNS a window's slot grid takes, so the cells' shape tracks
- * the photos' shape: portrait photos on a landscape screen stand three
- * abreast; landscape photos take a 2×2; landscape photos on a portrait
- * screen stack. The developer's finding was that a wrapping row of
- * fixed-size tiles left every image small however much screen there was —
- * the grid fills the window and lets the cells be as big as the count
- * allows. Derivation: pick the column count whose cell aspect lands nearest
- * the image aspect. */
-export function gridColumns(
-  slotCount: number,
-  containerAspect: number,
-  portraitImages: boolean,
+function pageForAnchor(
+  members: GroupMember[],
+  hash: string,
+  maximumImages: number,
+  displayCount: number,
 ): number {
-  if (slotCount <= 1) return 1;
-  const imageAspect = portraitImages ? 2 / 3 : 3 / 2;
-  const ideal = Math.sqrt((slotCount * containerAspect) / imageAspect);
-  return Math.min(slotCount, Math.max(1, Math.round(ideal)));
+  const pages = comparisonPages(members, maximumImages, displayCount);
+  const found = pages.findIndex((page) =>
+    page.members.some((member) => member.hash === hash),
+  );
+  return found < 0 ? 0 : found;
 }
 
-/// The design's per-screen rule: three slots when the photos run portrait,
-/// four when they run landscape — decided by the GROUP's dominant image
-/// orientation (unknown dimensions count as landscape).
-export function perScreenCapacity(members: GroupMember[]): number {
-  const portrait = members.filter(
-    (m) => m.width !== null && m.height !== null && m.height > m.width,
-  ).length;
-  return portrait * 2 > members.length ? 3 : 4;
-}
-
-/** The monitors the spread will use and the per-screen capacities they imply,
- * resolved BEFORE any window exists.
- *
- * Splitting this out of the window creation is what makes the handshake sound:
- * a secondary window announces itself the moment it mounts, and the main
- * window can only answer if `open` is already true. Creating the windows first
- * and setting the state afterwards left a gap in which that announcement was
- * answered with silence — the window then waited forever for a broadcast that
- * only fires on a state change. Resolve, set state, THEN create.
- *
- * Best-effort: a machine with one monitor keeps the single-window form and all
- * 16 keys. */
-/** How many screens this family actually fills. A 6-member family on three
- * 4-slot screens is 4 + 2 + NOTHING — and a spread window with nothing to
- * show must not open at all: an empty always-on-top surface covering a whole
- * monitor is not a comparison aid, it is a curtain. Never below 1 (the main
- * window always hosts chunk 0), never above what exists. */
-export function screensNeeded(
-  memberCount: number,
-  perScreen: number,
-  available: number,
-): number {
-  return Math.min(available, Math.max(1, Math.ceil(memberCount / perScreen)));
-}
-
-async function resolveSpread(
-  perScreen: number,
-  memberCount: number,
+async function resolveMonitors(
   screenState: Record<string, unknown>,
-): Promise<{ others: Awaited<ReturnType<typeof availableMonitors>>; capacities: number[] }> {
+): Promise<{ hostAspect: number; others: MonitorList }> {
   try {
-    // `others` is every monitor EXCEPT the one hosting the main window —
-    // found by ASKING, never assumed. The spread used to target priority
-    // slots 2+ blind, so whenever the priority list disagreed with where the
-    // main window really was (a moved window; the broken matched-pair keys),
-    // an always-on-top borderless window landed ON TOP of the main window
-    // and buried its slots — the developer never saw keys 1–4. The main
-    // window's own screen hosts chunk 0 by construction now; priority still
-    // orders which of the OTHER monitors join first.
     const monitors = orderMonitors(
       await availableMonitors(),
       priorityFromState(screenState),
     );
     const hosting = await currentMonitor();
-    const hostKey = hosting !== null ? monitorKey(hosting) : null;
-    const eligible =
-      hostKey === null
-        ? monitors.slice(1)
-        : monitors.filter((m) => monitorKey(m) !== hostKey);
-    // Only as many screens as the family fills (screensNeeded's contract);
-    // priority order decides WHICH of the eligible monitors join.
-    const others = eligible.slice(
-      0,
-      screensNeeded(memberCount, perScreen, eligible.length + 1) - 1,
-    );
+    const hostKey = hosting === null ? null : monitorKey(hosting);
+    const host =
+      hosting ??
+      (hostKey === null ? monitors[0] : monitors.find((monitor) => monitorKey(monitor) === hostKey)) ??
+      null;
     return {
-      others,
-      capacities:
-        others.length === 0
-          ? [SLOT_KEYS.length]
-          : [perScreen, ...others.map(() => perScreen)],
+      hostAspect:
+        host === null || host.size.height <= 0
+          ? 16 / 9
+          : host.size.width / host.size.height,
+      others:
+        hostKey === null
+          ? monitors.slice(1)
+          : monitors.filter((monitor) => monitorKey(monitor) !== hostKey),
     };
   } catch (error) {
-    log.warn("monitor query failed; staying single-window", toErrorFields(error));
-    return { others: [], capacities: [SLOT_KEYS.length] };
+    log.warn(
+      "monitor query failed; staying on the main display",
+      toErrorFields(error),
+    );
+    recordInterfaceFailure("Couldn’t read the connected displays for Comparison.");
+    return { hostAspect: 16 / 9, others: [] };
   }
 }
 
-/** Creates (or reveals) one borderless window per extra monitor, sized to that
- * monitor's own bounds.
- *
- * Deliberately NOT the OS fullscreen call: on macOS that animates the window
- * into its own Space, which costs about a second every time a group opens and
- * again when it closes — unusable in a keystroke-paced culling flow. A
- * frameless window placed at the monitor's exact bounds and held above the
- * others looks the same and appears instantly (imagequeue's viewer proves the
- * approach). */
-async function openSpread(
-  others: Awaited<ReturnType<typeof availableMonitors>>,
-): Promise<boolean> {
-  try {
-    for (let i = 0; i < others.length; i += 1) {
-      const label = `comparison-${i + 1}`;
+const fullscreenTransitions = new Map<string, Promise<void>>();
+
+function setComparisonFullscreen(
+  label: string,
+  enable: boolean,
+): Promise<void> {
+  const previous = fullscreenTransitions.get(label) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() =>
+      invoke<void>("set_window_simple_fullscreen", { label, enable }),
+    );
+  fullscreenTransitions.set(label, next);
+  const clear = () => {
+    if (fullscreenTransitions.get(label) === next) {
+      fullscreenTransitions.delete(label);
+    }
+  };
+  void next.then(clear, clear);
+  return next;
+}
+
+async function showSpread(monitors: MonitorList): Promise<void> {
+  for (let index = 0; index < monitors.length; index += 1) {
+    const label = `comparison-${index + 1}`;
+    const monitor = monitors[index];
+    try {
       const existing = await WebviewWindow.getByLabel(label);
-      const monitor = others[i];
       if (existing !== null) {
-        // Reused from a previous session: reveal and re-place it, cheaper
-        // than a webview boot and it keeps its listener registered.
-        // A monitor reports PHYSICAL pixels, so place it with the physical
-        // types rather than converting — on a Retina display the logical
-        // numbers are half these, and a half-sized window would be the bug.
         await existing.setPosition(
           new PhysicalPosition(monitor.position.x, monitor.position.y),
         );
-        await existing.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
-        await existing.show();
-        // macOS: cover the menu bar and dock too (simple fullscreen — no
-        // Spaces animation). No-op elsewhere; borderless-at-bounds already
-        // covers the Windows taskbar.
-        await setComparisonFullscreen(label, true).catch(
-          reportWindowCall("comparison enter fullscreen"),
+        await existing.setSize(
+          new PhysicalSize(monitor.size.width, monitor.size.height),
         );
+        await existing.show();
+        await setComparisonFullscreen(label, true);
         continue;
       }
-      // The constructor's x/y/width/height are LOGICAL, so the monitor's
-      // physical bounds are divided by its own scale factor here.
       const scale = monitor.scaleFactor || 1;
       const created = new WebviewWindow(label, {
-        url: `index.html?view=comparison&slice=${i + 1}`,
+        url: `index.html?view=comparison&slice=${index + 1}`,
         title: "OneCopy Comparison",
         x: monitor.position.x / scale,
         y: monitor.position.y / scale,
@@ -402,34 +362,98 @@ async function openSpread(
         skipTaskbar: true,
         resizable: false,
         focus: false,
+        visible: false,
       });
       void created.once("tauri://created", () => {
-        const state = useComparisonStore.getState();
-        if (!state.open || i >= state.spreadCount) return;
-        void setComparisonFullscreen(label, true)
-          .catch(reportWindowCall("comparison enter fullscreen"))
-          .then(() =>
-            getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus")),
-          );
+        void queueComparisonLifecycle(async () => {
+          const state = useComparisonStore.getState();
+          if (!state.open || index >= state.spreadCount) {
+            await created
+              .close()
+              .catch(reportWindowCall("unused comparison close"));
+            return;
+          }
+          try {
+            await created.show();
+            await setComparisonFullscreen(label, true);
+          } catch (error) {
+            log.warn("comparison display became unavailable", {
+              label,
+              ...toErrorFields(error),
+            });
+            recordInterfaceFailure(
+              "A Comparison display became unavailable. The session was rearranged.",
+            );
+            void recoverDisplays(index + 1);
+            return;
+          }
+          await getCurrentWindow()
+            .setFocus()
+            .catch(reportWindowCall("main setFocus"));
+        });
       });
       void created.once("tauri://error", (event) => {
         log.warn("comparison window creation failed", {
           label,
           error: { message: String(event.payload) },
         });
-        recoverSingleWindowComparison();
+        recordInterfaceFailure(
+          "A Comparison display could not open. The session was rearranged.",
+        );
+        recoverDisplays(index + 1);
       });
+    } catch (error) {
+      log.warn("comparison display became unavailable", {
+        label,
+        ...toErrorFields(error),
+      });
+      recordInterfaceFailure(
+        "A Comparison display became unavailable. The session was rearranged.",
+      );
+      recoverDisplays(index + 1);
+      return;
     }
-    return true;
-  } catch (error) {
-    log.warn("comparison spread failed; staying single-window", toErrorFields(error));
-    return false;
   }
 }
 
-/** A valid comparison claims the screens its spread will use. Hide an
- * existing Preview window only after the session is published, immediately
- * before spread creation; an invalid/stale group must never flicker Preview. */
+async function hideSpread(first: number, last: number): Promise<void> {
+  for (let index = first; index <= last; index += 1) {
+    const label = `comparison-${index}`;
+    const window = await WebviewWindow.getByLabel(label).catch((error) => {
+      reportWindowCall("comparison window lookup")(error);
+      return null;
+    });
+    if (window === null) continue;
+    await setComparisonFullscreen(label, false).catch(
+      reportWindowCall("comparison leave fullscreen"),
+    );
+    await window.hide().catch(reportWindowCall("comparison hide"));
+  }
+}
+
+async function closeSpread(first: number, last: number): Promise<void> {
+  for (let index = first; index <= last; index += 1) {
+    const label = `comparison-${index}`;
+    const window = await WebviewWindow.getByLabel(label).catch((error) => {
+      reportWindowCall("comparison window lookup")(error);
+      return null;
+    });
+    if (window === null) continue;
+    await setComparisonFullscreen(label, false).catch(
+      reportWindowCall("comparison leave fullscreen"),
+    );
+    await window.close().catch(reportWindowCall("comparison close"));
+  }
+}
+
+let comparisonLifecycle: Promise<void> = Promise.resolve();
+
+function queueComparisonLifecycle(action: () => Promise<void>): Promise<void> {
+  const next = comparisonLifecycle.then(action, action);
+  comparisonLifecycle = next.catch(() => undefined);
+  return next;
+}
+
 async function hidePreviewWindowForComparison(): Promise<void> {
   const preview = await WebviewWindow.getByLabel("preview").catch((error) => {
     reportWindowCall("preview lookup")(error);
@@ -440,293 +464,402 @@ async function hidePreviewWindowForComparison(): Promise<void> {
   }
 }
 
-function recoverSingleWindowComparison(): void {
+function synchronizeSpread(previousSpreadCount: number): void {
   const state = useComparisonStore.getState();
-  if (!state.open || state.spreadCount === 0) return;
-  const spreadCount = state.spreadCount;
-  useComparisonStore.setState({ capacities: [SLOT_KEYS.length], spreadCount: 0 });
+  if (!state.open) return;
+  const needed = state.spreadCount;
   broadcastComparison();
   void queueComparisonLifecycle(async () => {
-    await closeSpread(spreadCount);
-    await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+    await showSpread(sessionOtherMonitors.slice(0, needed));
+    if (previousSpreadCount > needed) {
+      await hideSpread(needed + 1, previousSpreadCount);
+    }
+    await getCurrentWindow()
+      .setFocus()
+      .catch(reportWindowCall("main setFocus"));
   });
 }
 
-/** HIDES the spread rather than closing it. A hidden window keeps its webview
- * and its `comparison://state` listener, so the next group opens without a
- * boot — the same reuse imagequeue's viewer relies on. They are real windows
- * owned by the app and go away with it. */
-async function closeSpread(spreadCount: number): Promise<void> {
-  for (let i = 1; i <= spreadCount; i += 1) {
-    const label = `comparison-${i}`;
-    const window = await WebviewWindow.getByLabel(label).catch((error) => {
-      reportWindowCall("comparison window lookup")(error);
-      return null;
-    });
-    if (window !== null) {
-      // Leave simple fullscreen BEFORE hiding: a hidden simple-fullscreen
-      // window reappears in a broken half-state on macOS.
-      await setComparisonFullscreen(label, false).catch(
-        reportWindowCall("comparison leave fullscreen"),
-      );
-      await window.hide().catch(reportWindowCall("comparison hide"));
-    }
-  }
-}
-
-const fullscreenTransitions = new Map<string, Promise<void>>();
-
-/** A label has one ordered native fullscreen transition stream. */
-function setComparisonFullscreen(label: string, enable: boolean): Promise<void> {
-  const previous = fullscreenTransitions.get(label) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(() => invoke<void>("set_window_simple_fullscreen", { label, enable }));
-  fullscreenTransitions.set(label, next);
-  const clear = () => {
-    if (fullscreenTransitions.get(label) === next) fullscreenTransitions.delete(label);
+function recoverDisplays(failedSpreadIndex: number): Promise<void> {
+  const state = useComparisonStore.getState();
+  if (!state.open) return Promise.resolve();
+  const previousSpreadCount = state.spreadCount;
+  sessionOtherMonitors = sessionOtherMonitors.filter(
+    (_, index) => index !== failedSpreadIndex - 1,
+  );
+  const displayAspects = state.displayAspects.filter(
+    (_, index) => index === 0 || index !== failedSpreadIndex,
+  );
+  const provisional = {
+    ...state,
+    displayCount: sessionOtherMonitors.length + 1,
+    displayAspects,
   };
-  void next.then(clear, clear);
-  return next;
+  useComparisonStore.setState({
+    displayCount: provisional.displayCount,
+    displayAspects: provisional.displayAspects,
+    ...viewPatch(provisional),
+    message:
+      "A comparison display became unavailable. The remaining images were rearranged.",
+  });
+  broadcastComparison();
+  const needed = useComparisonStore.getState().spreadCount;
+  return queueComparisonLifecycle(async () => {
+    await closeSpread(1, previousSpreadCount);
+    await showSpread(sessionOtherMonitors.slice(0, needed));
+    await getCurrentWindow()
+      .setFocus()
+      .catch(reportWindowCall("main setFocus"));
+  });
 }
 
-let comparisonLifecycle: Promise<void> = Promise.resolve();
+export function recoverComparisonDisplay(
+  failedSpreadIndex: number,
+): Promise<void> {
+  return recoverDisplays(failedSpreadIndex);
+}
 
-/** Opening and closing claimed screens are one serialized lifecycle. */
-function queueComparisonLifecycle(action: () => Promise<void>): Promise<void> {
-  const next = comparisonLifecycle.then(action, action);
-  comparisonLifecycle = next.catch(() => undefined);
-  return next;
+export function closeComparisonAfterMainRendererFailure(): void {
+  const state = useComparisonStore.getState();
+  if (!state.open) return;
+  const spreadCount = state.spreadCount;
+  useComparisonStore.setState(closedComparisonState());
+  void queueComparisonLifecycle(() => teardownComparison(spreadCount));
 }
 
 async function teardownComparison(spreadCount: number): Promise<void> {
-  await closeSpread(spreadCount);
+  await hideSpread(1, spreadCount);
   await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
 }
 
 const groupLoad = requestSeq();
 
 export const useComparisonStore = create<ComparisonState>((set, get) => ({
+  sessionId: 0,
   open: false,
   members: [],
-  kept: new Set<string>(),
-  visited: new Set<number>(),
+  originalMemberHashes: [],
   page: 0,
-  shortlist: false,
-  shortlistPage: 0,
-  sessionMembers: [],
-  busy: false,
-  commitFailure: null,
-  permanentArmed: false,
-  pendingPermanentCommit: false,
-  pendingCommit: null,
-  spreadCount: 0,
-  capacities: [SLOT_KEYS.length],
+  maximumImages: 16,
+  displayCount: 1,
+  displayAspects: [16 / 9],
+  capacities: [4],
   portraitDominant: false,
+  spreadCount: 0,
+  selected: new Set(),
+  anchors: new Set(),
+  anchor: null,
+  rangeOrigin: null,
+  rangeBase: new Set(),
+  busy: false,
+  message: null,
+  pendingAction: null,
+  failure: null,
 
-  confirmPermanentCommit: async (configConfirms = false) => {
-    set({ permanentArmed: true, pendingPermanentCommit: false });
-    return await get().commitTurn(true, configConfirms);
-  },
-
-  cancelPermanentCommit: () => set({ pendingPermanentCommit: false }),
-
-  confirmPendingCommit: async () => {
-    const pending = get().pendingCommit;
-    if (pending === null) return null;
-    set({ pendingCommit: null });
-    return await doCommit(set, get, pending.permanent);
-  },
-
-  cancelPendingCommit: () => set({ pendingCommit: null }),
-
-  openGroup: async (hash, screenState = {}) => {
-    // get_similar_group is an async command: two quick Enters on different
-    // anchors race, and the OLDER group's continuation must not publish state
-    // or open windows over the newer one's (request-seq.ts).
+  openGroup: async (
+    hash,
+    initialSelection = [hash],
+    entryAnchor = hash,
+    maximumImages = 16,
+    screenState = {},
+  ) => {
     const fresh = groupLoad.begin();
     try {
-      const members = await invoke<GroupMember[]>("get_similar_group", { hash });
-      // True, not false: the newer call owns the outcome now, and false would
-      // send the caller down its "group vanished" path for a group that is
-      // simply someone else's.
-      if (!fresh()) return true;
+      const [members, displays] = await Promise.all([
+        invoke<GroupMember[]>("get_similar_group", { hash }),
+        resolveMonitors(screenState),
+      ]);
+      if (!fresh()) return "opened";
       if (members.length < 2) {
-        // A ≈ badge whose group lost its other members (deleted, drive
-        // absent) must not swallow Enter silently.
-        log.warn("similar group has fewer than 2 live members", { hash });
-        return false;
+        log.warn("similar group has fewer than two live members", { hash });
+        return "unavailable";
       }
-      // Resolve the screens first (their capacities decide the page size),
-      // publish the state, and only THEN create the windows — a window that
-      // announces itself must find a session already open to be answered.
-      const perScreen = perScreenCapacity(members);
-      const { others, capacities } = await resolveSpread(
-        perScreen,
-        members.length,
-        screenState,
+      sessionOtherMonitors = displays.others;
+      const displayCount = displays.others.length + 1;
+      const displayAspects = [
+        displays.hostAspect,
+        ...displays.others.map((monitor) =>
+          monitor.size.height <= 0
+            ? 16 / 9
+            : monitor.size.width / monitor.size.height,
+        ),
+      ];
+      const boundedMaximum = Math.max(2, Math.floor(maximumImages));
+      const initialPage = pageForAnchor(
+        members,
+        entryAnchor ?? hash,
+        boundedMaximum,
+        displayCount,
+      );
+      const base = {
+        ...get(),
+        members,
+        page: initialPage,
+        maximumImages: boundedMaximum,
+        displayCount,
+        displayAspects,
+        selected: new Set<string>(),
+        anchors: new Set<string>(),
+        anchor: null,
+        rangeOrigin: null,
+        rangeBase: new Set<string>(),
+      };
+      const next = viewPatch(
+        base,
+        members,
+        initialPage,
+        initialSelection,
+        entryAnchor,
       );
       await queueComparisonLifecycle(async () => {
         if (!fresh()) return;
         set({
+          sessionId: get().sessionId + 1,
           open: true,
-          capacities,
-          spreadCount: others.length,
-          portraitDominant: perScreen === 3,
-          members,
-          kept: new Set<string>(),
-          visited: new Set([0]),
-          page: 0,
-          shortlist: false,
-          shortlistPage: 0,
-          sessionMembers: members.map((m) => m.hash),
-          // A new comparison session re-arms the one permanent confirmation.
-          permanentArmed: false,
-          pendingPermanentCommit: false,
-          pendingCommit: null,
-          commitFailure: null,
+          maximumImages: boundedMaximum,
+          displayCount,
+          displayAspects,
+          originalMemberHashes: members.map((member) => member.hash),
+          busy: false,
+          message: null,
+          pendingAction: null,
+          failure: null,
+          ...next,
         });
         broadcastComparison();
         await hidePreviewWindowForComparison();
-        const spreadOpened = await openSpread(others);
-        if (!spreadOpened) {
-          set({ capacities: [SLOT_KEYS.length], spreadCount: 0 });
-          broadcastComparison();
-          await closeSpread(others.length);
-        }
-        await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+        await showSpread(sessionOtherMonitors.slice(0, get().spreadCount));
+        await getCurrentWindow()
+          .setFocus()
+          .catch(reportWindowCall("main setFocus"));
       });
-      return true;
+      return "opened";
     } catch (error) {
       log.error("similar group load failed", toErrorFields(error));
-      return false;
+      recordInterfaceFailure("Couldn’t open the similar-image group.");
+      return "failed";
     }
   },
 
-  toggleKeep: (slotIndex) => {
-    if (get().busy) return;
-    const member = visibleSlots(get())[slotIndex];
-    if (!member) return;
-    const next = new Set(get().kept);
-    if (next.has(member.hash)) {
-      next.delete(member.hash);
-    } else {
-      next.add(member.hash);
-    }
-    set({ kept: next });
-    broadcastComparison();
-  },
-
-  unlinkSlot: async (slotIndex) => {
-    const { busy, sessionMembers } = get();
-    if (busy) return;
-    const member = visibleSlots(get())[slotIndex];
-    if (!member) return;
-    try {
-      await invoke("similar_unlink", { hash: member.hash });
-    } catch (error) {
-      log.error("similar unlink failed", { hash: member.hash, ...toErrorFields(error) });
-      return;
-    }
-    const nextKept = new Set(get().kept);
-    nextKept.delete(member.hash);
+  selectSlot: (slotIndex, mode) => {
+    const state = get();
+    if (state.busy || state.pendingAction !== null) return;
+    const visible = visibleMembers(state);
+    const member = visible[slotIndex];
+    if (member === undefined) return;
     set({
-      // The hole stays: page geometry and key numbers hold for the session.
-      members: get().members.map((m) => (m !== null && m.hash === member.hash ? null : m)),
-      kept: nextKept,
-      // No longer family: the finish may land the anchor on it, which is the
-      // natural way to meet the intruder again and decide its own fate.
-      sessionMembers: sessionMembers.filter((h) => h !== member.hash),
+      ...updateSelection(selectionFrom(state), visible, member.hash, mode),
+      message: null,
     });
     broadcastComparison();
   },
 
-  nextPage: () => {
-    if (!get().busy) movePage(set, get, 1);
-  },
-  prevPage: () => {
-    if (!get().busy) movePage(set, get, -1);
-  },
-
-  toggleShortlist: () => {
-    if (get().busy) return;
-    set({ shortlist: !get().shortlist, shortlistPage: 0 });
+  moveSelection: (direction, extend) => {
+    const state = get();
+    if (state.busy || state.pendingAction !== null) return;
+    const visible = visibleMembers(state);
+    if (visible.length === 0) return;
+    const current = Math.max(
+      0,
+      visible.findIndex((member) => member.hash === state.anchor),
+    );
+    const target = spatialTarget(
+      current,
+      direction,
+      comparisonChunks(state).map((chunk) => chunk.length),
+      state.portraitDominant,
+      state.displayAspects,
+    );
+    if (target === current) return;
+    set({
+      ...updateSelection(
+        selectionFrom(state),
+        visible,
+        visible[target].hash,
+        extend ? "range" : "exclusive",
+      ),
+      message: null,
+    });
     broadcastComparison();
   },
 
-  commitTurn: async (permanent, configConfirms = false) => {
+  selectBound: (bound, extend) => {
     const state = get();
-    if (state.busy) return null;
-    const retrying = state.commitFailure !== null;
-    const commitPermanent = state.commitFailure?.permanent ?? permanent;
-    const size = turnSize(state.capacities);
-    const pages = pageCountOf(state.members.length, size);
-    // The advance half of Enter's rhythm: while unseen pages remain, Enter
-    // means "next unseen page" — look, mark, Enter, unchanged muscle memory —
-    // and it is what GUARANTEES nothing unseen can be deleted.
-    if (!state.shortlist) {
-      const unseen = nextUnseenPage(state.visited, state.page, pages);
-      if (unseen !== null) {
-        set({
-          page: unseen,
-          visited: new Set(state.visited).add(unseen),
-        });
-        broadcastComparison();
-        return null;
+    if (state.busy || state.pendingAction !== null) return;
+    const visible = visibleMembers(state);
+    const member = bound === "first" ? visible[0] : visible[visible.length - 1];
+    if (member === undefined) return;
+    set({
+      ...updateSelection(
+        selectionFrom(state),
+        visible,
+        member.hash,
+        extend ? "range" : "exclusive",
+      ),
+      message: null,
+    });
+    broadcastComparison();
+  },
+
+  selectAll: () => {
+    const state = get();
+    if (state.busy || state.pendingAction !== null) return;
+    const visible = visibleMembers(state);
+    const selected = new Set(state.selected);
+    for (const member of visible) selected.add(member.hash);
+    const anchor = state.anchor ?? visible[0]?.hash ?? null;
+    const anchors = new Set(state.anchors);
+    for (const member of visible) anchors.delete(member.hash);
+    if (anchor !== null) anchors.add(anchor);
+    set({
+      selected,
+      anchors,
+      anchor,
+      rangeOrigin: anchor,
+      rangeBase: activeSelection(selected, visible),
+      message: null,
+    });
+    broadcastComparison();
+  },
+
+  nextPage: () => movePage(set, get, 1),
+  prevPage: () => movePage(set, get, -1),
+
+  unlinkSelected: async () => {
+    const state = get();
+    if (state.busy || state.pendingAction !== null) return null;
+    const selected = activeSelection(state.selected, visibleMembers(state));
+    if (selected.size === 0) {
+      set({ message: "Select at least one image to mark as not similar." });
+      return null;
+    }
+    set({ busy: true, message: null });
+    const removed = new Set<string>();
+    const failed: string[] = [];
+    for (const hash of selected) {
+      try {
+        await invoke("similar_unlink", { hash });
+        removed.add(hash);
+      } catch (error) {
+        log.error("similar unlink failed", { hash, ...toErrorFields(error) });
+        const fileName = state.members.find((member) => member.hash === hash)?.fileName;
+        recordInterfaceFailure(
+          `Couldn’t mark ${fileName ?? "one image"} as not similar.`,
+        );
+        failed.push(hash);
       }
-    } else if (state.visited.size < pages) {
-      // Committing FROM the shortlist still requires every page seen.
-      set({ shortlist: false });
-      return await get().commitTurn(permanent, configConfirms);
     }
-    if (commitPermanent && !state.permanentArmed) {
-      set({ pendingPermanentCommit: true });
+    const current = get();
+    const members = current.members.filter(
+      (member) => !removed.has(member.hash),
+    );
+    if (members.length < 2) {
+      const spreadCount = current.spreadCount;
+      set(closedComparisonState());
+      await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+      return "closed";
+    }
+    set({
+      busy: false,
+      ...viewPatch(current, members),
+      message:
+        failed.length === 0
+          ? null
+          : `${failed.length} image${failed.length === 1 ? "" : "s"} could not be marked as not similar.`,
+    });
+    synchronizeSpread(current.spreadCount);
+    return "open";
+  },
+
+  requestPageDecision: async (
+    permanent,
+    configConfirms = false,
+    trashAll = false,
+  ) => {
+    const state = get();
+    if (state.busy || state.pendingAction !== null) return null;
+    const visible = visibleMembers(state);
+    const selected = trashAll
+      ? new Set<string>()
+      : activeSelection(state.selected, visible);
+    if (!trashAll && selected.size === 0) {
+      set({ message: "Select at least one image to keep." });
       return null;
     }
-    const live = state.members.filter((m): m is GroupMember => m !== null);
-    const trashCount = live.filter((m) => !state.kept.has(m.hash)).length;
-    // The confirmation policy, tuned for pace: a single-page group with at
-    // least one mark commits instantly (1, Enter — two keystrokes); the
-    // count dialog appears for zero marks (trash ALL — the gesture that was
-    // impossible before), for multi-page trashing, and under the opt-in
-    // confirmTrashDelete config. Nothing-to-trash commits are free.
-    const needsConfirm =
-      !retrying &&
-      trashCount > 0 &&
-      (state.kept.size === 0 || pages > 1 || configConfirms);
-    if (needsConfirm) {
-      set({
-        pendingCommit: {
-          keepCount: state.kept.size,
-          trashCount,
-          permanent: commitPermanent,
-        },
-      });
-      return null;
+    const action: ComparisonAction = {
+      kind: "page",
+      permanent,
+      keepHashes: visible
+        .filter((member) => selected.has(member.hash))
+        .map((member) => member.hash),
+      targetHashes: visible
+        .filter((member) => !selected.has(member.hash))
+        .map((member) => member.hash),
+    };
+    return await requestAction(set, get, action, configConfirms);
+  },
+
+  requestSelectionDelete: async (permanent, configConfirms = false) => {
+    const state = get();
+    if (state.busy || state.pendingAction !== null) return null;
+    const selected = activeSelection(state.selected, visibleMembers(state));
+    if (selected.size === 0) return null;
+    const action: ComparisonAction = {
+      kind: "selection",
+      permanent,
+      keepHashes: [],
+      targetHashes: [...selected],
+    };
+    return await requestAction(set, get, action, configConfirms);
+  },
+
+  confirmPendingAction: async () => {
+    const action = get().pendingAction;
+    if (action === null) return null;
+    set({ pendingAction: null });
+    return await executeAction(set, get, action);
+  },
+
+  cancelPendingAction: () => set({ pendingAction: null }),
+
+  retryFailure: async (configConfirms = false) => {
+    const failure = get().failure;
+    if (failure === null || get().busy) return null;
+    const action: ComparisonAction = {
+      kind: failure.kind,
+      permanent: failure.permanent,
+      keepHashes: [],
+      targetHashes: failure.targetHashes,
+    };
+    set({ failure: null });
+    return await requestAction(set, get, action, configConfirms);
+  },
+
+  reconcileLiveMembers: async (liveHashes) => {
+    const state = get();
+    if (!state.open || state.busy) return false;
+    const live = new Set(liveHashes);
+    const members = state.members.filter((member) => live.has(member.hash));
+    if (members.length === state.members.length) return true;
+    if (members.length < 2) {
+      const spreadCount = state.spreadCount;
+      set(closedComparisonState());
+      await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+      return false;
     }
-    return await doCommit(set, get, commitPermanent);
+    set({ ...viewPatch(state, members), message: null });
+    synchronizeSpread(state.spreadCount);
+    return true;
   },
 
   close: async () => {
-    if (!get().open || get().busy) return;
-    const spreadCount = get().spreadCount;
+    const state = get();
+    if (!state.open || state.busy) return;
+    const spreadCount = state.spreadCount;
     set(closedComparisonState());
     await queueComparisonLifecycle(() => teardownComparison(spreadCount));
   },
 }));
-
-/** The next unseen page at or after `from`, wrapping — or null when all seen. */
-export function nextUnseenPage(
-  visited: Set<number>,
-  from: number,
-  pageCount: number,
-): number | null {
-  for (let step = 1; step <= pageCount; step += 1) {
-    const candidate = (from + step) % pageCount;
-    if (!visited.has(candidate)) return candidate;
-  }
-  return null;
-}
 
 function movePage(
   set: (partial: Partial<ComparisonState>) => void,
@@ -734,111 +867,163 @@ function movePage(
   delta: number,
 ): void {
   const state = get();
-  const size = turnSize(state.capacities);
-  if (state.shortlist) {
-    const marked = state.members.filter(
-      (m) => m !== null && state.kept.has(m.hash),
-    ).length;
-    const pages = pageCountOf(marked, size);
-    const next = Math.min(pages - 1, Math.max(0, state.shortlistPage + delta));
-    if (next !== state.shortlistPage) {
-      set({ shortlistPage: next });
-      broadcastComparison();
-    }
-    return;
-  }
-  const pages = pageCountOf(state.members.length, size);
-  const next = Math.min(pages - 1, Math.max(0, state.page + delta));
-  if (next !== state.page) {
-    set({ page: next, visited: new Set(state.visited).add(next) });
-    broadcastComparison();
-  }
+  if (state.busy || state.pendingAction !== null) return;
+  const pages = comparisonPages(
+    state.members,
+    state.maximumImages,
+    state.displayCount,
+  );
+  const page = Math.min(pages.length - 1, Math.max(0, state.page + delta));
+  if (page === state.page) return;
+  const previousSpreadCount = state.spreadCount;
+  set({ ...viewPatch(state, state.members, page), message: null });
+  synchronizeSpread(previousSpreadCount);
 }
 
-/** The commit itself: keep the marked, trash the rest, close, chain. Only
- * reachable once every page has been seen and any confirmation has passed. */
-async function doCommit(
+async function requestAction(
   set: (partial: Partial<ComparisonState>) => void,
   get: () => ComparisonState,
-  permanent: boolean,
+  action: ComparisonAction,
+  configConfirms: boolean,
+): Promise<ComparisonCommitResult | null> {
+  if (action.permanent || (configConfirms && action.targetHashes.length > 0)) {
+    set({ pendingAction: action, message: null });
+    return null;
+  }
+  return await executeAction(set, get, action);
+}
+
+async function executeAction(
+  set: (partial: Partial<ComparisonState>) => void,
+  get: () => ComparisonState,
+  action: ComparisonAction,
 ): Promise<ComparisonCommitResult> {
-  const state = get();
-  set({ busy: true, commitFailure: null });
-  const live = state.members.filter((m): m is GroupMember => m !== null);
-  const goners = live.filter((m) => !state.kept.has(m.hash));
+  const before = get();
+  const live = new Set(before.members.map((member) => member.hash));
+  const keep = new Set(action.keepHashes.filter((hash) => live.has(hash)));
+  const targets = action.targetHashes.filter((hash) => live.has(hash));
+  let members = before.members.filter((member) => !keep.has(member.hash));
+  set({
+    busy: targets.length > 0,
+    failure: null,
+    message: null,
+    ...viewPatch(before, members),
+  });
+
+  if (targets.length === 0) {
+    return await finishAction(set, get, before, members);
+  }
+
   let outcome: {
     cancelled: boolean;
     error: string | null;
     failedFiles: number;
-    items: Array<{ item: { hash: string | null; pathId: number | null }; failedFiles: number }>;
+    items: Array<{
+      item: { hash: string | null; pathId: number | null };
+      failedFiles: number;
+    }>;
   };
   try {
     outcome = await invoke<typeof outcome>("delete_items", {
-      items: goners.map((member) => ({ hash: member.hash, pathId: null })),
-      permanent,
+      items: targets.map((hash) => ({ hash, pathId: null })),
+      permanent: action.permanent,
     });
   } catch (error) {
-    log.error("comparison commit failed", toErrorFields(error));
+    log.error("comparison delete failed", toErrorFields(error));
+    recordInterfaceFailure("The Comparison delete operation could not start.");
+    const failure: ComparisonFailure = {
+      ...action,
+      keepHashes: [],
+      targetHashes: targets,
+      message:
+        "The delete operation could not start. Retry targets only these images.",
+    };
     set({
       busy: false,
-      commitFailure: {
-        message: "The delete operation could not finish. Retry targets the still-indexed items.",
-        permanent,
-      },
+      failure,
+      ...viewPatch(get(), members, get().page, targets, targets[0] ?? null),
     });
     return { kind: "failed" };
   }
+
   const completed = new Set(
     outcome.items
-      .filter((result) => result.failedFiles === 0 && result.item.hash !== null)
-      .map((result) => result.item.hash as string),
+      .filter((item) => item.failedFiles === 0 && item.item.hash !== null)
+      .map((item) => item.item.hash as string),
   );
-  if (completed.size > 0) {
-    set({
-      members: get().members.map((candidate) =>
-        candidate !== null && completed.has(candidate.hash) ? null : candidate,
-      ),
-    });
-    broadcastComparison();
-  }
-  const remainingItems = goners.length - completed.size;
-  if (remainingItems > 0 || outcome.error !== null) {
-    const detail = outcome.failedFiles > 0
-      ? `${outcome.failedFiles} file${outcome.failedFiles === 1 ? "" : "s"} could not be deleted.`
-      : outcome.cancelled
-        ? "Deletion stopped safely."
-        : (outcome.error ?? `${remainingItems} items remain.`);
+  members = members.filter((member) => !completed.has(member.hash));
+  const remaining = targets.filter((hash) => !completed.has(hash));
+  if (remaining.length > 0 || outcome.error !== null) {
+    const detail =
+      outcome.failedFiles > 0
+        ? `${outcome.failedFiles} file${outcome.failedFiles === 1 ? "" : "s"} could not be deleted.`
+        : outcome.cancelled
+          ? "Deletion stopped safely."
+          : (outcome.error ??
+            `${remaining.length} image${remaining.length === 1 ? "" : "s"} remain.`);
+    const failure: ComparisonFailure = {
+      ...action,
+      keepHashes: [],
+      targetHashes: remaining,
+      message: `${detail} Retry targets only the remaining images.`,
+    };
     set({
       busy: false,
-      commitFailure: {
-        message: `${detail} Retry targets only the remaining items.`,
-        permanent,
-      },
+      failure,
+      ...viewPatch(get(), members, get().page, remaining, remaining[0] ?? null),
     });
+    synchronizeSpread(before.spreadCount);
     return { kind: "failed" };
   }
-  const family = state.sessionMembers;
-  const spreadCount = get().spreadCount;
-  set(closedComparisonState());
-  await queueComparisonLifecycle(() => teardownComparison(spreadCount));
-  return { kind: "completed", family };
+
+  return await finishAction(set, get, before, members);
+}
+
+async function finishAction(
+  set: (partial: Partial<ComparisonState>) => void,
+  get: () => ComparisonState,
+  before: ComparisonState,
+  members: GroupMember[],
+): Promise<ComparisonCommitResult> {
+  if (members.length < 2) {
+    const family = before.originalMemberHashes;
+    const spreadCount = get().spreadCount;
+    set(closedComparisonState());
+    await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+    return { kind: "completed", family };
+  }
+  const current = get();
+  set({
+    busy: false,
+    failure: null,
+    pendingAction: null,
+    ...viewPatch(current, members, current.page),
+  });
+  synchronizeSpread(before.spreadCount);
+  return { kind: "continued" };
 }
 
 function closedComparisonState(): Partial<ComparisonState> {
+  sessionOtherMonitors = [];
   return {
     open: false,
     members: [],
-    kept: new Set(),
-    visited: new Set(),
+    originalMemberHashes: [],
     page: 0,
-    shortlist: false,
-    shortlistPage: 0,
-    sessionMembers: [],
-    busy: false,
-    permanentArmed: false,
-    pendingPermanentCommit: false,
-    pendingCommit: null,
-    commitFailure: null,
+    maximumImages: 16,
+    displayCount: 1,
+    displayAspects: [16 / 9],
+    capacities: [4],
+    portraitDominant: false,
     spreadCount: 0,
+    selected: new Set(),
+    anchors: new Set(),
+    anchor: null,
+    rangeOrigin: null,
+    rangeBase: new Set(),
+    busy: false,
+    message: null,
+    pendingAction: null,
+    failure: null,
   };
 }

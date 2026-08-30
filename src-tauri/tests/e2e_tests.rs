@@ -231,7 +231,8 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 
     // ---- Cull: best-first, losers to trash, winner moved out verified ----
     let a_member = items.iter().find(|i| i.similar_group_id.is_some()).unwrap();
-    let members = queries::similar_group_of(&conn, a_member.hash.as_ref().unwrap()).unwrap();
+    let members =
+        queries::similar_group_of(&conn, a_member.hash.as_ref().unwrap(), true).unwrap();
     assert_eq!(members.len(), 3, "the comparison surface sees the whole scene");
     let winner = members[0].hash.clone();
     let winner_bytes_expected = members[0].byte_size.unwrap() as u64;

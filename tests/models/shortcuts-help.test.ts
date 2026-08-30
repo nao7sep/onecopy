@@ -58,10 +58,9 @@ const EVIDENCE: Record<string, () => boolean> = {
   F: () => handles('toLowerCase() === "f"'),
   "Delete / Backspace": () => handles('"Delete" || event.key === "Backspace"'),
   "Shift+Delete": () => handles("setConfirmPermanent"),
-  "1–9 / 0 / A–F": () => handles("slotIndexForKey"),
-  "Left / Right": () => handles("nextPage()", "prevPage()"),
-  S: () => handles("toggleShortlist"),
-  "Shift+1–9/0/A–F": () => handles("slotIndexForShiftedCode"),
+  "0–9 / A–Z": () => handles("slotIndexForKey"),
+  A: () => handles("selectAll"),
+  "Double-click": () => handles("onDoubleClick"),
   "Shift+Enter": () => handles("shiftKey"),
   Escape: () => handles('"Escape"'),
   R: () => handles("isSectionRecheckShortcut"),
@@ -114,8 +113,11 @@ describe("keys the app handles but the sheet forgot", () => {
   });
 
   it("spells the comparison paging keys as words", () => {
-    const comparisonView = readFileSync("src/components/ComparisonView.tsx", "utf8");
-    expect(comparisonView).toContain("Left/Right pages");
-    expect(comparisonView).not.toContain("←/→ pages");
+    const comparisonView = readFileSync(
+      "src/components/ComparisonView.tsx",
+      "utf8",
+    );
+    expect(comparisonView).toContain("Page Up/Down browse");
+    expect(comparisonView).not.toContain("PgUp/PgDn");
   });
 });

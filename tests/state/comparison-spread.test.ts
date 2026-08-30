@@ -1,42 +1,28 @@
-// The multi-monitor comparison handshake.
-//
-// A secondary comparison window announces itself with `comparison://ready` the
-// moment it mounts, and the main window answers by broadcasting the current
-// slots. That reply is the ONLY one it gets — broadcasts otherwise fire on
-// state changes, and a turn in progress produces none — so an announcement
-// that arrives before the session exists leaves that screen showing "Waiting
-// for the comparison…" for the whole group.
-//
-// The ordering is therefore the contract: publish the session, THEN create the
-// windows. These specs assert it from both ends.
-
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  recoverComparisonDisplay,
   useComparisonStore,
-  perScreenCapacity,
   type GroupMember,
 } from "../../src/state/comparison-store";
-import { gridColumns } from "../../src/state/comparison-store";
 import {
   createdWindows,
   emitCalls,
-  mockCommands,
   invokeCalls,
+  mockCommands,
   resetTauriMocks,
-  setFocus,
   setCurrentMonitor,
   setMonitors,
   setWindowCreatedHook,
   WebviewWindow,
 } from "../mocks/tauri";
 
-function member(hash: string, width = 4000, height = 3000): GroupMember {
+function member(index: number, portrait = false): GroupMember {
   return {
-    hash,
-    fileName: `${hash}.jpg`,
-    width,
-    height,
-    byteSize: width * height,
+    hash: `m${index}`,
+    fileName: `image-${index}.jpg`,
+    width: portrait ? 3000 : 4000,
+    height: portrait ? 4000 : 3000,
+    byteSize: 1000,
     sharpness: 1,
     faceScore: null,
     copyCount: 1,
@@ -44,262 +30,182 @@ function member(hash: string, width = 4000, height = 3000): GroupMember {
   };
 }
 
-function members(count: number): GroupMember[] {
-  return Array.from({ length: count }, (_, i) => member(`m${i}`));
+function members(count: number, portrait = false): GroupMember[] {
+  return Array.from({ length: count }, (_, index) => member(index, portrait));
 }
 
-const TWO_SCREENS = [
-  { name: "one", position: { x: 0, y: 0 }, size: { width: 2560, height: 1440 }, scaleFactor: 2 },
+const THREE_SCREENS = [
+  {
+    name: "one",
+    position: { x: 0, y: 0 },
+    size: { width: 2560, height: 1440 },
+    scaleFactor: 2,
+  },
   {
     name: "two",
     position: { x: 2560, y: 0 },
     size: { width: 2560, height: 1440 },
     scaleFactor: 2,
   },
+  {
+    name: "three",
+    position: { x: 5120, y: 0 },
+    size: { width: 2560, height: 1440 },
+    scaleFactor: 2,
+  },
 ];
 
 beforeEach(() => {
-  // Stores register their forwarding listeners once at module load.
   resetTauriMocks({ keepListeners: true });
   useComparisonStore.setState({
+    sessionId: 0,
     open: false,
     members: [],
-    kept: new Set<string>(),
-    visited: new Set<number>(),
+    originalMemberHashes: [],
     page: 0,
-    spreadCount: 0,
+    displayAspects: [16 / 9],
+    selected: new Set(),
+    anchors: new Set(),
+    anchor: null,
     busy: false,
-    commitFailure: null,
+    pendingAction: null,
+    failure: null,
+    spreadCount: 0,
   });
+  mockCommands({ set_window_simple_fullscreen: () => null });
 });
 
-describe("opening a group across screens", () => {
-  it("does not hide Preview until a live comparison session exists", async () => {
+describe("opening Comparison across displays", () => {
+  it("does not hide Preview for an invalid group", async () => {
     const preview = new WebviewWindow("preview");
-    mockCommands({
-      get_similar_group: () => [member("only")],
-      patch_state: () => ({}),
-    });
-
-    expect(await useComparisonStore.getState().openGroup("only")).toBe(false);
+    mockCommands({ get_similar_group: () => [member(0)] });
+    expect(await useComparisonStore.getState().openGroup("m0")).toBe(
+      "unavailable",
+    );
     expect(preview.hide).not.toHaveBeenCalled();
-
-    mockCommands({ get_similar_group: () => [member("a"), member("b")] });
-    let openWhenHidden = false;
-    preview.hide.mockImplementation(async () => {
-      openWhenHidden = useComparisonStore.getState().open;
-    });
-    expect(await useComparisonStore.getState().openGroup("a")).toBe(true);
-    expect(preview.hide).toHaveBeenCalledOnce();
-    expect(openWhenHidden).toBe(true);
   });
 
-  it("publishes the session before any window can ask for it", async () => {
-    setMonitors(TWO_SCREENS);
-    // Six landscape members: past one screen's four slots, so the spread is
-    // genuinely needed (a family that fits one screen no longer spreads).
-    const family = members(6);
-    mockCommands({ get_similar_group: () => family, patch_state: () => ({}) });
-
-    // Observed INSIDE the constructor: a real webview begins booting there and
-    // can announce itself at once. Reading the store after openGroup returns
-    // would pass either way and prove nothing.
-    let openAtWindowCreation: boolean | null = null;
-    let slotsAtWindowCreation = -1;
+  it("publishes the session before a secondary window can announce itself", async () => {
+    setMonitors(THREE_SCREENS);
+    mockCommands({ get_similar_group: () => members(8) });
+    let openAtCreation = false;
+    let membersAtCreation = 0;
     setWindowCreatedHook(() => {
-      const state = useComparisonStore.getState();
-      openAtWindowCreation = state.open;
-      slotsAtWindowCreation = state.members.length;
-    });
-    const originalLength = createdWindows.length;
-
-    await useComparisonStore.getState().openGroup("a");
-
-    // A window WAS created (two monitors, so one secondary).
-    expect(createdWindows.length).toBeGreaterThan(originalLength);
-    // The session must already be live AND populated at that instant.
-    expect(openAtWindowCreation).toBe(true);
-    expect(slotsAtWindowCreation).toBe(6);
-
-    // And the answer to a late announcement is a real broadcast, not silence.
-    const broadcasts = emitCalls.filter((c) => c.event === "comparison://state");
-    expect(broadcasts.length).toBeGreaterThan(0);
-    const last = broadcasts[broadcasts.length - 1].payload as {
-      chunks: unknown[][];
-    };
-    expect(last.chunks.flat().length).toBe(6);
-  });
-
-  it("sizes each window to its own monitor, converted out of physical pixels", async () => {
-    setMonitors(TWO_SCREENS);
-    mockCommands({
-      get_similar_group: () => members(6),
-      patch_state: () => ({}),
+      openAtCreation = useComparisonStore.getState().open;
+      membersAtCreation = useComparisonStore.getState().members.length;
     });
 
     await useComparisonStore.getState().openGroup("m0");
 
-    const spread = createdWindows.find((w) => w.label === "comparison-1");
-    expect(spread).toBeDefined();
-    // The second monitor is 2560x1440 at scale 2, so the LOGICAL window is
-    // half that. Passing the physical numbers straight through would open a
-    // window twice the screen's size on any Retina display.
-    expect(spread?.options.width).toBe(1280);
-    expect(spread?.options.height).toBe(720);
-    expect(spread?.options.x).toBe(1280);
-    // Borderless and above the others — never the OS fullscreen call, whose
-    // Space animation costs about a second at both ends of every group.
-    expect(spread?.options.decorations).toBe(false);
-    expect(spread?.options.alwaysOnTop).toBe(true);
-    expect(spread?.options.fullscreen).toBeUndefined();
-    expect(spread?.options.focus).toBe(false);
-    expect(setFocus).toHaveBeenCalled();
+    expect(openAtCreation).toBe(true);
+    expect(membersAtCreation).toBe(8);
+    expect(emitCalls.some((call) => call.event === "comparison://state")).toBe(
+      true,
+    );
   });
 
-  it("reuses a hidden window instead of booting a second webview", async () => {
-    setMonitors(TWO_SCREENS);
-    mockCommands({
-      get_similar_group: () => members(6),
-      patch_state: () => ({}),
-      get_section_counts: () => ({ images: [], videos: [], others: [] }),
-      get_section_items: () => [],
-      patch_config: () => ({}),
-      set_window_simple_fullscreen: () => null,
-    });
-
-    await useComparisonStore.getState().openGroup("m0");
-    const afterFirst = createdWindows.length;
-
-    useComparisonStore.getState().close();
-    // Let the hide settle before reopening.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await useComparisonStore.getState().openGroup("m0");
-
-    // The window survived the close, so the second session constructs none.
-    expect(createdWindows.length).toBe(afterFirst);
-    const transitions = invokeCalls
-      .filter((call) => call.command === "set_window_simple_fullscreen")
-      .map((call) => call.args.enable);
-    expect(transitions).toEqual([false, true]);
-  });
-
-  it("opens NO spread for a family that fits the main screen", async () => {
-    // Three monitors, three members: the old code opened a window on every
-    // extra monitor regardless — the developer's 6-member family on three
-    // screens always got one showing nothing. A family within one screen's
-    // capacity never spreads at all.
-    setMonitors([
-      ...TWO_SCREENS,
-      {
-        name: "three",
-        position: { x: 5120, y: 0 },
-        size: { width: 2560, height: 1440 },
-        scaleFactor: 2,
-      },
-    ]);
-    mockCommands({ get_similar_group: () => members(3), patch_state: () => ({}) });
+  it("uses only displays needed by the current page", async () => {
+    setMonitors(THREE_SCREENS);
+    mockCommands({ get_similar_group: () => members(6) });
 
     await useComparisonStore.getState().openGroup("m0");
 
-    expect(createdWindows.filter((w) => w.label.startsWith("comparison-"))).toHaveLength(0);
-    expect(useComparisonStore.getState().capacities).toEqual([16]);
-  });
-
-  it("opens ONE spread window when the family fills exactly two screens", async () => {
-    // Six members on three monitors: 4 + 2 — the third screen stays dark.
-    setMonitors([
-      ...TWO_SCREENS,
-      {
-        name: "three",
-        position: { x: 5120, y: 0 },
-        size: { width: 2560, height: 1440 },
-        scaleFactor: 2,
-      },
-    ]);
-    mockCommands({ get_similar_group: () => members(6), patch_state: () => ({}) });
-
-    await useComparisonStore.getState().openGroup("m0");
-
-    expect(createdWindows.filter((w) => w.label.startsWith("comparison-"))).toHaveLength(1);
     expect(useComparisonStore.getState().capacities).toEqual([4, 4]);
+    expect(
+      createdWindows.filter((window) => window.label.startsWith("comparison-")),
+    ).toHaveLength(1);
   });
 
-  it("stays single-window on one monitor and keeps all sixteen keys", async () => {
-    setMonitors([TWO_SCREENS[0]]);
-    mockCommands({
-      get_similar_group: () => [member("a"), member("b")],
-      patch_state: () => ({}),
-    });
+  it("uses portrait capacity from the current page", async () => {
+    setMonitors(THREE_SCREENS);
+    mockCommands({ get_similar_group: () => members(8, true) });
 
-    await useComparisonStore.getState().openGroup("a");
+    await useComparisonStore.getState().openGroup("m0");
 
-    expect(createdWindows.filter((w) => w.label.startsWith("comparison-"))).toHaveLength(0);
-    expect(useComparisonStore.getState().capacities).toEqual([16]);
+    expect(useComparisonStore.getState().capacities).toEqual([3, 3, 3]);
+    expect(useComparisonStore.getState().portraitDominant).toBe(true);
   });
-});
 
-describe("the spread avoids the main window's own screen", () => {
-  it("never covers the main window, wherever it actually is", async () => {
-    // The developer's report: "left bottom is my primary screen but I have
-    // never seen slots 1-4". The spread targeted priority slots 2+ BLIND, so
-    // when the priority list disagreed with where the main window really was,
-    // an always-on-top borderless window landed on top of it and buried its
-    // chunk. The spread must ask which monitor hosts the main window and
-    // skip exactly that one.
-    const THREE = [
-      ...TWO_SCREENS,
-      {
-        name: "three",
-        position: { x: 5120, y: 0 },
-        size: { width: 2560, height: 1440 },
-        scaleFactor: 2,
-      },
-    ];
-    setMonitors(THREE);
-    // The main window actually lives on the SECOND monitor of the list.
-    setCurrentMonitor(THREE[1]);
-    mockCommands({
-      // Ten members: fills the host's four slots and both other screens, so
-      // BOTH secondary windows must exist for the avoidance to be provable.
-      get_similar_group: () => members(10),
-      patch_state: () => ({}),
-    });
+  it("honors the configured cap even when more displays are available", async () => {
+    setMonitors(THREE_SCREENS);
+    mockCommands({ get_similar_group: () => members(12) });
+
+    await useComparisonStore.getState().openGroup("m0", ["m0"], "m0", 5);
+
+    expect(useComparisonStore.getState().capacities).toEqual([4, 4]);
+    expect(
+      (
+        emitCalls.filter((call) => call.event === "comparison://state").at(-1)
+          ?.payload as {
+          chunks: unknown[][];
+        }
+      ).chunks.flat(),
+    ).toHaveLength(5);
+  });
+
+  it("avoids the display that hosts the main window", async () => {
+    setMonitors(THREE_SCREENS);
+    setCurrentMonitor(THREE_SCREENS[1]);
+    mockCommands({ get_similar_group: () => members(10) });
 
     await useComparisonStore.getState().openGroup("m0");
 
     const targets = createdWindows
-      .filter((w) => w.label.startsWith("comparison-"))
-      .map((w) => w.options.x);
-    // Windows on monitors 0 (x=0) and 2 (x=5120/2 logical) — never on the
-    // hosting monitor (x=2560/2 logical = 1280).
-    expect(targets).toHaveLength(2);
-    expect(targets).not.toContain(1280);
+      .filter((window) => window.label.startsWith("comparison-"))
+      .map((window) => window.options.x);
     expect(targets).toContain(0);
     expect(targets).toContain(2560);
-  });
-});
-
-describe("slot grids track the photos' shape", () => {
-  it("puts four landscape photos in a 2×2 on a landscape screen", () => {
-    expect(gridColumns(4, 16 / 9, false)).toBe(2);
+    expect(targets).not.toContain(1280);
   });
 
-  it("stands three portrait photos abreast on a landscape screen", () => {
-    expect(gridColumns(3, 16 / 9, true)).toBe(3);
+  it("sizes a new display window in logical coordinates", async () => {
+    setMonitors(THREE_SCREENS.slice(0, 2));
+    mockCommands({ get_similar_group: () => members(6) });
+
+    await useComparisonStore.getState().openGroup("m0");
+
+    const spread = createdWindows.find(
+      (window) => window.label === "comparison-1",
+    );
+    expect(spread?.options).toMatchObject({
+      x: 1280,
+      width: 1280,
+      height: 720,
+      decorations: false,
+      alwaysOnTop: true,
+      focus: false,
+    });
   });
 
-  it("stacks landscape photos on a portrait screen", () => {
-    expect(gridColumns(4, 9 / 16, false)).toBe(1);
+  it("reuses a hidden secondary window", async () => {
+    setMonitors(THREE_SCREENS.slice(0, 2));
+    mockCommands({ get_similar_group: () => members(6) });
+    await useComparisonStore.getState().openGroup("m0");
+    const count = createdWindows.length;
+    await useComparisonStore.getState().close();
+    await useComparisonStore.getState().openGroup("m0");
+
+    expect(createdWindows).toHaveLength(count);
+    expect(
+      invokeCalls
+        .filter((call) => call.command === "set_window_simple_fullscreen")
+        .map((call) => call.args.enable),
+    ).toEqual([false, true]);
   });
 
-  it("one photo takes the whole window", () => {
-    expect(gridColumns(1, 16 / 9, false)).toBe(1);
-  });
-});
+  it("repaginates on the other surviving displays after one fails", async () => {
+    setMonitors(THREE_SCREENS);
+    mockCommands({ get_similar_group: () => members(10) });
+    await useComparisonStore.getState().openGroup("m0");
 
-describe("per-screen capacity", () => {
-  it("follows the group's dominant orientation, not the monitor's", () => {
-    expect(perScreenCapacity([member("a", 3000, 4000), member("b", 3000, 4000)])).toBe(3);
-    expect(perScreenCapacity([member("a"), member("b")])).toBe(4);
+    await recoverComparisonDisplay(1);
+
+    expect(useComparisonStore.getState().open).toBe(true);
+    expect(useComparisonStore.getState().members).toHaveLength(10);
+    expect(useComparisonStore.getState().displayCount).toBe(2);
+    const replacement = createdWindows
+      .filter((window) => window.label === "comparison-1")
+      .at(-1);
+    expect(replacement?.options.x).toBe(2560);
   });
 });

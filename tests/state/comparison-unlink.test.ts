@@ -1,30 +1,29 @@
-// The unlink and the chain-to-next-family flow (the developer's cull rhythm,
-// 2026-08-17): spot an intruder in a turn → Shift+its key removes it from the
-// set (never deletes, and the verdict persists core-side); its slot stays as
-// a HOLE so the other keys keep their numbers; and when the family is fully
-// decided, the grid anchor lands on the next photo past it so Enter chains
-// straight into the next group.
-
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  SLOT_KEYS,
-  slotIndexForShiftedCode,
-  chunkSlots,
-  liveSlotCount,
-  screensNeeded,
   useComparisonStore,
+  type GroupMember,
 } from "../../src/state/comparison-store";
+import {
+  invokeCalls,
+  mockCommands,
+  resetTauriMocks,
+  WebviewWindow,
+} from "../mocks/tauri";
+import {
+  reconcileComparisonMembership,
+  unlinkComparisonSelection,
+} from "../../src/workflows/comparison";
 import { useItemsStore } from "../../src/state/items-store";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
-import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
-import { commitComparison } from "../../src/workflows/comparison";
+import { useSectionsStore } from "../../src/state/sections-store";
+import { useIssuesStore } from "../../src/state/issues-store";
+import { usePreviewStore } from "../../src/state/preview-store";
 
-function member(i: number) {
+function member(index: number): GroupMember {
   return {
-    hash: `h${i}`,
-    fileName: `IMG_${i}.jpg`,
-    width: 100,
-    height: 100,
+    hash: `h${index}`,
+    fileName: `image-${index}.jpg`,
+    width: 4000,
+    height: 3000,
     byteSize: 1000,
     sharpness: null,
     faceScore: null,
@@ -33,187 +32,142 @@ function member(i: number) {
   };
 }
 
-function openSession(count: number): void {
-  const members = Array.from({ length: count }, (_, i) => member(i));
+function openSession(count = 5): void {
+  const members = Array.from({ length: count }, (_, index) => member(index));
   useComparisonStore.setState({
+    sessionId: 0,
     open: true,
     members,
-    kept: new Set(),
-    visited: new Set([0]),
+    originalMemberHashes: members.map((item) => item.hash),
     page: 0,
-    shortlist: false,
-    shortlistPage: 0,
-    sessionMembers: members.map((m) => m.hash),
-    capacities: [count],
+    maximumImages: 16,
+    displayCount: 1,
+    displayAspects: [16 / 9],
+    capacities: [4],
+    portraitDominant: false,
+    spreadCount: 0,
+    selected: new Set(["h1", "h2"]),
+    anchors: new Set(["h2"]),
+    anchor: "h2",
+    rangeOrigin: "h2",
+    rangeBase: new Set(["h1", "h2"]),
     busy: false,
-    permanentArmed: true,
-    pendingPermanentCommit: false,
-    pendingCommit: null,
+    message: null,
+    pendingAction: null,
+    failure: null,
   });
 }
 
 beforeEach(() => {
-  resetTauriMocks();
+  resetTauriMocks({ keepListeners: true });
   mockCommands({
-    similar_unlink: () => 3,
-    delete_items: ({ items }) => ({
-      cancelled: false,
-      error: null,
-      failedFiles: 0,
-      items: (items as Array<{ hash: string | null; pathId: number | null }>).map((item) => ({
-        item,
-        failedFiles: 0,
-      })),
-    }),
-    get_section_items: () => [],
-    get_section_counts: () => [],
-    patch_state: () => ({}),
-    get_item_detail: () => null,
+    similar_unlink: () => 4,
+    set_window_simple_fullscreen: () => null,
   });
-  useItemsStore.setState({
-    selected: { kind: "image", month: "2026-01" },
-    items: [],
-    selectedItem: null,
-    selectedKeys: new Set(),
-    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
-  });
+  useItemsStore.setState({ refresh: vi.fn(async () => undefined) });
+  useSectionsStore.setState({ loadCounts: vi.fn(async () => undefined) });
+  useIssuesStore.setState({ load: vi.fn(async () => undefined) });
+  usePreviewStore.setState({ follow: false, placement: null, current: null });
+  openSession();
 });
 
-describe("the shifted slot chord", () => {
-  it("resolves physical digit and letter codes, layout-independently", () => {
-    // Shift+1 delivers `key: "!"` on US layouts and other symbols elsewhere;
-    // only `code` names the physical key every layout shares.
-    expect(slotIndexForShiftedCode({ code: "Digit1", shiftKey: true })).toBe(0);
-    expect(slotIndexForShiftedCode({ code: "Digit9", shiftKey: true })).toBe(8);
-    expect(slotIndexForShiftedCode({ code: "Digit0", shiftKey: true })).toBe(9);
-    expect(slotIndexForShiftedCode({ code: "KeyA", shiftKey: true })).toBe(10);
-    expect(slotIndexForShiftedCode({ code: "KeyF", shiftKey: true })).toBe(15);
-  });
+describe("Not similar", () => {
+  it("records and removes every selected image without leaving holes", async () => {
+    await useComparisonStore.getState().unlinkSelected();
 
-  it("refuses everything that is not the bare Shift chord", () => {
-    expect(slotIndexForShiftedCode({ code: "Digit1", shiftKey: false })).toBe(-1);
-    expect(slotIndexForShiftedCode({ code: "KeyG", shiftKey: true })).toBe(-1);
     expect(
-      slotIndexForShiftedCode({ code: "Digit1", shiftKey: true, ctrlKey: true }),
-    ).toBe(-1);
+      invokeCalls
+        .filter((call) => call.command === "similar_unlink")
+        .map((call) => call.args.hash),
+    ).toEqual(["h1", "h2"]);
     expect(
-      slotIndexForShiftedCode({ code: "Digit1", shiftKey: true, altKey: true }),
-    ).toBe(-1);
-  });
-});
-
-describe("unlinking a slot", () => {
-  it("records the verdict, leaves a hole, and keeps every other key number", async () => {
-    openSession(4);
-    useComparisonStore.getState().toggleKeep(1); // the intruder was even kept
-
-    await useComparisonStore.getState().unlinkSlot(1);
-
-    const after = useComparisonStore.getState();
-    expect(
-      invokeCalls.filter((c) => c.command === "similar_unlink").map((c) => c.args.hash),
-    ).toEqual(["h1"]);
-    expect(after.members[1]).toBeNull();
-    expect(after.kept.has("h1")).toBe(false);
-    // The photo is out of the family, so the finish may land the anchor on it.
-    expect(after.sessionMembers).not.toContain("h1");
-    // The hole PRESERVES key numbers: slot 3 is still key "3"... spelled as
-    // the chunk the windows render.
-    const chunk = chunkSlots(after.members, after.kept, [4])[0]!;
-    expect(chunk[1]!.member).toBeNull();
-    expect(chunk[2]!.member?.hash).toBe("h2");
-    expect(chunk[2]!.slotKey).toBe(SLOT_KEYS[2]);
+      useComparisonStore.getState().members.map((item) => item.hash),
+    ).toEqual(["h0", "h3", "h4"]);
+    expect(useComparisonStore.getState().selected).toEqual(new Set(["h3"]));
   });
 
-  it("stops counting a hole as a photo on screen", async () => {
-    // The header reads "N shown"; after an unlink the array still has four
-    // entries but only three photos.
-    openSession(4);
-    await useComparisonStore.getState().unlinkSlot(1);
-    expect(liveSlotCount(useComparisonStore.getState().members)).toBe(3);
-  });
-
-  it("never deletes the unlinked photo on commit", async () => {
-    openSession(3);
-    await useComparisonStore.getState().unlinkSlot(2); // h2 is not family
-    useComparisonStore.getState().toggleKeep(0); // keep h0
-
-    await commitComparison(false);
-
-    const deleted = invokeCalls
-      .filter((c) => c.command === "delete_items")
-      .flatMap((c) => c.args.items as Array<{ hash: string | null }>)
-      .map((item) => item.hash);
-    // Only the unkept FAMILY member dies — never the unlinked photo.
-    expect(deleted).toEqual(["h1"]);
-  });
-});
-
-describe("finishing a family", () => {
-  function gridItem(i: number, over: Partial<SectionItem> = {}): SectionItem {
-    return {
-      hash: `h${i}`,
-      pathId: i,
-      fileName: `IMG_${i}.jpg`,
-      resolvedUtcMs: i * 1000,
-      copyCount: 1,
-      width: 100,
-      height: 100,
-      hasThumb: true,
-      similarGroupId: null,
-      sharpness: null,
-      faceScore: null,
-      byteSize: 1000,
-      hasCompanions: false,
-      durationMs: null,
-      dirPaths: [`/Volumes/A/photos`],
-      derivedWork: EMPTY_ITEM_WORK,
-      ...over,
-    };
-  }
-
-  it("lands the anchor on the first photo PAST the family", async () => {
-    // Grid after the commit's refresh: keeper h0, then the next family at h5.
+  it("keeps failed selected images and explains the partial result", async () => {
     mockCommands({
-      get_section_items: () => [gridItem(0), gridItem(5), gridItem(6)],
+      similar_unlink: ({ hash }) => {
+        if (hash === "h2") throw new Error("write failed");
+        return 4;
+      },
     });
-    useItemsStore.setState({ items: [gridItem(0), gridItem(5), gridItem(6)] });
-    openSession(3); // h0..h2, no queue — this commit finishes the family
-    useComparisonStore.getState().toggleKeep(0);
 
-    await commitComparison(false);
+    await useComparisonStore.getState().unlinkSelected();
 
-    expect(useComparisonStore.getState().open).toBe(false);
-    // Past the keeper — Enter on h0 would reopen the family just decided.
-    expect(useItemsStore.getState().selectedItem).toBe("h5");
+    expect(
+      useComparisonStore.getState().members.map((item) => item.hash),
+    ).toEqual(["h0", "h2", "h3", "h4"]);
+    expect(useComparisonStore.getState().message).toContain(
+      "1 image could not",
+    );
   });
 
-  it("rests on the last keeper when the family sat at the end", async () => {
-    mockCommands({ get_section_items: () => [gridItem(0)] });
-    useItemsStore.setState({ items: [gridItem(0)] });
-    openSession(3);
-    useComparisonStore.getState().toggleKeep(0);
+  it("closes when fewer than two comparable images remain", async () => {
+    openSession(2);
+    useComparisonStore.setState({
+      selected: new Set(["h0"]),
+      anchors: new Set(["h0"]),
+      anchor: "h0",
+    });
+    await useComparisonStore.getState().unlinkSelected();
+    expect(useComparisonStore.getState().open).toBe(false);
+  });
 
-    await commitComparison(false);
+  it("restores a persistent Preview window after an automatic close", async () => {
+    const preview = new WebviewWindow("preview");
+    usePreviewStore.setState({ follow: true, placement: "window" });
+    openSession(2);
+    useComparisonStore.setState({
+      selected: new Set(["h0"]),
+      anchors: new Set(["h0"]),
+      anchor: "h0",
+    });
 
-    expect(useItemsStore.getState().selectedItem).toBe("h0");
+    await unlinkComparisonSelection();
+
+    expect(preview.show).toHaveBeenCalledOnce();
   });
 });
 
-describe("how many screens a family fills", () => {
-  // A spread window with nothing to show must not open: an empty
-  // always-on-top surface covering a monitor is a curtain, not a comparison
-  // aid — the developer's 6-member family on 3 screens got a third window
-  // showing nothing, every time.
-  it("opens only the screens the members fill", () => {
-    expect(screensNeeded(6, 4, 3)).toBe(2); // 4 + 2, third screen dark
-    expect(screensNeeded(12, 4, 3)).toBe(3); // exactly full
-    expect(screensNeeded(13, 4, 3)).toBe(3); // overflow queues, never a 4th
-    expect(screensNeeded(2, 4, 3)).toBe(1); // a pair never spreads at all
+describe("live membership reconciliation", () => {
+  it("removes missing members but never admits a newly discovered image", async () => {
+    await useComparisonStore
+      .getState()
+      .reconcileLiveMembers(["h0", "h2", "h4", "new"]);
+    expect(
+      useComparisonStore.getState().members.map((item) => item.hash),
+    ).toEqual(["h0", "h2", "h4"]);
   });
 
-  it("always keeps the main window's screen", () => {
-    expect(screensNeeded(0, 4, 3)).toBe(1);
-    expect(screensNeeded(1, 3, 1)).toBe(1);
+  it("recovers a missing anchor to a surviving selected image", async () => {
+    await useComparisonStore
+      .getState()
+      .reconcileLiveMembers(["h0", "h1", "h3", "h4"]);
+    expect(useComparisonStore.getState().anchor).toBe("h1");
+    expect(useComparisonStore.getState().selected.has("h1")).toBe(true);
+  });
+
+  it("does not apply a delayed refresh to a newer session", async () => {
+    let answer: (hashes: string[]) => void = () => undefined;
+    mockCommands({
+      comparison_live_hashes: () =>
+        new Promise<string[]>((resolve) => {
+          answer = resolve;
+        }),
+    });
+    useComparisonStore.setState({ sessionId: 1 });
+    const refresh = reconcileComparisonMembership();
+    const replacement = [member(8), member(9)];
+    useComparisonStore.setState({
+      sessionId: 2,
+      members: replacement,
+      originalMemberHashes: replacement.map((item) => item.hash),
+    });
+    answer([]);
+    await refresh;
+
+    expect(useComparisonStore.getState().members).toEqual(replacement);
   });
 });

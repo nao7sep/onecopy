@@ -13,6 +13,7 @@ import {
   type SourceCheckState,
   useSectionsStore,
 } from "../state/sections-store";
+import { reconcileComparisonMembership } from "./comparison";
 
 let installation: Promise<void> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -44,11 +45,17 @@ function refreshDerivedIssues(): void {
 
 async function install(): Promise<void> {
   try {
-    await listen<Omit<SourceCheckState, "progress">>("source-check://state", (event) => {
-      useSectionsStore.setState((state) => ({
-        sourceCheck: { ...event.payload, progress: state.sourceCheck.progress },
-      }));
-    });
+    await listen<Omit<SourceCheckState, "progress">>(
+      "source-check://state",
+      (event) => {
+        useSectionsStore.setState((state) => ({
+          sourceCheck: {
+            ...event.payload,
+            progress: state.sourceCheck.progress,
+          },
+        }));
+      },
+    );
     await listen<ScanProgress>("source-check://progress", (event) => {
       useSectionsStore.setState((state) => ({
         sourceCheck: {
@@ -59,21 +66,25 @@ async function install(): Promise<void> {
       }));
       refreshLibrarySoon();
     });
-    await listen<{ stopped?: boolean; error?: string }>("source-check://done", (event) => {
-      useSectionsStore.setState((state) => ({
-        sourceCheck: { running: false, stopping: false, progress: null },
-        rescanNeeded:
-          event.payload.stopped === true || event.payload.error !== undefined
-            ? true
-            : state.rescanNeeded,
-      }));
-      if (event.payload.error !== undefined) {
-        log.error("source-folder check failed", {
-          error: { message: event.payload.error },
-        });
-      }
-      refreshLibraryNow();
-    });
+    await listen<{ stopped?: boolean; error?: string }>(
+      "source-check://done",
+      (event) => {
+        useSectionsStore.setState((state) => ({
+          sourceCheck: { running: false, stopping: false, progress: null },
+          rescanNeeded:
+            event.payload.stopped === true || event.payload.error !== undefined
+              ? true
+              : state.rescanNeeded,
+        }));
+        if (event.payload.error !== undefined) {
+          log.error("source-folder check failed", {
+            error: { message: event.payload.error },
+          });
+        }
+        refreshLibraryNow();
+        void reconcileComparisonMembership();
+      },
+    );
 
     await listen<Omit<FileInformationState, "progress">>(
       "file-information://state",
@@ -114,7 +125,10 @@ async function install(): Promise<void> {
       void useSectionsStore.getState().loadIndexWork();
     });
 
-    await listen("watch://updated", refreshLibrarySoon);
+    await listen("watch://updated", () => {
+      refreshLibrarySoon();
+      void reconcileComparisonMembership();
+    });
     await listen<{ previousHash: string; item: SectionItem }>(
       "derived://item",
       (event) => {
@@ -155,7 +169,8 @@ async function install(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     recordInterfaceFailure(message);
     useItemsStore.setState({
-      message: "Live library updates are unavailable. Restart OneCopy to repair them.",
+      message:
+        "Live library updates are unavailable. Restart OneCopy to repair them.",
     });
   }
 }

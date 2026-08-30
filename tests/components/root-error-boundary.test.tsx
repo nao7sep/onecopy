@@ -15,11 +15,12 @@ function Broken(): never {
 
 describe("RootErrorBoundary", () => {
   it("leaves a private-detail-free reload surface after a render failure", () => {
+    const onFailure = vi.fn();
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     render(
-      <RootErrorBoundary>
+      <RootErrorBoundary onFailure={onFailure}>
         <Broken />
       </RootErrorBoundary>,
     );
@@ -28,6 +29,7 @@ describe("RootErrorBoundary", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reload window" })).toBeTruthy();
     expect(screen.queryByText("private detail")).toBeNull();
+    expect(onFailure).toHaveBeenCalledOnce();
     consoleError.mockRestore();
   });
 });

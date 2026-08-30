@@ -59,7 +59,7 @@ fn face_score_orders_ahead_of_sharpness_within_the_group() {
     conn.execute("UPDATE contents SET sharpness = 4.0, face_score = 0.55 WHERE hash = 'blur'", []).unwrap();
     group(&conn, &["smile", "blur", "scenery"]);
 
-    let members = queries::similar_group_of(&conn, "scenery").unwrap();
+    let members = queries::similar_group_of(&conn, "scenery", true).unwrap();
     assert_eq!(
         members.iter().map(|m| m.hash.as_str()).collect::<Vec<_>>(),
         vec!["smile", "blur", "scenery"],
@@ -67,6 +67,30 @@ fn face_score_orders_ahead_of_sharpness_within_the_group() {
     );
     // The comparison surface renders from this row — the score must ride it.
     assert_eq!(members[0].face_score, Some(0.91));
+}
+
+#[test]
+fn disabled_face_policy_orders_by_sharpness_even_when_scores_exist() {
+    let conn = db();
+    seed_image(&conn, "smile", "a.jpg");
+    seed_image(&conn, "sharp", "b.jpg");
+    conn.execute(
+        "UPDATE contents SET sharpness = 2.0, face_score = 0.91 WHERE hash = 'smile'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE contents SET sharpness = 9.0, face_score = 0.0 WHERE hash = 'sharp'",
+        [],
+    )
+    .unwrap();
+    group(&conn, &["smile", "sharp"]);
+
+    let members = queries::similar_group_of(&conn, "smile", false).unwrap();
+    assert_eq!(
+        members.iter().map(|member| member.hash.as_str()).collect::<Vec<_>>(),
+        vec!["sharp", "smile"]
+    );
 }
 
 #[test]
@@ -81,7 +105,7 @@ fn null_scores_fall_back_to_sharpness_exactly_as_before() {
     conn.execute("UPDATE contents SET sharpness = 1.0, face_score = 0.0 WHERE hash = 'soft'", []).unwrap();
     group(&conn, &["sharp", "soft"]);
 
-    let members = queries::similar_group_of(&conn, "sharp").unwrap();
+    let members = queries::similar_group_of(&conn, "sharp", true).unwrap();
     assert_eq!(
         members.iter().map(|m| m.hash.as_str()).collect::<Vec<_>>(),
         vec!["sharp", "soft"],
@@ -97,7 +121,7 @@ fn comparison_payload_serializes_the_score_camel_cased() {
     seed_image(&conn, "one", "a.jpg");
     conn.execute("UPDATE contents SET face_score = 0.5 WHERE hash = 'one'", []).unwrap();
     group(&conn, &["one"]);
-    let members = queries::similar_group_of(&conn, "one").unwrap();
+    let members = queries::similar_group_of(&conn, "one", true).unwrap();
     let json = serde_json::to_value(&members[0]).unwrap();
     assert_eq!(json["faceScore"], serde_json::json!(0.5));
     assert!(json.get("face_score").is_none(), "camelCase only");

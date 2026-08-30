@@ -4,6 +4,7 @@ import { recordInterfaceFailure } from "../utils/failureSurface";
 
 interface Props {
   children: ReactNode;
+  onFailure?: () => void;
 }
 
 interface State {
@@ -24,6 +25,7 @@ export default class RootErrorBoundary extends Component<Props, State> {
       componentStack: info.componentStack,
     });
     recordInterfaceFailure(error instanceof Error ? error.message : String(error));
+    this.props.onFailure?.();
   }
 
   render(): ReactNode {
@@ -35,7 +37,8 @@ export default class RootErrorBoundary extends Component<Props, State> {
             OneCopy needs to reload
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-            This window could not finish drawing. Your files were not changed.
+            This window could not finish drawing. Completed file operations
+            remain completed.
           </p>
           <button
             className="mt-5 inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-ink-inverted outline-none hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary-ring"

@@ -151,7 +151,7 @@ export function faceStarRating(score: number | null): 0 | 1 | 2 | 3 {
 }
 
 export function faceStarLabel(stars: number): string {
-  return `${stars} face ${stars === 1 ? "star" : "stars"} — best-face confidence and smile hint`;
+  return `Advisory: ${stars} face ${stars === 1 ? "star" : "stars"} — best-face confidence and smile hint`;
 }
 
 export function itemPresentation(

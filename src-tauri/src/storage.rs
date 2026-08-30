@@ -108,6 +108,9 @@ pub struct DefaultConfig {
     /// Show an existing face score as a subtle thumbnail/comparison hint.
     /// This is presentation-only and never causes scoring or model downloads.
     pub show_face_stars: bool,
+    /// Upper bound for one visible Comparison page. Connected displays and
+    /// the current images' orientation may reduce the actual page size.
+    pub maximum_images_in_comparison: u32,
     /// Confirm ordinary Delete/Backspace trash-deletes in the grid. OFF by
     /// default (developer, 2026-08-17): the trash is the net, and a dialog on
     /// every Delete would break the keystroke-paced cull — but a deliberate
@@ -158,6 +161,7 @@ impl Default for DefaultConfig {
             keep_awake_during_indexing: true,
             score_faces: true,
             show_face_stars: true,
+            maximum_images_in_comparison: 16,
             confirm_trash_delete: false,
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),

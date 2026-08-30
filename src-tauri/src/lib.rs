@@ -1605,9 +1605,29 @@ fn get_similar_group(app: AppHandle, hash: String) -> Result<Vec<queries::GroupM
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            queries::similar_group_of(&conn, &hash)
+            let config = storage::read_config_for_setup(&data_root)?;
+            let use_face_score = config
+                .as_ref()
+                .and_then(|value| value.get("scoreFaces"))
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| storage::DefaultConfig::default().score_faces);
+            queries::similar_group_of(&conn, &hash, use_face_score)
         },
         |members| json!({ "members": members.len() }),
+    )
+}
+
+#[tauri::command(async)]
+fn comparison_live_hashes(app: AppHandle, hashes: Vec<String>) -> Result<Vec<String>, String> {
+    logging::boundary(
+        "comparison_live_hashes",
+        json!({ "members": hashes.len() }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            queries::live_content_hashes(&conn, &hashes)
+        },
+        |live| json!({ "live": live.len() }),
     )
 }
 
@@ -1993,6 +2013,7 @@ pub fn run() {
             get_section_items,
             get_item_detail,
             get_similar_group,
+            comparison_live_hashes,
             similar_unlink,
             similar_exclusions_count,
             similar_exclusions_clear,

@@ -17,7 +17,7 @@ import { log, toErrorFields } from "../repositories";
 import Button from "./ui/Button";
 import TranscriptBlock from "./TranscriptBlock";
 import { openPreview } from "../workflows/preview";
-import { openComparison } from "../workflows/comparison";
+import { requestComparisonFromMain } from "../workflows/comparison";
 import { seekMainPlayback } from "../workflows/playback";
 import {
   mergeActiveItemWork,
@@ -104,7 +104,7 @@ function SimilarSection({ hash }: { hash: string }) {
     <div className="mb-1 mt-3">
       <div className="flex items-center justify-between gap-2">
         <dt className="text-xs text-ink-muted">Similar ({members.length})</dt>
-        <Button onClick={() => void openComparison(hash)}>
+        <Button onClick={() => void requestComparisonFromMain()}>
           Compare
         </Button>
       </div>

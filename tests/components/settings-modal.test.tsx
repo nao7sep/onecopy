@@ -111,14 +111,23 @@ describe("Settings categories", () => {
     const labels = Array.from(screen.getByRole("tabpanel").querySelectorAll("label")).map(
       (label) => label.textContent,
     );
-    expect(labels.indexOf("Score faces for photo ordering (background, needs the face models)"))
-      .toBeLessThan(labels.indexOf("Show face-score stars on photos"));
-    expect(labels.indexOf("Show face-score stars on photos")).toBeLessThan(
-      labels.indexOf("Confirm before moving items to trash"),
+    const labelIndex = (prefix: string) =>
+      labels.findIndex((label) => label?.startsWith(prefix));
+    expect(labelIndex("Score faces for photo ordering")).toBeLessThan(
+      labelIndex("Show face-score stars on photos"),
+    );
+    expect(labelIndex("Show face-score stars on photos")).toBeLessThan(
+      labelIndex("Maximum images in Comparison"),
+    );
+    expect(labelIndex("Maximum images in Comparison")).toBeLessThan(
+      labelIndex("Confirm before moving items to trash"),
     );
     expect(
       (screen.getByLabelText("Show face-score stars on photos") as HTMLInputElement).checked,
     ).toBe(true);
+    expect(
+      (screen.getByLabelText(/Maximum images in Comparison/) as HTMLInputElement).value,
+    ).toBe("16");
   });
 });
 

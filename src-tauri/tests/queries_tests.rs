@@ -746,7 +746,7 @@ fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
         .unwrap();
     }
 
-    let members = queries::similar_group_of(&conn, "sharp").unwrap();
+    let members = queries::similar_group_of(&conn, "sharp", true).unwrap();
     assert_eq!(
         members.iter().map(|m| m.hash.as_str()).collect::<Vec<_>>(),
         vec!["sharp", "soft"],
@@ -754,6 +754,73 @@ fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
     );
     assert!(members.iter().all(|m| m.copy_count == 1));
     assert!(members.iter().all(|m| m.has_thumb));
+}
+
+#[test]
+fn similar_group_ties_follow_the_representative_path() {
+    let conn = db();
+    seed_image(
+        &conn,
+        "a-hash",
+        Some("2026-01-02T03:04:05.000Z"),
+        "z-last.jpg",
+    );
+    seed_image(
+        &conn,
+        "z-hash",
+        Some("2026-01-02T03:04:05.000Z"),
+        "a-first.jpg",
+    );
+    conn.execute(
+        "INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x')",
+        [],
+    )
+    .unwrap();
+    for hash in ["a-hash", "z-hash"] {
+        conn.execute(
+            "INSERT INTO similar_group_members (group_id, content_hash) VALUES (1, ?1)",
+            params![hash],
+        )
+        .unwrap();
+    }
+
+    let members = queries::similar_group_of(&conn, "a-hash", true).unwrap();
+    assert_eq!(
+        members.iter().map(|member| member.hash.as_str()).collect::<Vec<_>>(),
+        vec!["z-hash", "a-hash"]
+    );
+    assert_eq!(members[0].file_name, "a-first.jpg");
+}
+
+#[test]
+fn live_content_hashes_checks_only_the_frozen_membership() {
+    let conn = db();
+    seed_image(
+        &conn,
+        "live",
+        Some("2026-01-02T03:04:05.000Z"),
+        "live.jpg",
+    );
+    seed_image(
+        &conn,
+        "gone",
+        Some("2026-01-02T03:04:05.000Z"),
+        "gone.jpg",
+    );
+    conn.execute(
+        "UPDATE paths SET missing = 1 WHERE content_hash = 'gone'",
+        [],
+    )
+    .unwrap();
+
+    assert_eq!(
+        queries::live_content_hashes(
+            &conn,
+            &["gone".to_string(), "live".to_string(), "unknown".to_string()],
+        )
+        .unwrap(),
+        vec!["live".to_string()]
+    );
 }
 
 // The verbatim prefix is a FILESYSTEM detail, and the boundary where it must

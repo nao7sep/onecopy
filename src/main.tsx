@@ -7,11 +7,18 @@ import IdentifyWindow from "./windows/IdentifyWindow";
 import ViewerWindow from "./windows/ViewerWindow";
 import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
+import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, initLogging } from "./repositories";
 import { useAppStore } from "./state/app-store";
 import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
 import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
+import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
+
+// One bundle serves every window; the `view` query parameter routes.
+const params = new URLSearchParams(window.location.search);
+const view = params.get("view");
+const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
 // already works before this resolves (defaulting to the dev-build gate).
@@ -50,6 +57,18 @@ window.addEventListener("contextmenu", (event) => {
 
 // Global last-resort handlers — catch anything that slips past React's error
 // handling and record it before the page can tear down.
+let presentationFailureHandled = false;
+
+function recoverComparisonPresentation(): void {
+  if (presentationFailureHandled) return;
+  presentationFailureHandled = true;
+  if (view === "comparison") {
+    void emit("comparison://display-failed", { slice });
+  } else if (view === null) {
+    closeComparisonAfterMainRendererFailure();
+  }
+}
+
 window.addEventListener("error", (event) => {
   const message = event.error instanceof Error ? event.error.message : String(event.message);
   log.error("uncaught error", {
@@ -59,6 +78,7 @@ window.addEventListener("error", (event) => {
     column: event.colno,
   });
   recordInterfaceFailure(message);
+  recoverComparisonPresentation();
   presentEscapedFailure(`This window stopped unexpectedly: ${message}`);
 });
 
@@ -66,19 +86,15 @@ window.addEventListener("unhandledrejection", (event) => {
   log.error("unhandled promise rejection", toErrorFields(event.reason));
   const message = event.reason instanceof Error ? event.reason.message : String(event.reason);
   recordInterfaceFailure(message);
+  recoverComparisonPresentation();
   presentEscapedFailure(`This window could not finish an action: ${message}`);
 });
-
-// One bundle serves every window; the `view` query parameter routes.
-const params = new URLSearchParams(window.location.search);
-const view = params.get("view");
-const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 
 void installMediaUseBoundary()
   .then(() => {
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
-        <RootErrorBoundary>
+        <RootErrorBoundary onFailure={recoverComparisonPresentation}>
           {view === "preview" ? (
             <PreviewWindow />
           ) : view === "comparison" ? (

@@ -13,7 +13,12 @@ import { render, cleanup, act } from "@testing-library/react";
 import PreviewWindow from "../../src/windows/PreviewWindow";
 import ComparisonWindow from "../../src/windows/ComparisonWindow";
 import type { ComparisonBroadcast } from "../../src/state/comparison-store";
-import { emitCalls, fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  emitCalls,
+  fireEvent,
+  mockCommands,
+  resetTauriMocks,
+} from "../mocks/tauri";
 
 const DETAIL = {
   fileName: "IMG_1.jpg",
@@ -41,7 +46,9 @@ afterEach(() => cleanup());
 describe("the preview window", () => {
   it("mounts without throwing and shows its placeholder", () => {
     const view = render(<PreviewWindow />);
-    expect(view.container.textContent).toContain("Select an item in the main window");
+    expect(view.container.textContent).toContain(
+      "Select an item in the main window",
+    );
   });
 
   it("announces itself only AFTER its listener is registered", async () => {
@@ -56,7 +63,11 @@ describe("the preview window", () => {
     const view = render(<PreviewWindow />);
     await act(async () => {});
     await act(async () => {
-      fireEvent("preview://show", { hash: "abc", pathId: null, detail: DETAIL });
+      fireEvent("preview://show", {
+        hash: "abc",
+        pathId: null,
+        detail: DETAIL,
+      });
     });
     const img = view.container.querySelector("img");
     expect(img).not.toBeNull();
@@ -83,8 +94,16 @@ describe("the preview window", () => {
         altKey: false,
       },
     });
-    expect(emitCalls.some((call) => call.event === "preview://key" && (call.payload as { key?: string }).key === " ")).toBe(false);
-    expect(emitCalls.some((call) => call.event === "preview://fullscreen")).toBe(true);
+    expect(
+      emitCalls.some(
+        (call) =>
+          call.event === "preview://key" &&
+          (call.payload as { key?: string }).key === " ",
+      ),
+    ).toBe(false);
+    expect(
+      emitCalls.some((call) => call.event === "preview://fullscreen"),
+    ).toBe(true);
   });
 });
 
@@ -101,16 +120,19 @@ describe("a comparison window", () => {
             height: 3000,
             byteSize: 5_000_000,
             sharpness: 12,
-    faceScore: null,
+            faceScore: null,
             copyCount: 2,
             hasThumb: true,
           },
-          slotKey: "5",
-          kept: false,
+          slotKey: "0",
+          selected: false,
+          anchor: false,
         },
       ],
     ],
-    queueCount: 3,
+    page: 0,
+    pageCount: 2,
+    remainingCount: 5,
     portraitDominant: false,
   };
 
@@ -126,9 +148,28 @@ describe("a comparison window", () => {
       fireEvent("comparison://state", broadcast);
     });
     expect(view.container.textContent).toContain("a.jpg");
-    expect(view.container.textContent).toContain("5");
+    expect(view.container.textContent).toContain("0");
     // The facts that make the keep decision possible.
     expect(view.container.textContent).toContain("4000×3000");
+  });
+
+  it("forwards only assigned comparison commands", async () => {
+    render(<ComparisonWindow slice={1} />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent("comparison://state", broadcast);
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "0" }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "f" }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowRight", metaKey: true }),
+    );
+    await act(async () => {});
+
+    expect(
+      emitCalls.filter((call) => call.event === "comparison://key"),
+    ).toHaveLength(1);
   });
 
   it("announced readiness after listening, so the reply can be heard", async () => {

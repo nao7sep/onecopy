@@ -37,7 +37,8 @@ export function shortcutGroups(): ShortcutGroup[] {
         { chord: "Home / End", action: "First or last item" },
         { chord: "Page Up / Page Down", action: "Move by a screenful" },
         { chord: "Shift+Arrows", action: "Extend the selection" },
-        { chord: "Click", action: "Select or deselect one item" },
+        { chord: "Click", action: "Select only that item" },
+        { chord: `${mod}+Click`, action: "Toggle one item in the selection" },
         { chord: "Shift+Click", action: "Select a range" },
       ],
     },
@@ -45,41 +46,88 @@ export function shortcutGroups(): ShortcutGroup[] {
       title: "Looking",
       context: "anywhere in the main window",
       rows: [
-        { chord: "Space", action: "Open Quick View (play/pause when its video has focus)" },
-        { chord: "Enter", action: "Compare similar photos (≈ badge)" },
-        { chord: "F", action: "Fullscreen (in the preview window)" },
-        { chord: "Escape", action: "Close Quick View, leave fullscreen, or close the preview window" },
+        { chord: "Space", action: "Open Quick View" },
+        { chord: "Enter", action: "Compare images or control media playback" },
+        { chord: "F", action: "Open the selection in fullscreen" },
+        {
+          chord: "Escape",
+          action: "Close the active viewer or preview window",
+        },
       ],
     },
     {
       title: "Culling",
       context: "when the photo grid has focus",
       rows: [
-        { chord: "Delete / Backspace", action: "Trash the item and every copy" },
-        { chord: "Shift+Delete", action: "Delete permanently, after confirming" },
+        {
+          chord: "Delete / Backspace",
+          action: "Trash the item and every copy",
+        },
+        {
+          chord: "Shift+Delete",
+          action: "Delete permanently, after confirming",
+        },
       ],
     },
     {
       title: "Comparison view",
       context: "while a comparison is open",
       rows: [
-        { chord: "1–9 / 0 / A–F", action: "Mark the photo in that slot as a keeper" },
-        { chord: "Shift+1–9/0/A–F", action: "Not similar — remove that slot from the group (never deletes)" },
-        { chord: "Left / Right", action: "Page through the group (marks persist; nothing deletes)" },
-        { chord: "S", action: "Shortlist — see the marked photos side by side" },
-        { chord: "Enter", action: "Next unseen page; once all pages are seen, commit — keep the marked, trash the rest" },
-        { chord: "Shift+Enter", action: "Commit, deleting the rest permanently" },
-        { chord: "Click", action: "Toggle the photo in that slot as a keeper" },
-        { chord: "Escape", action: "Leave — nothing is deleted, marks are discarded" },
+        {
+          chord: "0–9 / A–Z",
+          action: "Toggle the image with that visible key",
+        },
+        { chord: "Arrows", action: "Move the page selection spatially" },
+        { chord: "Shift+Arrows", action: "Extend the page selection" },
+        {
+          chord: "Home / End",
+          action: "Select the first or last visible image",
+        },
+        { chord: "Page Up / Page Down", action: "Browse undecided pages" },
+        { chord: `${mod}+A`, action: "Select the current page" },
+        {
+          chord: "Enter",
+          action: "Keep the selection and Trash its visible complement",
+        },
+        {
+          chord: "Shift+Enter",
+          action:
+            "Keep the selection and permanently delete its visible complement",
+        },
+        {
+          chord: "Delete / Backspace",
+          action: "Move the selected images to Trash",
+        },
+        {
+          chord: "Shift+Delete",
+          action: "Permanently delete the selected images after confirming",
+        },
+        {
+          chord: "Double-click",
+          action: "Keep only that image on the visible page",
+        },
+        {
+          chord: "Escape",
+          action: "Leave without applying the draft selection",
+        },
       ],
     },
     {
       title: "Destinations tree",
       context: "when the destinations tree has focus",
       rows: [
-        { chord: "Enter", action: "Move the selection here, trash the other copies" },
-        { chord: "Shift+Enter", action: "Move here, permanently delete the rest" },
-        { chord: `${mod}+Enter`, action: "Copy here, leave everything in place" },
+        {
+          chord: "Enter",
+          action: "Move the selection here, trash the other copies",
+        },
+        {
+          chord: "Shift+Enter",
+          action: "Move here, permanently delete the rest",
+        },
+        {
+          chord: `${mod}+Enter`,
+          action: "Copy here, leave everything in place",
+        },
       ],
     },
     {

@@ -156,6 +156,40 @@ describe("refresh", () => {
   });
 });
 
+describe("comparison completion", () => {
+  it("lands after a fully removed group using the pre-refresh order", () => {
+    const previous = [
+      item({ pathId: 1 }),
+      item({ pathId: 2 }),
+      item({ pathId: 3 }),
+      item({ pathId: 4 }),
+    ];
+    seed([previous[0], previous[3]]);
+
+    useItemsStore
+      .getState()
+      .selectAfterFamily(["h2", "h3"], previous);
+
+    expect(useItemsStore.getState().selectedItem).toBe("h4");
+    expect(useItemsStore.getState().scrollRequest?.key).toBe("h4");
+  });
+
+  it("falls back to the nearest previous survivor at the end", () => {
+    const previous = [
+      item({ pathId: 1 }),
+      item({ pathId: 2 }),
+      item({ pathId: 3 }),
+    ];
+    seed([previous[0]]);
+
+    useItemsStore
+      .getState()
+      .selectAfterFamily(["h2", "h3"], previous);
+
+    expect(useItemsStore.getState().selectedItem).toBe("h1");
+  });
+});
+
 describe("section entry and return", () => {
   it("selects the first displayed item on a first visit", async () => {
     mockCommand("get_section_items", () => [

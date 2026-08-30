@@ -580,7 +580,11 @@ pub struct GroupMember {
 /// is ungrouped. COALESCE makes NULL and scored-faceless order identically,
 /// so a group with no faces — or no face models — orders exactly by
 /// sharpness, as before the models existed.
-pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember>, String> {
+pub fn similar_group_of(
+    conn: &Connection,
+    hash: &str,
+    use_face_score: bool,
+) -> Result<Vec<GroupMember>, String> {
     let group_id: Option<i64> = conn
         .query_row(
             "SELECT group_id FROM similar_group_members WHERE content_hash = ?1",
@@ -596,18 +600,23 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
     let preview_available = crate::derived_state::preview_available_predicate("c");
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT c.hash, \
-             (SELECT MIN(p.file_name) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
+            "SELECT c.hash, representative.file_name, \
              c.width, c.height, c.byte_size, c.sharpness, c.face_score, \
              (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
              {preview_available} \
-             FROM similar_group_members m JOIN contents c ON c.hash = m.content_hash \
+             FROM similar_group_members m \
+             JOIN contents c ON c.hash = m.content_hash \
+             JOIN logical_contents logical ON logical.content_hash = c.hash \
+             JOIN paths representative ON representative.id = logical.representative_path_id \
              WHERE m.group_id = ?1 \
-             ORDER BY COALESCE(c.face_score, 0) DESC, c.sharpness DESC NULLS LAST, c.hash"
+             ORDER BY CASE WHEN ?2 THEN COALESCE(c.face_score, 0) ELSE 0 END DESC, \
+                      c.sharpness DESC NULLS LAST, \
+                      representative.abs_path COLLATE onecopy_nocase, \
+                      representative.abs_path, c.hash"
         ))
         .map_err(|e| e.to_string())?;
     let members: Vec<GroupMember> = stmt
-        .query_map([group_id], |r| {
+        .query_map(rusqlite::params![group_id, use_face_score], |r| {
             Ok(GroupMember {
                 hash: r.get(0)?,
                 file_name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -627,6 +636,29 @@ pub fn similar_group_of(conn: &Connection, hash: &str) -> Result<Vec<GroupMember
         .filter(|m| m.copy_count > 0)
         .collect();
     Ok(members)
+}
+
+/// The subset of a frozen Comparison membership that still has at least one
+/// indexed live copy. Newly grouped hashes are deliberately not returned.
+pub fn live_content_hashes(
+    conn: &Connection,
+    hashes: &[String],
+) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT EXISTS(SELECT 1 FROM paths WHERE content_hash = ?1 AND missing = 0)",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut live = Vec::with_capacity(hashes.len());
+    for hash in hashes {
+        let exists = statement
+            .query_row([hash], |row| row.get::<_, bool>(0))
+            .map_err(|error| error.to_string())?;
+        if exists {
+            live.push(hash.clone());
+        }
+    }
+    Ok(live)
 }
 
 /// The metadata pane's view of one logical item: content facts plus every

@@ -747,6 +747,13 @@ export default function SettingsModal() {
             checked={draft.showFaceStars}
             onChange={(v) => update({ showFaceStars: v })}
           />
+          <NumberField
+            label="Maximum images in Comparison"
+            hint="Connected displays and image shape may reduce the number shown at once"
+            value={draft.maximumImagesInComparison}
+            min={2}
+            onChange={(v) => update({ maximumImagesInComparison: v })}
+          />
           <CheckField
             label="Confirm before moving items to trash"
             checked={draft.confirmTrashDelete}

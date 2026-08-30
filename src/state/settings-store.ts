@@ -42,6 +42,7 @@ export interface SettingsDraft {
   confirmTrashDelete: boolean;
   scoreFaces: boolean;
   showFaceStars: boolean;
+  maximumImagesInComparison: number;
   sourceDirs: string[];
 }
 
@@ -65,7 +66,9 @@ function numberOr(value: unknown, fallback: number): number {
 function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
   return {
     defaultTimezone:
-      typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC",
+      typeof config?.defaultTimezone === "string"
+        ? config.defaultTimezone
+        : "UTC",
     goodRangeStartYear: numberOr(config?.goodRangeStartYear, 1995),
     similarityMaxGapSeconds: numberOr(
       config?.similarityMaxGapSeconds,
@@ -95,17 +98,26 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     videoAutoplay: config?.videoAutoplay !== false,
     audioAutoplay: config?.audioAutoplay !== false,
     soundEnabled: config?.soundEnabled !== false,
-    playbackVolume: Math.min(1, Math.max(0.01, numberOr(config?.playbackVolume, 1))),
+    playbackVolume: Math.min(
+      1,
+      Math.max(0.01, numberOr(config?.playbackVolume, 1)),
+    ),
     enlargeSmallImagesInPreview: config?.enlargeSmallImagesInPreview !== false,
-    enlargeSmallImagesInQuickView: config?.enlargeSmallImagesInQuickView !== false,
-    textPreviewMaxBytes: Math.max(1, numberOr(config?.textPreviewMaxBytes, 2 * 1024 * 1024)),
+    enlargeSmallImagesInQuickView:
+      config?.enlargeSmallImagesInQuickView !== false,
+    textPreviewMaxBytes: Math.max(
+      1,
+      numberOr(config?.textPreviewMaxBytes, 2 * 1024 * 1024),
+    ),
     textFallbackEncoding:
       typeof config?.textFallbackEncoding === "string"
         ? config.textFallbackEncoding
         : "utf-8",
     pairingEnabled: config?.pairingEnabled !== false,
     theme:
-      config?.theme === "light" || config?.theme === "dark" ? config.theme : "system",
+      config?.theme === "light" || config?.theme === "dark"
+        ? config.theme
+        : "system",
     uiFontFamily: normalizeUiFontPreference(config?.uiFontFamily),
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
     checkSourceFoldersAtLaunch: config?.checkSourceFoldersAtLaunch !== false,
@@ -115,6 +127,10 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     // Presentation is independent of scoring: existing results remain useful
     // after the optional background analysis is turned off.
     showFaceStars: config?.showFaceStars !== false,
+    maximumImagesInComparison: Math.max(
+      2,
+      Math.floor(numberOr(config?.maximumImagesInComparison, 16)),
+    ),
     sourceDirs: stringArrayField(config, "sourceDirs"),
   };
 }
@@ -198,9 +214,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   addSourceDir: async () => {
     try {
       const picked = await openDialog({ directory: true, multiple: true });
-      const paths = (Array.isArray(picked) ? picked : picked ? [picked] : []).filter(
-        (p): p is string => typeof p === "string",
-      );
+      const paths = (
+        Array.isArray(picked) ? picked : picked ? [picked] : []
+      ).filter((p): p is string => typeof p === "string");
       const draft = get().draft;
       if (!draft) return;
       const merged = [...draft.sourceDirs];
@@ -214,6 +230,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   removeSourceDir: (path) => {
     const draft = get().draft;
-    if (draft) get().update({ sourceDirs: draft.sourceDirs.filter((d) => d !== path) });
+    if (draft)
+      get().update({ sourceDirs: draft.sourceDirs.filter((d) => d !== path) });
   },
 }));

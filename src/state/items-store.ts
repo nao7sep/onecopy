@@ -68,9 +68,12 @@ interface ItemsState {
   applyDerivedItem: (previousHash: string, item: SectionItem) => void;
   /** After a similar-family is fully decided, land the anchor on the first
    * item PAST the family (in the shown order), so Enter chains straight into
-   * the next group. Past the KEEPERS, deliberately: Enter on a keeper would
+   * the next group. Past the retained images, deliberately: Enter on one would
    * reopen the family just decided. */
-  selectAfterFamily: (memberHashes: string[]) => void;
+  selectAfterFamily: (
+    memberHashes: string[],
+    orderBeforeComparison: SectionItem[],
+  ) => void;
 }
 
 // One guard per query the store issues (request-seq.ts explains why: these
@@ -284,22 +287,25 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     loadAnchorDetail(key);
   },
 
-  selectAfterFamily: (memberHashes) => {
+  selectAfterFamily: (memberHashes, orderBeforeComparison) => {
     const { items } = get();
     const family = new Set(memberHashes);
-    const shown = sortItems(items, get().currentSort());
-    const lastMember = shown.reduce(
+    const previous = sortItems(orderBeforeComparison, get().currentSort());
+    const lastMember = previous.reduce(
       (last, item, index) => (item.hash !== null && family.has(item.hash) ? index : last),
       -1,
     );
-    const next =
-      shown.slice(lastMember + 1).find((item) => item.hash === null || !family.has(item.hash)) ??
-      // The family sat at the end: rest on its last keeper rather than
-      // leaving the anchor on a trashed item.
-      (lastMember >= 0 ? shown[lastMember] : undefined);
-    if (next) {
-      get().selectItem(itemKey(next));
-    }
+    const live = new Set(items.map(itemKey));
+    const after = previous
+      .slice(lastMember + 1)
+      .map(itemKey)
+      .find((key) => live.has(key));
+    const before = previous
+      .slice(0, Math.max(0, lastMember + 1))
+      .reverse()
+      .map(itemKey)
+      .find((key) => live.has(key));
+    get().selectItem(after ?? before ?? null);
   },
 
   // A same-section reload. `select` now carries the selection across it and

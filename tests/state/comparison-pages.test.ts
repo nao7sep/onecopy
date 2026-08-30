@@ -1,27 +1,16 @@
-// The paged comparison (Phase 33, replacing the turn/pin/refill model).
-//
-// Viewing and deciding are decoupled: pages are a viewport, marks are the
-// only state, and ONE commit decides the whole group. The safety rule under
-// every spec here: nothing from an unvisited page can ever be deleted —
-// guaranteed structurally, because Enter advances through unseen pages
-// before it will commit.
-
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  nextUnseenPage,
-  pageCountOf,
   useComparisonStore,
-  visibleSlots,
+  type GroupMember,
 } from "../../src/state/comparison-store";
-import { useItemsStore } from "../../src/state/items-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
-function member(i: number) {
+function member(index: number): GroupMember {
   return {
-    hash: `h${i}`,
-    fileName: `IMG_${i}.jpg`,
-    width: 100,
-    height: 100,
+    hash: `h${index}`,
+    fileName: `image-${index}.jpg`,
+    width: 4000,
+    height: 3000,
     byteSize: 1000,
     sharpness: null,
     faceScore: null,
@@ -30,269 +19,208 @@ function member(i: number) {
   };
 }
 
-/** A session over `count` members with a page size of `perPage`. */
-function openSession(count: number, perPage: number): void {
-  const members = Array.from({ length: count }, (_, i) => member(i));
+function openSession(count: number): void {
+  const members = Array.from({ length: count }, (_, index) => member(index));
   useComparisonStore.setState({
+    sessionId: 0,
     open: true,
     members,
-    kept: new Set(),
-    visited: new Set([0]),
+    originalMemberHashes: members.map((item) => item.hash),
     page: 0,
-    shortlist: false,
-    shortlistPage: 0,
-    sessionMembers: members.map((m) => m.hash),
-    capacities: [perPage],
+    maximumImages: 4,
+    displayCount: 1,
+    displayAspects: [16 / 9],
+    capacities: [4],
+    portraitDominant: false,
+    spreadCount: 0,
+    selected: new Set(["h0"]),
+    anchors: new Set(["h0"]),
+    anchor: "h0",
+    rangeOrigin: "h0",
+    rangeBase: new Set(["h0"]),
     busy: false,
-    commitFailure: null,
-    permanentArmed: true,
-    pendingPermanentCommit: false,
-    pendingCommit: null,
+    message: null,
+    pendingAction: null,
+    failure: null,
   });
 }
 
-function deleted(): unknown[] {
-  return invokeCalls
-    .filter((c) => c.command === "delete_items")
-    .flatMap((c) => c.args.items as Array<{ hash: string | null }>)
-    .map((item) => item.hash);
+function successfulDelete(
+  items: Array<{ hash: string | null; pathId: number | null }>,
+) {
+  return {
+    cancelled: false,
+    error: null,
+    failedFiles: 0,
+    items: items.map((item) => ({ item, failedFiles: 0 })),
+  };
 }
 
 beforeEach(() => {
-  resetTauriMocks();
+  resetTauriMocks({ keepListeners: true });
   mockCommands({
-    delete_items: ({ items }) => ({
-      cancelled: false,
-      error: null,
-      failedFiles: 0,
-      items: (items as Array<{ hash: string | null; pathId: number | null }>).map((item) => ({
-        item,
-        failedFiles: 0,
-      })),
-    }),
-    get_section_items: () => [],
-    get_section_counts: () => [],
-    patch_state: () => ({}),
-    get_item_detail: () => null,
+    delete_items: ({ items }) =>
+      successfulDelete(
+        items as Array<{ hash: string | null; pathId: number | null }>,
+      ),
+    set_window_simple_fullscreen: () => null,
   });
-  useItemsStore.setState({
-    selected: { kind: "image", month: "2026-01" },
-    items: [],
-    selectedItem: null,
-    selectedKeys: new Set(),
-  });
+  openSession(8);
 });
 
-describe("Enter's rhythm: advance, then commit", () => {
-  it("never deletes while pages remain unseen", async () => {
-    openSession(12, 4); // 3 pages
-    useComparisonStore.getState().toggleKeep(0); // mark h0 on page 1
+describe("draft page selection", () => {
+  it("retains each undecided page draft while browsing", () => {
+    useComparisonStore.getState().selectSlot(1, "toggle");
+    useComparisonStore.getState().nextPage();
+    useComparisonStore.getState().selectSlot(2, "exclusive");
+    useComparisonStore.getState().prevPage();
 
-    await useComparisonStore.getState().commitTurn(false);
-    expect(deleted()).toHaveLength(0);
+    const state = useComparisonStore.getState();
+    expect(state.selected).toEqual(new Set(["h0", "h1", "h6"]));
+    expect(state.anchor).toBe("h1");
+  });
+
+  it("preserves a deliberately empty page draft", () => {
+    useComparisonStore.getState().selectSlot(0, "toggle");
+    expect(useComparisonStore.getState().selected).toEqual(new Set());
+
+    useComparisonStore.getState().nextPage();
+    useComparisonStore.getState().prevPage();
+
+    const state = useComparisonStore.getState();
+    expect(state.selected).toEqual(new Set());
+    expect(state.anchor).toBeNull();
+  });
+
+  it("does not wrap at either page bound", () => {
+    useComparisonStore.getState().prevPage();
+    expect(useComparisonStore.getState().page).toBe(0);
+    useComparisonStore.getState().nextPage();
+    useComparisonStore.getState().nextPage();
     expect(useComparisonStore.getState().page).toBe(1);
-
-    await useComparisonStore.getState().commitTurn(false);
-    expect(deleted()).toHaveLength(0);
-    expect(useComparisonStore.getState().page).toBe(2);
-  });
-
-  it("marks persist across pages and one commit decides the whole group", async () => {
-    openSession(12, 4);
-    useComparisonStore.getState().toggleKeep(1); // h1 on page 1
-    await useComparisonStore.getState().commitTurn(false); // -> page 2
-    useComparisonStore.getState().toggleKeep(2); // h6 on page 2
-    await useComparisonStore.getState().commitTurn(false); // -> page 3
-    await useComparisonStore.getState().commitTurn(false); // all seen -> commit
-
-    // Multi-page trashing confirms with the counts before anything moves.
-    const pending = useComparisonStore.getState().pendingCommit;
-    expect(deleted()).toHaveLength(0);
-    expect(pending).toEqual({ keepCount: 2, trashCount: 10, permanent: false });
-
-    await useComparisonStore.getState().confirmPendingCommit();
-    expect(deleted()).toHaveLength(10);
-    expect(deleted()).not.toContain("h1");
-    expect(deleted()).not.toContain("h6");
-    expect(useComparisonStore.getState().open).toBe(false);
-  });
-
-  it("free navigation marks pages as seen, so Enter can go straight to commit", async () => {
-    openSession(8, 4);
-    useComparisonStore.getState().toggleKeep(0);
-    useComparisonStore.getState().nextPage(); // sees page 2 by arrow
-    useComparisonStore.getState().prevPage(); // back — both seen now
-
-    await useComparisonStore.getState().commitTurn(false);
-    // All pages visited: this Enter is the COMMIT (multi-page -> confirm).
-    expect(useComparisonStore.getState().pendingCommit).not.toBeNull();
   });
 });
 
-describe("the commit confirmations", () => {
-  it("a single-page group with a mark commits instantly — two keystrokes, no dialog", async () => {
-    openSession(4, 16);
-    useComparisonStore.getState().toggleKeep(0);
+describe("page-local decisions", () => {
+  it("retains the selection, trashes only the visible complement, and fills the page", async () => {
+    useComparisonStore.getState().selectSlot(1, "toggle");
 
-    await useComparisonStore.getState().commitTurn(false);
+    const result = await useComparisonStore
+      .getState()
+      .requestPageDecision(false, false);
 
-    expect(useComparisonStore.getState().pendingCommit).toBeNull();
-    expect(deleted().sort()).toEqual(["h1", "h2", "h3"]);
+    expect(result).toEqual({ kind: "continued" });
+    const deleted = invokeCalls.find((call) => call.command === "delete_items")
+      ?.args.items as Array<{ hash: string }>;
+    expect(deleted.map((item) => item.hash)).toEqual(["h2", "h3"]);
+    expect(
+      useComparisonStore.getState().members.map((item) => item.hash),
+    ).toEqual(["h4", "h5", "h6", "h7"]);
   });
 
-  it("zero marks means trash ALL — possible at last, and always confirmed", async () => {
-    // The turn model could not express "all 12 are bad" at all: goners were
-    // only computed when something was kept.
-    openSession(4, 16);
+  it("completes an all-selected page without a filesystem operation", async () => {
+    useComparisonStore.getState().selectAll();
+    const result = await useComparisonStore
+      .getState()
+      .requestPageDecision(false, false);
 
-    await useComparisonStore.getState().commitTurn(false);
-    expect(deleted()).toHaveLength(0);
-    expect(useComparisonStore.getState().pendingCommit).toEqual({
-      keepCount: 0,
-      trashCount: 4,
-      permanent: false,
+    expect(result).toEqual({ kind: "continued" });
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
+    expect(
+      useComparisonStore.getState().members.map((item) => item.hash),
+    ).toEqual(["h4", "h5", "h6", "h7"]);
+  });
+
+  it("does nothing with no selection and explains why", async () => {
+    useComparisonStore.setState({
+      selected: new Set(),
+      anchor: null,
+      anchors: new Set(),
     });
-
-    await useComparisonStore.getState().confirmPendingCommit();
-    expect(deleted().sort()).toEqual(["h0", "h1", "h2", "h3"]);
+    expect(
+      await useComparisonStore.getState().requestPageDecision(false, false),
+    ).toBeNull();
+    expect(useComparisonStore.getState().message).toBe(
+      "Select at least one image to keep.",
+    );
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
   });
 
-  it("keeping everything commits nothing and just finishes", async () => {
-    openSession(2, 16);
-    useComparisonStore.getState().toggleKeep(0);
-    useComparisonStore.getState().toggleKeep(1);
-
-    await useComparisonStore.getState().commitTurn(false);
-
-    expect(deleted()).toHaveLength(0);
-    expect(useComparisonStore.getState().open).toBe(false);
+  it("offers a separate explicit Trash-all action", async () => {
+    await useComparisonStore.getState().requestPageDecision(false, false, true);
+    const deleted = invokeCalls.find((call) => call.command === "delete_items")
+      ?.args.items as Array<{ hash: string }>;
+    expect(deleted.map((item) => item.hash)).toEqual(["h0", "h1", "h2", "h3"]);
   });
 
-  it("the permanent arming still asks once per session", async () => {
-    openSession(3, 16);
-    useComparisonStore.setState({ permanentArmed: false });
-    useComparisonStore.getState().toggleKeep(0);
+  it("always confirms a permanent page decision", async () => {
+    expect(
+      await useComparisonStore.getState().requestPageDecision(true, false),
+    ).toBeNull();
+    expect(useComparisonStore.getState().pendingAction?.permanent).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
+  });
 
-    await useComparisonStore.getState().commitTurn(true);
-    expect(deleted()).toHaveLength(0);
-    expect(useComparisonStore.getState().pendingPermanentCommit).toBe(true);
+  it("preserves the draft when confirmation is cancelled", async () => {
+    useComparisonStore.getState().selectSlot(1, "toggle");
+    await useComparisonStore.getState().requestPageDecision(false, true);
+    useComparisonStore.getState().cancelPendingAction();
+    expect(useComparisonStore.getState().selected).toEqual(
+      new Set(["h0", "h1"]),
+    );
+    expect(useComparisonStore.getState().members).toHaveLength(8);
   });
 });
 
-describe("partial commit recovery", () => {
-  it("retires successes and retries only logical items that remain", async () => {
-    openSession(3, 16);
-    useComparisonStore.getState().toggleKeep(0);
-    let h2Attempts = 0;
+describe("partial deletion", () => {
+  it("removes successes and retainers while keeping only failed targets retryable", async () => {
+    openSession(4);
     mockCommands({
       delete_items: ({ items }) => {
-        const results = (items as Array<{ hash: string; pathId: null }>).map((item) => {
-          const failedFiles = item.hash === "h2" && h2Attempts++ === 0 ? 1 : 0;
-          return { item, failedFiles };
-        });
+        const requested = items as Array<{
+          hash: string | null;
+          pathId: number | null;
+        }>;
         return {
-          cancelled: false,
+          cancelled: true,
           error: null,
-          failedFiles: results.reduce((total, result) => total + result.failedFiles, 0),
-          items: results,
+          failedFiles: 1,
+          items: [
+            { item: requested[0], failedFiles: 0 },
+            { item: requested[1], failedFiles: 1 },
+          ],
         };
       },
-      get_issues: () => ({ total: 1, rows: [] }),
     });
 
-    await useComparisonStore.getState().commitTurn(false);
+    expect(
+      await useComparisonStore.getState().requestPageDecision(false, false),
+    ).toEqual({ kind: "failed" });
+    const state = useComparisonStore.getState();
+    expect(state.members.map((item) => item.hash)).toEqual(["h2", "h3"]);
+    expect(state.failure?.targetHashes).toEqual(["h2", "h3"]);
+    expect(state.selected).toEqual(new Set(["h2", "h3"]));
+  });
 
-    expect(deleted()).toEqual(["h1", "h2"]);
-    expect(useComparisonStore.getState().open).toBe(true);
-    expect(useComparisonStore.getState().members.map((m) => m?.hash ?? null)).toEqual([
-      "h0",
-      null,
-      "h2",
+  it("reconfirms a retry when current policy requires it", async () => {
+    useComparisonStore.setState({
+      failure: {
+        kind: "page",
+        permanent: false,
+        keepHashes: [],
+        targetHashes: ["h1"],
+        message: "failed",
+      },
+    });
+    await useComparisonStore.getState().retryFailure(true);
+    expect(useComparisonStore.getState().pendingAction?.targetHashes).toEqual([
+      "h1",
     ]);
-    expect(useComparisonStore.getState().commitFailure?.message).toContain(
-      "Retry targets only the remaining items",
-    );
-
-    await useComparisonStore.getState().commitTurn(false);
-
-    expect(deleted()).toEqual(["h1", "h2", "h2"]);
-    expect(useComparisonStore.getState().open).toBe(false);
-  });
-});
-
-describe("an active commit owns the comparison decision state", () => {
-  it("cannot close, page, or change keepers before the batch reaches a boundary", async () => {
-    openSession(8, 4);
-    useComparisonStore.setState({ busy: true });
-
-    useComparisonStore.getState().toggleKeep(0);
-    useComparisonStore.getState().nextPage();
-    await useComparisonStore.getState().close();
-
-    const state = useComparisonStore.getState();
-    expect(state.open).toBe(true);
-    expect(state.page).toBe(0);
-    expect(state.kept.size).toBe(0);
-  });
-});
-
-describe("Escape", () => {
-  it("leaves with nothing deleted and marks discarded", async () => {
-    openSession(8, 4);
-    useComparisonStore.getState().toggleKeep(0);
-    useComparisonStore.getState().close();
-
-    expect(deleted()).toHaveLength(0);
-    const state = useComparisonStore.getState();
-    expect(state.open).toBe(false);
-    expect(state.kept.size).toBe(0);
-    expect(state.members).toHaveLength(0);
-  });
-});
-
-describe("the shortlist", () => {
-  it("shows exactly the marks, and unmarking there shrinks it", () => {
-    openSession(8, 4);
-    useComparisonStore.getState().toggleKeep(0); // h0
-    useComparisonStore.getState().toggleKeep(2); // h2
-    useComparisonStore.getState().toggleShortlist();
-
-    let visible = visibleSlots(useComparisonStore.getState());
-    expect(visible.map((m) => m?.hash)).toEqual(["h0", "h2"]);
-
-    // Slot keys act on the VISIBLE page — in the shortlist, slot 2 is h2.
-    useComparisonStore.getState().toggleKeep(1);
-    visible = visibleSlots(useComparisonStore.getState());
-    expect(visible.map((m) => m?.hash)).toEqual(["h0"]);
-  });
-
-  it("committing from the shortlist still requires every page seen", async () => {
-    openSession(8, 4); // 2 pages, only page 1 seen
-    useComparisonStore.getState().toggleKeep(0);
-    useComparisonStore.getState().toggleShortlist();
-
-    await useComparisonStore.getState().commitTurn(false);
-
-    // The commit attempt dropped back to the pages and advanced instead.
-    expect(deleted()).toHaveLength(0);
-    expect(useComparisonStore.getState().shortlist).toBe(false);
-    expect(useComparisonStore.getState().page).toBe(1);
-  });
-});
-
-describe("the page math", () => {
-  it("pageCountOf covers the edges", () => {
-    expect(pageCountOf(0, 12)).toBe(1);
-    expect(pageCountOf(12, 12)).toBe(1);
-    expect(pageCountOf(13, 12)).toBe(2);
-    expect(pageCountOf(300, 12)).toBe(25);
-  });
-
-  it("nextUnseenPage walks forward with wrap and reports done", () => {
-    expect(nextUnseenPage(new Set([0]), 0, 3)).toBe(1);
-    expect(nextUnseenPage(new Set([0, 1]), 1, 3)).toBe(2);
-    // Wrap: standing on the last page with page 1 unseen.
-    expect(nextUnseenPage(new Set([0, 2]), 2, 3)).toBe(1);
-    expect(nextUnseenPage(new Set([0, 1, 2]), 2, 3)).toBeNull();
   });
 });
