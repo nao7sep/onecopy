@@ -112,6 +112,14 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "Tab" && !event.shiftKey) {
+      const itemArea = document.getElementById("main-item-area");
+      if (itemArea !== null) {
+        event.preventDefault();
+        itemArea.focus();
+      }
+      return;
+    }
     if (keys.length === 0) return;
     const row = activeIndex >= 0 ? rows[activeIndex] : undefined;
     const isBranch = row !== undefined && row.type !== "month";
@@ -144,6 +152,10 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
         return;
       case "ArrowRight":
         event.preventDefault();
+        if (row?.type === "month") {
+          document.getElementById("main-item-area")?.focus();
+          return;
+        }
         // Open a closed branch; on an open one, descend to its first child.
         if (isBranch && !isOpen) toggle(row.key, true);
         else if (isBranch) step(Math.min(activeIndex + 1, keys.length - 1));

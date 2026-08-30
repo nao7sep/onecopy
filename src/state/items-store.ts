@@ -6,6 +6,12 @@ import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
 import { replaceDerivedItem, sortItems } from "../models/items";
 import { DEFAULT_DESC, SORT_ORDERS, type ItemDetail, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
+import {
+  anchorContext,
+  recoverAnchor,
+  type AnchorContext,
+  type SectionMemory,
+} from "../models/mainSelection";
 
 export interface SelectedSection {
   kind: "image" | "video" | "other";
@@ -33,6 +39,10 @@ interface ItemsState {
    * gesture rebuilds from this, so the span can shrink without discarding
    * keys that were Cmd-clicked outside it. */
   rangeBase: Set<string>;
+  /** Per-section work positions live only for this app run. The persisted
+   * state owns only the last-open section's bounded context. */
+  sectionMemory: Record<string, SectionMemory>;
+  scrollRequest: { key: string; align: "nearest" | "center"; id: number } | null;
   detail: ItemDetail | null;
   /** Sort per LANE — other-files sort like a file manager (name, kind),
    * photos and videos sort like a light table (time taken, resolution); one
@@ -45,8 +55,11 @@ interface ItemsState {
    * command that was refused). Null whenever the last action was clean. */
   message: string | null;
   setSortOrder: (order: SortOrder) => void;
-  select: (section: SelectedSection) => Promise<void>;
-  selectItem: (key: string | null) => void;
+  select: (
+    section: SelectedSection,
+    restore?: { anchor: string | null; context: AnchorContext | null },
+  ) => Promise<void>;
+  selectItem: (key: string | null, align?: "nearest" | "center") => void;
   /** Moves the anchor WITHOUT collapsing the multi-selection (Shift+arrow). */
   setAnchor: (key: string | null) => void;
   toggleItem: (key: string) => void;
@@ -64,6 +77,12 @@ interface ItemsState {
 // reads are async commands now, so responses can arrive out of order).
 const sectionLoad = requestSeq();
 const detailLoad = requestSeq();
+let scrollRequestId = 0;
+
+function requestScroll(key: string, align: "nearest" | "center") {
+  scrollRequestId += 1;
+  return { key, align, id: scrollRequestId };
+}
 
 export const useItemsStore = create<ItemsState>((set, get) => ({
   selected: null,
@@ -74,6 +93,8 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   selectedKeys: new Set<string>(),
   rangeOrigin: null,
   rangeBase: new Set<string>(),
+  sectionMemory: {},
+  scrollRequest: null,
   detail: null,
   sortOrders: {
     media: SORT_ORDERS.media.defaultChoice,
@@ -96,11 +117,18 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         ? { order, desc: !current.desc }
         : { order, desc: DEFAULT_DESC[order] };
     const sortOrders = { ...get().sortOrders, [lane]: next };
-    set({ sortOrders });
+    const state = get();
+    const anchor = state.selectedItem;
+    set({
+      sortOrders,
+      scrollRequest:
+        anchor === null ? state.scrollRequest : requestScroll(anchor, "center"),
+    });
   },
 
-  select: async (section) => {
-    const previous = get().selected;
+  select: async (section, restore) => {
+    const before = get();
+    const previous = before.selected;
     const sameSection =
       previous !== null &&
       previous.kind === section.kind &&
@@ -111,8 +139,17 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     // Blanking it here would make every arrow key landing mid-reload select
     // item zero and every Delete a silent no-op, for as long as the query
     // takes. A real section switch clears both.
+    const memory = { ...before.sectionMemory };
+    if (!sameSection && previous !== null) {
+      const order = sortItems(before.items, before.currentSort()).map(itemKey);
+      memory[sectionId(previous)] = {
+        anchor: before.selectedItem,
+        context: anchorContext(order, before.selectedItem),
+      };
+    }
     set({
       selected: section,
+      sectionMemory: memory,
       loading: true,
       loadError: null,
       ...(sameSection
@@ -123,6 +160,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
             selectedKeys: new Set<string>(),
             rangeOrigin: null,
             rangeBase: new Set<string>(),
+            scrollRequest: null,
             detail: null,
           }),
     });
@@ -137,8 +175,19 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         month: section.month,
       });
       if (fresh()) {
-        set({ items, loading: false, loadError: null });
-        if (sameSection) dropVanishedSelection(set, get);
+        if (sameSection) {
+          const previousOrder = sortItems(get().items, get().currentSort()).map(itemKey);
+          set({ items, loading: false, loadError: null });
+          reconcileReloadSelection(set, get, previousOrder);
+        } else {
+          set({ items, loading: false, loadError: null });
+          const currentOrder = sortItems(items, get().currentSort()).map(itemKey);
+          const remembered = restore ?? get().sectionMemory[sectionId(section)] ?? null;
+          const anchor = remembered === null
+            ? (currentOrder[0] ?? null)
+            : recoverAnchor(currentOrder, remembered.anchor, remembered.context);
+          applyExclusiveSelection(set, anchor, remembered === null ? "nearest" : "center");
+        }
       }
     } catch (error) {
       log.error("section items load failed", toErrorFields(error));
@@ -154,12 +203,14 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     }
   },
 
-  selectItem: (key) => {
+  selectItem: (key, align = "nearest") => {
     set({
       selectedItem: key,
       selectedKeys: key === null ? new Set() : new Set([key]),
       rangeOrigin: key,
       rangeBase: key === null ? new Set<string>() : new Set([key]),
+      scrollRequest:
+        key === null ? null : requestScroll(key, align),
       detail: null,
     });
     loadAnchorDetail(key);
@@ -168,7 +219,15 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   // Moves the anchor only. The range origin deliberately stays put, so a
   // Shift+arrow run can reverse and shrink instead of only growing.
   setAnchor: (key) => {
-    set({ selectedItem: key, detail: null });
+    const selectedKeys = new Set(get().selectedKeys);
+    if (key !== null) selectedKeys.add(key);
+    set({
+      selectedItem: key,
+      selectedKeys,
+      scrollRequest:
+        key === null ? null : requestScroll(key, "nearest"),
+      detail: null,
+    });
     loadAnchorDetail(key);
   },
 
@@ -188,8 +247,10 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     set({
       selectedKeys: next,
       selectedItem: anchor,
-      rangeOrigin: key,
+      rangeOrigin: anchor,
       rangeBase: new Set(next),
+      scrollRequest:
+        anchor === null ? null : requestScroll(anchor, "nearest"),
       detail: null,
     });
     loadAnchorDetail(anchor);
@@ -206,11 +267,21 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     const origin = rangeOrigin ?? selectedItem;
     const from = origin !== null ? sortedKeys.indexOf(origin) : -1;
     const to = sortedKeys.indexOf(key);
-    if (from < 0 || to < 0) return;
+    if (to < 0) return;
+    if (from < 0) {
+      applyExclusiveSelection(set, key, "nearest");
+      return;
+    }
     const [start, end] = from <= to ? [from, to] : [to, from];
     const next = new Set(rangeBase);
     for (const k of sortedKeys.slice(start, end + 1)) next.add(k);
-    set({ selectedKeys: next });
+    set({
+      selectedKeys: next,
+      selectedItem: key,
+      scrollRequest: requestScroll(key, "nearest"),
+      detail: null,
+    });
+    loadAnchorDetail(key);
   },
 
   selectAfterFamily: (memberHashes) => {
@@ -256,6 +327,10 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       selectedKeys: remapSet(state.selectedKeys),
       rangeOrigin: remap(state.rangeOrigin),
       rangeBase: remapSet(state.rangeBase),
+      scrollRequest:
+        state.scrollRequest?.key === previousHash
+          ? { ...state.scrollRequest, key: current }
+          : state.scrollRequest,
       ...(anchorRemapped ? { detail: null } : {}),
     });
     if (selectedItem === current) loadAnchorDetail(current);
@@ -265,20 +340,60 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
 /** Drops whatever the reload did not bring back, leaving everything that
  * survived exactly where it was. Only reached on a same-section reload; a
  * real section switch clears the selection outright. */
-function dropVanishedSelection(
+function sectionId(section: SelectedSection): string {
+  return `${section.kind}:${section.month}`;
+}
+
+function applyExclusiveSelection(
+  set: (partial: Partial<ItemsState>) => void,
+  anchor: string | null,
+  align: "nearest" | "center",
+): void {
+  set({
+    selectedItem: anchor,
+    selectedKeys: anchor === null ? new Set() : new Set([anchor]),
+    rangeOrigin: anchor,
+    rangeBase: anchor === null ? new Set() : new Set([anchor]),
+    scrollRequest:
+      anchor === null ? null : requestScroll(anchor, align),
+    detail: null,
+  });
+  loadAnchorDetail(anchor);
+}
+
+function reconcileReloadSelection(
   set: (partial: Partial<ItemsState>) => void,
   get: () => ItemsState,
+  previousOrder: string[],
 ): void {
   const { items, selectedItem, selectedKeys, rangeOrigin, rangeBase } = get();
-  const alive = new Set(items.map(itemKey));
+  const currentOrder = sortItems(items, get().currentSort()).map(itemKey);
+  const alive = new Set(currentOrder);
   const keys = new Set([...selectedKeys].filter((k) => alive.has(k)));
-  const anchor =
-    selectedItem !== null && alive.has(selectedItem) ? selectedItem : null;
+  const context = anchorContext(previousOrder, selectedItem);
+  let anchor = selectedItem !== null && alive.has(selectedItem) ? selectedItem : null;
+  if (anchor === null && keys.size > 0) {
+    anchor = recoverAnchor(currentOrder, selectedItem, context, keys);
+  }
+  if (anchor === null) {
+    anchor = recoverAnchor(currentOrder, selectedItem, context);
+    if (anchor !== null) {
+      keys.clear();
+      keys.add(anchor);
+    }
+  }
+  if (anchor !== null) keys.add(anchor);
+  const nextRangeBase = new Set([...rangeBase].filter((k) => alive.has(k)));
+  if (keys.size === 1 && anchor !== null) nextRangeBase.add(anchor);
   set({
     selectedItem: anchor,
     selectedKeys: keys,
     rangeOrigin: rangeOrigin !== null && alive.has(rangeOrigin) ? rangeOrigin : anchor,
-    rangeBase: new Set([...rangeBase].filter((k) => alive.has(k))),
+    rangeBase: nextRangeBase,
+    scrollRequest:
+      anchor !== selectedItem && anchor !== null
+        ? requestScroll(anchor, "center")
+        : get().scrollRequest,
     ...(anchor !== selectedItem ? { detail: null } : {}),
   });
   if (anchor !== selectedItem) loadAnchorDetail(anchor);

@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { sortItems } from "../models/items";
+import { anchorContext } from "../models/mainSelection";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useIssuesStore } from "../state/issues-store";
@@ -67,6 +68,14 @@ export function installItemWorkflow(): void {
     if (state.sortOrders !== previous.sortOrders) patch.sortOrders = state.sortOrders;
     if (state.selected !== previous.selected) patch.lastSection = state.selected;
     if (state.selectedItem !== previous.selectedItem) patch.lastItem = state.selectedItem;
+    if (
+      state.selected !== previous.selected ||
+      state.selectedItem !== previous.selectedItem ||
+      state.sortOrders !== previous.sortOrders
+    ) {
+      const order = sortItems(state.items, state.currentSort()).map(itemKey);
+      patch.lastItemContext = anchorContext(order, state.selectedItem);
+    }
     if (Object.keys(patch).length > 0) {
       void useAppStore.getState().patchState(patch);
     }

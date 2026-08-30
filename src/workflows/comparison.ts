@@ -20,6 +20,7 @@ import { useMutationStore } from "../state/mutation-store";
 import { restorePreviewAfterComparison } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 import { hasOpenModal } from "../utils/modalStack";
+import { comparisonHashForSelection } from "../models/interactions";
 
 let eventInstallation: Promise<void> | null = null;
 
@@ -54,6 +55,23 @@ async function applyCommitResult(
 
 export async function openComparison(hash: string): Promise<boolean> {
   return await useComparisonStore.getState().openGroup(hash, appState());
+}
+
+export async function requestComparisonFromMain(): Promise<void> {
+  const { selected, items, selectedKeys, selectedItem } = useItemsStore.getState();
+  const hash =
+    selected?.kind === "image"
+      ? comparisonHashForSelection(items, selectedKeys, selectedItem)
+      : null;
+  if (hash === null) {
+    useItemsStore.setState({
+      message: "Comparison requires images from one similar group.",
+    });
+    return;
+  }
+  if (!(await openComparison(hash))) {
+    useItemsStore.setState({ message: "There are no similar images left to compare." });
+  }
 }
 
 export async function closeComparison(): Promise<void> {

@@ -5,12 +5,6 @@
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 
-function focusedVideoOwnsSpace(): boolean {
-  if (typeof document === "undefined" || typeof Element === "undefined") return false;
-  const active = document.activeElement;
-  return active instanceof Element && active.closest("[data-video-surface]") !== null;
-}
-
 /** Main and grid key layers share this exact routing decision. */
 export function handleSpaceQuickView(event: {
   preventDefault: () => void;
@@ -19,16 +13,21 @@ export function handleSpaceQuickView(event: {
   altKey?: boolean;
 }): boolean {
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
-  if (focusedVideoOwnsSpace()) return false;
-  const { selected, selectedItem, items } = useItemsStore.getState();
-  if (selected?.kind !== "image" && selected?.kind !== "video") return false;
+  const opened = openQuickViewFromMain();
+  event.preventDefault();
+  return opened;
+}
+
+export function openQuickViewFromMain(): boolean {
+  const { selectedItem, selectedKeys, items } = useItemsStore.getState();
   if (
     selectedItem === null ||
+    selectedKeys.size === 0 ||
     !items.some((item) => itemKey(item) === selectedItem)
   ) {
+    useItemsStore.setState({ message: "Select an item to open Quick View." });
     return false;
   }
   useQuickViewStore.getState().show();
-  event.preventDefault();
   return true;
 }

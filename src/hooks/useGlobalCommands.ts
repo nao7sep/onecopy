@@ -2,9 +2,8 @@
 // dialogs stay in App, while their command semantics have one owner here.
 
 import { useCallback, useEffect, useState } from "react";
-import { comparisonHashForEnter } from "../models/interactions";
 import { useAppStore } from "../state/app-store";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useSectionsStore } from "../state/sections-store";
@@ -16,7 +15,7 @@ import {
   isSettingsShortcut,
   shadowsMacTextEditing,
 } from "../utils/shortcuts";
-import { openComparison } from "../workflows/comparison";
+import { requestComparisonFromMain } from "../workflows/comparison";
 import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
 import { handleSpaceQuickView } from "../workflows/quick-view";
 
@@ -55,6 +54,9 @@ export function useGlobalCommands() {
           void rescanCurrentSection();
         }
       } else if (event.key === "Delete" || event.key === "Backspace") {
+        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+          return;
+        }
         event.preventDefault();
         const { selectedKeys, selectedItem } = useItemsStore.getState();
         const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;
@@ -72,18 +74,17 @@ export function useGlobalCommands() {
         !event.ctrlKey &&
         !event.altKey
       ) {
+        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+          return;
+        }
         handleSpaceQuickView(event);
       } else if (event.key === "Enter") {
-        const { items, selectedItem } = useItemsStore.getState();
-        const item = items.find((candidate) => itemKey(candidate) === selectedItem);
-        if (item === undefined) return;
+        if (!(event.target instanceof Element) || event.target.closest("#main-item-area") === null) {
+          return;
+        }
+        if (useItemsStore.getState().selected?.kind !== "image") return;
         event.preventDefault();
-        const comparisonHash = comparisonHashForEnter(item);
-        if (comparisonHash === null) return;
-        void openComparison(comparisonHash).then((opened) => {
-          if (opened) return;
-          useItemsStore.setState({ message: "No similar photos left in this group" });
-        });
+        void requestComparisonFromMain();
       }
     };
     window.addEventListener("keydown", onKeyDown);

@@ -6,10 +6,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LoadedAppData } from "../repositories";
 import type { SectionCounts } from "../models/sections";
 import { DEFAULT_DESC, type SortChoice, type SortOrder } from "../models/items";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { useAppStore } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { bootstrapApplication } from "../workflows/app-lifecycle";
+import { parseAnchorContext } from "../models/mainSelection";
 
 interface AppBootstrapAndRestoreOptions {
   appData: LoadedAppData | null;
@@ -82,17 +83,11 @@ export function useAppBootstrapAndRestore({
     const lists =
       last.kind === "image" ? counts.images : last.kind === "video" ? counts.videos : counts.others;
     if (!lists.some((section) => section.month === last.month)) return;
-    void useItemsStore
-      .getState()
-      .select({ kind: last.kind, month: last.month })
-      .then(() => {
-        const anchor = state.lastItem;
-        if (typeof anchor !== "string") return;
-        const { items } = useItemsStore.getState();
-        if (items.some((item) => itemKey(item) === anchor)) {
-          useItemsStore.getState().selectItem(anchor);
-        }
-      });
+    const anchor = typeof state.lastItem === "string" ? state.lastItem : null;
+    void useItemsStore.getState().select(
+      { kind: last.kind, month: last.month },
+      { anchor, context: parseAnchorContext(state.lastItemContext) },
+    );
   }, [appData, counts, restorePaneIntents]);
 
   return { rightTab, setRightTab };

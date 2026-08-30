@@ -328,7 +328,6 @@ export default function App() {
               loading={itemsLoading}
               loadError={itemsLoadError}
               layout={selected.kind === "other" ? "list" : "tiles"}
-              mayClaimFocus={!wizardOpen && !gateOpen}
             />
           ) : allEmpty ? (
             // While library work is active, empty counts do not yet prove the
@@ -369,7 +368,7 @@ export default function App() {
               />
               <button
                 aria-label="Close preview"
-                title="Close preview (Space)"
+                title="Close preview"
                 className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md bg-surface/80 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
                 onClick={closePreview}
               >

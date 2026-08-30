@@ -236,7 +236,8 @@ describe("the culling journey", () => {
       member("h3", 1),
     ]);
     await act(async () => {
-      pressWindow("Enter");
+      grid.focus();
+      grid.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
     await settle();
     const comparison = useComparisonStore.getState();
@@ -322,7 +323,9 @@ describe("the failure journey", () => {
       total: 1,
     }));
     await act(async () => {
-      pressWindow("Delete");
+      const grid = view.container.querySelector<HTMLElement>("[role='listbox']")!;
+      grid.focus();
+      grid.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
     });
     await settle();
 

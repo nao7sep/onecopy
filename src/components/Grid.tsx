@@ -15,10 +15,9 @@ import {
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useAppStore } from "../state/app-store";
-import { handleSpaceQuickView } from "../workflows/quick-view";
+import { handleSpaceQuickView, openQuickViewFromMain } from "../workflows/quick-view";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
-import { hasOpenModal } from "../utils/modalStack";
 import PreviewControl from "./PreviewControl";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { log, toErrorFields } from "../repositories";
@@ -33,6 +32,7 @@ import {
   useDerivedWorkStore,
 } from "../state/derived-work-store";
 import { useDestinationItemDrag } from "./DestinationDragProvider";
+import { requestComparisonFromMain } from "../workflows/comparison";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -79,11 +79,13 @@ function Thumb({ item }: { item: SectionItem }) {
 function Tile({
   item,
   isSelected,
+  isAnchor,
   onSelect,
   presentation,
 }: {
   item: SectionItem;
   isSelected: boolean;
+  isAnchor: boolean;
   onSelect: (event: React.MouseEvent) => void;
   presentation: ItemPresentation;
 }) {
@@ -96,16 +98,21 @@ function Tile({
   return (
     <figure
       ref={drag.ref}
+      data-item-anchor={isAnchor}
       className={`w-40 select-none transition-[opacity,transform] ${
         drag.isDragging
           ? "scale-[0.97] cursor-grabbing opacity-55"
-          : "cursor-grab"
+          : "cursor-pointer"
       }`}
       onClick={onSelect}
+      onDoubleClick={() => {
+        useItemsStore.getState().selectItem(itemKey(item));
+        openQuickViewFromMain();
+      }}
     >
       <div
-        className={`relative flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
-          isSelected ? "border-primary-ring ring-2 ring-primary-ring" : "border-border"
+        className={`item-selection-surface relative flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
+          isSelected ? "border-primary-ring ring-2 ring-inset ring-primary-ring" : "border-border"
         } bg-surface`}
       >
         <Thumb item={item} />
@@ -297,11 +304,13 @@ function ListHeader({
 function ListRow({
   item,
   isSelected,
+  isAnchor,
   onSelect,
   widths,
 }: {
   item: SectionItem;
   isSelected: boolean;
+  isAnchor: boolean;
   onSelect: (event: React.MouseEvent) => void;
   widths: Record<SizedColumn, number>;
 }) {
@@ -313,14 +322,19 @@ function ListRow({
   return (
     <div
       ref={drag.ref}
-      className={`flex w-full select-none items-center rounded-md border px-3 py-1.5 text-sm transition-[background-color,border-color,opacity] ${
-        drag.isDragging ? "cursor-grabbing opacity-55" : "cursor-grab"
+      data-item-anchor={isAnchor}
+      className={`item-selection-surface flex w-full select-none items-center border px-3 py-1.5 text-sm transition-[background-color,border-color,opacity] ${
+        drag.isDragging ? "cursor-grabbing opacity-55" : "cursor-pointer"
       } ${
         isSelected
           ? "border-primary-ring bg-primary-surface"
           : "border-transparent hover:bg-surface-muted"
       }`}
       onClick={onSelect}
+      onDoubleClick={() => {
+        useItemsStore.getState().selectItem(itemKey(item));
+        openQuickViewFromMain();
+      }}
     >
       <span
         className="shrink-0 truncate text-[11px] font-semibold text-ink-muted"
@@ -381,7 +395,6 @@ export default function Grid({
   loading,
   loadError,
   layout,
-  mayClaimFocus,
 }: {
   items: SectionItem[];
   loading: boolean;
@@ -389,10 +402,6 @@ export default function Grid({
   /** Thumbnails for images and videos; rows for other-files, which have
    * nothing to show in a tile. */
   layout: "tiles" | "list";
-  /** False while a boot gate (the wizard, the missing-volume gate) owns the
-   * screen — those overlays are opaque but focus nothing themselves, so the
-   * grid behind them must not quietly take the keyboard. */
-  mayClaimFocus: boolean;
 }) {
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedItem = useItemsStore((s) => s.selectedItem);
@@ -405,6 +414,7 @@ export default function Grid({
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
+  const scrollRequest = useItemsStore((s) => s.scrollRequest);
   const lane = layout === "list" ? "other" : "media";
   const sortChoice = useItemsStore((s) =>
     lane === "other" ? s.sortOrders.other : s.sortOrders.media,
@@ -444,27 +454,6 @@ export default function Grid({
   // in DOM focus), arrows move the selection, Shift+arrows extend it. The
   // command layer (Delete/Enter in App) reads the same source of truth.
   const containerRef = useRef<HTMLDivElement | null>(null);
-
-  // A restored section arrives WITHOUT anyone having clicked: on boot the app
-  // reopens the last month itself, so the items appear under a keyboard that
-  // still points at <body>. Every arrow, Space and Enter then went nowhere,
-  // and the app read as frozen until the user happened to click the grid.
-  //
-  // Claimed only when nothing else has focus (body or null). A user who
-  // clicked the sidebar, opened a modal, or is typing in a field owns the
-  // keyboard, and a late-arriving refresh must never pull it away mid-word —
-  // which is also why this runs on ARRIVAL, not on every render.
-  const claimedFor = useRef<SectionItem | null>(null);
-  const first = items[0] ?? null;
-  useEffect(() => {
-    if (loading || first === null || !mayClaimFocus) return;
-    if (claimedFor.current === first) return;
-    claimedFor.current = first;
-    if (hasOpenModal()) return;
-    const active = document.activeElement;
-    if (active !== null && active !== document.body) return;
-    containerRef.current?.focus({ preventScroll: true });
-  }, [loading, first, mayClaimFocus]);
 
   const [columns, setColumns] = useState(1);
   useEffect(() => {
@@ -519,12 +508,12 @@ export default function Grid({
   // virtualized-out anchor has no node to ask, so its row position is
   // computed instead.
   useEffect(() => {
-    if (selectedItem === null) return;
+    if (scrollRequest === null || scrollRequest.key !== selectedItem) return;
     const container = containerRef.current;
     if (!container) return;
     const node = container.querySelector(`[data-item-key="${CSS.escape(selectedItem)}"]`);
     if (node !== null) {
-      node.scrollIntoView({ block: "nearest" });
+      node.scrollIntoView({ block: scrollRequest.align });
       return;
     }
     const index = sortedKeysRef.current.indexOf(selectedItem);
@@ -534,7 +523,7 @@ export default function Grid({
       container.clientHeight,
       rowHeightRef.current,
     );
-  }, [selectedItem]);
+  }, [selectedItem, scrollRequest]);
 
   // During a same-section refresh the stale items keep rendering (the store
   // keeps them), so the scroll container never unmounts and its position
@@ -595,9 +584,9 @@ export default function Grid({
       ),
     );
     const step =
-      event.key === "ArrowRight"
+      event.key === "ArrowRight" && layout === "tiles"
         ? 1
-        : event.key === "ArrowLeft"
+        : event.key === "ArrowLeft" && layout === "tiles"
           ? -1
           : event.key === "ArrowDown"
             ? columns
@@ -624,9 +613,6 @@ export default function Grid({
     if (key === undefined) return;
     if (event.shiftKey) {
       rangeSelect(sortedKeys, key);
-      // Through the anchor path (not a raw setState) so persistence and the
-      // preview follow see Shift+arrow moves too.
-      useItemsStore.getState().setAnchor(key);
     } else {
       selectItem(key);
     }
@@ -640,6 +626,14 @@ export default function Grid({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-ink-muted">
         <PreviewControl />
+        {selectedSection?.kind === "image" ? (
+          <button
+            className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+            onClick={() => void requestComparisonFromMain()}
+          >
+            Compare
+          </button>
+        ) : null}
         <span className="flex-1" />
         <button
           className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
@@ -683,6 +677,7 @@ export default function Grid({
       ) : null}
       <div
         ref={containerRef}
+        id="main-item-area"
         tabIndex={0}
         role="listbox"
         aria-label="Section items"
@@ -694,6 +689,11 @@ export default function Grid({
             : "flex flex-wrap content-start gap-3 p-3"
         }`}
         onKeyDown={onGridKeyDown}
+        onClick={(event) => {
+          if ((event.target as Element).closest("[role='option']") === null) {
+            selectItem(null);
+          }
+        }}
         onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
       >
         {loadError !== null && items.length > 0 ? (
@@ -715,6 +715,7 @@ export default function Grid({
         {visible.map((item, i) => {
           const key = itemKey(item);
           const isSelected = selectedKeys.has(key);
+          const isAnchor = selectedItem === key;
           const projectedItem = {
             ...item,
             derivedWork: mergeActiveItemWork(item.derivedWork, item.hash, activeWork),
@@ -729,13 +730,15 @@ export default function Grid({
           const onSelect = (event: React.MouseEvent) => {
             containerRef.current?.focus();
             // Browser double-click dispatch is click, click, dblclick. Acting
-            // only on the first click keeps both a single and a double click
-            // as one immediate logical toggle.
+            // only on the first click avoids repeating the selection change
+            // before the double-click opens Quick View.
             if (event.detail > 1) return;
             if (event.shiftKey) {
               rangeSelect(sortedKeys, key);
-            } else {
+            } else if (event.metaKey || event.ctrlKey) {
               toggleItem(key);
+            } else {
+              selectItem(key);
             }
           };
           return (
@@ -752,6 +755,7 @@ export default function Grid({
                 <ListRow
                   item={item}
                   isSelected={isSelected}
+                  isAnchor={isAnchor}
                   onSelect={onSelect}
                   widths={columnWidths}
                 />
@@ -759,6 +763,7 @@ export default function Grid({
                 <Tile
                   item={projectedItem}
                   isSelected={isSelected}
+                  isAnchor={isAnchor}
                   onSelect={onSelect}
                   presentation={presentation}
                 />

@@ -48,6 +48,8 @@ function seed(items: SectionItem[]): void {
     loadError: null,
     selectedItem: null,
     selectedKeys: new Set(),
+    sectionMemory: {},
+    scrollRequest: null,
     detail: null,
     sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
   });
@@ -62,6 +64,8 @@ beforeEach(() => {
     loadError: null,
     selectedItem: null,
     selectedKeys: new Set(),
+    sectionMemory: {},
+    scrollRequest: null,
     detail: null,
     sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
   });
@@ -108,7 +112,7 @@ describe("refresh", () => {
     expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
 
-  it("drops an anchor that did not survive the reload", async () => {
+  it("recovers beside an anchor that did not survive the reload", async () => {
     const items = [item({ pathId: 1 }), item({ pathId: 2 })];
     seed(items);
     useItemsStore.getState().selectItem("h2");
@@ -116,8 +120,8 @@ describe("refresh", () => {
 
     await useItemsStore.getState().refresh();
 
-    expect(useItemsStore.getState().selectedItem).toBeNull();
-    expect(useItemsStore.getState().selectedKeys.size).toBe(0);
+    expect(useItemsStore.getState().selectedItem).toBe("h1");
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1"]);
   });
 
   it("does not revert a selection made while it was in flight", async () => {
@@ -137,6 +141,75 @@ describe("refresh", () => {
     await pending;
 
     expect(useItemsStore.getState().selectedItem).toBe("h2");
+  });
+
+  it("does not invent a selection after an explicitly empty selection refreshes", async () => {
+    const items = [item({ pathId: 1 }), item({ pathId: 2 })];
+    seed(items);
+    useItemsStore.getState().selectItem(null);
+    mockCommand("get_section_items", () => items);
+
+    await useItemsStore.getState().refresh();
+
+    expect(useItemsStore.getState().selectedItem).toBeNull();
+    expect(useItemsStore.getState().selectedKeys.size).toBe(0);
+  });
+});
+
+describe("section entry and return", () => {
+  it("selects the first displayed item on a first visit", async () => {
+    mockCommand("get_section_items", () => [
+      item({ pathId: 1, fileName: "b.jpg" }),
+      item({ pathId: 2, fileName: "a.jpg" }),
+    ]);
+    useItemsStore.setState({
+      selected: null,
+      items: [],
+      sortOrders: {
+        media: { order: "name", desc: false },
+        other: { order: "name", desc: false },
+      },
+    });
+
+    await useItemsStore.getState().select(SECTION);
+
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2"]);
+  });
+
+  it("restores a section's remembered anchor as an exclusive selection", async () => {
+    const january = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
+    const february = [item({ pathId: 4 }), item({ pathId: 5 })];
+    mockCommand("get_section_items", ({ month }) =>
+      month === "2026-01" ? january : february,
+    );
+    useItemsStore.setState({ selected: null, items: [] });
+
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2");
+    useItemsStore.getState().toggleItem("h3");
+    await useItemsStore.getState().select({ kind: "image", month: "2026-02" });
+    await useItemsStore.getState().select(SECTION);
+
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h3"]);
+    expect(useItemsStore.getState().scrollRequest?.align).toBe("center");
+  });
+
+  it("returns beside a remembered anchor that disappeared while away", async () => {
+    let january = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
+    mockCommand("get_section_items", ({ month }) =>
+      month === "2026-01" ? january : [item({ pathId: 4 })],
+    );
+    useItemsStore.setState({ selected: null, items: [] });
+
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2");
+    await useItemsStore.getState().select({ kind: "image", month: "2026-02" });
+    january = [item({ pathId: 1 }), item({ pathId: 3 })];
+    await useItemsStore.getState().select(SECTION);
+
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
   });
 });
 

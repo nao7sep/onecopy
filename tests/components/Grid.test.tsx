@@ -8,7 +8,6 @@
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import Grid from "../../src/components/Grid";
-import { popModal, pushModal } from "../../src/utils/modalStack";
 import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
@@ -46,7 +45,6 @@ function renderGrid(
   items = ITEMS,
   loading = false,
   layout: "tiles" | "list" = "tiles",
-  mayClaimFocus = true,
   loadError: string | null = null,
 ) {
   const view = render(
@@ -55,7 +53,6 @@ function renderGrid(
       loading={loading}
       loadError={loadError}
       layout={layout}
-      mayClaimFocus={mayClaimFocus}
     />,
   );
   const container = view.container.querySelector<HTMLElement>("[role='listbox']");
@@ -117,6 +114,8 @@ beforeEach(() => {
     selectedKeys: new Set(),
     rangeOrigin: null,
     rangeBase: new Set(),
+    sectionMemory: {},
+    scrollRequest: null,
     detail: null,
     sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
     message: null,
@@ -143,7 +142,7 @@ describe("section state", () => {
     expect(loading.view.container.textContent).toContain("Loading…");
     loading.view.unmount();
 
-    const failed = renderGrid([], false, "tiles", true, "Couldn’t load this section.");
+    const failed = renderGrid([], false, "tiles", "Couldn’t load this section.");
     expect(failed.view.container.textContent).toContain("Couldn’t load this section.");
     expect(failed.view.container.textContent).not.toContain("Nothing in this section");
     failed.view.unmount();
@@ -153,7 +152,7 @@ describe("section state", () => {
   });
 
   it("keeps stale rows and reports a failed refresh", () => {
-    const { view } = renderGrid(ITEMS, false, "tiles", true, "Couldn’t load this section.");
+    const { view } = renderGrid(ITEMS, false, "tiles", "Couldn’t load this section.");
     expect(view.container.querySelectorAll("[role='option']").length).toBeGreaterThan(0);
     expect(view.container.textContent).toContain("Couldn’t load this section.");
   });
@@ -232,17 +231,28 @@ describe("Space", () => {
 });
 
 describe("pointer selection", () => {
-  it("ordinary clicks toggle immediately", () => {
+  it("ordinary click is exclusive and clicking it again keeps it selected", () => {
     const { view } = renderGrid();
     const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
 
     fireEvent.click(tile, { detail: 1 });
     expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
     fireEvent.click(tile, { detail: 1 });
-    expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(false);
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1"]);
   });
 
-  it("a double-click makes the toggle decision once", () => {
+  it("Cmd/Ctrl-click toggles without disturbing the other selection", () => {
+    const { view } = renderGrid();
+    const first = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
+    const second = view.container.querySelector<HTMLElement>("[data-item-key='h2'] figure")!;
+    fireEvent.click(first, { detail: 1 });
+    fireEvent.click(second, { detail: 1, ctrlKey: true });
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1", "h2"]);
+    fireEvent.click(second, { detail: 1, ctrlKey: true });
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1"]);
+  });
+
+  it("double-click exclusively selects and opens Quick View", () => {
     const { view } = renderGrid();
     const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
 
@@ -251,6 +261,7 @@ describe("pointer selection", () => {
     fireEvent.doubleClick(tile, { detail: 2 });
 
     expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
+    expect(useQuickViewStore.getState().open).toBe(true);
   });
 });
 
@@ -351,24 +362,14 @@ describe("shift+arrow", () => {
   });
 });
 
-describe("taking the keyboard on arrival", () => {
-  // On boot the app reopens the last section by itself. Nobody clicked, so
-  // focus was still on <body> and every arrow key went nowhere — the app read
-  // as frozen until the user thought to click the grid.
-
-  it("focuses itself when a restored section's items arrive", () => {
+describe("focus ownership", () => {
+  it("does not steal focus when section items arrive", () => {
     const { container } = renderGrid();
-    expect(document.activeElement).toBe(container);
-  });
-
-  it("waits for the items", () => {
-    // Focusing an empty grid is not wrong, only useless — and it would fire
-    // once per section change, stealing focus from wherever the user is.
-    renderGrid([], true);
     expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement).not.toBe(container);
   });
 
-  it("leaves focus alone when something else already has it", async () => {
+  it("leaves an existing focus owner alone", () => {
     const outside = document.createElement("input");
     document.body.appendChild(outside);
     outside.focus();
@@ -380,21 +381,4 @@ describe("taking the keyboard on arrival", () => {
     outside.remove();
   });
 
-  it("does not reach through a modal", () => {
-    const token = {};
-    pushModal(token);
-    try {
-      renderGrid();
-      expect(document.activeElement).toBe(document.body);
-    } finally {
-      popModal(token);
-    }
-  });
-
-  it("does not reach through a boot gate", () => {
-    // The wizard and the missing-volume gate are opaque overlays that focus
-    // nothing themselves, so body stays active and only the flag stops it.
-    renderGrid(ITEMS, false, "tiles", false);
-    expect(document.activeElement).toBe(document.body);
-  });
 });

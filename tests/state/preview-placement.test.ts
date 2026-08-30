@@ -76,15 +76,16 @@ describe("the Space model", () => {
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
-  it("does nothing for non-media sections", () => {
+  it("opens the same enlarged view for Other files", () => {
     useItemsStore.setState({
       selected: { kind: "other", month: "2026-01" },
       selectedItem: "h1",
       selectedKeys: new Set(["h1"]),
     });
     let prevented = false;
-    expect(handleSpaceQuickView({ preventDefault: () => (prevented = true) })).toBe(false);
-    expect(prevented).toBe(false);
+    expect(handleSpaceQuickView({ preventDefault: () => (prevented = true) })).toBe(true);
+    expect(prevented).toBe(true);
+    expect(useQuickViewStore.getState().open).toBe(true);
   });
 });
 
