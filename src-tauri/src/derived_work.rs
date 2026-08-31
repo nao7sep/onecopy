@@ -2,8 +2,10 @@
 //! time facts, then wakes this coordinator; previews, video posters, scene
 //! strips, transcripts, face scores, and similarity are never scan phases.
 //!
-//! Preview/poster work runs one item at a time in bounded fair batches. Work
-//! near the selected and visible items may run while the user is active;
+//! Preview/poster work runs in bounded fair turns. Independent native image
+//! conversions may share a turn under live CPU and memory budgets; database
+//! publication, ffmpeg routes, and every other heavy class remain serialized.
+//! Work near selected and visible items may run while the user is active;
 //! global backlogs wait for idle time. All classes re-read settings for each
 //! pass, so installing a tool or changing a feature takes effect on the next
 //! wake without restarting either indexing or the app.
@@ -532,33 +534,38 @@ fn derive_priority_previews(
     hashes: &[String],
     limit: usize,
 ) -> Result<bool, String> {
+    let turn = hashes.iter().take(limit).cloned().collect::<Vec<_>>();
+    if turn.is_empty() {
+        return Ok(false);
+    }
     let mut did_work = false;
-    for hash in hashes.iter().take(limit) {
+    let image = with_active(app, WorkClass::Previews, || {
+        crate::derived_runtime::active_item(app, WorkClass::Previews, &turn[0]);
+        crate::preview::derive_image_hashes(
+            conn,
+            cache,
+            settings.thumb_edge,
+            settings.preview_long_edge,
+            settings.ffmpeg.as_deref(),
+            &turn,
+            is_idle(),
+        )
+    })?
+    .unwrap_or_default();
+    if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
+        if image.derived > 0 {
+            SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
+            projection.similarity_dirty = true;
+        }
+        emit_progress(app, WorkClass::Previews, None);
+        notify_image_changes(app, conn, *projection, &image.changes);
+        notify_issues(app);
+        did_work = true;
+    }
+
+    for hash in &turn {
         if !available() {
             break;
-        }
-        let image = with_active(app, WorkClass::Previews, || {
-            crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
-            crate::preview::derive_image_hash(
-                conn,
-                cache,
-                settings.thumb_edge,
-                settings.preview_long_edge,
-                settings.ffmpeg.as_deref(),
-                hash,
-            )
-        })?
-        .unwrap_or_default();
-        if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
-            if image.derived > 0 {
-                SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
-                projection.similarity_dirty = true;
-            }
-            emit_progress(app, WorkClass::Previews, None);
-            notify_image_changes(app, conn, *projection, &image.changes);
-            notify_issues(app);
-            did_work = true;
-            continue;
         }
         let video = with_active(app, WorkClass::Previews, || {
             crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
@@ -594,12 +601,13 @@ fn derive_global_required(
         return Ok(false);
     }
     let image = with_active(app, WorkClass::Previews, || {
-        crate::preview::derive_next_image(
+        crate::preview::derive_next_images(
             conn,
             cache,
             settings.thumb_edge,
             settings.preview_long_edge,
             settings.ffmpeg.as_deref(),
+            true,
             &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
         )
     })?

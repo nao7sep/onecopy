@@ -473,17 +473,15 @@ pub struct DeriveStats {
 /// with the file — and this pass picks those rows back up as soon as ffmpeg
 /// is present, which is what makes the wizard's skippable offer honest.
 ///
-/// Work is deliberately serial and checkpointed after every item. A preview
-/// decode can consume hundreds of megabytes for a large source; running 32 at
-/// once made a healthy pass exhaust memory and made progress appear frozen
-/// until the slowest decode in the batch completed. `progress` reports after
-/// each durable result, and cancellation leaves only the current item undone.
-/// Derives ONE item's thumb + preview on demand — the user clicked a photo
+/// Native canonical images may convert concurrently under the coordinator's
+/// live CPU and aggregate decoded-memory budget. Candidate reads and durable
+/// publication remain serial, and provisional promotion plus every ffmpeg
+/// route remain exclusive. `progress` reports after each durable result.
+/// Derives one item's thumb + preview on demand — the user clicked a photo
 /// the scan's bulk pass has not reached yet (it runs walk-order, and on a
 /// slow machine the tail is hours away). Idempotent: an already-derived hash
-/// returns immediately. Deliberately refuses a provisional hash — identity
-/// promotion belongs to the scan that created it, and the pass will reach
-/// the row anyway.
+/// returns immediately. A provisional identity is promoted before its facts
+/// are published, through the same serial identity owner as the bulk pass.
 pub fn derive_one(
     conn: &Connection,
     cache: &CachePaths,
@@ -582,20 +580,23 @@ pub fn derive_images_pending(
         progress,
         None,
         None,
+        true,
     )
 }
 
-/// Runs at most one image for the derived-work coordinator. Keeping the
-/// bounded entry point here means the bulk test helper and the live scheduler
-/// share every checkpoint and failure rule.
-pub(crate) fn derive_next_image(
+/// Runs one resource-bounded native image turn for the coordinator. Keeping
+/// admission here means bulk tests and the live scheduler share every
+/// checkpoint, fallback, and publication rule.
+pub(crate) fn derive_next_images(
     conn: &Connection,
     cache: &CachePaths,
     thumb_edge: u32,
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
+    idle: bool,
     on_item: &dyn Fn(&str),
 ) -> Result<DeriveStats, String> {
+    let limit = crate::resource_limits::image_worker_capacity(idle);
     derive_images_pending_limit(
         conn,
         cache,
@@ -604,22 +605,38 @@ pub(crate) fn derive_next_image(
         ffmpeg,
         Some(on_item),
         None,
-        Some(1),
+        Some(limit),
         None,
+        idle,
     )
 }
 
-/// Runs one pending image only when it matches `hash`. Priority remains an
-/// ephemeral coordinator concern; every output/checkpoint rule stays here.
-pub(crate) fn derive_image_hash(
+/// Runs pending priority images in the supplied order. Hash priority remains
+/// an ephemeral coordinator concern; all conversion and publication rules
+/// stay in this owner.
+pub(crate) fn derive_image_hashes(
     conn: &Connection,
     cache: &CachePaths,
     thumb_edge: u32,
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
-    hash: &str,
+    hashes: &[String],
+    idle: bool,
 ) -> Result<DeriveStats, String> {
-    derive_images_pending_limit(
+    let mut rows = Vec::with_capacity(hashes.len());
+    let mut seen = std::collections::HashSet::with_capacity(hashes.len());
+    for hash in hashes {
+        if !seen.insert(hash.as_str()) {
+            continue;
+        }
+        rows.extend(crate::derived_state::image_candidates(
+            conn,
+            ffmpeg.is_some(),
+            Some(1),
+            Some(hash),
+        )?);
+    }
+    derive_candidate_rows(
         conn,
         cache,
         thumb_edge,
@@ -627,8 +644,8 @@ pub(crate) fn derive_image_hash(
         ffmpeg,
         None,
         None,
-        Some(1),
-        Some(hash),
+        rows,
+        idle,
     )
 }
 
@@ -642,94 +659,214 @@ fn derive_images_pending_limit(
     progress: Option<&dyn Fn(u64, u64)>,
     limit: Option<usize>,
     only_hash: Option<&str>,
+    idle: bool,
+) -> Result<DeriveStats, String> {
+    let rows = crate::derived_state::image_candidates(conn, ffmpeg.is_some(), limit, only_hash)?;
+    derive_candidate_rows(
+        conn,
+        cache,
+        thumb_edge,
+        preview_long_edge,
+        ffmpeg,
+        on_item,
+        progress,
+        rows,
+        idle,
+    )
+}
+
+type DeriveOutcome = Result<(Option<String>, DerivedFacts), String>;
+type WorkerOutcome = Result<DeriveOutcome, String>;
+
+fn derive_candidate(
+    hash: &str,
+    path: &str,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
+) -> DeriveOutcome {
+    if ffmpeg.is_none() && needs_ffmpeg_decode(Path::new(path)) {
+        Err(NEEDS_FFMPEG.to_string())
+    } else if crate::scanner::is_provisional(hash) {
+        generate_for_image_teeing(
+            Path::new(path),
+            cache,
+            thumb_edge,
+            preview_long_edge,
+            ffmpeg,
+        )
+        .map(|(real, facts)| (Some(real), facts))
+    } else {
+        generate_for_image(
+            Path::new(path),
+            hash,
+            cache,
+            thumb_edge,
+            preview_long_edge,
+            ffmpeg,
+        )
+        .map(|facts| (None, facts))
+    }
+}
+
+fn derive_native_candidates_parallel(
+    rows: &[(usize, String, String)],
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+) -> Result<Vec<(usize, DeriveOutcome)>, String> {
+    std::thread::scope(|scope| {
+        let (send, receive) = std::sync::mpsc::channel();
+        for (index, hash, path) in rows {
+            let send = send.clone();
+            let hash = hash.clone();
+            let path = path.clone();
+            std::thread::Builder::new()
+                .name(format!("onecopy-image-preview-{index}"))
+                .spawn_scoped(scope, move || {
+                    let outcome: WorkerOutcome = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            generate_for_image(
+                                Path::new(&path),
+                                &hash,
+                                cache,
+                                thumb_edge,
+                                preview_long_edge,
+                                None,
+                            )
+                            .map(|facts| (None, facts))
+                        }),
+                    )
+                    .map_err(|panic| {
+                        format!(
+                            "image preview worker stopped unexpectedly: {}",
+                            crate::failure_runtime::panic_message(panic)
+                        )
+                    });
+                    let _ = send.send((*index, outcome));
+                })
+                .map_err(|error| format!("could not start an image preview worker: {error}"))?;
+        }
+        drop(send);
+        let mut outcomes = receive
+            .into_iter()
+            .map(|(index, outcome)| outcome.map(|outcome| (index, outcome)))
+            .collect::<Result<Vec<_>, _>>()?;
+        outcomes.sort_by_key(|(index, _)| *index);
+        Ok(outcomes)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_candidate_rows(
+    conn: &Connection,
+    cache: &CachePaths,
+    thumb_edge: u32,
+    preview_long_edge: u32,
+    ffmpeg: Option<&Path>,
+    on_item: Option<&dyn Fn(&str)>,
+    progress: Option<&dyn Fn(u64, u64)>,
+    rows: Vec<(String, String)>,
+    idle: bool,
 ) -> Result<DeriveStats, String> {
     let mut stats = DeriveStats::default();
-    let rows = crate::derived_state::image_candidates(
-        conn,
-        ffmpeg.is_some(),
-        limit,
-        only_hash,
-    )?;
 
     let total = rows.len() as u64;
     let mut done = 0u64;
+    let capacity = crate::resource_limits::image_worker_capacity(idle).min(rows.len().max(1));
 
-    for (hash, path) in rows {
-        if let Some(report) = on_item {
-            report(&hash);
-        }
+    for chunk in rows.chunks(capacity) {
         if crate::derived_runtime::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
+        if let (Some(report), Some((hash, _))) = (on_item, chunk.first()) {
+            report(hash);
+        }
 
-        type DeriveOutcome = Result<(Option<String>, DerivedFacts), String>;
-        let outcome: DeriveOutcome = if ffmpeg.is_none() && needs_ffmpeg_decode(Path::new(&path)) {
-            Err(NEEDS_FFMPEG.to_string())
-        } else if crate::scanner::is_provisional(&hash) {
-            // The decode reads every byte anyway — tee the REAL hash out of
-            // the same read and derive under it; the writer then promotes the
-            // identity before checkpointing the derived facts.
-            generate_for_image_teeing(
-                Path::new(&path),
-                cache,
-                thumb_edge,
-                preview_long_edge,
-                ffmpeg,
-            )
-            .map(|(real, facts)| (Some(real), facts))
+        let parallel = if capacity > 1 {
+            chunk
+                .iter()
+                .enumerate()
+                .filter(|(_, (hash, path))| {
+                    !crate::scanner::is_provisional(hash) && !needs_ffmpeg_decode(Path::new(path))
+                })
+                .map(|(index, (hash, path))| (index, hash.clone(), path.clone()))
+                .collect::<Vec<_>>()
         } else {
-            generate_for_image(
-                Path::new(&path),
-                &hash,
-                cache,
-                thumb_edge,
-                preview_long_edge,
-                ffmpeg,
-            )
-            .map(|facts| (None, facts))
+            Vec::new()
         };
-
-        match outcome {
-            Ok((promoted, facts)) => {
-                let key = match promoted {
-                    Some(real) => {
-                        crate::scanner::promote_identity(conn, cache, &hash, &real)?;
-                        real
-                    }
-                    None => hash.clone(),
-                };
-                stats.derived += 1;
-                crate::derived_state::record_preview_success(
-                    conn,
-                    &key,
-                    &path,
-                    facts.width,
-                    facts.height,
-                    facts.sharpness,
-                    facts.phash,
-                )?;
-                stats.changes.push((hash, key));
-            }
-            Err(err) if err == NEEDS_FFMPEG => {
-                // Waiting on a tool, not a bad file: no issue row. The marker
-                // keeps it inert until ffmpeg arrives and wakes the owner.
-                stats.blocked_no_ffmpeg += 1;
-                crate::derived_state::record_preview_blocked(conn, &hash)?;
-                stats.changes.push((hash.clone(), hash));
-            }
-            Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
-                return Err(crate::scanner::CANCELLED.to_string());
-            }
-            Err(err) => {
-                stats.failed += 1;
-                crate::derived_state::record_preview_failure(conn, &hash, &path, &err)?;
-                stats.changes.push((hash.clone(), hash));
+        let mut outcomes: Vec<Option<DeriveOutcome>> = (0..chunk.len()).map(|_| None).collect();
+        if parallel.len() > 1 {
+            for (index, outcome) in
+                derive_native_candidates_parallel(&parallel, cache, thumb_edge, preview_long_edge)?
+            {
+                outcomes[index] = Some(outcome);
             }
         }
 
-        done += 1;
-        if let Some(report) = progress {
-            report(done.min(total), total);
+        for (index, (hash, path)) in chunk.iter().enumerate() {
+            let mut outcome = outcomes[index].take().unwrap_or_else(|| {
+                derive_candidate(hash, path, cache, thumb_edge, preview_long_edge, ffmpeg)
+            });
+            if outcome
+                .as_ref()
+                .is_err_and(|error| crate::resource_limits::is_decode_limit(error))
+                && ffmpeg.is_some()
+            {
+                // The native worker hit its per-decode ceiling. Retry this one
+                // item through bounded ffmpeg only after every parallel native
+                // worker has joined, preserving subprocess exclusivity.
+                outcome =
+                    derive_candidate(hash, path, cache, thumb_edge, preview_long_edge, ffmpeg);
+            }
+
+            match outcome {
+                Ok((promoted, facts)) => {
+                    let key = match promoted {
+                        Some(real) => {
+                            crate::scanner::promote_identity(conn, cache, hash, &real)?;
+                            real
+                        }
+                        None => hash.clone(),
+                    };
+                    stats.derived += 1;
+                    crate::derived_state::record_preview_success(
+                        conn,
+                        &key,
+                        path,
+                        facts.width,
+                        facts.height,
+                        facts.sharpness,
+                        facts.phash,
+                    )?;
+                    stats.changes.push((hash.clone(), key));
+                }
+                Err(err) if err == NEEDS_FFMPEG => {
+                    // Waiting on a tool, not a bad file: no issue row. The marker
+                    // keeps it inert until ffmpeg arrives and wakes the owner.
+                    stats.blocked_no_ffmpeg += 1;
+                    crate::derived_state::record_preview_blocked(conn, hash)?;
+                    stats.changes.push((hash.clone(), hash.clone()));
+                }
+                Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                    return Err(crate::scanner::CANCELLED.to_string());
+                }
+                Err(err) => {
+                    stats.failed += 1;
+                    crate::derived_state::record_preview_failure(conn, hash, path, &err)?;
+                    stats.changes.push((hash.clone(), hash.clone()));
+                }
+            }
+
+            done += 1;
+            if let Some(report) = progress {
+                report(done.min(total), total);
+            }
+        }
+
+        if crate::derived_runtime::cancelled() {
+            return Err(crate::scanner::CANCELLED.to_string());
         }
     }
 

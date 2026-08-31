@@ -1,9 +1,10 @@
 //! Hard working-set gates at the allocation boundary.
 //!
-//! The derived runtime admits only one class at a time, so these per-job
-//! ceilings combine into a fixed aggregate bound rather than multiplying by
-//! concurrency. They are deliberately not user-configurable: a setting that
-//! can disable OOM protection is not a preference.
+//! The derived runtime admits one heavy class at a time. Independent native
+//! image-preview jobs may share that class, so admission combines the
+//! per-decode ceiling with live memory and CPU budgets. The limits are
+//! deliberately not user-configurable: a setting that can disable OOM
+//! protection is not a preference.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -11,6 +12,8 @@ use std::path::Path;
 use image::{DynamicImage, ImageReader, Limits};
 
 pub const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+const IMAGE_JOB_RESERVATION: u64 = 2 * MAX_DECODE_ALLOC;
+const IMAGE_CONCURRENCY_HEADROOM: u64 = 1024 * 1024 * 1024;
 pub const MAX_FFMPEG_STILL_OUTPUT: usize = 256 * 1024 * 1024;
 pub const MAX_PCM_OUTPUT: usize = 512 * 1024 * 1024;
 pub const PCM_REQUIRED_AVAILABLE: u64 = 768 * 1024 * 1024;
@@ -80,6 +83,43 @@ pub fn is_safety_error(error: &str) -> bool {
 
 pub fn safety_message(error: &str) -> &str {
     error.strip_prefix(SAFETY_ERROR_PREFIX).unwrap_or(error)
+}
+
+/// Maximum native image conversions that may be in flight together now.
+///
+/// A decode may briefly hold both its source-sized pixel allocation and an
+/// oriented copy, so each worker reserves twice the decoder's hard ceiling.
+/// Unknown memory falls back to one worker. While the user is active, no more
+/// than half the logical CPUs are admitted; idle work may use all but one.
+pub(crate) fn image_worker_capacity(idle: bool) -> usize {
+    let logical_cpus = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    image_worker_capacity_for(logical_cpus, available_memory_bytes(), idle)
+}
+
+fn image_worker_capacity_for(
+    logical_cpus: usize,
+    available_memory: Option<u64>,
+    idle: bool,
+) -> usize {
+    let logical_cpus = logical_cpus.max(1);
+    let cpu_capacity = if idle {
+        logical_cpus.saturating_sub(1).max(1)
+    } else {
+        (logical_cpus / 2).max(1)
+    };
+    let memory_capacity = available_memory
+        .map(|available| {
+            let workers = available
+                .saturating_sub(IMAGE_CONCURRENCY_HEADROOM)
+                .checked_div(IMAGE_JOB_RESERVATION)
+                .unwrap_or(0);
+            usize::try_from(workers).unwrap_or(usize::MAX)
+        })
+        .unwrap_or(1)
+        .max(1);
+    cpu_capacity.min(memory_capacity).max(1)
 }
 
 #[cfg(target_os = "macos")]
@@ -152,4 +192,31 @@ fn available_memory_bytes() -> Option<u64> {
 #[cfg(not(any(target_os = "macos", windows)))]
 fn available_memory_bytes() -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{image_worker_capacity_for, IMAGE_JOB_RESERVATION};
+
+    #[test]
+    fn active_image_work_leaves_cpu_headroom() {
+        let abundant = Some(64 * IMAGE_JOB_RESERVATION);
+        assert_eq!(image_worker_capacity_for(8, abundant, false), 4);
+        assert_eq!(image_worker_capacity_for(8, abundant, true), 7);
+    }
+
+    #[test]
+    fn image_concurrency_falls_back_to_one_when_memory_is_unknown_or_tight() {
+        assert_eq!(image_worker_capacity_for(32, None, true), 1);
+        assert_eq!(image_worker_capacity_for(32, Some(1024), true), 1);
+    }
+
+    #[test]
+    fn image_concurrency_obeys_the_aggregate_memory_budget() {
+        let for_three_workers = 1024 * 1024 * 1024 + 3 * IMAGE_JOB_RESERVATION;
+        assert_eq!(
+            image_worker_capacity_for(32, Some(for_three_workers), true),
+            3
+        );
+    }
 }
