@@ -28,7 +28,6 @@ use crate::preview::CachePaths;
 
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
-static SIMILARITY_DIRTY: AtomicBool = AtomicBool::new(true);
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 static PRIORITY: LazyLock<Mutex<PriorityHints>> =
     LazyLock::new(|| Mutex::new(PriorityHints::default()));
@@ -219,16 +218,9 @@ pub(crate) fn available() -> bool {
     !crate::derived_runtime::exclusive() && !crate::scan_runtime::running()
 }
 
-pub(crate) fn similarity_dirty() -> bool {
-    SIMILARITY_DIRTY.load(Ordering::SeqCst)
-}
-
-/// Wake after index, settings, tool, priority, or lifecycle changes. Index
-/// changes also invalidate the process-local similarity cohort.
-pub fn wake(index_changed: bool) {
-    if index_changed {
-        SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
-    }
+/// Wake after index, settings, tool, priority, or lifecycle changes. Durable
+/// source triggers own derived invalidation; this signal only schedules work.
+pub fn wake() {
     let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
     match generation.lock() {
         Ok(mut value) => {
@@ -259,7 +251,7 @@ pub fn set_priority(
     if required_changed {
         crate::derived_runtime::preempt_automatic_optional_for_required();
     }
-    wake(false);
+    wake();
 }
 
 fn required_priority_pending(selected: Option<&str>, visible: &[String]) -> bool {
@@ -297,7 +289,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
             STARTED.store(false, Ordering::SeqCst);
             format!("could not start previews-and-analysis worker: {error}")
         })?;
-    wake(true);
+    wake();
     Ok(true)
 }
 
@@ -404,12 +396,10 @@ pub fn ensure_preview(
         hash,
     );
     if result.is_ok() {
-        SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
-        wake(false);
+        wake();
     }
     let projection = crate::queries::ItemProjectionContext {
         capabilities: settings.capabilities(),
-        similarity_dirty: SIMILARITY_DIRTY.load(Ordering::SeqCst),
     };
     notify_item_update(
         app,
@@ -432,10 +422,10 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
     let config = crate::storage::read_config_for_setup(&data_root)?;
     let settings = settings_from_config(config.as_ref(), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+    crate::similarity::ensure_config_current(&conn, &settings.similarity)?;
     let cache = CachePaths::new(settings.cache_root.clone());
-    let mut projection = crate::queries::ItemProjectionContext {
+    let projection = crate::queries::ItemProjectionContext {
         capabilities: settings.capabilities(),
-        similarity_dirty: SIMILARITY_DIRTY.load(Ordering::SeqCst),
     };
 
     let hints = PRIORITY
@@ -455,7 +445,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         &conn,
         &cache,
         &settings,
-        &mut projection,
+        projection,
         &visible_previews,
         VISIBLE_PREVIEW_TURN,
     )? {
@@ -489,7 +479,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         &conn,
         &cache,
         &settings,
-        &mut projection,
+        projection,
         &section_previews,
         SECTION_PREVIEW_TURN,
     )? {
@@ -515,7 +505,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         return Ok(false);
     }
 
-    let required = derive_global_required(app, &conn, &cache, &settings, &mut projection)?;
+    let required = derive_global_required(app, &conn, &cache, &settings, projection)?;
     let optional = run_global_optional_turn(app, &conn, &cache, &settings, projection, cursors)?;
     let did_work = required || optional;
     if !did_work {
@@ -530,7 +520,7 @@ fn derive_priority_previews(
     conn: &Connection,
     cache: &CachePaths,
     settings: &Settings,
-    projection: &mut crate::queries::ItemProjectionContext,
+    projection: crate::queries::ItemProjectionContext,
     hashes: &[String],
     limit: usize,
 ) -> Result<bool, String> {
@@ -553,12 +543,8 @@ fn derive_priority_previews(
     })?
     .unwrap_or_default();
     if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
-        if image.derived > 0 {
-            SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
-            projection.similarity_dirty = true;
-        }
         emit_progress(app, WorkClass::Previews, None);
-        notify_image_changes(app, conn, *projection, &image.changes);
+        notify_image_changes(app, conn, projection, &image.changes);
         notify_issues(app);
         did_work = true;
     }
@@ -582,7 +568,7 @@ fn derive_priority_previews(
         .unwrap_or_default();
         if video.derived + video.failed > 0 {
             emit_progress(app, WorkClass::Previews, None);
-            notify_video_changes(app, conn, *projection, &video.changed_hashes);
+            notify_video_changes(app, conn, projection, &video.changed_hashes);
             notify_issues(app);
             did_work = true;
         }
@@ -595,7 +581,7 @@ fn derive_global_required(
     conn: &Connection,
     cache: &CachePaths,
     settings: &Settings,
-    projection: &mut crate::queries::ItemProjectionContext,
+    projection: crate::queries::ItemProjectionContext,
 ) -> Result<bool, String> {
     if !available() {
         return Ok(false);
@@ -614,12 +600,8 @@ fn derive_global_required(
     .unwrap_or_default();
     let mut did_work = image.derived + image.failed + image.blocked_no_ffmpeg > 0;
     if did_work {
-        if image.derived > 0 {
-            SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
-            projection.similarity_dirty = true;
-        }
         emit_progress(app, WorkClass::Previews, None);
-        notify_image_changes(app, conn, *projection, &image.changes);
+        notify_image_changes(app, conn, projection, &image.changes);
         notify_issues(app);
     }
     if !available() {
@@ -639,7 +621,7 @@ fn derive_global_required(
     .unwrap_or_default();
     if video.derived + video.failed > 0 {
         emit_progress(app, WorkClass::Previews, None);
-        notify_video_changes(app, conn, *projection, &video.changed_hashes);
+        notify_video_changes(app, conn, projection, &video.changed_hashes);
         notify_issues(app);
         did_work = true;
     }
@@ -728,12 +710,8 @@ fn run_optional_class(
     let stop = || cancelled() || (!foreground && !is_idle());
     match class {
         WorkClass::Similarity => {
-            if !SIMILARITY_DIRTY.load(Ordering::SeqCst) {
-                return Ok(false);
-            }
             let result = with_active(app, class, || {
-                SIMILARITY_DIRTY.store(false, Ordering::SeqCst);
-                crate::similarity::rebuild_groups_for_root_cancellable(
+                crate::similarity::rebuild_next_dirty_bucket_for_root_cancellable(
                     conn,
                     &settings.similarity,
                     &settings.data_root,
@@ -741,7 +719,7 @@ fn run_optional_class(
                 )
             });
             match result {
-                Ok(Some(stats)) => {
+                Ok(Some(Some(stats))) => {
                     emit_progress(app, class, None);
                     crate::failure_runtime::emit_or_record(
                         app,
@@ -750,13 +728,16 @@ fn run_optional_class(
                     );
                     logging::info(
                         "similarity rebuilt",
-                        json!({ "groups": stats.groups, "items": stats.grouped_items }),
+                        json!({
+                            "bucket": stats.last_bucket,
+                            "groups": stats.groups,
+                            "items": stats.grouped_items,
+                        }),
                     );
                     Ok(true)
                 }
-                Ok(None) => Ok(false),
+                Ok(Some(None)) | Ok(None) => Ok(false),
                 Err(error) => {
-                    SIMILARITY_DIRTY.store(true, Ordering::SeqCst);
                     if crate::resource_limits::is_safety_error(&error) {
                         pause_for_resource_safety(app, conn, class, &error)?;
                         Ok(false)

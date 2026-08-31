@@ -140,7 +140,6 @@ fn work_debt_sql(ffmpeg: bool) -> String {
 pub(crate) fn work_debts(
     conn: &Connection,
     capabilities: WorkCapabilities,
-    similarity_dirty: bool,
 ) -> Result<WorkDebts, String> {
     let sql = work_debt_sql(capabilities.ffmpeg);
     let counts = conn
@@ -202,7 +201,7 @@ pub(crate) fn work_debts(
     };
     let similarity = if capabilities.similarity_enabled {
         WorkDebt {
-            runnable: u64::from(similarity_dirty),
+            runnable: crate::similarity::dirty_bucket_count(conn)?,
             ..WorkDebt::default()
         }
     } else {

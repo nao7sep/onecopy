@@ -40,7 +40,6 @@ impl RuntimeState {
 #[derive(Clone, Copy)]
 pub struct RuntimeConditions {
     pub busy: bool,
-    pub similarity_dirty: bool,
 }
 
 #[derive(Clone)]
@@ -51,7 +50,6 @@ pub struct RuntimeSnapshot {
     pub(crate) active_hash: Option<String>,
     pub(crate) preempt_requested: bool,
     pub(crate) busy: bool,
-    pub(crate) similarity_dirty: bool,
 }
 
 static RUNTIME: LazyLock<(Mutex<RuntimeState>, Condvar)> =
@@ -572,6 +570,5 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
         active_hash,
         preempt_requested,
         busy: conditions.busy,
-        similarity_dirty: conditions.similarity_dirty,
     })
 }

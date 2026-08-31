@@ -2,8 +2,8 @@
 // (tests-folder conventions, Rust form).
 
 use onecopy_lib::index_store;
-use rusqlite::{params, Connection};
 use onecopy_lib::similarity::*;
+use rusqlite::{params, Connection};
 
 fn seeded() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::Builder::new()
@@ -89,17 +89,28 @@ fn cancellation_keeps_the_previous_complete_similarity_cohort() {
     insert_image(&conn, "b", "Ricoh", t + 1_000, 1, 1.0);
     rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
     let before: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| {
+            row.get(0)
+        })
         .unwrap();
 
-    let error = rebuild_groups_for_root_cancellable(&conn, &config(), dir.path(), &|| true)
-        .unwrap_err();
+    conn.execute(
+        "UPDATE contents SET camera_model = 'changed' WHERE hash = 'a'",
+        [],
+    )
+    .unwrap();
+    let error =
+        rebuild_next_dirty_bucket_for_root_cancellable(&conn, &config(), dir.path(), &|| true)
+            .unwrap_err();
     let after: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| {
+            row.get(0)
+        })
         .unwrap();
 
     assert_eq!(error, onecopy_lib::scanner::CANCELLED);
     assert_eq!(after, before);
+    assert_eq!(dirty_bucket_count(&conn).unwrap(), 1);
 }
 
 #[test]
@@ -109,7 +120,10 @@ fn different_cameras_never_chain() {
     insert_image(&conn, "a1", "Ricoh", t, 0, 1.0);
     insert_image(&conn, "b1", "Sony", t + 10_000, 0, 1.0);
     let stats = rebuild_groups(&conn, &config()).unwrap();
-    assert_eq!(stats.groups, 0, "cross-device grouping is the deferred phase");
+    assert_eq!(
+        stats.groups, 0,
+        "cross-device grouping is the deferred phase"
+    );
 }
 
 #[test]
@@ -183,14 +197,7 @@ fn large_families_group_whole_with_no_cap() {
     let (_d, conn) = seeded();
     let t = 1_700_000_000_000i64;
     for i in 0..75 {
-        insert_image_with_camera(
-            &conn,
-            &format!("o{i}"),
-            None,
-            Some(t + i * 1000),
-            0,
-            1.0,
-        );
+        insert_image_with_camera(&conn, &format!("o{i}"), None, Some(t + i * 1000), 0, 1.0);
     }
     let stats = rebuild_groups(&conn, &config()).unwrap();
     assert_eq!(stats.groups, 1, "one family, however large");
@@ -209,10 +216,10 @@ fn a_chain_cannot_glue_dissimilar_photos_into_one_family() {
     // bounded at twice the threshold, so the chain splits where it stops
     // looking like one family.
     let hashes: Vec<i64> = vec![
-        0b0000_0000_0000,          // a
-        0b0000_0000_1111,          // b: d4 from a
-        0b0000_1111_1111,          // c: d4 from b, d8 from a  (still within 2d)
-        0b1111_1111_1111,          // d: d4 from c, d12 from a (chained past 2d)
+        0b0000_0000_0000, // a
+        0b0000_0000_1111, // b: d4 from a
+        0b0000_1111_1111, // c: d4 from b, d8 from a  (still within 2d)
+        0b1111_1111_1111, // d: d4 from c, d12 from a (chained past 2d)
     ];
     let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2).unwrap();
     assert_eq!(clusters.len(), 2, "the chain must split");
@@ -250,13 +257,15 @@ fn identical_twins_survive_a_hairball_split() {
         0b0000_0000_1111, // chain link
     ];
     let clusters = cluster_by_appearance(&hashes, &vec![None; hashes.len()], 4, 4, 90, 2).unwrap();
-    let twins: Vec<&Vec<usize>> =
-        clusters.iter().filter(|c| c.contains(&1) || c.contains(&3)).collect();
+    let twins: Vec<&Vec<usize>> = clusters
+        .iter()
+        .filter(|c| c.contains(&1) || c.contains(&3))
+        .collect();
     assert_eq!(twins.len(), 1, "distance-0 twins must share a cluster");
 }
 
 #[test]
-fn rebuild_is_wholesale_and_idempotent() {
+fn complete_bucket_rebuild_is_idempotent() {
     let (_d, conn) = seeded();
     let t = 1_700_000_000_000i64;
     insert_image(&conn, "r1", "Ricoh", t, 0, 1.0);
@@ -265,9 +274,122 @@ fn rebuild_is_wholesale_and_idempotent() {
     let stats = rebuild_groups(&conn, &config()).unwrap();
     assert_eq!(stats.groups, 1);
     let member_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(member_rows, 2, "no duplicate membership after a rebuild");
+}
+
+#[test]
+fn rebuilding_one_dirty_month_preserves_the_other_months_publication() {
+    let (dir, conn) = seeded();
+    let jan = 1_704_067_200_000i64;
+    let mar = 1_709_251_200_000i64;
+    insert_image(&conn, "jan-a", "Ricoh", jan, 0, 1.0);
+    insert_image(&conn, "jan-b", "Ricoh", jan + 1_000, 1, 1.0);
+    insert_image(&conn, "mar-a", "Ricoh", mar, 0, 1.0);
+    insert_image(&conn, "mar-b", "Ricoh", mar + 1_000, 1, 1.0);
+    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    let group_id = |bucket: &str| {
+        conn.query_row(
+            "SELECT id FROM similar_groups WHERE bucket = ?1",
+            [bucket],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    let jan_before = group_id("2024-01");
+    let mar_before = group_id("2024-03");
+
+    conn.execute("UPDATE contents SET phash = phash WHERE hash = 'jan-a'", [])
+        .unwrap();
+    assert_eq!(dirty_bucket_count(&conn).unwrap(), 1);
+    let stats =
+        rebuild_next_dirty_bucket_for_root_cancellable(&conn, &config(), dir.path(), &|| false)
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(stats.last_bucket.as_deref(), Some("2024-01"));
+    assert_ne!(group_id("2024-01"), jan_before);
+    assert_eq!(group_id("2024-03"), mar_before);
+    assert_eq!(dirty_bucket_count(&conn).unwrap(), 0);
+}
+
+#[test]
+fn date_change_invalidates_both_the_old_and_new_months() {
+    let (dir, conn) = seeded();
+    let jan = 1_704_067_200_000i64;
+    let mar = 1_709_251_200_000i64;
+    insert_image(&conn, "moved", "Ricoh", jan, 0, 1.0);
+    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+
+    conn.execute(
+        "UPDATE paths SET resolved_utc_ms = ?1 WHERE content_hash = 'moved'",
+        [mar],
+    )
+    .unwrap();
+    let buckets = conn
+        .prepare("SELECT bucket FROM similarity_dirty_buckets ORDER BY bucket")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(buckets, vec!["2024-01", "2024-03"]);
+}
+
+#[test]
+fn pre_epoch_dates_keep_their_actual_utc_month() {
+    let (_dir, conn) = seeded();
+    insert_image(&conn, "old", "Ricoh", -1, 0, 1.0);
+
+    let bucket: String = conn
+        .query_row("SELECT bucket FROM similarity_dirty_buckets", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(bucket, "1969-12");
+}
+
+#[test]
+fn a_new_invalidation_during_computation_cannot_publish_stale_membership() {
+    use std::cell::Cell;
+
+    let (dir, conn) = seeded();
+    let t = 1_700_000_000_000i64;
+    insert_image(&conn, "a", "Ricoh", t, 0, 1.0);
+    insert_image(&conn, "b", "Ricoh", t + 1_000, 1, 1.0);
+    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    conn.execute(
+        "UPDATE contents SET camera_model = 'first-change' WHERE hash = 'a'",
+        [],
+    )
+    .unwrap();
+
+    let writer = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let changed = Cell::new(false);
+    let stop = || {
+        if !changed.replace(true) {
+            writer
+                .execute(
+                    "UPDATE contents SET phash = ?1 WHERE hash = 'b'",
+                    [i64::MAX],
+                )
+                .unwrap();
+        }
+        false
+    };
+    let stats = rebuild_next_dirty_bucket_for_root_cancellable(&conn, &config(), dir.path(), &stop)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(stats.groups, 0);
+    assert_eq!(dirty_bucket_count(&conn).unwrap(), 0);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM similar_groups", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 // ---- Unlink: the user's "not the same subject" verdicts ----
@@ -298,12 +420,20 @@ fn split_by_exclusions_removes_the_intruder_and_keeps_the_family_whole() {
     let excluded: HashSet<(String, String)> = ["a", "b", "c"]
         .iter()
         .map(|m| {
-            let (x, y) = if *m < "intruder" { (m.to_string(), "intruder".into()) } else { ("intruder".into(), m.to_string()) };
+            let (x, y) = if *m < "intruder" {
+                (m.to_string(), "intruder".into())
+            } else {
+                ("intruder".into(), m.to_string())
+            };
             (x, y)
         })
         .collect();
     let out = split_by_exclusions(vec![family(&["a", "b", "intruder", "c"])], &excluded);
-    assert_eq!(out, vec![family(&["a", "b", "c"])], "family whole, intruder out (dropped: alone)");
+    assert_eq!(
+        out,
+        vec![family(&["a", "b", "c"])],
+        "family whole, intruder out (dropped: alone)"
+    );
 
     // No exclusions → untouched, same allocation path.
     let untouched = split_by_exclusions(vec![family(&["a", "b"])], &HashSet::new());
@@ -312,9 +442,9 @@ fn split_by_exclusions_removes_the_intruder_and_keeps_the_family_whole() {
 
 #[test]
 fn an_unlinked_pair_never_regroups_however_similar_their_pixels_are() {
-    // The persistence promise: groups are rebuilt WHOLESALE every scan, so an
+    // The persistence promise: a rebuilt cohort replaces its groups, so an
     // unlink stored against the group would evaporate. Stored against the
-    // pair, it must hold on every later rebuild.
+    // pair, it must hold on every later cohort rebuild.
     let (dir, conn) = seeded();
     seed_pairable(&conn, "keeper", 0b0001);
     seed_pairable(&conn, "bolt", 0b0011); // distance 1 — pairs on looks
@@ -322,29 +452,73 @@ fn an_unlinked_pair_never_regroups_however_similar_their_pixels_are() {
     let cfg = config();
     rebuild_groups(&conn, &cfg).unwrap();
     let grouped: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(grouped, 2, "they pair before the verdict");
 
     let written = unlink_from_group(&conn, dir.path(), "bolt").unwrap();
     assert_eq!(written, 1, "one exclusion per other member");
+    assert_eq!(dirty_bucket_count(&conn).unwrap(), 1);
     // Immediate effect, no rescan needed: membership gone, and a group of one
     // is dissolved rather than left as a phantom ≈ badge.
     let (members, groups): (i64, i64) = (
-        conn.query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0)).unwrap(),
-        conn.query_row("SELECT COUNT(*) FROM similar_groups", [], |r| r.get(0)).unwrap(),
+        conn.query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
+            r.get(0)
+        })
+        .unwrap(),
+        conn.query_row("SELECT COUNT(*) FROM similar_groups", [], |r| r.get(0))
+            .unwrap(),
     );
     assert_eq!((members, groups), (0, 0));
 
     // And the verdict binds every future rebuild.
     rebuild_groups_for_root(&conn, &cfg, dir.path()).unwrap();
     let regrouped: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(regrouped, 0, "the pair must never re-form");
 
     // Unlinking something ungrouped is a quiet no-op, not an error.
     assert_eq!(unlink_from_group(&conn, dir.path(), "keeper").unwrap(), 0);
+}
+
+#[test]
+fn a_config_change_invalidates_every_bucket_once() {
+    let (dir, conn) = seeded();
+    let jan = 1_704_067_200_000i64;
+    let mar = 1_709_251_200_000i64;
+    insert_image(&conn, "jan", "Ricoh", jan, 0, 1.0);
+    insert_image(&conn, "mar", "Ricoh", mar, 0, 1.0);
+    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+
+    let changed = SimilarityConfig {
+        phash_max_distance: 5,
+        ..config()
+    };
+    ensure_config_current(&conn, &changed).unwrap();
+    let revisions = || {
+        conn.prepare("SELECT bucket, revision FROM similarity_dirty_buckets ORDER BY bucket")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let once = revisions();
+    assert_eq!(once.len(), 2);
+
+    ensure_config_current(&conn, &changed).unwrap();
+    assert_eq!(
+        revisions(),
+        once,
+        "the same config must not re-invalidate cohorts"
+    );
 }
 
 #[test]
@@ -377,7 +551,10 @@ fn an_unlinked_image_still_groups_with_a_genuine_twin() {
         .map(|r| r.unwrap())
         .collect();
     assert!(with.contains(&"bolt-copy".to_string()));
-    assert!(!with.contains(&"family".to_string()), "the verdict still holds: {with:?}");
+    assert!(
+        !with.contains(&"family".to_string()),
+        "the verdict still holds: {with:?}"
+    );
 }
 
 // ---- Time-gated pairing (Phase 33) ----------------------------------------

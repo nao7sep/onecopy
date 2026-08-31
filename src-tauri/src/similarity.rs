@@ -24,10 +24,11 @@
 //! filing a fresh issue on every rebuild. The tight default distance is what
 //! keeps hairballs rare.
 //!
-//! Groups rebuild wholesale after each scan — membership is cheap to derive
-//! and rebuilding sidesteps every incremental staleness bug. A group needs
-//! ≥ 2 members to exist. Best-effort by design and documented as such; groups
-//! order best-first by sharpness so slot 1 is the machine's guess.
+//! Each bucket publishes as one complete cohort. Source-fact triggers retain
+//! a durable revision for only the affected buckets; a rebuild computed from
+//! an older revision cannot replace the published cohort or clear the newer
+//! invalidation. A group needs ≥ 2 members to exist. Groups order best-first
+//! by sharpness so slot 1 is the machine's guess.
 
 use std::collections::HashMap;
 
@@ -53,6 +54,8 @@ pub struct SimilarityConfig {
 pub struct GroupStats {
     pub groups: u64,
     pub grouped_items: u64,
+    pub buckets: u64,
+    pub last_bucket: Option<String>,
 }
 
 fn hamming(a: i64, b: i64) -> u32 {
@@ -286,14 +289,6 @@ fn cluster_by_appearance_cancellable(
     Ok(out)
 }
 
-/// The month bucket key: UTC `yyyy-mm`, or `undated`.
-fn bucket_key(resolved_utc_ms: Option<i64>) -> String {
-    match resolved_utc_ms.and_then(chrono::DateTime::from_timestamp_millis) {
-        Some(dt) => dt.format("%Y-%m").to_string(),
-        None => "undated".to_string(),
-    }
-}
-
 /// Plain union-find over indices.
 struct UnionFind {
     parent: Vec<usize>,
@@ -327,17 +322,22 @@ struct Candidate {
     phash: i64,
 }
 
-const SIMILARITY_CANDIDATES_SQL: &str = "SELECT c.hash,
+const DATED_CANDIDATES_SQL: &str = "SELECT c.hash,
             COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''),
             l.resolved_utc_ms, c.phash
      FROM logical_contents l
      JOIN contents c ON c.hash = l.content_hash
-     WHERE l.kind = 'image' AND c.phash IS NOT NULL";
+     WHERE l.kind = 'image' AND l.resolved_utc_ms >= ?1
+       AND l.resolved_utc_ms < ?2 AND c.phash IS NOT NULL";
 
-/// Rebuilds every similar group from the current index. Only images with a
-/// perceptual hash participate; the logical item's time is the earliest among
-/// its copies (the same rule the sections use), and undated images form their
-/// own bucket rather than being excluded.
+const UNDATED_CANDIDATES_SQL: &str = "SELECT c.hash,
+            COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''),
+            l.resolved_utc_ms, c.phash
+     FROM logical_contents l
+     JOIN contents c ON c.hash = l.content_hash
+     WHERE l.kind = 'image' AND l.resolved_utc_ms IS NULL
+       AND c.phash IS NOT NULL";
+
 /// Canonical form of an exclusion pair: lexicographic, so one row (and one
 /// set entry) represents "a and b are not the same subject" regardless of
 /// which side the user unlinked from.
@@ -393,7 +393,7 @@ pub fn split_by_exclusions(
 
 /// The comparison view's unlink: this image is NOT the same subject as its
 /// similar-family. Writes one exclusion per other CURRENT member (a fact
-/// about the images, so it survives the wholesale group rebuilds), removes
+/// about the images, so it survives every cohort rebuild), removes
 /// the membership row for immediate effect, and dissolves the group when
 /// fewer than two members remain. Returns how many exclusions were recorded.
 pub fn unlink_from_group(
@@ -425,7 +425,15 @@ pub fn unlink_from_group(
             .map_err(|e| e.to_string())?;
         rows
     };
+    // Bracket the authored-store write with durable invalidation. A rebuild
+    // racing the first marker may still read the old verdicts, while the
+    // second marker and stored fingerprint guarantee another pass sees the
+    // new set. An authored write followed by an index failure is recovered by
+    // the fingerprint comparison on the next worker turn.
+    mark_hash_bucket_dirty(conn, hash)?;
     let written = crate::similar_exclusions::add_for_peers(root, hash, &others)?;
+    let exclusions = crate::similar_exclusions::pairs(root)?;
+    record_targeted_exclusions_change(conn, hash, &exclusions)?;
     let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     transaction
         .execute(
@@ -459,164 +467,443 @@ pub fn unlink_from_group(
     Ok(written)
 }
 
-fn rebuild_groups_with_exclusions(
+fn config_fingerprint(config: &SimilarityConfig) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        config.max_gap_seconds,
+        config.phash_max_distance,
+        config.phash_max_distance_burst,
+        config.diameter_multiplier
+    )
+}
+
+fn exclusions_fingerprint(exclusions: &std::collections::HashSet<(String, String)>) -> String {
+    let mut pairs = exclusions.iter().collect::<Vec<_>>();
+    pairs.sort_unstable();
+    let mut hasher = blake3::Hasher::new();
+    for (left, right) in pairs {
+        hasher.update(&(left.len() as u64).to_le_bytes());
+        hasher.update(left.as_bytes());
+        hasher.update(&(right.len() as u64).to_le_bytes());
+        hasher.update(right.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn dirty_bucket_expression(alias: &str) -> String {
+    format!("COALESCE(strftime('%Y-%m', {alias}.resolved_utc_ms / 1000.0, 'unixepoch'), 'undated')")
+}
+
+fn mark_all_buckets_dirty_in(conn: &Connection) -> Result<(), String> {
+    let bucket = dirty_bucket_expression("l");
+    conn.execute_batch(&format!(
+        "INSERT INTO similarity_dirty_buckets (bucket, revision)
+         SELECT bucket, 1
+         FROM (
+           SELECT {bucket} AS bucket
+           FROM logical_contents l
+           WHERE l.kind = 'image'
+           UNION
+           SELECT bucket FROM similar_groups
+         )
+         WHERE 1
+         ON CONFLICT(bucket) DO UPDATE SET revision = revision + 1"
+    ))
+    .map_err(|error| error.to_string())
+}
+
+pub fn mark_all_buckets_dirty(conn: &Connection) -> Result<(), String> {
+    let transaction = rusqlite::Transaction::new_unchecked(
+        conn,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .map_err(|error| error.to_string())?;
+    mark_all_buckets_dirty_in(&transaction)?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+fn mark_hash_bucket_dirty(conn: &Connection, hash: &str) -> Result<(), String> {
+    let bucket = dirty_bucket_expression("l");
+    conn.execute(
+        &format!(
+            "INSERT INTO similarity_dirty_buckets (bucket, revision)
+             SELECT {bucket}, 1
+             FROM logical_contents l
+             WHERE l.content_hash = ?1 AND l.kind = 'image'
+             ON CONFLICT(bucket) DO UPDATE SET revision = revision + 1"
+        ),
+        [hash],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn dirty_bucket_count(conn: &Connection) -> Result<u64, String> {
+    conn.query_row("SELECT COUNT(*) FROM similarity_dirty_buckets", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|count| count.max(0) as u64)
+    .map_err(|error| error.to_string())
+}
+
+pub fn ensure_config_current(conn: &Connection, config: &SimilarityConfig) -> Result<(), String> {
+    let fingerprint = config_fingerprint(config);
+    let current = conn
+        .query_row(
+            "SELECT config_fingerprint FROM similarity_state WHERE singleton = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if current.as_deref() == Some(&fingerprint) {
+        return Ok(());
+    }
+
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    mark_all_buckets_dirty_in(&transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO similarity_state (singleton, config_fingerprint)
+             VALUES (1, ?1)
+             ON CONFLICT(singleton) DO UPDATE
+             SET config_fingerprint = excluded.config_fingerprint",
+            [&fingerprint],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+fn ensure_exclusions_current(
+    conn: &Connection,
+    exclusions: &std::collections::HashSet<(String, String)>,
+) -> Result<(), String> {
+    let fingerprint = exclusions_fingerprint(exclusions);
+    let current = conn
+        .query_row(
+            "SELECT exclusions_fingerprint FROM similarity_state WHERE singleton = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if current.as_deref() == Some(&fingerprint) {
+        return Ok(());
+    }
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    mark_all_buckets_dirty_in(&transaction)?;
+    transaction
+        .execute(
+            "UPDATE similarity_state SET exclusions_fingerprint = ?1 WHERE singleton = 1",
+            [&fingerprint],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+fn record_targeted_exclusions_change(
+    conn: &Connection,
+    hash: &str,
+    exclusions: &std::collections::HashSet<(String, String)>,
+) -> Result<(), String> {
+    let fingerprint = exclusions_fingerprint(exclusions);
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    mark_hash_bucket_dirty(&transaction, hash)?;
+    transaction
+        .execute(
+            "UPDATE similarity_state SET exclusions_fingerprint = ?1 WHERE singleton = 1",
+            [&fingerprint],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+pub fn record_all_exclusions_change(
+    conn: &Connection,
+    exclusions: &std::collections::HashSet<(String, String)>,
+) -> Result<(), String> {
+    let fingerprint = exclusions_fingerprint(exclusions);
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    mark_all_buckets_dirty_in(&transaction)?;
+    transaction
+        .execute(
+            "UPDATE similarity_state SET exclusions_fingerprint = ?1 WHERE singleton = 1",
+            [&fingerprint],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+fn bucket_bounds(bucket: &str) -> Result<Option<(i64, i64)>, String> {
+    if bucket == "undated" {
+        return Ok(None);
+    }
+    let first = chrono::NaiveDate::parse_from_str(&format!("{bucket}-01"), "%Y-%m-%d")
+        .map_err(|_| format!("invalid similarity bucket {bucket}"))?;
+    let next = first
+        .checked_add_months(chrono::Months::new(1))
+        .ok_or_else(|| format!("invalid similarity bucket {bucket}"))?;
+    let at_midnight = |date: chrono::NaiveDate| {
+        date.and_hms_opt(0, 0, 0)
+            .map(|value| value.and_utc().timestamp_millis())
+            .ok_or_else(|| format!("invalid similarity bucket {bucket}"))
+    };
+    Ok(Some((at_midnight(first)?, at_midnight(next)?)))
+}
+
+fn candidates_for_bucket(conn: &Connection, bucket: &str) -> Result<Vec<Candidate>, String> {
+    let collect = |mut stmt: rusqlite::Statement<'_>, parameters: &[&dyn rusqlite::ToSql]| {
+        let rows = stmt
+            .query_map(parameters, |row| {
+                Ok(Candidate {
+                    hash: row.get(0)?,
+                    camera: row.get(1)?,
+                    time_ms: row.get(2)?,
+                    phash: row.get(3)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())
+    };
+    match bucket_bounds(bucket)? {
+        Some((start, end)) => collect(
+            conn.prepare(DATED_CANDIDATES_SQL)
+                .map_err(|error| error.to_string())?,
+            &[&start, &end],
+        ),
+        None => collect(
+            conn.prepare(UNDATED_CANDIDATES_SQL)
+                .map_err(|error| error.to_string())?,
+            &[],
+        ),
+    }
+}
+
+fn groups_for_bucket(
+    candidates: &[Candidate],
+    config: &SimilarityConfig,
+    exclusions: &std::collections::HashSet<(String, String)>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Vec<String>>, String> {
+    if stop() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
+    let phashes = candidates
+        .iter()
+        .map(|candidate| candidate.phash)
+        .collect::<Vec<_>>();
+    let times = candidates
+        .iter()
+        .map(|candidate| candidate.time_ms)
+        .collect::<Vec<_>>();
+    let gap_ms = i64::from(config.max_gap_seconds) * 1000;
+    let mut groups = Vec::new();
+    for cluster in cluster_by_appearance_cancellable(
+        &phashes,
+        &times,
+        config.phash_max_distance,
+        config.phash_max_distance_burst,
+        config.max_gap_seconds,
+        config.diameter_multiplier,
+        stop,
+    )? {
+        if cluster.len() < 2 {
+            continue;
+        }
+        let mut by_camera: HashMap<&str, Vec<usize>> = HashMap::new();
+        for index in cluster {
+            by_camera
+                .entry(candidates[index].camera.as_str())
+                .or_default()
+                .push(index);
+        }
+        for (camera, mut members) in by_camera {
+            if camera == "|" {
+                if members.len() >= 2 {
+                    groups.push(
+                        members
+                            .into_iter()
+                            .map(|index| candidates[index].hash.clone())
+                            .collect(),
+                    );
+                }
+                continue;
+            }
+            members.sort_by_key(|&index| candidates[index].time_ms.unwrap_or(i64::MAX));
+            let mut burst: Vec<usize> = Vec::new();
+            let mut last_time: Option<i64> = None;
+            for index in members {
+                let time = candidates[index].time_ms;
+                let splits = matches!((last_time, time), (Some(previous), Some(now)) if now - previous > gap_ms);
+                if splits {
+                    if burst.len() >= 2 {
+                        groups.push(
+                            burst
+                                .drain(..)
+                                .map(|member| candidates[member].hash.clone())
+                                .collect(),
+                        );
+                    } else {
+                        burst.clear();
+                    }
+                }
+                burst.push(index);
+                last_time = time.or(last_time);
+            }
+            if burst.len() >= 2 {
+                groups.push(
+                    burst
+                        .into_iter()
+                        .map(|index| candidates[index].hash.clone())
+                        .collect(),
+                );
+            }
+        }
+    }
+    Ok(split_by_exclusions(groups, exclusions))
+}
+
+fn publish_bucket(
+    conn: &Connection,
+    bucket: &str,
+    claimed_revision: i64,
+    groups: &[Vec<String>],
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<GroupStats>, String> {
+    if stop() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
+    let transaction = rusqlite::Transaction::new_unchecked(
+        conn,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .map_err(|error| error.to_string())?;
+    let current_revision = transaction
+        .query_row(
+            "SELECT revision FROM similarity_dirty_buckets WHERE bucket = ?1",
+            [bucket],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if current_revision != Some(claimed_revision) {
+        return Ok(None);
+    }
+
+    transaction
+        .execute(
+            "DELETE FROM similar_group_members
+             WHERE group_id IN (SELECT id FROM similar_groups WHERE bucket = ?1)",
+            [bucket],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM similar_groups WHERE bucket = ?1", [bucket])
+        .map_err(|error| error.to_string())?;
+
+    let mut stats = GroupStats {
+        buckets: 1,
+        last_bucket: Some(bucket.to_string()),
+        ..GroupStats::default()
+    };
+    let created_at = crate::logging::now_iso_millis();
+    let mut inserted = 0usize;
+    for members in groups {
+        if stop() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        transaction
+            .execute(
+                "INSERT INTO similar_groups (bucket, created_at_utc) VALUES (?1, ?2)",
+                params![bucket, created_at],
+            )
+            .map_err(|error| error.to_string())?;
+        let group_id = transaction.last_insert_rowid();
+        for hash in members {
+            inserted += 1;
+            if inserted % 1024 == 0 && stop() {
+                return Err(crate::scanner::CANCELLED.to_string());
+            }
+            transaction
+                .execute(
+                    "INSERT INTO similar_group_members (group_id, content_hash) VALUES (?1, ?2)",
+                    params![group_id, hash],
+                )
+                .map_err(|error| error.to_string())?;
+            stats.grouped_items += 1;
+        }
+        stats.groups += 1;
+    }
+    transaction
+        .execute(
+            "DELETE FROM similarity_dirty_buckets WHERE bucket = ?1 AND revision = ?2",
+            params![bucket, claimed_revision],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(Some(stats))
+}
+
+fn next_dirty_bucket(conn: &Connection) -> Result<Option<(String, i64)>, String> {
+    conn.query_row(
+        "SELECT bucket, revision FROM similarity_dirty_buckets
+         ORDER BY bucket = 'undated', bucket LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+fn rebuild_next_dirty_bucket_with_exclusions(
+    conn: &Connection,
+    config: &SimilarityConfig,
+    exclusions: &std::collections::HashSet<(String, String)>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<GroupStats>, String> {
+    loop {
+        let Some((bucket, revision)) = next_dirty_bucket(conn)? else {
+            return Ok(None);
+        };
+        let candidates = candidates_for_bucket(conn, &bucket)?;
+        let groups = groups_for_bucket(&candidates, config, exclusions, stop)?;
+        if let Some(stats) = publish_bucket(conn, &bucket, revision, &groups, stop)? {
+            return Ok(Some(stats));
+        }
+    }
+}
+
+fn rebuild_all_dirty(
     conn: &Connection,
     config: &SimilarityConfig,
     exclusions: &std::collections::HashSet<(String, String)>,
     stop: &dyn Fn() -> bool,
 ) -> Result<GroupStats, String> {
-    let mut stmt = conn
-        .prepare(SIMILARITY_CANDIDATES_SQL)
-        .map_err(|e| e.to_string())?;
-    let candidates: Vec<Candidate> = stmt
-        .query_map([], |r| {
-            Ok(Candidate {
-                hash: r.get(0)?,
-                camera: r.get(1)?,
-                time_ms: r.get(2)?,
-                phash: r.get(3)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    drop(stmt);
-    if stop() {
-        return Err(crate::scanner::CANCELLED.to_string());
+    let mut total = GroupStats::default();
+    while let Some(stats) =
+        rebuild_next_dirty_bucket_with_exclusions(conn, config, exclusions, stop)?
+    {
+        total.groups += stats.groups;
+        total.grouped_items += stats.grouped_items;
+        total.buckets += stats.buckets;
+        total.last_bucket = stats.last_bucket;
     }
-
-    // Partition into month buckets, then cluster within each.
-    let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, c) in candidates.iter().enumerate() {
-        buckets.entry(bucket_key(c.time_ms)).or_default().push(i);
-    }
-
-    let gap_ms = i64::from(config.max_gap_seconds) * 1000;
-    let mut groups: Vec<Vec<String>> = Vec::new();
-
-    for indices in buckets.values() {
-        if stop() {
-            return Err(crate::scanner::CANCELLED.to_string());
-        }
-        // Exact strict Hamming candidates plus the relaxed capture-time
-        // window stay in memory and read no files. Chained components split
-        // around leaders (see cluster_by_appearance).
-        let mut bucket_groups: Vec<Vec<usize>> = Vec::new();
-        let phashes: Vec<i64> = indices.iter().map(|&i| candidates[i].phash).collect();
-        let times: Vec<Option<i64>> = indices.iter().map(|&i| candidates[i].time_ms).collect();
-        for cluster in cluster_by_appearance_cancellable(
-            &phashes,
-            &times,
-            config.phash_max_distance,
-            config.phash_max_distance_burst,
-            config.max_gap_seconds,
-            config.diameter_multiplier,
-            stop,
-        )? {
-            let cluster: Vec<usize> = cluster.into_iter().map(|local| indices[local]).collect();
-            if cluster.len() < 2 {
-                continue;
-            }
-            // Refinement: partition by camera identity (cross-camera grouping
-            // is the deferred phase), then split camera-bearing partitions
-            // into bursts at time gaps. The camera-less partition ("|")
-            // stands whole — appearance is its only signal, by design.
-            let mut by_camera: HashMap<&str, Vec<usize>> = HashMap::new();
-            for idx in cluster {
-                by_camera
-                    .entry(candidates[idx].camera.as_str())
-                    .or_default()
-                    .push(idx);
-            }
-            for (camera, mut members) in by_camera {
-                let camera_less = camera == "|";
-                if camera_less {
-                    if members.len() >= 2 {
-                        bucket_groups.push(members.clone());
-                    }
-                    continue;
-                }
-                // Burst split along time; members without a resolved time sort
-                // last and never force a split among themselves.
-                members.sort_by_key(|&i| candidates[i].time_ms.unwrap_or(i64::MAX));
-                let mut burst: Vec<usize> = Vec::new();
-                let mut last_time: Option<i64> = None;
-                for idx in members {
-                    let time = candidates[idx].time_ms;
-                    let splits = match (last_time, time) {
-                        (Some(prev), Some(now)) => now - prev > gap_ms,
-                        _ => false,
-                    };
-                    if splits && burst.len() >= 2 {
-                        bucket_groups.push(burst.clone());
-                        burst.clear();
-                    } else if splits {
-                        burst.clear();
-                    }
-                    burst.push(idx);
-                    last_time = time.or(last_time);
-                }
-                if burst.len() >= 2 {
-                    bucket_groups.push(burst.clone());
-                }
-            }
-        }
-
-        for group in bucket_groups {
-            if group.len() >= 2 {
-                groups.push(group.iter().map(|&i| candidates[i].hash.clone()).collect());
-            }
-        }
-    }
-
-    // The user's unlink verdicts bind every rebuild, not just the session
-    // they were made in.
-    let groups = split_by_exclusions(groups, exclusions);
-
-    if stop() {
-        return Err(crate::scanner::CANCELLED.to_string());
-    }
-
-    // Persist wholesale in one transaction. Cancellation or a write failure
-    // keeps the previous complete cohort rather than publishing an empty or
-    // half-rebuilt similarity view.
-    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    transaction
-        .execute("DELETE FROM similar_group_members", [])
-        .map_err(|e| e.to_string())?;
-    transaction
-        .execute("DELETE FROM similar_groups", [])
-        .map_err(|e| e.to_string())?;
-
-    let mut stats = GroupStats::default();
-    for members in &groups {
-        if stop() {
-            return Err(crate::scanner::CANCELLED.to_string());
-        }
-        transaction.execute(
-            "INSERT INTO similar_groups (created_at_utc) VALUES (?1)",
-            [crate::logging::now_iso_millis()],
-        )
-        .map_err(|e| e.to_string())?;
-        let group_id = transaction.last_insert_rowid();
-        for hash in members {
-            transaction.execute(
-                "INSERT INTO similar_group_members (group_id, content_hash) VALUES (?1, ?2)",
-                params![group_id, hash],
-            )
-            .map_err(|e| e.to_string())?;
-            stats.grouped_items += 1;
-        }
-        stats.groups += 1;
-    }
-
-    transaction.commit().map_err(|e| e.to_string())?;
-
-    Ok(stats)
+    Ok(total)
 }
 
 pub fn rebuild_groups(conn: &Connection, config: &SimilarityConfig) -> Result<GroupStats, String> {
-    rebuild_groups_with_exclusions(conn, config, &std::collections::HashSet::new(), &|| false)
+    ensure_config_current(conn, config)?;
+    mark_all_buckets_dirty(conn)?;
+    rebuild_all_dirty(conn, config, &std::collections::HashSet::new(), &|| false)
 }
 
 pub fn rebuild_groups_for_root(
@@ -624,22 +911,27 @@ pub fn rebuild_groups_for_root(
     config: &SimilarityConfig,
     root: &std::path::Path,
 ) -> Result<GroupStats, String> {
+    ensure_config_current(conn, config)?;
+    mark_all_buckets_dirty(conn)?;
     let exclusions = crate::similar_exclusions::pairs(root)?;
-    rebuild_groups_with_exclusions(conn, config, &exclusions, &|| false)
+    ensure_exclusions_current(conn, &exclusions)?;
+    rebuild_all_dirty(conn, config, &exclusions, &|| false)
 }
 
-pub fn rebuild_groups_for_root_cancellable(
+pub fn rebuild_next_dirty_bucket_for_root_cancellable(
     conn: &Connection,
     config: &SimilarityConfig,
     root: &std::path::Path,
     stop: &dyn Fn() -> bool,
-) -> Result<GroupStats, String> {
+) -> Result<Option<GroupStats>, String> {
     crate::resource_limits::require_available(
         crate::resource_limits::SIMILARITY_REQUIRED_AVAILABLE,
         "Similarity analysis",
     )?;
+    ensure_config_current(conn, config)?;
     let exclusions = crate::similar_exclusions::pairs(root)?;
-    rebuild_groups_with_exclusions(conn, config, &exclusions, stop)
+    ensure_exclusions_current(conn, &exclusions)?;
+    rebuild_next_dirty_bucket_with_exclusions(conn, config, &exclusions, stop)
 }
 
 /// One group's members, best-first: sharpness descending (the advisory
@@ -671,17 +963,19 @@ mod candidate_query_tests {
     use super::*;
 
     #[test]
-    fn candidate_load_uses_the_logical_projection_without_regrouping_paths() {
+    fn dated_candidate_load_seeks_one_logical_month_without_regrouping_paths() {
         let dir = tempfile::Builder::new()
             .prefix("onecopy-similarity-plan-")
             .tempdir()
             .unwrap();
         let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
         let mut statement = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {SIMILARITY_CANDIDATES_SQL}"))
+            .prepare(&format!("EXPLAIN QUERY PLAN {DATED_CANDIDATES_SQL}"))
             .unwrap();
         let details: Vec<String> = statement
-            .query_map([], |row| row.get(3))
+            .query_map([1_704_067_200_000i64, 1_706_745_600_000i64], |row| {
+                row.get(3)
+            })
             .unwrap()
             .map(Result::unwrap)
             .collect();
@@ -689,6 +983,10 @@ mod candidate_query_tests {
         assert!(
             details.iter().any(|line| line.contains("logical_contents")),
             "similarity lost the maintained logical source: {details:?}"
+        );
+        assert!(
+            details.iter().any(|line| line.contains("resolved_utc_ms")),
+            "similarity no longer seeks the requested UTC month: {details:?}"
         );
         assert!(
             details.iter().all(|line| !line.contains("paths")),

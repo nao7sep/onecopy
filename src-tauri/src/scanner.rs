@@ -1295,8 +1295,8 @@ pub fn promote_identity(
             params![provisional, real_hash],
         )
         .map_err(|e| e.to_string())?;
-        // Groups rebuild wholesale each scan; dropping the provisional
-        // membership is enough (never duplicating the real row's).
+        // The logical-content triggers dirty the affected cohort; dropping
+        // provisional membership avoids duplicating the real row meanwhile.
         conn.execute(
             "DELETE FROM similar_group_members WHERE content_hash = ?1",
             [provisional],

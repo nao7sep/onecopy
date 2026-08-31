@@ -58,7 +58,6 @@ fn item_projection() -> onecopy_lib::queries::ItemProjectionContext {
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
         },
-        similarity_dirty: false,
     }
 }
 

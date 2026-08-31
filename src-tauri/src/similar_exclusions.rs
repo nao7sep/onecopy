@@ -2,7 +2,7 @@
 //!
 //! The scan index is disposable and rebuilt from source media. These verdicts
 //! are authored data, so they live in their own atomic text store and are
-//! loaded into each wholesale group rebuild. A one-time, idempotent import
+//! loaded into each affected-cohort rebuild. A one-time, idempotent import
 //! preserves verdicts written by older builds into `index.sqlite3`.
 
 use std::collections::{BTreeMap, HashSet};

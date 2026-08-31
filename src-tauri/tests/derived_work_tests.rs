@@ -225,7 +225,6 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
-                    similarity_dirty: false,
                 },
             )
             .unwrap(),
@@ -265,7 +264,6 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
-                    similarity_dirty: false,
                 },
             )
             .unwrap(),
@@ -327,7 +325,6 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
-                    similarity_dirty: false,
                 },
             )
             .unwrap(),
@@ -356,7 +353,7 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
 
     assert_eq!(debt("previews"), (2, 0));
     assert_eq!(debt("snapshots"), (1, 1));
-    assert_eq!(debt("similarity"), (0, 0));
+    assert_eq!(debt("similarity"), (1, 0));
     assert_eq!(debt("faces"), (1, 1));
     assert_eq!(debt("video-transcripts"), (3, 1));
     assert_eq!(debt("audio-transcripts"), (1, 1));

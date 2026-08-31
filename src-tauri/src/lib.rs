@@ -371,7 +371,6 @@ fn item_projection_context(
 ) -> Result<queries::ItemProjectionContext, String> {
     Ok(queries::ItemProjectionContext {
         capabilities: derived_work::work_capabilities(data_root)?,
-        similarity_dirty: derived_work::similarity_dirty(),
     })
 }
 
@@ -912,7 +911,7 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
                     &|_| {},
                 )?;
                 scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
-                derived_work::wake(true);
+                derived_work::wake();
                 Ok(stats.resolved)
             })
         },
@@ -958,7 +957,7 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
                         &|_| {},
                         &mut summary,
                     )?;
-                    derived_work::wake(true);
+                    derived_work::wake();
                 }
                 scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
                 Ok(changed)
@@ -1117,7 +1116,6 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                     let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                     let projection = queries::ItemProjectionContext {
                         capabilities: derived_work::work_capabilities(&data_root)?,
-                        similarity_dirty: derived_work::similarity_dirty(),
                     };
                     let source_path: String = conn
                         .query_row(
@@ -1385,7 +1383,6 @@ fn background_work_snapshot(
         &data_root,
         derived_runtime::snapshot(derived_runtime::RuntimeConditions {
             busy: !derived_work::available(),
-            similarity_dirty: derived_work::similarity_dirty(),
         })?,
         derived_work::work_capabilities(&data_root)?,
     )
@@ -1401,7 +1398,7 @@ fn background_work_set_paused(
     if !paused {
         derived_work::start(app.clone())?;
     }
-    derived_work::wake(false);
+    derived_work::wake();
     Ok(())
 }
 
@@ -1512,17 +1509,17 @@ fn retry_issue(app: AppHandle, id: i64) -> Result<bool, String> {
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             if issue_recovery::issue_has_kind(&conn, id, issue_recovery::DERIVED_WORKER_FAILED)? {
                 derived_work::start(app.clone())?;
-                derived_work::wake(false);
+                derived_work::wake();
                 return Ok(true);
             }
             if let Some(class) = derived_state::take_resource_issue(&conn, id)? {
                 derived_runtime::set_paused(&app, Some(class.id()), false)?;
-                derived_work::wake(false);
+                derived_work::wake();
                 return Ok(true);
             }
             let retried = derived_state::retry_issue(&conn, id)?;
             if retried {
-                derived_work::wake(false);
+                derived_work::wake();
             }
             Ok(retried)
         },
@@ -1550,7 +1547,7 @@ fn retry_all_issues(app: AppHandle) -> Result<u64, String> {
                 retried += 1;
             }
             if retried > 0 {
-                derived_work::wake(false);
+                derived_work::wake();
             }
             Ok(retried)
         },
@@ -1692,7 +1689,7 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
                     // Managed tools are prerequisites for derived work. The
                     // coordinator re-reads live capability state on this wake;
                     // no scan restart or captured config is involved.
-                    derived_work::wake(false);
+                    derived_work::wake();
                 }
                 Ok(Err(err)) => {
                     if binaries_manager::is_cancelled_error(&err) {
@@ -1857,7 +1854,11 @@ fn similar_unlink(app: AppHandle, hash: String) -> Result<u64, String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            similarity::unlink_from_group(&conn, &data_root, &hash)
+            let written = similarity::unlink_from_group(&conn, &data_root, &hash)?;
+            if written > 0 {
+                derived_work::wake();
+            }
+            Ok(written)
         },
         |written| json!({ "exclusions": written }),
     )
@@ -1886,7 +1887,22 @@ fn similar_exclusions_clear(app: AppHandle) -> Result<u64, String> {
         json!({}),
         || {
             let data_root = paths::data_root(&app)?;
-            similar_exclusions::clear(&data_root)
+            let previous = similar_exclusions::count(&data_root)?;
+            if previous == 0 {
+                return similar_exclusions::clear(&data_root);
+            }
+            let config = storage::read_config_for_setup(&data_root)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let settings = derived_work::settings_from_config(config.as_ref(), &data_root);
+            similarity::ensure_config_current(&conn, &settings.similarity)?;
+            similarity::mark_all_buckets_dirty(&conn)?;
+            let cleared = similar_exclusions::clear(&data_root)?;
+            similarity::record_all_exclusions_change(
+                &conn,
+                &similar_exclusions::pairs(&data_root)?,
+            )?;
+            derived_work::wake();
+            Ok(cleared)
         },
         |n| json!({ "cleared": n }),
     )

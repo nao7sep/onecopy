@@ -53,7 +53,7 @@ impl Drop for Guard {
             json!({ "token": self.token, "restorePlayback": self.restore_playback }),
         );
         self.exclusive.take();
-        crate::derived_work::wake(false);
+        crate::derived_work::wake();
     }
 }
 

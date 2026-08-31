@@ -281,7 +281,6 @@ pub struct SectionItem {
 #[derive(Clone, Copy)]
 pub struct ItemProjectionContext {
     pub capabilities: crate::derived_state::WorkCapabilities,
-    pub similarity_dirty: bool,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]
@@ -1077,7 +1076,7 @@ fn unhashed_other_item_from_row(
                 transcript_state: None,
             },
             projection.capabilities,
-            projection.similarity_dirty,
+            false,
         ),
     })
 }
@@ -1184,7 +1183,14 @@ fn hashed_section_select() -> String {
                       AND pri.missing = 0), \
             c.duration_ms, c.kind, c.derived_at_utc, \
             c.derived_version, c.strip_frames, r.face_state, c.face_score, \
-            r.transcript_state \
+            r.transcript_state, \
+            EXISTS (
+              SELECT 1 FROM similarity_dirty_buckets dirty
+              WHERE dirty.bucket = COALESCE(
+                strftime('%Y-%m', l.resolved_utc_ms / 1000.0, 'unixepoch'),
+                'undated'
+              )
+            ) \
      FROM logical_contents l \
      JOIN contents c ON c.hash = l.content_hash \
      JOIN paths rp ON rp.id = l.representative_path_id \
@@ -1230,7 +1236,7 @@ fn section_item_from_row(
                 transcript_state: transcript_state.as_deref(),
             },
             projection.capabilities,
-            projection.similarity_dirty,
+            row.get(21)?,
         ),
     })
 }
@@ -1724,7 +1730,6 @@ mod tests {
                 video_transcription_enabled: true,
                 audio_transcription_enabled: true,
             },
-            similarity_dirty: false,
         }
     }
 

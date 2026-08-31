@@ -25,6 +25,11 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
     for table in [
         "contents",
         "paths",
+        "logical_contents",
+        "similar_groups",
+        "similar_group_members",
+        "similarity_dirty_buckets",
+        "similarity_state",
         "issues",
         "recent_notifications",
         "scan_dirs",

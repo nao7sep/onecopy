@@ -45,7 +45,7 @@ pub fn snapshot(
     capabilities: WorkCapabilities,
 ) -> Result<BackgroundWorkSnapshot, String> {
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-    let debts = crate::derived_state::work_debts(&conn, capabilities, runtime.similarity_dirty)?;
+    let debts = crate::derived_state::work_debts(&conn, capabilities)?;
     let mut classes = Vec::with_capacity(WorkClass::ALL.len());
     for class in WorkClass::ALL {
         let debt = debts.get(class);

@@ -23,7 +23,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 6;
+const SCHEMA_REVISION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -115,6 +115,24 @@ CREATE INDEX IF NOT EXISTS idx_logical_contents_section
 CREATE INDEX IF NOT EXISTS idx_logical_contents_work
   ON logical_contents (kind, content_hash);
 
+-- Similarity is published as complete UTC-month cohorts. Dirty buckets are
+-- reconstructible invalidation facts, not jobs: a revision changes whenever
+-- source facts affecting one cohort change, so stale computation can never
+-- clear or replace a newer request.
+CREATE TABLE IF NOT EXISTS similarity_dirty_buckets (
+  bucket   TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL
+);
+
+-- The configuration fingerprint is the derivation version for similarity.
+-- Keeping it beside the output makes a settings change survive restart and
+-- invalidate every existing cohort exactly once.
+CREATE TABLE IF NOT EXISTS similarity_state (
+  singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+  config_fingerprint TEXT NOT NULL,
+  exclusions_fingerprint TEXT NOT NULL DEFAULT ''
+);
+
 -- Only the current trigger definitions may maintain the projection.
 DROP TRIGGER IF EXISTS paths_logical_after_insert;
 DROP TRIGGER IF EXISTS paths_logical_after_update;
@@ -124,7 +142,9 @@ CREATE TRIGGER IF NOT EXISTS paths_logical_after_insert_v2
 AFTER INSERT ON paths
 WHEN NEW.content_hash IS NOT NULL
 BEGIN
-  INSERT OR REPLACE INTO logical_contents
+  DELETE FROM logical_contents WHERE content_hash = NEW.content_hash;
+
+  INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
   SELECT c.hash,
@@ -161,7 +181,7 @@ BEGIN
   DELETE FROM logical_contents
   WHERE content_hash IN (OLD.content_hash, NEW.content_hash);
 
-  INSERT OR REPLACE INTO logical_contents
+  INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
   SELECT c.hash,
@@ -198,7 +218,7 @@ WHEN OLD.content_hash IS NOT NULL
 BEGIN
   DELETE FROM logical_contents WHERE content_hash = OLD.content_hash;
 
-  INSERT OR REPLACE INTO logical_contents
+  INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
   SELECT c.hash,
@@ -228,6 +248,57 @@ BEGIN
   GROUP BY c.hash, c.kind;
 END;
 
+CREATE TRIGGER IF NOT EXISTS logical_similarity_after_insert
+AFTER INSERT ON logical_contents
+WHEN NEW.kind = 'image'
+BEGIN
+  INSERT INTO similarity_dirty_buckets (bucket, revision)
+  VALUES (
+    COALESCE(strftime('%Y-%m', NEW.resolved_utc_ms / 1000.0, 'unixepoch'), 'undated'),
+    1
+  )
+  ON CONFLICT(bucket) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS logical_similarity_after_update
+AFTER UPDATE OF kind, resolved_utc_ms ON logical_contents
+BEGIN
+  INSERT INTO similarity_dirty_buckets (bucket, revision)
+  SELECT COALESCE(strftime('%Y-%m', OLD.resolved_utc_ms / 1000.0, 'unixepoch'), 'undated'),
+         1
+  WHERE OLD.kind = 'image'
+  ON CONFLICT(bucket) DO UPDATE SET revision = revision + 1;
+
+  INSERT INTO similarity_dirty_buckets (bucket, revision)
+  SELECT COALESCE(strftime('%Y-%m', NEW.resolved_utc_ms / 1000.0, 'unixepoch'), 'undated'),
+         1
+  WHERE NEW.kind = 'image'
+  ON CONFLICT(bucket) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS logical_similarity_after_delete
+AFTER DELETE ON logical_contents
+WHEN OLD.kind = 'image'
+BEGIN
+  INSERT INTO similarity_dirty_buckets (bucket, revision)
+  VALUES (
+    COALESCE(strftime('%Y-%m', OLD.resolved_utc_ms / 1000.0, 'unixepoch'), 'undated'),
+    1
+  )
+  ON CONFLICT(bucket) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS contents_similarity_after_update
+AFTER UPDATE OF phash, camera_make, camera_model ON contents
+BEGIN
+  INSERT INTO similarity_dirty_buckets (bucket, revision)
+  SELECT COALESCE(strftime('%Y-%m', l.resolved_utc_ms / 1000.0, 'unixepoch'), 'undated'),
+         1
+  FROM logical_contents l
+  WHERE l.content_hash = NEW.hash AND l.kind = 'image'
+  ON CONFLICT(bucket) DO UPDATE SET revision = revision + 1;
+END;
+
 CREATE TABLE IF NOT EXISTS evidence (
   id            INTEGER PRIMARY KEY,
   content_hash  TEXT REFERENCES contents(hash),
@@ -243,8 +314,10 @@ CREATE INDEX IF NOT EXISTS idx_evidence_source_raw ON evidence (source, raw);
 
 CREATE TABLE IF NOT EXISTS similar_groups (
   id             INTEGER PRIMARY KEY,
+  bucket         TEXT NOT NULL,
   created_at_utc TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_similar_groups_bucket ON similar_groups (bucket);
 
 CREATE TABLE IF NOT EXISTS similar_group_members (
   group_id     INTEGER NOT NULL REFERENCES similar_groups(id),
@@ -361,6 +434,8 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
              DROP TABLE IF EXISTS analysis_receipts;
              DROP TABLE IF EXISTS similar_group_members;
              DROP TABLE IF EXISTS similar_groups;
+             DROP TABLE IF EXISTS similarity_state;
+             DROP TABLE IF EXISTS similarity_dirty_buckets;
              DROP TABLE IF EXISTS evidence;
              DROP TABLE IF EXISTS logical_contents;
              DROP TABLE IF EXISTS paths;
@@ -507,6 +582,8 @@ pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
              DELETE FROM logical_contents;
              DELETE FROM paths;
              DELETE FROM contents;
+             DELETE FROM similarity_dirty_buckets;
+             DELETE FROM similarity_state;
              DELETE FROM scan_dirs;
              DELETE FROM issues;
              DELETE FROM recent_notifications;
@@ -558,6 +635,8 @@ mod tests {
             "scan_dirs",
             "similar_group_members",
             "similar_groups",
+            "similarity_dirty_buckets",
+            "similarity_state",
             "volumes",
         ];
         expected.sort_unstable();

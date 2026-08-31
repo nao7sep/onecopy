@@ -34,7 +34,7 @@ fn seed_image(conn: &Connection, hash: &str, name: &str) {
 }
 
 fn group(conn: &Connection, hashes: &[&str]) {
-    conn.execute("INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x')", [])
+    conn.execute("INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x')", [])
         .unwrap();
     for hash in hashes {
         conn.execute(

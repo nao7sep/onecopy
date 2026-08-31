@@ -119,7 +119,7 @@ fn worker(app: AppHandle) {
     let terminal = match outcome {
         Ok(Ok(summary)) => {
             if summary.is_some() {
-                crate::derived_work::wake(true);
+                crate::derived_work::wake();
                 crate::logging::info(
                     "file-information completion complete",
                     json!({ "summary": &summary }),

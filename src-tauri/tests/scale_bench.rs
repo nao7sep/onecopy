@@ -12,7 +12,11 @@ use onecopy_lib::derived_state;
 use onecopy_lib::index_store;
 use onecopy_lib::queries;
 use onecopy_lib::scanner;
-use onecopy_lib::similarity::cluster_by_appearance;
+use onecopy_lib::similarity::{
+    cluster_by_appearance, ensure_config_current,
+    rebuild_next_dirty_bucket_for_root_cancellable, record_all_exclusions_change,
+    SimilarityConfig,
+};
 use onecopy_lib::viewer_sequence;
 use rusqlite::params;
 
@@ -28,7 +32,6 @@ fn item_projection() -> queries::ItemProjectionContext {
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
         },
-        similarity_dirty: false,
     }
 }
 
@@ -343,7 +346,6 @@ fn background_work_snapshot_across_one_million_live_items() {
 
     let runtime = derived_runtime::snapshot(RuntimeConditions {
         busy: false,
-        similarity_dirty: false,
     })
     .unwrap();
     let started = Instant::now();
@@ -626,4 +628,69 @@ fn similarity_candidates_by_bucket_size() {
         );
         assert_eq!(clusters.iter().map(Vec::len).sum::<usize>(), n);
     }
+}
+
+#[test]
+#[ignore]
+fn one_dirty_similarity_month_in_a_million_image_index() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-similarity-month-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO paths (id, abs_path, dir_path, file_name, kind, missing)
+         VALUES (1, '/representative', '/', 'representative', 'image', 1);
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO contents (hash, byte_size, kind, phash)
+         SELECT printf('similarity-%07d', n), 1, 'image', n * 2654435761 FROM seq;
+         INSERT INTO logical_contents
+           (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
+            live_copy_count)
+         SELECT hash, 'image', 'dated',
+                946684800000 + (CAST(substr(hash, 12) AS INTEGER) % 120) * 2678400000,
+                1, 1
+         FROM contents;
+         COMMIT;",
+    )
+    .unwrap();
+    let config = SimilarityConfig {
+        max_gap_seconds: 90,
+        phash_max_distance: 0,
+        phash_max_distance_burst: 0,
+        diameter_multiplier: 2,
+    };
+    ensure_config_current(&conn, &config).unwrap();
+    record_all_exclusions_change(&conn, &std::collections::HashSet::new()).unwrap();
+    conn.execute("DELETE FROM similarity_dirty_buckets", []).unwrap();
+    conn.execute(
+        "UPDATE contents SET phash = phash WHERE hash = 'similarity-0500000'",
+        [],
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let stats = rebuild_next_dirty_bucket_for_root_cancellable(
+        &conn,
+        &config,
+        dir.path(),
+        &|| false,
+    )
+    .unwrap()
+    .unwrap();
+    eprintln!(
+        "rebuilt one dirty month among one million images in {:?}",
+        started.elapsed()
+    );
+    assert_eq!(stats.buckets, 1);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM similarity_dirty_buckets", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
 }

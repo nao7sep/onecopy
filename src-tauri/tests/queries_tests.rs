@@ -47,7 +47,6 @@ fn projection() -> queries::ItemProjectionContext {
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
         },
-        similarity_dirty: false,
     }
 }
 
@@ -422,7 +421,7 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
         "UPDATE contents SET face_score = 0.75 WHERE hash = 'photo';
          INSERT INTO analysis_receipts (content_hash, face_state)
            VALUES ('photo', 'ready');
-         INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'now');
+         INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, '2026-01', 'now');
          INSERT INTO similar_group_members (group_id, content_hash) VALUES (1, 'photo');",
     )
     .unwrap();
@@ -461,7 +460,6 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
         },
-        similarity_dirty: true,
     };
     let photo = queries::item_by_hash(&conn, "photo", projection)
         .unwrap()
@@ -508,7 +506,6 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
                 video_transcription_enabled: true,
                 audio_transcription_enabled: true,
             },
-            similarity_dirty: false,
         },
     )
     .unwrap()
@@ -553,7 +550,6 @@ fn stale_preview_is_pending_everywhere_and_is_not_advertised_as_current() {
                 video_transcription_enabled: true,
                 audio_transcription_enabled: true,
             },
-            similarity_dirty: false,
         },
     )
     .unwrap()
@@ -1029,7 +1025,7 @@ fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x')",
+        "INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x')",
         [],
     )
     .unwrap();
@@ -1058,7 +1054,7 @@ fn comparison_admission_checks_selected_members_outside_the_loaded_window() {
         seed_image(&conn, hash, Some("ready"), &format!("{hash}.jpg"));
     }
     conn.execute_batch(
-        "INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x'), (2, 'x');
+        "INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x'), (2, 'undated', 'x');
          INSERT INTO similar_group_members (group_id, content_hash) VALUES
            (1, 'a'), (1, 'b'), (2, 'c');",
     )
@@ -1085,7 +1081,7 @@ fn similar_group_ties_follow_the_representative_path() {
         "a-first.jpg",
     );
     conn.execute(
-        "INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x')",
+        "INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x')",
         [],
     )
     .unwrap();
