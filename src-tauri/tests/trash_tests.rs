@@ -1,8 +1,8 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
-use std::path::{Path, PathBuf};
 use onecopy_lib::trash::*;
+use std::path::{Path, PathBuf};
 
 // These tests run entirely under the temp dir, which lives on the home
 // volume — so trash_root_for routes into the app-root trash and the
@@ -90,7 +90,11 @@ fn files_are_stored_flat_with_provenance_in_the_manifest() {
     );
     let day_dir = stored.parent().expect("stored inside a day folder");
     assert!(
-        day_dir.file_name().unwrap().to_string_lossy().ends_with("-utc"),
+        day_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("-utc"),
         "the file sits DIRECTLY in the day folder, not under a rebuilt tree"
     );
     // Nothing from the source structure was recreated.
@@ -217,7 +221,8 @@ fn volume_root_of_temp_paths_resolves_to_a_real_ancestor() {
         Some(parent) => {
             let parent_dev = std::fs::metadata(parent).unwrap().dev();
             assert_ne!(
-                root_dev, parent_dev,
+                root_dev,
+                parent_dev,
                 "{} is not a mount point — its parent is on the same device",
                 root.display()
             );
@@ -330,6 +335,7 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
         Path::new(&row.root),
         &cancelled,
         &|progress| snapshots.borrow_mut().push(progress),
+        &|_, _| Ok(()),
     )
     .unwrap();
     assert!(!outcome.cancelled);
@@ -363,15 +369,45 @@ fn empty_cancellation_stops_between_files_without_hiding_remaining_contents() {
     let cancelled = std::sync::atomic::AtomicBool::new(true);
     let snapshots = std::cell::RefCell::new(Vec::new());
 
-    let outcome = empty_root_with_progress(&root, &cancelled, &|progress| {
-        snapshots.borrow_mut().push(progress);
-    })
+    let outcome = empty_root_with_progress(
+        &root,
+        &cancelled,
+        &|progress| snapshots.borrow_mut().push(progress),
+        &|_, _| Ok(()),
+    )
     .unwrap();
 
     assert!(outcome.cancelled);
     assert!(snapshots.into_inner().is_empty());
     assert!(root.join("20260827-utc/one.jpg").exists());
     assert!(root.join("20260827-utc/two.jpg").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_stops_when_a_file_failure_cannot_be_recorded() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-trash-empty-record-failure-")
+        .tempdir()
+        .unwrap();
+    let root = dir.path().join("trash");
+    let day = root.join("20260827-utc");
+    let file = day.join("one.jpg");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(&file, b"keep").unwrap();
+    std::fs::set_permissions(&day, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+
+    let result = empty_root_with_progress(&root, &cancelled, &|_| {}, &|path, _| {
+        assert_eq!(path, file);
+        Err("Issues unavailable".to_string())
+    });
+
+    std::fs::set_permissions(&day, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(result.unwrap_err(), "Issues unavailable");
+    assert!(file.exists());
 }
 
 #[cfg(unix)]
@@ -390,7 +426,7 @@ fn empty_never_follows_a_replaced_root_symlink() {
     symlink(&outside, &root).unwrap();
 
     let cancelled = std::sync::atomic::AtomicBool::new(false);
-    let error = empty_root_with_progress(&root, &cancelled, &|_| {}).unwrap_err();
+    let error = empty_root_with_progress(&root, &cancelled, &|_| {}, &|_, _| Ok(())).unwrap_err();
 
     assert_eq!(error, "trash root is not a directory");
     assert_eq!(std::fs::read(outside.join("keep.jpg")).unwrap(), b"keep");

@@ -35,4 +35,18 @@ describe("escaped interface failures", () => {
       args: { message: "drawing failed" },
     });
   });
+
+  it("shows the direct recovery surface when the core cannot save the failure", async () => {
+    mockCommands({
+      record_interface_failure: () => Promise.reject(new Error("index unavailable")),
+    });
+
+    recordInterfaceFailure("drawing failed");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.body.textContent).toContain("OneCopy needs to reload");
+    expect(document.body.textContent).toContain("drawing failed");
+    expect(document.body.textContent).toContain("could not save this failure");
+  });
 });

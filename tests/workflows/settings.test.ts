@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { saveSettings } from "../../src/workflows/settings";
+import { useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { useSettingsStore } from "../../src/state/settings-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -16,6 +17,7 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     patch_config: () => ({}),
+    patch_state: ({ patch }) => patch,
     log_event: () => null,
     re_resolve_all: () => 0,
     start_source_check: () => true,
@@ -23,6 +25,15 @@ beforeEach(() => {
     check_source_dirs: () => ({ missing: [], substituted: [] }),
   });
   useSettingsStore.getState().openWith({});
+  useAppStore.setState({
+    appData: {
+      config: {},
+      state: {},
+      dataRoot: "/app",
+      debugEnabled: false,
+      quarantines: [],
+    },
+  });
   useItemsStore.setState({ selected: null, message: null });
 });
 
@@ -85,5 +96,19 @@ describe("Settings save boundary", () => {
     await saveSettings();
 
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
+  });
+
+  it("publishes Sound and volume as view state rather than configuration", async () => {
+    useSettingsStore.getState().update({ soundEnabled: false, playbackVolume: 0.35 });
+
+    await saveSettings();
+
+    const configSave = invokeCalls.find((call) => call.command === "patch_config");
+    expect(configSave?.args.patch).not.toHaveProperty("soundEnabled");
+    expect(configSave?.args.patch).not.toHaveProperty("playbackVolume");
+    expect(useAppStore.getState().appData?.state).toMatchObject({
+      soundEnabled: false,
+      playbackVolume: 0.35,
+    });
   });
 });

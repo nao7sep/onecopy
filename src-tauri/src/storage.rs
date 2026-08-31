@@ -81,9 +81,6 @@ pub struct DefaultConfig {
     pub audio_transcription_enabled: bool,
     pub video_autoplay: bool,
     pub audio_autoplay: bool,
-    pub sound_enabled: bool,
-    /// Remembered nonzero volume restored when app-wide Sound is enabled.
-    pub playback_volume: f64,
     pub enlarge_small_images_in_preview: bool,
     pub enlarge_small_images_in_quick_view: bool,
     pub text_preview_max_bytes: u64,
@@ -151,8 +148,6 @@ impl Default for DefaultConfig {
             audio_transcription_enabled: true,
             video_autoplay: true,
             audio_autoplay: true,
-            sound_enabled: true,
-            playback_volume: 1.0,
             enlarge_small_images_in_preview: true,
             enlarge_small_images_in_quick_view: true,
             text_preview_max_bytes: crate::text_preview::DEFAULT_MAX_BYTES,

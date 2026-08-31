@@ -203,6 +203,11 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
           loading: false,
           loadError: "Couldn’t load this section.",
         });
+        reportActionFailure(
+          "section-items-load-failed",
+          "Couldn’t load this section.",
+          error,
+        );
       }
     }
   },

@@ -73,7 +73,14 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       if (fresh()) set({ counts, error: null });
     } catch (error) {
       log.error("section counts load failed", toErrorFields(error));
-      if (fresh()) set({ error: "Couldn’t read the library sections." });
+      if (fresh()) {
+        set({ error: "Couldn’t read the library sections." });
+        reportActionFailure(
+          "section-counts-load-failed",
+          "Couldn’t read the library sections.",
+          error,
+        );
+      }
     }
   },
 
@@ -92,7 +99,14 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       }));
     } catch (error) {
       log.error("library background-work status failed", toErrorFields(error));
-      if (fresh()) set({ error: "Couldn’t read library background-work status." });
+      if (fresh()) {
+        set({ error: "Couldn’t read library background-work status." });
+        reportActionFailure(
+          "background-work-status-failed",
+          "Couldn’t read library background-work status.",
+          error,
+        );
+      }
     }
   },
 

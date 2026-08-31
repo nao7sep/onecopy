@@ -67,12 +67,18 @@ fn trash_file_with_before_move(
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, String> {
     if !file.is_absolute() {
-        return Err(format!("trash requires an absolute path: {}", file.display()));
+        return Err(format!(
+            "trash requires an absolute path: {}",
+            file.display()
+        ));
     }
     let metadata = std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref())
         .map_err(|error| format!("trash source is unavailable: {error}"))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(format!("trash source is not a regular file: {}", file.display()));
+        return Err(format!(
+            "trash source is not a regular file: {}",
+            file.display()
+        ));
     }
     let plan = prepare_trash(file, app_root, content_hash)?;
     commit_trash(file, plan, before_move)
@@ -151,12 +157,8 @@ fn commit_trash(
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, String> {
     before_move(&plan.stored);
-    crate::fs_publish::rename_no_replace(source, &plan.stored).map_err(|e| {
-        format!(
-            "trash move failed for {}: {e}",
-            source.display()
-        )
-    })?;
+    crate::fs_publish::rename_no_replace(source, &plan.stored)
+        .map_err(|e| format!("trash move failed for {}: {e}", source.display()))?;
     if let Err(error) = crate::fs_publish::sync_directory(&plan.day_dir) {
         crate::logging::warn(
             "trash directory sync failed after the move completed",
@@ -245,12 +247,9 @@ mod boundary_tests {
         let source = source_dir.join("photo.jpg");
         std::fs::write(&source, b"source").unwrap();
 
-        let result = trash_file_with_before_move(
-            &source,
-            &app_root,
-            None,
-            |target| std::fs::write(target, b"winner").unwrap(),
-        );
+        let result = trash_file_with_before_move(&source, &app_root, None, |target| {
+            std::fs::write(target, b"winner").unwrap()
+        });
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"source");
@@ -429,7 +428,7 @@ fn mounted_trash_roots() -> Vec<PathBuf> {
 /// be perfect, only smaller.
 pub fn empty_root(root: &Path) -> Result<(), String> {
     let never_cancelled = AtomicBool::new(false);
-    empty_root_with_progress(root, &never_cancelled, &|_| {}).map(|_| ())
+    empty_root_with_progress(root, &never_cancelled, &|_| {}, &|_, _| Ok(())).map(|_| ())
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -459,6 +458,7 @@ pub fn empty_root_with_progress(
     root: &Path,
     cancelled: &AtomicBool,
     progress: &dyn Fn(EmptyProgress),
+    record_failure: &dyn Fn(&Path, &str) -> Result<(), String>,
 ) -> Result<EmptyOutcome, String> {
     match std::fs::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_dir() => {}
@@ -489,8 +489,8 @@ pub fn empty_root_with_progress(
             // Symlinks and other stray non-directories are bookkeeping, never
             // followed and never counted as recoverable media, but Empty must
             // still remove their directory entries.
-            let recoverable = entry.file_type().is_file()
-                && entry.file_name() != MANIFEST_FILE_NAME;
+            let recoverable =
+                entry.file_type().is_file() && entry.file_name() != MANIFEST_FILE_NAME;
             let bytes = recoverable
                 .then(|| entry.metadata().map(|metadata| metadata.len()).unwrap_or(0))
                 .unwrap_or(0);
@@ -500,7 +500,10 @@ pub fn empty_root_with_progress(
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
 
     let mut snapshot = EmptyProgress {
-        total: files.iter().filter(|(_, _, recoverable)| *recoverable).count() as u64,
+        total: files
+            .iter()
+            .filter(|(_, _, recoverable)| *recoverable)
+            .count() as u64,
         bytes_total: files
             .iter()
             .filter(|(_, _, recoverable)| *recoverable)
@@ -519,6 +522,7 @@ pub fn empty_root_with_progress(
         }
         if let Err(error) = std::fs::remove_file(&path) {
             snapshot.failures += 1;
+            record_failure(&path, &error.to_string())?;
             crate::logging::warn(
                 "trash entry removal failed",
                 serde_json::json!({
@@ -539,6 +543,7 @@ pub fn empty_root_with_progress(
                 error.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
             ) {
+                record_failure(&directory, &error.to_string())?;
                 crate::logging::warn(
                     "trash directory cleanup failed",
                     serde_json::json!({

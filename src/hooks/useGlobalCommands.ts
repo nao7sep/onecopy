@@ -27,9 +27,11 @@ export function useGlobalCommands() {
   const [confirmTrash, setConfirmTrash] = useState<number | null>(null);
 
   const openSettings = useCallback(() => {
-    useSettingsStore
-      .getState()
-      .openWith(useAppStore.getState().appData?.config ?? null);
+    const appData = useAppStore.getState().appData;
+    useSettingsStore.getState().openWith(
+      appData?.config ?? null,
+      appData?.state ?? null,
+    );
   }, []);
 
   useEffect(() => {

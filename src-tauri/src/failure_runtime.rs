@@ -16,6 +16,30 @@ pub fn report(
     path: Option<&str>,
     message: &str,
 ) -> Result<(), String> {
+    record_active(app, kind, path, message)?;
+    crate::notifications::publish(
+        app,
+        crate::notifications::NotificationRequest {
+            kind: kind.to_string(),
+            path: path.map(str::to_string),
+            level: crate::notifications::NotificationLevel::Error,
+            presentation: crate::notifications::NotificationPresentation::Persistent,
+            message: message.to_string(),
+        },
+    )
+    .map_err(|error| present_unrecorded(app, kind, path, message, "Recent", &error))?;
+    Ok(())
+}
+
+/// Records one unresolved condition without creating a per-input notification.
+/// Large operations use this for detailed Active rows and publish one summary
+/// through their owning result surface.
+pub fn record_active(
+    app: &AppHandle,
+    kind: &str,
+    path: Option<&str>,
+    message: &str,
+) -> Result<(), String> {
     crate::logging::error(
         "application failure",
         json!({
@@ -29,18 +53,6 @@ pub fn report(
         .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
     crate::index_store::upsert_issue(&conn, path, kind, message)
         .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
-    crate::notifications::publish(
-        app,
-        crate::notifications::NotificationRequest {
-            kind: kind.to_string(),
-            path: path.map(str::to_string),
-            level: crate::notifications::NotificationLevel::Error,
-            presentation: crate::notifications::NotificationPresentation::Persistent,
-            message: message.to_string(),
-        },
-    )
-    .map_err(|error| present_unrecorded(app, kind, path, message, "Recent", &error))?;
-
     if let Err(emit_error) = emit_checked(app, "failure://reported", json!({ "kind": kind })) {
         crate::logging::error(
             "failure notification event failed",

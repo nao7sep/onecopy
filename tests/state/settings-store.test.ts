@@ -48,7 +48,7 @@ describe("settings timezone validation", () => {
 });
 
 describe("playback preferences", () => {
-  it("defaults separate autoplay and app-wide sound on", () => {
+  it("defaults separate autoplay and missing playback state on", () => {
     expect(useSettingsStore.getState().draft).toMatchObject({
       videoAutoplay: true,
       audioAutoplay: true,
@@ -62,18 +62,35 @@ describe("playback preferences", () => {
   });
 
   it("preserves explicit off choices", () => {
-    useSettingsStore.getState().openWith({
-      ...config,
-      videoAutoplay: false,
-      audioAutoplay: false,
-      soundEnabled: false,
-      playbackVolume: 0.4,
-    });
+    useSettingsStore.getState().openWith(
+      {
+        ...config,
+        videoAutoplay: false,
+        audioAutoplay: false,
+      },
+      {
+        soundEnabled: false,
+        playbackVolume: 0.4,
+      },
+    );
     expect(useSettingsStore.getState().draft).toMatchObject({
       videoAutoplay: false,
       audioAutoplay: false,
       soundEnabled: false,
       playbackVolume: 0.4,
+    });
+  });
+
+  it("does not read playback state from the configuration document", () => {
+    useSettingsStore.getState().openWith({
+      ...config,
+      soundEnabled: false,
+      playbackVolume: 0.2,
+    });
+
+    expect(useSettingsStore.getState().draft).toMatchObject({
+      soundEnabled: true,
+      playbackVolume: 1,
     });
   });
 });

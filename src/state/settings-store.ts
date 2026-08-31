@@ -1,6 +1,7 @@
-// The settings surface over the Design's tunables. This store owns the draft,
-// field validation, and picker. The cross-store Save journey lives in
-// workflows/settings.
+// The Settings surface over durable configuration plus the two playback-view
+// adjustments it exposes for convenience. This store owns only the draft,
+// field validation, and picker; the workflow splits config from state again at
+// publication.
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
@@ -66,7 +67,10 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
+function draftFrom(
+  config: Record<string, unknown> | null,
+  state: Record<string, unknown> | null,
+): SettingsDraft {
   return {
     defaultTimezone:
       typeof config?.defaultTimezone === "string"
@@ -100,10 +104,10 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
     audioTranscriptionEnabled: config?.audioTranscriptionEnabled !== false,
     videoAutoplay: config?.videoAutoplay !== false,
     audioAutoplay: config?.audioAutoplay !== false,
-    soundEnabled: config?.soundEnabled !== false,
+    soundEnabled: state?.soundEnabled !== false,
     playbackVolume: Math.min(
       1,
-      Math.max(0.01, numberOr(config?.playbackVolume, 1)),
+      Math.max(0.01, numberOr(state?.playbackVolume, 1)),
     ),
     enlargeSmallImagesInPreview: config?.enlargeSmallImagesInPreview !== false,
     enlargeSmallImagesInQuickView:
@@ -155,7 +159,10 @@ interface SettingsState {
   timezonePending: boolean;
   saving: boolean;
   message: string;
-  openWith: (config: Record<string, unknown> | null) => void;
+  openWith: (
+    config: Record<string, unknown> | null,
+    state?: Record<string, unknown> | null,
+  ) => void;
   close: () => void;
   update: (patch: Partial<SettingsDraft>) => void;
   resetSimilarPhotoSettings: () => void;
@@ -175,12 +182,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   saving: false,
   message: "",
 
-  openWith: (config) => {
+  openWith: (config, state = null) => {
     timezoneValidation.begin();
     set({
       open: true,
-      draft: draftFrom(config),
-      opened: draftFrom(config),
+      draft: draftFrom(config, state),
+      opened: draftFrom(config, state),
       timezoneValid: true,
       timezonePending: false,
       message: "",

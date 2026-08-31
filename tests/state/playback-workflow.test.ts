@@ -20,10 +20,11 @@ beforeEach(async () => {
       config: {
         videoAutoplay: true,
         audioAutoplay: false,
+      },
+      state: {
         soundEnabled: true,
         playbackVolume: 0.7,
       },
-      state: null,
       dataRoot: "/app",
       debugEnabled: false,
       quarantines: [],

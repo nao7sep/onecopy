@@ -574,10 +574,7 @@ pub(crate) fn move_items_out(
                 .map(std::path::Path::new)
                 .collect::<Vec<_>>();
             if destination_roots.is_empty()
-                || !crate::path_identity::directory_is_within_any(
-                    destination,
-                    &destination_roots,
-                )?
+                || !crate::path_identity::directory_is_within_any(destination, &destination_roots)?
             {
                 return Err(format!(
                     "destination {dest_dir} is not a configured destination root or one of its folders"
@@ -783,6 +780,16 @@ pub(crate) fn empty_trash(
                         "trash://progress",
                         json!({ "root": root, "progress": trash_progress }),
                     );
+                },
+                &|path, error| {
+                    crate::failure_runtime::record_active(
+                        app,
+                        "trash-empty-entry-failed",
+                        Some(&path.to_string_lossy()),
+                        &format!(
+                            "OneCopy couldn’t permanently remove this item from OneCopy Trash: {error}"
+                        ),
+                    )
                 },
             )
         },

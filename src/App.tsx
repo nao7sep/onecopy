@@ -71,7 +71,7 @@ function ZoomInIcon() {
 export default function App() {
   useDestinationDragBoundary();
   const appData = useAppStore((s) => s.appData);
-  const soundEnabled = appData?.config?.soundEnabled !== false;
+  const soundEnabled = appData?.state?.soundEnabled !== false;
   const videoAutoplay = appData?.config?.videoAutoplay !== false;
   const audioAutoplay = appData?.config?.audioAutoplay !== false;
   const loadError = useAppStore((s) => s.loadError);

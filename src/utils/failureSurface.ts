@@ -44,7 +44,10 @@ export function presentEscapedFailure(message: string): void {
 /** Persists one current interface condition per webview when the core remains reachable. */
 export function recordInterfaceFailure(message: string): void {
   void invoke("record_interface_failure", { message }).catch(() => {
-    // The direct surface already carries the failure. A failed IPC call has no
-    // deeper reliable channel inside this webview and must not recurse.
+    // A failed IPC call means the promised durable Issue does not exist. The
+    // DOM is the final independent channel in this webview; do not recurse.
+    presentEscapedFailure(
+      `${message} OneCopy could not save this failure. Reload the window before continuing.`,
+    );
   });
 }

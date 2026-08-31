@@ -23,8 +23,8 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["previewLongEdgePx"], serde_json::json!(1600));
     assert_eq!(value["videoAutoplay"], serde_json::json!(true));
     assert_eq!(value["audioAutoplay"], serde_json::json!(true));
-    assert_eq!(value["soundEnabled"], serde_json::json!(true));
-    assert_eq!(value["playbackVolume"], serde_json::json!(1.0));
+    assert!(value.get("soundEnabled").is_none());
+    assert!(value.get("playbackVolume").is_none());
     assert_eq!(
         value["enlargeSmallImagesInPreview"],
         serde_json::json!(true)

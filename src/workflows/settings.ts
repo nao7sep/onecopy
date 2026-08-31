@@ -1,6 +1,6 @@
 // The complete Settings Save transaction. The settings store owns its draft;
-// this application edge coordinates the config owner and the projections that
-// must be refreshed after resolver settings change.
+// this application edge publishes durable configuration and playback view
+// state through their separate owners, then refreshes affected projections.
 
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
@@ -16,13 +16,15 @@ export async function saveSettings(): Promise<void> {
   if (!draft || !timezoneValid || timezonePending) return;
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
+  const { soundEnabled, playbackVolume, ...configDraft } = draft;
   useSettingsStore.setState({ saving: true, message: "" });
   // Config publication is the Save transaction's commit point. Index
   // projection is durable follow-up work: once publication succeeds, close
   // the draft surface rather than leaving it looking unsaved for the duration
   // of a million-row rebuild or after a cancellable repair.
   try {
-    await useAppStore.getState().patchConfig({ ...draft });
+    await useAppStore.getState().patchConfig(configDraft);
+    await useAppStore.getState().patchState({ soundEnabled, playbackVolume });
     useSettingsStore.setState({
       open: false,
       draft: null,

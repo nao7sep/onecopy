@@ -30,8 +30,8 @@ interface PlaybackTarget {
 const registrations = new Map<PlaybackSurface, PlaybackRegistration>();
 let session: PlaybackSession | null = null;
 let installed = false;
-let pendingConfig: Record<string, unknown> | null = null;
-let configTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingState: Record<string, unknown> | null = null;
+let stateTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSeek: PlaybackTarget | null = null;
 
 function booleanConfig(key: string, fallback = true): boolean {
@@ -39,13 +39,18 @@ function booleanConfig(key: string, fallback = true): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function booleanState(key: string, fallback = true): boolean {
+  const value = useAppStore.getState().appData?.state?.[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
 function policy() {
   return {
     videoAutoplay: booleanConfig("videoAutoplay"),
     audioAutoplay: booleanConfig("audioAutoplay"),
-    soundEnabled: booleanConfig("soundEnabled"),
+    soundEnabled: booleanState("soundEnabled"),
     volume: clampPlaybackVolume(
-      useAppStore.getState().appData?.config?.playbackVolume,
+      useAppStore.getState().appData?.state?.playbackVolume,
     ),
   };
 }
@@ -106,19 +111,19 @@ function unregister(registration: PlaybackRegistration): void {
   recompute();
 }
 
-function queueConfigPatch(patch: Record<string, unknown>): void {
-  pendingConfig = { ...(pendingConfig ?? {}), ...patch };
-  if (configTimer !== null) clearTimeout(configTimer);
-  configTimer = setTimeout(() => {
-    const next = pendingConfig;
-    pendingConfig = null;
-    configTimer = null;
+function queueStatePatch(patch: Record<string, unknown>): void {
+  pendingState = { ...(pendingState ?? {}), ...patch };
+  if (stateTimer !== null) clearTimeout(stateTimer);
+  stateTimer = setTimeout(() => {
+    const next = pendingState;
+    pendingState = null;
+    stateTimer = null;
     if (next === null) return;
     void useAppStore
       .getState()
-      .patchConfig(next)
+      .patchState(next)
       .catch((error) => {
-        log.error("playback setting save failed", toErrorFields(error));
+        log.error("playback state save failed", toErrorFields(error));
       });
   }, 250);
 }
@@ -157,7 +162,7 @@ function observe(observation: PlaybackObservation): void {
     broadcast();
   }
   if (soundChanged || volumeChanged) {
-    queueConfigPatch({ soundEnabled, playbackVolume: volume });
+    queueStatePatch({ soundEnabled, playbackVolume: volume });
   }
 }
 
@@ -218,7 +223,11 @@ export async function installPlaybackWorkflow(): Promise<void> {
     }),
   ]);
   useAppStore.subscribe((state, previous) => {
-    if (state.appData?.config === previous.appData?.config || session === null)
+    if (
+      (state.appData?.config === previous.appData?.config &&
+        state.appData?.state === previous.appData?.state) ||
+      session === null
+    )
       return;
     const next = policy();
     session = {
@@ -254,7 +263,7 @@ export async function setSoundEnabled(enabled: boolean): Promise<void> {
     session = { ...session, soundEnabled: enabled };
     broadcast();
   }
-  await useAppStore.getState().patchConfig({ soundEnabled: enabled });
+  await useAppStore.getState().patchState({ soundEnabled: enabled });
 }
 
 export async function setMediumAutoplay(
