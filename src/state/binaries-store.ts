@@ -17,6 +17,7 @@ import {
 } from "../models/dependencyProgress";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { reportActionFailure } from "./notifications-store";
 
 export type DependencyStatus =
   | "not-installed"
@@ -166,6 +167,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         };
       });
       log.error("binaries install start failed", { id, ...toErrorFields(error) });
+      reportActionFailure(
+        "managed-tool-install-failed",
+        "Couldn’t start installing this managed tool.",
+        error,
+      );
     }
   },
 
@@ -196,6 +202,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       }
     } catch (error) {
       log.error("binaries install cancellation failed", { id, ...toErrorFields(error) });
+      reportActionFailure(
+        "managed-tool-cancel-failed",
+        "Couldn’t cancel this managed-tool installation.",
+        error,
+      );
       set((s) => {
         if (s.installing[id]?.cancelling !== true) return s;
         const installing = { ...s.installing };
@@ -290,6 +301,12 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       cooldownUntil: cancelled ? 0 : Date.now() + COOLDOWN_MS,
       lastCheckOutcome: outcome,
     });
+    if (failures > 0) {
+      reportActionFailure(
+        "managed-tool-check-failed",
+        `${failures} managed-tool check${failures === 1 ? "" : "s"} failed.`,
+      );
+    }
     setTimeout(() => {
       useBinariesStore.setState((state) =>
         state.lastCheckOutcome === outcome && !state.checking
@@ -308,6 +325,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     } catch (error) {
       set({ checkCancelling: false });
       log.error("binaries check cancellation failed", { id, ...toErrorFields(error) });
+      reportActionFailure(
+        "managed-tool-check-cancel-failed",
+        "Couldn’t cancel the managed-tool check.",
+        error,
+      );
     }
   },
 
@@ -423,6 +445,11 @@ void (async () => {
         };
       });
       void useBinariesStore.getState().load();
+      reportActionFailure(
+        "managed-tool-install-failed",
+        "The managed-tool installation failed.",
+        event.payload.message,
+      );
     });
     // The launch-time update check (config-gated, core-side) finished after
     // this store's initial load — refresh so the chip reflects it.

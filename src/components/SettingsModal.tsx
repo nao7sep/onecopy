@@ -20,6 +20,7 @@ import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
 import { Plus } from "lucide-react";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { reportActionFailure } from "../state/notifications-store";
 
 /** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
  * comparison). Persisted as app STATE, not part of the config draft — screen
@@ -48,6 +49,7 @@ function ScreensSection() {
       .catch((error) => {
         log.warn("settings monitor query failed", toErrorFields(error));
         setScreenError("Couldn’t read the connected screens.");
+        reportActionFailure("screen-list-failed", "Couldn’t read the connected screens.", error);
       });
   }, []);
   if (screenError !== null) {
@@ -61,7 +63,14 @@ function ScreensSection() {
     if (target < 0 || target >= ordered.length) return;
     const keys = ordered.map(monitorKey);
     [keys[index], keys[target]] = [keys[target], keys[index]];
-    void useAppStore.getState().patchState({ screenPriority: keys });
+    void useAppStore
+      .getState()
+      .patchState({ screenPriority: keys })
+      .catch((error) => {
+        log.error("screen priority save failed", toErrorFields(error));
+        setScreenError("Couldn’t save the screen order.");
+        reportActionFailure("screen-order-save-failed", "Couldn’t save the screen order.", error);
+      });
   };
   const role = (index: number) =>
     index === 0 ? "main" : index === 1 ? "preview" : "comparison";
@@ -110,6 +119,11 @@ function ScreensSection() {
                     toErrorFields(failure),
                   );
                   setScreenError("Couldn’t identify the connected screens.");
+                  reportActionFailure(
+                    "screen-identify-failed",
+                    "Couldn’t identify the connected screens.",
+                    failure,
+                  );
                 });
               });
               setScreenError(null);
@@ -117,6 +131,11 @@ function ScreensSection() {
             .catch((error) => {
               log.warn("screen identification failed", toErrorFields(error));
               setScreenError("Couldn’t identify the connected screens.");
+              reportActionFailure(
+                "screen-identify-failed",
+                "Couldn’t identify the connected screens.",
+                error,
+              );
             });
         }}
       >
@@ -176,6 +195,7 @@ function NumberField({
   hint,
   value,
   min,
+  max,
   onChange,
 }: {
   label: string;
@@ -185,6 +205,7 @@ function NumberField({
   hint?: string;
   value: number;
   min: number;
+  max?: number;
   onChange: (value: number) => void;
 }) {
   const [text, setText] = useState<string | null>(null);
@@ -195,11 +216,16 @@ function NumberField({
         className="w-24 text-right"
         value={text ?? String(value)}
         min={min}
+        max={max}
         onFocus={() => setText(String(value))}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
           const parsed = Number.parseInt(text ?? "", 10);
-          onChange(Number.isFinite(parsed) ? Math.max(min, parsed) : value);
+          onChange(
+            Number.isFinite(parsed)
+              ? Math.min(max ?? Number.POSITIVE_INFINITY, Math.max(min, parsed))
+              : value,
+          );
           setText(null);
         }}
       />
@@ -220,6 +246,7 @@ function UnlinkedPairsRow() {
       .catch((failure) => {
         log.warn("exclusions count failed", toErrorFields(failure));
         setError("Couldn’t read unlinked pairs.");
+        reportActionFailure("unlinked-pairs-load-failed", "Couldn’t read unlinked pairs.", failure);
       });
   }, []);
   if (count === null) {
@@ -243,6 +270,7 @@ function UnlinkedPairsRow() {
             .catch((failure) => {
               log.warn("exclusions clear failed", toErrorFields(failure));
               setError("Couldn’t forget unlinked pairs.");
+              reportActionFailure("unlinked-pairs-clear-failed", "Couldn’t forget unlinked pairs.", failure);
             });
         }}
       >
@@ -367,6 +395,11 @@ export default function SettingsModal() {
         useSettingsStore.setState({
           message: "Couldn’t read the supported text encodings.",
         });
+        reportActionFailure(
+          "text-encodings-load-failed",
+          "Couldn’t read the supported text encodings.",
+          error,
+        );
       });
   }, [open, textEncodings.length]);
 
@@ -412,7 +445,7 @@ export default function SettingsModal() {
       {confirmRebuild ? (
         <ConfirmDialog
           title="Rebuild library index?"
-          message="OneCopy will clear rebuildable library information and Issues, then check your source folders again. Your files, settings, managed tools, and choices will not change."
+          message="OneCopy will clear rebuildable library information, Active Issues, and Recent notification history, then check your source folders again. Your files, settings, managed tools, and choices will not change."
           confirmLabel="Rebuild"
           onConfirm={() => {
             setConfirmRebuild(false);
@@ -433,6 +466,11 @@ export default function SettingsModal() {
               .catch((error) => {
                 useSettingsStore.setState({ message: String(error) });
                 log.error("library index rebuild failed", toErrorFields(error));
+                reportActionFailure(
+                  "library-rebuild-failed",
+                  "Couldn’t rebuild the library index.",
+                  error,
+                );
               })
               .finally(() => setRebuilding(false));
           }}
@@ -547,7 +585,7 @@ export default function SettingsModal() {
           </h2>
           <Row
             label="Rebuild library index"
-            hint="Clears rebuildable library information and Issues, then checks every source folder again. Your files and choices are preserved."
+            hint="Clears rebuildable library information, Active Issues, and Recent notification history, then checks every source folder again. Your files and choices are preserved."
           >
             <Button
               disabled={dirty || saving || rebuilding}
@@ -753,6 +791,13 @@ export default function SettingsModal() {
             value={draft.maximumImagesInComparison}
             min={2}
             onChange={(v) => update({ maximumImagesInComparison: v })}
+          />
+          <NumberField
+            label="Minor notification display time (seconds)"
+            value={draft.notificationDisplaySeconds}
+            min={1}
+            max={60}
+            onChange={(v) => update({ notificationDisplaySeconds: v })}
           />
           <Row
             label="Destination conflict names"

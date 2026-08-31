@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { FolderOpen, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealInFileManager } from "../workflows/external-open";
 import {
   formatBytes,
   stripTimestampMs,
@@ -55,7 +55,7 @@ function PathRow({ path }: { path: string }) {
         title={`Show in ${word}`}
         className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition-opacity hover:bg-surface-muted hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
         onClick={() => {
-          void revealItemInDir(path).catch((error) => {
+          void revealInFileManager(path).catch((error) => {
             // A copy on an unplugged drive is the ordinary failure here, and
             // it is worth a log line rather than silence.
             log.warn("reveal failed", { path, ...toErrorFields(error) });

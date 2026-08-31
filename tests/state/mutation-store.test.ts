@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MutationProgress } from "../../src/models/mutation";
 import { useItemsStore } from "../../src/state/items-store";
 import { useMutationStore } from "../../src/state/mutation-store";
@@ -76,6 +76,45 @@ describe("the shared mutation activity projection", () => {
       exiting: true,
       cancelling: true,
     });
+  });
+
+  it("records a failed final result in restart-persistent Recent history", async () => {
+    mockCommands({
+      record_recent_notification: () => ({
+        id: 1,
+        kind: "delete-failed",
+        path: null,
+        level: "warning",
+        presentation: "persistent",
+        message: "Delete stopped: 1 file failed.",
+        firstSeenUtc: "2026-08-31T00:00:00.000Z",
+        lastSeenUtc: "2026-08-31T00:00:00.000Z",
+        occurrenceCount: 1,
+      }),
+    });
+    await installMutationEventWiring();
+    fireEvent("mutation://progress", PROGRESS);
+    fireEvent("mutation://done", {
+      progress: { ...PROGRESS, phase: "complete" },
+      cancelled: false,
+      summary: {
+        itemsCompleted: 1,
+        itemsPartial: 1,
+        itemsUnstarted: 3,
+        filesCompleted: 2,
+        filesFailed: 1,
+        filesUnstarted: 5,
+        error: null,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "record_recent_notification")).toBe(true);
+    });
+    const request = invokeCalls.find(
+      (call) => call.command === "record_recent_notification",
+    )?.args.request as { kind?: string; level?: string } | undefined;
+    expect(request).toMatchObject({ kind: "delete-failed", level: "warning" });
   });
 
   it("keeps a cancellation command failure visible", async () => {

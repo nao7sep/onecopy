@@ -904,11 +904,12 @@ pub struct IssueRow {
     pub message: Option<String>,
     pub first_seen_utc: String,
     pub last_seen_utc: String,
+    pub occurrence_count: u64,
     pub recovery: Option<crate::issue_recovery::IssueRecovery>,
 }
 
 const ISSUES_PAGE_SQL: &str =
-    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc FROM issues
+    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM issues
      ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
 
 /// OLDEST first (the developer's call — the longest-standing condition leads),
@@ -940,6 +941,7 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
                 message: r.get(3)?,
                 first_seen_utc: r.get(4)?,
                 last_seen_utc: r.get(5)?,
+                occurrence_count: r.get::<_, i64>(6)?.max(1) as u64,
                 recovery: None,
             })
         })

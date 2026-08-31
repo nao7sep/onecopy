@@ -53,6 +53,8 @@ import { useMutationStore } from "./state/mutation-store";
 import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
 import DestinationDragProvider from "./components/DestinationDragProvider";
 import { setMediumAutoplay, setSoundEnabled } from "./workflows/playback";
+import NotificationHost from "./components/NotificationHost";
+import { reportActionFailure } from "./state/notifications-store";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -185,6 +187,7 @@ export default function App() {
         <PresenceGate missing={missingDirs} substituted={substitutedDirs} />
       ) : null}
       <ComparisonView />
+      <NotificationHost />
       <BinariesModal />
       <BackgroundWorkModal />
       <ShortcutsModal open={helpOpen} onClose={closeHelp} />
@@ -264,6 +267,7 @@ export default function App() {
               <MenuItem onSelect={openSettings}>Settings…</MenuItem>
               <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
               <MenuItem onSelect={() => setTrashOpen(true)}>OneCopy Trash…</MenuItem>
+              <MenuItem onSelect={() => setIssuesOpen(true)}>Issues…</MenuItem>
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}
@@ -300,6 +304,7 @@ export default function App() {
                   void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
                     log.warn("reveal logs failed", toErrorFields(error));
                     useItemsStore.setState({ message: "Couldn’t reveal the logs folder." });
+                    reportActionFailure("reveal-logs-failed", "Couldn’t reveal the logs folder.", error);
                   });
                 }}
               >
@@ -491,6 +496,7 @@ export default function App() {
               void setSoundEnabled(!soundEnabled).catch((error) => {
                 log.error("sound setting failed", toErrorFields(error));
                 useItemsStore.setState({ message: "Couldn’t change Sound." });
+                reportActionFailure("sound-setting-failed", "Couldn’t change Sound.", error);
               });
             }}
           >
@@ -504,6 +510,7 @@ export default function App() {
               void setMediumAutoplay("video", !videoAutoplay).catch((error) => {
                 log.error("video autoplay setting failed", toErrorFields(error));
                 useItemsStore.setState({ message: "Couldn’t change video autoplay." });
+                reportActionFailure("video-autoplay-setting-failed", "Couldn’t change video autoplay.", error);
               });
             }}
           >
@@ -517,6 +524,7 @@ export default function App() {
               void setMediumAutoplay("audio", !audioAutoplay).catch((error) => {
                 log.error("audio autoplay setting failed", toErrorFields(error));
                 useItemsStore.setState({ message: "Couldn’t change audio autoplay." });
+                reportActionFailure("audio-autoplay-setting-failed", "Couldn’t change audio autoplay.", error);
               });
             }}
           >
@@ -558,9 +566,8 @@ export default function App() {
           >
             {derivedWorkLine}
           </button>
-          {/* The issues count: NOTHING at zero, a danger-tinted count when
-              conditions exist. No toasts anywhere — the design case is a
-              multi-day unattended scan, so the count simply waits here. */}
+          {/* Active conditions keep a durable status-bar count even after
+              their nonblocking notification has been dismissed. */}
           {issuesTotal > 0 ? (
             <button
               className="text-danger hover:underline"

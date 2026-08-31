@@ -28,6 +28,7 @@ pub mod media_use;
 pub mod metadata;
 mod mutation_runtime;
 mod nanoid;
+pub mod notifications;
 pub mod operations;
 pub mod path_identity;
 pub mod paths;
@@ -279,7 +280,8 @@ fn rebuild_library_index(app: AppHandle) -> Result<(), String> {
             scan_runtime::run_foreground(&app, || {
                 let data_root = paths::data_root(&app)?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                index_store::clear_reconstructible(&conn)
+                index_store::clear_reconstructible(&conn)?;
+                notifications::clear_active(&app)
             })?;
             let _ = source_check_runtime::start(app.clone())?;
             Ok(())
@@ -783,6 +785,50 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
         },
         |v| json!({ "total": v.get("total") }),
     )
+}
+
+#[tauri::command(async)]
+fn get_recent_notifications(
+    app: AppHandle,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    logging::boundary(
+        "get_recent_notifications",
+        json!({}),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            let (total, rows) = notifications::recent(&conn, limit.unwrap_or(500).min(500))?;
+            Ok(json!({ "total": total, "rows": rows }))
+        },
+        |value| json!({ "total": value.get("total") }),
+    )
+}
+
+#[tauri::command]
+fn get_active_notifications() -> Vec<notifications::NotificationRecord> {
+    notifications::active()
+}
+
+#[tauri::command(async)]
+fn publish_notification(
+    app: AppHandle,
+    request: notifications::NotificationRequest,
+) -> Result<notifications::NotificationRecord, String> {
+    notifications::publish(&app, request)
+}
+
+#[tauri::command(async)]
+fn record_recent_notification(
+    app: AppHandle,
+    request: notifications::NotificationRequest,
+) -> Result<notifications::NotificationRecord, String> {
+    notifications::record_history(&app, request)
+}
+
+#[tauri::command(async)]
+fn dismiss_notification(app: AppHandle, id: i64) -> Result<bool, String> {
+    notifications::dismiss(&app, id)
 }
 
 // On-demand derive for ONE clicked photo the scan's bulk pass has not reached
@@ -1998,6 +2044,11 @@ pub fn run() {
             re_resolve_all,
             rescan_section,
             get_issues,
+            get_recent_notifications,
+            get_active_notifications,
+            publish_notification,
+            record_recent_notification,
+            dismiss_notification,
             ensure_fullres,
             transcribe,
             transcript_get,

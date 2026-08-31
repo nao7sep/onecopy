@@ -9,6 +9,7 @@ import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
+import { reportActionFailure } from "../state/notifications-store";
 
 export async function saveSettings(): Promise<void> {
   const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
@@ -31,6 +32,7 @@ export async function saveSettings(): Promise<void> {
   } catch (error) {
     useSettingsStore.setState({ saving: false, message: String(error) });
     log.error("settings save failed", toErrorFields(error));
+    reportActionFailure("settings-save-failed", "Couldn’t save Settings.", error);
     return;
   }
 
@@ -45,6 +47,13 @@ export async function saveSettings(): Promise<void> {
       });
     }
     log.error("settings re-index failed after save", toErrorFields(error));
+    if (!message.includes("scan cancelled")) {
+      reportActionFailure(
+        "settings-reindex-failed",
+        "Settings were saved, but OneCopy couldn’t update the library.",
+        error,
+      );
+    }
   }
   try {
     await Promise.all([
@@ -54,12 +63,22 @@ export async function saveSettings(): Promise<void> {
     ]);
   } catch (error) {
     log.error("settings projections refresh failed", toErrorFields(error));
+    reportActionFailure(
+      "settings-refresh-failed",
+      "Settings were saved, but OneCopy couldn’t refresh the interface.",
+      error,
+    );
   }
   if (sourceDirsChanged) {
     try {
       await useSectionsStore.getState().startSourceCheck();
     } catch (error) {
       log.error("source-folder check failed to start after settings save", toErrorFields(error));
+      reportActionFailure(
+        "settings-source-check-failed",
+        "Settings were saved, but OneCopy couldn’t start checking source folders.",
+        error,
+      );
     }
   }
   log.info("settings saved", { resolved });

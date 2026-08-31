@@ -1,13 +1,10 @@
 // @vitest-environment happy-dom
 //
-// The issues surface after its rework: a status-bar count that renders
-// NOTHING at zero (a permanently-occupied slot would be noise; an empty one
-// is the good state), and a modal whose rows the user can dismiss. The
-// current-state semantics live in the Rust suite; these specs pin the
-// user-facing half.
+// Active keeps the status-bar count and safe recovery controls; Recent keeps
+// bounded notification history without becoming a replay surface.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, cleanup, act } from "@testing-library/react";
+import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import IssuesModal from "../../src/components/IssuesModal";
 import { useIssuesStore, type IssueRow } from "../../src/state/issues-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -20,6 +17,7 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
     message: "could not decode",
     firstSeenUtc: `2026-08-0${id}T00:00:00.000Z`,
     lastSeenUtc: "2026-08-16T00:00:00.000Z",
+    occurrenceCount: 1,
     recovery: null,
     ...over,
   };
@@ -27,7 +25,19 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  useIssuesStore.setState({ total: 0, rows: [], loading: false, error: null, open: false });
+  mockCommands({ get_recent_notifications: () => ({ total: 0, rows: [] }) });
+  useIssuesStore.setState({
+    total: 0,
+    rows: [],
+    loading: false,
+    error: null,
+    recentTotal: 0,
+    recentRows: [],
+    recentLoading: false,
+    recentError: null,
+    view: "active",
+    open: false,
+  });
 });
 
 afterEach(() => cleanup());
@@ -49,7 +59,8 @@ describe("the issues modal", () => {
     expect(items).toHaveLength(2);
     // The backend orders oldest first; the list must not re-sort it.
     expect(items[0].textContent).toContain("IMG_1");
-    expect(items[0].textContent).toContain("decode-error");
+    expect(items[0].textContent).toContain("Action needed");
+    expect(items[0].textContent).not.toContain("decode-error");
   });
 
   it("distinguishes an unavailable list from no issues", async () => {
@@ -102,7 +113,7 @@ describe("the issues modal", () => {
     );
     await act(async () => all!.click());
 
-    expect(document.body.textContent).toContain("No issues");
+    expect(document.body.textContent).toContain("No active issues");
   });
 
   it("retries only backend-authorized rows and leaves them visible as queued", async () => {
@@ -202,6 +213,42 @@ describe("the issues modal", () => {
 
     await act(async () => release());
     expect(invokeCalls.some((call) => call.command === "recheck_issue")).toBe(true);
-    expect(document.body.textContent).toContain("No issues");
+    expect(document.body.textContent).toContain("No active issues");
+  });
+
+  it("keeps restart-persistent notification history separate from active conditions", async () => {
+    mockCommands({
+      get_issues: () => ({ total: 0, rows: [] }),
+      get_recent_notifications: () => ({
+        total: 1,
+        rows: [
+          {
+            id: 9,
+            kind: "open-failed",
+            path: null,
+            level: "error",
+            presentation: "persistent",
+            message: "Couldn’t open the selected file.",
+            firstSeenUtc: "2026-08-30T00:00:00.000Z",
+            lastSeenUtc: "2026-08-31T00:00:00.000Z",
+            occurrenceCount: 2,
+          },
+        ],
+      }),
+    });
+    render(<IssuesModal />);
+    await act(async () => useIssuesStore.getState().setOpen(true));
+    await act(async () => useIssuesStore.getState().setView("recent"));
+
+    expect(document.body.textContent).toContain("Recent (1)");
+    expect(document.body.textContent).toContain("Couldn’t open the selected file.");
+    expect(document.body.textContent).toContain("×2");
+    expect(document.body.textContent).not.toContain("Dismiss all");
+
+    const recentTab = document.getElementById("issues-tab-recent") as HTMLElement;
+    recentTab.focus();
+    fireEvent.keyDown(recentTab, { key: "ArrowLeft" });
+    expect(useIssuesStore.getState().view).toBe("active");
+    expect(document.activeElement?.id).toBe("issues-tab-active");
   });
 });

@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
+import { reportActionFailure } from "./notifications-store";
 import { replaceDerivedItem, sortItems } from "../models/items";
 import { DEFAULT_DESC, SORT_ORDERS, type ItemDetail, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
 import {
@@ -445,6 +446,11 @@ function loadAnchorDetail(key: string | null): void {
       log.error("item detail load failed", toErrorFields(error));
       if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ message: "Couldn’t load details for this item." });
+        reportActionFailure(
+          "item-detail-load-failed",
+          "Couldn’t load details for this item.",
+          error,
+        );
       }
     });
 }

@@ -1,15 +1,13 @@
-// Issues are CURRENT-STATE diagnostics, not a log — everything the pipeline
-// could not do lands here, one row per (kind, path). Scan-derived rows clear
-// themselves when a scan finds the condition resolved; safe derived failures
-// may be retried, while operation records wait for the user's Dismiss. The
-// count lives in the status bar (nothing at zero),
-// and there are deliberately NO toasts anywhere: the design case is a
-// multi-day unattended scan, where anything transient would be missed.
+// Active owns unresolved current conditions; Recent owns restart-persistent
+// notification history. They share one modal but retain different lifecycles:
+// resolving/dismissing Active never erases Recent, and dismissing a live notice
+// never edits its history row.
 
 import { create } from "zustand";
 import { requestSeq } from "./request-seq";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
+import { reportActionFailure } from "./notifications-store";
 
 export interface IssueRow {
   id: number;
@@ -18,11 +16,24 @@ export interface IssueRow {
   message: string | null;
   firstSeenUtc: string;
   lastSeenUtc: string;
+  occurrenceCount: number;
   recovery: {
     action: "retry" | "recheck";
     label: string;
     status: "available" | "queued" | "running";
   } | null;
+}
+
+export interface RecentNotificationRow {
+  id: number;
+  kind: string;
+  path: string | null;
+  level: "info" | "warning" | "error";
+  presentation: "timed" | "persistent";
+  message: string;
+  firstSeenUtc: string;
+  lastSeenUtc: string;
+  occurrenceCount: number;
 }
 
 interface RecheckResult {
@@ -34,11 +45,19 @@ interface IssuesState {
   rows: IssueRow[];
   loading: boolean;
   error: string | null;
+  recentTotal: number;
+  recentRows: RecentNotificationRow[];
+  recentLoading: boolean;
+  recentError: string | null;
+  view: "active" | "recent";
   /** The Issues modal (a plain modal, not persisted — a diagnostics window
    * is something you open, read, and close). */
   open: boolean;
   load: () => Promise<void>;
+  loadActive: () => Promise<void>;
+  loadRecent: () => Promise<void>;
   setOpen: (open: boolean) => void;
+  setView: (view: "active" | "recent") => void;
   dismiss: (id: number) => Promise<void>;
   dismissAll: () => Promise<void>;
   recover: (id: number) => Promise<void>;
@@ -46,15 +65,25 @@ interface IssuesState {
 }
 
 const issuesLoad = requestSeq();
+const recentLoad = requestSeq();
 
 export const useIssuesStore = create<IssuesState>((set, get) => ({
   total: 0,
   rows: [],
   loading: false,
   error: null,
+  recentTotal: 0,
+  recentRows: [],
+  recentLoading: false,
+  recentError: null,
+  view: "active",
   open: false,
 
   load: async () => {
+    await Promise.all([get().loadActive(), get().loadRecent()]);
+  },
+
+  loadActive: async () => {
     // Async command — the older of two in-flight loads must lose (request-seq.ts).
     const fresh = issuesLoad.begin();
     set({ loading: true, error: null });
@@ -69,16 +98,42 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     }
   },
 
+  loadRecent: async () => {
+    const fresh = recentLoad.begin();
+    set({ recentLoading: true, recentError: null });
+    try {
+      const result = await invoke<{ total: number; rows: RecentNotificationRow[] }>(
+        "get_recent_notifications",
+        { limit: 500 },
+      );
+      if (fresh()) {
+        set({
+          recentTotal: result.total,
+          recentRows: result.rows,
+          recentLoading: false,
+          recentError: null,
+        });
+      }
+    } catch (error) {
+      log.error("recent notifications load failed", toErrorFields(error));
+      if (fresh()) {
+        set({ recentLoading: false, recentError: "Recent notifications are unavailable." });
+      }
+    }
+  },
+
   setOpen: (open) => set({ open }),
+  setView: (view) => set({ view }),
 
   dismiss: async (id) => {
     set({ error: null });
     try {
       await invoke("dismiss_issue", { id });
-      await get().load();
+      await get().loadActive();
     } catch (error) {
       log.error("issue dismissal failed", toErrorFields(error));
       set({ error: "Couldn’t dismiss the issue." });
+      reportActionFailure("issue-dismiss-failed", "Couldn’t dismiss the issue.", error);
     }
   },
 
@@ -86,10 +141,11 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     set({ error: null });
     try {
       await invoke("dismiss_all_issues");
-      await get().load();
+      await get().loadActive();
     } catch (error) {
       log.error("dismiss all failed", toErrorFields(error));
       set({ error: "Couldn’t dismiss the issues." });
+      reportActionFailure("issues-dismiss-failed", "Couldn’t dismiss the issues.", error);
     }
   },
 
@@ -107,7 +163,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     try {
       if (recovery.action === "recheck") {
         const result = await invoke<RecheckResult>("recheck_issue", { id });
-        await get().load();
+        await get().loadActive();
         if (result.status === "busy") {
           set({ error: "Indexing is busy. Recheck when it finishes." });
         } else if (result.status === "stillFailing") {
@@ -117,12 +173,13 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         }
       } else {
         await invoke("retry_issue", { id });
-        await get().load();
+        await get().loadActive();
       }
     } catch (error) {
       log.error("issue recovery failed", toErrorFields(error));
-      await get().load();
+      await get().loadActive();
       set({ error: "Couldn’t run the recovery." });
+      reportActionFailure("issue-recovery-failed", "Couldn’t run the issue recovery.", error);
     }
   },
 
@@ -130,10 +187,11 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     set({ error: null });
     try {
       await invoke("retry_all_issues");
-      await get().load();
+      await get().loadActive();
     } catch (error) {
       log.error("retry all issues failed", toErrorFields(error));
       set({ error: "Couldn’t retry the issues." });
+      reportActionFailure("issues-retry-failed", "Couldn’t retry the issues.", error);
     }
   },
 }));

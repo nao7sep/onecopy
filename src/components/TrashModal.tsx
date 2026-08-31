@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { formatBytes } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
 import Button from "./ui/Button";
+import { reportActionFailure } from "../state/notifications-store";
+import { revealInFileManager } from "../workflows/external-open";
 
 // The Trash surface: every trash on the system — the configured volumes,
 // the app home, AND any mounted drive carrying one from an earlier
@@ -62,6 +63,7 @@ export default function TrashModal({
       .catch((error) => {
         log.error("trash overview failed", toErrorFields(error));
         setError("Trash locations are unavailable.");
+        reportActionFailure("trash-overview-failed", "Trash locations are unavailable.", error);
       });
   }, [open]);
 
@@ -81,6 +83,7 @@ export default function TrashModal({
     }).catch((error) => {
       log.warn("trash progress wiring failed", toErrorFields(error));
       if (alive) setError("Live trash progress is unavailable.");
+      reportActionFailure("trash-progress-unavailable", "Live Trash progress is unavailable.", error);
     });
     return () => {
       alive = false;
@@ -112,9 +115,13 @@ export default function TrashModal({
           : `${outcomeError} Totals couldn’t be refreshed.`;
       }
       setError(outcomeError);
+      if (outcomeError !== null) {
+        reportActionFailure("trash-empty-partial", outcomeError);
+      }
     } catch (error) {
       log.error("trash empty failed", toErrorFields(error));
       setError("Couldn’t empty this trash.");
+      reportActionFailure("trash-empty-failed", "Couldn’t empty this Trash.", error);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -134,6 +141,7 @@ export default function TrashModal({
       setCancelling(false);
       log.error("trash empty cancellation failed", toErrorFields(error));
       setError("Couldn’t cancel emptying this trash.");
+      reportActionFailure("trash-empty-cancel-failed", "Couldn’t cancel emptying this Trash.", error);
     }
   };
 
@@ -198,7 +206,7 @@ export default function TrashModal({
               </div>
               <Button
                 onClick={() => {
-                  void revealItemInDir(row.root).catch((error) => {
+                  void revealInFileManager(row.root).catch((error) => {
                     log.warn("trash reveal failed", { root: row.root, ...toErrorFields(error) });
                     setError("Couldn’t reveal this trash location.");
                   });

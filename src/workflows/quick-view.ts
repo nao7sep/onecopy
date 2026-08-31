@@ -12,6 +12,7 @@ import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { itemKey, useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
+import { reportActionFailure } from "../state/notifications-store";
 import { deleteItems } from "./items";
 import { toggleMainPlayback } from "./playback";
 import {
@@ -129,6 +130,7 @@ function recoverFullscreenFailure(
       useQuickViewStore.getState().close();
     }
     useItemsStore.setState({ message: "Couldn’t open full screen." });
+    reportActionFailure("fullscreen-open-failed", "Couldn’t open full screen.", error);
   }
   clearFullscreenSurface();
   void exitViewerFullscreen().then(restoreMainFocus);

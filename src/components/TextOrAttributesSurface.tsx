@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ExternalLink, FolderOpen } from "lucide-react";
 import type { ItemDetail } from "../models/items";
 import { formatBytes } from "../models/items";
@@ -14,7 +13,7 @@ import {
   useContentSessionStore,
 } from "../state/content-session-store";
 import Button from "./ui/Button";
-import { openInDefaultApp } from "../workflows/external-open";
+import { openInDefaultApp, revealInFileManager } from "../workflows/external-open";
 
 interface TextBody {
   body: "text";
@@ -262,7 +261,7 @@ function AttributesBodyView({
                     title="Reveal file"
                     onClick={() => {
                       setRevealError(null);
-                      void revealItemInDir(path).catch((failure) => {
+                      void revealInFileManager(path).catch((failure) => {
                         log.warn("reveal failed", {
                           path,
                           ...toErrorFields(failure),

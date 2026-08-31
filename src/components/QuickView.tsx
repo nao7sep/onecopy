@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Maximize2, X } from "lucide-react";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { itemKey, useItemsStore } from "../state/items-store";
@@ -24,10 +24,40 @@ export default function QuickView() {
   const surfaceRef = useRef<HTMLDivElement>(null);
   useModalLayer(surfaceRef, () => void closeViewer());
 
-  if (session === null || session.presentation !== "quick") return null;
-  const key = session.members[session.index]?.key ?? null;
+  const quickOpen = session?.presentation === "quick";
+  const key = quickOpen ? (session.members[session.index]?.key ?? null) : null;
   const item = key === null ? null : (items.find((candidate) => itemKey(candidate) === key) ?? null);
-  if (item === null) return null;
+
+  useEffect(() => {
+    if (!quickOpen || item === null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (pendingDelete !== null) return;
+      const notificationControl =
+        event.target instanceof Element && event.target.closest("[data-notification]") !== null;
+      if (notificationControl && event.key === "Enter") return;
+      const handled = new Set([
+        " ",
+        "f",
+        "F",
+        "ArrowLeft",
+        "ArrowRight",
+        "Delete",
+        "Backspace",
+      ]).has(event.key) ||
+        (sectionKind !== "other" && ["PageUp", "PageDown", "Home", "End"].includes(event.key));
+      const mediaEnter =
+        event.key === "Enter" &&
+        (sectionKind === "video" || isAudioFile(item.fileName));
+      if (!handled && !mediaEnter) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void handleViewerKey(event);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [item, pendingDelete, quickOpen, sectionKind]);
+
+  if (!quickOpen || session === null || item === null) return null;
   const currentDetail = selectedItem === key ? detail : null;
   const atStart = session.index === 0;
   const atEnd = session.index === session.members.length - 1;
@@ -36,30 +66,10 @@ export default function QuickView() {
     <div
       ref={surfaceRef}
       tabIndex={-1}
-      className="fixed inset-0 z-30 flex flex-col bg-background outline-none"
+      className="fixed inset-0 z-20 flex flex-col bg-background outline-none"
       role="dialog"
       aria-modal="true"
       aria-label="Quick View"
-      onKeyDownCapture={(event) => {
-        if (pendingDelete !== null) return;
-        const handled = new Set([
-          " ",
-          "f",
-          "F",
-          "ArrowLeft",
-          "ArrowRight",
-          "Delete",
-          "Backspace",
-        ]).has(event.key) ||
-          (sectionKind !== "other" && ["PageUp", "PageDown", "Home", "End"].includes(event.key));
-        const mediaEnter =
-          event.key === "Enter" &&
-          (sectionKind === "video" || isAudioFile(item.fileName));
-        if (!handled && !mediaEnter) return;
-        event.preventDefault();
-        event.stopPropagation();
-        void handleViewerKey(event);
-      }}
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-3 py-2">
         <span className="min-w-0 flex-1 truncate text-sm text-ink" title={item.fileName}>

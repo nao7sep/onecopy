@@ -7,6 +7,7 @@ import type { ScanProgress } from "../models/scan";
 import type { SectionCounts } from "../models/sections";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
+import { reportActionFailure } from "./notifications-store";
 
 export interface SourceCheckState {
   running: boolean;
@@ -109,6 +110,7 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     } catch (error) {
       log.error("source-folder check start failed", toErrorFields(error));
       set({ error: "Couldn’t start checking source folders." });
+      reportActionFailure("source-check-start-failed", "Couldn’t start checking source folders.", error);
     }
   },
 
@@ -124,6 +126,7 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     } catch (error) {
       log.error("source-folder stop failed", toErrorFields(error));
       set({ error: "Couldn’t stop checking source folders." });
+      reportActionFailure("source-check-stop-failed", "Couldn’t stop checking source folders.", error);
     }
   },
 
@@ -141,6 +144,11 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     } catch (error) {
       log.error("file-information pause change failed", toErrorFields(error));
       set({ error: "Couldn’t change file-information background work." });
+      reportActionFailure(
+        "file-information-control-failed",
+        "Couldn’t change file-information background work.",
+        error,
+      );
     }
   },
 }));

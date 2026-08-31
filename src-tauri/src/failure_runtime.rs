@@ -26,9 +26,20 @@ pub fn report(
     );
     let conn = crate::paths::data_root(app)
         .and_then(|root| crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME)))
-        .map_err(|error| present_unsaved(app, kind, path, message, &error))?;
+        .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
     crate::index_store::upsert_issue(&conn, path, kind, message)
-        .map_err(|error| present_unsaved(app, kind, path, message, &error))?;
+        .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
+    crate::notifications::publish(
+        app,
+        crate::notifications::NotificationRequest {
+            kind: kind.to_string(),
+            path: path.map(str::to_string),
+            level: crate::notifications::NotificationLevel::Error,
+            presentation: crate::notifications::NotificationPresentation::Persistent,
+            message: message.to_string(),
+        },
+    )
+    .map_err(|error| present_unrecorded(app, kind, path, message, "Recent", &error))?;
 
     if let Err(emit_error) = emit_checked(app, "failure://reported", json!({ "kind": kind })) {
         crate::logging::error(
@@ -42,11 +53,32 @@ pub fn report(
             &emit_error,
         )
         .map_err(|save_error| {
-            present_unsaved(
+            present_unrecorded(
                 app,
                 "event-delivery-failed",
                 Some("failure://reported"),
                 &emit_error,
+                "Issues",
+                &save_error,
+            )
+        })?;
+        crate::notifications::record_history(
+            app,
+            crate::notifications::NotificationRequest {
+                kind: "event-delivery-failed".to_string(),
+                path: Some("failure://reported".to_string()),
+                level: crate::notifications::NotificationLevel::Error,
+                presentation: crate::notifications::NotificationPresentation::Persistent,
+                message: emit_error.clone(),
+            },
+        )
+        .map_err(|save_error| {
+            present_unrecorded(
+                app,
+                "event-delivery-failed",
+                Some("failure://reported"),
+                &emit_error,
+                "Recent",
                 &save_error,
             )
         })?;
@@ -54,21 +86,24 @@ pub fn report(
     Ok(())
 }
 
-fn present_unsaved(
+fn present_unrecorded(
     app: &AppHandle,
     kind: &str,
     path: Option<&str>,
     message: &str,
+    record_name: &str,
     save_error: &str,
 ) -> String {
-    let direct =
-        format!("{message} OneCopy also could not save this failure to Issues: {save_error}");
+    let direct = format!(
+        "{message} OneCopy also could not save this failure to {record_name}: {save_error}"
+    );
     crate::logging::error(
         "application failure could not be saved",
         json!({
             "kind": kind,
             "path": path,
             "failure": { "message": message },
+            "record": record_name,
             "error": { "message": save_error },
         }),
     );

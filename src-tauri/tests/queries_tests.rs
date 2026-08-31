@@ -532,6 +532,7 @@ fn a_recurring_issue_is_one_row_whose_last_seen_moves() {
     assert_eq!(total, 2, "recurrence must never insert a second row");
     let decode = rows.iter().find(|r| r.kind == "decode-error").unwrap();
     assert_eq!(decode.message.as_deref(), Some("same failure again"));
+    assert_eq!(decode.occurrence_count, 2);
     assert!(decode.first_seen_utc <= decode.last_seen_utc);
 }
 

@@ -8,6 +8,7 @@ import {
 } from "../models/items";
 import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
 import { log, toErrorFields } from "../repositories";
+import { reportActionFailure } from "../state/notifications-store";
 
 /** Cursor position mapped into the source, with a forgiving edge margin. */
 export function panFraction(position: number, extent: number): number {
@@ -76,6 +77,11 @@ export default function InspectableImage({
   const [originalFailed, setOriginalFailed] = useState(false);
   const converted = needsConvertedFullres(fileName);
   const [convertedSrc, setConvertedSrc] = useState<string | null>(null);
+  useEffect(() => {
+    setConvertedSrc(null);
+    setOriginalFailed(false);
+    setSourceSize({ width: 0, height: 0 });
+  }, [hash]);
   const updatePosition = (point: PointerPoint) => {
     setPosition(inspectPosition(viewportRef.current, point));
   };
@@ -148,7 +154,15 @@ export default function InspectableImage({
                   height: event.currentTarget.naturalHeight,
                 });
               }}
-              onError={() => setOriginalFailed(true)}
+              onError={() => {
+                if (!originalFailed) {
+                  reportActionFailure(
+                    "original-pixels-failed",
+                    `Couldn’t show the original pixels for ${fileName}.`,
+                  );
+                }
+                setOriginalFailed(true);
+              }}
               style={originalStyle(position, sourceSize)}
             />
           )}

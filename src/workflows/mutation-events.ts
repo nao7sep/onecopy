@@ -2,19 +2,34 @@
 // is idempotent; domain workflows still own refreshes, selection, and results.
 
 import { listen } from "@tauri-apps/api/event";
-import type {
-  MutationKind,
-  MutationProgress,
-  MutationResultSummary,
+import {
+  mutationResultLine,
+  type MutationResult,
+  type MutationKind,
+  type MutationProgress,
+  type MutationResultSummary,
 } from "../models/mutation";
 import { log, toErrorFields } from "../repositories";
 import { useMutationStore } from "../state/mutation-store";
 import { useItemsStore } from "../state/items-store";
+import { recordRecentNotification } from "../state/notifications-store";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 
 let installation: Promise<void> | null = null;
 
 async function install(): Promise<void> {
+  const recordFailedResult = (result: MutationResult) => {
+    if (result.summary.error === null && result.summary.filesFailed === 0) return;
+    void recordRecentNotification({
+      kind: `${result.kind}-failed`,
+      level: result.summary.error === null ? "warning" : "error",
+      presentation: "persistent",
+      message: mutationResultLine(result),
+    }).catch((error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      recordInterfaceFailure(`OneCopy could not save the file-operation result: ${reason}`);
+    });
+  };
   try {
     await listen<MutationProgress>("mutation://progress", (event) => {
       const current = useMutationStore.getState();
@@ -35,20 +50,22 @@ async function install(): Promise<void> {
           useMutationStore.getState().progress?.operationId ===
           event.payload.progress.operationId
         ) {
+          const result = event.payload.summary === null
+            ? null
+            : {
+                operationId: event.payload.progress.operationId,
+                kind: event.payload.progress.kind,
+                cancelled: event.payload.cancelled,
+                summary: event.payload.summary,
+              } satisfies MutationResult;
           useMutationStore.setState({
             progress: null,
             cancelling: false,
-            ...(event.payload.summary === null
+            ...(result === null
               ? {}
-              : {
-                  result: {
-                    operationId: event.payload.progress.operationId,
-                    kind: event.payload.progress.kind,
-                    cancelled: event.payload.cancelled,
-                    summary: event.payload.summary,
-                  },
-                }),
+              : { result }),
           });
+          if (result !== null) recordFailedResult(result);
         }
       },
     );
@@ -61,16 +78,18 @@ async function install(): Promise<void> {
       "mutation://error",
       (event) => {
         if (useMutationStore.getState().progress?.operationId === event.payload.operationId) {
+          const result = {
+            operationId: event.payload.operationId,
+            kind: event.payload.kind,
+            cancelled: false,
+            summary: event.payload.summary,
+          } satisfies MutationResult;
           useMutationStore.setState({
             progress: null,
             cancelling: false,
-            result: {
-              operationId: event.payload.operationId,
-              kind: event.payload.kind,
-              cancelled: false,
-              summary: event.payload.summary,
-            },
+            result,
           });
+          recordFailedResult(result);
         }
       },
     );

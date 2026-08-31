@@ -4,6 +4,7 @@ const SURFACE_ID = "onecopy-escaped-failure";
 
 /** Last-resort UI for errors outside React's render boundary. */
 export function presentEscapedFailure(message: string): void {
+  if (typeof document === "undefined") return;
   let surface = document.getElementById(SURFACE_ID);
   if (surface === null) {
     surface = document.createElement("section");

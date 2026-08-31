@@ -89,4 +89,21 @@ describe("Quick View", () => {
     expect(document.activeElement).toBe(opener);
     opener.remove();
   });
+
+  it("keeps viewer commands active while a notification control has focus", async () => {
+    render(
+      <>
+        <Host />
+        <button data-notification>Dismiss notification</button>
+      </>,
+    );
+    const notification = screen.getByRole("button", { name: "Dismiss notification" });
+    notification.focus();
+
+    fireEvent.keyDown(notification, { key: "Enter" });
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+
+    await act(async () => fireEvent.keyDown(notification, { key: " " }));
+    expect(useQuickViewStore.getState().session).toBeNull();
+  });
 });

@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { reportActionFailure } from "./notifications-store";
 
 export type TranscriptStatus =
   "loading" | "pending" | "queued" | "running" | "ready" | "failed";
@@ -147,6 +148,11 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         });
       }
       log.error("transcribe start failed", toErrorFields(error));
+      reportActionFailure(
+        "transcription-start-failed",
+        "Couldn’t start transcription.",
+        error,
+      );
     }
   },
 
@@ -155,6 +161,11 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
       await invoke("transcribe_cancel");
     } catch (error) {
       log.warn("transcription cancellation failed", toErrorFields(error));
+      reportActionFailure(
+        "transcription-cancel-failed",
+        "Couldn’t cancel transcription.",
+        error,
+      );
     }
   },
 }));

@@ -9,6 +9,7 @@ import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { normalizeUiFontPreference } from "../utils/theme";
 import { requestSeq } from "./request-seq";
+import { reportActionFailure } from "./notifications-store";
 
 export interface SettingsDraft {
   defaultTimezone: string;
@@ -43,6 +44,7 @@ export interface SettingsDraft {
   scoreFaces: boolean;
   showFaceStars: boolean;
   maximumImagesInComparison: number;
+  notificationDisplaySeconds: number;
   destinationConflictRenameStyle: "space-number" | "parenthesized-number";
   sourceDirs: string[];
 }
@@ -132,6 +134,10 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
       2,
       Math.floor(numberOr(config?.maximumImagesInComparison, 16)),
     ),
+    notificationDisplaySeconds: Math.min(
+      60,
+      Math.max(1, numberOr(config?.notificationDisplaySeconds, 6)),
+    ),
     destinationConflictRenameStyle:
       config?.destinationConflictRenameStyle === "parenthesized-number"
         ? "parenthesized-number"
@@ -213,6 +219,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           message: "Couldn’t check this timezone.",
         });
       }
+      reportActionFailure("timezone-check-failed", "Couldn’t check this timezone.", error);
     }
   },
 
@@ -230,6 +237,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     } catch (error) {
       log.error("settings source dir picker failed", toErrorFields(error));
       set({ message: "Couldn’t open the directory picker." });
+      reportActionFailure("source-picker-failed", "Couldn’t open the directory picker.", error);
     }
   },
 

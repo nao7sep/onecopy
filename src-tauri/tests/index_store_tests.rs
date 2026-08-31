@@ -11,6 +11,10 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
          VALUES ('/photos/a.jpg', '/photos', 'a.jpg', 'image', 'hash', 0);
          INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc)
          VALUES ('/photos/a.jpg', 'read-error', 'failed', 'now', 'now');
+         INSERT INTO recent_notifications
+           (kind, path, level, presentation, message, first_seen_utc, last_seen_utc)
+         VALUES ('read-error', '/photos/a.jpg', 'error', 'persistent', 'failed',
+                 '2026-08-31T00:00:00.000Z', '2026-08-31T00:00:00.000Z');
          INSERT INTO scan_dirs (root, last_completed_at_utc)
          VALUES ('/photos', 'now');",
     )
@@ -18,7 +22,13 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
 
     index_store::clear_reconstructible(&conn).unwrap();
 
-    for table in ["contents", "paths", "issues", "scan_dirs"] {
+    for table in [
+        "contents",
+        "paths",
+        "issues",
+        "recent_notifications",
+        "scan_dirs",
+    ] {
         let count: i64 = conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)

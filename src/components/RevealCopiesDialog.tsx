@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealInFileManager } from "../workflows/external-open";
 import type { ItemDetail } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import { fileManagerWord } from "../utils/shortcuts";
@@ -60,14 +60,11 @@ export default function RevealCopiesDialog({
                 title={`Show in ${manager}`}
                 onClick={() => {
                   setError(null);
-                  void revealItemInDir(path).catch((failure) => {
+                  void revealInFileManager(path).catch((failure) => {
                     log.warn("comparison reveal failed", {
                       path,
                       ...toErrorFields(failure),
                     });
-                    recordInterfaceFailure(
-                      `Couldn’t show ${path} in ${manager}.`,
-                    );
                     setError(`Couldn’t show this copy in ${manager}.`);
                   });
                 }}

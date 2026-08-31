@@ -16,6 +16,7 @@ import type {
   DestinationSelection,
   DestinationConflict,
 } from "../models/destinationTransfer";
+import { reportActionFailure } from "../state/notifications-store";
 
 interface MoveBatchOutcome {
   cancelled: boolean;
@@ -124,6 +125,7 @@ export async function addDestinationRoot(): Promise<void> {
   } catch (error) {
     log.error("destination root add failed", toErrorFields(error));
     useDestinationsStore.setState({ message: "Couldn’t add that destination." });
+    reportActionFailure("destination-add-failed", "Couldn’t add that destination.", error);
   }
 }
 
@@ -137,6 +139,7 @@ export async function removeDestinationRoot(root: string): Promise<void> {
   } catch (error) {
     log.error("destination root remove failed", toErrorFields(error));
     useDestinationsStore.setState({ message: "Couldn’t remove that destination." });
+    reportActionFailure("destination-remove-failed", "Couldn’t remove that destination.", error);
   }
 }
 
@@ -318,6 +321,11 @@ async function executeMoveBatch(
       },
       confirmation: null,
     });
+    reportActionFailure(
+      "destination-operation-failed",
+      "The file operation could not finish.",
+      error,
+    );
     log.error("move out failed", toErrorFields(error));
   }
 
@@ -335,6 +343,13 @@ async function executeMoveBatch(
       },
       confirmation: null,
     });
+    reportActionFailure(
+      "destination-refresh-failed",
+      operationCompleted
+        ? "The file operation finished, but OneCopy couldn’t refresh its view."
+        : "OneCopy couldn’t refresh after the failed file operation.",
+      error,
+    );
   }
 }
 

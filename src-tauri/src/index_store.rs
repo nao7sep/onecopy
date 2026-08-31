@@ -23,7 +23,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 5;
+const SCHEMA_REVISION: i64 = 6;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -254,9 +254,9 @@ CREATE TABLE IF NOT EXISTS similar_group_members (
 CREATE INDEX IF NOT EXISTS idx_similar_members_content
   ON similar_group_members (content_hash);
 
--- Issues are CURRENT-STATE diagnostics, not a log — the log file is the
--- history. Identity is (kind, path): a recurrence UPDATES the row, so a
--- condition persisting for weeks is one line, not one per scan. `path` is ''
+-- Issues are CURRENT-STATE diagnostics. Identity is (kind, path): a recurrence
+-- UPDATES the row, so a condition persisting for weeks is one line, not one
+-- per scan. `path` is ''
 -- when the condition has no file anchor (a rootless walk error); NULLs would
 -- break the unique identity, which is why the column is NOT NULL.
 CREATE TABLE IF NOT EXISTS issues (
@@ -266,10 +266,29 @@ CREATE TABLE IF NOT EXISTS issues (
   message        TEXT,
   first_seen_utc TEXT NOT NULL,
   last_seen_utc  TEXT NOT NULL,
+  occurrence_count INTEGER NOT NULL DEFAULT 1,
   UNIQUE (kind, path)
 );
 CREATE INDEX IF NOT EXISTS idx_issues_first_seen
   ON issues (first_seen_utc, id);
+
+-- Recent is restart-persistent notification history, not an operation plan
+-- or permanent ledger. Equal notices coalesce and the owning publisher prunes
+-- the table to the approved age/count window after each write.
+CREATE TABLE IF NOT EXISTS recent_notifications (
+  id               INTEGER PRIMARY KEY,
+  kind             TEXT NOT NULL,
+  path             TEXT NOT NULL DEFAULT '',
+  level            TEXT NOT NULL CHECK (level IN ('info', 'warning', 'error')),
+  presentation     TEXT NOT NULL CHECK (presentation IN ('timed', 'persistent')),
+  message          TEXT NOT NULL,
+  first_seen_utc   TEXT NOT NULL,
+  last_seen_utc    TEXT NOT NULL,
+  occurrence_count INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (kind, path, level, presentation, message)
+);
+CREATE INDEX IF NOT EXISTS idx_recent_notifications_latest
+  ON recent_notifications (last_seen_utc DESC, id DESC);
 
 -- Fixed-class output receipts, never jobs. NULL means the class is pending;
 -- ready and failed are durable results, while running/paused/waiting belong
@@ -348,6 +367,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
              DROP TABLE IF EXISTS contents;
              DROP TABLE IF EXISTS scan_dirs;
              DROP TABLE IF EXISTS issues;
+             DROP TABLE IF EXISTS recent_notifications;
              DROP TABLE IF EXISTS volumes;
              PRAGMA user_version = 0;
              PRAGMA foreign_keys = ON;",
@@ -438,7 +458,9 @@ pub fn upsert_issue(
         "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
          VALUES (?1, ?2, ?3, ?4, ?4) \
          ON CONFLICT (kind, path) DO UPDATE \
-         SET message = excluded.message, last_seen_utc = excluded.last_seen_utc",
+         SET message = excluded.message,
+             last_seen_utc = excluded.last_seen_utc,
+             occurrence_count = issues.occurrence_count + 1",
         rusqlite::params![path.unwrap_or(""), kind, message, now],
     )
     .map_err(|e| e.to_string())?;
@@ -487,6 +509,7 @@ pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
              DELETE FROM contents;
              DELETE FROM scan_dirs;
              DELETE FROM issues;
+             DELETE FROM recent_notifications;
              DELETE FROM volumes;",
         )
         .map_err(|error| error.to_string())?;
@@ -531,6 +554,7 @@ mod tests {
             "issues",
             "logical_contents",
             "paths",
+            "recent_notifications",
             "scan_dirs",
             "similar_group_members",
             "similar_groups",

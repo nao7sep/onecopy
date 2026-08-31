@@ -111,6 +111,9 @@ pub struct DefaultConfig {
     /// Upper bound for one visible Comparison page. Connected displays and
     /// the current images' orientation may reduce the actual page size.
     pub maximum_images_in_comparison: u32,
+    /// How long a safely missable notification remains visible. Persistent
+    /// notifications ignore this setting.
+    pub notification_display_seconds: u32,
     /// Confirm ordinary Delete/Backspace trash-deletes in the grid. OFF by
     /// default (developer, 2026-08-17): the trash is the net, and a dialog on
     /// every Delete would break the keystroke-paced cull — but a deliberate
@@ -165,6 +168,7 @@ impl Default for DefaultConfig {
             score_faces: true,
             show_face_stars: true,
             maximum_images_in_comparison: 16,
+            notification_display_seconds: 6,
             confirm_trash_delete: false,
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),
