@@ -1,8 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { comparisonHashForSelection } from "../models/interactions";
-import { sectionProjection } from "../models/items";
+import {
+  anchorContextFromPayload,
+  type AnchorContext,
+} from "../models/mainSelection";
+import type { SectionRecoveryContextPayload } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
@@ -23,6 +26,7 @@ import { recordInterfaceFailure } from "../utils/failureSurface";
 import { hasOpenModal } from "../utils/modalStack";
 
 let eventInstallation: Promise<void> | null = null;
+let mainRecoveryAfterFamily: AnchorContext | null = null;
 
 function appState(): Record<string, unknown> {
   return useAppStore.getState().appData?.state ?? {};
@@ -51,8 +55,6 @@ async function applyResult(
   result: ComparisonCommitResult | null,
 ): Promise<void> {
   if (result === null) return;
-  const orderBeforeComparison =
-    result.kind === "completed" ? useItemsStore.getState().items : null;
   await Promise.all([refreshLibrary(), useIssuesStore.getState().load()]);
   if (result.kind === "failed") {
     await reconcileComparisonMembership();
@@ -62,9 +64,8 @@ async function applyResult(
     await reconcileComparisonMembership();
     return;
   }
-  useItemsStore
-    .getState()
-    .selectAfterFamily(result.family, orderBeforeComparison ?? []);
+  await useItemsStore.getState().selectAfterFamily(mainRecoveryAfterFamily);
+  mainRecoveryAfterFamily = null;
   await restorePreviewAfterComparison();
 }
 
@@ -73,7 +74,7 @@ export async function openComparison(
   initialSelection: Iterable<string> = [hash],
   entryAnchor: string | null = hash,
 ): Promise<ComparisonOpenResult> {
-  return await useComparisonStore
+  const result = await useComparisonStore
     .getState()
     .openGroup(
       hash,
@@ -82,25 +83,58 @@ export async function openComparison(
       maximumImages(),
       appState(),
     );
+  if (result === "opened") {
+    const items = useItemsStore.getState();
+    const section = items.selected;
+    const hashes = useComparisonStore.getState().originalMemberHashes;
+    if (section !== null) {
+      try {
+        const context = await invoke<SectionRecoveryContextPayload | null>(
+          "get_section_family_context",
+          {
+            kind: section.kind,
+            month: section.month,
+            sort: items.currentSort(),
+            memberHashes: hashes,
+          },
+        );
+        mainRecoveryAfterFamily = anchorContextFromPayload(context);
+      } catch (error) {
+        log.error("comparison return position failed", toErrorFields(error));
+        await useComparisonStore.getState().close();
+        recordInterfaceFailure("Couldn’t prepare Comparison.");
+        return "failed";
+      }
+    }
+  }
+  return result;
 }
 
 export async function requestComparisonFromMain(): Promise<void> {
-  const { selected, items, selectedKeys, selectedItem } =
-    useItemsStore.getState();
-  const state = useItemsStore.getState();
-  const projection = sectionProjection(items, state.currentSort());
-  const selectedItems = [...selectedKeys].flatMap((key) => {
-    const item = projection.itemByKey.get(key);
-    return item === undefined ? [] : [item];
-  });
-  const hash =
-    selected?.kind === "image"
-      ? comparisonHashForSelection(selectedItems, selectedKeys, selectedItem)
-      : null;
-  if (hash === null) {
+  const { selected, selectedKeys, selectedItem } = useItemsStore.getState();
+  const hashes = [...selectedKeys].filter((key) => !key.startsWith("path-"));
+  const hash = selectedItem !== null && !selectedItem.startsWith("path-") ? selectedItem : null;
+  if (
+    selected?.kind !== "image" ||
+    hash === null ||
+    hashes.length !== selectedKeys.size
+  ) {
     useItemsStore.setState({
       message: "Comparison requires images from one similar group.",
     });
+    return;
+  }
+  try {
+    const valid = await invoke<boolean>("comparison_selection_valid", { hashes });
+    if (!valid) {
+      useItemsStore.setState({
+        message: "Comparison requires images from one similar group.",
+      });
+      return;
+    }
+  } catch (error) {
+    log.error("comparison admission failed", toErrorFields(error));
+    useItemsStore.setState({ message: "Couldn’t check the selected images." });
     return;
   }
   const result = await openComparison(hash, selectedKeys, selectedItem);

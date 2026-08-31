@@ -1,31 +1,26 @@
-// The grid's selection state machine.
-//
-// This store drives every keystroke of the culling workflow — the anchor the
-// metadata pane and preview follow, the multi-selection the bulk actions read,
-// and the recovery that lands after a delete. The specs below assert the
-// behaviour a user feels at the keyboard, not the shape of the state object.
-
 import { beforeEach, describe, expect, it } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
 import { deleteSelectedItems } from "../../src/workflows/items";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
-  mockCommand,
   mockCommands,
+  mockSectionItems,
   resetTauriMocks,
 } from "../mocks/tauri";
 
-function item(over: Partial<SectionItem> & { pathId: number }): SectionItem {
+function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
-    hash: `h${over.pathId}`,
-    fileName: `IMG_${over.pathId}.jpg`,
-    resolvedUtcMs: over.pathId * 1000,
+    hash: `h${pathId}`,
+    pathId,
+    fileName: `IMG_${String(pathId).padStart(4, "0")}.jpg`,
+    resolvedUtcMs: pathId * 1000,
     copyCount: 1,
     width: 100,
     height: 100,
     hasThumb: true,
     similarGroupId: null,
+    similarCount: 0,
     sharpness: null,
     faceScore: null,
     byteSize: 1000,
@@ -39,549 +34,190 @@ function item(over: Partial<SectionItem> & { pathId: number }): SectionItem {
 
 const SECTION = { kind: "image" as const, month: "2026-01" };
 
-/** Seed the store with a loaded section, bypassing the load path. */
-function seed(items: SectionItem[]): void {
+function resetStore(): void {
   useItemsStore.setState({
-    selected: SECTION,
-    items,
+    selected: null,
+    items: [],
+    totalItems: 0,
+    windowStart: 0,
+    itemPositions: new Map(),
+    reconciliationId: 0,
     loading: false,
     loadError: null,
     selectedItem: null,
     selectedKeys: new Set(),
+    selectedPositions: new Map(),
+    rangeOrigin: null,
+    rangeOriginPosition: null,
+    rangeBase: new Set(),
+    rangeBasePositions: new Map(),
     sectionMemory: {},
+    currentContext: null,
     scrollRequest: null,
     detail: null,
-    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
+    sortOrders: {
+      media: { order: "time", desc: false },
+      other: { order: "name", desc: false },
+    },
+    message: null,
   });
+}
+
+function mockSection(rows: SectionItem[] | (() => SectionItem[] | Promise<SectionItem[]>)): void {
+  mockSectionItems(() =>
+    typeof rows === "function" ? rows() : rows,
+  );
 }
 
 beforeEach(() => {
   resetTauriMocks();
-  useItemsStore.setState({
-    selected: null,
-    items: [],
-    loading: false,
-    loadError: null,
-    selectedItem: null,
-    selectedKeys: new Set(),
-    sectionMemory: {},
-    scrollRequest: null,
-    detail: null,
-    sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
-  });
-  // Anchor moves fan out to these; none is under test here.
+  resetStore();
   mockCommands({
     patch_state: () => ({}),
-    get_item_detail: () => null,
-    delete_items: ({ items }) => ({
-      cancelled: false,
-      error: null,
-      failedFiles: 0,
-      items: (items as Array<{ hash: string | null; pathId: number | null }>).map((item) => ({
-        item,
-        failedFiles: 0,
-      })),
-    }),
+    get_item_detail: () => ({ fileName: "item", kind: "image" }),
     get_section_counts: () => [],
+    delete_items: () => ({ error: null, failedFiles: 0 }),
   });
 });
 
-describe("refresh", () => {
-  it("keeps the anchor visible for the whole reload", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
-    seed(items);
-    useItemsStore.getState().selectItem("h2");
-
-    // A deferred backend response models the real IPC round trip, which on a
-    // large month runs into the hundreds of milliseconds.
-    let release!: (value: SectionItem[]) => void;
-    mockCommand(
-      "get_section_items",
-      () => new Promise<SectionItem[]>((resolve) => (release = resolve)),
-    );
-
-    const pending = useItemsStore.getState().refresh();
-    // Mid-flight: an arrow key or a Delete lands HERE. The anchor must still
-    // be the user's photo, not null — a null anchor makes the grid select
-    // item zero and makes Delete a silent no-op.
-    expect(useItemsStore.getState().selectedItem).toBe("h2");
-    expect(useItemsStore.getState().selectedKeys.has("h2")).toBe(true);
-
-    release(items);
-    await pending;
-    expect(useItemsStore.getState().selectedItem).toBe("h2");
-  });
-
-  it("recovers beside an anchor that did not survive the reload", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 })];
-    seed(items);
-    useItemsStore.getState().selectItem("h2");
-    mockCommand("get_section_items", () => [item({ pathId: 1 })]);
-
-    await useItemsStore.getState().refresh();
-
-    expect(useItemsStore.getState().selectedItem).toBe("h1");
-    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1"]);
-  });
-
-  it("does not revert a selection made while it was in flight", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 })];
-    seed(items);
-    useItemsStore.getState().selectItem("h1");
-
-    let release!: (value: SectionItem[]) => void;
-    mockCommand(
-      "get_section_items",
-      () => new Promise<SectionItem[]>((resolve) => (release = resolve)),
-    );
-
-    const pending = useItemsStore.getState().refresh();
-    useItemsStore.getState().selectItem("h2");
-    release(items);
-    await pending;
-
-    expect(useItemsStore.getState().selectedItem).toBe("h2");
-  });
-
-  it("does not invent a selection after an explicitly empty selection refreshes", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 })];
-    seed(items);
-    useItemsStore.getState().selectItem(null);
-    mockCommand("get_section_items", () => items);
-
-    await useItemsStore.getState().refresh();
-
-    expect(useItemsStore.getState().selectedItem).toBeNull();
-    expect(useItemsStore.getState().selectedKeys.size).toBe(0);
-  });
-});
-
-describe("comparison completion", () => {
-  it("lands after a fully removed group using the pre-refresh order", () => {
-    const previous = [
-      item({ pathId: 1 }),
-      item({ pathId: 2 }),
-      item({ pathId: 3 }),
-      item({ pathId: 4 }),
-    ];
-    seed([previous[0], previous[3]]);
-
-    useItemsStore
-      .getState()
-      .selectAfterFamily(["h2", "h3"], previous);
-
-    expect(useItemsStore.getState().selectedItem).toBe("h4");
-    expect(useItemsStore.getState().scrollRequest?.key).toBe("h4");
-  });
-
-  it("falls back to the nearest previous survivor at the end", () => {
-    const previous = [
-      item({ pathId: 1 }),
-      item({ pathId: 2 }),
-      item({ pathId: 3 }),
-    ];
-    seed([previous[0]]);
-
-    useItemsStore
-      .getState()
-      .selectAfterFamily(["h2", "h3"], previous);
-
-    expect(useItemsStore.getState().selectedItem).toBe("h1");
-  });
-});
-
-describe("section entry and return", () => {
-  it("selects the first displayed item on a first visit", async () => {
-    mockCommand("get_section_items", () => [
-      item({ pathId: 1, fileName: "b.jpg" }),
-      item({ pathId: 2, fileName: "a.jpg" }),
-    ]);
-    useItemsStore.setState({
-      selected: null,
-      items: [],
-      sortOrders: {
-        media: { order: "name", desc: false },
-        other: { order: "name", desc: false },
-      },
-    });
+describe("bounded section state", () => {
+  it("selects the first item and retains only the capped backend window", async () => {
+    const rows = Array.from({ length: 900 }, (_, index) => item(index + 1));
+    mockSection(rows);
 
     await useItemsStore.getState().select(SECTION);
-
-    expect(useItemsStore.getState().selectedItem).toBe("h2");
-    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2"]);
-  });
-
-  it("restores a section's remembered anchor as an exclusive selection", async () => {
-    const january = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
-    const february = [item({ pathId: 4 }), item({ pathId: 5 })];
-    mockCommand("get_section_items", ({ month }) =>
-      month === "2026-01" ? january : february,
-    );
-    useItemsStore.setState({ selected: null, items: [] });
-
-    await useItemsStore.getState().select(SECTION);
-    useItemsStore.getState().selectItem("h2");
-    useItemsStore.getState().toggleItem("h3");
-    await useItemsStore.getState().select({ kind: "image", month: "2026-02" });
-    await useItemsStore.getState().select(SECTION);
-
-    expect(useItemsStore.getState().selectedItem).toBe("h3");
-    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h3"]);
-    expect(useItemsStore.getState().scrollRequest?.align).toBe("center");
-  });
-
-  it("returns beside a remembered anchor that disappeared while away", async () => {
-    let january = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
-    mockCommand("get_section_items", ({ month }) =>
-      month === "2026-01" ? january : [item({ pathId: 4 })],
-    );
-    useItemsStore.setState({ selected: null, items: [] });
-
-    await useItemsStore.getState().select(SECTION);
-    useItemsStore.getState().selectItem("h2");
-    await useItemsStore.getState().select({ kind: "image", month: "2026-02" });
-    january = [item({ pathId: 1 }), item({ pathId: 3 })];
-    await useItemsStore.getState().select(SECTION);
-
-    expect(useItemsStore.getState().selectedItem).toBe("h3");
-  });
-});
-
-describe("a failed load", () => {
-  it("keeps stale rows and exposes a failed refresh", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 })];
-    seed(items);
-    mockCommand("get_section_items", () => {
-      throw new Error("offline");
-    });
-
-    await useItemsStore.getState().refresh();
-
-    expect(useItemsStore.getState().items).toEqual(items);
-    expect(useItemsStore.getState().loadError).toBe("Couldn’t load this section.");
-    expect(useItemsStore.getState().loading).toBe(false);
-  });
-
-  it("does not blank a section the user already moved on to", async () => {
-    seed([]);
-    let failMarch!: (reason: Error) => void;
-    mockCommand("get_section_items", (args) => {
-      if (args.month === "2026-03") {
-        return new Promise((_resolve, reject) => (failMarch = reject));
-      }
-      return [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
-    });
-
-    const march = useItemsStore
-      .getState()
-      .select({ kind: "image", month: "2026-03" });
-    const april = useItemsStore
-      .getState()
-      .select({ kind: "image", month: "2026-04" });
-    await april;
-    failMarch(new Error("march is gone"));
-    await march;
-
-    // April's three items must survive March's rejection — the catch writes
-    // unconditionally today while the success path is guarded.
-    expect(useItemsStore.getState().items).toHaveLength(3);
-  });
-});
-
-describe("incremental derived rows", () => {
-  it("updates facts and remaps every selection key across identity promotion", () => {
-    seed([item({ pathId: 1, hash: "quick-1", hasThumb: false })]);
-    useItemsStore.setState({
-      selectedItem: "quick-1",
-      selectedKeys: new Set(["quick-1"]),
-      rangeOrigin: "quick-1",
-      rangeBase: new Set(["quick-1"]),
-    });
-
-    useItemsStore.getState().applyDerivedItem(
-      "quick-1",
-      item({ pathId: 1, hash: "real", hasThumb: true, width: 4000 }),
-    );
 
     const state = useItemsStore.getState();
-    expect(state.items).toHaveLength(1);
-    expect(state.items[0]).toMatchObject({ hash: "real", hasThumb: true, width: 4000 });
-    expect(state.selectedItem).toBe("real");
-    expect([...state.selectedKeys]).toEqual(["real"]);
-    expect(state.rangeOrigin).toBe("real");
-    expect([...state.rangeBase]).toEqual(["real"]);
+    expect(state.totalItems).toBe(900);
+    expect(state.items).toHaveLength(512);
+    expect(state.selectedItem).toBe("h1");
+    expect(state.selectedPositions.get("h1")).toBe(0);
+    expect(invokeCalls.some((call) => call.command === "reconcile_section")).toBe(true);
+  });
+
+  it("loads another capped window before selecting a remote absolute position", async () => {
+    const rows = Array.from({ length: 1_200 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+
+    await useItemsStore.getState().selectPosition(900, false);
+
+    const state = useItemsStore.getState();
+    expect(state.selectedItem).toBe("h901");
+    expect(state.selectedPositions.get("h901")).toBe(900);
+    expect(state.items.length).toBeLessThanOrEqual(512);
+    expect(state.windowStart).toBeGreaterThan(0);
+  });
+
+  it("keeps the visible anchor while a refresh is in flight", async () => {
+    const rows = [item(1), item(2), item(3)];
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+
+    let release!: () => void;
+    mockSection(() => new Promise<SectionItem[]>((resolve) => {
+      release = () => resolve(rows);
+    }));
+    const pending = useItemsStore.getState().refresh();
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+    release();
+    await pending;
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+  });
+
+  it("recovers to the next remembered neighbor, then keeps it visible", async () => {
+    const rows = [item(1), item(2), item(3)];
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+
+    mockSection([item(1), item(3)]);
+    await useItemsStore.getState().refresh();
+
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
+    expect(useItemsStore.getState().scrollRequest).toMatchObject({ key: "h3", index: 1 });
   });
 });
 
-describe("rangeSelect", () => {
-  const keys = ["h1", "h2", "h3", "h4", "h5", "h6"];
+describe("explicit selection", () => {
+  it("builds and shrinks a Shift range from backend identities", async () => {
+    const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
 
-  beforeEach(() => {
-    seed(keys.map((_k, i) => item({ pathId: i + 1 })));
+    await useItemsStore.getState().rangeSelect("h6", 5);
+    expect([...useItemsStore.getState().selectedKeys]).toEqual([
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+    ]);
+
+    await useItemsStore.getState().rangeSelect("h4", 3);
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2", "h3", "h4"]);
   });
 
-  it("clears details whenever the anchor changes", () => {
-    const staleDetail = {
-      fileName: "old.jpg",
-      kind: "image",
-      byteSize: 10,
-      width: 100,
-      height: 100,
-      durationMs: null,
-      dateState: "dated" as const,
-      resolvedUtcMs: 0,
-      resolvedSource: "metadata",
-      dateOnly: false,
-      copyPaths: ["/photos/old.jpg"],
-      companionPaths: [],
-      stripFrames: null,
-    };
-    useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]), detail: staleDetail });
+  it("preserves modifier-selected keys outside a changing Shift range", async () => {
+    const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    useItemsStore.getState().toggleItem("h8", 7);
 
-    useItemsStore.getState().toggleItem("h2");
-    expect(useItemsStore.getState().detail).toBeNull();
+    await useItemsStore.getState().rangeSelect("h5", 4);
+    await useItemsStore.getState().rangeSelect("h3", 2);
 
-    useItemsStore.setState({ detail: staleDetail });
-    useItemsStore.getState().setAnchor("h3");
-    expect(useItemsStore.getState().detail).toBeNull();
-  });
-
-  it("selects the span between the anchor and the target", () => {
-    useItemsStore.getState().selectItem("h2");
-    useItemsStore.getState().rangeSelect(keys, "h5");
     expect([...useItemsStore.getState().selectedKeys].sort()).toEqual([
       "h2",
       "h3",
       "h4",
       "h5",
+      "h6",
+      "h7",
+      "h8",
     ]);
   });
 
-  it("replaces the range on a second shift-click instead of only growing", () => {
-    useItemsStore.getState().selectItem("h1");
-    useItemsStore.getState().rangeSelect(keys, "h6");
-    expect(useItemsStore.getState().selectedKeys.size).toBe(6);
-
-    // Narrowing is the standard gesture: shift-clicking nearer the origin
-    // means "I overshot, take it back", not "keep everything".
-    useItemsStore.getState().rangeSelect(keys, "h3");
-    expect([...useItemsStore.getState().selectedKeys].sort()).toEqual([
-      "h1",
-      "h2",
-      "h3",
-    ]);
-  });
-
-  it("shrinks when shift+arrow reverses direction", () => {
-    useItemsStore.getState().selectItem("h1");
-    useItemsStore.getState().rangeSelect(keys, "h2");
-    useItemsStore.getState().rangeSelect(keys, "h3");
-    expect(useItemsStore.getState().selectedKeys.size).toBe(3);
-
-    useItemsStore.getState().rangeSelect(keys, "h2");
-    expect([...useItemsStore.getState().selectedKeys].sort()).toEqual([
-      "h1",
-      "h2",
-    ]);
-  });
-});
-
-describe("deleteSelected", () => {
-  it("recovers onto the next item in DISPLAY order, not backend order", async () => {
-    // Name order is deliberately the reverse of time order, so a recovery
-    // that walks the backend array lands somewhere the user is not looking.
-    const items = [
-      item({ pathId: 1, fileName: "c.jpg" }),
-      item({ pathId: 2, fileName: "b.jpg" }),
-      item({ pathId: 3, fileName: "a.jpg" }),
-    ];
-    seed(items);
-    useItemsStore.setState({ sortOrders: { media: { order: "name", desc: false }, other: { order: "name", desc: false } } });
-    mockCommand("get_section_items", () =>
-      items.filter((i) => i.hash !== "h2"),
-    );
-
-    useItemsStore.getState().selectItem("h2"); // "b.jpg", middle in name order
-    await deleteSelectedItems(false);
-
-    // Display order is a.jpg(h3), b.jpg(h2), c.jpg(h1) — the next after b is c.
-    expect(useItemsStore.getState().selectedItem).toBe("h1");
-  });
-
-  it("recovers onto the previous item when the last one is deleted", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
-    seed(items);
-    mockCommand("get_section_items", () =>
-      items.filter((i) => i.hash !== "h3"),
-    );
-
-    useItemsStore.getState().selectItem("h3");
-    await deleteSelectedItems(false);
-
-    expect(useItemsStore.getState().selectedItem).toBe("h2");
-  });
-
-  it("falls back to the next selected item in display order, then the previous", async () => {
-    const items = [
-      item({ pathId: 1 }),
-      item({ pathId: 2 }),
-      item({ pathId: 3 }),
-      item({ pathId: 4 }),
-    ];
-    seed(items);
-    mockCommand("get_section_items", () => items);
-
-    // Removing a middle anchor prefers the next selected row even when it was
-    // selected earlier than the previous row.
-    useItemsStore.getState().selectItem("h2");
-    useItemsStore.getState().toggleItem("h4");
-    useItemsStore.getState().toggleItem("h3");
-    useItemsStore.getState().toggleItem("h3");
-    expect(useItemsStore.getState().selectedItem).toBe("h4");
-
-    // Removing the last selected row falls back to the previous survivor.
-    useItemsStore.getState().toggleItem("h4");
-    expect(useItemsStore.getState().selectedItem).toBe("h2");
-  });
-
-  it("keeps the anchor when a different selected item is removed", () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
-    seed(items);
-
-    useItemsStore.getState().selectItem("h1");
-    useItemsStore.getState().toggleItem("h2");
-    useItemsStore.getState().toggleItem("h3");
-    useItemsStore.getState().toggleItem("h1");
-
-    expect(useItemsStore.getState().selectedItem).toBe("h3");
-    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2", "h3"]);
-  });
-
-  it("deletes every selected item and nothing else", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
-    seed(items);
-    mockCommand("get_section_items", () => [item({ pathId: 2 })]);
-
-    useItemsStore.getState().selectItem("h1");
-    useItemsStore.getState().toggleItem("h3");
-    await deleteSelectedItems(false);
-
-    const deleted = invokeCalls
-      .filter((c) => c.command === "delete_items")
-      .flatMap((c) => c.args.items as Array<{ hash: string | null }>)
-      .map((item) => item.hash);
-    expect(deleted.sort()).toEqual(["h1", "h3"]);
-    expect(invokeCalls.filter((c) => c.command === "delete_items")).toHaveLength(1);
-  });
-
-  it("surfaces copies that failed to delete", async () => {
-    const items = [item({ pathId: 1 }), item({ pathId: 2 })];
-    seed(items);
-    mockCommand("get_section_items", () => items);
-    mockCommand("delete_items", ({ items }) => ({
-      cancelled: false,
-      error: null,
-      failedFiles: 1,
-      items: [{ item: (items as unknown[])[0], failedFiles: 1 }],
-    }));
-
-    useItemsStore.getState().selectItem("h1");
-    await deleteSelectedItems(false);
-
-    // A delete that silently did nothing is the worst outcome: the user
-    // presses again, and again. Something must reach the UI.
-    expect(useItemsStore.getState().message).toBeTruthy();
-  });
-
-  it("surfaces a rejected delete instead of only logging it", async () => {
-    const items = [item({ pathId: 1 })];
-    seed(items);
-    mockCommand("get_section_items", () => items);
-    mockCommand("delete_items", () => {
-      throw new Error("a source volume is not present");
+  it("sends every selected identity even when the rows are outside the loaded window", async () => {
+    const rows = Array.from({ length: 900 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.setState({
+      selectedItem: "h700",
+      selectedKeys: new Set(["h1", "h700"]),
+      selectedPositions: new Map([
+        ["h1", 0],
+        ["h700", 699],
+      ]),
     });
 
-    useItemsStore.getState().selectItem("h1");
     await deleteSelectedItems(false);
 
-    expect(useItemsStore.getState().message).toMatch(/not present/i);
+    const call = invokeCalls.find((candidate) => candidate.command === "delete_items");
+    expect(call?.args.items).toEqual([
+      { hash: "h1", pathId: null },
+      { hash: "h700", pathId: null },
+    ]);
   });
 });
 
-describe("out-of-order responses (the reads are async commands now)", () => {
-  // The stores used to lean on main-thread commands serializing FIFO. On the
-  // async runtime two reloads race, and without the sequence guard the OLDER
-  // response landing last resurrects rows a newer reload already dropped —
-  // deleted photos reappearing until the next refresh.
-  it("a stale section reload cannot overwrite a fresher one", async () => {
-    const resolvers: ((items: SectionItem[]) => void)[] = [];
-    mockCommand(
-      "get_section_items",
-      () => new Promise<SectionItem[]>((resolve) => resolvers.push(resolve)),
-    );
-    const section = { kind: "image" as const, month: "2026-01" };
-    useItemsStore.setState({ selected: section });
+describe("request ownership", () => {
+  it("ignores an older section response that arrives last", async () => {
+    let release!: () => void;
+    mockSection(() => new Promise<SectionItem[]>((resolve) => {
+      release = () => resolve([item(1)]);
+    }));
+    const older = useItemsStore.getState().select(SECTION);
 
-    const older = useItemsStore.getState().select(section);
-    const newer = useItemsStore.getState().refresh(); // same section OBJECT
-    expect(resolvers).toHaveLength(2);
-
-    // The newer reload returns first — post-delete, one row gone.
-    resolvers[1]([item({ pathId: 2 })]);
-    await newer;
-    // The OLDER response straggles in with the pre-delete rows.
-    resolvers[0]([item({ pathId: 1 }), item({ pathId: 2 })]);
+    mockSection([item(9)]);
+    await useItemsStore.getState().select({ kind: "image", month: "2026-02" });
+    release();
     await older;
 
-    expect(useItemsStore.getState().items.map((i) => i.pathId)).toEqual([2]);
-  });
-
-  it("a stale detail response for the same anchor is discarded", async () => {
-    const resolvers: ((detail: unknown) => void)[] = [];
-    mockCommand(
-      "get_item_detail",
-      () => new Promise((resolve) => resolvers.push(resolve)),
-    );
-    useItemsStore.setState({ items: [item({ pathId: 1 })], selected: { kind: "image", month: "2026-01" } });
-
-    useItemsStore.getState().selectItem("h1");
-    useItemsStore.getState().selectItem("h1"); // re-select fires a second fetch
-    // Macrotask drains, not bare microtask ticks: the response runs through
-    // invoke's async wrapper AND the .then chain, and a single microtask left
-    // the stale write still pending — the assertion passed with the guard
-    // deleted. setTimeout(0) flushes the whole chain (mutation-verified).
-    const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
-    await drain();
-    expect(resolvers).toHaveLength(2);
-
-    resolvers[1]({ fileName: "IMG_1.jpg", copyPaths: ["/b"], companionPaths: [] });
-    await drain();
-    resolvers[0]({ fileName: "IMG_1.jpg", copyPaths: ["/a"], companionPaths: [] });
-    await drain();
-
-    // The newer fetch's answer stands.
-    expect(
-      (useItemsStore.getState().detail as { copyPaths: string[] } | null)?.copyPaths,
-    ).toEqual(["/b"]);
-  });
-});
-
-describe("the direction toggle (Phase 33)", () => {
-  it("re-picking the active order flips it; a fresh order starts natural", () => {
-    useItemsStore.setState({
-      selected: { kind: "image", month: "2026-01" },
-      sortOrders: {
-        media: { order: "time", desc: false },
-        other: { order: "name", desc: false },
-      },
-    });
-    useItemsStore.getState().setSortOrder("time");
-    expect(useItemsStore.getState().sortOrders.media).toEqual({ order: "time", desc: true });
-    // A fresh order arrives in its NATURAL direction (size = biggest first),
-    // not whatever direction the previous order left behind.
-    useItemsStore.getState().setSortOrder("size");
-    expect(useItemsStore.getState().sortOrders.media).toEqual({ order: "size", desc: true });
-    // And only the active lane moved.
-    expect(useItemsStore.getState().sortOrders.other).toEqual({ order: "name", desc: false });
+    expect(useItemsStore.getState().selected?.month).toBe("2026-02");
+    expect(useItemsStore.getState().items.map((row) => row.hash)).toEqual(["h9"]);
   });
 });

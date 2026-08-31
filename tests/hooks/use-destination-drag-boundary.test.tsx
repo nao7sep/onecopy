@@ -58,7 +58,6 @@ describe("the app-wide drag boundary", () => {
       dragSelection: {
         items: [{ hash: "h1", pathId: null }],
         anchorKey: "h1",
-        shownKeys: ["h1"],
       },
     });
     const event = dragEvent("dragover", ["text/plain"]);

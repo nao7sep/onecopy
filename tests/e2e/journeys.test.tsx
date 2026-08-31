@@ -23,6 +23,7 @@ import {
   invokeCalls,
   mockCommand,
   mockCommands,
+  mockSectionItems,
   resetTauriMocks,
 } from "../mocks/tauri";
 import { finishWizard } from "../../src/workflows/wizard";
@@ -222,7 +223,7 @@ describe("the culling journey", () => {
       videos: [],
       others: [],
     }));
-    mockCommand("get_section_items", () => SCENE);
+    mockSectionItems(() => SCENE);
     await act(async () => {
       fireEvent("source-check://done", {});
     });
@@ -306,7 +307,7 @@ describe("the culling journey", () => {
         items: items.map((item) => ({ item, failedFiles: 0 })),
       };
     });
-    mockCommand("get_section_items", () => [
+    mockSectionItems(() => [
       item(2, { similarGroupId: null }),
       item(4),
     ]);
@@ -338,7 +339,7 @@ describe("the failure journey", () => {
       dataRoot: "/data",
       debugEnabled: false,
     }));
-    mockCommand("get_section_items", () => SCENE);
+    mockSectionItems(() => SCENE);
     const view = render(<App />);
     await settle();
 

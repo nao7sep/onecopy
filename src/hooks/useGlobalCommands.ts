@@ -18,7 +18,7 @@ import {
 import { requestComparisonFromMain } from "../workflows/comparison";
 import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
 import { handleFViewer, handleSpaceQuickView } from "../workflows/quick-view";
-import { isAudioFile, sectionProjection } from "../models/items";
+import { isAudioFile, itemKey } from "../models/items";
 import { toggleMainPlayback } from "../workflows/playback";
 
 export function useGlobalCommands() {
@@ -127,9 +127,7 @@ export function useGlobalCommands() {
         const anchor =
           items.selectedItem === null
             ? undefined
-            : sectionProjection(items.items, items.currentSort()).itemByKey.get(
-                items.selectedItem,
-              );
+            : items.items.find((item) => itemKey(item) === items.selectedItem);
         if (
           items.selected?.kind === "video" ||
           (anchor !== undefined && isAudioFile(anchor.fileName))

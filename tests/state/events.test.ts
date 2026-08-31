@@ -5,7 +5,14 @@
 // footer permanently claiming work is in flight. Nothing exercised them.
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  fireEvent,
+  invokeCalls,
+  listenerCount,
+  mockCommands,
+  mockSectionItems,
+  resetTauriMocks,
+} from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
 import { installScanEventWiring } from "../../src/workflows/scan-events";
@@ -65,7 +72,6 @@ beforeEach(async () => {
   });
   mockCommands({
     get_section_counts: () => [],
-    get_section_items: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
     index_work_snapshot: () => ({
       sourceCheck: { running: false, stopping: false },
@@ -74,6 +80,7 @@ beforeEach(async () => {
     patch_state: () => ({}),
     binaries_state: () => ({ status: "up-to-date" }),
   });
+  mockSectionItems(() => []);
   await settle();
 });
 
@@ -168,7 +175,8 @@ describe("derived media events", () => {
     await settleUntil(() => useItemsStore.getState().items[0]?.width === 4000);
 
     expect(useItemsStore.getState().items[0]).toMatchObject({ width: 4000, hasThumb: true });
-    expect(invokeCalls.some((call) => call.command === "get_section_items")).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "get_section_window")).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "reconcile_section")).toBe(false);
     expect(invokeCalls.some((call) => call.command === "get_section_counts")).toBe(false);
   });
 });

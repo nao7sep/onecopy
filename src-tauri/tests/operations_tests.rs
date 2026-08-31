@@ -62,6 +62,24 @@ fn item_projection() -> onecopy_lib::queries::ItemProjectionContext {
     }
 }
 
+fn section_items(f: &Fixture, kind: &str) -> Vec<onecopy_lib::queries::SectionItem> {
+    onecopy_lib::queries::section_window(
+        &f.conn,
+        kind,
+        "undated",
+        chrono_tz::Tz::UTC,
+        onecopy_lib::queries::SectionSort {
+            order: onecopy_lib::queries::SectionSortOrder::Time,
+            desc: false,
+        },
+        0,
+        onecopy_lib::queries::MAX_SECTION_WINDOW_ITEMS,
+        item_projection(),
+    )
+    .unwrap()
+    .items
+}
+
 fn scan(f: &Fixture) {
     scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
     scanner::hash_pending(&f.conn, &f.cache).unwrap();
@@ -1259,14 +1277,7 @@ fn copy_count_matches_the_rows_a_delete_targets() {
             |r| r.get(0),
         )
         .unwrap();
-    let items = onecopy_lib::queries::section_items(
-        &f.conn,
-        "image",
-        "undated",
-        chrono_tz::Tz::UTC,
-        item_projection(),
-    )
-    .unwrap();
+    let items = section_items(&f, "image");
     let shown = items
         .iter()
         .find(|i| i.hash.as_deref() == Some(hash.as_str()))
@@ -1321,14 +1332,7 @@ fn a_shared_hash_split_across_paired_and_unpaired_rows_still_agrees() {
         .unwrap();
     assert_eq!(paired, 1, "exactly one of the two ARWs pairs");
 
-    let items = onecopy_lib::queries::section_items(
-        &f.conn,
-        "other",
-        "undated",
-        chrono_tz::Tz::UTC,
-        item_projection(),
-    )
-    .unwrap();
+    let items = section_items(&f, "other");
     let badge = items
         .iter()
         .find(|i| i.hash.as_deref() == Some(raw_hash.as_str()))

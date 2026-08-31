@@ -48,6 +48,7 @@ pub mod timestamps;
 pub mod transcription;
 pub mod trash;
 pub mod video;
+pub mod viewer_sequence;
 pub mod volume;
 pub mod watcher;
 pub mod winpath;
@@ -365,33 +366,230 @@ fn mutation_cancel(app: AppHandle, operation_id: u64) -> Result<bool, String> {
     })
 }
 
-// One (kind, month) section's grid items, same month keys and timezone as the
-// counts so the two always agree.
+fn item_projection_context(
+    data_root: &std::path::Path,
+) -> Result<queries::ItemProjectionContext, String> {
+    Ok(queries::ItemProjectionContext {
+        capabilities: derived_work::work_capabilities(data_root)?,
+        similarity_dirty: derived_work::similarity_dirty(),
+    })
+}
+
 #[tauri::command(async)]
-fn get_section_items(
+fn get_section_window(
     app: AppHandle,
     kind: String,
     month: String,
-) -> Result<Vec<queries::SectionItem>, String> {
+    sort: queries::SectionSort,
+    start: u64,
+    limit: u32,
+) -> Result<queries::SectionWindow, String> {
     logging::boundary(
-        "get_section_items",
-        json!({ "kind": kind, "month": month }),
+        "get_section_window",
+        json!({ "kind": kind, "month": month, "start": start, "limit": limit }),
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            queries::section_items(
+            queries::section_window(
                 &conn,
                 &kind,
                 &month,
                 display_timezone(),
-                queries::ItemProjectionContext {
-                    capabilities: derived_work::work_capabilities(&data_root)?,
-                    similarity_dirty: derived_work::similarity_dirty(),
-                },
+                sort,
+                start,
+                limit,
+                item_projection_context(&data_root)?,
+            )
+        },
+        |window| json!({ "total": window.total, "start": window.start, "items": window.items.len() }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command(async)]
+fn reconcile_section(
+    app: AppHandle,
+    kind: String,
+    month: String,
+    sort: queries::SectionSort,
+    selected: Vec<queries::SectionIdentity>,
+    anchor: Option<queries::SectionIdentity>,
+    range_origin: Option<queries::SectionIdentity>,
+    range_base: Vec<queries::SectionIdentity>,
+    recovery: Option<queries::SectionRecoveryContext>,
+    select_first: bool,
+    limit: u32,
+) -> Result<queries::SectionReconciliation, String> {
+    logging::boundary(
+        "reconcile_section",
+        json!({
+            "kind": kind,
+            "month": month,
+            "selected": selected.len(),
+            "rangeBase": range_base.len(),
+            "selectFirst": select_first,
+            "limit": limit,
+        }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            queries::reconcile_section(
+                &conn,
+                &kind,
+                &month,
+                display_timezone(),
+                sort,
+                &selected,
+                anchor.as_ref(),
+                range_origin.as_ref(),
+                &range_base,
+                recovery.as_ref(),
+                select_first,
+                limit,
+                item_projection_context(&data_root)?,
+            )
+        },
+        |result| {
+            json!({
+                "total": result.window.total,
+                "start": result.window.start,
+                "items": result.window.items.len(),
+                "selected": result.selected.len(),
+            })
+        },
+    )
+}
+
+#[tauri::command(async)]
+fn get_section_range(
+    app: AppHandle,
+    kind: String,
+    month: String,
+    sort: queries::SectionSort,
+    start: u64,
+    end: u64,
+) -> Result<Vec<queries::PositionedSectionIdentity>, String> {
+    logging::boundary(
+        "get_section_range",
+        json!({ "kind": kind, "month": month, "start": start, "end": end }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            queries::section_range(
+                &conn,
+                &kind,
+                &month,
+                display_timezone(),
+                sort,
+                start,
+                end,
             )
         },
         |items| json!({ "items": items.len() }),
     )
+}
+
+#[tauri::command(async)]
+fn get_section_family_context(
+    app: AppHandle,
+    kind: String,
+    month: String,
+    sort: queries::SectionSort,
+    member_hashes: Vec<String>,
+) -> Result<Option<queries::SectionRecoveryContextOutput>, String> {
+    logging::boundary(
+        "get_section_family_context",
+        json!({ "kind": kind, "month": month, "members": member_hashes.len() }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            queries::section_family_context(
+                &conn,
+                &kind,
+                &month,
+                display_timezone(),
+                sort,
+                &member_hashes,
+            )
+        },
+        |context| json!({ "found": context.is_some() }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command(async)]
+fn viewer_sequence_start(
+    app: AppHandle,
+    kind: String,
+    month: String,
+    sort: queries::SectionSort,
+    selected: Vec<queries::PositionedSectionIdentity>,
+    anchor: queries::SectionIdentity,
+) -> Result<viewer_sequence::Snapshot, String> {
+    logging::boundary(
+        "viewer_sequence_start",
+        json!({ "kind": kind, "month": month, "selected": selected.len() }),
+        || {
+            let data_root = paths::data_root(&app)?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+            viewer_sequence::start(
+                &data_root,
+                &conn,
+                &kind,
+                &month,
+                display_timezone(),
+                sort,
+                selected,
+                &anchor,
+                item_projection_context(&data_root)?,
+            )
+        },
+        |snapshot| json!({ "length": snapshot.length, "index": snapshot.index }),
+    )
+}
+
+#[tauri::command(async)]
+fn viewer_sequence_move(
+    app: AppHandle,
+    token: String,
+    movement: viewer_sequence::Move,
+) -> Result<viewer_sequence::Snapshot, String> {
+    let data_root = paths::data_root(&app)?;
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+    viewer_sequence::move_current(
+        &token,
+        movement,
+        &conn,
+        item_projection_context(&data_root)?,
+    )
+}
+
+#[tauri::command(async)]
+fn viewer_sequence_reconcile(
+    app: AppHandle,
+    token: String,
+) -> Result<Option<viewer_sequence::Snapshot>, String> {
+    let data_root = paths::data_root(&app)?;
+    let index_db = data_root.join(storage::INDEX_DB_FILE_NAME);
+    let conn = index_store::open(&index_db)?;
+    viewer_sequence::reconcile(
+        &token,
+        &index_db,
+        &conn,
+        item_projection_context(&data_root)?,
+    )
+}
+
+#[tauri::command(async)]
+fn viewer_sequence_close(token: Option<String>) -> Result<(), String> {
+    viewer_sequence::close(token.as_deref())
+}
+
+#[tauri::command(async)]
+fn comparison_selection_valid(app: AppHandle, hashes: Vec<String>) -> Result<bool, String> {
+    let data_root = paths::data_root(&app)?;
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+    queries::comparison_selection_valid(&conn, &hashes)
 }
 
 fn display_timezone() -> chrono_tz::Tz {
@@ -2018,7 +2216,15 @@ pub fn run() {
             index_work_snapshot,
             rebuild_library_index,
             get_section_counts,
-            get_section_items,
+            get_section_window,
+            reconcile_section,
+            get_section_range,
+            get_section_family_context,
+            viewer_sequence_start,
+            viewer_sequence_move,
+            viewer_sequence_reconcile,
+            viewer_sequence_close,
+            comparison_selection_valid,
             get_item_detail,
             get_similar_group,
             comparison_live_hashes,

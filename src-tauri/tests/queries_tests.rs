@@ -55,6 +55,26 @@ fn sort(order: queries::SectionSortOrder, desc: bool) -> queries::SectionSort {
     queries::SectionSort { order, desc }
 }
 
+fn section_items(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+) -> Vec<queries::SectionItem> {
+    queries::section_window(
+        conn,
+        kind,
+        month,
+        display_tz,
+        sort(queries::SectionSortOrder::Time, false),
+        0,
+        queries::MAX_SECTION_WINDOW_ITEMS,
+        projection(),
+    )
+    .unwrap()
+    .items
+}
+
 /// One image content row with a live path in January 2026 UTC.
 fn seed_image(conn: &Connection, hash: &str, derived_at: Option<&str>, name: &str) {
     conn.execute(
@@ -236,6 +256,131 @@ fn other_section_window_combines_hashed_and_unhashed_items() {
 }
 
 #[test]
+fn section_reconciliation_preserves_selection_and_recovers_forward() {
+    let conn = db();
+    for index in 1..=5 {
+        seed_image(
+            &conn,
+            &format!("h{index}"),
+            Some("ready"),
+            &format!("{index}.jpg"),
+        );
+    }
+    let identity = |index| queries::SectionIdentity {
+        hash: Some(format!("h{index}")),
+        path_id: 0,
+    };
+    let recovery = queries::SectionRecoveryContext {
+        index: 2,
+        before: vec![identity(2), identity(1)],
+        after: vec![identity(4), identity(5)],
+    };
+    conn.execute("DELETE FROM paths WHERE content_hash = 'h3'", [])
+        .unwrap();
+
+    let result = queries::reconcile_section(
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &[identity(2), identity(4)],
+        Some(&identity(3)),
+        Some(&identity(3)),
+        &[identity(2), identity(4)],
+        Some(&recovery),
+        false,
+        3,
+        projection(),
+    )
+    .unwrap();
+
+    assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h4"));
+    assert_eq!(
+        result
+            .selected
+            .iter()
+            .filter_map(|member| member.hash.as_deref())
+            .collect::<Vec<_>>(),
+        vec!["h2", "h4"]
+    );
+    assert_eq!(result.window.items.len(), 3);
+}
+
+#[test]
+fn section_reconciliation_chooses_the_nearest_surviving_selection_outside_context() {
+    let conn = db();
+    for index in 1..=200 {
+        seed_image(
+            &conn,
+            &format!("h{index:03}"),
+            Some("ready"),
+            &format!("{index:03}.jpg"),
+        );
+    }
+    let identity = |index| queries::SectionIdentity {
+        hash: Some(format!("h{index:03}")),
+        path_id: 0,
+    };
+    conn.execute("DELETE FROM paths WHERE content_hash = 'h100'", [])
+        .unwrap();
+
+    let result = queries::reconcile_section(
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &[identity(150), identity(170)],
+        Some(&identity(100)),
+        None,
+        &[],
+        Some(&queries::SectionRecoveryContext {
+            index: 99,
+            before: vec![],
+            after: vec![],
+        }),
+        false,
+        3,
+        projection(),
+    )
+    .unwrap();
+
+    assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h150"));
+}
+
+#[test]
+fn explicit_section_range_returns_only_requested_positions() {
+    let conn = db();
+    for index in 1..=8 {
+        seed_image(
+            &conn,
+            &format!("h{index}"),
+            Some("ready"),
+            &format!("{index}.jpg"),
+        );
+    }
+    let range = queries::section_range(
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        2,
+        5,
+    )
+    .unwrap();
+    assert_eq!(range.iter().map(|member| member.index).collect::<Vec<_>>(), vec![2, 3, 4]);
+    assert_eq!(
+        range
+            .iter()
+            .filter_map(|member| member.hash.as_deref())
+            .collect::<Vec<_>>(),
+        vec!["h3", "h4", "h5"]
+    );
+}
+
+#[test]
 fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
     let conn = db();
     seed_image(&conn, "hdone", Some("2026-01-02T03:04:05.000Z"), "done.jpg");
@@ -247,7 +392,7 @@ fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
     );
     seed_image(&conn, "hfailed", Some("failed"), "failed.jpg");
 
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
+    let items = section_items(&conn, "image", "2026-01", Tz::UTC);
     let thumb_of = |hash: &str| {
         items
             .iter()
@@ -440,7 +585,7 @@ fn copy_count_counts_every_live_path_for_one_content() {
         .unwrap();
     }
 
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
+    let items = section_items(&conn, "image", "2026-01", Tz::UTC);
     let item = items
         .iter()
         .find(|i| i.hash.as_deref() == Some("hshared"))
@@ -484,7 +629,7 @@ fn a_missing_copy_does_not_count_toward_the_logical_item() {
     )
     .unwrap();
 
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
+    let items = section_items(&conn, "image", "2026-01", Tz::UTC);
     let item = items.iter().find(|i| i.hash.as_deref() == Some("hgone")).unwrap();
     assert_eq!(item.copy_count, 1, "a vanished copy is not a copy");
 }
@@ -518,11 +663,8 @@ fn logical_date_waits_for_every_live_copy_to_finish_date_checking() {
         )
         .unwrap();
     assert_eq!(state, ("pending".to_string(), None));
-    assert!(queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection())
-        .unwrap()
-        .is_empty());
-    let undated =
-        queries::section_items(&conn, "image", "undated", Tz::UTC, projection()).unwrap();
+    assert!(section_items(&conn, "image", "2026-01", Tz::UTC).is_empty());
+    let undated = section_items(&conn, "image", "undated", Tz::UTC);
     assert_eq!(undated.len(), 1, "pending items remain visible in Undated");
     assert_eq!(undated[0].file_name, "dated.jpg");
 
@@ -559,8 +701,7 @@ fn logical_date_waits_for_every_live_copy_to_finish_date_checking() {
     )
     .unwrap();
 
-    let completed =
-        queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
+    let completed = section_items(&conn, "image", "2026-01", Tz::UTC);
     assert_eq!(completed.len(), 1);
     assert_eq!(completed[0].file_name, "dated.jpg");
     let detail = queries::item_detail(&conn, Some("hpending"), None).unwrap();
@@ -620,7 +761,7 @@ fn logical_summary_tracks_representative_date_name_and_presence_changes() {
     )
     .unwrap();
 
-    let january = queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection()).unwrap();
+    let january = section_items(&conn, "image", "2026-01", Tz::UTC);
     assert_eq!(january.len(), 1);
     assert_eq!(january[0].copy_count, 2);
     assert_eq!(january[0].file_name, "early.jpg", "the oldest copy supplies the name");
@@ -630,13 +771,8 @@ fn logical_summary_tracks_representative_date_name_and_presence_changes() {
         [],
     )
     .unwrap();
-    assert!(
-        queries::section_items(&conn, "image", "2026-01", Tz::UTC, projection())
-            .unwrap()
-            .is_empty()
-    );
-    let february =
-        queries::section_items(&conn, "image", "2026-02", Tz::UTC, projection()).unwrap();
+    assert!(section_items(&conn, "image", "2026-01", Tz::UTC).is_empty());
+    let february = section_items(&conn, "image", "2026-02", Tz::UTC);
     assert_eq!(
         february.len(),
         1,
@@ -802,7 +938,7 @@ fn section_dirs_matches_the_directories_of_section_items() {
     seed_at(&conn, "hwin", r"\\?\C:\photos", "c.jpg", 1_769_853_600_000);
 
     for month in ["2026-01", "2026-02"] {
-        let items = queries::section_items(&conn, "image", month, tz, projection()).unwrap();
+        let items = section_items(&conn, "image", month, tz);
         let mut expected: Vec<String> = items
             .iter()
             .map(|i| {
@@ -824,9 +960,7 @@ fn section_dirs_matches_the_directories_of_section_items() {
     }
     // The boundary really did split them, or the test proves nothing.
     assert_eq!(
-        queries::section_items(&conn, "image", "2026-02", tz, projection())
-            .unwrap()
-            .len(),
+        section_items(&conn, "image", "2026-02", tz).len(),
         1,
         "the Tokyo boundary puts exactly one item in February"
     );
@@ -915,6 +1049,24 @@ fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
     );
     assert!(members.iter().all(|m| m.copy_count == 1));
     assert!(members.iter().all(|m| m.has_thumb));
+}
+
+#[test]
+fn comparison_admission_checks_selected_members_outside_the_loaded_window() {
+    let conn = db();
+    for hash in ["a", "b", "c"] {
+        seed_image(&conn, hash, Some("ready"), &format!("{hash}.jpg"));
+    }
+    conn.execute_batch(
+        "INSERT INTO similar_groups (id, created_at_utc) VALUES (1, 'x'), (2, 'x');
+         INSERT INTO similar_group_members (group_id, content_hash) VALUES
+           (1, 'a'), (1, 'b'), (2, 'c');",
+    )
+    .unwrap();
+
+    assert!(queries::comparison_selection_valid(&conn, &["a".into(), "b".into()]).unwrap());
+    assert!(!queries::comparison_selection_valid(&conn, &["a".into(), "c".into()]).unwrap());
+    assert!(!queries::comparison_selection_valid(&conn, &["a".into(), "missing".into()]).unwrap());
 }
 
 #[test]
@@ -1064,8 +1216,7 @@ fn equal_dates_choose_the_case_insensitive_path_order_then_exact_path() {
     )
     .unwrap();
 
-    let items =
-        queries::section_items(&conn, "image", "1970-01", chrono_tz::UTC, projection()).unwrap();
+    let items = section_items(&conn, "image", "1970-01", chrono_tz::UTC);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].file_name, "Photo.jpg");
     assert_eq!(items[0].dir_paths, vec!["/A", "/a", "/z"]);

@@ -1,21 +1,18 @@
 import { create } from "zustand";
-import {
-  moveViewerSession,
-  reconcileViewerSession,
-  viewerCurrentKey,
-  type ViewerMove,
-  type ViewerMember,
-  type ViewerSession,
+import { identityKey } from "../models/items";
+import type {
+  ActiveViewerSession,
+  ViewerPresentation,
+  ViewerSequenceSnapshot,
 } from "../models/viewerSession";
 
 interface QuickViewState {
-  session: ViewerSession | null;
+  session: ActiveViewerSession | null;
   pendingDelete: "trash" | "permanent" | null;
   currentKey: () => string | null;
-  start: (session: ViewerSession) => void;
-  move: (move: ViewerMove) => void;
-  reconcile: (liveMembers: ViewerMember[]) => void;
-  setPresentation: (presentation: ViewerSession["presentation"]) => void;
+  start: (snapshot: ViewerSequenceSnapshot, presentation: ViewerPresentation) => void;
+  update: (snapshot: ViewerSequenceSnapshot) => void;
+  setPresentation: (presentation: ViewerPresentation) => void;
   requestDelete: (kind: "trash" | "permanent") => void;
   cancelDelete: () => void;
   close: () => void;
@@ -24,16 +21,17 @@ interface QuickViewState {
 export const useQuickViewStore = create<QuickViewState>((set, get) => ({
   session: null,
   pendingDelete: null,
-  currentKey: () => viewerCurrentKey(get().session),
-  start: (session) => set({ session, pendingDelete: null }),
-  move: (move) => {
+  currentKey: () => {
     const session = get().session;
-    if (session !== null) set({ session: moveViewerSession(session, move) });
+    return session === null ? null : identityKey(session.member);
   },
-  reconcile: (liveMembers) => {
+  start: (snapshot, presentation) => {
+    set({ session: { ...snapshot, presentation }, pendingDelete: null });
+  },
+  update: (snapshot) => {
     const session = get().session;
-    if (session !== null) {
-      set({ session: reconcileViewerSession(session, liveMembers), pendingDelete: null });
+    if (session !== null && session.token === snapshot.token) {
+      set({ session: { ...snapshot, presentation: session.presentation } });
     }
   },
   setPresentation: (presentation) => {

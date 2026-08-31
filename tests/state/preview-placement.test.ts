@@ -21,7 +21,7 @@ import { useItemsStore } from "../../src/state/items-store";
 import { togglePreview } from "../../src/workflows/preview";
 import { installItemWorkflow } from "../../src/workflows/items";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
-import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 
 function item(pathId: number): SectionItem {
   return {
@@ -48,7 +48,11 @@ installItemWorkflow();
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  mockCommands({ patch_state: () => ({}), get_item_detail: () => null });
+  mockCommands({
+    patch_state: () => ({}),
+    get_item_detail: () => null,
+  });
+  mockSectionItems(() => [item(1), item(2)]);
   usePreviewStore.setState({
     follow: false,
     placement: null,
@@ -66,17 +70,18 @@ beforeEach(() => {
 });
 
 describe("the Space model", () => {
-  it("opens Quick View without changing persistent Preview", () => {
+  it("opens Quick View without changing persistent Preview", async () => {
     useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]) });
     let prevented = false;
     const claimed = handleSpaceQuickView({ preventDefault: () => (prevented = true) });
     expect(claimed).toBe(true);
     expect(prevented).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
-  it("opens the same enlarged view for Other files", () => {
+  it("opens the same enlarged view for Other files", async () => {
     useItemsStore.setState({
       selected: { kind: "other", month: "2026-01" },
       selectedItem: "h1",
@@ -85,6 +90,7 @@ describe("the Space model", () => {
     let prevented = false;
     expect(handleSpaceQuickView({ preventDefault: () => (prevented = true) })).toBe(true);
     expect(prevented).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
   });
 });

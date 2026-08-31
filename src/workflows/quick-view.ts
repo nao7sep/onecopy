@@ -1,13 +1,18 @@
 // The transient viewer is one application-owned session with two renderings:
 // an overlay in Main and a reusable borderless fullscreen window. This edge
-// coordinates those surfaces; the pure sequence rules live in
-// models/viewerSession and neither React surface owns library state.
+// coordinates those surfaces. The native disk-backed sequence owns frozen
+// membership and order; neither React surface owns library state.
 
 import { emit, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { createViewerSession, type ViewerMove, type ViewerPresentation } from "../models/viewerSession";
+import type {
+  ViewerMove,
+  ViewerPresentation,
+  ViewerSequenceSnapshot,
+} from "../models/viewerSession";
 import type { ItemDetail, SectionItem } from "../models/items";
-import { isAudioFile, itemKey, sectionProjection } from "../models/items";
+import { identityFromKey, identityKey, isAudioFile, itemKey } from "../models/items";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
@@ -42,13 +47,15 @@ interface ViewerKeyMessage {
 let installed = false;
 let itemReconcileQueued = false;
 let fullscreenRequest = 0;
+let viewerOpenRequest = 0;
+let viewerSequenceQueue: Promise<void> = Promise.resolve();
+
+function enqueueViewerSequence(task: () => Promise<void>): void {
+  viewerSequenceQueue = viewerSequenceQueue.then(task, task);
+}
 
 function currentItem(): SectionItem | null {
-  const key = useQuickViewStore.getState().currentKey();
-  const state = useItemsStore.getState();
-  return key === null
-    ? null
-    : (sectionProjection(state.items, state.currentSort()).itemByKey.get(key) ?? null);
+  return useQuickViewStore.getState().session?.item ?? null;
 }
 
 export function viewerBroadcast(): ViewerBroadcast {
@@ -60,7 +67,7 @@ export function viewerBroadcast(): ViewerBroadcast {
     detail:
       item !== null && items.selectedItem === itemKey(item) ? items.detail : null,
     index: session?.index ?? 0,
-    length: session?.members.length ?? 0,
+    length: session?.length ?? 0,
     pendingDelete: useQuickViewStore.getState().pendingDelete,
     sectionKind: items.selected?.kind ?? null,
   };
@@ -87,11 +94,12 @@ function clearFullscreenSurface(): void {
 function syncMainAnchor(): void {
   const viewer = useQuickViewStore.getState();
   const key = viewer.currentKey();
-  if (key === null) return;
+  const session = viewer.session;
+  if (key === null || session === null) return;
   if (viewer.session?.scope === "selection") {
-    useItemsStore.getState().setAnchor(key);
+    useItemsStore.getState().setAnchor(key, session.sectionIndex);
   } else {
-    useItemsStore.getState().selectItem(key);
+    useItemsStore.getState().selectItem(key, "nearest", session.sectionIndex);
   }
 }
 
@@ -128,13 +136,15 @@ function recoverFullscreenFailure(
     if (fallback === "quick") {
       useQuickViewStore.getState().setPresentation("quick");
     } else {
-      useQuickViewStore.getState().close();
+      void closeViewer();
     }
     useItemsStore.setState({ message: "Couldn’t open full screen." });
     reportActionFailure("fullscreen-open-failed", "Couldn’t open full screen.", error);
   }
-  clearFullscreenSurface();
-  void exitViewerFullscreen().then(restoreMainFocus);
+  if (fallback === "quick") {
+    clearFullscreenSurface();
+    void exitViewerFullscreen().then(restoreMainFocus);
+  }
 }
 
 /** Installs the cross-window handshake and disappearance reconciliation once. */
@@ -158,26 +168,46 @@ export async function installViewerWorkflow(): Promise<void> {
   ]);
   useQuickViewStore.subscribe(broadcastViewer);
   useItemsStore.subscribe((state, previous) => {
-    if (state.items === previous.items || itemReconcileQueued) return;
+    if (state.reconciliationId === previous.reconciliationId || itemReconcileQueued) return;
     itemReconcileQueued = true;
     queueMicrotask(() => {
       itemReconcileQueued = false;
-      const before = useQuickViewStore.getState().currentKey();
-      const state = useItemsStore.getState();
-      useQuickViewStore.getState().reconcile(
-        sectionProjection(state.items, state.currentSort()).orderedItems.map((item) => ({
-          key: itemKey(item),
-          pathId: item.pathId,
-        })),
-      );
-      const after = useQuickViewStore.getState().currentKey();
-      if (after !== null && after !== before) syncMainAnchor();
-      if (after === null && before !== null) void closeViewer();
+      void reconcileViewerSequence();
     });
   });
   useItemsStore.subscribe((state, previous) => {
     if (state.detail !== previous.detail || state.selectedItem !== previous.selectedItem) {
       broadcastViewer();
+    }
+  });
+}
+
+async function reconcileViewerSequence(): Promise<void> {
+  const session = useQuickViewStore.getState().session;
+  if (session === null) return;
+  enqueueViewerSequence(async () => {
+    const current = useQuickViewStore.getState().session;
+    if (current?.token !== session.token) return;
+    const before = identityKey(current.member);
+    try {
+      const snapshot = await invoke<ViewerSequenceSnapshot | null>(
+        "viewer_sequence_reconcile",
+        { token: session.token },
+      );
+      if (useQuickViewStore.getState().session?.token !== session.token) return;
+      if (snapshot === null) {
+        await closeViewer();
+        return;
+      }
+      useQuickViewStore.getState().update(snapshot);
+      if (identityKey(snapshot.member) !== before) syncMainAnchor();
+    } catch (error) {
+      log.error("viewer sequence reconciliation failed", toErrorFields(error));
+      reportActionFailure(
+        "viewer-reconcile-failed",
+        "Couldn’t refresh the open viewer.",
+        error,
+      );
     }
   });
 }
@@ -191,21 +221,43 @@ export function openViewerFromMain(
     useItemsStore.setState({ message: "Select an item to open the viewer." });
     return false;
   }
-  const displayed = sectionProjection(items.items, items.currentSort()).orderedItems;
-  const session = createViewerSession(
-    presentation,
-    displayed.map((item) => ({ key: itemKey(item), pathId: item.pathId })),
-    items.selectedKeys,
-    items.selectedItem,
+  const section = items.selected;
+  const loadedPositions = new Map(
+    items.items.map((item, offset) => [itemKey(item), items.windowStart + offset]),
   );
-  if (session === null) {
+  const anchorPosition = items.selectedPositions.get(items.selectedItem) ?? loadedPositions.get(items.selectedItem);
+  if (section === null || anchorPosition === undefined) {
     useItemsStore.setState({ message: "The selected item is no longer available." });
     return false;
   }
-  useQuickViewStore.getState().start(session);
-  if (presentation === "fullscreen") {
-    beginFullscreen("main", preferredMonitor);
-  }
+  const request = ++viewerOpenRequest;
+  const selected = [...items.selectedKeys].flatMap((key) => {
+    const index = items.selectedPositions.get(key) ?? loadedPositions.get(key);
+    return index === undefined ? [] : [{ ...identityFromKey(key), index }];
+  });
+  void invoke<ViewerSequenceSnapshot>("viewer_sequence_start", {
+    kind: section.kind,
+    month: section.month,
+    sort: items.currentSort(),
+    selected,
+    anchor: identityFromKey(items.selectedItem),
+  })
+    .then((snapshot) => {
+      if (request !== viewerOpenRequest) {
+        void invoke("viewer_sequence_close", { token: snapshot.token }).catch((error) =>
+          log.warn("stale viewer sequence cleanup failed", toErrorFields(error)),
+        );
+        return;
+      }
+      useQuickViewStore.getState().start(snapshot, presentation);
+      if (presentation === "fullscreen") beginFullscreen("main", preferredMonitor);
+    })
+    .catch((error) => {
+      if (request !== viewerOpenRequest) return;
+      log.error("viewer sequence start failed", toErrorFields(error));
+      useItemsStore.setState({ message: "Couldn’t open the viewer." });
+      reportActionFailure("viewer-open-failed", "Couldn’t open the viewer.", error);
+    });
   return true;
 }
 
@@ -234,9 +286,23 @@ export function handleFViewer(event: {
 }
 
 export function moveViewer(move: ViewerMove): void {
-  const before = useQuickViewStore.getState().currentKey();
-  useQuickViewStore.getState().move(move);
-  if (useQuickViewStore.getState().currentKey() !== before) syncMainAnchor();
+  const session = useQuickViewStore.getState().session;
+  if (session === null) return;
+  enqueueViewerSequence(async () => {
+    if (useQuickViewStore.getState().session?.token !== session.token) return;
+    try {
+      const snapshot = await invoke<ViewerSequenceSnapshot>("viewer_sequence_move", {
+        token: session.token,
+        movement: move,
+      });
+      if (useQuickViewStore.getState().session?.token !== session.token) return;
+      useQuickViewStore.getState().update(snapshot);
+      syncMainAnchor();
+    } catch (error) {
+      log.error("viewer navigation failed", toErrorFields(error));
+      reportActionFailure("viewer-navigation-failed", "Couldn’t move in the viewer.", error);
+    }
+  });
 }
 
 export async function setViewerPresentation(presentation: ViewerPresentation): Promise<void> {
@@ -254,13 +320,21 @@ export async function setViewerPresentation(presentation: ViewerPresentation): P
 }
 
 export async function closeViewer(): Promise<void> {
-  const presentation = useQuickViewStore.getState().session?.presentation;
+  viewerOpenRequest += 1;
+  const session = useQuickViewStore.getState().session;
+  const presentation = session?.presentation;
   useQuickViewStore.getState().close();
+  if (session !== null) {
+    await invoke("viewer_sequence_close", { token: session.token }).catch((error) =>
+      log.warn("viewer sequence cleanup failed", toErrorFields(error)),
+    );
+  }
   fullscreenRequest += 1;
   if (presentation === "fullscreen") {
     clearFullscreenSurface();
     await exitViewerFullscreen();
   }
+  await useItemsStore.getState().refresh();
   await restoreMainFocus();
 }
 

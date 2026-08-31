@@ -12,7 +12,12 @@ import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
-import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  invokeCalls,
+  mockCommands,
+  mockSectionItems,
+  resetTauriMocks,
+} from "../mocks/tauri";
 import { useDerivedWorkStore } from "../../src/state/derived-work-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useDestinationsStore } from "../../src/state/destinations-store";
@@ -47,6 +52,12 @@ function renderGrid(
   layout: "tiles" | "list" = "tiles",
   loadError: string | null = null,
 ) {
+  useItemsStore.setState({
+    items,
+    totalItems: items.length,
+    windowStart: 0,
+    itemPositions: new Map(items.map((entry, index) => [entry.hash!, index])),
+  });
   const view = render(
     <Grid
       items={items}
@@ -81,9 +92,9 @@ beforeEach(() => {
   mockCommands({
     patch_state: () => ({}),
     get_item_detail: () => null,
-    get_section_items: () => ITEMS,
     get_section_counts: () => [],
   });
+  mockSectionItems(() => ITEMS);
   usePreviewStore.setState({
     follow: false,
     placement: null,
@@ -112,6 +123,10 @@ beforeEach(() => {
     loadError: null,
     selectedItem: null,
     selectedKeys: new Set(),
+    selectedPositions: new Map(),
+    totalItems: ITEMS.length,
+    windowStart: 0,
+    itemPositions: new Map(ITEMS.map((entry, index) => [entry.hash!, index])),
     rangeOrigin: null,
     rangeBase: new Set(),
     sectionMemory: {},
@@ -185,9 +200,9 @@ describe("arrow navigation", () => {
 
 describe("Home and End", () => {
   it("jump to the ends of the DISPLAYED order", async () => {
-    const { container } = renderGrid();
-    // Sorted by size DESCENDING, so the display order reverses the fixtures.
     await act(async () => useItemsStore.setState({ sortOrders: { media: { order: "size", desc: true }, other: { order: "name", desc: false } } }));
+    // The bounded backend, not Grid, supplies the active total order.
+    const { container } = renderGrid([...ITEMS].reverse());
     await anchor("h4");
 
     press(container, "Home");
@@ -252,13 +267,14 @@ describe("pointer selection", () => {
     expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1"]);
   });
 
-  it("double-click exclusively selects and opens Quick View", () => {
+  it("double-click exclusively selects and opens Quick View", async () => {
     const { view } = renderGrid();
     const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
 
     fireEvent.click(tile, { detail: 1 });
     fireEvent.click(tile, { detail: 2 });
     fireEvent.doubleClick(tile, { detail: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
     expect(useQuickViewStore.getState().session?.presentation).toBe("quick");

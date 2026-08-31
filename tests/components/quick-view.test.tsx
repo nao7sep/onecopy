@@ -17,12 +17,44 @@ function Host() {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   resetModalStack();
-  mockCommands({ patch_state: () => null });
+  mockCommands({
+    patch_state: () => null,
+    viewer_sequence_close: () => null,
+    reconcile_section: () => ({
+      anchor: { hash: "photo-hash", pathId: 1, index: 0 },
+      selected: [{ hash: "photo-hash", pathId: 1, index: 0 }],
+      rangeOrigin: { hash: "photo-hash", pathId: 1, index: 0 },
+      rangeBase: [{ hash: "photo-hash", pathId: 1, index: 0 }],
+      context: { index: 0, before: [], after: [] },
+      window: { total: 1, start: 0, items: useItemsStore.getState().items },
+    }),
+  });
   useQuickViewStore.setState({
     session: {
       presentation: "quick",
-      members: [{ key: "photo-hash", pathId: 1 }],
+      token: "viewer-token",
+      member: { hash: "photo-hash", pathId: 1 },
+      item: {
+        hash: "photo-hash",
+        pathId: 1,
+        fileName: "family.jpg",
+        resolvedUtcMs: 0,
+        copyCount: 1,
+        width: 4000,
+        height: 3000,
+        hasThumb: true,
+        similarGroupId: null,
+        sharpness: null,
+        faceScore: null,
+        byteSize: 10,
+        hasCompanions: false,
+        durationMs: null,
+        dirPaths: ["/photos"],
+        derivedWork: EMPTY_ITEM_WORK,
+      },
       index: 0,
+      length: 1,
+      sectionIndex: 0,
       scope: "section",
     },
     pendingDelete: null,

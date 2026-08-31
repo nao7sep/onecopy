@@ -1,15 +1,28 @@
-// The selected section and its grid items.
+// The selected section, its bounded display window, and explicit selection.
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
 import { reportActionFailure } from "./notifications-store";
-import { itemKey, replaceDerivedItem, sectionProjection, sortItems } from "../models/items";
-import { DEFAULT_DESC, SORT_ORDERS, type ItemDetail, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
 import {
-  anchorContext,
-  recoverAnchor,
+  DEFAULT_DESC,
+  SORT_ORDERS,
+  identityFromKey,
+  identityKey,
+  itemKey,
+  replaceDerivedItem,
+  type ItemDetail,
+  type PositionedSectionIdentity,
+  type SectionItem,
+  type SectionReconciliation,
+  type SectionWindow,
+  type SortChoice,
+  type SortOrder,
+} from "../models/items";
+import {
+  anchorContextFromPayload,
+  anchorContextPayload,
   type AnchorContext,
   type SectionMemory,
 } from "../models/mainSelection";
@@ -19,80 +32,118 @@ export interface SelectedSection {
   month: string;
 }
 
+const SECTION_WINDOW_LIMIT = 512;
+
 interface ItemsState {
   selected: SelectedSection | null;
+  /** Only [windowStart, windowStart + items.length) is retained. */
   items: SectionItem[];
+  totalItems: number;
+  windowStart: number;
+  itemPositions: Map<string, number>;
+  reconciliationId: number;
   loading: boolean;
   loadError: string | null;
   selectedItem: string | null;
-  /** The full multi-selection (always contains the anchor when non-empty). */
   selectedKeys: Set<string>;
-  /** Where the current Shift range grows FROM. Held apart from the anchor
-   * because Shift+arrow moves the anchor on every press, so an anchor-based
-   * origin can only ever extend — the range could never be narrowed. */
+  selectedPositions: Map<string, number>;
   rangeOrigin: string | null;
-  /** The selection as it stood when the current range began. Each Shift
-   * gesture rebuilds from this, so the span can shrink without discarding
-   * keys that were Cmd-clicked outside it. */
+  rangeOriginPosition: number | null;
   rangeBase: Set<string>;
-  /** Per-section work positions live only for this app run. The persisted
-   * state owns only the last-open section's bounded context. */
+  rangeBasePositions: Map<string, number>;
   sectionMemory: Record<string, SectionMemory>;
-  scrollRequest: { key: string; align: "nearest" | "center"; id: number } | null;
+  currentContext: AnchorContext | null;
+  scrollRequest: {
+    key: string;
+    index: number;
+    align: "nearest" | "center";
+    id: number;
+  } | null;
   detail: ItemDetail | null;
-  /** Sort per LANE — other-files sort like a file manager (name, kind),
-   * photos and videos sort like a light table (time taken, resolution); one
-   * shared order let each kind be shown in orders that are nonsense for it
-   * ("Time taken" over files nobody took). Each lane carries its direction;
-   * `currentSort()` resolves the active lane from the open section. */
   sortOrders: { media: SortChoice; other: SortChoice };
   currentSort: () => SortChoice;
-  /** Last outcome worth showing the user (a delete that failed on disk, or a
-   * command that was refused). Null whenever the last action was clean. */
   message: string | null;
   setSortOrder: (order: SortOrder) => void;
   select: (
     section: SelectedSection,
     restore?: { anchor: string | null; context: AnchorContext | null },
   ) => Promise<void>;
-  selectItem: (key: string | null, align?: "nearest" | "center") => void;
-  /** Moves the anchor WITHOUT collapsing the multi-selection (Shift+arrow). */
-  setAnchor: (key: string | null) => void;
-  toggleItem: (key: string) => void;
-  rangeSelect: (sortedKeys: string[], key: string) => void;
+  loadWindow: (start: number, force?: boolean) => Promise<void>;
+  selectPosition: (index: number, extend: boolean) => Promise<void>;
+  selectIdentity: (key: string) => Promise<void>;
+  selectItem: (
+    key: string | null,
+    align?: "nearest" | "center",
+    position?: number,
+  ) => void;
+  setAnchor: (key: string | null, position?: number) => void;
+  toggleItem: (key: string, position?: number) => void;
+  rangeSelect: (key: string, position?: number) => Promise<void>;
   refresh: () => Promise<void>;
   applyDerivedItem: (previousHash: string, item: SectionItem) => void;
-  /** After a similar-family is fully decided, land the anchor on the first
-   * item PAST the family (in the shown order), so Enter chains straight into
-   * the next group. Past the retained images, deliberately: Enter on one would
-   * reopen the family just decided. */
-  selectAfterFamily: (
-    memberHashes: string[],
-    orderBeforeComparison: SectionItem[],
-  ) => void;
+  selectAfterFamily: (recovery: AnchorContext | null) => Promise<void>;
 }
 
-// One guard per query the store issues (request-seq.ts explains why: these
-// reads are async commands now, so responses can arrive out of order).
 const sectionLoad = requestSeq();
+const windowLoad = requestSeq();
+const rangeLoad = requestSeq();
 const detailLoad = requestSeq();
 let scrollRequestId = 0;
 
-function requestScroll(key: string, align: "nearest" | "center") {
+function requestScroll(
+  key: string,
+  index: number,
+  align: "nearest" | "center",
+) {
   scrollRequestId += 1;
-  return { key, align, id: scrollRequestId };
+  return { key, index, align, id: scrollRequestId };
+}
+
+function positionMap(start: number, items: readonly SectionItem[]): Map<string, number> {
+  return new Map(items.map((item, offset) => [itemKey(item), start + offset]));
+}
+
+function membersMap(members: readonly PositionedSectionIdentity[]): Map<string, number> {
+  return new Map(members.map((member) => [identityKey(member), member.index]));
+}
+
+function knownPosition(state: ItemsState, key: string): number | undefined {
+  return (
+    state.itemPositions.get(key) ??
+    (() => {
+      const local = state.items.findIndex((item) => itemKey(item) === key);
+      return local < 0 ? undefined : state.windowStart + local;
+    })() ??
+    state.selectedPositions.get(key)
+  );
+}
+
+function sectionId(section: SelectedSection): string {
+  return `${section.kind}:${section.month}`;
+}
+
+function sameSort(left: SortChoice, right: SortChoice): boolean {
+  return left.order === right.order && left.desc === right.desc;
 }
 
 export const useItemsStore = create<ItemsState>((set, get) => ({
   selected: null,
   items: [],
+  totalItems: 0,
+  windowStart: 0,
+  itemPositions: new Map(),
+  reconciliationId: 0,
   loading: false,
   loadError: null,
   selectedItem: null,
-  selectedKeys: new Set<string>(),
+  selectedKeys: new Set(),
+  selectedPositions: new Map(),
   rangeOrigin: null,
-  rangeBase: new Set<string>(),
+  rangeOriginPosition: null,
+  rangeBase: new Set(),
+  rangeBasePositions: new Map(),
   sectionMemory: {},
+  currentContext: null,
   scrollRequest: null,
   detail: null,
   sortOrders: {
@@ -102,246 +153,275 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   message: null,
 
   currentSort: () => {
-    const { selected, sortOrders } = get();
-    return selected?.kind === "other" ? sortOrders.other : sortOrders.media;
+    const state = get();
+    return state.selected?.kind === "other" ? state.sortOrders.other : state.sortOrders.media;
   },
 
   setSortOrder: (order) => {
-    const lane = get().selected?.kind === "other" ? "other" : "media";
-    const current = get().sortOrders[lane];
-    // Picking the ACTIVE order again flips its direction (the header-click
-    // convention); a fresh order starts in its natural direction.
+    const state = get();
+    const lane = state.selected?.kind === "other" ? "other" : "media";
+    const current = state.sortOrders[lane];
     const next: SortChoice =
       current.order === order
         ? { order, desc: !current.desc }
         : { order, desc: DEFAULT_DESC[order] };
-    const sortOrders = { ...get().sortOrders, [lane]: next };
-    const state = get();
-    const anchor = state.selectedItem;
-    set({
-      sortOrders,
-      scrollRequest:
-        anchor === null ? state.scrollRequest : requestScroll(anchor, "center"),
-    });
+    set({ sortOrders: { ...state.sortOrders, [lane]: next } });
+    void reconcileCurrent(set, get, false, "center");
   },
 
   select: async (section, restore) => {
     const before = get();
-    const previous = before.selected;
     const sameSection =
-      previous !== null &&
-      previous.kind === section.kind &&
-      previous.month === section.month;
-    // A same-section reload (refresh after a delete, a rescan, or a watcher
-    // event) keeps the stale items rendered so the grid's scroll container
-    // never unmounts, AND keeps the selection live for the whole round trip.
-    // Blanking it here would make every arrow key landing mid-reload select
-    // item zero and every Delete a silent no-op, for as long as the query
-    // takes. A real section switch clears both.
+      before.selected?.kind === section.kind && before.selected.month === section.month;
     const memory = { ...before.sectionMemory };
-    if (!sameSection && previous !== null) {
-      const order = sectionProjection(before.items, before.currentSort()).orderedKeys;
-      memory[sectionId(previous)] = {
+    if (!sameSection && before.selected !== null) {
+      memory[sectionId(before.selected)] = {
         anchor: before.selectedItem,
-        context: anchorContext(order, before.selectedItem),
+        context: before.currentContext,
       };
     }
+    const remembered = restore ?? memory[sectionId(section)] ?? null;
     set({
       selected: section,
       sectionMemory: memory,
       loading: true,
       loadError: null,
-      ...(sameSection
-        ? {}
-        : {
+      ...(!sameSection
+        ? {
             items: [],
+            totalItems: 0,
+            windowStart: 0,
+            itemPositions: new Map<string, number>(),
             selectedItem: null,
             selectedKeys: new Set<string>(),
+            selectedPositions: new Map<string, number>(),
             rangeOrigin: null,
+            rangeOriginPosition: null,
             rangeBase: new Set<string>(),
+            rangeBasePositions: new Map<string, number>(),
+            currentContext: null,
             scrollRequest: null,
             detail: null,
-          }),
+          }
+        : {}),
     });
-    // Sequence, not identity: `refresh` passes the SAME section object, so an
-    // identity check cannot tell two same-section reloads apart — with the
-    // reads async, an older response landing last would resurrect rows a
-    // newer reload had already dropped.
-    const fresh = sectionLoad.begin();
+    await reconcileCurrent(
+      set,
+      get,
+      !sameSection && remembered === null,
+      remembered === null ? "nearest" : "center",
+      !sameSection ? remembered : undefined,
+    );
+  },
+
+  loadWindow: async (requestedStart, force = false) => {
+    const state = get();
+    const section = state.selected;
+    if (section === null || state.totalItems === 0) return;
+    const sort = state.currentSort();
+    const maxStart = Math.max(0, state.totalItems - SECTION_WINDOW_LIMIT);
+    const start = Math.min(Math.max(Math.floor(requestedStart), 0), maxStart);
+    const requestedEnd = Math.min(state.totalItems, start + SECTION_WINDOW_LIMIT);
+    if (!force && start >= state.windowStart && requestedEnd <= state.windowStart + state.items.length) {
+      return;
+    }
+    const fresh = windowLoad.begin();
     try {
-      const items = await invoke<SectionItem[]>("get_section_items", {
+      const window = await invoke<SectionWindow>("get_section_window", {
         kind: section.kind,
         month: section.month,
+        sort,
+        start,
+        limit: SECTION_WINDOW_LIMIT,
       });
-      if (fresh()) {
-        if (sameSection) {
-          const previousOrder = sectionProjection(
-            get().items,
-            get().currentSort(),
-          ).orderedKeys;
-          set({ items, loading: false, loadError: null });
-          reconcileReloadSelection(set, get, previousOrder);
-        } else {
-          set({ items, loading: false, loadError: null });
-          const currentOrder = sectionProjection(items, get().currentSort()).orderedKeys;
-          const remembered = restore ?? get().sectionMemory[sectionId(section)] ?? null;
-          const anchor = remembered === null
-            ? (currentOrder[0] ?? null)
-            : recoverAnchor(currentOrder, remembered.anchor, remembered.context);
-          applyExclusiveSelection(set, anchor, remembered === null ? "nearest" : "center");
-        }
+      const current = get();
+      if (
+        fresh() &&
+        current.selected?.kind === section.kind &&
+        current.selected.month === section.month &&
+        sameSort(current.currentSort(), sort)
+      ) {
+        set({
+          items: window.items,
+          totalItems: window.total,
+          windowStart: window.start,
+          itemPositions: positionMap(window.start, window.items),
+          loadError: null,
+        });
       }
     } catch (error) {
-      log.error("section items load failed", toErrorFields(error));
-      // Only the latest request may blank — a rejection for a section the
-      // user already navigated away from must not wipe the live one.
+      log.error("section window load failed", toErrorFields(error));
       if (fresh()) {
-        set({
-          ...(sameSection ? {} : { items: [] }),
-          loading: false,
-          loadError: "Couldn’t load this section.",
-        });
+        set({ loadError: "Couldn’t load this part of the section." });
         reportActionFailure(
-          "section-items-load-failed",
-          "Couldn’t load this section.",
+          "section-window-load-failed",
+          "Couldn’t load this part of the section.",
           error,
         );
       }
     }
   },
 
-  selectItem: (key, align = "nearest") => {
-    set({
-      selectedItem: key,
-      selectedKeys: key === null ? new Set() : new Set([key]),
-      rangeOrigin: key,
-      rangeBase: key === null ? new Set<string>() : new Set([key]),
-      scrollRequest:
-        key === null ? null : requestScroll(key, align),
-      detail: null,
-    });
-    loadAnchorDetail(key);
-  },
-
-  // Moves the anchor only. The range origin deliberately stays put, so a
-  // Shift+arrow run can reverse and shrink instead of only growing.
-  setAnchor: (key) => {
-    const selectedKeys = new Set(get().selectedKeys);
-    if (key !== null) selectedKeys.add(key);
-    set({
-      selectedItem: key,
-      selectedKeys,
-      scrollRequest:
-        key === null ? null : requestScroll(key, "nearest"),
-      detail: null,
-    });
-    loadAnchorDetail(key);
-  },
-
-  toggleItem: (key) => {
-    const state = get();
-    const next = new Set(state.selectedKeys);
-    const removing = next.has(key);
-    if (removing) {
-      next.delete(key);
-    } else {
-      next.add(key);
+  selectPosition: async (requestedIndex, extend) => {
+    const before = get();
+    const total = before.totalItems > 0 ? before.totalItems : before.windowStart + before.items.length;
+    if (total === 0) return;
+    const index = Math.min(Math.max(Math.floor(requestedIndex), 0), total - 1);
+    let entry = before.items
+      .map((item, offset) => [itemKey(item), before.windowStart + offset] as const)
+      .find((candidate) => candidate[1] === index);
+    if (entry === undefined) {
+      await get().loadWindow(index - Math.floor(SECTION_WINDOW_LIMIT / 2));
+      const state = get();
+      entry = state.items
+        .map((item, offset) => [itemKey(item), state.windowStart + offset] as const)
+        .find((candidate) => candidate[1] === index);
     }
-    // Removing the anchor follows the visible review order, not selection
-    // history: first the next selected item, then the previous one. That
-    // keeps Preview and Details beside the item the user just removed.
-    let anchor: string | null = key;
-    if (removing && state.selectedItem !== key) {
-      anchor = state.selectedItem;
-    } else if (removing) {
-      const displayed = sectionProjection(
-        state.items,
-        state.currentSort(),
-      ).orderedKeys;
-      const removedIndex = displayed.indexOf(key);
-      const nextSelected =
-        removedIndex < 0
-          ? undefined
-          : displayed
-              .slice(removedIndex + 1)
-              .find((candidate) => next.has(candidate));
-      const previousSelected =
-        removedIndex < 0
-          ? undefined
-          : displayed
-              .slice(0, removedIndex)
-              .reverse()
-              .find((candidate) => next.has(candidate));
-      anchor = nextSelected ?? previousSelected ?? null;
-    }
-    set({
-      selectedKeys: next,
-      selectedItem: anchor,
-      rangeOrigin: anchor,
-      rangeBase: new Set(next),
-      scrollRequest:
-        anchor === null ? null : requestScroll(anchor, "nearest"),
-      detail: null,
-    });
-    loadAnchorDetail(anchor);
+    if (entry === undefined) return;
+    if (extend) await get().rangeSelect(entry[0], index);
+    else get().selectItem(entry[0], "nearest", index);
   },
 
-  // Recomputes the range as the span from the origin to the target on top of
-  // the selection as it stood when the range began, rather than unioning into
-  // the live selection: shift-clicking (or shift-arrowing) back toward the
-  // origin means "I overshot, take it back", and a union can never express
-  // that. Rebuilding from `rangeBase` is what lets the span shrink while
-  // Cmd-clicked keys outside it survive.
-  rangeSelect: (sortedKeys, key) => {
-    const { rangeOrigin, selectedItem, rangeBase } = get();
-    const origin = rangeOrigin ?? selectedItem;
-    const from = origin !== null ? sortedKeys.indexOf(origin) : -1;
-    const to = sortedKeys.indexOf(key);
-    if (to < 0) return;
-    if (from < 0) {
-      applyExclusiveSelection(set, key, "nearest");
+  selectIdentity: async (key) => {
+    await reconcileCurrent(
+      set,
+      get,
+      false,
+      "center",
+      { anchor: key, context: null },
+      true,
+    );
+  },
+
+  selectItem: (key, align = "nearest", position) => {
+    if (key === null) {
+      set({
+        selectedItem: null,
+        selectedKeys: new Set(),
+        selectedPositions: new Map(),
+        rangeOrigin: null,
+        rangeOriginPosition: null,
+        rangeBase: new Set(),
+        rangeBasePositions: new Map(),
+        currentContext: null,
+        scrollRequest: null,
+        detail: null,
+      });
       return;
     }
-    const [start, end] = from <= to ? [from, to] : [to, from];
-    const next = new Set(rangeBase);
-    for (const k of sortedKeys.slice(start, end + 1)) next.add(k);
+    const index = position ?? knownPosition(get(), key);
+    if (index === undefined) return;
+    const positions = new Map([[key, index]]);
     set({
-      selectedKeys: next,
       selectedItem: key,
-      scrollRequest: requestScroll(key, "nearest"),
+      selectedKeys: new Set([key]),
+      selectedPositions: positions,
+      rangeOrigin: key,
+      rangeOriginPosition: index,
+      rangeBase: new Set([key]),
+      rangeBasePositions: new Map(positions),
+      currentContext: contextFromWindow(get(), index),
+      scrollRequest: requestScroll(key, index, align),
       detail: null,
     });
     loadAnchorDetail(key);
   },
 
-  selectAfterFamily: (memberHashes, orderBeforeComparison) => {
-    const { items } = get();
-    const family = new Set(memberHashes);
-    const previous = sortItems(orderBeforeComparison, get().currentSort());
-    const lastMember = previous.reduce(
-      (last, item, index) => (item.hash !== null && family.has(item.hash) ? index : last),
-      -1,
-    );
-    const live = new Set(
-      sectionProjection(items, get().currentSort()).orderedKeys,
-    );
-    const after = previous
-      .slice(lastMember + 1)
-      .map(itemKey)
-      .find((key) => live.has(key));
-    const before = previous
-      .slice(0, Math.max(0, lastMember + 1))
-      .reverse()
-      .map(itemKey)
-      .find((key) => live.has(key));
-    get().selectItem(after ?? before ?? null);
+  setAnchor: (key, position) => {
+    if (key === null) {
+      set({ selectedItem: null, scrollRequest: null, detail: null, currentContext: null });
+      return;
+    }
+    const index = position ?? knownPosition(get(), key);
+    if (index === undefined) return;
+    const selectedPositions = new Map(get().selectedPositions).set(key, index);
+    set({
+      selectedItem: key,
+      selectedKeys: new Set(selectedPositions.keys()),
+      selectedPositions,
+      currentContext: contextFromWindow(get(), index),
+      scrollRequest: requestScroll(key, index, "nearest"),
+      detail: null,
+    });
+    loadAnchorDetail(key);
   },
 
-  // A same-section reload. `select` now carries the selection across it and
-  // reconciles once the rows land, so there is nothing to save and restore.
+  toggleItem: (key, position) => {
+    const state = get();
+    const index = position ?? knownPosition(state, key);
+    if (index === undefined) return;
+    const selectedPositions = new Map(state.selectedPositions);
+    const removing = selectedPositions.delete(key);
+    if (!removing) selectedPositions.set(key, index);
+    const ordered = [...selectedPositions.entries()].sort((left, right) => left[1] - right[1]);
+    let anchor = key;
+    let anchorIndex = index;
+    if (removing && state.selectedItem !== key && state.selectedItem !== null) {
+      anchor = state.selectedItem;
+      anchorIndex = state.selectedPositions.get(anchor) ?? index;
+    } else if (removing) {
+      const next = ordered.find((entry) => entry[1] > index);
+      const previous = [...ordered].reverse().find((entry) => entry[1] < index);
+      const replacement = next ?? previous;
+      anchor = replacement?.[0] ?? "";
+      anchorIndex = replacement?.[1] ?? 0;
+    }
+    const selectedItem = anchor === "" ? null : anchor;
+    set({
+      selectedItem,
+      selectedKeys: new Set(selectedPositions.keys()),
+      selectedPositions,
+      rangeOrigin: selectedItem,
+      rangeOriginPosition: selectedItem === null ? null : anchorIndex,
+      rangeBase: new Set(selectedPositions.keys()),
+      rangeBasePositions: new Map(selectedPositions),
+      currentContext: selectedItem === null ? null : contextFromWindow(get(), anchorIndex),
+      scrollRequest:
+        selectedItem === null ? null : requestScroll(selectedItem, anchorIndex, "nearest"),
+      detail: null,
+    });
+    loadAnchorDetail(selectedItem);
+  },
+
+  rangeSelect: async (key, position) => {
+    const state = get();
+    const section = state.selected;
+    const target = position ?? state.itemPositions.get(key);
+    const origin = state.rangeOriginPosition ?? state.selectedPositions.get(state.selectedItem ?? "");
+    if (section === null || target === undefined || origin === undefined) {
+      get().selectItem(key, "nearest", target);
+      return;
+    }
+    const [start, end] = origin <= target ? [origin, target + 1] : [target, origin + 1];
+    const fresh = rangeLoad.begin();
+    try {
+      const members = await invoke<PositionedSectionIdentity[]>("get_section_range", {
+        kind: section.kind,
+        month: section.month,
+        sort: state.currentSort(),
+        start,
+        end,
+      });
+      if (!fresh()) return;
+      const selectedPositions = new Map(state.rangeBasePositions);
+      for (const member of members) selectedPositions.set(identityKey(member), member.index);
+      set({
+        selectedItem: key,
+        selectedKeys: new Set(selectedPositions.keys()),
+        selectedPositions,
+        currentContext: contextFromWindow(get(), target),
+        scrollRequest: requestScroll(key, target, "nearest"),
+        detail: null,
+      });
+      loadAnchorDetail(key);
+    } catch (error) {
+      log.error("section range selection failed", toErrorFields(error));
+      reportActionFailure("section-range-load-failed", "Couldn’t extend the selection.", error);
+    }
+  },
+
   refresh: async () => {
-    const { selected, select } = get();
-    if (selected) await select(selected);
+    if (get().selected !== null) await reconcileCurrent(set, get, false, "center");
   },
 
   applyDerivedItem: (previousHash, item) => {
@@ -349,103 +429,166 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     const items = replaceDerivedItem(state.items, previousHash, item);
     if (items === state.items || item.hash === null) return;
     const current = item.hash;
-    const remap = (key: string | null): string | null =>
-      key === previousHash ? current : key;
-    const remapKey = (key: string): string => (key === previousHash ? current : key);
-    const remapSet = (keys: Set<string>): Set<string> =>
-      new Set([...keys].map(remapKey));
+    const remap = (key: string | null) => (key === previousHash ? current : key);
+    const remapPositions = (positions: Map<string, number>) => {
+      const next = new Map(positions);
+      const position = next.get(previousHash);
+      if (position !== undefined) {
+        next.delete(previousHash);
+        next.set(current, position);
+      }
+      return next;
+    };
+    const selectedPositions = remapPositions(state.selectedPositions);
+    const rangeBasePositions = remapPositions(state.rangeBasePositions);
     const selectedItem = remap(state.selectedItem);
-    const anchorRemapped = selectedItem !== state.selectedItem;
     set({
       items,
+      itemPositions: positionMap(state.windowStart, items),
       selectedItem,
-      selectedKeys: remapSet(state.selectedKeys),
+      selectedKeys: new Set(selectedPositions.keys()),
+      selectedPositions,
       rangeOrigin: remap(state.rangeOrigin),
-      rangeBase: remapSet(state.rangeBase),
+      rangeBase: new Set(rangeBasePositions.keys()),
+      rangeBasePositions,
       scrollRequest:
         state.scrollRequest?.key === previousHash
           ? { ...state.scrollRequest, key: current }
           : state.scrollRequest,
-      ...(anchorRemapped ? { detail: null } : {}),
+      ...(selectedItem !== state.selectedItem ? { detail: null } : {}),
     });
+    void get().loadWindow(state.windowStart, true);
     if (selectedItem === current) loadAnchorDetail(current);
+  },
+
+  selectAfterFamily: async (recovery) => {
+    if (get().selected === null || recovery === null) {
+      get().selectItem(null);
+      return;
+    }
+    await reconcileCurrent(
+      set,
+      get,
+      false,
+      "center",
+      { anchor: "__comparison-family-boundary__", context: recovery },
+      true,
+    );
   },
 }));
 
-/** Drops whatever the reload did not bring back, leaving everything that
- * survived exactly where it was. Only reached on a same-section reload; a
- * real section switch clears the selection outright. */
-function sectionId(section: SelectedSection): string {
-  return `${section.kind}:${section.month}`;
-}
-
-function applyExclusiveSelection(
-  set: (partial: Partial<ItemsState>) => void,
-  anchor: string | null,
-  align: "nearest" | "center",
-): void {
-  set({
-    selectedItem: anchor,
-    selectedKeys: anchor === null ? new Set() : new Set([anchor]),
-    rangeOrigin: anchor,
-    rangeBase: anchor === null ? new Set() : new Set([anchor]),
-    scrollRequest:
-      anchor === null ? null : requestScroll(anchor, align),
-    detail: null,
-  });
-  loadAnchorDetail(anchor);
-}
-
-function reconcileReloadSelection(
+async function reconcileCurrent(
   set: (partial: Partial<ItemsState>) => void,
   get: () => ItemsState,
-  previousOrder: string[],
-): void {
-  const { items, selectedItem, selectedKeys, rangeOrigin, rangeBase } = get();
-  const currentOrder = sectionProjection(items, get().currentSort()).orderedKeys;
-  const alive = new Set(currentOrder);
-  const keys = new Set([...selectedKeys].filter((k) => alive.has(k)));
-  const context = anchorContext(previousOrder, selectedItem);
-  let anchor = selectedItem !== null && alive.has(selectedItem) ? selectedItem : null;
-  if (anchor === null && keys.size > 0) {
-    anchor = recoverAnchor(currentOrder, selectedItem, context, keys);
-  }
-  if (anchor === null) {
-    anchor = recoverAnchor(currentOrder, selectedItem, context);
-    if (anchor !== null) {
-      keys.clear();
-      keys.add(anchor);
+  selectFirst: boolean,
+  align: "nearest" | "center",
+  remembered?: { anchor: string | null; context: AnchorContext | null } | null,
+  replaceSelection = false,
+): Promise<void> {
+  const before = get();
+  const section = before.selected;
+  if (section === null) return;
+  const sort = before.currentSort();
+  const fresh = sectionLoad.begin();
+  const selected = replaceSelection ? [] : [...before.selectedKeys].map(identityFromKey);
+  const rangeBase = replaceSelection ? [] : [...before.rangeBase].map(identityFromKey);
+  const requestedAnchor = remembered === undefined ? before.selectedItem : remembered?.anchor ?? null;
+  const inferredContext =
+    before.selectedItem === null
+      ? null
+      : (() => {
+          const position = knownPosition(before, before.selectedItem!);
+          return position === undefined ? null : contextFromWindow(before, position);
+        })();
+  const recovery =
+    remembered === undefined
+      ? (before.currentContext ?? inferredContext)
+      : remembered?.context ?? null;
+  try {
+    const result = await invoke<SectionReconciliation>("reconcile_section", {
+      kind: section.kind,
+      month: section.month,
+      sort,
+      selected,
+      anchor: requestedAnchor === null ? null : identityFromKey(requestedAnchor),
+      rangeOrigin:
+        replaceSelection || before.rangeOrigin === null
+          ? null
+          : identityFromKey(before.rangeOrigin),
+      rangeBase,
+      recovery: anchorContextPayload(recovery),
+      selectFirst,
+      limit: SECTION_WINDOW_LIMIT,
+    });
+    const current = get();
+    if (
+      !fresh() ||
+      current.selected?.kind !== section.kind ||
+      current.selected.month !== section.month ||
+      !sameSort(current.currentSort(), sort)
+    ) return;
+    const selectedPositions = membersMap(result.selected);
+    const anchor = result.anchor === null ? null : identityKey(result.anchor);
+    if (anchor !== null && result.anchor !== null) selectedPositions.set(anchor, result.anchor.index);
+    const rangeBasePositions = membersMap(result.rangeBase);
+    if (rangeBasePositions.size === 0 && anchor !== null && selectedPositions.size === 1) {
+      rangeBasePositions.set(anchor, result.anchor!.index);
+    }
+    const rangeOrigin = result.rangeOrigin === null ? anchor : identityKey(result.rangeOrigin);
+    const rangeOriginPosition = result.rangeOrigin?.index ?? result.anchor?.index ?? null;
+    set({
+      items: result.window.items,
+      totalItems: result.window.total,
+      windowStart: result.window.start,
+      itemPositions: positionMap(result.window.start, result.window.items),
+      reconciliationId: current.reconciliationId + 1,
+      loading: false,
+      loadError: null,
+      selectedItem: anchor,
+      selectedKeys: new Set(selectedPositions.keys()),
+      selectedPositions,
+      rangeOrigin,
+      rangeOriginPosition,
+      rangeBase: new Set(rangeBasePositions.keys()),
+      rangeBasePositions,
+      currentContext: anchorContextFromPayload(result.context),
+      scrollRequest:
+        anchor === null || result.anchor === null
+          ? null
+          : requestScroll(anchor, result.anchor.index, align),
+      ...(anchor !== before.selectedItem ? { detail: null } : {}),
+    });
+    if (anchor !== before.selectedItem) loadAnchorDetail(anchor);
+  } catch (error) {
+    log.error("section reconciliation failed", toErrorFields(error));
+    if (fresh()) {
+      set({ loading: false, loadError: "Couldn’t load this section." });
+      reportActionFailure("section-items-load-failed", "Couldn’t load this section.", error);
     }
   }
-  if (anchor !== null) keys.add(anchor);
-  const nextRangeBase = new Set([...rangeBase].filter((k) => alive.has(k)));
-  if (keys.size === 1 && anchor !== null) nextRangeBase.add(anchor);
-  set({
-    selectedItem: anchor,
-    selectedKeys: keys,
-    rangeOrigin: rangeOrigin !== null && alive.has(rangeOrigin) ? rangeOrigin : anchor,
-    rangeBase: nextRangeBase,
-    scrollRequest:
-      anchor !== selectedItem && anchor !== null
-        ? requestScroll(anchor, "center")
-        : get().scrollRequest,
-    ...(anchor !== selectedItem ? { detail: null } : {}),
-  });
-  if (anchor !== selectedItem) loadAnchorDetail(anchor);
 }
 
-/** One detail query belongs to the item state owner. Persistence and Preview
- * projection observe the resulting state at the application edge. */
+function contextFromWindow(state: ItemsState, index: number): AnchorContext {
+  const local = index - state.windowStart;
+  const keys = state.items.map(itemKey);
+  if (local < 0 || local >= keys.length) {
+    return { index, before: [], after: [] };
+  }
+  return {
+    index,
+    before: keys.slice(Math.max(0, local - 64), local).reverse(),
+    after: keys.slice(local + 1, local + 65),
+  };
+}
+
 function loadAnchorDetail(key: string | null): void {
   if (key === null) return;
-  const state = useItemsStore.getState();
-  const item = sectionProjection(state.items, state.currentSort()).itemByKey.get(key);
-  if (!item) return;
-  const payload = { hash: item.hash, pathId: item.hash === null ? item.pathId : null };
-  // Both guards: the key check drops a response for an anchor the user left;
-  // the sequence drops the OLDER of two responses for the same anchor.
+  const payload = identityFromKey(key);
   const fresh = detailLoad.begin();
-  void invoke<ItemDetail>("get_item_detail", payload)
+  void invoke<ItemDetail>("get_item_detail", {
+    hash: payload.hash,
+    pathId: payload.hash === null ? payload.pathId : null,
+  })
     .then((detail) => {
       if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ detail });
@@ -455,11 +598,7 @@ function loadAnchorDetail(key: string | null): void {
       log.error("item detail load failed", toErrorFields(error));
       if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ message: "Couldn’t load details for this item." });
-        reportActionFailure(
-          "item-detail-load-failed",
-          "Couldn’t load details for this item.",
-          error,
-        );
+        reportActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
       }
     });
 }

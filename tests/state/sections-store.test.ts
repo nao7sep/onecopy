@@ -3,7 +3,13 @@ import type { ScanProgress } from "../../src/models/scan";
 import type { SectionCounts } from "../../src/models/sections";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { installScanEventWiring } from "../../src/workflows/scan-events";
-import { fireEvent, mockCommand, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  fireEvent,
+  mockCommand,
+  mockCommands,
+  mockSectionItems,
+  resetTauriMocks,
+} from "../mocks/tauri";
 
 function counts(imageCount: number): SectionCounts {
   return {
@@ -81,9 +87,9 @@ describe("independent index work", () => {
         loads += 1;
         return counts(loads);
       },
-      get_section_items: () => [],
       get_issues: () => ({ total: 0, rows: [] }),
     });
+    mockSectionItems(() => []);
 
     fireEvent("file-information://progress", progress(1));
     fireEvent("file-information://progress", progress(2));

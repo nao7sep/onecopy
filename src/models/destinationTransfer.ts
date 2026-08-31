@@ -15,7 +15,6 @@ export interface DestinationItemIdentity {
 export interface DestinationSelection {
   readonly items: readonly DestinationItemIdentity[];
   readonly anchorKey: string | null;
-  readonly shownKeys: readonly string[];
 }
 
 export interface PendingDestinationDrop {

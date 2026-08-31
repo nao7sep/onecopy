@@ -9,7 +9,7 @@
 //! SQL's UTC strftime: for a JST user, photos taken before 09:00 on the 1st
 //! belong to the new month, and SQL's UTC month would misfile them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -261,6 +261,7 @@ pub struct SectionItem {
     pub height: Option<i64>,
     pub has_thumb: bool,
     pub similar_group_id: Option<i64>,
+    pub similar_count: u64,
     pub sharpness: Option<f64>,
     /// Ready face score for advisory presentation; None remains unscored or
     /// failed, while zero is a successful no-face result.
@@ -310,10 +311,66 @@ pub struct SectionWindow {
 
 pub const MAX_SECTION_WINDOW_ITEMS: u32 = 512;
 
-#[derive(Debug)]
-struct SectionIdentity {
-    hash: Option<String>,
-    path_id: i64,
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionIdentity {
+    pub hash: Option<String>,
+    pub path_id: i64,
+}
+
+impl SectionIdentity {
+    fn key(&self) -> String {
+        identity_key(self.hash.as_deref(), self.path_id)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionedSectionIdentity {
+    pub hash: Option<String>,
+    pub path_id: i64,
+    pub index: u64,
+}
+
+impl PositionedSectionIdentity {
+    fn from_identity(identity: SectionIdentity, index: u64) -> Self {
+        Self {
+            hash: identity.hash,
+            path_id: identity.path_id,
+            index,
+        }
+    }
+
+    fn key(&self) -> String {
+        identity_key(self.hash.as_deref(), self.path_id)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionRecoveryContext {
+    pub index: u64,
+    pub before: Vec<SectionIdentity>,
+    pub after: Vec<SectionIdentity>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionReconciliation {
+    pub anchor: Option<PositionedSectionIdentity>,
+    pub selected: Vec<PositionedSectionIdentity>,
+    pub range_origin: Option<PositionedSectionIdentity>,
+    pub range_base: Vec<PositionedSectionIdentity>,
+    pub context: Option<SectionRecoveryContextOutput>,
+    pub window: SectionWindow,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionRecoveryContextOutput {
+    pub index: u64,
+    pub before: Vec<SectionIdentity>,
+    pub after: Vec<SectionIdentity>,
 }
 
 /// A bounded ordered window into one section. SQLite owns ordering and may
@@ -414,6 +471,397 @@ fn section_window_snapshot(
         start,
         items: section_items_by_identity(conn, &identities, projection)?,
     })
+}
+
+const RECOVERY_NEIGHBOR_LIMIT: u64 = 64;
+
+/// Reconciles selection and the work-position anchor against one ordered
+/// section snapshot, then returns only the display window around the chosen
+/// anchor. The scan retains matches for explicitly supplied identities; it
+/// never materializes the section itself.
+#[allow(clippy::too_many_arguments)]
+pub fn reconcile_section(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+    sort: SectionSort,
+    selected: &[SectionIdentity],
+    anchor: Option<&SectionIdentity>,
+    range_origin: Option<&SectionIdentity>,
+    range_base: &[SectionIdentity],
+    recovery: Option<&SectionRecoveryContext>,
+    select_first: bool,
+    limit: u32,
+    projection: ItemProjectionContext,
+) -> Result<SectionReconciliation, String> {
+    if !matches!(kind, "image" | "video" | "other") {
+        return Err(format!("bad section kind: {kind}"));
+    }
+    if !(1..=MAX_SECTION_WINDOW_ITEMS).contains(&limit) {
+        return Err(format!(
+            "section window limit must be between 1 and {MAX_SECTION_WINDOW_ITEMS}"
+        ));
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+            .map_err(|error| error.to_string())?;
+    let bounds = month_bounds(month, display_tz)?;
+    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
+    let params = section_candidate_params(kind, bounds);
+    let sql = format!(
+        "WITH candidates AS ({candidates}) \
+         SELECT hash, path_id FROM candidates ORDER BY {}",
+        section_order_sql(sort)
+    );
+
+    let wanted: HashSet<String> = selected
+        .iter()
+        .chain(anchor)
+        .chain(range_origin)
+        .chain(range_base)
+        .chain(recovery.into_iter().flat_map(|context| {
+            context.before.iter().chain(context.after.iter())
+        }))
+        .map(SectionIdentity::key)
+        .collect();
+    let mut matches = HashMap::<String, PositionedSectionIdentity>::with_capacity(wanted.len());
+    let mut statement = transaction
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
+    let mut rows = statement
+        .query(rusqlite::params_from_iter(params.iter()))
+        .map_err(|error| error.to_string())?;
+    let mut total = 0_u64;
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        let identity = SectionIdentity {
+            hash: row.get(0).map_err(|error| error.to_string())?,
+            path_id: row.get(1).map_err(|error| error.to_string())?,
+        };
+        let key = identity.key();
+        if wanted.contains(&key) {
+            matches.insert(
+                key,
+                PositionedSectionIdentity::from_identity(identity, total),
+            );
+        }
+        total += 1;
+    }
+    drop(rows);
+    drop(statement);
+
+    let mut live_selected = matched_identities(selected, &matches);
+    live_selected.sort_by_key(|member| member.index);
+    let mut live_range_base = matched_identities(range_base, &matches);
+    live_range_base.sort_by_key(|member| member.index);
+    let live_range_origin = range_origin.and_then(|identity| matches.get(&identity.key()).cloned());
+    let chosen = choose_reconciled_anchor(
+        anchor,
+        recovery,
+        &matches,
+        &live_selected,
+        select_first,
+        total,
+    );
+    let anchor = match chosen {
+        Some(AnchorChoice::Known(member)) => Some(member),
+        Some(AnchorChoice::Index(index)) => section_identity_at(
+            &transaction,
+            kind,
+            bounds,
+            sort,
+            index,
+        )?
+        .map(|identity| PositionedSectionIdentity::from_identity(identity, index)),
+        None => None,
+    };
+
+    let anchor_index = anchor.as_ref().map_or(0, |member| member.index);
+    let max_start = total.saturating_sub(u64::from(limit));
+    let start = anchor_index
+        .saturating_sub(u64::from(limit) / 2)
+        .min(max_start);
+    let window = section_window_snapshot(
+        &transaction,
+        kind,
+        month,
+        display_tz,
+        sort,
+        start,
+        limit,
+        projection,
+    )?;
+    let context = anchor
+        .as_ref()
+        .map(|member| section_recovery_context(&transaction, kind, bounds, sort, member.index))
+        .transpose()?;
+    transaction.commit().map_err(|error| error.to_string())?;
+
+    Ok(SectionReconciliation {
+        anchor,
+        selected: live_selected,
+        range_origin: live_range_origin,
+        range_base: live_range_base,
+        context,
+        window,
+    })
+}
+
+fn matched_identities(
+    requested: &[SectionIdentity],
+    matches: &HashMap<String, PositionedSectionIdentity>,
+) -> Vec<PositionedSectionIdentity> {
+    requested
+        .iter()
+        .filter_map(|identity| matches.get(&identity.key()).cloned())
+        .collect()
+}
+
+enum AnchorChoice {
+    Known(PositionedSectionIdentity),
+    Index(u64),
+}
+
+fn choose_reconciled_anchor(
+    requested: Option<&SectionIdentity>,
+    recovery: Option<&SectionRecoveryContext>,
+    matches: &HashMap<String, PositionedSectionIdentity>,
+    live_selected: &[PositionedSectionIdentity],
+    select_first: bool,
+    total: u64,
+) -> Option<AnchorChoice> {
+    if total == 0 {
+        return None;
+    }
+    let Some(requested) = requested else {
+        return select_first.then_some(AnchorChoice::Index(0));
+    };
+    if let Some(member) = matches.get(&requested.key()) {
+        return Some(AnchorChoice::Known(member.clone()));
+    }
+
+    let selected_keys: HashSet<String> = live_selected
+        .iter()
+        .map(PositionedSectionIdentity::key)
+        .collect();
+    if let Some(context) = recovery {
+        let selected_neighbor = context
+            .after
+            .iter()
+            .chain(context.before.iter())
+            .filter(|identity| selected_keys.contains(&identity.key()))
+            .find_map(|identity| matches.get(&identity.key()).cloned());
+        if let Some(member) = selected_neighbor {
+            return Some(AnchorChoice::Known(member));
+        }
+        if let Some(member) = live_selected
+            .iter()
+            .find(|member| member.index >= context.index)
+            .or_else(|| live_selected.last())
+        {
+            return Some(AnchorChoice::Known(member.clone()));
+        }
+        let neighbor = context
+            .after
+            .iter()
+            .chain(context.before.iter())
+            .find_map(|identity| matches.get(&identity.key()).cloned());
+        if let Some(member) = neighbor {
+            return Some(AnchorChoice::Known(member));
+        }
+        return Some(AnchorChoice::Index(context.index.min(total - 1)));
+    }
+    Some(AnchorChoice::Index(0))
+}
+
+fn section_identity_at(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+    index: u64,
+) -> Result<Option<SectionIdentity>, String> {
+    section_identity_range(conn, kind, bounds, sort, index, index.saturating_add(1))
+        .map(|mut identities| identities.pop())
+}
+
+fn section_recovery_context(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+    index: u64,
+) -> Result<SectionRecoveryContextOutput, String> {
+    let start = index.saturating_sub(RECOVERY_NEIGHBOR_LIMIT);
+    let end = index.saturating_add(RECOVERY_NEIGHBOR_LIMIT + 1);
+    let identities = section_identity_range(conn, kind, bounds, sort, start, end)?;
+    let anchor_offset = (index - start) as usize;
+    Ok(SectionRecoveryContextOutput {
+        index,
+        before: identities[..anchor_offset].iter().rev().cloned().collect(),
+        after: identities.get(anchor_offset + 1..).unwrap_or_default().to_vec(),
+    })
+}
+
+fn section_identity_range(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+    start: u64,
+    end: u64,
+) -> Result<Vec<SectionIdentity>, String> {
+    if end <= start {
+        return Ok(Vec::new());
+    }
+    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
+    let mut params = section_candidate_params(kind, bounds);
+    let limit = end.saturating_sub(start).min(i64::MAX as u64) as i64;
+    params.push(limit.into());
+    params.push((start.min(i64::MAX as u64) as i64).into());
+    let sql = format!(
+        "WITH candidates AS ({candidates}) \
+         SELECT hash, path_id FROM candidates ORDER BY {} LIMIT ?{} OFFSET ?{}",
+        section_order_sql(sort),
+        params.len() - 1,
+        params.len(),
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let identities = statement
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(SectionIdentity {
+                hash: row.get(0)?,
+                path_id: row.get(1)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(identities)
+}
+
+/// Returns the ordered identities for one deliberate Main range-selection.
+/// The result may be large because its size is the user's explicit selection,
+/// while ordinary browsing and rendering remain capped.
+pub fn section_range(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+    sort: SectionSort,
+    start: u64,
+    end: u64,
+) -> Result<Vec<PositionedSectionIdentity>, String> {
+    if !matches!(kind, "image" | "video" | "other") {
+        return Err(format!("bad section kind: {kind}"));
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+            .map_err(|error| error.to_string())?;
+    let bounds = month_bounds(month, display_tz)?;
+    let members = section_identity_range(&transaction, kind, bounds, sort, start, end)?
+        .into_iter()
+        .enumerate()
+        .map(|(offset, identity)| {
+            PositionedSectionIdentity::from_identity(identity, start + offset as u64)
+        })
+        .collect();
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(members)
+}
+
+/// Captures the bounded Main recovery neighborhood after the last member of
+/// a Comparison family in the current order. Comparison keeps this before it
+/// changes files, so Main can return past the original family afterward.
+pub fn section_family_context(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+    sort: SectionSort,
+    member_hashes: &[String],
+) -> Result<Option<SectionRecoveryContextOutput>, String> {
+    if !matches!(kind, "image" | "video" | "other") {
+        return Err(format!("bad section kind: {kind}"));
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+            .map_err(|error| error.to_string())?;
+    let bounds = month_bounds(month, display_tz)?;
+    let family: HashSet<&str> = member_hashes.iter().map(String::as_str).collect();
+    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
+    let params = section_candidate_params(kind, bounds);
+    let sql = format!(
+        "WITH candidates AS ({candidates}) \
+         SELECT hash FROM candidates ORDER BY {}",
+        section_order_sql(sort)
+    );
+    let mut statement = transaction.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut rows = statement
+        .query(rusqlite::params_from_iter(params.iter()))
+        .map_err(|error| error.to_string())?;
+    let mut index = 0_u64;
+    let mut last_member = None;
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        let hash: Option<String> = row.get(0).map_err(|error| error.to_string())?;
+        if hash.as_deref().is_some_and(|value| family.contains(value)) {
+            last_member = Some(index);
+        }
+        index += 1;
+    }
+    drop(rows);
+    drop(statement);
+    let context = last_member
+        .map(|member_index| {
+            section_recovery_context(&transaction, kind, bounds, sort, member_index)
+        })
+        .transpose()?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(context)
+}
+
+/// Streams one complete ordered identity sequence without collecting it.
+/// The caller may persist it in a disposable store while this read
+/// transaction keeps membership and order on one index snapshot.
+pub fn visit_section_identities(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+    sort: SectionSort,
+    mut visit: impl FnMut(u64, &SectionIdentity) -> Result<(), String>,
+) -> Result<u64, String> {
+    if !matches!(kind, "image" | "video" | "other") {
+        return Err(format!("bad section kind: {kind}"));
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+            .map_err(|error| error.to_string())?;
+    let bounds = month_bounds(month, display_tz)?;
+    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
+    let params = section_candidate_params(kind, bounds);
+    let sql = format!(
+        "WITH candidates AS ({candidates}) \
+         SELECT hash, path_id FROM candidates ORDER BY {}",
+        section_order_sql(sort)
+    );
+    let mut statement = transaction.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut rows = statement
+        .query(rusqlite::params_from_iter(params.iter()))
+        .map_err(|error| error.to_string())?;
+    let mut count = 0_u64;
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        let identity = SectionIdentity {
+            hash: row.get(0).map_err(|error| error.to_string())?,
+            path_id: row.get(1).map_err(|error| error.to_string())?,
+        };
+        visit(count, &identity)?;
+        count += 1;
+    }
+    drop(rows);
+    drop(statement);
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(count)
 }
 
 fn section_candidate_params(kind: &str, bounds: Option<(i64, i64)>) -> Vec<rusqlite::types::Value> {
@@ -609,6 +1057,7 @@ fn unhashed_other_item_from_row(
         height: None,
         has_thumb: false,
         similar_group_id: None,
+        similar_count: 0,
         sharpness: None,
         face_score: None,
         byte_size: row.get(3)?,
@@ -631,34 +1080,6 @@ fn unhashed_other_item_from_row(
             projection.similarity_dirty,
         ),
     })
-}
-
-/// Items of one (kind, month) section, oldest first; `month` is the same key
-/// `section_counts` emits (`"2016-03"` or `"undated"`), bucketed under the
-/// same display timezone so the two always agree.
-pub fn section_items(
-    conn: &Connection,
-    kind: &str,
-    month: &str,
-    display_tz: Tz,
-    projection: ItemProjectionContext,
-) -> Result<Vec<SectionItem>, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
-    let bounds = month_bounds(month, display_tz)?;
-    let mut items = hashed_section_items(conn, kind, bounds, projection)?;
-    let dirs_by_hash = hashed_section_dirs(conn, kind, bounds)?;
-    for item in &mut items {
-        if let Some(hash) = item.hash.as_ref() {
-            item.dir_paths = dirs_by_hash.get(hash).cloned().unwrap_or_default();
-        }
-    }
-    if kind == "other" {
-        items.extend(unhashed_other_items(conn, bounds, projection)?);
-    }
-    items.sort_by_key(|item| (item.resolved_utc_ms, item.path_id));
-    Ok(items)
 }
 
 /// One logical row after a derived output changes. The coordinator publishes
@@ -690,6 +1111,59 @@ pub fn item_by_hash(
     Ok(item)
 }
 
+pub fn item_by_identity(
+    conn: &Connection,
+    identity: &SectionIdentity,
+    projection: ItemProjectionContext,
+) -> Result<Option<SectionItem>, String> {
+    if let Some(hash) = identity.hash.as_deref() {
+        return item_by_hash(conn, hash, projection);
+    }
+    conn.query_row(
+        "SELECT id, file_name, resolved_utc_ms, size, dir_path FROM paths \
+         WHERE id = ?1 AND missing = 0 AND companion_of IS NULL \
+           AND content_hash IS NULL AND kind NOT IN ('image', 'video')",
+        [identity.path_id],
+        |row| unhashed_other_item_from_row(row, projection),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+/// True only when every selected image currently belongs to the same live
+/// similarity group. Main may retain selected identities outside its loaded
+/// window, so Comparison admission cannot be inferred from display rows.
+pub fn comparison_selection_valid(
+    conn: &Connection,
+    hashes: &[String],
+) -> Result<bool, String> {
+    if hashes.is_empty() {
+        return Ok(false);
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT m.group_id FROM similar_group_members m \
+             JOIN logical_contents l ON l.content_hash = m.content_hash \
+             WHERE m.content_hash = ?1 AND l.live_copy_count > 0 LIMIT 1",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut group = None;
+    for hash in hashes {
+        let current = statement
+            .query_row([hash], |row| row.get::<_, i64>(0))
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        if group.is_some_and(|expected| expected != current) {
+            return Ok(false);
+        }
+        group = Some(current);
+    }
+    Ok(true)
+}
+
 fn hashed_section_select() -> String {
     let preview_available = crate::derived_state::preview_available_predicate("c");
     format!(
@@ -698,6 +1172,12 @@ fn hashed_section_select() -> String {
             (l.kind IN ('image', 'video') AND {preview_available}), \
             (SELECT m.group_id FROM similar_group_members m \
              WHERE m.content_hash = c.hash LIMIT 1), \
+            (SELECT COUNT(*) FROM similar_group_members members \
+             JOIN logical_contents member_items \
+               ON member_items.content_hash = members.content_hash \
+             WHERE member_items.live_copy_count > 0 \
+               AND members.group_id = (SELECT m.group_id FROM similar_group_members m \
+                                       WHERE m.content_hash = c.hash LIMIT 1)), \
             c.sharpness, c.byte_size, \
             EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                     WHERE pri.content_hash = c.hash AND comp.missing = 0 \
@@ -712,52 +1192,14 @@ fn hashed_section_select() -> String {
     )
 }
 
-fn hashed_section_items(
-    conn: &Connection,
-    kind: &str,
-    bounds: Option<(i64, i64)>,
-    projection: ItemProjectionContext,
-) -> Result<Vec<SectionItem>, String> {
-    let sql = hashed_section_sql(bounds.is_some());
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = match bounds {
-        Some((start, end)) => stmt
-            .query_map(rusqlite::params![kind, start, end], |row| {
-                section_item_from_row(row, projection)
-            })
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?,
-        None => stmt
-            .query_map([kind], |row| section_item_from_row(row, projection))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?,
-    };
-    Ok(rows)
-}
-
-fn hashed_section_sql(has_bounds: bool) -> String {
-    let time_clause = if has_bounds {
-        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
-    } else {
-        "AND l.resolved_utc_ms IS NULL"
-    };
-    format!(
-        "{} WHERE l.kind = ?1 {time_clause} \
-         ORDER BY l.resolved_utc_ms, l.representative_path_id",
-        hashed_section_select()
-    )
-}
-
 fn section_item_from_row(
     row: &rusqlite::Row<'_>,
     projection: ItemProjectionContext,
 ) -> rusqlite::Result<SectionItem> {
-    let kind: String = row.get(13)?;
-    let derived_at: Option<String> = row.get(14)?;
-    let face_state: Option<String> = row.get(17)?;
-    let transcript_state: Option<String> = row.get(19)?;
+    let kind: String = row.get(14)?;
+    let derived_at: Option<String> = row.get(15)?;
+    let face_state: Option<String> = row.get(18)?;
+    let transcript_state: Option<String> = row.get(20)?;
     Ok(SectionItem {
         hash: Some(row.get(0)?),
         path_id: row.get(1)?,
@@ -768,22 +1210,23 @@ fn section_item_from_row(
         height: row.get(6)?,
         has_thumb: row.get(7)?,
         similar_group_id: row.get(8)?,
-        sharpness: row.get(9)?,
-        face_score: row.get(18)?,
-        byte_size: row.get(10)?,
-        has_companions: row.get(11)?,
-        duration_ms: row.get(12)?,
+        similar_count: row.get::<_, i64>(9)?.max(0) as u64,
+        sharpness: row.get(10)?,
+        face_score: row.get(19)?,
+        byte_size: row.get(11)?,
+        has_companions: row.get(12)?,
+        duration_ms: row.get(13)?,
         dir_paths: Vec::new(),
         derived_work: crate::derived_state::item_work_states(
             crate::derived_state::ItemWorkFacts {
                 kind: &kind,
                 derived_at: derived_at.as_deref(),
-                derived_version: row.get(15)?,
-                strip_frames: row.get(16)?,
-                duration_ms: row.get(12)?,
+                derived_version: row.get(16)?,
+                strip_frames: row.get(17)?,
+                duration_ms: row.get(13)?,
                 similar_group_id: row.get(8)?,
                 face_state: face_state.as_deref(),
-                face_score: row.get(18)?,
+                face_score: row.get(19)?,
                 transcript_state: transcript_state.as_deref(),
             },
             projection.capabilities,
@@ -792,83 +1235,8 @@ fn section_item_from_row(
     })
 }
 
-fn hashed_section_dirs(
-    conn: &Connection,
-    kind: &str,
-    bounds: Option<(i64, i64)>,
-) -> Result<HashMap<String, Vec<String>>, String> {
-    let time_clause = if bounds.is_some() {
-        "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
-    } else {
-        "AND l.resolved_utc_ms IS NULL"
-    };
-    let sql = format!(
-        "SELECT DISTINCT p.content_hash, p.dir_path \
-         FROM logical_contents l JOIN paths p ON p.content_hash = l.content_hash \
-         WHERE l.kind = ?1 {time_clause} \
-           AND p.missing = 0 AND p.companion_of IS NULL \
-         ORDER BY p.content_hash, p.dir_path"
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String)> = match bounds {
-        Some((start, end)) => stmt
-            .query_map(rusqlite::params![kind, start, end], section_dir_from_row)
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?,
-        None => stmt
-            .query_map([kind], section_dir_from_row)
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?,
-    };
-    let mut by_hash: HashMap<String, Vec<String>> = HashMap::new();
-    for (hash, dir) in rows {
-        let display = crate::winpath::for_display(&dir).into_owned();
-        let dirs = by_hash.entry(hash).or_default();
-        if !dirs.contains(&display) {
-            dirs.push(display);
-        }
-    }
-    Ok(by_hash)
-}
-
 fn section_dir_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String)> {
     Ok((row.get(0)?, row.get(1)?))
-}
-
-fn unhashed_other_items(
-    conn: &Connection,
-    bounds: Option<(i64, i64)>,
-    projection: ItemProjectionContext,
-) -> Result<Vec<SectionItem>, String> {
-    let time_clause = if bounds.is_some() {
-        "AND resolved_utc_ms >= ?1 AND resolved_utc_ms < ?2"
-    } else {
-        "AND resolved_utc_ms IS NULL"
-    };
-    let sql = format!(
-        "SELECT id, file_name, resolved_utc_ms, size, dir_path FROM paths \
-         WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL \
-           AND kind NOT IN ('image', 'video') {time_clause} \
-         ORDER BY resolved_utc_ms, id"
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = match bounds {
-        Some((start, end)) => stmt
-            .query_map(rusqlite::params![start, end], |row| {
-                unhashed_other_item_from_row(row, projection)
-            })
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?,
-        None => stmt
-            .query_map([], |row| unhashed_other_item_from_row(row, projection))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?,
-    };
-    Ok(rows)
 }
 
 /// One comparison-view member: enough to render a preview tile, ORDER the
@@ -1360,6 +1728,29 @@ mod tests {
         }
     }
 
+    fn section_items(
+        conn: &Connection,
+        kind: &str,
+        month: &str,
+        display_tz: Tz,
+        projection: ItemProjectionContext,
+    ) -> Result<Vec<SectionItem>, String> {
+        section_window(
+            conn,
+            kind,
+            month,
+            display_tz,
+            SectionSort {
+                order: SectionSortOrder::Time,
+                desc: false,
+            },
+            0,
+            MAX_SECTION_WINDOW_ITEMS,
+            projection,
+        )
+        .map(|window| window.items)
+    }
+
     fn utc_ms(y: i32, mo: u32, d: u32, h: u32) -> i64 {
         chrono::NaiveDate::from_ymd_opt(y, mo, d)
             .unwrap()
@@ -1375,7 +1766,15 @@ mod tests {
     #[test]
     fn a_month_section_seeks_the_logical_section_index() {
         let (_dir, conn) = seeded();
-        let sql = format!("EXPLAIN QUERY PLAN {}", hashed_section_sql(true));
+        let candidates = section_candidates_sql(false, true);
+        let sql = format!(
+            "EXPLAIN QUERY PLAN WITH candidates AS ({candidates}) \
+             SELECT hash, path_id FROM candidates ORDER BY {} LIMIT 512 OFFSET 0",
+            section_order_sql(SectionSort {
+                order: SectionSortOrder::Time,
+                desc: false,
+            })
+        );
         let mut stmt = conn.prepare(&sql).unwrap();
         let details: Vec<String> = stmt
             .query_map(

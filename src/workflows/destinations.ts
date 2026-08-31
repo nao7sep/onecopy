@@ -10,7 +10,7 @@ import { useDestinationsStore } from "../state/destinations-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
-import { sectionProjection } from "../models/items";
+import { identityFromKey } from "../models/items";
 import type {
   DestinationItemIdentity,
   DestinationSelection,
@@ -66,18 +66,20 @@ export function captureDestinationSelection(): DestinationSelection {
       : state.selectedItem !== null
         ? new Set([state.selectedItem])
         : new Set<string>();
-  const projection = sectionProjection(state.items, state.currentSort());
-  const targets = [...keys].flatMap((key) => {
-    const item = projection.itemByKey.get(key);
-    return item === undefined ? [] : [item];
-  });
+  const orderedKeys = [...keys].sort(
+    (left, right) =>
+      (state.selectedPositions.get(left) ?? Number.MAX_SAFE_INTEGER) -
+      (state.selectedPositions.get(right) ?? Number.MAX_SAFE_INTEGER),
+  );
   return {
-    items: targets.map((item) => ({
-      hash: item.hash,
-      pathId: item.hash === null ? item.pathId : null,
-    })),
+    items: orderedKeys.map((key) => {
+      const identity = identityFromKey(key);
+      return {
+        hash: identity.hash,
+        pathId: identity.hash === null ? identity.pathId : null,
+      };
+    }),
     anchorKey: state.selectedItem,
-    shownKeys: projection.orderedKeys,
   };
 }
 
@@ -334,7 +336,7 @@ async function executeMoveBatch(
   }
 
   try {
-    await refreshDestinationOwners(selection);
+    await refreshDestinationOwners();
   } catch (error) {
     log.error("destination projections refresh failed", toErrorFields(error));
     useDestinationsStore.setState({
@@ -372,9 +374,7 @@ export async function resolveDestinationConflicts(
   );
 }
 
-async function refreshDestinationOwners(
-  selection: DestinationSelection,
-): Promise<void> {
+async function refreshDestinationOwners(): Promise<void> {
   await Promise.all([
     useItemsStore.getState().refresh(),
     useSectionsStore.getState().loadCounts(),
@@ -382,32 +382,7 @@ async function refreshDestinationOwners(
     useDestinationsStore.getState().refreshExpanded(),
   ]);
 
-  // A Move can remove the active source row. Recover to the next surviving
-  // item in the drag-start order, then the previous one, without overriding a
-  // different surviving item the user selected while the operation ran.
-  const state = useItemsStore.getState();
-  if (state.selectedItem !== null || selection.anchorKey === null) return;
-  const requested = new Set(
-    selection.items.map((item) =>
-      item.hash !== null ? item.hash : `path-${item.pathId}`,
-    ),
-  );
-  if (!requested.has(selection.anchorKey)) return;
-  const alive = new Set(
-    sectionProjection(state.items, state.currentSort()).orderedKeys,
-  );
-  const anchorIndex = selection.shownKeys.indexOf(selection.anchorKey);
-  const start = Math.max(anchorIndex, 0);
-  const orderedSurvivor = (allowed: Set<string>) =>
-    selection.shownKeys.slice(start).find((key) => allowed.has(key)) ??
-    [...selection.shownKeys.slice(0, start)]
-      .reverse()
-      .find((key) => allowed.has(key)) ??
-    null;
-  const selectedSurvivor = orderedSurvivor(state.selectedKeys);
-  if (selectedSurvivor !== null) {
-    state.setAnchor(selectedSurvivor);
-  } else {
-    state.selectItem(orderedSurvivor(alive));
-  }
+  // Main refresh owns next/previous recovery from its bounded anchor context.
+  // Keeping a second drag-start copy of the section order would be both
+  // unbounded and a competing selection authority.
 }

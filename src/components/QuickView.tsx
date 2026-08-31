@@ -12,13 +12,11 @@ import {
 } from "../workflows/quick-view";
 import ConfirmDialog from "./ConfirmDialog";
 import PreviewSurface from "./PreviewSurface";
-import { isAudioFile, sectionProjection } from "../models/items";
+import { identityKey, isAudioFile } from "../models/items";
 
 export default function QuickView() {
   const session = useQuickViewStore((state) => state.session);
   const pendingDelete = useQuickViewStore((state) => state.pendingDelete);
-  const items = useItemsStore((state) => state.items);
-  const currentSort = useItemsStore((state) => state.currentSort());
   const selectedItem = useItemsStore((state) => state.selectedItem);
   const detail = useItemsStore((state) => state.detail);
   const sectionKind = useItemsStore((state) => state.selected?.kind ?? null);
@@ -26,11 +24,8 @@ export default function QuickView() {
   useModalLayer(surfaceRef, () => void closeViewer());
 
   const quickOpen = session?.presentation === "quick";
-  const key = quickOpen ? (session.members[session.index]?.key ?? null) : null;
-  const item =
-    key === null
-      ? null
-      : (sectionProjection(items, currentSort).itemByKey.get(key) ?? null);
+  const key = quickOpen && session !== null ? identityKey(session.member) : null;
+  const item = quickOpen ? (session?.item ?? null) : null;
 
   useEffect(() => {
     if (!quickOpen || item === null) return;
@@ -64,7 +59,7 @@ export default function QuickView() {
   if (!quickOpen || session === null || item === null) return null;
   const currentDetail = selectedItem === key ? detail : null;
   const atStart = session.index === 0;
-  const atEnd = session.index === session.members.length - 1;
+  const atEnd = session.index === session.length - 1;
 
   return (
     <div
@@ -80,7 +75,7 @@ export default function QuickView() {
           {item.fileName}
         </span>
         <span className="text-xs tabular-nums text-ink-muted">
-          {session.index + 1} / {session.members.length}
+          {session.index + 1} / {session.length}
         </span>
         <button
           aria-label="Previous item"

@@ -69,3 +69,30 @@ export function parseAnchorContext(value: unknown): AnchorContext | null {
     after: record.after.slice(0, NEIGHBOR_LIMIT) as string[],
   };
 }
+
+export function anchorContextPayload(
+  context: AnchorContext | null,
+): SectionRecoveryContextPayload | null {
+  if (context === null) return null;
+  return {
+    index: context.index,
+    before: context.before.map(identityFromKey),
+    after: context.after.map(identityFromKey),
+  };
+}
+
+export function anchorContextFromPayload(
+  context: SectionRecoveryContextPayload | null,
+): AnchorContext | null {
+  if (context === null) return null;
+  return {
+    index: context.index,
+    before: context.before.map(identityKey),
+    after: context.after.map(identityKey),
+  };
+}
+import {
+  identityFromKey,
+  identityKey,
+  type SectionRecoveryContextPayload,
+} from "./items";

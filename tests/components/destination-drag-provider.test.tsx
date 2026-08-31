@@ -222,7 +222,6 @@ describe("destination drag transport", () => {
           { hash: "h2", pathId: null },
         ],
         anchorKey: "h1",
-        shownKeys: ["h1", "h2"],
       },
     });
 
@@ -255,7 +254,6 @@ describe("destination drag transport", () => {
         selection: {
           items: [{ hash: "h1", pathId: null }],
           anchorKey: "h1",
-          shownKeys: ["h1"],
         },
       },
     });

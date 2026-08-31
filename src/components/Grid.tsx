@@ -7,7 +7,6 @@ import {
   factsLine,
   formatBytes,
   itemKey,
-  sectionProjection,
   thumbUrl,
   type SectionItem,
   type SortChoice,
@@ -405,6 +404,7 @@ export default function Grid({
   layout: "tiles" | "list";
 }) {
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
+  const selectedPositions = useItemsStore((s) => s.selectedPositions);
   const selectedItem = useItemsStore((s) => s.selectedItem);
   const selectedSection = useItemsStore((s) => s.selected);
   const sourceChecking = useSectionsStore((s) => s.sourceCheck.running);
@@ -416,12 +416,25 @@ export default function Grid({
   const toggleItem = useItemsStore((s) => s.toggleItem);
   const rangeSelect = useItemsStore((s) => s.rangeSelect);
   const scrollRequest = useItemsStore((s) => s.scrollRequest);
+  const totalItems = useItemsStore((s) => s.totalItems);
+  const windowStart = useItemsStore((s) => s.windowStart);
+  const itemPositions = useItemsStore((s) => s.itemPositions);
+  const loadWindow = useItemsStore((s) => s.loadWindow);
+  const selectPosition = useItemsStore((s) => s.selectPosition);
   const lane = layout === "list" ? "other" : "media";
   const sortChoice = useItemsStore((s) =>
     lane === "other" ? s.sortOrders.other : s.sortOrders.media,
   );
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
   const sortCatalogue = SORT_ORDERS[lane];
+  const effectiveTotalItems = totalItems > 0 ? totalItems : items.length;
+  const effectivePositions = useMemo(
+    () =>
+      itemPositions.size > 0
+        ? itemPositions
+        : new Map(items.map((item, offset) => [itemKey(item), windowStart + offset])),
+    [itemPositions, items, windowStart],
+  );
   const selectionOrdinals = useMemo(
     () => new Map([...selectedKeys].map((key, index) => [key, index + 1])),
     [selectedKeys],
@@ -508,10 +521,8 @@ export default function Grid({
       node.scrollIntoView({ block: scrollRequest.align });
       return;
     }
-    const index = sortedKeysRef.current.indexOf(selectedItem);
-    if (index < 0) return;
     container.scrollTop = scrollTopForRow(
-      Math.floor(index / Math.max(1, columnsRef.current)),
+      Math.floor(scrollRequest.index / Math.max(1, columnsRef.current)),
       container.clientHeight,
       rowHeightRef.current,
     );
@@ -522,32 +533,66 @@ export default function Grid({
   // survives the reload. An empty grid keeps its focusable container too —
   // an empty composite is still reachable by Tab (composite-control rules).
   const emptyState =
-    items.length === 0
+    effectiveTotalItems === 0
       ? loading
         ? "Loading…"
         : loadError ?? "Nothing in this section"
       : null;
-  const projection = sectionProjection(items, sortChoice);
-  const sorted = emptyState === null ? projection.orderedItems : [];
-  const sortedKeys = emptyState === null ? projection.orderedKeys : [];
-  // Refs for the anchor effect, which must read current values without
-  // re-running on every scroll.
-  const sortedKeysRef = useRef(sortedKeys);
-  sortedKeysRef.current = sortedKeys;
+  // The backend already returns this bounded window in the active total
+  // order. Re-sorting a partial window would corrupt its absolute positions.
+  const sorted = emptyState === null ? items : [];
+  const loadedSimilarCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const item of items) {
+      if (item.similarGroupId !== null) {
+        counts.set(item.similarGroupId, (counts.get(item.similarGroupId) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [items]);
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
   const rowHeightRef = useRef(rowHeight);
   rowHeightRef.current = rowHeight;
 
-  const totalRows = Math.ceil(sorted.length / Math.max(1, columns));
+  const totalRows = Math.ceil(effectiveTotalItems / Math.max(1, columns));
   const win = visibleWindow(scrollTop, viewportHeight, rowHeight, totalRows);
-  const visible = sorted.slice(win.startRow * columns, win.endRow * columns);
+  const desiredStart = win.startRow * columns;
+  const desiredEnd = Math.min(effectiveTotalItems, win.endRow * columns);
+  const overlapStart = Math.max(desiredStart, windowStart);
+  const overlapEnd = Math.min(desiredEnd, windowStart + sorted.length);
+  const hasLoadedOverlap = overlapEnd > overlapStart;
+  // While a distant window is loading, retain the total scroll geometry at
+  // the requested location instead of combining that location with the old
+  // window's end and temporarily making the scroller taller than the section.
+  const visibleStart = hasLoadedOverlap ? overlapStart : desiredStart;
+  const visibleEnd = hasLoadedOverlap ? overlapEnd : desiredStart;
+  const visible =
+    visibleEnd > visibleStart
+      ? sorted.slice(visibleStart - windowStart, visibleEnd - windowStart)
+      : [];
+  useEffect(() => {
+    if (emptyState !== null) return;
+    if (desiredStart >= windowStart && desiredEnd <= windowStart + items.length) return;
+    const timer = setTimeout(() => {
+      void loadWindow(Math.max(0, desiredStart - columns * 4));
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [
+    columns,
+    desiredEnd,
+    desiredStart,
+    emptyState,
+    items.length,
+    loadWindow,
+    windowStart,
+  ]);
   const visibleHashes = visible.flatMap((item) => (item.hash === null ? [] : [item.hash]));
   const visibleHashSignature = visibleHashes.join("\n");
   const selectedHash =
     selectedItem === null
       ? null
-      : (projection.itemByKey.get(selectedItem)?.hash ?? null);
+      : (items.find((item) => itemKey(item) === selectedItem)?.hash ?? null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -596,23 +641,17 @@ export default function Grid({
                       : null;
     if (step === null) return;
     event.preventDefault();
-    const current = selectedItem !== null ? sortedKeys.indexOf(selectedItem) : -1;
+    const current =
+      selectedItem !== null
+        ? (effectivePositions.get(selectedItem) ?? selectedPositions.get(selectedItem) ?? -1)
+        : -1;
     const target = Number.isFinite(step)
-      ? Math.min(Math.max(current < 0 ? 0 : current + (step as number), 0), sortedKeys.length - 1)
+      ? Math.min(Math.max(current < 0 ? 0 : current + (step as number), 0), effectiveTotalItems - 1)
       : step === Number.NEGATIVE_INFINITY
         ? 0
-        : sortedKeys.length - 1;
-    const key = sortedKeys[target];
-    if (key === undefined) return;
-    if (event.shiftKey) {
-      rangeSelect(sortedKeys, key);
-    } else {
-      selectItem(key);
-    }
-    // Minimal scroll-into-view for the active tile.
-    containerRef.current
-      ?.querySelector(`[data-item-key="${CSS.escape(key)}"]`)
-      ?.scrollIntoView({ block: "nearest" });
+        : effectiveTotalItems - 1;
+    if (target < 0) return;
+    void selectPosition(target, event.shiftKey);
   };
 
   return (
@@ -702,10 +741,27 @@ export default function Grid({
         {/* The spacers stand in for the unmounted rows, keeping the
             scrollbar's geometry honest. basis-full forces each onto its own
             flex row. */}
-        {win.topPad > 0 ? (
-          <div aria-hidden className="w-full shrink-0 basis-full" style={{ height: win.topPad - gap }} />
+        {Math.floor(visibleStart / Math.max(1, columns)) * rowHeight > 0 ? (
+          <div
+            aria-hidden
+            className="w-full shrink-0 basis-full"
+            style={{
+              height:
+                Math.floor(visibleStart / Math.max(1, columns)) * rowHeight - gap,
+            }}
+          />
         ) : null}
+        {layout === "tiles" && visible.length > 0
+          ? Array.from({ length: visibleStart % Math.max(1, columns) }, (_, index) => (
+              <div
+                key={`leading-${index}`}
+                aria-hidden
+                className="w-40 shrink-0"
+              />
+            ))
+          : null}
         {visible.map((item, i) => {
+          const absoluteIndex = visibleStart + i;
           const key = itemKey(item);
           const isSelected = selectedKeys.has(key);
           const isAnchor = selectedItem === key;
@@ -715,9 +771,10 @@ export default function Grid({
           };
           const presentation = itemPresentation(projectedItem, {
             similarCount:
-              item.similarGroupId === null
+              item.similarCount ??
+              (item.similarGroupId === null
                 ? 0
-                : (projection.similarCounts.get(item.similarGroupId) ?? 0),
+                : (loadedSimilarCounts.get(item.similarGroupId) ?? 0)),
             selectionOrdinal: selectionOrdinals.get(key) ?? null,
             selectedCount: selectedKeys.size,
             showFaceStars,
@@ -729,11 +786,11 @@ export default function Grid({
             // before the double-click opens Quick View.
             if (event.detail > 1) return;
             if (event.shiftKey) {
-              rangeSelect(sortedKeys, key);
+              void rangeSelect(key, absoluteIndex);
             } else if (event.metaKey || event.ctrlKey) {
-              toggleItem(key);
+              toggleItem(key, absoluteIndex);
             } else {
-              selectItem(key);
+              selectItem(key, "nearest", absoluteIndex);
             }
           };
           return (
@@ -766,8 +823,17 @@ export default function Grid({
             </div>
           );
         })}
-        {win.bottomPad > 0 ? (
-          <div aria-hidden className="w-full shrink-0 basis-full" style={{ height: win.bottomPad - gap }} />
+        {Math.max(0, totalRows - Math.ceil(visibleEnd / Math.max(1, columns))) * rowHeight > 0 ? (
+          <div
+            aria-hidden
+            className="w-full shrink-0 basis-full"
+            style={{
+              height:
+                Math.max(0, totalRows - Math.ceil(visibleEnd / Math.max(1, columns))) *
+                  rowHeight -
+                gap,
+            }}
+          />
         ) : null}
       </div>
     </div>

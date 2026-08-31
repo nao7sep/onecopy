@@ -120,7 +120,7 @@ interface ComparisonState extends ComparisonSelection {
 export type ComparisonCommitResult =
   | { kind: "failed" }
   | { kind: "continued" }
-  | { kind: "completed"; family: string[] };
+  | { kind: "completed" };
 
 type MonitorList = Awaited<ReturnType<typeof availableMonitors>>;
 
@@ -986,11 +986,10 @@ async function finishAction(
   members: GroupMember[],
 ): Promise<ComparisonCommitResult> {
   if (members.length < 2) {
-    const family = before.originalMemberHashes;
     const spreadCount = get().spreadCount;
     set(closedComparisonState());
     await queueComparisonLifecycle(() => teardownComparison(spreadCount));
-    return { kind: "completed", family };
+    return { kind: "completed" };
   }
   const current = get();
   set({

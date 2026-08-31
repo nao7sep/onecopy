@@ -13,6 +13,7 @@ use onecopy_lib::index_store;
 use onecopy_lib::queries;
 use onecopy_lib::scanner;
 use onecopy_lib::similarity::cluster_by_appearance;
+use onecopy_lib::viewer_sequence;
 use rusqlite::params;
 
 fn item_projection() -> queries::ItemProjectionContext {
@@ -74,9 +75,21 @@ fn six_item_section_in_a_million_row_index() {
     }
 
     let started = Instant::now();
-    let items =
-        queries::section_items(&conn, "image", "2026-01", chrono_tz::UTC, item_projection())
-            .unwrap();
+    let items = queries::section_window(
+        &conn,
+        "image",
+        "2026-01",
+        chrono_tz::UTC,
+        queries::SectionSort {
+            order: queries::SectionSortOrder::Time,
+            desc: false,
+        },
+        0,
+        6,
+        item_projection(),
+    )
+    .unwrap()
+    .items;
     eprintln!(
         "opened six items among one million logical rows in {:?}",
         started.elapsed()
@@ -140,6 +153,37 @@ fn bounded_window_of_one_million_active_undated_items() {
     assert_eq!(window.start, 500_000);
     assert_eq!(window.items.len(), 256);
     assert_eq!(window.items[0].file_name, "0500000.jpg");
+
+    let sequence_started = Instant::now();
+    let snapshot = viewer_sequence::start(
+        dir.path(),
+        &conn,
+        "image",
+        "undated",
+        chrono_tz::UTC,
+        queries::SectionSort {
+            order: queries::SectionSortOrder::Name,
+            desc: false,
+        },
+        vec![queries::PositionedSectionIdentity {
+            hash: Some("active-0500000".to_string()),
+            path_id: 500_001,
+            index: 500_000,
+        }],
+        &queries::SectionIdentity {
+            hash: Some("active-0500000".to_string()),
+            path_id: 500_001,
+        },
+        item_projection(),
+    )
+    .unwrap();
+    eprintln!(
+        "froze a million-item viewer sequence in {:?}",
+        sequence_started.elapsed()
+    );
+    assert_eq!(snapshot.length, 1_000_000);
+    assert_eq!(snapshot.index, 500_000);
+    viewer_sequence::close(Some(&snapshot.token)).unwrap();
 }
 
 #[test]

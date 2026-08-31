@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { reportWindowCall } from "../repositories";
 import { useItemsStore } from "../state/items-store";
-import { sectionProjection } from "../models/items";
+import { itemKey } from "../models/items";
 import {
   type PlacementPreference,
   type PreviewPayload,
@@ -98,7 +98,7 @@ export async function togglePreview(): Promise<void> {
   const item =
     selectedItem === null
       ? undefined
-      : sectionProjection(items, state.currentSort()).itemByKey.get(selectedItem);
+      : items.find((item) => itemKey(item) === selectedItem);
   if (!item) {
     // Arm follow without opening an empty surface. The first real anchor is
     // projected by the installed item workflow.

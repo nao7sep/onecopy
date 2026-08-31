@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Sidebar from "../../src/components/Sidebar";
 import { useItemsStore } from "../../src/state/items-store";
 import { useSectionsStore } from "../../src/state/sections-store";
-import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 
 const COUNTS = {
   images: [{ month: "undated", count: 2 }],
@@ -16,9 +16,9 @@ const COUNTS = {
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
-    get_section_items: () => [],
     get_item_detail: () => null,
   });
+  mockSectionItems(() => []);
   useItemsStore.setState({
     selected: { kind: "image", month: "undated" },
     items: [],

@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { revealInFileManager } from "../workflows/external-open";
 import {
   formatBytes,
-  sectionProjection,
   stripTimestampMs,
   stripUrl,
   thumbUrl,
@@ -122,12 +121,7 @@ function SimilarSection({ hash }: { hash: string }) {
               onClick={() => {
                 // Select that member in the grid; the preview follows through
                 // the ordinary anchor path.
-                const state = useItemsStore.getState();
-                const target = sectionProjection(
-                  state.items,
-                  state.currentSort(),
-                ).itemByKey.get(member.hash);
-                if (target) state.selectItem(member.hash);
+                void useItemsStore.getState().selectIdentity(member.hash);
               }}
             >
               <img

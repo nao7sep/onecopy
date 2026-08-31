@@ -32,6 +32,24 @@ fn item_projection() -> queries::ItemProjectionContext {
     }
 }
 
+fn january_images(conn: &Connection) -> Vec<queries::SectionItem> {
+    queries::section_window(
+        conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        queries::SectionSort {
+            order: queries::SectionSortOrder::Time,
+            desc: false,
+        },
+        0,
+        queries::MAX_SECTION_WINDOW_ITEMS,
+        item_projection(),
+    )
+    .unwrap()
+    .items
+}
+
 /// A deterministic JPEG "photo": a gradient with a per-shot brightness lift,
 /// so three shots of one scene hash differently but phash identically.
 fn shoot(dir: &Path, name: &str, lift: u8, stripes: bool) -> PathBuf {
@@ -212,8 +230,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 
     // The section a user would open: one month, four logical items, the
     // duplicated shot reporting both copies.
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, item_projection())
-        .unwrap();
+    let items = january_images(&conn);
     assert_eq!(items.len(), 4);
     assert_eq!(
         items.iter().map(|i| i.copy_count).max(),
@@ -350,8 +367,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     }
 
     // The month view and the issues surface agree nothing is wrong.
-    let items = queries::section_items(&conn, "image", "2026-01", Tz::UTC, item_projection())
-        .unwrap();
+    let items = january_images(&conn);
     assert_eq!(items.len(), 1);
     let (issue_total, _) = queries::issues(&conn, 10).unwrap();
     assert_eq!(issue_total, 0, "a clean journey raises no issues");

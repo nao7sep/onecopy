@@ -193,10 +193,212 @@ export function mockCommand(command: string, handler: InvokeHandler): void {
   handlers.set(command, handler);
 }
 
+/** Project a complete ordered fixture through the bounded section protocol. */
+export function mockSectionItems(handler: InvokeHandler): void {
+  const rows = async (args: Record<string, unknown>) =>
+    (await handler(args)) as Array<{ hash: string | null; pathId: number }>;
+  const ordered = async (args: Record<string, unknown>) => {
+    const all = [...(await rows(args))] as Array<
+      Record<string, unknown> & { hash: string | null; pathId: number }
+    >;
+    const sort = (args.sort ?? { order: "time", desc: false }) as {
+      order: string;
+      desc: boolean;
+    };
+    const primary = (item: Record<string, unknown>) => {
+      if (sort.order === "name") {
+        return String(item.fileName ?? "").toLowerCase();
+      }
+      if (sort.order === "size") return Number(item.byteSize ?? -1);
+      if (sort.order === "resolution") {
+        return Number(item.width ?? 0) * Number(item.height ?? 0);
+      }
+      if (sort.order === "ext") {
+        return String(item.fileName ?? "").split(".").pop()?.toLowerCase() ?? "";
+      }
+      return Number(item.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER);
+    };
+    all.sort((left, right) => {
+      const a = primary(left);
+      const b = primary(right);
+      const compared =
+        typeof a === "number" && typeof b === "number"
+          ? a - b
+          : String(a).localeCompare(String(b));
+      if (compared !== 0) return sort.desc ? -compared : compared;
+      return left.pathId - right.pathId;
+    });
+    return all;
+  };
+  let viewerMembers: Array<
+    Record<string, unknown> & { hash: string | null; pathId: number }
+  > = [];
+  let viewerIndex = 0;
+  let viewerScope: "section" | "selection" = "section";
+  handlers.set("get_section_window", async (args) => {
+    const all = await ordered(args);
+    const start = Number(args.start ?? 0);
+    const limit = Number(args.limit ?? 512);
+    return { total: all.length, start, items: all.slice(start, start + limit) };
+  });
+  handlers.set("get_section_range", async (args) => {
+    const all = await ordered(args);
+    const start = Number(args.start ?? 0);
+    const end = Number(args.end ?? all.length);
+    return all.slice(start, end).map((item, offset) => ({
+      hash: item.hash,
+      pathId: item.pathId,
+      index: start + offset,
+    }));
+  });
+  handlers.set("reconcile_section", async (args) => {
+    const all = await ordered(args);
+    const keyed = all.map((item, index) => ({
+      hash: item.hash,
+      pathId: item.pathId,
+      index,
+      key: item.hash ?? `path-${item.pathId}`,
+    }));
+    const requested = args.anchor as {
+      hash: string | null;
+      pathId: number;
+    } | null;
+    const requestedKey =
+      requested?.hash ?? (requested ? `path-${requested.pathId}` : null);
+    const recovery = args.recovery as
+      | {
+          index: number;
+          before: Array<{ hash: string | null; pathId: number }>;
+          after: Array<{ hash: string | null; pathId: number }>;
+        }
+      | null;
+    const recoverKeys = (
+      values: Array<{ hash: string | null; pathId: number }> = [],
+    ) => values.map((value) => value.hash ?? `path-${value.pathId}`);
+    let anchor = keyed.find((item) => item.key === requestedKey) ?? null;
+    if (anchor === null && requestedKey !== null && recovery !== null) {
+      const key = [
+        ...recoverKeys(recovery.after),
+        ...recoverKeys(recovery.before),
+      ].find((candidate) => keyed.some((item) => item.key === candidate));
+      anchor =
+        keyed.find((item) => item.key === key) ??
+        keyed[
+          Math.min(recovery.index, Math.max(0, keyed.length - 1))
+        ] ??
+        null;
+    }
+    if (anchor === null && args.selectFirst === true) anchor = keyed[0] ?? null;
+    const requestedSelected = new Set(
+      (
+        (args.selected as Array<{ hash: string | null; pathId: number }>) ?? []
+      ).map((item) => item.hash ?? `path-${item.pathId}`),
+    );
+    const selected = keyed.filter((item) => requestedSelected.has(item.key));
+    const start = Math.max(
+      0,
+      Math.min(all.length - 512, (anchor?.index ?? 0) - 256),
+    );
+    const context =
+      anchor === null
+        ? null
+        : {
+            index: anchor.index,
+            before: keyed
+              .slice(Math.max(0, anchor.index - 64), anchor.index)
+              .reverse(),
+            after: keyed.slice(anchor.index + 1, anchor.index + 65),
+          };
+    return {
+      anchor,
+      selected,
+      rangeOrigin: null,
+      rangeBase: selected,
+      context,
+      window: { total: all.length, start, items: all.slice(start, start + 512) },
+    };
+  });
+  handlers.set("viewer_sequence_start", async (args) => {
+    const all = await ordered(args);
+    const selected = args.selected as Array<{
+      hash: string | null;
+      pathId: number;
+      index: number;
+    }>;
+    const anchor = args.anchor as { hash: string | null; pathId: number };
+    const anchorKey = anchor.hash ?? `path-${anchor.pathId}`;
+    const selectedKeys = new Set(
+      selected.map((item) => item.hash ?? `path-${item.pathId}`),
+    );
+    viewerMembers =
+      selected.length === 1
+        ? all
+        : all.filter((item) =>
+            selectedKeys.has(item.hash ?? `path-${item.pathId}`),
+          );
+    viewerScope = selected.length === 1 ? "section" : "selection";
+    viewerIndex = Math.max(
+      0,
+      viewerMembers.findIndex(
+        (item) => (item.hash ?? `path-${item.pathId}`) === anchorKey,
+      ),
+    );
+    const current = viewerMembers[viewerIndex]!;
+    return {
+      token: "mock-viewer",
+      member: { hash: current.hash, pathId: current.pathId },
+      item: current,
+      index: viewerIndex,
+      length: viewerMembers.length,
+      sectionIndex: all.indexOf(current),
+      scope: viewerScope,
+    };
+  });
+  handlers.set("viewer_sequence_move", async (args) => {
+    if (args.movement === "previous") {
+      viewerIndex = Math.max(0, viewerIndex - 1);
+    }
+    if (args.movement === "next") {
+      viewerIndex = Math.min(viewerMembers.length - 1, viewerIndex + 1);
+    }
+    if (args.movement === "first") viewerIndex = 0;
+    if (args.movement === "last") viewerIndex = viewerMembers.length - 1;
+    const current = viewerMembers[viewerIndex]!;
+    return {
+      token: "mock-viewer",
+      member: { hash: current.hash, pathId: current.pathId },
+      item: current,
+      index: viewerIndex,
+      length: viewerMembers.length,
+      sectionIndex: viewerIndex,
+      scope: viewerScope,
+    };
+  });
+  handlers.set("viewer_sequence_close", () => null);
+  handlers.set("comparison_selection_valid", (args) => {
+    const hashes = args.hashes as string[];
+    return hashes.length > 0;
+  });
+  handlers.set("get_section_family_context", async (args) => {
+    const all = await ordered(args);
+    const family = new Set(args.memberHashes as string[]);
+    let index = -1;
+    all.forEach((item, candidate) => {
+      if (item.hash !== null && family.has(item.hash)) index = candidate;
+    });
+    if (index < 0) return null;
+    return {
+      index,
+      before: all.slice(Math.max(0, index - 64), index).reverse(),
+      after: all.slice(index + 1, index + 65),
+    };
+  });
+}
+
 /** Stub several commands at once. */
 export function mockCommands(map: Record<string, InvokeHandler>): void {
   for (const [command, handler] of Object.entries(map)) {
-    handlers.set(command, handler);
+    mockCommand(command, handler);
   }
 }
 

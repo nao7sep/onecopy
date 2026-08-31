@@ -8,7 +8,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
-import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  invokeCalls,
+  mockCommands,
+  mockSectionItems,
+  resetTauriMocks,
+} from "../mocks/tauri";
 import {
   captureDestinationSelection,
   confirmDestinationDeleteRest,
@@ -84,12 +89,12 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     move_items_out: () => OUTCOME,
-    get_section_items: () => [],
     get_section_counts: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
     patch_state: () => ({}),
     get_item_detail: () => null,
   });
+  mockSectionItems(() => []);
   useDestinationsStore.setState({
     pendingDeleteRest: null,
     pendingDrop: null,
@@ -171,7 +176,6 @@ describe("staging a permanent move", () => {
         selection: {
           items: [{ hash: "h1", pathId: null }],
           anchorKey: "h1",
-          shownKeys: ["h1"],
         },
       },
     });
@@ -445,10 +449,8 @@ describe("outcome reporting", () => {
 
   it("recovers selection beside a source row removed by Move", async () => {
     selectAll(["h1"]);
-    mockCommands({
-      move_items_out: () => OUTCOME,
-      get_section_items: () => [item(2), item(3), item(4)],
-    });
+    mockCommands({ move_items_out: () => OUTCOME });
+    mockSectionItems(() => [item(2), item(3), item(4)]);
 
     await moveSelectionTo("/dest", "move-trash-rest");
 
@@ -463,8 +465,8 @@ describe("outcome reporting", () => {
         ...OUTCOME,
         conflicts: ["/dest/IMG_1.jpg", "/dest/IMG_3.jpg"],
       }),
-      get_section_items: () => [item(1), item(3), item(4)],
     });
+    mockSectionItems(() => [item(1), item(3), item(4)]);
 
     await moveSelectionTo("/dest", "move-trash-rest");
 

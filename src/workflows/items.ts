@@ -3,8 +3,7 @@
 // anchor into Preview, and coordinates mutations with Issues and counts.
 
 import { invoke } from "@tauri-apps/api/core";
-import { itemKey, sectionProjection } from "../models/items";
-import { anchorContext } from "../models/mainSelection";
+import { identityFromKey, itemKey } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useIssuesStore } from "../state/issues-store";
@@ -31,7 +30,7 @@ function projectAnchor(): void {
     usePreviewStore.getState().anchorCleared();
     return;
   }
-  const item = sectionProjection(items, state.currentSort()).itemByKey.get(selectedItem);
+  const item = items.find((candidate) => itemKey(candidate) === selectedItem);
   if (!item) return;
   const payload = {
     hash: item.hash,
@@ -50,7 +49,6 @@ export function installItemWorkflow(): void {
   if (installed) return;
   installed = true;
   useItemsStore.subscribe((state, previous) => {
-    const projection = sectionProjection(state.items, state.currentSort());
     const patch: Record<string, unknown> = {};
     if (state.sortOrders !== previous.sortOrders) patch.sortOrders = state.sortOrders;
     if (state.selected !== previous.selected) patch.lastSection = state.selected;
@@ -60,19 +58,23 @@ export function installItemWorkflow(): void {
       state.selectedItem !== previous.selectedItem ||
       state.sortOrders !== previous.sortOrders
     ) {
-      const order = projection.orderedKeys;
-      patch.lastItemContext = anchorContext(order, state.selectedItem);
+      patch.lastItemContext = state.currentContext;
     }
     if (Object.keys(patch).length > 0) {
       void useAppStore.getState().patchState(patch);
     }
-    if (state.selectedItem !== previous.selectedItem) {
+    const selectedEnteredWindow =
+      state.selectedItem !== null &&
+      state.items !== previous.items &&
+      !previous.items.some((item) => itemKey(item) === state.selectedItem) &&
+      state.items.some((item) => itemKey(item) === state.selectedItem);
+    if (state.selectedItem !== previous.selectedItem || selectedEnteredWindow) {
       projectAnchor();
     } else if (state.detail !== previous.detail && state.detail !== null) {
       const item =
         state.selectedItem === null
           ? undefined
-          : projection.itemByKey.get(state.selectedItem);
+          : state.items.find((candidate) => itemKey(candidate) === state.selectedItem);
       if (item) {
         usePreviewStore.getState().detailLoaded(
           { hash: item.hash, pathId: item.hash === null ? item.pathId : null },
@@ -102,17 +104,23 @@ export async function deleteItems(
   keys: Set<string>,
   permanent: boolean,
 ): Promise<void> {
-  const store = useItemsStore.getState();
   if (keys.size === 0) return;
-  const shown = sectionProjection(store.items, store.currentSort()).orderedItems;
   useItemsStore.setState({ message: null });
   try {
-    const requested = shown.filter((candidate) => keys.has(itemKey(candidate)));
+    const positions = useItemsStore.getState().selectedPositions;
+    const orderedKeys = [...keys].sort(
+      (left, right) =>
+        (positions.get(left) ?? Number.MAX_SAFE_INTEGER) -
+        (positions.get(right) ?? Number.MAX_SAFE_INTEGER),
+    );
     const outcome = await invoke<DeleteBatchOutcome>("delete_items", {
-      items: requested.map((item) => ({
-        hash: item.hash,
-        pathId: item.hash === null ? item.pathId : null,
-      })),
+      items: orderedKeys.map((key) => {
+        const identity = identityFromKey(key);
+        return {
+          hash: identity.hash,
+          pathId: identity.hash === null ? identity.pathId : null,
+        };
+      }),
       permanent,
     });
     if (outcome.error !== null) {
