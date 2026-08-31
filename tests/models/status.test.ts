@@ -15,6 +15,8 @@ const COUNTS: SectionCounts = {
 const IDLE = {
   message: null,
   mutation: null,
+  mutationResult: null,
+  exiting: false,
   scanning: false,
   stopping: false,
   progress: null,
@@ -113,6 +115,39 @@ describe("what the status bar shows", () => {
       progress: HASH_PROGRESS,
     });
     expect(status.text).toBe("Deleting — 2/8 items · 3/10 files · 1 KB/2 KB");
+  });
+
+  it("shows the truthful final operation accounting until it is dismissed", () => {
+    const status = statusLine({
+      ...IDLE,
+      mutationResult: {
+        operationId: 9,
+        kind: "destination-move",
+        cancelled: true,
+        summary: {
+          itemsCompleted: 2,
+          itemsPartial: 1,
+          itemsUnstarted: 4,
+          filesCompleted: 5,
+          filesFailed: 1,
+          filesUnstarted: 6,
+          error: null,
+        },
+      },
+    });
+    expect(status.tone).toBe("warning");
+    expect(status.text).toBe(
+      "Move cancelled — 2 completed · 1 partially processed · 5 file steps completed · 1 failed · 4 unstarted",
+    );
+  });
+
+  it("puts the safe close wait above every ordinary status", () => {
+    const status = statusLine({
+      ...IDLE,
+      exiting: true,
+      message: "an older message",
+    });
+    expect(status.text).toBe("Finishing current file before exit…");
   });
 
   it("prefers live scan progress over the totals it is busy changing", () => {

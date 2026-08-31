@@ -23,7 +23,12 @@ const PROGRESS: MutationProgress = {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  useMutationStore.setState({ progress: null, cancelling: false });
+  useMutationStore.setState({
+    progress: null,
+    cancelling: false,
+    result: null,
+    exiting: false,
+  });
   useItemsStore.setState({ message: "" });
 });
 
@@ -43,10 +48,33 @@ describe("the shared mutation activity projection", () => {
     fireEvent("mutation://progress", { ...PROGRESS, filesDone: 3 });
     expect(useMutationStore.getState().cancelling).toBe(true);
 
-    fireEvent("mutation://done", { progress: { ...PROGRESS, phase: "complete" }, cancelled: true });
+    fireEvent("mutation://done", {
+      progress: { ...PROGRESS, phase: "complete" },
+      cancelled: true,
+      summary: {
+        itemsCompleted: 1,
+        itemsPartial: 1,
+        itemsUnstarted: 3,
+        filesCompleted: 2,
+        filesFailed: 0,
+        filesUnstarted: 6,
+        error: null,
+      },
+    });
     expect(useMutationStore.getState()).toMatchObject({
       progress: null,
       cancelling: false,
+      result: { cancelled: true },
+    });
+  });
+
+  it("projects the exit quiescence wait without offering a force path", async () => {
+    await installMutationEventWiring();
+    fireEvent("app://exit-quiescing", null);
+
+    expect(useMutationStore.getState()).toMatchObject({
+      exiting: true,
+      cancelling: true,
     });
   });
 

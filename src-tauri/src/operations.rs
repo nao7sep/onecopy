@@ -114,6 +114,7 @@ pub struct DeleteBatchOutcome {
     pub removed_rows: u64,
     pub files_total: u64,
     pub bytes_total: u64,
+    pub items_started: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -415,6 +416,7 @@ pub fn delete_batch(
             batch.cancelled = true;
             break;
         }
+        batch.items_started = batch.items_started.saturating_add(1);
         let mut outcome = DeleteOutcome::default();
         let mut completed_unit = true;
         for target in &unit.targets {
@@ -601,6 +603,7 @@ pub struct MoveBatchOutcome {
     pub plan_changed: bool,
     pub overwrite_allowed: bool,
     pub reviewed_conflicts: Vec<DestinationConflict>,
+    pub items_started: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -916,6 +919,7 @@ pub fn move_batch_reviewed(
             batch.cancelled = true;
             break;
         }
+        batch.items_started = batch.items_started.saturating_add(1);
         let execution = execute_move_unit(
             conn,
             app_root,

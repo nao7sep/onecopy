@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { comparisonPages, gridFor } from "../models/comparisonSession";
-import { mutationProgressLine } from "../models/mutation";
+import { mutationProgressLine, mutationResultLine } from "../models/mutation";
 import {
   comparisonChunks,
   useComparisonStore,
@@ -49,7 +49,10 @@ export default function ComparisonView() {
   const busy = useComparisonStore((state) => state.busy);
   const mutationProgress = useMutationStore((state) => state.progress);
   const mutationCancelling = useMutationStore((state) => state.cancelling);
+  const mutationResult = useMutationStore((state) => state.result);
+  const exitQuiescing = useMutationStore((state) => state.exiting);
   const cancelMutation = useMutationStore((state) => state.cancel);
+  const dismissMutationResult = useMutationStore((state) => state.dismissResult);
 
   useEffect(() => {
     if (!open) return;
@@ -208,20 +211,31 @@ export default function ComparisonView() {
         ) : null}
       </footer>
 
-      {busy ? (
+      {busy || mutationResult !== null || exitQuiescing ? (
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
           <span>
-            {mutationProgress === null
-              ? "Preparing file operation…"
-              : mutationProgressLine(mutationProgress, mutationCancelling)}
+            {exitQuiescing
+              ? "Finishing current file before exit…"
+              : mutationProgress !== null
+                ? mutationProgressLine(mutationProgress, mutationCancelling)
+                : mutationResult !== null
+                  ? mutationResultLine(mutationResult)
+                  : "Preparing file operation…"}
           </span>
-          {mutationProgress !== null ? (
+          {mutationProgress !== null && !exitQuiescing ? (
             <button
               className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted disabled:opacity-50"
               disabled={mutationCancelling}
               onClick={() => void cancelMutation()}
             >
-              {mutationCancelling ? "Stopping…" : "Stop safely"}
+              {mutationCancelling ? "Cancelling…" : "Cancel file operation"}
+            </button>
+          ) : mutationResult !== null && !exitQuiescing ? (
+            <button
+              className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"
+              onClick={dismissMutationResult}
+            >
+              Dismiss result
             </button>
           ) : null}
         </footer>

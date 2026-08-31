@@ -139,7 +139,7 @@ export default function TrashModal({
 
   return (
     <ModalShell
-      title="Trash"
+      title="OneCopy Trash"
       onClose={onClose}
       closeDisabled={busy}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
@@ -216,7 +216,7 @@ export default function TrashModal({
                   disabled={busy || row.files === 0}
                   onClick={() => setConfirm(row)}
                 >
-                  Empty
+                  Empty…
                 </Button>
               )}
             </li>

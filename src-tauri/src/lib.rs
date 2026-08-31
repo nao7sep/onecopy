@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub mod background_work;
 pub mod backup_store;
@@ -221,6 +221,8 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
 // The storage root, for the mediafile protocol's hash→path lookups.
 pub(crate) static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 static EXIT_QUIESCING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static EXIT_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 fn cache_root() -> Option<std::path::PathBuf> {
@@ -1210,51 +1212,12 @@ fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
 // verified here so the command can never delete an arbitrary tree.
 #[tauri::command(async)]
 fn trash_empty(app: AppHandle, root: String) -> Result<trash::EmptyOutcome, String> {
-    logging::boundary(
-        "trash_empty",
-        json!({ "root": root }),
-        || {
-            let empty = trash::begin_empty()?;
-            let _media = media_use::begin(&app, &[])?;
-            let data_root = paths::data_root(&app)?;
-            let dirs = storage::load_config_source_dirs(&data_root)?;
-            let known = trash::overview(&dirs, &data_root);
-            if !known.iter().any(|r| r.root == root) {
-                return Err("not a known trash root".to_string());
-            }
-            let last_emit =
-                std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
-            let last_failures = std::cell::Cell::new(0u64);
-            trash::empty_root_with_progress(
-                std::path::Path::new(&root),
-                empty.cancellation_flag(),
-                &|progress| {
-                    let now = std::time::Instant::now();
-                    let completed = progress.done == progress.total;
-                    let failure_changed = progress.failures != last_failures.get();
-                    if completed
-                        || failure_changed
-                        || now.duration_since(last_emit.get())
-                            >= std::time::Duration::from_millis(125)
-                    {
-                        last_emit.set(now);
-                        last_failures.set(progress.failures);
-                        failure_runtime::emit_or_record(
-                            &app,
-                            "trash://progress",
-                            json!({ "root": root, "progress": progress }),
-                        );
-                    }
-                },
-            )
-        },
-        |outcome| json!({ "cancelled": outcome.cancelled, "failures": outcome.failures }),
-    )
+    mutation_runtime::empty_trash(&app, root)
 }
 
 #[tauri::command(async)]
-fn trash_empty_cancel() -> bool {
-    trash::cancel_empty()
+fn trash_empty_cancel() -> Result<bool, String> {
+    mutation_runtime::request_active_cancel()
 }
 
 // Dismissal is the user's half of the issues lifecycle: scan-derived rows
@@ -1762,6 +1725,17 @@ pub fn run() {
         .register_uri_scheme_protocol("mediafile", |_ctx, request| {
             media_protocol::serve_original(&request)
         })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if !EXIT_REQUESTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .setup(move |app| {
             // Everything in this closure runs BEFORE the window appears, so it
             // is the launch latency. Each phase logs its cost so a slow start
@@ -2076,6 +2050,20 @@ pub fn run() {
         // the worker starts winding down, then join it at Exit — bounded by
         // the per-item cancel checks — so no SQLite write is killed halfway.
         tauri::RunEvent::ExitRequested { api, .. } => {
+            if EXIT_QUIESCING.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            EXIT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+            api.prevent_exit();
+            if EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if let Err(error) = app_handle.emit("app://exit-quiescing", ()) {
+                logging::warn(
+                    "exit wait state delivery failed",
+                    json!({ "error": { "message": error.to_string() } }),
+                );
+            }
             // A hidden or abruptly destroyed simple-fullscreen window can
             // leave macOS system chrome suppressed. Leave presentation mode
             // synchronously before the longer worker-quiescence shutdown.
@@ -2097,37 +2085,15 @@ pub fn run() {
             if let Err(error) = mutation_runtime::request_shutdown() {
                 let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
-            api.prevent_exit();
-            if !EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                let handle = app_handle.clone();
-                let exit_handle = handle.clone();
-                let started = std::thread::Builder::new()
-                    .name("onecopy-exit-quiescence".to_string())
-                    .spawn(move || {
-                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                source_check_runtime::join();
-                                file_information_runtime::join();
-                                if let Err(error) = mutation_runtime::wait_for_idle() {
-                                    let _ = failure_runtime::report(
-                                        &handle,
-                                        "shutdown-worker-failed",
-                                        None,
-                                        &error,
-                                    );
-                                }
-                                let media = media_use::begin(&handle, &[]);
-                                if let Err(error) = &media {
-                                    let _ = failure_runtime::report(
-                                        &handle,
-                                        "shutdown-media-release-failed",
-                                        None,
-                                        error,
-                                    );
-                                }
-                                drop(media);
-                            }));
-                        if let Err(payload) = outcome {
-                            let error = failure_runtime::panic_message(payload);
+            let handle = app_handle.clone();
+            let exit_handle = handle.clone();
+            let started = std::thread::Builder::new()
+                .name("onecopy-exit-quiescence".to_string())
+                .spawn(move || {
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        source_check_runtime::join();
+                        file_information_runtime::join();
+                        if let Err(error) = mutation_runtime::wait_for_idle() {
                             let _ = failure_runtime::report(
                                 &handle,
                                 "shutdown-worker-failed",
@@ -2135,18 +2101,37 @@ pub fn run() {
                                 &error,
                             );
                         }
-                        handle.exit(0);
-                    });
-                if let Err(error) = started {
-                    let message = format!("could not start shutdown worker: {error}");
-                    let _ = failure_runtime::report(
-                        &exit_handle,
-                        "shutdown-worker-failed",
-                        None,
-                        &message,
-                    );
-                    exit_handle.exit(1);
-                }
+                        let media = media_use::begin(&handle, &[]);
+                        if let Err(error) = &media {
+                            let _ = failure_runtime::report(
+                                &handle,
+                                "shutdown-media-release-failed",
+                                None,
+                                error,
+                            );
+                        }
+                        drop(media);
+                    }));
+                    if let Err(payload) = outcome {
+                        let error = failure_runtime::panic_message(payload);
+                        let _ = failure_runtime::report(
+                            &handle,
+                            "shutdown-worker-failed",
+                            None,
+                            &error,
+                        );
+                    }
+                    handle.exit(0);
+                });
+            if let Err(error) = started {
+                let message = format!("could not start shutdown worker: {error}");
+                let _ = failure_runtime::report(
+                    &exit_handle,
+                    "shutdown-worker-failed",
+                    None,
+                    &message,
+                );
+                exit_handle.exit(1);
             }
         }
         tauri::RunEvent::Exit => {

@@ -112,10 +112,32 @@ pub(crate) fn request_cancel(id: u64) -> Result<bool, String> {
             if let Some(active) = active.as_ref().filter(|active| active.id == id) {
                 active.cancelled.store(true, Ordering::SeqCst);
             }
-            return Err("file-operation state was recovered; cancellation was requested".to_string());
+            return Err(
+                "file-operation state was recovered; cancellation was requested".to_string(),
+            );
         }
     };
     let Some(active) = active.as_ref().filter(|active| active.id == id) else {
+        return Ok(false);
+    };
+    active.cancelled.store(true, Ordering::SeqCst);
+    Ok(true)
+}
+
+pub(crate) fn request_active_cancel() -> Result<bool, String> {
+    let active = match RUNTIME.active.lock() {
+        Ok(active) => active,
+        Err(poisoned) => {
+            let active = poisoned.into_inner();
+            if let Some(active) = active.as_ref() {
+                active.cancelled.store(true, Ordering::SeqCst);
+            }
+            return Err(
+                "file-operation state was recovered; cancellation was requested".to_string(),
+            );
+        }
+    };
+    let Some(active) = active.as_ref() else {
         return Ok(false);
     };
     active.cancelled.store(true, Ordering::SeqCst);
@@ -165,6 +187,7 @@ enum Kind {
     Delete,
     DestinationCopy,
     DestinationMove,
+    TrashEmpty,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -173,6 +196,7 @@ enum Phase {
     Planning,
     Deleting,
     Delivering,
+    Emptying,
     Complete,
 }
 
@@ -192,6 +216,18 @@ struct Progress {
     current_file_bytes_done: Option<u64>,
     current_file_bytes_total: Option<u64>,
     next_phase: Option<Phase>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResultSummary {
+    items_completed: u64,
+    items_partial: u64,
+    items_unstarted: u64,
+    files_completed: u64,
+    files_failed: u64,
+    files_unstarted: u64,
+    error: Option<String>,
 }
 
 struct Publisher {
@@ -230,21 +266,58 @@ impl Publisher {
         }
     }
 
-    fn done(&mut self, progress: &Progress, cancelled: bool) {
+    fn done(&mut self, progress: &Progress, cancelled: bool, summary: Option<ResultSummary>) {
         self.progress(progress);
         crate::failure_runtime::emit_or_record(
             &self.app,
             "mutation://done",
-            json!({ "progress": progress, "cancelled": cancelled }),
+            json!({ "progress": progress, "cancelled": cancelled, "summary": summary }),
         );
     }
 
-    fn error(&self, operation_id: u64, kind: Kind, error: &str) {
+    fn error(&self, progress: &Progress, error: &str) {
+        let started = progress.items_done.saturating_add(u64::from(
+            progress.phase != Phase::Planning && progress.items_done < progress.items_total,
+        ));
+        let summary = result_summary(
+            progress.items_total,
+            started,
+            progress.items_done,
+            progress.files_total,
+            progress.files_done,
+            progress.failures,
+            Some(error.to_string()),
+        );
         crate::failure_runtime::emit_or_record(
             &self.app,
             "mutation://error",
-            json!({ "operationId": operation_id, "kind": kind, "error": error }),
+            json!({
+                "operationId": progress.operation_id,
+                "kind": progress.kind,
+                "error": error,
+                "summary": summary,
+            }),
         );
+    }
+}
+
+fn result_summary(
+    items_total: u64,
+    items_started: u64,
+    items_completed: u64,
+    files_total: u64,
+    files_done: u64,
+    files_failed: u64,
+    error: Option<String>,
+) -> ResultSummary {
+    ResultSummary {
+        items_completed,
+        items_partial: items_started.saturating_sub(items_completed),
+        items_unstarted: items_total.saturating_sub(items_started),
+        files_completed: files_done.saturating_sub(files_failed),
+        files_failed,
+        files_unstarted: files_total.saturating_sub(files_done),
+        error,
     }
 }
 
@@ -368,11 +441,16 @@ pub(crate) fn delete_items(
     );
     match &result {
         Ok(outcome) => {
+            let items_completed = if last_progress.phase == Phase::Deleting {
+                last_progress.items_done
+            } else {
+                0
+            };
             let terminal = Progress {
                 operation_id,
                 kind: Kind::Delete,
                 phase: Phase::Complete,
-                items_done: outcome.items.len() as u64,
+                items_done: items_completed,
                 items_total: last_progress.items_total,
                 files_done: outcome.deleted_files.saturating_add(outcome.failed_files),
                 files_total: outcome.files_total,
@@ -387,9 +465,21 @@ pub(crate) fn delete_items(
                 current_file_bytes_total: None,
                 next_phase: None,
             };
-            publisher.done(&terminal, outcome.cancelled);
+            publisher.done(
+                &terminal,
+                outcome.cancelled,
+                Some(result_summary(
+                    terminal.items_total,
+                    outcome.items_started,
+                    items_completed,
+                    terminal.files_total,
+                    terminal.files_done,
+                    terminal.failures,
+                    outcome.error.clone(),
+                )),
+            );
         }
-        Err(error) => publisher.error(operation_id, Kind::Delete, error),
+        Err(error) => publisher.error(&last_progress, error),
     }
     result
 }
@@ -584,11 +674,16 @@ pub(crate) fn move_items_out(
     );
     match &result {
         Ok(outcome) => {
+            let items_completed = if last_progress.phase == Phase::Delivering {
+                last_progress.items_done
+            } else {
+                0
+            };
             let terminal = Progress {
                 operation_id,
                 kind,
                 phase: Phase::Complete,
-                items_done: outcome.items.len() as u64,
+                items_done: items_completed,
                 items_total: last_progress.items_total,
                 files_done: last_progress.files_done,
                 files_total: outcome.files_total,
@@ -599,9 +694,24 @@ pub(crate) fn move_items_out(
                 current_file_bytes_total: None,
                 next_phase: None,
             };
-            publisher.done(&terminal, outcome.cancelled);
+            let show_result = !outcome.requires_conflict_choice && !outcome.plan_changed;
+            publisher.done(
+                &terminal,
+                outcome.cancelled,
+                show_result.then(|| {
+                    result_summary(
+                        terminal.items_total,
+                        outcome.items_started,
+                        items_completed,
+                        terminal.files_total,
+                        terminal.files_done,
+                        terminal.failures,
+                        outcome.error.clone(),
+                    )
+                }),
+            );
         }
-        Err(error) => publisher.error(operation_id, kind, error),
+        Err(error) => publisher.error(&last_progress, error),
     }
     result
 }
@@ -612,6 +722,108 @@ fn mode_string(mode: crate::operations::MoveOutMode) -> &'static str {
         crate::operations::MoveOutMode::MoveDeleteRest => "move-delete-rest",
         crate::operations::MoveOutMode::CopyKeepAll => "copy",
     }
+}
+
+pub(crate) fn empty_trash(
+    app: &AppHandle,
+    root: String,
+) -> Result<crate::trash::EmptyOutcome, String> {
+    let mutation = begin_reported(app)?;
+    let operation_id = mutation.id();
+    let publisher = std::cell::RefCell::new(Publisher::new(app));
+    let progress = std::cell::RefCell::new(Progress {
+        operation_id,
+        kind: Kind::TrashEmpty,
+        phase: Phase::Planning,
+        items_done: 0,
+        items_total: 1,
+        files_done: 0,
+        files_total: 0,
+        bytes_done: 0,
+        bytes_total: 0,
+        failures: 0,
+        current_file_bytes_done: None,
+        current_file_bytes_total: None,
+        next_phase: Some(Phase::Emptying),
+    });
+    publisher.borrow_mut().progress(&progress.borrow());
+    let result = crate::logging::boundary(
+        "trash_empty",
+        json!({ "root": root, "operationId": operation_id }),
+        || {
+            let data_root = crate::paths::data_root(app)?;
+            let dirs = crate::storage::load_config_source_dirs(&data_root)?;
+            let known = crate::trash::overview(&dirs, &data_root);
+            if !known.iter().any(|candidate| candidate.root == root) {
+                return Err("not a known trash root".to_string());
+            }
+            crate::trash::empty_root_with_progress(
+                std::path::Path::new(&root),
+                &mutation.cancelled,
+                &|trash_progress| {
+                    let next = Progress {
+                        operation_id,
+                        kind: Kind::TrashEmpty,
+                        phase: Phase::Emptying,
+                        items_done: 0,
+                        items_total: 1,
+                        files_done: trash_progress.done,
+                        files_total: trash_progress.total,
+                        bytes_done: trash_progress.bytes_done,
+                        bytes_total: trash_progress.bytes_total,
+                        failures: trash_progress.failures,
+                        current_file_bytes_done: None,
+                        current_file_bytes_total: None,
+                        next_phase: Some(Phase::Complete),
+                    };
+                    *progress.borrow_mut() = next.clone();
+                    publisher.borrow_mut().progress(&next);
+                    crate::failure_runtime::emit_or_record(
+                        app,
+                        "trash://progress",
+                        json!({ "root": root, "progress": trash_progress }),
+                    );
+                },
+            )
+        },
+        |outcome| json!({ "cancelled": outcome.cancelled, "failures": outcome.failures }),
+    );
+    match &result {
+        Ok(outcome) => {
+            let latest = progress.borrow();
+            let completed = !outcome.cancelled && outcome.failures == 0;
+            let terminal = Progress {
+                operation_id,
+                kind: Kind::TrashEmpty,
+                phase: Phase::Complete,
+                items_done: u64::from(completed),
+                items_total: 1,
+                files_done: latest.files_done,
+                files_total: latest.files_total,
+                bytes_done: latest.bytes_done,
+                bytes_total: latest.bytes_total,
+                failures: outcome.failures,
+                current_file_bytes_done: None,
+                current_file_bytes_total: None,
+                next_phase: None,
+            };
+            publisher.borrow_mut().done(
+                &terminal,
+                outcome.cancelled,
+                Some(result_summary(
+                    1,
+                    1,
+                    terminal.items_done,
+                    terminal.files_total,
+                    terminal.files_done,
+                    terminal.failures,
+                    None,
+                )),
+            );
+        }
+        Err(error) => publisher.borrow().error(&progress.borrow(), error),
+    }
+    result
 }
 
 #[cfg(test)]
@@ -628,10 +840,29 @@ mod tests {
         assert!(request_cancel(first_id).unwrap());
         assert!(first.cancelled());
         drop(first);
+        assert!(!request_active_cancel().unwrap());
 
         let second = begin().unwrap();
         assert_ne!(second.id(), first_id);
         assert!(!request_cancel(first_id).unwrap());
         assert!(!second.cancelled());
+        assert!(request_active_cancel().unwrap());
+        assert!(second.cancelled());
+    }
+
+    #[test]
+    fn result_accounting_separates_complete_partial_and_unstarted_work() {
+        assert_eq!(
+            result_summary(8, 4, 3, 12, 7, 2, None),
+            ResultSummary {
+                items_completed: 3,
+                items_partial: 1,
+                items_unstarted: 4,
+                files_completed: 5,
+                files_failed: 2,
+                files_unstarted: 5,
+                error: None,
+            }
+        );
     }
 }

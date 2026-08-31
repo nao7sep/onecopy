@@ -23,7 +23,12 @@
 
 import type { SectionCounts } from "./sections";
 import { progressLine, progressTitle, type ScanProgress } from "./scan";
-import { mutationProgressLine, type MutationProgress } from "./mutation";
+import {
+  mutationProgressLine,
+  mutationResultLine,
+  type MutationProgress,
+  type MutationResult,
+} from "./mutation";
 
 export type StatusTone = "danger" | "warning" | "normal";
 
@@ -54,6 +59,8 @@ export function statusLine(input: {
   /** A failed delete or a refused command; null when the last action was clean. */
   message: string | null;
   mutation: { progress: MutationProgress; cancelling: boolean } | null;
+  mutationResult: MutationResult | null;
+  exiting: boolean;
   scanning: boolean;
   workKind?: "source-check" | "file-information";
   stopping: boolean;
@@ -61,6 +68,13 @@ export function statusLine(input: {
   rescanNeeded: boolean;
   counts: SectionCounts | null;
 }): Status {
+  if (input.exiting) {
+    return {
+      tone: "normal",
+      text: "Finishing current file before exit…",
+      title: "OneCopy is waiting until it no longer owns an unsafe file change.",
+    };
+  }
   if (input.message !== null && input.message !== "") {
     return { tone: "danger", text: input.message, title: input.message };
   }
@@ -71,6 +85,23 @@ export function statusLine(input: {
     );
     return {
       tone: input.mutation.progress.failures > 0 ? "warning" : "normal",
+      text,
+      title: text,
+    };
+  }
+  if (input.mutationResult !== null) {
+    const text = mutationResultLine(input.mutationResult);
+    const { summary } = input.mutationResult;
+    return {
+      tone: summary.error !== null
+        ? "danger"
+        : input.mutationResult.cancelled ||
+            summary.filesFailed > 0 ||
+            summary.itemsPartial > 0 ||
+            summary.itemsUnstarted > 0 ||
+            summary.filesUnstarted > 0
+          ? "warning"
+          : "normal",
       text,
       title: text,
     };

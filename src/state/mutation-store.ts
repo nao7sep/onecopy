@@ -4,19 +4,25 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import type { MutationProgress } from "../models/mutation";
+import type { MutationProgress, MutationResult } from "../models/mutation";
 import { log, toErrorFields } from "../repositories";
 import { useItemsStore } from "./items-store";
 
 interface MutationState {
   progress: MutationProgress | null;
   cancelling: boolean;
+  result: MutationResult | null;
+  exiting: boolean;
   cancel: () => Promise<void>;
+  dismissResult: () => void;
 }
 
 export const useMutationStore = create<MutationState>((set, get) => ({
   progress: null,
   cancelling: false,
+  result: null,
+  exiting: false,
+  dismissResult: () => set({ result: null }),
 
   cancel: async () => {
     const progress = get().progress;

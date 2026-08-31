@@ -83,7 +83,10 @@ export default function App() {
   const itemsMessage = useItemsStore((s) => s.message);
   const mutationProgress = useMutationStore((s) => s.progress);
   const mutationCancelling = useMutationStore((s) => s.cancelling);
+  const mutationResult = useMutationStore((s) => s.result);
+  const exitQuiescing = useMutationStore((s) => s.exiting);
   const cancelMutation = useMutationStore((s) => s.cancel);
+  const dismissMutationResult = useMutationStore((s) => s.dismissResult);
   const startSourceCheck = useSectionsStore((s) => s.startSourceCheck);
   const stopSourceCheck = useSectionsStore((s) => s.stopSourceCheck);
   const selected = useItemsStore((s) => s.selected);
@@ -153,6 +156,8 @@ export default function App() {
     mutation: mutationProgress === null
       ? null
       : { progress: mutationProgress, cancelling: mutationCancelling },
+    mutationResult,
+    exiting: exitQuiescing,
     scanning,
     workKind: sourceCheck.running ? "source-check" : "file-information",
     stopping: stoppingScan,
@@ -258,7 +263,7 @@ export default function App() {
               <MenuSeparator />
               <MenuItem onSelect={openSettings}>Settings…</MenuItem>
               <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
-              <MenuItem onSelect={() => setTrashOpen(true)}>Trash…</MenuItem>
+              <MenuItem onSelect={() => setTrashOpen(true)}>OneCopy Trash…</MenuItem>
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}
@@ -517,14 +522,22 @@ export default function App() {
           >
             Audio autoplay {audioAutoplay ? "on" : "off"}
           </button>
-          {mutationProgress !== null ? (
+          {mutationProgress === null && mutationResult !== null && !exitQuiescing ? (
+            <button
+              className="text-ink-muted hover:text-ink hover:underline"
+              onClick={dismissMutationResult}
+            >
+              Dismiss result
+            </button>
+          ) : null}
+          {mutationProgress !== null && !exitQuiescing ? (
             <button
               className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
               disabled={mutationCancelling}
-              title="Stop safely after the current logical item"
+              title="Cancel safely after the current file"
               onClick={() => void cancelMutation()}
             >
-              {mutationCancelling ? "Stopping…" : "Stop file operation"}
+              {mutationCancelling ? "Cancelling…" : "Cancel file operation"}
             </button>
           ) : null}
           {sourceCheck.running ? (

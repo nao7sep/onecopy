@@ -26,7 +26,6 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 use serde::Serialize;
 
@@ -37,49 +36,6 @@ pub const TRASH_DIR_NAME: &str = ".onecopy-trash";
 /// exclude its own bookkeeping (see `tree_size`).
 pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";
 
-static EMPTY_RUNNING: AtomicBool = AtomicBool::new(false);
-static EMPTY_CANCELLED: AtomicBool = AtomicBool::new(false);
-static EMPTY_TRANSITION: Mutex<()> = Mutex::new(());
-
-pub struct EmptyClaim;
-
-impl EmptyClaim {
-    pub fn cancellation_flag(&self) -> &AtomicBool {
-        &EMPTY_CANCELLED
-    }
-}
-
-impl Drop for EmptyClaim {
-    fn drop(&mut self) {
-        let _transition = EMPTY_TRANSITION
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        EMPTY_RUNNING.store(false, Ordering::SeqCst);
-    }
-}
-
-pub fn begin_empty() -> Result<EmptyClaim, String> {
-    let _transition = EMPTY_TRANSITION
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if EMPTY_RUNNING.load(Ordering::SeqCst) {
-        return Err("a trash root is already being emptied".to_string());
-    }
-    EMPTY_CANCELLED.store(false, Ordering::SeqCst);
-    EMPTY_RUNNING.store(true, Ordering::SeqCst);
-    Ok(EmptyClaim)
-}
-
-pub fn cancel_empty() -> bool {
-    let _transition = EMPTY_TRANSITION
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !EMPTY_RUNNING.load(Ordering::SeqCst) {
-        return false;
-    }
-    EMPTY_CANCELLED.store(true, Ordering::SeqCst);
-    true
-}
 /// The home-volume trash lives under the app root (macOS forbids creating
 /// `/.onecopy-trash`). Named once in paths.rs, like every other subpath.
 use crate::paths::TRASH_DIR_NAME as HOME_TRASH_SUBDIR;
