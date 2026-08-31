@@ -9,6 +9,7 @@ import { stringArrayField } from "../utils/configProjection";
 import type {
   DestinationSelection,
   PendingDestinationDrop,
+  PendingDestinationConflicts,
 } from "../models/destinationTransfer";
 
 export interface DirEntry {
@@ -58,6 +59,8 @@ interface DestinationsState {
    * identities are frozen; the modal never rereads live grid selection. */
   pendingDrop: PendingDestinationDrop | null;
   setPendingDrop: (drop: PendingDestinationDrop | null) => void;
+  pendingConflicts: PendingDestinationConflicts | null;
+  setPendingConflicts: (conflicts: PendingDestinationConflicts | null) => void;
   init: (config: Record<string, unknown> | null) => void;
   toggleExpand: (path: string) => Promise<void>;
   refreshNode: (path: string) => Promise<void>;
@@ -88,6 +91,9 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
 
   pendingDrop: null,
   setPendingDrop: (drop) => set({ pendingDrop: drop }),
+
+  pendingConflicts: null,
+  setPendingConflicts: (conflicts) => set({ pendingConflicts: conflicts }),
 
   pendingDeleteRest: null,
 

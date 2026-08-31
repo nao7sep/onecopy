@@ -14,6 +14,7 @@ import {
   confirmDestinationDeleteRest,
   moveDestinationSelectionTo,
   moveSelectionTo,
+  resolveDestinationConflicts,
 } from "../../src/workflows/destinations";
 
 function item(pathId: number): SectionItem {
@@ -47,6 +48,11 @@ const OUTCOME = {
   conflicts: [],
   undelivered: [],
   postAction: { deletedFiles: 1, failedFiles: 0, removedRows: 1 },
+  planToken: null,
+  requiresConflictChoice: false,
+  planChanged: false,
+  overwriteAllowed: true,
+  reviewedConflicts: [],
 };
 
 function selectAll(keys: string[]): void {
@@ -87,6 +93,7 @@ beforeEach(() => {
   useDestinationsStore.setState({
     pendingDeleteRest: null,
     pendingDrop: null,
+    pendingConflicts: null,
     dragSelection: null,
     message: "",
     result: null,
@@ -203,8 +210,99 @@ describe("the non-permanent modes", () => {
   });
 });
 
+describe("destination conflict review", () => {
+  it("does nothing until one policy is accepted for the frozen selection", async () => {
+    let attempts = 0;
+    mockCommands({
+      move_items_out: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            ...OUTCOME,
+            exported: 0,
+            postAction: { deletedFiles: 0, failedFiles: 0, removedRows: 0 },
+            planToken: "reviewed-plan",
+            requiresConflictChoice: true,
+            reviewedConflicts: [
+              {
+                path: "/dest/IMG_1.jpg",
+                incomingBytes: 1000,
+                existingBytes: 900,
+                withinSelection: false,
+                preservedPaths: [
+                  "/dest/IMG_1.jpg",
+                  "/dest/IMG_1.xmp",
+                ],
+              },
+            ],
+          };
+        }
+        return OUTCOME;
+      },
+    });
+    selectAll(["h1"]);
+
+    await moveSelectionTo("/dest", "copy");
+
+    const pending = useDestinationsStore.getState().pendingConflicts;
+    expect(pending?.planToken).toBe("reviewed-plan");
+    expect(pending?.selection.items.map((entry) => entry.hash)).toEqual(["h1"]);
+    expect(useDestinationsStore.getState().result).toBeNull();
+    expect(movedHashes()).toEqual(["h1"]);
+
+    selectAll(["h4"]);
+    await resolveDestinationConflicts("rename");
+
+    const calls = invokeCalls.filter((call) => call.command === "move_items_out");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.args.items).toEqual([{ hash: "h1", pathId: null }]);
+    expect(calls[1]?.args.conflictPolicy).toBe("rename");
+    expect(calls[1]?.args.planToken).toBe("reviewed-plan");
+    expect(useDestinationsStore.getState().pendingConflicts).toBeNull();
+  });
+
+  it("refuses a changed review instead of broadening it", async () => {
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        exported: 0,
+        planChanged: true,
+        planToken: "new-plan",
+        requiresConflictChoice: true,
+        reviewedConflicts: [
+          {
+            path: "/dest/IMG_1.jpg",
+            incomingBytes: 1000,
+            existingBytes: 900,
+            withinSelection: false,
+            preservedPaths: ["/dest/IMG_1.jpg"],
+          },
+        ],
+        postAction: { deletedFiles: 0, failedFiles: 0, removedRows: 0 },
+      }),
+    });
+    useDestinationsStore.setState({
+      pendingConflicts: {
+        destDir: "/dest",
+        mode: "copy",
+        selection: captureDestinationSelection(),
+        planToken: "old-plan",
+        conflicts: [],
+        overwriteAllowed: true,
+      },
+    });
+
+    await resolveDestinationConflicts("overwrite");
+
+    expect(useDestinationsStore.getState().result?.severity).toBe("warning");
+    expect(useDestinationsStore.getState().result?.message).toMatch(
+      /changed.*review/i,
+    );
+  });
+});
+
 describe("outcome reporting", () => {
-  it("spells out a conflict instead of swallowing it", async () => {
+  it("spells out a new unreviewed conflict instead of swallowing it", async () => {
     mockCommands({
       move_items_out: () => ({
         ...OUTCOME,

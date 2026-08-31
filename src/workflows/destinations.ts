@@ -14,6 +14,7 @@ import { sortItems } from "../models/items";
 import type {
   DestinationItemIdentity,
   DestinationSelection,
+  DestinationConflict,
 } from "../models/destinationTransfer";
 
 interface MoveBatchOutcome {
@@ -24,9 +25,15 @@ interface MoveBatchOutcome {
   conflicts: string[];
   undelivered: string[];
   postAction: { deletedFiles: number; failedFiles: number };
+  planToken: string | null;
+  requiresConflictChoice: boolean;
+  planChanged: boolean;
+  overwriteAllowed: boolean;
+  reviewedConflicts: DestinationConflict[];
 }
 
 export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
+export type DestinationConflictPolicy = "rename" | "overwrite";
 
 function receiverOperationKey(destDir: string, mode: MoveMode): string {
   return JSON.stringify([destDir, mode]);
@@ -186,6 +193,8 @@ async function executeMoveBatch(
   destDir: string,
   mode: MoveMode,
   selection: DestinationSelection,
+  conflictPolicy: DestinationConflictPolicy | null = null,
+  planToken: string | null = null,
 ): Promise<void> {
   const operationKey = moveOperationKey(destDir, mode, selection.items);
   const receiverKey = receiverOperationKey(destDir, mode);
@@ -195,7 +204,35 @@ async function executeMoveBatch(
       items: selection.items,
       destDir,
       mode,
+      conflictPolicy,
+      planToken,
     });
+    if (outcome.planChanged) {
+      useDestinationsStore.setState({
+        result: {
+          severity: "warning",
+          message:
+            "The selected files or destination changed while the conflict question was open. Review the operation again.",
+          operationKey,
+        },
+        confirmation: null,
+      });
+      return;
+    }
+    if (outcome.requiresConflictChoice && outcome.planToken !== null) {
+      useDestinationsStore.setState({
+        pendingConflicts: {
+          destDir,
+          mode,
+          selection,
+          planToken: outcome.planToken,
+          conflicts: outcome.reviewedConflicts,
+          overwriteAllowed: outcome.overwriteAllowed,
+        },
+        confirmation: null,
+      });
+      return;
+    }
     operationCompleted = true;
     const parts: string[] = [];
     const hasCommittedNonSuccess =
@@ -299,6 +336,21 @@ async function executeMoveBatch(
       confirmation: null,
     });
   }
+}
+
+export async function resolveDestinationConflicts(
+  policy: DestinationConflictPolicy,
+): Promise<void> {
+  const pending = useDestinationsStore.getState().pendingConflicts;
+  if (pending === null) return;
+  useDestinationsStore.setState({ pendingConflicts: null });
+  await executeMoveBatch(
+    pending.destDir,
+    pending.mode,
+    pending.selection,
+    policy,
+    pending.planToken,
+  );
 }
 
 async function refreshDestinationOwners(

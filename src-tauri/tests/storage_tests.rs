@@ -52,6 +52,14 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert!(value.get("verifyAfterCopy").is_none());
     assert_eq!(value["showFaceStars"], serde_json::json!(true));
     assert_eq!(value["maximumImagesInComparison"], serde_json::json!(16));
+    assert_eq!(
+        value["destinationConflictRenameStyle"],
+        if cfg!(target_os = "windows") {
+            serde_json::json!("parenthesized-number")
+        } else {
+            serde_json::json!("space-number")
+        }
+    );
     assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(value.get("cacheDir").is_none());
     // Spec, not configuration: extension lists (and the other dead keys)

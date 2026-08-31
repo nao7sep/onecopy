@@ -17,6 +17,7 @@ import {
 import type { PendingDestinationDrop } from "../models/destinationTransfer";
 import { useDestinationReceiver } from "./DestinationDragProvider";
 import Button from "./ui/Button";
+import DestinationConflictModal from "./DestinationConflictModal";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -434,6 +435,7 @@ export default function DestinationsTab() {
 
   const pendingDeleteRest = useDestinationsStore((s) => s.pendingDeleteRest);
   const pendingDrop = useDestinationsStore((s) => s.pendingDrop);
+  const pendingConflicts = useDestinationsStore((s) => s.pendingConflicts);
 
   return (
     <div className="flex h-full flex-col p-3">
@@ -442,6 +444,9 @@ export default function DestinationsTab() {
           drop={pendingDrop}
           onClose={() => useDestinationsStore.getState().setPendingDrop(null)}
         />
+      ) : null}
+      {pendingConflicts !== null ? (
+        <DestinationConflictModal pending={pendingConflicts} />
       ) : null}
       {pendingDeleteRest !== null ? (
         <ConfirmDialog
@@ -546,7 +551,7 @@ export default function DestinationsTab() {
 /** The drop's Move/Copy question (Phase 33). Dropping used to read modifier
  * keys held at release — a silent decision nobody remembers making with a
  * mouse button down. The permanent variant is deliberately absent here: it
- * stays behind the keyboard chord and its own confirmation. */
+ * stays behind the explicit destination-row action and its own confirmation. */
 function DropChoiceModal({
   drop,
   onClose,

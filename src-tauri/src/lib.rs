@@ -407,8 +407,17 @@ fn move_items_out(
     items: Vec<operations::ItemIdentity>,
     dest_dir: String,
     mode: String,
+    conflict_policy: Option<String>,
+    plan_token: Option<String>,
 ) -> Result<operations::MoveBatchOutcome, String> {
-    mutation_runtime::move_items_out(&app, items, dest_dir, mode)
+    mutation_runtime::move_items_out(
+        &app,
+        items,
+        dest_dir,
+        mode,
+        conflict_policy,
+        plan_token,
+    )
 }
 
 // Destination-tree support: immediate subdirectories of one directory (the

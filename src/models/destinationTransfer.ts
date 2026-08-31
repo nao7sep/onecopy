@@ -22,3 +22,20 @@ export interface PendingDestinationDrop {
   readonly path: string;
   readonly selection: DestinationSelection;
 }
+
+export interface DestinationConflict {
+  readonly path: string;
+  readonly incomingBytes: number;
+  readonly existingBytes: number | null;
+  readonly withinSelection: boolean;
+  readonly preservedPaths: readonly string[];
+}
+
+export interface PendingDestinationConflicts {
+  readonly destDir: string;
+  readonly mode: "move-trash-rest" | "move-delete-rest" | "copy";
+  readonly selection: DestinationSelection;
+  readonly planToken: string;
+  readonly conflicts: readonly DestinationConflict[];
+  readonly overwriteAllowed: boolean;
+}

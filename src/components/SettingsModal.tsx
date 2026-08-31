@@ -754,6 +754,25 @@ export default function SettingsModal() {
             min={2}
             onChange={(v) => update({ maximumImagesInComparison: v })}
           />
+          <Row
+            label="Destination conflict names"
+            hint="Used when Rename and Copy/Move resolves an existing filename"
+          >
+            <Select
+              value={draft.destinationConflictRenameStyle}
+              onChange={(event) =>
+                update({
+                  destinationConflictRenameStyle:
+                    event.target.value === "parenthesized-number"
+                      ? "parenthesized-number"
+                      : "space-number",
+                })
+              }
+            >
+              <option value="space-number">name 2.ext (macOS style)</option>
+              <option value="parenthesized-number">name (2).ext (Windows style)</option>
+            </Select>
+          </Row>
           <CheckField
             label="Confirm before moving items to trash"
             checked={draft.confirmTrashDelete}

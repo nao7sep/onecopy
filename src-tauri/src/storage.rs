@@ -121,6 +121,9 @@ pub struct DefaultConfig {
     pub source_dirs: Vec<String>,
     /// Destination roots for the move/copy-out tree (absolute paths).
     pub destination_roots: Vec<String>,
+    /// Conflict renaming follows one familiar desktop style. The platform
+    /// default is materialized on first setup; users may choose the other.
+    pub destination_conflict_rename_style: String,
 }
 
 impl Default for DefaultConfig {
@@ -165,6 +168,11 @@ impl Default for DefaultConfig {
             confirm_trash_delete: false,
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),
+            destination_conflict_rename_style: if cfg!(target_os = "windows") {
+                "parenthesized-number".to_string()
+            } else {
+                "space-number".to_string()
+            },
         }
     }
 }

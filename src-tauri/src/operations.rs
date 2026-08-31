@@ -512,14 +512,37 @@ pub enum MoveOutMode {
     CopyKeepAll,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DestinationConflictPolicy {
+    Rename,
+    Overwrite,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DestinationRenameStyle {
+    SpaceNumber,
+    ParenthesizedNumber,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DestinationConflict {
+    pub path: String,
+    pub incoming_bytes: u64,
+    pub existing_bytes: Option<u64>,
+    pub within_selection: bool,
+    pub preserved_paths: Vec<String>,
+}
+
 #[derive(Clone, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveOutOutcome {
     pub exported: u64,
     pub skipped_identical: u64,
-    /// Destination names that exist with DIFFERENT content — surfaced, never
-    /// auto-suffixed; the post-action does not run when a conflict blocks the
-    /// primary.
+    /// Conflicts that appeared after the reviewed plan was accepted. Expected
+    /// conflicts are resolved before execution and never enter this result.
     pub conflicts: Vec<String>,
     /// Files that could not be written at all — every source copy failed to
     /// read or the destination refused the write (a full disk is the common
@@ -573,6 +596,11 @@ pub struct MoveBatchOutcome {
     pub post_action: DeleteOutcome,
     pub files_total: u64,
     pub bytes_total: u64,
+    pub plan_token: Option<String>,
+    pub requires_conflict_choice: bool,
+    pub plan_changed: bool,
+    pub overwrite_allowed: bool,
+    pub reviewed_conflicts: Vec<DestinationConflict>,
 }
 
 #[derive(Clone, Debug)]
@@ -589,6 +617,8 @@ struct DeliveryPlan {
     sources: Vec<DeliverySource>,
     bytes: u64,
     primary: bool,
+    replacement_family: Vec<ReviewedDestinationFile>,
+    rename_required: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -603,6 +633,43 @@ struct MovePlan {
     units: Vec<MoveUnit>,
     files_total: u64,
     bytes_total: u64,
+}
+
+#[derive(Clone, Debug)]
+struct ReviewedDestinationFile {
+    path: std::path::PathBuf,
+    bytes: u64,
+    hash: String,
+}
+
+#[derive(Clone, Debug)]
+enum DestinationObservation {
+    Absent,
+    Regular { bytes: u64, hash: String },
+    Other { bytes: u64 },
+}
+
+#[derive(Clone, Debug)]
+struct ReviewedDestination {
+    path: std::path::PathBuf,
+    state: DestinationObservation,
+}
+
+#[derive(Clone, Debug)]
+struct DestinationReview {
+    conflicts: Vec<DestinationConflict>,
+    observations: Vec<ReviewedDestination>,
+    overwrite_allowed: bool,
+}
+
+impl Default for DestinationReview {
+    fn default() -> Self {
+        Self {
+            conflicts: Vec::new(),
+            observations: Vec::new(),
+            overwrite_allowed: true,
+        }
+    }
 }
 
 /// Moves or copies one logical item out to `dest_dir`: the primary plus one
@@ -641,6 +708,9 @@ pub fn move_out(
     if let Some(error) = batch.error {
         return Err(error);
     }
+    if batch.requires_conflict_choice {
+        return Err("destination conflicts require a reviewed batch decision".to_string());
+    }
     Ok(batch
         .items
         .into_iter()
@@ -661,6 +731,34 @@ pub fn move_batch(
     items: &[ItemIdentity],
     dest_dir: &Path,
     mode: MoveOutMode,
+    cancelled: &dyn Fn() -> bool,
+    on_progress: impl FnMut(MoveBatchProgress),
+) -> Result<MoveBatchOutcome, String> {
+    move_batch_reviewed(
+        conn,
+        app_root,
+        cache,
+        items,
+        dest_dir,
+        mode,
+        None,
+        None,
+        DestinationRenameStyle::SpaceNumber,
+        cancelled,
+        on_progress,
+    )
+}
+
+pub fn move_batch_reviewed(
+    conn: &Connection,
+    app_root: &Path,
+    cache: &CachePaths,
+    items: &[ItemIdentity],
+    dest_dir: &Path,
+    mode: MoveOutMode,
+    conflict_policy: Option<DestinationConflictPolicy>,
+    expected_plan_token: Option<&str>,
+    rename_style: DestinationRenameStyle,
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(MoveBatchProgress),
 ) -> Result<MoveBatchOutcome, String> {
@@ -736,9 +834,65 @@ pub fn move_batch(
             current_file_bytes_total: None,
         });
     }
+    let review = match review_destination_conflicts(&mut plan, cancelled) {
+        Ok(review) => review,
+        Err(error) if error == crate::scanner::CANCELLED => {
+            return Ok(MoveBatchOutcome {
+                cancelled: true,
+                files_total: plan.files_total,
+                bytes_total: plan.bytes_total,
+                ..MoveBatchOutcome::default()
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let plan_token = move_plan_token(&plan, mode, &review);
+    if expected_plan_token.is_some_and(|expected| expected != plan_token) {
+        return Ok(MoveBatchOutcome {
+            plan_token: Some(plan_token),
+            requires_conflict_choice: !review.conflicts.is_empty(),
+            plan_changed: true,
+            overwrite_allowed: review.overwrite_allowed,
+            reviewed_conflicts: review.conflicts,
+            files_total: plan.files_total,
+            bytes_total: plan.bytes_total,
+            ..MoveBatchOutcome::default()
+        });
+    }
+    if !review.conflicts.is_empty() && conflict_policy.is_none() {
+        return Ok(MoveBatchOutcome {
+            plan_token: Some(plan_token),
+            requires_conflict_choice: true,
+            overwrite_allowed: review.overwrite_allowed,
+            reviewed_conflicts: review.conflicts,
+            files_total: plan.files_total,
+            bytes_total: plan.bytes_total,
+            ..MoveBatchOutcome::default()
+        });
+    }
+    if !review.conflicts.is_empty()
+        && conflict_policy.is_some()
+        && expected_plan_token.is_none()
+    {
+        return Err("destination conflict policy requires the reviewed plan token".to_string());
+    }
+    if conflict_policy == Some(DestinationConflictPolicy::Overwrite)
+        && !review.overwrite_allowed
+    {
+        return Err(
+            "overwrite cannot preserve every selected file in this conflict set; use Rename"
+                .to_string(),
+        );
+    }
+    if conflict_policy == Some(DestinationConflictPolicy::Rename) {
+        apply_conflict_renames(&mut plan, rename_style)?;
+    }
     let mut batch = MoveBatchOutcome {
         files_total: plan.files_total,
         bytes_total: plan.bytes_total,
+        plan_token: Some(plan_token),
+        overwrite_allowed: review.overwrite_allowed,
+        reviewed_conflicts: review.conflicts,
         ..MoveBatchOutcome::default()
     };
     let mut items_done = 0u64;
@@ -768,6 +922,7 @@ pub fn move_batch(
             cache,
             &unit,
             mode,
+            conflict_policy,
             cancelled,
             &mut |progress| {
                 let (current_done, current_total) = match progress {
@@ -839,6 +994,7 @@ pub fn move_batch(
             || !outcome.undelivered.is_empty()
             || outcome.post_action.deleted_files > 0
             || outcome.post_action.failed_files > 0;
+        let stopped_by_conflict = !outcome.conflicts.is_empty();
         if !unit_cancelled || has_effect {
             batch.items.push(MoveBatchItemResult {
                 item: unit.item,
@@ -847,6 +1003,9 @@ pub fn move_batch(
         }
         if unit_cancelled {
             batch.cancelled = true;
+            break;
+        }
+        if stopped_by_conflict {
             break;
         }
         items_done = items_done.saturating_add(1);
@@ -878,6 +1037,322 @@ pub fn move_batch(
         }),
     );
     Ok(batch)
+}
+
+fn move_plan_token(
+    plan: &MovePlan,
+    mode: MoveOutMode,
+    review: &DestinationReview,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(match mode {
+        MoveOutMode::MoveTrashRest => b"move-trash-rest",
+        MoveOutMode::MoveDeleteRest => b"move-delete-rest",
+        MoveOutMode::CopyKeepAll => b"copy",
+    });
+    let mut field = |value: &[u8]| {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    };
+    for unit in &plan.units {
+        match &unit.item.hash {
+            Some(hash) => field(hash.as_bytes()),
+            None => field(&unit.item.path_id.unwrap_or_default().to_le_bytes()),
+        }
+        for delivery in &unit.deliveries {
+            field(delivery.target.as_os_str().as_encoded_bytes());
+            field(&[u8::from(delivery.primary)]);
+            for source in &delivery.sources {
+                field(&source.path_id.to_le_bytes());
+                field(source.abs_path.as_bytes());
+            }
+        }
+    }
+    for observation in &review.observations {
+        field(observation.path.as_os_str().as_encoded_bytes());
+        match &observation.state {
+            DestinationObservation::Absent => field(b"absent"),
+            DestinationObservation::Regular { bytes, hash } => {
+                field(b"regular");
+                field(&bytes.to_le_bytes());
+                field(hash.as_bytes());
+            }
+            DestinationObservation::Other { bytes } => {
+                field(b"other");
+                field(&bytes.to_le_bytes());
+            }
+        }
+    }
+    for delivery in plan.units.iter().flat_map(|unit| &unit.deliveries) {
+        for member in &delivery.replacement_family {
+            field(member.path.as_os_str().as_encoded_bytes());
+            field(&member.bytes.to_le_bytes());
+            field(member.hash.as_bytes());
+        }
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn review_destination_conflicts(
+    plan: &mut MovePlan,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DestinationReview, String> {
+    let mut review = DestinationReview::default();
+    let mut claimed = HashSet::new();
+    for delivery in plan
+        .units
+        .iter_mut()
+        .flat_map(|unit| &mut unit.deliveries)
+    {
+        if cancelled() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        if !claimed.insert(delivery.target.clone()) {
+            delivery.rename_required = true;
+            review.conflicts.push(DestinationConflict {
+                path: delivery.target.to_string_lossy().into_owned(),
+                incoming_bytes: delivery.bytes,
+                existing_bytes: None,
+                within_selection: true,
+                preserved_paths: Vec::new(),
+            });
+            review.overwrite_allowed = false;
+            continue;
+        }
+        let observation = observe_destination(&delivery.target, cancelled)?;
+        review.observations.push(ReviewedDestination {
+            path: delivery.target.clone(),
+            state: observation.clone(),
+        });
+        match observation {
+            DestinationObservation::Absent => {}
+            DestinationObservation::Other { bytes } => {
+                delivery.rename_required = true;
+                review.overwrite_allowed = false;
+                review.conflicts.push(DestinationConflict {
+                    path: delivery.target.to_string_lossy().into_owned(),
+                    incoming_bytes: delivery.bytes,
+                    existing_bytes: Some(bytes),
+                    within_selection: false,
+                    preserved_paths: vec![delivery.target.to_string_lossy().into_owned()],
+                });
+            }
+            DestinationObservation::Regular { bytes, hash } => {
+                if delivery_matches_hash(delivery, &hash, bytes, cancelled)? {
+                    continue;
+                }
+                delivery.rename_required = true;
+                let (family, preserved_paths, replaceable) = reviewed_replacement_family(
+                    &delivery.target,
+                    delivery.primary,
+                    bytes,
+                    hash,
+                    cancelled,
+                )?;
+                delivery.replacement_family = family;
+                review.overwrite_allowed &= replaceable;
+                review.conflicts.push(DestinationConflict {
+                    path: delivery.target.to_string_lossy().into_owned(),
+                    incoming_bytes: delivery.bytes,
+                    existing_bytes: Some(bytes),
+                    within_selection: false,
+                    preserved_paths,
+                });
+            }
+        }
+    }
+    Ok(review)
+}
+
+fn observe_destination(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DestinationObservation, String> {
+    let metadata = match std::fs::symlink_metadata(crate::winpath::for_fs(path).as_ref()) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(DestinationObservation::Absent)
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not inspect destination {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Ok(DestinationObservation::Other {
+            bytes: metadata.len(),
+        });
+    }
+    let (mut file, _) = crate::file_identity::open_regular_nofollow(path).map_err(|error| {
+        format!(
+            "could not inspect destination {}: {error}",
+            path.display()
+        )
+    })?;
+    let bytes = file.metadata().map_err(|error| error.to_string())?.len();
+    let hash = crate::hashing::full_hash_file_cancellable(
+        &mut file,
+        bytes,
+        cancelled,
+        &mut |_, _| {},
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(DestinationObservation::Regular { bytes, hash })
+}
+
+fn delivery_matches_hash(
+    delivery: &DeliveryPlan,
+    destination_hash: &str,
+    destination_bytes: u64,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    for source in &delivery.sources {
+        let (mut source_file, _) = match crate::file_identity::open_regular_nofollow(Path::new(
+            &source.abs_path,
+        )) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        let source_bytes = source_file.metadata().map_err(|error| error.to_string())?.len();
+        if source_bytes != destination_bytes {
+            return Ok(false);
+        }
+        let source_hash = crate::hashing::full_hash_file_cancellable(
+            &mut source_file,
+            source_bytes,
+            cancelled,
+            &mut |_, _| {},
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok(source_hash == destination_hash);
+    }
+    Ok(false)
+}
+
+fn reviewed_replacement_family(
+    target: &Path,
+    include_companions: bool,
+    target_bytes: u64,
+    target_hash: String,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(Vec<ReviewedDestinationFile>, Vec<String>, bool), String> {
+    let mut paths = vec![target.to_path_buf()];
+    if include_companions {
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("destination has no parent: {}", target.display()))?;
+        let stem = target
+            .file_stem()
+            .ok_or_else(|| format!("destination has no file name: {}", target.display()))?;
+        for entry in std::fs::read_dir(crate::winpath::for_fs(parent).as_ref())
+            .map_err(|error| format!("could not inspect destination companions: {error}"))?
+        {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path == target || path.file_stem() != Some(stem) {
+                continue;
+            }
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if crate::extensions::COMPANION_EXTENSIONS.contains(&extension.as_str()) {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort_by(|left, right| left.as_os_str().cmp(right.as_os_str()));
+    let mut reviewed = Vec::new();
+    let mut presented = Vec::new();
+    let mut replaceable = true;
+    for path in paths {
+        presented.push(path.to_string_lossy().into_owned());
+        if path == target {
+            reviewed.push(ReviewedDestinationFile {
+                path,
+                bytes: target_bytes,
+                hash: target_hash.clone(),
+            });
+            continue;
+        }
+        match observe_destination(&path, cancelled)? {
+            DestinationObservation::Regular { bytes, hash } => {
+                reviewed.push(ReviewedDestinationFile { path, bytes, hash });
+            }
+            DestinationObservation::Other { .. } => replaceable = false,
+            DestinationObservation::Absent => {}
+        }
+    }
+    Ok((reviewed, presented, replaceable))
+}
+
+fn apply_conflict_renames(
+    plan: &mut MovePlan,
+    style: DestinationRenameStyle,
+) -> Result<(), String> {
+    let needs_rename = plan
+        .units
+        .iter()
+        .map(|unit| {
+            unit.deliveries
+                .iter()
+                .any(|delivery| delivery.rename_required)
+        })
+        .collect::<Vec<_>>();
+    let mut reserved = HashSet::new();
+    for (unit, rename) in plan.units.iter().zip(&needs_rename) {
+        if !rename {
+            reserved.extend(unit.deliveries.iter().map(|delivery| delivery.target.clone()));
+        }
+    }
+    for (unit, rename) in plan.units.iter_mut().zip(needs_rename) {
+        if !rename {
+            continue;
+        }
+        let chosen = (2..=1_000_000u32).find_map(|number| {
+            let candidates = unit
+                .deliveries
+                .iter()
+                .map(|delivery| renamed_target(&delivery.target, number, style))
+                .collect::<Option<Vec<_>>>()?;
+            let available = candidates.iter().all(|candidate| {
+                !reserved.contains(candidate)
+                    && std::fs::symlink_metadata(crate::winpath::for_fs(candidate).as_ref())
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            });
+            available.then_some(candidates)
+        });
+        let chosen = chosen.ok_or_else(|| {
+            "could not find an available destination name for the selected family".to_string()
+        })?;
+        for (delivery, target) in unit.deliveries.iter_mut().zip(chosen) {
+            delivery.target = target.clone();
+            delivery.replacement_family.clear();
+            delivery.rename_required = false;
+            reserved.insert(target);
+        }
+    }
+    Ok(())
+}
+
+fn renamed_target(
+    target: &Path,
+    number: u32,
+    style: DestinationRenameStyle,
+) -> Option<std::path::PathBuf> {
+    let stem = target.file_stem()?.to_str()?;
+    let suffix = match style {
+        DestinationRenameStyle::SpaceNumber => format!(" {number}"),
+        DestinationRenameStyle::ParenthesizedNumber => format!(" ({number})"),
+    };
+    let mut name = format!("{stem}{suffix}");
+    if let Some(extension) = target.extension().and_then(|value| value.to_str()) {
+        name.push('.');
+        name.push_str(extension);
+    }
+    Some(target.with_file_name(name))
 }
 
 fn collect_move_unit(
@@ -936,6 +1411,8 @@ fn collect_move_unit(
             bytes: first.bytes,
             sources: primary_sources,
             primary: true,
+            replacement_family: Vec::new(),
+            rename_required: false,
         });
     }
 
@@ -955,6 +1432,8 @@ fn collect_move_unit(
             bytes: first.bytes,
             sources,
             primary: false,
+            replacement_family: Vec::new(),
+            rename_required: false,
         });
     }
     Ok(MoveUnit {
@@ -1027,6 +1506,7 @@ fn execute_move_unit(
     cache: &CachePaths,
     unit: &MoveUnit,
     mode: MoveOutMode,
+    conflict_policy: Option<DestinationConflictPolicy>,
     cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
 ) -> Result<MoveUnitResult, String> {
@@ -1070,28 +1550,8 @@ fn execute_move_unit(
                 return Err(format!("private output changed before publication: {error}"));
             }
         };
-        let delivered = match crate::fs_publish::rename_no_replace(&claimed, &output.target) {
-            Ok(()) => {
-                if !crate::file_identity::path_names(&output.target, output.identity) {
-                    return Err(format!(
-                        "published output was replaced before completion: {}",
-                        output.target.display()
-                    ));
-                }
-                if let Some(parent) = output.target.parent() {
-                    if let Err(error) = crate::fs_publish::sync_directory(parent) {
-                        crate::index_store::upsert_issue(
-                            conn,
-                            Some(output.target.to_string_lossy().as_ref()),
-                            "copy-error",
-                            &format!("output was published but its directory could not be synced: {error}"),
-                        )?;
-                        return Err(format!(
-                            "could not durably publish {}: {error}",
-                            output.target.display()
-                        ));
-                    }
-                }
+        let delivered = match publish_claimed(conn, &claimed, &output.target, output.identity) {
+            Ok(true) => {
                 outcome.exported = outcome.exported.saturating_add(1);
                 natural_targets.push(NaturalTarget {
                     identity: output.identity,
@@ -1099,8 +1559,7 @@ fn execute_move_unit(
                 });
                 true
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                crate::file_identity::remove_private_if_owned(&claimed, output.identity);
+            Ok(false) => {
                 let existing = crate::file_identity::open_regular_nofollow(&output.target);
                 let delivered = match existing {
                     Ok((mut file, identity)) => {
@@ -1130,13 +1589,49 @@ fn execute_move_unit(
                                 delivered: same,
                             });
                             if same {
+                                crate::file_identity::remove_private_if_owned(
+                                    &claimed,
+                                    output.identity,
+                                );
                                 outcome.skipped_identical =
                                     outcome.skipped_identical.saturating_add(1);
+                                true
+                            } else if conflict_policy
+                                == Some(DestinationConflictPolicy::Overwrite)
+                            {
+                                drop(file);
+                                preserve_reviewed_destination_family(
+                                    conn,
+                                    &delivery.replacement_family,
+                                    app_root,
+                                )?;
+                                if !publish_claimed(
+                                    conn,
+                                    &claimed,
+                                    &output.target,
+                                    output.identity,
+                                )?
+                                {
+                                    return Err(format!(
+                                        "a new destination conflict appeared at {}",
+                                        output.target.display()
+                                    ));
+                                }
+                                outcome.exported = outcome.exported.saturating_add(1);
+                                true
+                            } else {
+                                crate::file_identity::remove_private_if_owned(
+                                    &claimed,
+                                    output.identity,
+                                );
+                                false
                             }
-                            same
                         }
                     }
-                    Err(_) => false,
+                    Err(_) => {
+                        crate::file_identity::remove_private_if_owned(&claimed, output.identity);
+                        false
+                    }
                 };
                 if !delivered {
                     outcome
@@ -1212,9 +1707,87 @@ fn execute_move_unit(
                     .saturating_add(cleanup.removed_rows);
             }
         }
+        if !outcome.conflicts.is_empty() {
+            break;
+        }
     }
 
     Ok(MoveUnitResult::Completed(outcome))
+}
+
+fn publish_claimed(
+    conn: &Connection,
+    claimed: &Path,
+    target: &Path,
+    identity: crate::file_identity::FileIdentity,
+) -> Result<bool, String> {
+    match crate::fs_publish::rename_no_replace(claimed, target) {
+        Ok(()) => {
+            if !crate::file_identity::path_names(target, identity) {
+                return Err(format!(
+                    "published output was replaced before completion: {}",
+                    target.display()
+                ));
+            }
+            if let Some(parent) = target.parent() {
+                if let Err(error) = crate::fs_publish::sync_directory(parent) {
+                    crate::index_store::upsert_issue(
+                        conn,
+                        Some(target.to_string_lossy().as_ref()),
+                        "copy-error",
+                        &format!(
+                            "output was published but its directory could not be synced: {error}"
+                        ),
+                    )?;
+                    return Err(format!(
+                        "could not durably publish {}: {error}",
+                        target.display()
+                    ));
+                }
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn preserve_reviewed_destination_family(
+    conn: &Connection,
+    family: &[ReviewedDestinationFile],
+    app_root: &Path,
+) -> Result<(), String> {
+    if family.is_empty() {
+        return Err("a new unreviewed destination conflict appeared".to_string());
+    }
+    for member in family {
+        match observe_destination(&member.path, &|| false)? {
+            DestinationObservation::Regular { bytes, hash }
+                if bytes == member.bytes && hash == member.hash => {}
+            _ => {
+                return Err(format!(
+                    "the reviewed destination changed before replacement: {}",
+                    member.path.display()
+                ))
+            }
+        }
+    }
+    for member in family {
+        crate::trash::trash_file(&member.path, app_root, None).map_err(|error| {
+            let message = format!(
+                "could not preserve the existing destination {} in OneCopy Trash: {error}",
+                member.path.display()
+            );
+            let _ = crate::index_store::upsert_issue(
+                conn,
+                Some(member.path.to_string_lossy().as_ref()),
+                "copy-error",
+                &message,
+            );
+            message
+        })?;
+    }
+    Ok(())
 }
 
 fn stage_delivery(

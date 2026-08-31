@@ -504,7 +504,7 @@ fn companion_name_collisions_follow_the_destination_filesystem_and_representativ
 }
 
 #[test]
-fn destination_batch_publishes_the_first_colliding_name_and_reports_the_later_one() {
+fn destination_batch_preflights_internal_collisions_and_renames_the_complete_set() {
     let f = fixture("batch-name-collision");
     for (dir, bytes) in [("a", b"first".as_slice()), ("b", b"second".as_slice())] {
         std::fs::create_dir_all(f.root.join(dir)).unwrap();
@@ -527,7 +527,7 @@ fn destination_batch_publishes_the_first_colliding_name_and_reports_the_later_on
     let dest = f._dir.path().join("dest");
     std::fs::create_dir_all(&dest).unwrap();
 
-    let outcome = move_batch(
+    let review = move_batch(
         &f.conn,
         &f.app_root,
         &f.cache,
@@ -539,10 +539,38 @@ fn destination_batch_publishes_the_first_colliding_name_and_reports_the_later_on
     )
     .unwrap();
 
+    assert!(review.requires_conflict_choice);
+    assert!(!review.overwrite_allowed);
+    assert!(review.items.is_empty());
+    assert_eq!(review.reviewed_conflicts.len(), 1);
+    assert!(review.reviewed_conflicts[0].within_selection);
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+
+    let token = review.plan_token.as_deref().expect("review token");
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        Some(DestinationConflictPolicy::Rename),
+        Some(token),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
     assert_eq!(outcome.items.len(), 2);
-    assert_eq!(outcome.exported, 1);
-    assert_eq!(outcome.conflicts.len(), 1);
-    assert!(dest.join("same.jpg").is_file());
+    assert_eq!(outcome.exported, 2);
+    assert!(outcome.conflicts.is_empty());
+    let mut delivered = [
+        std::fs::read(dest.join("same.jpg")).unwrap(),
+        std::fs::read(dest.join("same 2.jpg")).unwrap(),
+    ];
+    delivered.sort();
+    assert_eq!(delivered, [b"first".to_vec(), b"second".to_vec()]);
 }
 
 #[test]
@@ -710,7 +738,7 @@ fn identical_destination_skips_but_still_runs_the_post_action() {
 }
 
 #[test]
-fn conflicting_destination_blocks_and_withholds_the_post_action() {
+fn conflicting_destination_waits_for_one_reviewed_policy_before_any_effect() {
     let f = fixture("conflict");
     std::fs::write(f.root.join("clash.jpg"), b"mine").unwrap();
     scan(&f);
@@ -722,27 +750,178 @@ fn conflicting_destination_blocks_and_withholds_the_post_action() {
         .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
         .unwrap();
 
-    let outcome = move_out(
+    let item = ItemIdentity {
+        hash: Some(hash),
+        path_id: None,
+    };
+    let review = move_batch(
         &f.conn,
         &f.app_root,
         &f.cache,
-        ItemRef::Hash(&hash),
+        std::slice::from_ref(&item),
         &dest,
         MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
     )
     .unwrap();
-    assert_eq!(outcome.conflicts.len(), 1);
-    assert_eq!(outcome.exported, 0);
-    assert_eq!(
-        outcome.post_action.deleted_files, 0,
-        "no destructive follow-up"
-    );
+    assert!(review.requires_conflict_choice);
+    assert_eq!(review.reviewed_conflicts.len(), 1);
+    assert!(review.items.is_empty());
     assert!(f.root.join("clash.jpg").exists(), "originals untouched");
     assert_eq!(
         std::fs::read(dest.join("clash.jpg")).unwrap(),
         b"theirs - different".as_slice(),
         "the conflicting file is never overwritten"
     );
+
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item],
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        Some(DestinationConflictPolicy::Rename),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::ParenthesizedNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(outcome.post_action.deleted_files, 1);
+    assert_eq!(std::fs::read(dest.join("clash (2).jpg")).unwrap(), b"mine");
+    assert!(!f.root.join("clash.jpg").exists());
+}
+
+#[test]
+fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
+    let f = fixture("overwrite-family");
+    std::fs::write(f.root.join("x.jpg"), b"new-primary").unwrap();
+    std::fs::write(f.root.join("x.xmp"), b"new-sidecar").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("x.jpg"), b"old-primary").unwrap();
+    std::fs::write(dest.join("x.xmp"), b"old-sidecar").unwrap();
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let item = ItemIdentity {
+        hash: Some(hash),
+        path_id: None,
+    };
+
+    let review = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        std::slice::from_ref(&item),
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert!(review.requires_conflict_choice);
+    assert!(review.overwrite_allowed);
+    assert!(review
+        .reviewed_conflicts
+        .iter()
+        .any(|conflict| conflict.preserved_paths.len() == 2));
+
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item],
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        Some(DestinationConflictPolicy::Overwrite),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.exported, 2);
+    assert_eq!(outcome.post_action.deleted_files, 2);
+    assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"new-primary");
+    assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"new-sidecar");
+
+    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_dir())
+        .expect("destination replacements are recoverable");
+    let originals = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["originalPath"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(originals.contains(&dest.join("x.jpg").to_string_lossy().into_owned()));
+    assert!(originals.contains(&dest.join("x.xmp").to_string_lossy().into_owned()));
+}
+
+#[test]
+fn changed_destination_review_refuses_overwrite_without_filesystem_effects() {
+    let f = fixture("overwrite-review-change");
+    std::fs::write(f.root.join("x.jpg"), b"source-bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("x.jpg"), b"old-version1").unwrap();
+    let hash: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    let item = ItemIdentity {
+        hash: Some(hash),
+        path_id: None,
+    };
+    let review = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        std::slice::from_ref(&item),
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    std::fs::write(dest.join("x.jpg"), b"old-version2").unwrap();
+
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item],
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        Some(DestinationConflictPolicy::Overwrite),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert!(outcome.plan_changed);
+    assert!(outcome.items.is_empty());
+    assert!(f.root.join("x.jpg").exists());
+    assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"old-version2");
+    assert!(!f.app_root.join("trash").exists());
 }
 
 #[test]
@@ -828,11 +1007,8 @@ fn a_failed_copy_keeps_its_row_and_records_an_issue() {
     assert_eq!(issues, 1);
 }
 
-// Each verified output releases only its own source group. A failed companion
-// does not roll the primary back and is itself preserved for a later retry.
-
 #[test]
-fn companion_conflict_preserves_that_companion_without_rolling_back_the_primary() {
+fn companion_conflict_renames_the_complete_output_family_consistently() {
     let f = fixture("companion-conflict");
     std::fs::write(f.root.join("x.jpg"), b"primary-bytes").unwrap();
     std::fs::write(f.root.join("x.arw"), b"raw-bytes").unwrap();
@@ -852,25 +1028,45 @@ fn companion_conflict_preserves_that_companion_without_rolling_back_the_primary(
         )
         .unwrap();
 
-    let outcome = move_out(
+    let item = ItemIdentity {
+        hash: Some(hash),
+        path_id: None,
+    };
+    let review = move_batch(
         &f.conn,
         &f.app_root,
         &f.cache,
-        ItemRef::Hash(&hash),
+        std::slice::from_ref(&item),
         &dest,
         MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
     )
     .unwrap();
+    assert!(review.requires_conflict_choice);
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 1);
+    assert!(f.root.join("x.jpg").exists());
+    assert!(f.root.join("x.arw").exists());
 
-    assert!(
-        outcome.conflicts.iter().any(|c| c.ends_with("x.arw")),
-        "the companion conflict must be reported, got {:?}",
-        outcome.conflicts
-    );
-    assert_eq!(outcome.post_action.deleted_files, 1);
-    assert!(dest.join("x.jpg").is_file(), "the primary output completes");
-    assert!(!f.root.join("x.jpg").exists(), "the delivered primary is cleaned");
-    assert!(f.root.join("x.arw").exists(), "the RAW must survive");
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item],
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        Some(DestinationConflictPolicy::Rename),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.exported, 2);
+    assert_eq!(outcome.post_action.deleted_files, 2);
+    assert_eq!(std::fs::read(dest.join("x 2.jpg")).unwrap(), b"primary-bytes");
+    assert_eq!(std::fs::read(dest.join("x 2.arw")).unwrap(), b"raw-bytes");
+    assert_eq!(std::fs::read(dest.join("x.arw")).unwrap(), b"a-different-raw");
 }
 
 // Unix-only, gated at the ITEM so Windows is honestly MISSING this coverage
@@ -1161,13 +1357,13 @@ fn unhashed_other_files_move_out_and_conflict_correctly_by_path_id() {
     // verification entirely — there is no indexed hash to verify against — and
     // instead compares the destination against the first copy's bytes re-read
     // from disk, so it is a genuinely different code path.
-    let cases: [(&str, &[u8], u64, u64, usize); 3] = [
-        // (label, pre-existing destination bytes, exported, skipped, conflicts)
-        ("empty", b"", 1, 0, 0),
-        ("identical", b"unique-payload", 0, 1, 0),
-        ("different", b"something-else", 0, 0, 1),
+    let cases: [(&str, &[u8], u64, u64, bool); 3] = [
+        // (label, pre-existing destination bytes, exported, skipped, needs review)
+        ("empty", b"", 1, 0, false),
+        ("identical", b"unique-payload", 0, 1, false),
+        ("different", b"something-else", 0, 0, true),
     ];
-    for (label, existing, exported, skipped, conflicts) in cases {
+    for (label, existing, exported, skipped, needs_review) in cases {
         let f = fixture(&format!("moveout-pathid-{label}"));
         std::fs::write(f.root.join("unique.bin"), b"unique-payload").unwrap();
         scan(&f);
@@ -1182,19 +1378,28 @@ fn unhashed_other_files_move_out_and_conflict_correctly_by_path_id() {
             std::fs::write(dest.join("unique.bin"), existing).unwrap();
         }
 
-        let outcome = move_out(
+        let item = ItemIdentity {
+            hash: None,
+            path_id: Some(path_id),
+        };
+        let outcome = move_batch(
             &f.conn,
             &f.app_root,
             &f.cache,
-            ItemRef::PathId(path_id),
+            std::slice::from_ref(&item),
             &dest,
             MoveOutMode::MoveTrashRest,
+            &|| false,
+            |_| {},
         )
         .unwrap();
 
         assert_eq!(outcome.exported, exported, "{label}: exported");
         assert_eq!(outcome.skipped_identical, skipped, "{label}: skipped");
-        assert_eq!(outcome.conflicts.len(), conflicts, "{label}: conflicts");
+        assert_eq!(
+            outcome.requires_conflict_choice, needs_review,
+            "{label}: review"
+        );
         assert_eq!(
             std::fs::read(dest.join("unique.bin")).unwrap(),
             if existing.is_empty() {
@@ -1205,15 +1410,16 @@ fn unhashed_other_files_move_out_and_conflict_correctly_by_path_id() {
             "{label}: the destination holds what it should"
         );
 
-        if conflicts == 0 {
+        if !needs_review {
             // Delivered (or already there): the post-action ran.
             assert!(
                 !f.root.join("unique.bin").exists(),
                 "{label}: the original was handled"
             );
         } else {
-            // A conflict withholds the post-action — the original is intact.
+            // The complete conflict review has no filesystem effects.
             assert_eq!(outcome.post_action.deleted_files, 0, "{label}: no delete");
+            assert_eq!(outcome.reviewed_conflicts.len(), 1);
             assert!(
                 f.root.join("unique.bin").exists(),
                 "{label}: a conflicting move must leave the original alone"

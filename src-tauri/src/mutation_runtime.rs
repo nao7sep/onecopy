@@ -399,6 +399,8 @@ pub(crate) fn move_items_out(
     mut items: Vec<crate::operations::ItemIdentity>,
     dest_dir: String,
     mode: String,
+    conflict_policy: Option<String>,
+    plan_token: Option<String>,
 ) -> Result<crate::operations::MoveBatchOutcome, String> {
     let mode = match mode.as_str() {
         "move-trash-rest" => crate::operations::MoveOutMode::MoveTrashRest,
@@ -411,6 +413,14 @@ pub(crate) fn move_items_out(
     } else {
         Kind::DestinationMove
     };
+    let conflict_policy = conflict_policy
+        .as_deref()
+        .map(|policy| match policy {
+            "rename" => Ok(crate::operations::DestinationConflictPolicy::Rename),
+            "overwrite" => Ok(crate::operations::DestinationConflictPolicy::Overwrite),
+            other => Err(format!("unknown destination conflict policy: {other}")),
+        })
+        .transpose()?;
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin_reported(app)?;
@@ -453,6 +463,16 @@ pub(crate) fn move_items_out(
             let data_root = crate::paths::data_root(app)?;
             let config = crate::storage::read_config_for_setup(&data_root)?;
             let settings = crate::scanner::settings_from_config(config.as_ref(), &data_root, 0);
+            let rename_style = match config
+                .as_ref()
+                .and_then(|value| value.get("destinationConflictRenameStyle"))
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("parenthesized-number") => {
+                    crate::operations::DestinationRenameStyle::ParenthesizedNumber
+                }
+                _ => crate::operations::DestinationRenameStyle::SpaceNumber,
+            };
             let destination = std::path::Path::new(&dest_dir);
             let destination_roots = config
                 .as_ref()
@@ -487,13 +507,16 @@ pub(crate) fn move_items_out(
                 crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
             let cache =
                 crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
-            crate::operations::move_batch(
+            crate::operations::move_batch_reviewed(
                 &conn,
                 &data_root,
                 &cache,
                 &items,
                 destination,
                 mode,
+                conflict_policy,
+                plan_token.as_deref(),
+                rename_style,
                 &|| mutation.cancelled(),
                 |progress| {
                     last_progress = match progress {

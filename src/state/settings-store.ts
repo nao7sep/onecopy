@@ -43,6 +43,7 @@ export interface SettingsDraft {
   scoreFaces: boolean;
   showFaceStars: boolean;
   maximumImagesInComparison: number;
+  destinationConflictRenameStyle: "space-number" | "parenthesized-number";
   sourceDirs: string[];
 }
 
@@ -131,6 +132,10 @@ function draftFrom(config: Record<string, unknown> | null): SettingsDraft {
       2,
       Math.floor(numberOr(config?.maximumImagesInComparison, 16)),
     ),
+    destinationConflictRenameStyle:
+      config?.destinationConflictRenameStyle === "parenthesized-number"
+        ? "parenthesized-number"
+        : "space-number",
     sourceDirs: stringArrayField(config, "sourceDirs"),
   };
 }
