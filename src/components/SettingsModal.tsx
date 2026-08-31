@@ -1,5 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { availableMonitors } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useSettingsStore } from "../state/settings-store";
 import { saveSettings } from "../workflows/settings";
 import { log, toErrorFields } from "../repositories";
@@ -40,8 +42,7 @@ function ScreensSection() {
     useAppStore((s) => s.appData?.state) ?? null,
   );
   useEffect(() => {
-    void import("@tauri-apps/api/window")
-      .then(({ availableMonitors }) => availableMonitors())
+    void availableMonitors()
       .then((available) => {
         setMonitors(available);
         setScreenError(null);
@@ -89,54 +90,52 @@ function ScreensSection() {
         onClick={() => {
           // One self-closing flash per monitor, showing its ordinal — the
           // only way to tell a matched pair apart beyond "left"/"right".
-          void import("@tauri-apps/api/webviewWindow")
-            .then(({ WebviewWindow }) => {
-              ordered.forEach((monitor, index) => {
-                const scale = monitor.scaleFactor || 1;
-                const window = new WebviewWindow(`identify-${index + 1}`, {
-                  url: `index.html?view=identify&slice=${index + 1}`,
-                  title: "OneCopy",
-                  x:
-                    monitor.position.x / scale +
-                    monitor.size.width / scale / 2 -
-                    110,
-                  y:
-                    monitor.position.y / scale +
-                    monitor.size.height / scale / 2 -
-                    110,
-                  width: 220,
-                  height: 220,
-                  decorations: false,
-                  alwaysOnTop: true,
-                  skipTaskbar: true,
-                  resizable: false,
-                  focus: false,
-                });
-                void window.once("tauri://error", (event) => {
-                  const failure = new Error(String(event.payload));
-                  log.warn(
-                    "screen identification failed",
-                    toErrorFields(failure),
-                  );
-                  setScreenError("Couldn’t identify the connected screens.");
-                  reportActionFailure(
-                    "screen-identify-failed",
-                    "Couldn’t identify the connected screens.",
-                    failure,
-                  );
-                });
+          try {
+            ordered.forEach((monitor, index) => {
+              const scale = monitor.scaleFactor || 1;
+              const window = new WebviewWindow(`identify-${index + 1}`, {
+                url: `index.html?view=identify&slice=${index + 1}`,
+                title: "OneCopy",
+                x:
+                  monitor.position.x / scale +
+                  monitor.size.width / scale / 2 -
+                  110,
+                y:
+                  monitor.position.y / scale +
+                  monitor.size.height / scale / 2 -
+                  110,
+                width: 220,
+                height: 220,
+                decorations: false,
+                alwaysOnTop: true,
+                skipTaskbar: true,
+                resizable: false,
+                focus: false,
               });
-              setScreenError(null);
-            })
-            .catch((error) => {
-              log.warn("screen identification failed", toErrorFields(error));
-              setScreenError("Couldn’t identify the connected screens.");
-              reportActionFailure(
-                "screen-identify-failed",
-                "Couldn’t identify the connected screens.",
-                error,
-              );
+              void window.once("tauri://error", (event) => {
+                const failure = new Error(String(event.payload));
+                log.warn(
+                  "screen identification failed",
+                  toErrorFields(failure),
+                );
+                setScreenError("Couldn’t identify the connected screens.");
+                reportActionFailure(
+                  "screen-identify-failed",
+                  "Couldn’t identify the connected screens.",
+                  failure,
+                );
+              });
             });
+            setScreenError(null);
+          } catch (error) {
+            log.warn("screen identification failed", toErrorFields(error));
+            setScreenError("Couldn’t identify the connected screens.");
+            reportActionFailure(
+              "screen-identify-failed",
+              "Couldn’t identify the connected screens.",
+              error,
+            );
+          }
         }}
       >
         Identify screens

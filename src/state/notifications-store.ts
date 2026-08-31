@@ -84,9 +84,6 @@ async function install(): Promise<void> {
       useNotificationsStore.setState((state) => ({
         active: mergeRecord(state.active, event.payload),
       }));
-      void import("./issues-store").then(({ useIssuesStore }) => {
-        if (useIssuesStore.getState().open) void useIssuesStore.getState().loadRecent();
-      });
     }));
     unlisten.push(await listen<{ id: number }>("notification://dismissed", (event) => {
       useNotificationsStore.setState((state) => ({
@@ -132,11 +129,7 @@ export async function publishNotification(
 export async function recordRecentNotification(
   request: NotificationRequest,
 ): Promise<NotificationRecord> {
-  const record = await invoke<NotificationRecord>("record_recent_notification", { request });
-  void import("./issues-store").then(({ useIssuesStore }) => {
-    if (useIssuesStore.getState().open) void useIssuesStore.getState().loadRecent();
-  });
-  return record;
+  return invoke<NotificationRecord>("record_recent_notification", { request });
 }
 
 export function errorNotification(

@@ -823,7 +823,9 @@ fn record_recent_notification(
     app: AppHandle,
     request: notifications::NotificationRequest,
 ) -> Result<notifications::NotificationRecord, String> {
-    notifications::record_history(&app, request)
+    let record = notifications::record_history(&app, request)?;
+    failure_runtime::emit_or_record(&app, "notification://recorded", &record);
+    Ok(record)
 }
 
 #[tauri::command(async)]

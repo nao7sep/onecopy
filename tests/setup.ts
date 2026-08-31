@@ -4,22 +4,7 @@
 // platform at module load must never throw under `node`, so a bare stub is
 // installed here. Tests that need a specific platform stub it themselves.
 
-import { afterEach, vi } from "vitest";
-
-// Several stores reach each other through fire-and-forget dynamic imports
-// (`void import("./preview-store").then(...)`), which is correct in the app —
-// nothing awaits an anchor notification. In tests those imports can still be
-// resolving when the file finishes, and loading a module after the environment
-// is torn down surfaces as an unhandled EnvironmentTeardownError: all tests
-// pass, but runs are intermittently noisy.
-//
-// A module load is a macrotask, so draining microtasks is not enough — and the
-// real timer is captured HERE, before any spec installs fake ones, so a suite
-// using vi.useFakeTimers() still gets a genuine tick.
-const realSetTimeout = globalThis.setTimeout;
-afterEach(async () => {
-  await new Promise<void>((resolve) => realSetTimeout(resolve, 0));
-});
+import { vi } from "vitest";
 
 if (typeof globalThis.navigator === "undefined") {
   vi.stubGlobal("navigator", { platform: "", userAgent: "" });

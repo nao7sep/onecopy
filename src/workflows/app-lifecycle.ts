@@ -17,6 +17,7 @@ import { installMutationEventWiring } from "./mutation-events";
 import { installViewerWorkflow } from "./quick-view";
 import { installPlaybackWorkflow } from "./playback";
 import { installContentSessionWorkflow } from "./content-session";
+import { installIssuesEventWiring } from "./issues";
 
 export async function bootstrapApplication(): Promise<void> {
   installItemWorkflow();
@@ -29,6 +30,7 @@ export async function bootstrapApplication(): Promise<void> {
     installPreviewCommandWiring(),
     installPlaybackWorkflow(),
     installContentSessionWorkflow(),
+    installIssuesEventWiring(),
   ]);
   const [data] = await Promise.all([
     useAppStore.getState().initialize(),
