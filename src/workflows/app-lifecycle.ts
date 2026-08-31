@@ -8,6 +8,7 @@ import { useDestinationsStore } from "../state/destinations-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useWizardStore } from "../state/wizard-store";
+import { stringArrayField } from "../utils/configProjection";
 import { installScanEventWiring } from "./scan-events";
 import { installItemWorkflow } from "./items";
 import { installPreviewCommandWiring, installPreviewPersistence } from "./preview";
@@ -38,4 +39,19 @@ export async function bootstrapApplication(): Promise<void> {
   if (data === null) return;
   await useWizardStore.getState().init(data.config);
   useDestinationsStore.getState().init(data.config);
+  const wizard = useWizardStore.getState();
+  const sources = stringArrayField(data.config, "sourceDirs");
+  const checkAfterLaunch = data.config?.checkSourceFoldersAtLaunch !== false;
+  if (
+    checkAfterLaunch &&
+    sources.length > 0 &&
+    !wizard.open &&
+    wizard.missingDirs.length === 0 &&
+    wizard.substitutedDirs.length === 0
+  ) {
+    // Event wiring, initial data, the first section projection, and source
+    // presence are settled before this finite background pass starts. The
+    // main interface is therefore usable and cannot miss its early state.
+    await useSectionsStore.getState().startSourceCheck();
+  }
 }

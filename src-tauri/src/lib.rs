@@ -1444,7 +1444,6 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
                     }
                 }
             };
-            let is_ffmpeg = id == "ffmpeg";
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 binaries_manager::install_entry_started(&data_root, started, emit)
             }));
@@ -1472,12 +1471,10 @@ fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
                             &error,
                         );
                     }
-                    if is_ffmpeg {
-                        // Tool installation changes derived-work eligibility, not
-                        // index debt. The coordinator re-reads the tool state on
-                        // this wake; no scan restart or captured config is involved.
-                        derived_work::wake(false);
-                    }
+                    // Managed tools are prerequisites for derived work. The
+                    // coordinator re-reads live capability state on this wake;
+                    // no scan restart or captured config is involved.
+                    derived_work::wake(false);
                 }
                 Ok(Err(err)) => {
                     if binaries_manager::is_cancelled_error(&err) {
@@ -1877,7 +1874,6 @@ pub fn run() {
             // source roots (the Camera Roll inflow case). Restart picks up
             // source-dir changes; correctness never depends on it.
             let watch_settings = scanner::settings_from_config(setup_config.as_ref(), &data_root, 0);
-            let configured = watch_settings.source_dirs.clone();
             watcher::start(app.handle().clone(), watch_settings.source_dirs);
 
             // The one update switch (managed-runtime-dependencies): when ON,
@@ -1959,29 +1955,10 @@ pub fn run() {
             }
 
             // Pending rows are independent of source discovery and always get
-            // an opportunity to finish. The stat-only source walk is a
-            // separate optional launch job because it exists to discover work
-            // performed while OneCopy was closed.
+            // an opportunity to finish. The finite configured-source pass is
+            // admitted by the main-window bootstrap only after its event
+            // wiring and usable interface are ready.
             file_information_runtime::wake(app.handle().clone());
-            let check_sources_at_launch = setup_config
-                .as_ref()
-                .and_then(|config| config.get("checkSourceFoldersAtLaunch"))
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            if check_sources_at_launch && !configured.is_empty() {
-                logging::info(
-                    "source-folder check started at launch",
-                    json!({ "roots": configured.len() }),
-                );
-                if let Err(error) = source_check_runtime::start(app.handle().clone()) {
-                    let _ = failure_runtime::report(
-                        app.handle(),
-                        "source-check-failed",
-                        None,
-                        &error,
-                    );
-                }
-            }
 
             logging::info(
                 "app startup",

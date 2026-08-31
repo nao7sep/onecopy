@@ -161,6 +161,26 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the culling journey", () => {
+  it("starts the configured source check only after usable bootstrap", async () => {
+    mockCommand("load_app_data", () => ({
+      config: {
+        sourceDirs: ["/photos"],
+        defaultTimezone: "UTC",
+        checkSourceFoldersAtLaunch: true,
+      },
+      state: {},
+      dataRoot: "/data",
+      debugEnabled: false,
+    }));
+
+    render(<App />);
+    await settle();
+    await settle();
+
+    expect(invokeCalls.map((call) => call.command)).toContain("check_source_dirs");
+    expect(invokeCalls.map((call) => call.command)).toContain("start_source_check");
+  });
+
   it("runs wizard finish → scan → tree → month → arrows → Space → Enter → page decision → refresh", async () => {
     const view = render(<App />);
     await settle();
