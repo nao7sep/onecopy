@@ -8,6 +8,7 @@ import {
   replaceDerivedItem,
   factsLine,
   sortItems,
+  sectionProjection,
   stripTimestampMs,
   timestampLabel,
   type SectionItem,
@@ -196,5 +197,38 @@ describe("directions and tie-break chains (Phase 33)", () => {
     const asc = sortItems(items, { order: "time", desc: false }).map((i) => i.pathId);
     const desc = sortItems(items, { order: "time", desc: true }).map((i) => i.pathId);
     expect(desc).toEqual([...asc].reverse());
+  });
+});
+
+describe("section projection", () => {
+  it("reuses one ordered/indexed projection for repeated render reads", () => {
+    const items = [
+      item({ hash: "b", pathId: 2, fileName: "b.jpg", similarGroupId: 7 }),
+      item({ hash: "a", pathId: 1, fileName: "a.jpg", similarGroupId: 7 }),
+    ];
+    const choice = { order: "name" as const, desc: false };
+
+    const first = sectionProjection(items, choice);
+    const second = sectionProjection(items, choice);
+
+    expect(second).toBe(first);
+    expect(first.orderedKeys).toEqual(["a", "b"]);
+    expect(first.itemByKey.get("b")).toBe(items[0]);
+    expect(first.indexByKey.get("b")).toBe(1);
+    expect(first.similarCounts.get(7)).toBe(2);
+  });
+
+  it("replaces the cached projection when the sort choice changes", () => {
+    const items = [
+      item({ hash: "new", pathId: 2, fileName: "a.jpg", resolvedUtcMs: 2 }),
+      item({ hash: "old", pathId: 1, fileName: "z.jpg", resolvedUtcMs: 1 }),
+    ];
+
+    expect(
+      sectionProjection(items, { order: "time", desc: false }).orderedKeys,
+    ).toEqual(["old", "new"]);
+    expect(
+      sectionProjection(items, { order: "name", desc: false }).orderedKeys,
+    ).toEqual(["new", "old"]);
   });
 });

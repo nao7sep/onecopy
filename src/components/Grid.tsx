@@ -6,13 +6,14 @@ import {
   extOf,
   factsLine,
   formatBytes,
-  sortItems,
+  itemKey,
+  sectionProjection,
   thumbUrl,
   type SectionItem,
   type SortChoice,
   type SortOrder,
 } from "../models/items";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useAppStore } from "../state/app-store";
 import { handleSpaceQuickView, openViewerFromMain } from "../workflows/quick-view";
@@ -421,15 +422,6 @@ export default function Grid({
   );
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
   const sortCatalogue = SORT_ORDERS[lane];
-  const similarCounts = useMemo(() => {
-    const counts = new Map<number, number>();
-    for (const item of items) {
-      if (item.similarGroupId !== null) {
-        counts.set(item.similarGroupId, (counts.get(item.similarGroupId) ?? 0) + 1);
-      }
-    }
-    return counts;
-  }, [items]);
   const selectionOrdinals = useMemo(
     () => new Map([...selectedKeys].map((key, index) => [key, index + 1])),
     [selectedKeys],
@@ -535,8 +527,9 @@ export default function Grid({
         ? "Loading…"
         : loadError ?? "Nothing in this section"
       : null;
-  const sorted = emptyState === null ? sortItems(items, sortChoice) : [];
-  const sortedKeys = sorted.map(itemKey);
+  const projection = sectionProjection(items, sortChoice);
+  const sorted = emptyState === null ? projection.orderedItems : [];
+  const sortedKeys = emptyState === null ? projection.orderedKeys : [];
   // Refs for the anchor effect, which must read current values without
   // re-running on every scroll.
   const sortedKeysRef = useRef(sortedKeys);
@@ -554,7 +547,7 @@ export default function Grid({
   const selectedHash =
     selectedItem === null
       ? null
-      : (items.find((item) => itemKey(item) === selectedItem)?.hash ?? null);
+      : (projection.itemByKey.get(selectedItem)?.hash ?? null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -722,7 +715,9 @@ export default function Grid({
           };
           const presentation = itemPresentation(projectedItem, {
             similarCount:
-              item.similarGroupId === null ? 0 : (similarCounts.get(item.similarGroupId) ?? 0),
+              item.similarGroupId === null
+                ? 0
+                : (projection.similarCounts.get(item.similarGroupId) ?? 0),
             selectionOrdinal: selectionOrdinals.get(key) ?? null,
             selectedCount: selectedKeys.size,
             showFaceStars,

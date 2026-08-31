@@ -8,9 +8,9 @@ import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useDestinationsStore } from "../state/destinations-store";
 import { useIssuesStore } from "../state/issues-store";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
-import { sortItems } from "../models/items";
+import { sectionProjection } from "../models/items";
 import type {
   DestinationItemIdentity,
   DestinationSelection,
@@ -66,14 +66,18 @@ export function captureDestinationSelection(): DestinationSelection {
       : state.selectedItem !== null
         ? new Set([state.selectedItem])
         : new Set<string>();
-  const targets = state.items.filter((item) => keys.has(itemKey(item)));
+  const projection = sectionProjection(state.items, state.currentSort());
+  const targets = [...keys].flatMap((key) => {
+    const item = projection.itemByKey.get(key);
+    return item === undefined ? [] : [item];
+  });
   return {
     items: targets.map((item) => ({
       hash: item.hash,
       pathId: item.hash === null ? item.pathId : null,
     })),
     anchorKey: state.selectedItem,
-    shownKeys: sortItems(state.items, state.currentSort()).map(itemKey),
+    shownKeys: projection.orderedKeys,
   };
 }
 
@@ -389,7 +393,9 @@ async function refreshDestinationOwners(
     ),
   );
   if (!requested.has(selection.anchorKey)) return;
-  const alive = new Set(state.items.map(itemKey));
+  const alive = new Set(
+    sectionProjection(state.items, state.currentSort()).orderedKeys,
+  );
   const anchorIndex = selection.shownKeys.indexOf(selection.anchorKey);
   const start = Math.max(anchorIndex, 0);
   const orderedSurvivor = (allowed: Set<string>) =>

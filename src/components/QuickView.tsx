@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Maximize2, X } from "lucide-react";
 import { useModalLayer } from "../hooks/useModalLayer";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import {
   closeViewer,
@@ -12,12 +12,13 @@ import {
 } from "../workflows/quick-view";
 import ConfirmDialog from "./ConfirmDialog";
 import PreviewSurface from "./PreviewSurface";
-import { isAudioFile } from "../models/items";
+import { isAudioFile, sectionProjection } from "../models/items";
 
 export default function QuickView() {
   const session = useQuickViewStore((state) => state.session);
   const pendingDelete = useQuickViewStore((state) => state.pendingDelete);
   const items = useItemsStore((state) => state.items);
+  const currentSort = useItemsStore((state) => state.currentSort());
   const selectedItem = useItemsStore((state) => state.selectedItem);
   const detail = useItemsStore((state) => state.detail);
   const sectionKind = useItemsStore((state) => state.selected?.kind ?? null);
@@ -26,7 +27,10 @@ export default function QuickView() {
 
   const quickOpen = session?.presentation === "quick";
   const key = quickOpen ? (session.members[session.index]?.key ?? null) : null;
-  const item = key === null ? null : (items.find((candidate) => itemKey(candidate) === key) ?? null);
+  const item =
+    key === null
+      ? null
+      : (sectionProjection(items, currentSort).itemByKey.get(key) ?? null);
 
   useEffect(() => {
     if (!quickOpen || item === null) return;

@@ -9,7 +9,8 @@ import {
 } from "./utils/windowSizing";
 import { useSectionsStore } from "./state/sections-store";
 import { statusLine } from "./models/status";
-import { itemKey, useItemsStore } from "./state/items-store";
+import { useItemsStore } from "./state/items-store";
+import { sectionProjection } from "./models/items";
 import Sidebar from "./components/Sidebar";
 import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
@@ -97,6 +98,8 @@ export default function App() {
   const itemsLoadError = useItemsStore((s) => s.loadError);
   const detail = useItemsStore((s) => s.detail);
   const selectedItemKey = useItemsStore((s) => s.selectedItem);
+  const currentSort = useItemsStore((s) => s.currentSort());
+  const itemProjection = sectionProjection(items, currentSort);
   const selectedHash =
     selectedItemKey !== null && !selectedItemKey.startsWith("path-")
       ? selectedItemKey
@@ -104,7 +107,7 @@ export default function App() {
   const selectedSectionItem =
     selectedItemKey === null
       ? null
-      : (items.find((item) => itemKey(item) === selectedItemKey) ?? null);
+      : (itemProjection.itemByKey.get(selectedItemKey) ?? null);
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);

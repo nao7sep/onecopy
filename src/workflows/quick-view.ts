@@ -7,10 +7,10 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createViewerSession, type ViewerMove, type ViewerPresentation } from "../models/viewerSession";
 import type { ItemDetail, SectionItem } from "../models/items";
-import { isAudioFile, sortItems } from "../models/items";
+import { isAudioFile, itemKey, sectionProjection } from "../models/items";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import { reportActionFailure } from "../state/notifications-store";
 import { deleteItems } from "./items";
@@ -45,9 +45,10 @@ let fullscreenRequest = 0;
 
 function currentItem(): SectionItem | null {
   const key = useQuickViewStore.getState().currentKey();
+  const state = useItemsStore.getState();
   return key === null
     ? null
-    : (useItemsStore.getState().items.find((item) => itemKey(item) === key) ?? null);
+    : (sectionProjection(state.items, state.currentSort()).itemByKey.get(key) ?? null);
 }
 
 export function viewerBroadcast(): ViewerBroadcast {
@@ -162,8 +163,12 @@ export async function installViewerWorkflow(): Promise<void> {
     queueMicrotask(() => {
       itemReconcileQueued = false;
       const before = useQuickViewStore.getState().currentKey();
+      const state = useItemsStore.getState();
       useQuickViewStore.getState().reconcile(
-        useItemsStore.getState().items.map((item) => ({ key: itemKey(item), pathId: item.pathId })),
+        sectionProjection(state.items, state.currentSort()).orderedItems.map((item) => ({
+          key: itemKey(item),
+          pathId: item.pathId,
+        })),
       );
       const after = useQuickViewStore.getState().currentKey();
       if (after !== null && after !== before) syncMainAnchor();
@@ -186,7 +191,7 @@ export function openViewerFromMain(
     useItemsStore.setState({ message: "Select an item to open the viewer." });
     return false;
   }
-  const displayed = sortItems(items.items, items.currentSort());
+  const displayed = sectionProjection(items.items, items.currentSort()).orderedItems;
   const session = createViewerSession(
     presentation,
     displayed.map((item) => ({ key: itemKey(item), pathId: item.pathId })),

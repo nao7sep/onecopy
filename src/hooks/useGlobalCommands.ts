@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAppStore } from "../state/app-store";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useSectionsStore } from "../state/sections-store";
@@ -18,7 +18,7 @@ import {
 import { requestComparisonFromMain } from "../workflows/comparison";
 import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
 import { handleFViewer, handleSpaceQuickView } from "../workflows/quick-view";
-import { isAudioFile } from "../models/items";
+import { isAudioFile, sectionProjection } from "../models/items";
 import { toggleMainPlayback } from "../workflows/playback";
 
 export function useGlobalCommands() {
@@ -124,9 +124,12 @@ export function useGlobalCommands() {
           void requestComparisonFromMain();
           return;
         }
-        const anchor = items.items.find(
-          (item) => itemKey(item) === items.selectedItem,
-        );
+        const anchor =
+          items.selectedItem === null
+            ? undefined
+            : sectionProjection(items.items, items.currentSort()).itemByKey.get(
+                items.selectedItem,
+              );
         if (
           items.selected?.kind === "video" ||
           (anchor !== undefined && isAudioFile(anchor.fileName))

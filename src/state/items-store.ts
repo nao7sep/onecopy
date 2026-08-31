@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
 import { reportActionFailure } from "./notifications-store";
-import { replaceDerivedItem, sortItems } from "../models/items";
+import { itemKey, replaceDerivedItem, sectionProjection, sortItems } from "../models/items";
 import { DEFAULT_DESC, SORT_ORDERS, type ItemDetail, type SectionItem, type SortChoice, type SortOrder } from "../models/items";
 import {
   anchorContext,
@@ -17,11 +17,6 @@ import {
 export interface SelectedSection {
   kind: "image" | "video" | "other";
   month: string;
-}
-
-/** The grid's stable identity for a logical item. */
-export function itemKey(item: SectionItem): string {
-  return item.hash ?? `path-${item.pathId}`;
 }
 
 interface ItemsState {
@@ -145,7 +140,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     // takes. A real section switch clears both.
     const memory = { ...before.sectionMemory };
     if (!sameSection && previous !== null) {
-      const order = sortItems(before.items, before.currentSort()).map(itemKey);
+      const order = sectionProjection(before.items, before.currentSort()).orderedKeys;
       memory[sectionId(previous)] = {
         anchor: before.selectedItem,
         context: anchorContext(order, before.selectedItem),
@@ -180,12 +175,15 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       });
       if (fresh()) {
         if (sameSection) {
-          const previousOrder = sortItems(get().items, get().currentSort()).map(itemKey);
+          const previousOrder = sectionProjection(
+            get().items,
+            get().currentSort(),
+          ).orderedKeys;
           set({ items, loading: false, loadError: null });
           reconcileReloadSelection(set, get, previousOrder);
         } else {
           set({ items, loading: false, loadError: null });
-          const currentOrder = sortItems(items, get().currentSort()).map(itemKey);
+          const currentOrder = sectionProjection(items, get().currentSort()).orderedKeys;
           const remembered = restore ?? get().sectionMemory[sectionId(section)] ?? null;
           const anchor = remembered === null
             ? (currentOrder[0] ?? null)
@@ -256,7 +254,10 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     if (removing && state.selectedItem !== key) {
       anchor = state.selectedItem;
     } else if (removing) {
-      const displayed = sortItems(state.items, state.currentSort()).map(itemKey);
+      const displayed = sectionProjection(
+        state.items,
+        state.currentSort(),
+      ).orderedKeys;
       const removedIndex = displayed.indexOf(key);
       const nextSelected =
         removedIndex < 0
@@ -321,7 +322,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       (last, item, index) => (item.hash !== null && family.has(item.hash) ? index : last),
       -1,
     );
-    const live = new Set(items.map(itemKey));
+    const live = new Set(
+      sectionProjection(items, get().currentSort()).orderedKeys,
+    );
     const after = previous
       .slice(lastMember + 1)
       .map(itemKey)
@@ -399,7 +402,7 @@ function reconcileReloadSelection(
   previousOrder: string[],
 ): void {
   const { items, selectedItem, selectedKeys, rangeOrigin, rangeBase } = get();
-  const currentOrder = sortItems(items, get().currentSort()).map(itemKey);
+  const currentOrder = sectionProjection(items, get().currentSort()).orderedKeys;
   const alive = new Set(currentOrder);
   const keys = new Set([...selectedKeys].filter((k) => alive.has(k)));
   const context = anchorContext(previousOrder, selectedItem);
@@ -435,7 +438,8 @@ function reconcileReloadSelection(
  * projection observe the resulting state at the application edge. */
 function loadAnchorDetail(key: string | null): void {
   if (key === null) return;
-  const item = useItemsStore.getState().items.find((i) => itemKey(i) === key);
+  const state = useItemsStore.getState();
+  const item = sectionProjection(state.items, state.currentSort()).itemByKey.get(key);
   if (!item) return;
   const payload = { hash: item.hash, pathId: item.hash === null ? item.pathId : null };
   // Both guards: the key check drops a response for an anchor the user left;

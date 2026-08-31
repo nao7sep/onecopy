@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { comparisonHashForSelection } from "../models/interactions";
+import { sectionProjection } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
@@ -86,9 +87,15 @@ export async function openComparison(
 export async function requestComparisonFromMain(): Promise<void> {
   const { selected, items, selectedKeys, selectedItem } =
     useItemsStore.getState();
+  const state = useItemsStore.getState();
+  const projection = sectionProjection(items, state.currentSort());
+  const selectedItems = [...selectedKeys].flatMap((key) => {
+    const item = projection.itemByKey.get(key);
+    return item === undefined ? [] : [item];
+  });
   const hash =
     selected?.kind === "image"
-      ? comparisonHashForSelection(items, selectedKeys, selectedItem)
+      ? comparisonHashForSelection(selectedItems, selectedKeys, selectedItem)
       : null;
   if (hash === null) {
     useItemsStore.setState({

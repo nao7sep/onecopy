@@ -3,12 +3,12 @@
 // anchor into Preview, and coordinates mutations with Issues and counts.
 
 import { invoke } from "@tauri-apps/api/core";
-import { sortItems } from "../models/items";
+import { itemKey, sectionProjection } from "../models/items";
 import { anchorContext } from "../models/mainSelection";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useIssuesStore } from "../state/issues-store";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 import { reportActionFailure } from "../state/notifications-store";
@@ -25,12 +25,13 @@ function appWindowState(): Record<string, unknown> {
 }
 
 function projectAnchor(): void {
-  const { selectedItem, items, detail } = useItemsStore.getState();
+  const state = useItemsStore.getState();
+  const { selectedItem, items, detail } = state;
   if (selectedItem === null) {
     usePreviewStore.getState().anchorCleared();
     return;
   }
-  const item = items.find((candidate) => itemKey(candidate) === selectedItem);
+  const item = sectionProjection(items, state.currentSort()).itemByKey.get(selectedItem);
   if (!item) return;
   const payload = {
     hash: item.hash,
@@ -49,6 +50,7 @@ export function installItemWorkflow(): void {
   if (installed) return;
   installed = true;
   useItemsStore.subscribe((state, previous) => {
+    const projection = sectionProjection(state.items, state.currentSort());
     const patch: Record<string, unknown> = {};
     if (state.sortOrders !== previous.sortOrders) patch.sortOrders = state.sortOrders;
     if (state.selected !== previous.selected) patch.lastSection = state.selected;
@@ -58,7 +60,7 @@ export function installItemWorkflow(): void {
       state.selectedItem !== previous.selectedItem ||
       state.sortOrders !== previous.sortOrders
     ) {
-      const order = sortItems(state.items, state.currentSort()).map(itemKey);
+      const order = projection.orderedKeys;
       patch.lastItemContext = anchorContext(order, state.selectedItem);
     }
     if (Object.keys(patch).length > 0) {
@@ -67,9 +69,10 @@ export function installItemWorkflow(): void {
     if (state.selectedItem !== previous.selectedItem) {
       projectAnchor();
     } else if (state.detail !== previous.detail && state.detail !== null) {
-      const item = state.items.find(
-        (candidate) => itemKey(candidate) === state.selectedItem,
-      );
+      const item =
+        state.selectedItem === null
+          ? undefined
+          : projection.itemByKey.get(state.selectedItem);
       if (item) {
         usePreviewStore.getState().detailLoaded(
           { hash: item.hash, pathId: item.hash === null ? item.pathId : null },
@@ -101,7 +104,7 @@ export async function deleteItems(
 ): Promise<void> {
   const store = useItemsStore.getState();
   if (keys.size === 0) return;
-  const shown = sortItems(store.items, store.currentSort());
+  const shown = sectionProjection(store.items, store.currentSort()).orderedItems;
   useItemsStore.setState({ message: null });
   try {
     const requested = shown.filter((candidate) => keys.has(itemKey(candidate)));

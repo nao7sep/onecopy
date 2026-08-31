@@ -4,12 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { revealInFileManager } from "../workflows/external-open";
 import {
   formatBytes,
+  sectionProjection,
   stripTimestampMs,
   stripUrl,
   thumbUrl,
   timestampLabel,
 } from "../models/items";
-import { itemKey, useItemsStore } from "../state/items-store";
+import { useItemsStore } from "../state/items-store";
 import type { ItemDetail, ItemWorkStates, SectionItem } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
 import { fileManagerWord } from "../utils/shortcuts";
@@ -121,9 +122,12 @@ function SimilarSection({ hash }: { hash: string }) {
               onClick={() => {
                 // Select that member in the grid; the preview follows through
                 // the ordinary anchor path.
-                const { items, selectItem } = useItemsStore.getState();
-                const target = items.find((i) => itemKey(i) === member.hash);
-                if (target) selectItem(member.hash);
+                const state = useItemsStore.getState();
+                const target = sectionProjection(
+                  state.items,
+                  state.currentSort(),
+                ).itemByKey.get(member.hash);
+                if (target) state.selectItem(member.hash);
               }}
             >
               <img

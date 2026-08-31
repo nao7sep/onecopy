@@ -56,6 +56,11 @@ export interface SectionItem {
   derivedWork: ItemWorkStates;
 }
 
+/** Stable logical identity used by every Main projection. */
+export function itemKey(item: Pick<SectionItem, "hash" | "pathId">): string {
+  return item.hash ?? `path-${item.pathId}`;
+}
+
 /** Mirrors queries::ItemDetail on the Rust side. */
 export interface ItemDetail {
   fileName: string;
@@ -191,6 +196,65 @@ export function sortItems(items: SectionItem[], choice: SortChoice): SectionItem
     return a.pathId - b.pathId;
   });
   return sorted;
+}
+
+export interface SectionProjection {
+  orderedItems: SectionItem[];
+  orderedKeys: string[];
+  itemByKey: Map<string, SectionItem>;
+  indexByKey: Map<string, number>;
+  similarCounts: Map<number, number>;
+}
+
+const projectionCache = new WeakMap<
+  SectionItem[],
+  { sort: string; projection: SectionProjection }
+>();
+
+/**
+ * Builds the one stable order/index projection shared by Main consumers.
+ * React scroll state changes must not re-sort a complete section or rebuild
+ * linear lookup tables. A section array is immutable at the store boundary,
+ * so its weakly cached projections remain valid until that array is replaced.
+ */
+export function sectionProjection(
+  items: SectionItem[],
+  choice: SortChoice,
+): SectionProjection {
+  const cacheKey = `${choice.order}:${choice.desc ? "desc" : "asc"}`;
+  const cached = projectionCache.get(items);
+  if (cached?.sort === cacheKey) return cached.projection;
+
+  const orderedItems = sortItems(items, choice);
+  const orderedKeys = new Array<string>(orderedItems.length);
+  const itemByKey = new Map<string, SectionItem>();
+  const indexByKey = new Map<string, number>();
+  const similarCounts = new Map<number, number>();
+  for (let index = 0; index < orderedItems.length; index += 1) {
+    const item = orderedItems[index];
+    const key = itemKey(item);
+    orderedKeys[index] = key;
+    itemByKey.set(key, item);
+    indexByKey.set(key, index);
+    if (item.similarGroupId !== null) {
+      similarCounts.set(
+        item.similarGroupId,
+        (similarCounts.get(item.similarGroupId) ?? 0) + 1,
+      );
+    }
+  }
+  const projection = {
+    orderedItems,
+    orderedKeys,
+    itemByKey,
+    indexByKey,
+    similarCounts,
+  };
+  // Keep only the active ordering. Retaining every order a user had visited
+  // would multiply the working set of the very large sections this
+  // projection exists to protect.
+  projectionCache.set(items, { sort: cacheKey, projection });
+  return projection;
 }
 
 // The mediacache protocol serves the hash-keyed cache; convertFileSrc builds
