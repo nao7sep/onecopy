@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import DestinationsTab from "../../src/components/DestinationsTab";
 import { useDestinationsStore } from "../../src/state/destinations-store";
-import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
@@ -86,5 +86,26 @@ describe("destination folder states", () => {
       dataTransfer: { types: ["application/x-onecopy-drag"] },
     });
     expect(useDestinationsStore.getState().pendingDrop).toBeNull();
+  });
+
+  it("uses Enter and double-click only to expand or collapse", async () => {
+    mockCommands({ list_subdirs: () => [] });
+    useDestinationsStore.setState({
+      roots: ["/dest"],
+      expanded: new Set(),
+      activePath: "/dest",
+    });
+    const view = render(<DestinationsTab />);
+    const tree = view.getByRole("tree");
+    const row = view.container.querySelector<HTMLElement>("[data-tree-path='/dest']")!;
+
+    await act(async () => fireEvent.keyDown(tree, { key: "Enter" }));
+    expect(useDestinationsStore.getState().expanded.has("/dest")).toBe(true);
+
+    await act(async () => fireEvent.doubleClick(row));
+    expect(useDestinationsStore.getState().expanded.has("/dest")).toBe(false);
+    expect(
+      invokeCalls.filter(({ command }) => command === "move_items_out"),
+    ).toHaveLength(0);
   });
 });

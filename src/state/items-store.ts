@@ -235,18 +235,38 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   toggleItem: (key) => {
-    const next = new Set(get().selectedKeys);
-    if (next.has(key)) {
+    const state = get();
+    const next = new Set(state.selectedKeys);
+    const removing = next.has(key);
+    if (removing) {
       next.delete(key);
     } else {
       next.add(key);
     }
-    // The anchor moves to the toggled key; toggling the anchor OFF falls back
-    // to the most recently selected item remaining — a Set preserves
-    // insertion order, so that is its last element. Cmd-clicking through a
-    // pile and then un-clicking the last one previews the one before it,
-    // which is what "which one is selected?" needs during a multi-select.
-    const anchor = next.has(key) ? key : ([...next].pop() ?? null);
+    // Removing the anchor follows the visible review order, not selection
+    // history: first the next selected item, then the previous one. That
+    // keeps Preview and Details beside the item the user just removed.
+    let anchor: string | null = key;
+    if (removing && state.selectedItem !== key) {
+      anchor = state.selectedItem;
+    } else if (removing) {
+      const displayed = sortItems(state.items, state.currentSort()).map(itemKey);
+      const removedIndex = displayed.indexOf(key);
+      const nextSelected =
+        removedIndex < 0
+          ? undefined
+          : displayed
+              .slice(removedIndex + 1)
+              .find((candidate) => next.has(candidate));
+      const previousSelected =
+        removedIndex < 0
+          ? undefined
+          : displayed
+              .slice(0, removedIndex)
+              .reverse()
+              .find((candidate) => next.has(candidate));
+      anchor = nextSelected ?? previousSelected ?? null;
+    }
     set({
       selectedKeys: next,
       selectedItem: anchor,

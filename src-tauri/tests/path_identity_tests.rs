@@ -1,6 +1,6 @@
 // Physical path-safety regressions use only throwaway directories.
 
-use onecopy_lib::path_identity::directory_is_within;
+use onecopy_lib::path_identity::{directory_is_within, directory_is_within_any};
 
 #[cfg(unix)]
 #[test]
@@ -31,4 +31,21 @@ fn the_root_itself_is_inside_itself_but_a_sibling_is_not() {
 
     assert!(directory_is_within(&source, &source).unwrap());
     assert!(!directory_is_within(&sibling, &source).unwrap());
+}
+
+#[test]
+fn destination_may_be_any_configured_root_or_descendant() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    let child = second.join("child");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&child).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+
+    let roots = [first.as_path(), second.as_path()];
+    assert!(directory_is_within_any(&child, &roots).unwrap());
+    assert!(!directory_is_within_any(&outside, &roots).unwrap());
+    assert!(!directory_is_within_any(&outside, &[]).unwrap());
 }

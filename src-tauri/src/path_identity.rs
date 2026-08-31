@@ -25,3 +25,12 @@ pub fn directory_is_within(candidate: &Path, root: &Path) -> Result<bool, String
     }
     Ok(false)
 }
+
+pub fn directory_is_within_any(candidate: &Path, roots: &[&Path]) -> Result<bool, String> {
+    for root in roots {
+        if directory_is_within(candidate, root)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}

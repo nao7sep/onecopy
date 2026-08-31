@@ -454,6 +454,25 @@ pub(crate) fn move_items_out(
             let config = crate::storage::read_config_for_setup(&data_root)?;
             let settings = crate::scanner::settings_from_config(config.as_ref(), &data_root, 0);
             let destination = std::path::Path::new(&dest_dir);
+            let destination_roots = config
+                .as_ref()
+                .and_then(|value| value.get("destinationRoots"))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(std::path::Path::new)
+                .collect::<Vec<_>>();
+            if destination_roots.is_empty()
+                || !crate::path_identity::directory_is_within_any(
+                    destination,
+                    &destination_roots,
+                )?
+            {
+                return Err(format!(
+                    "destination {dest_dir} is not a configured destination root or one of its folders"
+                ));
+            }
             for source in &settings.source_dirs {
                 if crate::path_identity::directory_is_within(
                     destination,

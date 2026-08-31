@@ -13,7 +13,6 @@ import {
   confirmDestinationDeleteRest,
   moveSelectionTo,
   removeDestinationRoot,
-  type MoveMode,
 } from "../workflows/destinations";
 import type { PendingDestinationDrop } from "../models/destinationTransfer";
 import { useDestinationReceiver } from "./DestinationDragProvider";
@@ -29,18 +28,6 @@ import Button from "./ui/Button";
 // full path as a second muted line; every other row is single-line,
 // full-width. Move/copy work on ANY row — a root (the developer sorts the
 // rest by hand) or a subfolder, recursively discovered.
-
-type MoveModifiers = Pick<
-  KeyboardEvent,
-  "altKey" | "ctrlKey" | "metaKey" | "shiftKey"
->;
-
-export function keyboardMoveMode(event: MoveModifiers): MoveMode | null {
-  if (event.altKey && (event.metaKey || event.ctrlKey)) return null;
-  if (event.metaKey || event.ctrlKey) return "copy";
-  if (event.shiftKey) return "move-delete-rest";
-  return "move-trash-rest";
-}
 
 /** Expandability from the LIVE children map first, the listing's flag second.
  * The listing's `hasChildren` is a snapshot taken when the PARENT was listed
@@ -92,20 +79,28 @@ function DirNode({
       <div
         ref={receiver.ref}
         data-tree-path={entry.path}
-        className={`flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
+        className={`flex items-center px-1.5 py-1 text-sm transition-colors ${
           receiver.isDropTarget
-            ? "bg-primary-surface ring-2 ring-primary"
+            ? "bg-primary-surface ring-2 ring-inset ring-primary"
             : isActive
-              ? "bg-primary-surface ring-1 ring-primary-ring"
+              ? "bg-primary-surface ring-1 ring-inset ring-primary-ring"
               : "hover:bg-surface-muted"
         }`}
         style={{ paddingLeft: `${depth * 12}px` }}
         onClick={() => setActive(entry.path)}
+        onDoubleClick={() => {
+          setActive(entry.path);
+          if (hasChildren) void toggleExpand(entry.path);
+        }}
       >
         <button
           tabIndex={-1}
           className="w-4 shrink-0 text-ink-muted"
-          onClick={() => void toggleExpand(entry.path)}
+          onClick={(event) => {
+            event.stopPropagation();
+            void toggleExpand(entry.path);
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
           title={hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
         >
           {hasChildren ? (isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />) : "\u00b7"}
@@ -168,19 +163,27 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
       <div
         ref={receiver.ref}
         data-tree-path={root}
-        className={`flex items-start rounded-md px-1.5 py-1 text-sm transition-colors ${
+        className={`flex items-start px-1.5 py-1 text-sm transition-colors ${
           receiver.isDropTarget
-            ? "bg-primary-surface ring-2 ring-primary"
+            ? "bg-primary-surface ring-2 ring-inset ring-primary"
             : isActive
-              ? "bg-primary-surface ring-1 ring-primary-ring"
+              ? "bg-primary-surface ring-1 ring-inset ring-primary-ring"
               : "hover:bg-surface-muted"
         }`}
         onClick={() => setActive(root)}
+        onDoubleClick={() => {
+          setActive(root);
+          void toggleExpand(root);
+        }}
       >
         <button
           tabIndex={-1}
           className="w-4 shrink-0 pt-0.5 text-ink-muted"
-          onClick={() => void toggleExpand(root)}
+          onClick={(event) => {
+            event.stopPropagation();
+            void toggleExpand(root);
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
         >
           {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </button>
@@ -269,22 +272,24 @@ function ActionBar() {
       <div className="flex flex-wrap items-center gap-1">
         <button
           className={`${button} text-primary hover:bg-primary-surface`}
-          title="Move the selection here; its other copies go to trash (Enter). Shift: delete them permanently."
-          onClick={(e) =>
-            void moveSelectionTo(
-              activePath,
-              e.shiftKey ? "move-delete-rest" : "move-trash-rest",
-            )
-          }
+          title="Move the selection here; its other copies go to trash"
+          onClick={() => void moveSelectionTo(activePath, "move-trash-rest")}
         >
           Move here
         </button>
         <button
           className={`${button} text-ink hover:bg-surface-muted`}
-          title="Copy the selection here; nothing else is touched (Cmd/Ctrl+Enter)"
+          title="Copy the selection here; nothing else is touched"
           onClick={() => void moveSelectionTo(activePath, "copy")}
         >
           Copy here
+        </button>
+        <button
+          className={`${button} text-danger hover:bg-danger-surface`}
+          title="Move the selection here and permanently delete its other copies"
+          onClick={() => void moveSelectionTo(activePath, "move-delete-rest")}
+        >
+          Move here, delete rest…
         </button>
         {creating ? (
           <input
@@ -370,8 +375,8 @@ export default function DestinationsTab() {
 
   // One composite tree (the conventions' sibling pattern): the container is
   // the single tab stop, Up/Down move across visible rows, Right expands or
-  // enters, Left collapses or exits to the parent, Enter moves the grid
-  // selection here (Shift = delete-rest, Cmd/Ctrl = copy).
+  // enters, Left collapses or exits to the parent, and Enter toggles the
+  // active folder. File operations remain explicit action-bar commands.
   const onKeyDown = (event: React.KeyboardEvent) => {
     const rows = visibleRows(roots, children, expanded);
     if (rows.length === 0) return;
@@ -421,11 +426,9 @@ export default function DestinationsTab() {
         activate(row.parent);
       }
     } else if (event.key === "Enter" && row) {
-      const mode = keyboardMoveMode(event.nativeEvent);
-      if (mode === null) return;
       event.preventDefault();
       event.stopPropagation();
-      void moveSelectionTo(row.path, mode);
+      if (row.hasChildren) void toggleExpand(row.path);
     }
   };
 

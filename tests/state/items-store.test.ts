@@ -421,7 +421,7 @@ describe("deleteSelected", () => {
     expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
 
-  it("falls back to the most recently selected item when the anchor toggles off", async () => {
+  it("falls back to the next selected item in display order, then the previous", async () => {
     const items = [
       item({ pathId: 1 }),
       item({ pathId: 2 }),
@@ -431,20 +431,30 @@ describe("deleteSelected", () => {
     seed(items);
     mockCommand("get_section_items", () => items);
 
-    // Click h2, ctrl-click h3, ctrl-click h4, then take h4 back. The anchor
-    // must land on h3 — the most recently selected REMAINING item — so the
-    // user always sees which photo a multi-select is "on". It previously went
-    // null, leaving the preview and metadata pane pointing at nothing while
-    // two photos were still selected.
+    // Removing a middle anchor prefers the next selected row even when it was
+    // selected earlier than the previous row.
     useItemsStore.getState().selectItem("h2");
+    useItemsStore.getState().toggleItem("h4");
     useItemsStore.getState().toggleItem("h3");
-    useItemsStore.getState().toggleItem("h4");
-    useItemsStore.getState().toggleItem("h4");
-    expect(useItemsStore.getState().selectedItem).toBe("h3");
+    useItemsStore.getState().toggleItem("h3");
+    expect(useItemsStore.getState().selectedItem).toBe("h4");
 
-    // And taking h3 back too steps to the one before it.
-    useItemsStore.getState().toggleItem("h3");
+    // Removing the last selected row falls back to the previous survivor.
+    useItemsStore.getState().toggleItem("h4");
     expect(useItemsStore.getState().selectedItem).toBe("h2");
+  });
+
+  it("keeps the anchor when a different selected item is removed", () => {
+    const items = [item({ pathId: 1 }), item({ pathId: 2 }), item({ pathId: 3 })];
+    seed(items);
+
+    useItemsStore.getState().selectItem("h1");
+    useItemsStore.getState().toggleItem("h2");
+    useItemsStore.getState().toggleItem("h3");
+    useItemsStore.getState().toggleItem("h1");
+
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2", "h3"]);
   });
 
   it("deletes every selected item and nothing else", async () => {
