@@ -51,6 +51,10 @@ fn projection() -> queries::ItemProjectionContext {
     }
 }
 
+fn sort(order: queries::SectionSortOrder, desc: bool) -> queries::SectionSort {
+    queries::SectionSort { order, desc }
+}
+
 /// One image content row with a live path in January 2026 UTC.
 fn seed_image(conn: &Connection, hash: &str, derived_at: Option<&str>, name: &str) {
     conn.execute(
@@ -73,6 +77,162 @@ fn seed_image(conn: &Connection, hash: &str, derived_at: Option<&str>, name: &st
         ],
     )
     .unwrap();
+}
+
+#[test]
+fn section_window_returns_only_the_requested_ordered_rows() {
+    let conn = db();
+    for (index, name) in ["delta.jpg", "alpha.jpg", "charlie.jpg", "bravo.jpg"]
+        .into_iter()
+        .enumerate()
+    {
+        seed_image(&conn, &format!("h{index}"), Some("ready"), name);
+        conn.execute(
+            "UPDATE contents SET byte_size = ?2, width = ?3, height = ?4 WHERE hash = ?1",
+            params![
+                format!("h{index}"),
+                100 + index as i64,
+                100 + index as i64,
+                10
+            ],
+        )
+        .unwrap();
+    }
+
+    let window = queries::section_window(
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        1,
+        2,
+        projection(),
+    )
+    .unwrap();
+
+    assert_eq!(window.total, 4);
+    assert_eq!(window.start, 1);
+    assert_eq!(
+        window
+            .items
+            .iter()
+            .map(|item| item.file_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["bravo.jpg", "charlie.jpg"]
+    );
+}
+
+#[test]
+fn section_window_rejects_unbounded_requests() {
+    let conn = db();
+    for limit in [0, queries::MAX_SECTION_WINDOW_ITEMS + 1] {
+        let error = queries::section_window(
+            &conn,
+            "image",
+            "undated",
+            Tz::UTC,
+            sort(queries::SectionSortOrder::Time, false),
+            0,
+            limit,
+            projection(),
+        )
+        .unwrap_err();
+        assert!(error.contains("section window limit"));
+    }
+}
+
+#[test]
+fn section_window_orders_descending_primary_keys_without_reversing_ties() {
+    let conn = db();
+    for (hash, name, time) in [
+        ("big-late", "z.jpg", 1_767_225_603_000i64),
+        ("big-early", "a.jpg", 1_767_225_601_000i64),
+        ("small", "m.jpg", 1_767_225_602_000i64),
+    ] {
+        seed_image(&conn, hash, Some("ready"), name);
+        conn.execute(
+            "UPDATE contents SET width = CASE WHEN hash = 'small' THEN 10 ELSE 100 END, \
+                                 height = 10 WHERE hash = ?1",
+            [hash],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE paths SET resolved_utc_ms = ?2 WHERE content_hash = ?1",
+            params![hash, time],
+        )
+        .unwrap();
+    }
+
+    let window = queries::section_window(
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Resolution, true),
+        0,
+        3,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(
+        window
+            .items
+            .iter()
+            .map(|item| item.hash.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["big-early", "big-late", "small"]
+    );
+}
+
+#[test]
+fn other_section_window_combines_hashed_and_unhashed_items() {
+    let conn = db();
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('audio', 20, 'audio')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths \
+         (abs_path, dir_path, file_name, stem, ext, kind, size, content_hash, \
+          resolved_utc_ms, resolved_source) \
+         VALUES ('/root/voice.wav', '/root', 'voice.wav', 'voice', 'wav', 'audio', 20, \
+                 'audio', 1767225600000, 'metadata')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths \
+         (abs_path, dir_path, file_name, stem, ext, kind, size, resolved_utc_ms, resolved_source) \
+         VALUES ('/root/note.txt', '/root', 'note.txt', 'note', 'txt', 'other', 10, \
+                 1767225600000, 'filesystem')",
+        [],
+    )
+    .unwrap();
+
+    let window = queries::section_window(
+        &conn,
+        "other",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        0,
+        10,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(window.total, 2);
+    assert_eq!(
+        window
+            .items
+            .iter()
+            .map(|item| item.file_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["note.txt", "voice.wav"]
+    );
+    assert_eq!(window.items[0].hash, None);
+    assert_eq!(window.items[1].hash.as_deref(), Some("audio"));
 }
 
 #[test]

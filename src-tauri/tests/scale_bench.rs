@@ -86,6 +86,64 @@ fn six_item_section_in_a_million_row_index() {
 
 #[test]
 #[ignore]
+fn bounded_window_of_one_million_active_undated_items() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-active-section-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, stem, ext, kind, missing)
+         SELECT n + 1, printf('/undated/%07d.jpg', n), '/undated',
+                printf('%07d.jpg', n), printf('%07d', n), 'jpg', 'image', 1
+         FROM seq;
+         WITH RECURSIVE seq(n) AS (
+           VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO contents (hash, byte_size, kind, width, height)
+         SELECT printf('active-%07d', n), n + 1, 'image', 4000, 3000 FROM seq;
+         INSERT INTO logical_contents
+           (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
+            live_copy_count)
+         SELECT hash, 'image', 'undated', NULL,
+                CAST(substr(hash, 8) AS INTEGER) + 1, 1
+         FROM contents;
+         COMMIT;",
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let window = queries::section_window(
+        &conn,
+        "image",
+        "undated",
+        chrono_tz::UTC,
+        queries::SectionSort {
+            order: queries::SectionSortOrder::Name,
+            desc: false,
+        },
+        500_000,
+        256,
+        item_projection(),
+    )
+    .unwrap();
+    eprintln!(
+        "opened 256 rows in a million-item active section in {:?}",
+        started.elapsed()
+    );
+    assert_eq!(window.total, 1_000_000);
+    assert_eq!(window.start, 500_000);
+    assert_eq!(window.items.len(), 256);
+    assert_eq!(window.items[0].file_name, "0500000.jpg");
+}
+
+#[test]
+#[ignore]
 fn section_counts_across_one_million_logical_items() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-bench-section-counts-")

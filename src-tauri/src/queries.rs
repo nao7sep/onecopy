@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use chrono::{Datelike, TimeZone};
 use chrono_tz::Tz;
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Debug, PartialEq, Eq, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -283,6 +283,356 @@ pub struct ItemProjectionContext {
     pub similarity_dirty: bool,
 }
 
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum SectionSortOrder {
+    Time,
+    Name,
+    Size,
+    Resolution,
+    Ext,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionSort {
+    pub order: SectionSortOrder,
+    pub desc: bool,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionWindow {
+    pub total: u64,
+    pub start: u64,
+    pub items: Vec<SectionItem>,
+}
+
+pub const MAX_SECTION_WINDOW_ITEMS: u32 = 512;
+
+#[derive(Debug)]
+struct SectionIdentity {
+    hash: Option<String>,
+    path_id: i64,
+}
+
+/// A bounded ordered window into one section. SQLite owns ordering and may
+/// spill a large non-index sort to its temp store; the webview never receives
+/// or retains rows outside the requested window.
+pub fn section_window(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+    sort: SectionSort,
+    start: u64,
+    limit: u32,
+    projection: ItemProjectionContext,
+) -> Result<SectionWindow, String> {
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+            .map_err(|error| error.to_string())?;
+    let window = section_window_snapshot(
+        &transaction,
+        kind,
+        month,
+        display_tz,
+        sort,
+        start,
+        limit,
+        projection,
+    )?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(window)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn section_window_snapshot(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    display_tz: Tz,
+    sort: SectionSort,
+    start: u64,
+    limit: u32,
+    projection: ItemProjectionContext,
+) -> Result<SectionWindow, String> {
+    if !matches!(kind, "image" | "video" | "other") {
+        return Err(format!("bad section kind: {kind}"));
+    }
+    if !(1..=MAX_SECTION_WINDOW_ITEMS).contains(&limit) {
+        return Err(format!(
+            "section window limit must be between 1 and {MAX_SECTION_WINDOW_ITEMS}"
+        ));
+    }
+    let bounds = month_bounds(month, display_tz)?;
+    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
+    let base_params = section_candidate_params(kind, bounds);
+    let total_sql = format!("WITH candidates AS ({candidates}) SELECT COUNT(*) FROM candidates");
+    let total = conn
+        .query_row(
+            &total_sql,
+            rusqlite::params_from_iter(base_params.iter()),
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())?
+        .max(0) as u64;
+    let start = start.min(total);
+    if start == total {
+        return Ok(SectionWindow {
+            total,
+            start,
+            items: Vec::new(),
+        });
+    }
+
+    let mut page_params = base_params;
+    page_params.push((limit as i64).into());
+    page_params.push((start.min(i64::MAX as u64) as i64).into());
+    let page_sql = format!(
+        "WITH candidates AS ({candidates}) \
+         SELECT hash, path_id FROM candidates ORDER BY {} LIMIT ?{} OFFSET ?{}",
+        section_order_sql(sort),
+        page_params.len() - 1,
+        page_params.len(),
+    );
+    let mut statement = conn.prepare(&page_sql).map_err(|error| error.to_string())?;
+    let identities = statement
+        .query_map(rusqlite::params_from_iter(page_params.iter()), |row| {
+            Ok(SectionIdentity {
+                hash: row.get(0)?,
+                path_id: row.get(1)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+
+    Ok(SectionWindow {
+        total,
+        start,
+        items: section_items_by_identity(conn, &identities, projection)?,
+    })
+}
+
+fn section_candidate_params(kind: &str, bounds: Option<(i64, i64)>) -> Vec<rusqlite::types::Value> {
+    let mut values = vec![kind.to_string().into()];
+    if let Some((start, end)) = bounds {
+        values.push(start.into());
+        values.push(end.into());
+    }
+    values
+}
+
+fn section_candidates_sql(include_unhashed_other: bool, has_bounds: bool) -> String {
+    let logical_time = if has_bounds {
+        "l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
+    } else {
+        "l.resolved_utc_ms IS NULL"
+    };
+    let mut sql = format!(
+        "SELECT c.hash AS hash, l.representative_path_id AS path_id, \
+                rp.file_name AS file_name, l.resolved_utc_ms AS resolved_utc_ms, \
+                c.byte_size AS byte_size, c.width AS width, c.height AS height, \
+                lower(rp.ext) AS extension \
+         FROM logical_contents l \
+         JOIN contents c ON c.hash = l.content_hash \
+         JOIN paths rp ON rp.id = l.representative_path_id \
+         WHERE l.kind = ?1 AND {logical_time}"
+    );
+    if include_unhashed_other {
+        let other_time = if has_bounds {
+            "p.resolved_utc_ms >= ?2 AND p.resolved_utc_ms < ?3"
+        } else {
+            "p.resolved_utc_ms IS NULL"
+        };
+        sql.push_str(&format!(
+            " UNION ALL \
+             SELECT NULL, p.id, p.file_name, p.resolved_utc_ms, p.size, \
+                    NULL, NULL, lower(p.ext) \
+             FROM paths p \
+             WHERE p.missing = 0 AND p.companion_of IS NULL \
+               AND p.content_hash IS NULL AND p.kind NOT IN ('image', 'video') \
+               AND {other_time}"
+        ));
+    }
+    sql
+}
+
+fn section_order_sql(sort: SectionSort) -> String {
+    let direction = if sort.desc { "DESC" } else { "ASC" };
+    let null_direction = if sort.desc { "DESC" } else { "ASC" };
+    let time = "resolved_utc_ms IS NULL ASC, resolved_utc_ms ASC";
+    let name = "file_name COLLATE onecopy_nocase ASC";
+    let primary = match sort.order {
+        SectionSortOrder::Time => {
+            format!("resolved_utc_ms IS NULL {null_direction}, resolved_utc_ms {direction}")
+        }
+        SectionSortOrder::Name => format!("file_name COLLATE onecopy_nocase {direction}"),
+        SectionSortOrder::Size => format!("COALESCE(byte_size, -1) {direction}"),
+        SectionSortOrder::Resolution => {
+            format!("(COALESCE(width, 0) * COALESCE(height, 0)) {direction}")
+        }
+        SectionSortOrder::Ext => format!("COALESCE(extension, '') {direction}"),
+    };
+    let chain = match sort.order {
+        SectionSortOrder::Time => name.to_string(),
+        SectionSortOrder::Name => time.to_string(),
+        SectionSortOrder::Size | SectionSortOrder::Resolution => format!("{time}, {name}"),
+        SectionSortOrder::Ext => name.to_string(),
+    };
+    format!("{primary}, {chain}, path_id ASC")
+}
+
+fn identity_key(hash: Option<&str>, path_id: i64) -> String {
+    hash.map_or_else(|| format!("path-{path_id}"), str::to_owned)
+}
+
+fn section_items_by_identity(
+    conn: &Connection,
+    identities: &[SectionIdentity],
+    projection: ItemProjectionContext,
+) -> Result<Vec<SectionItem>, String> {
+    let hashes: Vec<&str> = identities
+        .iter()
+        .filter_map(|identity| identity.hash.as_deref())
+        .collect();
+    let path_ids: Vec<i64> = identities
+        .iter()
+        .filter(|identity| identity.hash.is_none())
+        .map(|identity| identity.path_id)
+        .collect();
+    let mut items = HashMap::with_capacity(identities.len());
+
+    if !hashes.is_empty() {
+        let placeholders = std::iter::repeat_n("?", hashes.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "{} WHERE c.hash IN ({placeholders})",
+            hashed_section_select()
+        );
+        let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let hashed = statement
+            .query_map(rusqlite::params_from_iter(hashes.iter()), |row| {
+                section_item_from_row(row, projection)
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+        drop(statement);
+        let dirs = hashed_dirs_for_hashes(conn, &hashes)?;
+        for mut item in hashed {
+            if let Some(hash) = item.hash.clone() {
+                item.dir_paths = dirs.get(&hash).cloned().unwrap_or_default();
+                items.insert(hash, item);
+            }
+        }
+    }
+
+    if !path_ids.is_empty() {
+        let placeholders = std::iter::repeat_n("?", path_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, file_name, resolved_utc_ms, size, dir_path FROM paths \
+             WHERE id IN ({placeholders}) AND missing = 0 AND companion_of IS NULL \
+               AND content_hash IS NULL AND kind NOT IN ('image', 'video')"
+        );
+        let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(path_ids.iter()), |row| {
+                unhashed_other_item_from_row(row, projection)
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+        for item in rows {
+            items.insert(identity_key(None, item.path_id), item);
+        }
+    }
+
+    identities
+        .iter()
+        .map(|identity| {
+            items
+                .remove(&identity_key(identity.hash.as_deref(), identity.path_id))
+                .ok_or_else(|| "section item disappeared while its window was loading".to_string())
+        })
+        .collect()
+}
+
+fn hashed_dirs_for_hashes(
+    conn: &Connection,
+    hashes: &[&str],
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let placeholders = std::iter::repeat_n("?", hashes.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT DISTINCT content_hash, dir_path FROM paths \
+         WHERE content_hash IN ({placeholders}) AND missing = 0 \
+           AND companion_of IS NULL ORDER BY content_hash, dir_path"
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            rusqlite::params_from_iter(hashes.iter()),
+            section_dir_from_row,
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    let mut by_hash: HashMap<String, Vec<String>> = HashMap::new();
+    for (hash, dir) in rows {
+        by_hash
+            .entry(hash)
+            .or_default()
+            .push(crate::winpath::for_display(&dir).into_owned());
+    }
+    Ok(by_hash)
+}
+
+fn unhashed_other_item_from_row(
+    row: &rusqlite::Row<'_>,
+    projection: ItemProjectionContext,
+) -> rusqlite::Result<SectionItem> {
+    let dir: String = row.get(4)?;
+    Ok(SectionItem {
+        hash: None,
+        path_id: row.get(0)?,
+        file_name: row.get(1)?,
+        resolved_utc_ms: row.get(2)?,
+        copy_count: 1,
+        width: None,
+        height: None,
+        has_thumb: false,
+        similar_group_id: None,
+        sharpness: None,
+        face_score: None,
+        byte_size: row.get(3)?,
+        has_companions: false,
+        duration_ms: None,
+        dir_paths: vec![crate::winpath::for_display(&dir).into_owned()],
+        derived_work: crate::derived_state::item_work_states(
+            crate::derived_state::ItemWorkFacts {
+                kind: "other",
+                derived_at: None,
+                derived_version: 0,
+                strip_frames: None,
+                duration_ms: None,
+                similar_group_id: None,
+                face_state: None,
+                face_score: None,
+                transcript_state: None,
+            },
+            projection.capabilities,
+            projection.similarity_dirty,
+        ),
+    })
+}
+
 /// Items of one (kind, month) section, oldest first; `month` is the same key
 /// `section_counts` emits (`"2016-03"` or `"undated"`), bucketed under the
 /// same display timezone so the two always agree.
@@ -504,49 +854,16 @@ fn unhashed_other_items(
          ORDER BY resolved_utc_ms, id"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let map = |row: &rusqlite::Row<'_>| {
-        let dir: String = row.get(4)?;
-        Ok(SectionItem {
-            hash: None,
-            path_id: row.get(0)?,
-            file_name: row.get(1)?,
-            resolved_utc_ms: row.get(2)?,
-            copy_count: 1,
-            width: None,
-            height: None,
-            has_thumb: false,
-            similar_group_id: None,
-            sharpness: None,
-            face_score: None,
-            byte_size: row.get(3)?,
-            has_companions: false,
-            duration_ms: None,
-            dir_paths: vec![crate::winpath::for_display(&dir).into_owned()],
-            derived_work: crate::derived_state::item_work_states(
-                crate::derived_state::ItemWorkFacts {
-                    kind: "other",
-                    derived_at: None,
-                    derived_version: 0,
-                    strip_frames: None,
-                    duration_ms: None,
-                    similar_group_id: None,
-                    face_state: None,
-                    face_score: None,
-                    transcript_state: None,
-                },
-                projection.capabilities,
-                projection.similarity_dirty,
-            ),
-        })
-    };
     let rows = match bounds {
         Some((start, end)) => stmt
-            .query_map(rusqlite::params![start, end], map)
+            .query_map(rusqlite::params![start, end], |row| {
+                unhashed_other_item_from_row(row, projection)
+            })
             .map_err(|e| e.to_string())?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?,
         None => stmt
-            .query_map([], map)
+            .query_map([], |row| unhashed_other_item_from_row(row, projection))
             .map_err(|e| e.to_string())?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?,
