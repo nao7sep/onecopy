@@ -30,14 +30,16 @@ OneCopy uses three distinct interruption levels:
 
 Notifications belong to the main application frame rather than a transient viewer. Closing Quick View or switching between Quick View and fullscreen does not dismiss or lose a persistent notification. Notifications do not intercept the viewer's navigation or exit commands.
 
-Every warning or error notification is recorded immediately in Issues. A broad operation such as a source check may present one summary notification while retaining the individual affected paths and explanations in its Issue details.
+An expected unsupported format or unavailable richer preview remains truthful inside the affected content surface and does not become an Active Issue merely because OneCopy has no suitable decoder. A failed user-requested action is recorded in Recent notification history. A condition that remains unresolved and requires permission, repair, retry, a tool, or another user action appears in Active. One failed action may therefore enter Recent while its unresolved cause remains in Active.
+
+Every warning or error notification is recorded immediately in Recent. A broad operation such as a source check may present one summary notification while retaining the individual affected paths and explanations in its Active details when the condition still needs attention.
 
 ## Issues
 
 The Issues surface has two distinct views:
 
-- `Active` contains unresolved conditions that need attention, retry, repair, or dismissal.
-- `Recent` contains the history of timed and persistent notifications across ordinary restarts.
+- `Active` contains unresolved conditions that need attention, retry, repair, permission, a required tool, or dismissal.
+- `Recent` contains failed requested actions and the history of timed and persistent notifications across ordinary restarts.
 
 Repeated background failures are combined with a count. Issue presentation must remain useful when many files fail; it summarizes the condition without hiding access to the affected files and technical context.
 

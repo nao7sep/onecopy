@@ -23,12 +23,12 @@
 - Video and audio are separate presentation bodies with separate policy. They may share source loading, play/pause, seek, position, volume, app-wide Sound, handoff, error, and safe-release primitives without becoming modes of one universal player.
 - `Video autoplay`, `Audio autoplay`, and app-wide `Sound` are independent settings, all default on, and are directly available in Main as well as Settings.
 - Autoplay applies only when a genuinely new media item is shown. Changing it does not alter current playback. Rapid navigation cancels automatic starts for abandoned items.
-- App-wide Sound applies immediately to every OneCopy-owned player without changing position or playing state. One remembered volume value is shared; Sound off silences playback and Sound on restores that value.
+- App-wide Sound applies immediately to every OneCopy-owned player without changing position or playing state. One remembered nonzero volume value is shared; Sound off silences playback without replacing it, and Sound on restores it.
 - Only one OneCopy surface owns playback at a time. Moving the same logical media item among Preview pane, Preview window, Quick View, and fullscreen preserves the latest position as closely as the media permits together with playing/paused state, without restart, duplicate sound, or autoplay reapplication.
 - Persistent Preview remains open but suspended while the transient viewer owns the same session. Returning transfers the latest state back when Preview remains open; otherwise the session ends.
 - Moving to another logical item ends the prior session. Returning later starts at the beginning and reapplies that medium's autoplay setting. OneCopy keeps no durable playback-position history per item.
 - Natural completion stops at the end without looping, restarting, selecting another library item, or playlist-style advance.
-- Before a file operation or external delegation, OneCopy pauses and releases its own media readers. A failed file operation may restore the same surviving item's prior live position and playing state; a successful operation follows ordinary selection and sequence recovery.
+- Before a file operation or external delegation, OneCopy pauses and releases its own media readers. A failed file operation restores the same surviving item's prior live position and playing state when possible and reports restoration failure otherwise; a successful operation follows ordinary selection and sequence recovery.
 
 ## Video body
 
@@ -50,13 +50,13 @@
 
 - Text preview is built in and cannot be disabled. The configurable whole-file eligibility limit defaults to 2 MiB and remains positive. A larger file shows attributes and the reason without partial preview or Load more.
 - Automatic decoding checks a Unicode marker, exact UTF-8 validity, strong binary evidence, a maintained encoding detector, then the configured fallback, which defaults to UTF-8.
-- The encoding picker begins with Automatic and exposes every canonical decoder the current runtime can reliably support. Aliases aid search without creating duplicate choices. A manual choice re-decodes immediately and follows that byte-identical content among Preview and transient presentations for the current app session.
+- The encoding picker begins with Automatic and exposes every canonical decoder the current runtime can reliably support. Aliases aid search without creating duplicate choices. Automatic identifies whether it used a Unicode marker, exact UTF-8, detected encoding, or the configured fallback. A manual choice re-decodes immediately and follows that byte-identical content among Preview and transient presentations for the current app session.
 - UTF-32LE and UTF-32BE are available for explicit selection and are chosen automatically only when a Unicode marker makes the result certain.
 - Text renders as inert read-only selectable plain text, preserves line breaks, and never executes markup. Syntax highlighting, editing, saving, and permanent per-file encoding records are outside this lifecycle.
 - Wrap is on by default and shared across Preview and transient presentations. Turning it off permits horizontal scrolling.
-- A focused text body owns selection, copy, and document scrolling. In a mixed transient sequence, Left/Right still changes files; horizontal document movement uses its scrollbar or horizontal gesture.
+- A focused text body supports pointer selection, word selection, Select All, Copy, and document scrolling. Delete and Backspace retain the owning view's file meaning because the text is read-only; only a genuinely editable control consumes them for editing. In a mixed transient sequence, Left/Right still changes files; horizontal document movement uses its scrollbar or horizontal gesture.
 - Leaving the item discards text selection and scroll while preserving its session encoding choice. Watcher-confirmed content change reloads bounded bytes and discards stale text state.
-- Decode failure explains the problem and preserves useful alternative encodings. Content that is not convincingly textual falls back to attributes.
+- Invalid byte sequences under a selected fallback render replacement characters rather than crashing or silently discarding bytes. Decode failure explains the problem and preserves useful alternative encodings. Content that is not convincingly textual falls back to attributes.
 
 ## Attributes body
 
@@ -67,7 +67,7 @@
 
 ## Transcript presentation
 
-- Supported video and audio may show the transcript supplied for their current logical content identity. Changed bytes never display an old transcript as current; generation and cache ownership belong to `library-maintenance.md`.
+- Supported video and audio may show the transcript supplied for their current logical content identity. Changed bytes never display an old transcript as current. Generation, cancellation, replacement publication, and cache ownership belong to `library-maintenance.md`; this contract owns only the rendered transcript state and controls.
 - Transcript text is read-only, selectable, copyable, and divided into timestamped segments. It appears as a subordinate collapsible panel and never obscures essential controls or makes video unusably small.
 - Video and audio remember transcript open/collapsed state independently. Preview placement and transient-presentation switches retain panel state, scroll, and text selection for the same live media session. Restart persistence of that preference is not specified.
 - Pending, queued, running, paused, disabled, failed, and replacement states are explicit. Incomplete generated words are never presented as a completed transcript.

@@ -19,7 +19,7 @@
 ## Preview focus and commands
 
 - The pane never becomes a second item-navigation context. Main continues to own selection and command position.
-- When the separate Preview window is focused and no native or body-specific interactive control owns input, it forwards Arrow, Page, Home, End, Shift-range, content-specific Enter, Delete/Backspace, and confirmed permanent-deletion commands to Main.
+- When the separate Preview window is focused and no native or body-specific interactive control owns input, it forwards Arrow, Page, Home, End, Shift-range, content-specific Enter, Delete/Backspace, and confirmed permanent-deletion commands to Main. Read-only text selection and document scrolling remain local to the body; Main resumes command ownership when that body does not consume the key.
 - Space has no separate Preview-window action. Escape closes the ordinary Preview window. `F` invokes the app-level transient viewer in true fullscreen using Main's selection and anchor.
 - Ordinary and double-click have no Preview-level image action. Video picture click and media controls retain the content actions defined by `content-presentation.md`.
 - Delete/Backspace in persistent Preview Trashes Main's complete selection for every read-only image, video, audio, text, or attributes body. Confirmed permanent deletion has the same scope. Only a genuinely editable control consumes deletion keys for editing.
@@ -52,7 +52,8 @@
 
 - While Quick View or fullscreen is active, it owns app commands so the hidden Main grid and sidebar cannot react.
 - Image and video sequences use Left/Right and Page Up/Page Down for previous and next, Home/End for bounds, and do not wrap. Up/Down has no fitted-media viewer action.
-- Mixed Other-file sequences always use Left/Right for previous and next. Focused text or attributes bodies use vertical keys for their document; audio has no viewer-level Up/Down behavior outside real controls.
+- Mixed Other-file sequences always use Left/Right for previous and next. Audio uses Page Up and Page Down for previous and next plus Home and End for sequence bounds; Up and Down remain available to real controls. Focused text or attributes bodies use Up/Down, Page Up/Page Down, and Home/End for their document rather than sequence navigation.
+- Real media controls retain suitable Enter and Arrow accessibility. Space, `F`, and Escape remain transient-viewer commands rather than becoming media-control shortcuts.
 - Wheel or trackpad scrolling over a fitted image does not navigate the transient sequence.
 - The transient presentation shows the current filename, sequence position, visible previous/next controls, and Close through lightweight chrome that does not permanently reserve a thick frame.
 - Closing returns focus to Main with the current anchor visible.

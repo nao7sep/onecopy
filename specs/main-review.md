@@ -8,7 +8,9 @@ Main is the library workspace for choosing a section, maintaining a visible sele
 
 The selection is the set a Main operation targets. The anchor is the last deliberately selected or navigated item, the subject followed by Details and persistent Preview, the starting item supplied to a viewer, and the resumable work position.
 
-Ordinary click exclusively selects an item. Clicking the sole selected item leaves it selected. Cmd/Ctrl-click toggles one item without disturbing the others. Shift-click and Shift-modified navigation form or adjust a continuous displayed range from a stable range origin. Navigation without Shift exclusively selects its destination. Clicking empty item-area space clears both selection and anchor.
+Ordinary click exclusively selects an item. Clicking the sole selected item leaves it selected. Cmd/Ctrl-click toggles one item without disturbing the others. Shift-click and Shift-modified navigation form or adjust a continuous displayed range from a stable range origin on top of the selection that existed when that range began. Deliberate Cmd/Ctrl selections outside the changing range survive as the range grows, shrinks, or reverses. Navigation without Shift exclusively selects its destination. Clicking empty item-area space clears both selection and anchor.
+
+Cmd/Ctrl-removing the anchor chooses the next selected item in displayed order, then the previous selected item, then no anchor when the selection is empty. The result is kept visible.
 
 Dragging an unselected item exclusively selects and drags it. Crossing the drag threshold from a selected member drags the complete selection. Releasing before a drag begins remains an ordinary click and collapses the selection normally.
 
@@ -43,6 +45,8 @@ Double-click exclusively selects the clicked item and then requests Quick View. 
 Delete and Backspace request recoverable deletion of the complete Main selection. Shift+Delete requests permanent deletion of the complete Main selection through its confirmation path.
 
 The resting pointer over an item is the normal clickable pointer. A drag pointer appears only after dragging begins. Click-and-hold inspection is not available on Main thumbnails or rows because the gesture belongs to dragging there.
+
+In image and video tile grids, Arrow keys move spatially, Page Up and Page Down move by approximately one visible page, and Home and End reach the displayed bounds. Navigation clamps and does not wrap. Without Shift it exclusively selects the destination; with Shift it adjusts the common range while preserving deliberate selections outside that range.
 
 ## Images
 
@@ -80,4 +84,8 @@ Facts, similar-item thumbnails, scene thumbnails, transcript status, and actions
 
 Destination entries are flat, full-width list rows. Selected destinations use a contained full-row fill. Drag hover adds a stronger full-row fill and an inset outline that remains above neighboring rows and cannot be clipped by them. Ordinary child rows form a continuous list; deliberate spacing may separate root groups.
 
-Destination admission and file-operation effects are governed by the file-operation contract.
+Ordinary click selects one destination. Up and Down navigate visible folders; Left and Right collapse or expand the tree conventionally. A disclosure control, Enter, and double-click expand or collapse only and never begin a file operation.
+
+Explicit `Copy here`, `Move here`, and confirmed permanent-Move controls begin their named operations. Dropping a Main item freezes the complete current Main selection and asks whether to Copy or Move before any filesystem work. The active destination and expanded folders are remembered only for the current app run.
+
+A selected descendant reached beneath a configured destination root is an eligible receiver without being configured separately. Destination admission and file-operation effects are governed by `file-operations.md`.

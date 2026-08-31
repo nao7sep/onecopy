@@ -38,7 +38,7 @@ Selection is neutral until the user invokes an action. It is not an automatic ke
 
 On the first page, Comparison preserves Main-selected group members that are visible there. If none are visible, it exclusively selects the entry anchor. If the entry anchor is gone, it selects the first visible image. No quality score may create the initial selection.
 
-Ordinary click exclusively selects a card. Clicking the sole selected card leaves it selected. Cmd/Ctrl-click toggles one card and makes a newly selected card the anchor. Shift-click adjusts a continuous range from the anchor in stable cross-display order.
+Ordinary click exclusively selects a card. Clicking the sole selected card leaves it selected. Cmd/Ctrl-click toggles one card and makes a newly selected card the anchor. Shift-click adjusts a continuous range from a stable origin in cross-display order on top of the selection that existed when that range began, so deliberate Cmd/Ctrl selections outside the range survive as it grows, shrinks, or reverses.
 
 Arrow keys move the anchor spatially through the grids and across display edges. Without Shift they exclusively select the destination; with Shift they extend the range. Home and End select the first or last image on the current page, with Shift extending to that bound. Cmd/Ctrl+A selects the current page only and never selects hidden later pages.
 
@@ -52,7 +52,7 @@ Auto-repeat does not repeat a direct-key toggle. Cmd/Ctrl/Alt-modified keys reta
 
 The thirty-seventh and later visible images have no direct key and remain fully selectable through pointer and grid navigation. Comparison has no multi-character key system, modifier alphabet, alternate shortcut mode, or key subpages.
 
-When `F` is assigned to a visible card, bare `F` is that card's direct key and does not enter fullscreen. Other assigned letters similarly keep their visible Comparison meaning.
+When `F` is assigned to a visible card, bare `F` is that card's direct key and does not enter fullscreen. When `F` is unassigned, it does nothing in Comparison. Other assigned letters similarly keep their visible Comparison meaning.
 
 ## Not similar
 

@@ -18,11 +18,11 @@ Normal browsing and file operations remain available while maintenance runs. A f
 
 ## Checking configured sources
 
-Checking source folders is a finite background pass over configured sources. It finds new paths, missing paths, and paths whose recorded size or modification time changed. A configured setting controls whether this pass starts after launch; disabling that timing preference does not make reconciliation optional.
+Checking source folders is a finite background pass over configured sources. It finds new paths, missing paths, and paths whose recorded size or modification time changed. `Check source folders after launch` defaults on and starts the pass only after Main is usable. Disabling that timing preference does not make reconciliation optional.
 
 The pass does not block the usable main window. It compares inexpensive recorded filesystem facts first and does not reopen, rehash, or re-resolve a file whose recorded size and modification time are unchanged. A replacement that preserves both values may therefore remain unnoticed until another discovery mechanism or a library-index rebuild.
 
-Background Work provides Start and Stop for checking source folders. Stop takes effect at a safe checkpoint and preserves discoveries already recorded. The finite pass has no separate Pause state whose meaning duplicates Stop.
+Background Work provides Start and Stop for checking source folders and shows its progress plus running, stopped, completed, or failed state. Stop takes effect at a safe checkpoint and preserves discoveries already recorded. The finite pass has no separate Pause state whose meaning duplicates Stop.
 
 A missing configured source or unavailable drive does not block the entire application. OneCopy continues with available copies, reports unavailable paths, and allows files to reappear when their source returns.
 
@@ -68,6 +68,8 @@ Each optional feature has its own durable Settings choice and defaults on when r
 The first-launch wizard separates `OneCopy always prepares` from `Additional features`. The required section explains the unswitched identity, metadata, companion, thumbnail, preview, video-playback, and live-watching work. The additional-features section provides switches only for optional enrichment.
 
 When a concrete prerequisite or enforced storage or memory safety check makes an optional feature unavailable, its wizard switch starts off and explains the condition. The user may still choose the feature, but unavailability is never represented as running or completed work, and the application retains its error-containment and resource-safety boundaries.
+
+An enabled optional feature whose required managed tool is unavailable remains enabled and visibly `Waiting for required tool`. It offers a direct Managed Tools action but never installs the tool implicitly. When the prerequisite becomes runnable, already-enabled work becomes eligible automatically; a feature that remained off stays off until the user enables it.
 
 ## Background Work controls
 
@@ -116,11 +118,15 @@ Optional visible ordering is:
 
 Required visible preparation runs while the user is active and does not wait for a general idle timer. It may preempt automatic optional work at that work's next safe cancellation point. Preemption preserves completed results rather than presenting incomplete work as complete. A preempted transcript publishes no partial text and returns to its enabled queue. Moving among already prepared items does not by itself discard useful running work.
 
-Only one CPU-heavy derived operation runs at a time. Transcription, snapshot extraction, face scoring, and large preview conversion do not compete concurrently. Exact neighborhood and batch sizes remain implementation tuning rather than user settings.
+One coordinator owns derived-work admission, priority, cancellation, and publication. Independently checkpointed image thumbnail and screen-preview jobs may run concurrently when automatic CPU, decoded-memory, and subprocess budgets admit them. Concurrency leaves interactive headroom while the user is active, may use more capacity while idle, and falls back as far as one job for large or uncertain decodes. Exact worker, neighborhood, and batch sizes are implementation tuning rather than user settings.
+
+Database publication and user-visible state remain single-owned even when image conversion runs concurrently. Transcription, model-heavy analysis, ffmpeg work, and whole-library computation do not overlap another heavy class unless measured platform evidence establishes safe memory use, cancellation, and responsiveness. No user setting can disable resource-safety limits or choose a raw thread count.
 
 ## Transcription generation
 
 Supported videos with audio and supported audio files are eligible for transcription. Images and generic non-audio Other files are not. Video and audio have separate automatic-transcription settings, each enabled by default when runnable.
+
+Transcription detects spoken language automatically. OneCopy does not add a language selector or translation mode to this lifecycle. A completed attempt that finds no speech records `Checked — no speech found` as a successful empty result rather than remaining pending or failed.
 
 A transcript belongs to the content identity, so byte-identical copies share one result. Changed bytes create a new identity and new transcription work.
 
@@ -130,10 +136,12 @@ When automatic transcription is enabled for a medium, a pending selected item is
 
 Pause and required-work preemption take effect at the transcription engine's safe cancellation boundary. Partial text is never published as complete. Preempted automatic work returns to its queue.
 
-Completed transcripts remain reconstructible derived information while their content identity exists. `Re-transcribe` keeps the completed result available and replaces it only after the new result succeeds; a failed replacement leaves the previous transcript intact and reports the failure.
+Cancelling a first attempt returns the content to Not transcribed. Cancelling replacement work preserves the prior completed transcript. Completed transcripts are not redone merely because a newer model becomes available.
+
+Completed transcripts remain reconstructible derived information while their content identity exists. `Re-transcribe` keeps the completed result available and replaces it only after the new result succeeds; a failed or cancelled replacement leaves the previous transcript intact and reports the unsuccessful attempt.
 
 ## Rebuilding the library index
 
 `Rebuild library index…` is a Settings maintenance action, not an everyday refresh command. It discards reconstructible library information, generated preparation, transcripts, and Issues so they can be derived again.
 
-Rebuilding never changes user files, Settings, managed tools, or user-authored choices such as exclusions from similarity groups. It cannot overlap an active file operation because it removes information used to plan that operation.
+Rebuilding never changes user files, Settings, managed tools, or user-authored choices such as exclusions from similarity groups. It cannot overlap an active file operation because it removes information used to plan that operation. A rebuild request made while mutation work is active is refused with an explanation rather than queued for later execution.
