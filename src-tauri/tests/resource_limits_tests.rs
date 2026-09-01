@@ -1,6 +1,9 @@
+#[cfg(unix)]
 use std::process::Command;
 
-use onecopy_lib::{resource_limits, subprocess};
+use onecopy_lib::resource_limits;
+#[cfg(unix)]
+use onecopy_lib::subprocess;
 
 #[test]
 fn oversized_bitmap_is_rejected_before_pixel_allocation() {

@@ -23,6 +23,11 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// No output at all for this long means stuck, not slow.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -97,6 +102,12 @@ fn run_bounded_idle_output(
     idle_timeout: Duration,
     max_stdout: usize,
 ) -> Result<Run, String> {
+    #[cfg(windows)]
+    // Managed command-line tools must remain app-owned background work. A
+    // GUI parent otherwise causes Windows to allocate a visible console for
+    // ffmpeg, covering OneCopy for the lifetime of a long media operation.
+    command.creation_flags(CREATE_NO_WINDOW);
+
     #[cfg(unix)]
     // SAFETY: this closure runs in the child after fork and before exec. It
     // performs one async-signal-safe syscall and returns only its OS error.
