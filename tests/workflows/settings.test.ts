@@ -48,6 +48,9 @@ describe("Settings save boundary", () => {
       "Settings could not be saved. Your changes are still here; try again.",
     );
     expect(invokeCalls.some((call) => call.command === "re_resolve_all")).toBe(false);
+    expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({
+      reportFailure: false,
+    });
   });
 
   it("closes the committed draft before a large index projection finishes", async () => {

@@ -7,6 +7,7 @@ import {
 } from "../../src/workflows/destinations";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import {
+  invokeCalls,
   mockCommands,
   openDialog,
   resetTauriMocks,
@@ -38,6 +39,9 @@ describe("destination root failures", () => {
     expect(useDestinationsStore.getState()).toMatchObject({
       roots: ["/existing"],
       message: "Couldn’t remove that destination.",
+    });
+    expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({
+      reportFailure: false,
     });
   });
 });

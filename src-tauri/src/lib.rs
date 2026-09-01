@@ -156,7 +156,11 @@ fn record_interface_failure(window: tauri::WebviewWindow, message: String) -> Re
 // store's stale cached copy can blind-overwrite another's save. Returns the
 // merged document so the caller can publish it without a second read.
 #[tauri::command(async)]
-fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
+fn patch_config(
+    app: AppHandle,
+    mut patch: Value,
+    report_failure: Option<bool>,
+) -> Result<Value, String> {
     let result = logging::boundary(
         "patch_config",
         json!({}),
@@ -196,8 +200,10 @@ fn patch_config(app: AppHandle, mut patch: Value) -> Result<Value, String> {
         },
         |_| json!({}),
     );
-    if let Err(error) = &result {
-        let _ = failure_runtime::report(&app, "config-save-failed", None, error);
+    if report_failure.unwrap_or(true) {
+        if let Err(error) = &result {
+            let _ = failure_runtime::report(&app, "config-save-failed", None, error);
+        }
     }
     result
 }

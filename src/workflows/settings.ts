@@ -23,7 +23,7 @@ export async function saveSettings(): Promise<void> {
   // the draft surface rather than leaving it looking unsaved for the duration
   // of a million-row rebuild or after a cancellable repair.
   try {
-    await useAppStore.getState().patchConfig(configDraft);
+    await useAppStore.getState().patchConfig(configDraft, { reportFailure: false });
     await useAppStore.getState().patchState({ soundEnabled, playbackVolume });
     useSettingsStore.setState({
       open: false,

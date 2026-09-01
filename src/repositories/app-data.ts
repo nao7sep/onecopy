@@ -37,8 +37,9 @@ export function loadAppData(): Promise<LoadedAppData> {
 
 export function patchConfigFile(
   patch: Record<string, unknown>,
+  reportFailure = true,
 ): Promise<Record<string, unknown>> {
-  return invoke<Record<string, unknown>>("patch_config", { patch });
+  return invoke<Record<string, unknown>>("patch_config", { patch, reportFailure });
 }
 
 export function patchStateFile(

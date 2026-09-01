@@ -29,7 +29,10 @@ interface AppState {
   quarantines: QuarantineRecord[];
   dismissQuarantines: () => void;
   initialize: () => Promise<LoadedAppData | null>;
-  patchConfig: (patch: Record<string, unknown>) => Promise<void>;
+  patchConfig: (
+    patch: Record<string, unknown>,
+    options?: { reportFailure?: boolean },
+  ) => Promise<void>;
   patchState: (patch: Record<string, unknown>) => Promise<void>;
 }
 
@@ -53,9 +56,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissQuarantines: () => set({ quarantines: [] }),
 
-  patchConfig: async (patch) => {
+  patchConfig: async (patch, options) => {
     try {
-      const merged = await patchConfigFile(patch);
+      const merged = await patchConfigFile(patch, options?.reportFailure ?? true);
       set((s) =>
         s.appData === null ? s : { appData: { ...s.appData, config: merged } },
       );
