@@ -104,12 +104,6 @@ export function useGlobalCommands() {
         !event.ctrlKey &&
         !event.altKey
       ) {
-        if (
-          !(event.target instanceof Element) ||
-          event.target.closest("#main-item-area") === null
-        ) {
-          return;
-        }
         handleFViewer(event);
       } else if (event.key === "Enter") {
         if (

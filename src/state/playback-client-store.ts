@@ -1,19 +1,48 @@
 import { create } from "zustand";
 import { emit, listen } from "@tauri-apps/api/event";
-import type { PlaybackSession } from "../models/playback";
+import type {
+  PlaybackRegistration,
+  PlaybackSession,
+  PlaybackSurface,
+} from "../models/playback";
 import { log, toErrorFields } from "../repositories";
 
 interface PlaybackClientState {
   session: PlaybackSession | null;
-  coordinatorEpoch: number;
 }
 
 export const usePlaybackClientStore = create<PlaybackClientState>(() => ({
   session: null,
-  coordinatorEpoch: 0,
 }));
 
 let installation: Promise<void> | null = null;
+const registrations = new Map<PlaybackSurface, PlaybackRegistration>();
+
+function emitPlayback(event: string, payload: unknown): void {
+  void emit(event, payload).catch((error) => {
+    log.error("playback event delivery failed", {
+      event,
+      ...toErrorFields(error),
+    });
+  });
+}
+
+function sameRegistration(
+  left: PlaybackRegistration | undefined,
+  right: PlaybackRegistration,
+): boolean {
+  return (
+    left?.surface === right.surface &&
+    left.key === right.key &&
+    left.medium === right.medium
+  );
+}
+
+function announceRegistrations(): void {
+  for (const registration of registrations.values()) {
+    emitPlayback("playback://register", registration);
+  }
+}
 
 /** One listener per webview; individual media bodies only register their
  * availability and observe this local projection. */
@@ -24,9 +53,7 @@ export function installPlaybackClient(): Promise<void> {
       usePlaybackClientStore.setState({ session: event.payload });
     }),
     listen("playback://coordinator-ready", () => {
-      usePlaybackClientStore.setState((state) => ({
-        coordinatorEpoch: state.coordinatorEpoch + 1,
-      }));
+      announceRegistrations();
     }),
   ])
     .then(() => emit("playback://client-ready", {}))
@@ -37,4 +64,30 @@ export function installPlaybackClient(): Promise<void> {
       throw error;
     });
   return installation;
+}
+
+/** Registers one live media body without coupling coordinator recovery to a
+ * React remount. A coordinator-ready handshake simply re-announces the live
+ * registrations, so no stale cleanup can race the replacement registration. */
+export function registerPlaybackClient(
+  registration: PlaybackRegistration,
+): void {
+  registrations.set(registration.surface, registration);
+  void installPlaybackClient()
+    .then(() => {
+      const current = registrations.get(registration.surface);
+      if (sameRegistration(current, registration)) {
+        emitPlayback("playback://register", registration);
+      }
+    })
+    .catch(() => undefined);
+}
+
+export function unregisterPlaybackClient(
+  registration: PlaybackRegistration,
+): void {
+  if (!sameRegistration(registrations.get(registration.surface), registration))
+    return;
+  registrations.delete(registration.surface);
+  emitPlayback("playback://unregister", registration);
 }

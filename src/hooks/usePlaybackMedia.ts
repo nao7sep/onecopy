@@ -8,7 +8,8 @@ import type {
 import { mediaUseActive, useOwnedMedia } from "../media-use";
 import { log, toErrorFields } from "../repositories";
 import {
-  installPlaybackClient,
+  registerPlaybackClient,
+  unregisterPlaybackClient,
   usePlaybackClientStore,
 } from "../state/playback-client-store";
 
@@ -29,27 +30,15 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
 ) {
   const [elementRef, setElementRef] = useOwnedMedia<T>();
   const session = usePlaybackClientStore((state) => state.session);
-  const coordinatorEpoch = usePlaybackClientStore(
-    (state) => state.coordinatorEpoch,
-  );
   const registration: PlaybackRegistration = { surface, key, medium };
 
   useEffect(() => {
     if (!enabled) return;
-    let registered = false;
-    let disposed = false;
-    void installPlaybackClient()
-      .then(() => {
-        if (disposed) return;
-        registered = true;
-        emitPlayback("playback://register", registration);
-      })
-      .catch(() => undefined);
+    registerPlaybackClient(registration);
     return () => {
-      disposed = true;
-      if (registered) emitPlayback("playback://unregister", registration);
+      unregisterPlaybackClient(registration);
     };
-  }, [coordinatorEpoch, enabled, key, medium, surface]);
+  }, [enabled, key, medium, surface]);
 
   useEffect(() => {
     const element = elementRef.current;

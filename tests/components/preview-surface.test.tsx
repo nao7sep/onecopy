@@ -132,6 +132,26 @@ describe("shared video presentation", () => {
     });
   });
 
+  it("re-announces a live surface when the coordinator becomes ready without remounting it", async () => {
+    render(
+      <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />,
+    );
+    await act(async () => {});
+    emitCalls.length = 0;
+
+    await act(async () => {
+      fireTauriEvent("playback://coordinator-ready", {});
+    });
+
+    expect(emitCalls).toContainEqual({
+      event: "playback://register",
+      payload: { surface: "quick", key: "video-hash", medium: "video" },
+    });
+    expect(
+      emitCalls.some((call) => call.event === "playback://unregister"),
+    ).toBe(false);
+  });
+
   it("plays only when the central session assigns this surface", async () => {
     render(
       <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />,
