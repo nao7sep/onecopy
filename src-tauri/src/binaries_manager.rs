@@ -447,33 +447,74 @@ pub fn is_cancelled_error(error: &str) -> bool {
 /// 2026-08-17): several dependencies may download AT ONCE — only a second
 /// operation on the SAME entry is refused. The facts-file RMW no longer
 /// rides this claim; it has its own lock below.
+struct ActiveOperation {
+    operation_id: String,
+    cancelled: Arc<AtomicBool>,
+}
+
 static IN_FLIGHT: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    (
+        std::sync::Mutex<std::collections::HashMap<String, ActiveOperation>>,
+        std::sync::Condvar,
+    ),
+> = std::sync::LazyLock::new(|| {
+    (
+        std::sync::Mutex::new(std::collections::HashMap::new()),
+        std::sync::Condvar::new(),
+    )
+});
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 struct BusyGuard {
     id: String,
+    operation_id: String,
     cancelled: Arc<AtomicBool>,
     deadline: acquisition::OperationDeadline,
 }
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        IN_FLIGHT
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.id);
+        let (operations, settled) = &*IN_FLIGHT;
+        let mut in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
+        if in_flight
+            .get(&self.id)
+            .is_some_and(|active| active.operation_id == self.operation_id)
+        {
+            in_flight.remove(&self.id);
+            settled.notify_all();
+        }
     }
 }
 
-fn claim(id: &str, deadline: acquisition::OperationDeadline) -> Result<BusyGuard, String> {
-    let mut in_flight = IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+fn claim(
+    id: &str,
+    operation_id: &str,
+    deadline: acquisition::OperationDeadline,
+) -> Result<BusyGuard, String> {
+    if operation_id.trim().is_empty() {
+        return Err("dependency operation id is empty".to_string());
+    }
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return Err("managed dependencies are shutting down".to_string());
+    }
+    let (operations, _) = &*IN_FLIGHT;
+    let mut in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return Err("managed dependencies are shutting down".to_string());
+    }
     if in_flight.contains_key(id) {
         return Err(format!("{id} is already being worked on"));
     }
     let cancelled = Arc::new(AtomicBool::new(false));
-    in_flight.insert(id.to_string(), cancelled.clone());
+    in_flight.insert(
+        id.to_string(),
+        ActiveOperation {
+            operation_id: operation_id.to_string(),
+            cancelled: cancelled.clone(),
+        },
+    );
     Ok(BusyGuard {
         id: id.to_string(),
+        operation_id: operation_id.to_string(),
         cancelled,
         deadline,
     })
@@ -482,13 +523,39 @@ fn claim(id: &str, deadline: acquisition::OperationDeadline) -> Result<BusyGuard
 /// Requests cancellation of the current operation for one registry entry.
 /// Network futures race this flag directly, so cancellation does not wait for
 /// a connect, TLS handshake, metadata response, or stalled body read.
-pub fn cancel_entry(id: &str) -> bool {
-    let in_flight = IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(cancelled) = in_flight.get(id) else {
+pub fn cancel_entry(id: &str, operation_id: &str) -> bool {
+    let (operations, _) = &*IN_FLIGHT;
+    let in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(active) = in_flight.get(id) else {
         return false;
     };
-    cancelled.store(true, Ordering::Relaxed);
+    if active.operation_id != operation_id {
+        return false;
+    }
+    active.cancelled.store(true, Ordering::Relaxed);
     true
+}
+
+/// Normal application exit cancels every managed-dependency operation and
+/// then joins this registry before allowing process shutdown. Each acquisition
+/// owns bounded external waits and observes the same cancellation flag.
+pub fn begin_shutdown() {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    let (operations, _) = &*IN_FLIGHT;
+    let in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
+    for active in in_flight.values() {
+        active.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+pub fn wait_for_idle() {
+    let (operations, settled) = &*IN_FLIGHT;
+    let mut in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
+    while !in_flight.is_empty() {
+        in_flight = settled
+            .wait(in_flight)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
 }
 
 /// The full install/update for any registry entry. Binaries: resolve →
@@ -500,18 +567,24 @@ pub fn install_entry(
     id: &str,
     on_progress: impl FnMut(InstallProgress),
 ) -> Result<BinaryFacts, String> {
-    let started = begin_install(id)?;
+    let operation_id = nanoid::generate()?;
+    let started = begin_install(id, &operation_id)?;
     install_entry_started(root, started, on_progress)
 }
 
-/// A claim acquired before the detached worker starts, so a Cancel click can
+/// A claim acquired before the blocking worker starts, so a Cancel click can
 /// never race ahead of the operation's registration on a slow machine.
 pub struct StartedInstall(BusyGuard);
 
-pub fn begin_install(id: &str) -> Result<StartedInstall, String> {
+pub fn begin_install(id: &str, operation_id: &str) -> Result<StartedInstall, String> {
     let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
     let expected = spec.pinned.as_ref().map(|pin| pin.bytes);
-    claim(id, acquisition::OperationDeadline::for_install(expected)).map(StartedInstall)
+    claim(
+        id,
+        operation_id,
+        acquisition::OperationDeadline::for_install(expected),
+    )
+    .map(StartedInstall)
 }
 
 pub fn install_entry_started(
@@ -748,8 +821,21 @@ fn install_ffmpeg_started(
 /// there is nothing to ask and nothing to stamp — `state_of` derives it and
 /// a re-pin shipped in an app update shows up on its own.
 pub fn check_entry(root: &Path, id: &str) -> Result<BinaryFacts, String> {
+    let operation_id = nanoid::generate()?;
+    check_entry_with_operation(root, id, &operation_id)
+}
+
+pub fn check_entry_with_operation(
+    root: &Path,
+    id: &str,
+    operation_id: &str,
+) -> Result<BinaryFacts, String> {
     let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
-    let guard = claim(id, acquisition::OperationDeadline::for_check())?;
+    let guard = claim(
+        id,
+        operation_id,
+        acquisition::OperationDeadline::for_check(),
+    )?;
     let mut facts = load_facts_for(root, id);
     match spec.kind {
         DependencyKind::Binary => {
@@ -859,13 +945,15 @@ mod tests {
     #[test]
     fn cancellation_is_visible_to_chunked_work_and_released_with_the_claim() {
         let id = "whisper-large-v3-turbo";
-        let started = begin_install(id).unwrap();
-        assert!(cancel_entry(id));
+        let operation_id = "first-attempt";
+        let started = begin_install(id, operation_id).unwrap();
+        assert!(!cancel_entry(id, "older-attempt"));
+        assert!(cancel_entry(id, operation_id));
         assert!(is_cancelled_error(
             &acquisition::check_cancelled(&started.0.cancelled).unwrap_err()
         ));
         drop(started);
-        assert!(!cancel_entry(id));
+        assert!(!cancel_entry(id, operation_id));
     }
 
     #[test]

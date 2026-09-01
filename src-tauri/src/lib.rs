@@ -1614,168 +1614,179 @@ fn binaries_state(app: AppHandle) -> Result<Vec<binaries_manager::DependencyStat
     Ok(binaries_manager::states(&data_root))
 }
 
-// Installs or updates ONE registry entry on a worker thread; progress arrives
-// as `binaries://progress` (id in the payload), completion as
-// `binaries://done` / `binaries://cancelled` / `binaries://error`.
+#[derive(serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+enum BinaryInstallResult {
+    Installed {
+        #[serde(rename = "operationId")]
+        operation_id: String,
+        state: binaries_manager::DependencyState,
+    },
+    Cancelled {
+        #[serde(rename = "operationId")]
+        operation_id: String,
+        state: binaries_manager::DependencyState,
+    },
+    Failed {
+        #[serde(rename = "operationId")]
+        operation_id: String,
+        state: binaries_manager::DependencyState,
+        error: String,
+    },
+}
+
+enum InstallWorkerOutcome {
+    Installed,
+    Cancelled,
+    Failed(String),
+}
+
+// Installs or updates one registry entry on a blocking worker. Progress is an
+// operation-correlated event; the awaited command response is the single
+// authoritative terminal boundary, including a fresh artifact-derived row.
 #[tauri::command(async)]
-fn binaries_install(app: AppHandle, id: String) -> Result<(), String> {
+async fn binaries_install(
+    app: AppHandle,
+    id: String,
+    operation_id: String,
+) -> Result<BinaryInstallResult, String> {
     let data_root = paths::data_root(&app)?;
-    let started = binaries_manager::begin_install(&id)?;
+    let started = binaries_manager::begin_install(&id, &operation_id)?;
     let handle = app.clone();
-    let start_id = id.clone();
-    let thread = std::thread::Builder::new()
-        .name(format!("onecopy-install-{id}"))
-        .spawn(move || {
-            let progress_id = id.clone();
-            let progress_handle = handle.clone();
-            let progress_event_failed = std::cell::Cell::new(false);
-            let last_phase = std::cell::Cell::new(None::<binaries_manager::InstallPhase>);
-            let last_emit =
-                std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
-            let emit = move |progress: binaries_manager::InstallProgress| {
-                let now = std::time::Instant::now();
-                let phase_changed = last_phase.get() != Some(progress.phase);
-                let completed = progress.total.is_some_and(|total| progress.done >= total);
-                if !phase_changed
-                    && !completed
-                    && now.duration_since(last_emit.get()) < std::time::Duration::from_millis(125)
-                {
-                    return;
-                }
-                last_phase.set(Some(progress.phase));
-                last_emit.set(now);
-                if let Err(error) = failure_runtime::emit_checked(
-                    &progress_handle,
-                    "binaries://progress",
-                    json!({
-                        "id": progress_id,
-                        "phase": progress.phase,
-                        "done": progress.done,
-                        "total": progress.total,
-                        "nextPhase": progress.next_phase,
-                    }),
-                ) {
-                    if !progress_event_failed.replace(true) {
-                        let _ = failure_runtime::report(
-                            &progress_handle,
-                            "event-delivery-failed",
-                            Some(&progress_id),
-                            &error,
-                        );
-                    }
-                }
-            };
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                binaries_manager::install_entry_started(&data_root, started, emit)
-            }));
-            match outcome {
-                Ok(Ok(facts)) => {
-                    if let Err(error) =
-                        failure_runtime::clear(&handle, "dependency-install-failed", Some(&id))
-                    {
-                        let _ = failure_runtime::report(
-                            &handle,
-                            "issue-recovery-failed",
-                            Some(&id),
-                            &error,
-                        );
-                    }
-                    if let Err(error) = failure_runtime::emit_checked(
-                        &handle,
-                        "binaries://done",
-                        json!({ "id": id, "facts": facts }),
-                    ) {
-                        let _ = failure_runtime::report(
-                            &handle,
-                            "event-delivery-failed",
-                            Some(&id),
-                            &error,
-                        );
-                    }
-                    // Managed tools are prerequisites for derived work. The
-                    // coordinator re-reads live capability state on this wake;
-                    // no scan restart or captured config is involved.
-                    derived_work::wake();
-                }
-                Ok(Err(err)) => {
-                    if binaries_manager::is_cancelled_error(&err) {
-                        logging::info("dependency install cancelled", json!({ "id": id }));
-                        if let Err(error) = failure_runtime::emit_checked(
-                            &handle,
-                            "binaries://cancelled",
-                            json!({ "id": id }),
-                        ) {
-                            let _ = failure_runtime::report(
-                                &handle,
-                                "event-delivery-failed",
-                                Some(&id),
-                                &error,
-                            );
-                        }
-                        return;
-                    }
-                    logging::warn(
-                        "dependency install failed",
-                        json!({ "id": id, "error": { "message": err.clone() } }),
-                    );
+    let worker_id = id.clone();
+    let worker_operation_id = operation_id.clone();
+    let worker_root = data_root.clone();
+    let joined = tokio::task::spawn_blocking(move || {
+        let progress_id = worker_id.clone();
+        let progress_operation_id = worker_operation_id.clone();
+        let progress_handle = handle.clone();
+        let progress_event_failed = std::cell::Cell::new(false);
+        let last_phase = std::cell::Cell::new(None::<binaries_manager::InstallPhase>);
+        let last_emit =
+            std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        let emit = move |progress: binaries_manager::InstallProgress| {
+            let now = std::time::Instant::now();
+            let phase_changed = last_phase.get() != Some(progress.phase);
+            let completed = progress.total.is_some_and(|total| progress.done >= total);
+            if !phase_changed
+                && !completed
+                && now.duration_since(last_emit.get()) < std::time::Duration::from_millis(125)
+            {
+                return;
+            }
+            last_phase.set(Some(progress.phase));
+            last_emit.set(now);
+            if let Err(error) = failure_runtime::emit_checked(
+                &progress_handle,
+                "binaries://progress",
+                json!({
+                    "id": progress_id,
+                    "operationId": progress_operation_id,
+                    "phase": progress.phase,
+                    "done": progress.done,
+                    "total": progress.total,
+                    "nextPhase": progress.next_phase,
+                }),
+            ) {
+                if !progress_event_failed.replace(true) {
                     let _ = failure_runtime::report(
-                        &handle,
-                        "dependency-install-failed",
-                        Some(&id),
-                        &err,
+                        &progress_handle,
+                        "event-delivery-failed",
+                        Some(&progress_id),
+                        &error,
                     );
-                    if let Err(error) = failure_runtime::emit_checked(
-                        &handle,
-                        "binaries://error",
-                        json!({ "id": id, "message": err }),
-                    ) {
-                        let _ = failure_runtime::report(
-                            &handle,
-                            "event-delivery-failed",
-                            Some("binaries://error"),
-                            &error,
-                        );
-                    }
-                }
-                Err(payload) => {
-                    let message = failure_runtime::panic_message(payload);
-                    logging::error(
-                        "dependency install panicked",
-                        json!({ "id": id, "error": { "message": message.clone() } }),
-                    );
-                    let _ = failure_runtime::report(
-                        &handle,
-                        "dependency-install-failed",
-                        Some(&id),
-                        &message,
-                    );
-                    if let Err(error) = failure_runtime::emit_checked(
-                        &handle,
-                        "binaries://error",
-                        json!({ "id": id, "message": message }),
-                    ) {
-                        let _ = failure_runtime::report(
-                            &handle,
-                            "event-delivery-failed",
-                            Some("binaries://error"),
-                            &error,
-                        );
-                    }
                 }
             }
-        });
-    if let Err(error) = thread {
-        let message = format!("could not start dependency install worker: {error}");
-        let _ =
-            failure_runtime::report(&app, "dependency-install-failed", Some(&start_id), &message);
-        return Err(message);
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            binaries_manager::install_entry_started(&worker_root, started, emit)
+        }));
+        let outcome = match outcome {
+            Ok(Ok(_facts)) => InstallWorkerOutcome::Installed,
+            Ok(Err(error)) if binaries_manager::is_cancelled_error(&error) => {
+                InstallWorkerOutcome::Cancelled
+            }
+            Ok(Err(error)) => InstallWorkerOutcome::Failed(error),
+            Err(payload) => InstallWorkerOutcome::Failed(failure_runtime::panic_message(payload)),
+        };
+        let spec = binaries_manager::spec_of(&worker_id)
+            .expect("a claimed dependency remains registered");
+        let state = binaries_manager::state_of(&worker_root, spec);
+        (outcome, state)
+    })
+    .await;
+
+    let (outcome, state) = match joined {
+        Ok(result) => result,
+        Err(error) => {
+            let message = format!("dependency install worker failed: {error}");
+            let spec = binaries_manager::spec_of(&id)
+                .ok_or_else(|| format!("unknown dependency: {id}"))?;
+            (
+                InstallWorkerOutcome::Failed(message),
+                binaries_manager::state_of(&data_root, spec),
+            )
+        }
+    };
+
+    match outcome {
+        InstallWorkerOutcome::Installed => {
+            if let Err(error) =
+                failure_runtime::clear(&app, "dependency-install-failed", Some(&id))
+            {
+                let _ = failure_runtime::report(
+                    &app,
+                    "issue-recovery-failed",
+                    Some(&id),
+                    &error,
+                );
+            }
+            derived_work::wake();
+            Ok(BinaryInstallResult::Installed {
+                operation_id,
+                state,
+            })
+        }
+        InstallWorkerOutcome::Cancelled => {
+            logging::info(
+                "dependency install cancelled",
+                json!({ "id": id, "operationId": operation_id }),
+            );
+            Ok(BinaryInstallResult::Cancelled {
+                operation_id,
+                state,
+            })
+        }
+        InstallWorkerOutcome::Failed(error) => {
+            logging::warn(
+                "dependency install failed",
+                json!({
+                    "id": id,
+                    "operationId": operation_id,
+                    "error": { "message": error.clone() }
+                }),
+            );
+            let _ = failure_runtime::report(
+                &app,
+                "dependency-install-failed",
+                Some(&id),
+                &error,
+            );
+            if state.status != binaries::BinaryStatus::NotInstalled {
+                derived_work::wake();
+            }
+            Ok(BinaryInstallResult::Failed {
+                operation_id,
+                state,
+                error,
+            })
+        }
     }
-    Ok(())
 }
 
 #[tauri::command(async)]
-fn binaries_cancel(id: String) -> bool {
-    binaries_manager::cancel_entry(&id)
+fn binaries_cancel(id: String, operation_id: String) -> bool {
+    binaries_manager::cancel_entry(&id, &operation_id)
 }
 
 // Version check for one entry — never installs; a failure writes nothing.
@@ -1783,13 +1794,14 @@ fn binaries_cancel(id: String) -> bool {
 fn binaries_check(
     app: AppHandle,
     id: String,
+    operation_id: String,
 ) -> Result<Vec<binaries_manager::DependencyState>, String> {
     logging::boundary(
         "binaries_check",
         json!({ "id": id }),
         || {
             let data_root = paths::data_root(&app)?;
-            binaries_manager::check_entry(&data_root, &id)?;
+            binaries_manager::check_entry_with_operation(&data_root, &id, &operation_id)?;
             Ok(binaries_manager::states(&data_root))
         },
         |states| json!({ "entries": states.len() }),
@@ -2325,6 +2337,7 @@ pub fn run() {
             }
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
+            binaries_manager::begin_shutdown();
             if let Err(error) = mutation_runtime::request_shutdown() {
                 let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
@@ -2336,6 +2349,7 @@ pub fn run() {
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         source_check_runtime::join();
                         file_information_runtime::join();
+                        binaries_manager::wait_for_idle();
                         if let Err(error) = mutation_runtime::wait_for_idle() {
                             let _ = failure_runtime::report(
                                 &handle,
@@ -2380,8 +2394,10 @@ pub fn run() {
         tauri::RunEvent::Exit => {
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
+            binaries_manager::begin_shutdown();
             source_check_runtime::join();
             file_information_runtime::join();
+            binaries_manager::wait_for_idle();
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
         _ => {}

@@ -1,8 +1,6 @@
-// The backend event channels.
-//
-// These listeners are the ONLY paths that clear library work and installs,
-// so a payload or channel-name drift does not fail loudly — it leaves the
-// footer permanently claiming work is in flight. Nothing exercised them.
+// The backend event channels. Long-lived library work still settles through
+// terminal events; managed-tool progress alone is event-driven and is
+// correlated to the authoritative command-owned terminal boundary.
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -257,37 +255,54 @@ describe("quarantine events", () => {
 });
 
 describe("binaries events", () => {
-  it("clears the entry and keeps the failure visible on an error", async () => {
+  it("ignores progress from an older attempt on the same entry", async () => {
     binaries.setState({
       installing: {
         ffmpeg: {
+          operationId: "current-attempt",
           progress: { phase: "download", done: 12, total: null, nextPhase: "verify" },
           cancelling: false,
         },
       },
     });
 
-    fireEvent("binaries://error", { id: "ffmpeg", message: "checksum mismatch" });
-    expect(binaries.getState().installing["ffmpeg"]).toBeUndefined();
-    expect(binaries.getState().errors["ffmpeg"]).toBe("checksum mismatch");
-  });
-
-  it("clears progress without inventing an error when an install is cancelled", async () => {
-    binaries.setState({
-      installing: { ffmpeg: { progress: null, cancelling: true } },
-      errors: { ffmpeg: "old failure" },
+    fireEvent("binaries://progress", {
+      id: "ffmpeg",
+      operationId: "older-attempt",
+      phase: "verify",
+      done: 20,
+      total: 20,
+      nextPhase: "install",
     });
 
-    fireEvent("binaries://cancelled", { id: "ffmpeg" });
-    expect(binaries.getState().installing.ffmpeg).toBeUndefined();
-    expect(binaries.getState().errors.ffmpeg).toBeUndefined();
+    expect(binaries.getState().installing.ffmpeg?.progress).toEqual({
+      phase: "download",
+      done: 12,
+      total: null,
+      nextPhase: "verify",
+    });
   });
 
   it("narrates SEVERAL installs at once, each in words", async () => {
     // Installs are parallel per entry (developer, 2026-08-17): the map keeps
     // one typed snapshot per id; presentation owns the humanized line.
+    binaries.setState({
+      installing: {
+        "whisper-large-v3-turbo": {
+          operationId: "whisper-attempt",
+          progress: null,
+          cancelling: false,
+        },
+        "ultraface-rfb640": {
+          operationId: "face-attempt",
+          progress: null,
+          cancelling: false,
+        },
+      },
+    });
     fireEvent("binaries://progress", {
       id: "whisper-large-v3-turbo",
+      operationId: "whisper-attempt",
       phase: "download",
       done: 300 * 1_048_576,
       total: 1_549 * 1_048_576,
@@ -295,6 +310,7 @@ describe("binaries events", () => {
     });
     fireEvent("binaries://progress", {
       id: "ultraface-rfb640",
+      operationId: "face-attempt",
       phase: "verify",
       done: 0,
       total: 1_588_012,
@@ -315,10 +331,20 @@ describe("binaries events", () => {
     });
   });
 
-  it("retains each phase and a terminal result instead of flashing one line", async () => {
-    binaries.setState({ installing: {}, installHistory: {} });
+  it("retains each delivered phase instead of flashing one line", async () => {
+    binaries.setState({
+      installing: {
+        ffmpeg: {
+          operationId: "ffmpeg-attempt",
+          progress: null,
+          cancelling: false,
+        },
+      },
+      installHistory: {},
+    });
     fireEvent("binaries://progress", {
       id: "ffmpeg",
+      operationId: "ffmpeg-attempt",
       phase: "resolve",
       done: 1,
       total: 1,
@@ -326,6 +352,7 @@ describe("binaries events", () => {
     });
     fireEvent("binaries://progress", {
       id: "ffmpeg",
+      operationId: "ffmpeg-attempt",
       phase: "download",
       done: 84 * 1_048_576,
       total: 84 * 1_048_576,
@@ -333,18 +360,16 @@ describe("binaries events", () => {
     });
     fireEvent("binaries://progress", {
       id: "ffmpeg",
+      operationId: "ffmpeg-attempt",
       phase: "verify",
       done: 84 * 1_048_576,
       total: 84 * 1_048_576,
       nextPhase: "install",
     });
-    fireEvent("binaries://done", { id: "ffmpeg" });
-
     expect(binaries.getState().installHistory.ffmpeg).toEqual([
       { phase: "resolve", text: "Resolving — 1/1 · Next: Downloading" },
       { phase: "download", text: "Downloading — 84 MB / 84 MB (100%) · Next: Verifying" },
       { phase: "verify", text: "Verifying — 84 MB / 84 MB (100%) · Next: Installing" },
-      { phase: "result", text: "Installed" },
     ]);
   });
 });

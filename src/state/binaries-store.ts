@@ -59,6 +59,20 @@ export interface InstallStep {
   text: string;
 }
 
+export interface ManagedInstallOperation extends ManagedInstallActivity {
+  operationId: string;
+}
+
+export type BinaryInstallResult =
+  | { outcome: "installed"; operationId: string; state: DependencyState }
+  | { outcome: "cancelled"; operationId: string; state: DependencyState }
+  | {
+      outcome: "failed";
+      operationId: string;
+      state: DependencyState;
+      error: string;
+    };
+
 /** Preserve phase changes while replacing noisy progress updates within a phase. */
 function installStep(
   steps: InstallStep[] | undefined,
@@ -79,13 +93,40 @@ function terminalStep(
   return installStep(steps, "result", text);
 }
 
+function operationId(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+function replaceEntry(
+  entries: DependencyState[],
+  replacement: DependencyState,
+): DependencyState[] {
+  return entries.map((entry) =>
+    entry.id === replacement.id ? replacement : entry,
+  );
+}
+
+function mergeRegistrySnapshot(
+  current: DependencyState[],
+  snapshot: DependencyState[],
+  protectedIds: ReadonlySet<string>,
+): DependencyState[] {
+  const currentById = new Map(current.map((entry) => [entry.id, entry]));
+  return snapshot.map((entry) =>
+    protectedIds.has(entry.id) ? (currentById.get(entry.id) ?? entry) : entry,
+  );
+}
+
+let registryRevision = 0;
+let loadSequence = 0;
+
 interface BinariesState {
   entries: DependencyState[];
   loading: boolean;
   loadError: string | null;
   /** Typed activity per entry currently installing — several at once is
    * normal (the whole point of per-id claims). */
-  installing: Record<string, ManagedInstallActivity>;
+  installing: Record<string, ManagedInstallOperation>;
   /** The current attempt's durable phase history, retained through its result. */
   installHistory: Record<string, InstallStep[]>;
   /** The last failure per entry, shown in its row until the next attempt. */
@@ -93,6 +134,7 @@ interface BinariesState {
   /** True while the registry-wide check runs (the button narrates it). */
   checking: boolean;
   checkingId: string | null;
+  checkingOperationId: string | null;
   checkCancelling: boolean;
   /** Epoch ms until which re-checking is pointless (fresh-check cooldown —
    * kind to upstream APIs, and honest: nothing can have changed in a
@@ -110,7 +152,7 @@ interface BinariesState {
   installAll: () => Promise<void>;
   /** ONE check for the whole registry (per-entry checking was busywork):
    * sequential over the installed CHECKABLE entries — models have no
-   * upstream to ask — refreshing state at the end. */
+   * upstream to ask — applying each authoritative checked row directly. */
   checkAll: () => Promise<void>;
   cancelCheck: (id: string) => Promise<void>;
   setModalOpen: (open: boolean) => void;
@@ -125,39 +167,110 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   errors: {},
   checking: false,
   checkingId: null,
+  checkingOperationId: null,
   checkCancelling: false,
   cooldownUntil: 0,
   lastCheckOutcome: null,
   modalOpen: false,
 
   load: async () => {
+    const sequence = ++loadSequence;
+    const revision = registryRevision;
+    const protectedIds = new Set(Object.keys(get().installing));
+    if (get().checkingId !== null) protectedIds.add(get().checkingId!);
     set({ loading: true, loadError: null });
     try {
       const entries = await invoke<DependencyState[]>("binaries_state");
-      set({ entries: Array.isArray(entries) ? entries : [], loading: false, loadError: null });
+      if (sequence !== loadSequence) return;
+      if (revision !== registryRevision) {
+        set({ loading: false });
+        return;
+      }
+      set((state) => ({
+        entries: mergeRegistrySnapshot(
+          state.entries,
+          Array.isArray(entries) ? entries : [],
+          protectedIds,
+        ),
+        loading: false,
+        loadError: null,
+      }));
     } catch (error) {
+      if (sequence !== loadSequence) return;
+      if (revision !== registryRevision) {
+        set({ loading: false });
+        return;
+      }
       log.error("binaries state load failed", toErrorFields(error));
       set({ loading: false, loadError: "Managed tools are unavailable." });
     }
   },
 
   install: async (id) => {
+    if (get().installing[id] !== undefined) return;
+    const currentOperationId = operationId();
+    registryRevision += 1;
     set((s) => {
       const errors = { ...s.errors };
       delete errors[id];
       return {
         installing: {
           ...s.installing,
-          [id]: { progress: null, cancelling: false },
+          [id]: {
+            operationId: currentOperationId,
+            progress: null,
+            cancelling: false,
+          },
         },
         installHistory: { ...s.installHistory, [id]: [] },
         errors,
       };
     });
     try {
-      await invoke("binaries_install", { id });
+      const result = await invoke<BinaryInstallResult>("binaries_install", {
+        id,
+        operationId: currentOperationId,
+      });
+      if (result.operationId !== currentOperationId) return;
+      let failedMessage: string | null = null;
+      set((s) => {
+        if (s.installing[id]?.operationId !== currentOperationId) return s;
+        const installing = { ...s.installing };
+        const errors = { ...s.errors };
+        delete installing[id];
+        if (result.outcome === "failed") {
+          errors[id] = result.error;
+          failedMessage = result.error;
+        } else {
+          delete errors[id];
+        }
+        return {
+          entries: replaceEntry(s.entries, result.state),
+          installing,
+          installHistory: {
+            ...s.installHistory,
+            [id]: terminalStep(
+              s.installHistory[id],
+              result.outcome === "installed"
+                ? "Installed"
+                : result.outcome === "cancelled"
+                  ? "Cancelled"
+                  : "Install failed",
+            ),
+          },
+          errors,
+        };
+      });
+      if (failedMessage !== null) {
+        reportActionFailure(
+          "managed-tool-install-failed",
+          "The managed-tool installation failed.",
+          failedMessage,
+        );
+      }
     } catch (error) {
       set((s) => {
+        if (s.installing[id]?.operationId !== currentOperationId) return s;
         const installing = { ...s.installing };
         delete installing[id];
         return {
@@ -188,21 +301,10 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       },
     }));
     try {
-      const active = await invoke<boolean>("binaries_cancel", { id });
-      if (!active) {
-        set((s) => {
-          if (s.installing[id]?.cancelling !== true) return s;
-          const installing = { ...s.installing };
-          delete installing[id];
-          return {
-            installing,
-            installHistory: {
-              ...s.installHistory,
-              [id]: terminalStep(s.installHistory[id], "Install stopped"),
-            },
-          };
-        });
-      }
+      await invoke<boolean>("binaries_cancel", {
+        id,
+        operationId: previous.operationId,
+      });
     } catch (error) {
       log.error("binaries install cancellation failed", { id, ...toErrorFields(error) });
       reportActionFailure(
@@ -211,10 +313,12 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         error,
       );
       set((s) => {
-        if (s.installing[id]?.cancelling !== true) return s;
+        if (
+          s.installing[id]?.operationId !== previous.operationId ||
+          s.installing[id]?.cancelling !== true
+        ) return s;
         const installing = { ...s.installing };
-        if (previous === undefined) delete installing[id];
-        else installing[id] = previous;
+        installing[id] = previous;
         return { installing };
       });
     }
@@ -234,7 +338,14 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     const { entries, installing, checking } = get();
     if (checking) return;
     const started = Date.now();
-    set({ checking: true, checkingId: null, checkCancelling: false, lastCheckOutcome: null });
+    registryRevision += 1;
+    set({
+      checking: true,
+      checkingId: null,
+      checkingOperationId: null,
+      checkCancelling: false,
+      lastCheckOutcome: null,
+    });
     const installed = entries.filter(
       (entry) =>
         entry.checkable &&
@@ -244,13 +355,22 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     let failures = 0;
     let cancelled = false;
     for (const entry of installed) {
-      set({ checkingId: entry.id });
+      const currentOperationId = operationId();
+      set({ checkingId: entry.id, checkingOperationId: currentOperationId });
       try {
-        await invoke("binaries_check", { id: entry.id });
+        const states = await invoke<DependencyState[]>("binaries_check", {
+          id: entry.id,
+          operationId: currentOperationId,
+        });
         set((s) => {
+          if (s.checkingOperationId !== currentOperationId) return s;
           const errors = { ...s.errors };
           delete errors[entry.id];
-          return { errors };
+          const checked = states.find((state) => state.id === entry.id);
+          return {
+            entries: checked === undefined ? s.entries : replaceEntry(s.entries, checked),
+            errors,
+          };
         });
       } catch (error) {
         const message = messageOf(error);
@@ -268,7 +388,6 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         log.error("binaries check failed", { id: entry.id, ...toErrorFields(error) });
       }
     }
-    await get().load();
     // Model checks are LOCAL pin comparisons: a real run can finish in tens
     // of milliseconds, which reads as a dead button. Hold the "Checking…"
     // state long enough to be a visible acknowledgement of the click.
@@ -300,6 +419,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     set({
       checking: false,
       checkingId: null,
+      checkingOperationId: null,
       checkCancelling: false,
       cooldownUntil: cancelled ? 0 : Date.now() + COOLDOWN_MS,
       lastCheckOutcome: outcome,
@@ -320,10 +440,18 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   },
 
   cancelCheck: async (id) => {
-    if (get().checkingId !== id || get().checkCancelling) return;
+    const currentOperationId = get().checkingOperationId;
+    if (
+      get().checkingId !== id ||
+      currentOperationId === null ||
+      get().checkCancelling
+    ) return;
     set({ checkCancelling: true });
     try {
-      const active = await invoke<boolean>("binaries_cancel", { id });
+      const active = await invoke<boolean>("binaries_cancel", {
+        id,
+        operationId: currentOperationId,
+      });
       if (!active) set({ checkCancelling: false });
     } catch (error) {
       set({ checkCancelling: false });
@@ -371,89 +499,33 @@ export function ffmpegEntry(
 
 void (async () => {
   try {
-    await listen<{ id: string } & ManagedInstallProgress>(
+    await listen<{ id: string; operationId: string } & ManagedInstallProgress>(
       "binaries://progress",
       (event) => {
-        const { id, ...progress } = event.payload;
-        useBinariesStore.setState((s) => ({
-          installing: {
-            ...s.installing,
-            [id]: {
-              progress,
-              cancelling: s.installing[id]?.cancelling ?? false,
+        const { id, operationId: eventOperationId, ...progress } = event.payload;
+        useBinariesStore.setState((s) => {
+          const active = s.installing[id];
+          if (active?.operationId !== eventOperationId) return s;
+          return {
+            installing: {
+              ...s.installing,
+              [id]: {
+                ...active,
+                progress,
+              },
             },
-          },
-          installHistory: {
-            ...s.installHistory,
-            [id]: installStep(
-              s.installHistory[id],
-              progress.phase,
-              managedInstallLine(progress),
-            ),
-          },
-        }));
+            installHistory: {
+              ...s.installHistory,
+              [id]: installStep(
+                s.installHistory[id],
+                progress.phase,
+                managedInstallLine(progress),
+              ),
+            },
+          };
+        });
       },
     );
-    await listen<{ id: string }>("binaries://done", (event) => {
-      useBinariesStore.setState((s) => {
-        const installing = { ...s.installing };
-        delete installing[event.payload.id];
-        return {
-          installing,
-          installHistory: {
-            ...s.installHistory,
-            [event.payload.id]: terminalStep(
-              s.installHistory[event.payload.id],
-              "Installed",
-            ),
-          },
-        };
-      });
-      void useBinariesStore.getState().load();
-    });
-    await listen<{ id: string }>("binaries://cancelled", (event) => {
-      useBinariesStore.setState((s) => {
-        const installing = { ...s.installing };
-        const errors = { ...s.errors };
-        delete installing[event.payload.id];
-        delete errors[event.payload.id];
-        return {
-          installing,
-          installHistory: {
-            ...s.installHistory,
-            [event.payload.id]: terminalStep(
-              s.installHistory[event.payload.id],
-              "Cancelled",
-            ),
-          },
-          errors,
-        };
-      });
-      void useBinariesStore.getState().load();
-    });
-    await listen<{ id: string; message: string }>("binaries://error", (event) => {
-      useBinariesStore.setState((s) => {
-        const installing = { ...s.installing };
-        delete installing[event.payload.id];
-        return {
-          installing,
-          installHistory: {
-            ...s.installHistory,
-            [event.payload.id]: terminalStep(
-              s.installHistory[event.payload.id],
-              "Install failed",
-            ),
-          },
-          errors: { ...s.errors, [event.payload.id]: event.payload.message },
-        };
-      });
-      void useBinariesStore.getState().load();
-      reportActionFailure(
-        "managed-tool-install-failed",
-        "The managed-tool installation failed.",
-        event.payload.message,
-      );
-    });
     // The launch-time update check (config-gated, core-side) finished after
     // this store's initial load — refresh so the chip reflects it.
     await listen("binaries://changed", () => {

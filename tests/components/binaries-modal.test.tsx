@@ -15,6 +15,7 @@ import { useBinariesStore, type DependencyState } from "../../src/state/binaries
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const downloading = {
+  operationId: "download-operation",
   progress: {
     phase: "download" as const,
     done: 100 * 1_048_576,
@@ -58,6 +59,7 @@ function seed(entries: DependencyState[]): void {
     errors: {},
     checking: false,
     checkingId: null,
+    checkingOperationId: null,
     checkCancelling: false,
     cooldownUntil: 0,
     lastCheckOutcome: null,
@@ -71,9 +73,21 @@ function seed(entries: DependencyState[]): void {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
-    binaries_install: () => null,
+    binaries_install: ({ id, operationId }) => {
+      const current = useBinariesStore.getState().entries.find((item) => item.id === id);
+      if (!current) throw new Error(`missing test dependency ${String(id)}`);
+      return {
+        outcome: "installed",
+        operationId,
+        state: {
+          ...current,
+          status: "up-to-date",
+          installedVersion: current.installedVersion ?? "installed-test-version",
+        },
+      };
+    },
     binaries_cancel: () => true,
-    binaries_check: () => null,
+    binaries_check: () => useBinariesStore.getState().entries,
     binaries_state: () => [],
   });
   seed([
@@ -130,12 +144,18 @@ describe("parallel installs", () => {
     await act(async () => buttons("Cancel")[0]!.click());
 
     expect(invokeCalls.filter((call) => call.command === "binaries_cancel")).toEqual([
-      { command: "binaries_cancel", args: { id: "whisper-large-v3-turbo" } },
+      {
+        command: "binaries_cancel",
+        args: {
+          id: "whisper-large-v3-turbo",
+          operationId: "download-operation",
+        },
+      },
     ]);
     expect(document.body.textContent).toContain("Cancelling…");
   });
 
-  it("does not leave stale cancellation progress when the worker already ended", async () => {
+  it("keeps cancellation visible until the owning operation settles", async () => {
     mockCommands({ binaries_cancel: () => false });
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
@@ -144,8 +164,10 @@ describe("parallel installs", () => {
 
     await act(async () => buttons("Cancel")[0]!.click());
 
-    expect(useBinariesStore.getState().installing["whisper-large-v3-turbo"]).toBeUndefined();
-    expect(document.body.textContent).not.toContain("Cancelling…");
+    expect(
+      useBinariesStore.getState().installing["whisper-large-v3-turbo"]?.cancelling,
+    ).toBe(true);
+    expect(document.body.textContent).toContain("Cancelling…");
   });
 });
 
@@ -381,7 +403,10 @@ describe("check feedback", () => {
 
       expect(invokeCalls.filter((call) => call.command === "binaries_cancel")).toContainEqual({
         command: "binaries_cancel",
-        args: { id: "ffmpeg" },
+        args: {
+          id: "ffmpeg",
+          operationId: expect.any(String),
+        },
       });
       expect(document.body.textContent).toContain("Cancelling…");
       await act(async () => vi.advanceTimersByTimeAsync(700));
