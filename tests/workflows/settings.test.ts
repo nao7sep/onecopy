@@ -44,7 +44,9 @@ describe("Settings save boundary", () => {
     await saveSettings();
 
     expect(useSettingsStore.getState().open).toBe(true);
-    expect(useSettingsStore.getState().message).toContain("disk full");
+    expect(useSettingsStore.getState().message).toBe(
+      "Settings could not be saved. Your changes are still here; try again.",
+    );
     expect(invokeCalls.some((call) => call.command === "re_resolve_all")).toBe(false);
   });
 

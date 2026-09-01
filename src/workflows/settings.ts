@@ -32,7 +32,10 @@ export async function saveSettings(): Promise<void> {
       saving: false,
     });
   } catch (error) {
-    useSettingsStore.setState({ saving: false, message: String(error) });
+    useSettingsStore.setState({
+      saving: false,
+      message: "Settings could not be saved. Your changes are still here; try again.",
+    });
     log.error("settings save failed", toErrorFields(error));
     recordActionFailure("settings-save-failed", "Couldn’t save Settings.", error);
     return;
