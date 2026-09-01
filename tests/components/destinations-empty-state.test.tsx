@@ -72,6 +72,35 @@ describe("destination folder states", () => {
     expect(view.container.textContent).not.toContain("Drop into");
   });
 
+  it("reserves disclosure alignment without giving leaf folders a fake control", () => {
+    useDestinationsStore.setState({
+      roots: ["/dest"],
+      children: {
+        "/dest": [
+          {
+            name: "Leaf",
+            path: "/dest/Leaf",
+            hasChildren: false,
+            isEmpty: true,
+          },
+        ],
+      },
+      expanded: new Set(["/dest"]),
+      activePath: "/dest/Leaf",
+    });
+
+    const view = render(<DestinationsTab />);
+    const leaf = view.container.querySelector<HTMLElement>(
+      "[data-tree-path='/dest/Leaf']",
+    )!;
+
+    expect(leaf.textContent).toBe("Leaf");
+    expect(leaf.querySelector("button")).toBeNull();
+    expect(leaf.querySelector("[aria-hidden='true']")?.className).toContain(
+      "w-4",
+    );
+  });
+
   it("does not treat a browser payload as an internal operation", () => {
     useDestinationsStore.setState({
       roots: ["/dest"],

@@ -94,18 +94,22 @@ function DirNode({
           if (hasChildren) void toggleExpand(entry.path);
         }}
       >
-        <button
-          tabIndex={-1}
-          className="w-4 shrink-0 text-ink-muted"
-          onClick={(event) => {
-            event.stopPropagation();
-            void toggleExpand(entry.path);
-          }}
-          onDoubleClick={(event) => event.stopPropagation()}
-          title={hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
-        >
-          {hasChildren ? (isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />) : "\u00b7"}
-        </button>
+        {hasChildren ? (
+          <button
+            tabIndex={-1}
+            className="w-4 shrink-0 text-ink-muted"
+            onClick={(event) => {
+              event.stopPropagation();
+              void toggleExpand(entry.path);
+            }}
+            onDoubleClick={(event) => event.stopPropagation()}
+            title={isOpen ? "Collapse" : "Expand"}
+          >
+            {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+        ) : (
+          <span aria-hidden="true" className="w-4 shrink-0" />
+        )}
         <span
           className={`min-w-0 flex-1 truncate ${
             isEmpty ? "italic text-ink-muted" : "text-ink"
