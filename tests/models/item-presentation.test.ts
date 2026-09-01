@@ -169,7 +169,10 @@ describe("item presentation slots", () => {
   });
 
   it("shows useful ready analysis while quieting empty results", () => {
-    expect(presentation({ faceScore: 0.66 }).analysis?.text).toBe("★★★");
+    expect(presentation({ faceScore: 0.66 }).analysis).toMatchObject({
+      stars: 3,
+      label: "Advisory: 3 face stars — best-face confidence and smile hint",
+    });
     expect(presentation({ faceScore: 0 }).analysis).toBeNull();
     expect(
       itemPresentation(item({ faceScore: 0.66 }), {

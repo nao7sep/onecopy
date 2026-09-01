@@ -1,5 +1,5 @@
 import { factsLine } from "../models/items";
-import { faceStarLabel, faceStarRating } from "../models/itemPresentation";
+import { faceStarRating } from "../models/itemPresentation";
 import type { GroupMember } from "../state/comparison-store";
 import { useState } from "react";
 import { ExternalLink, Focus, FolderOpen } from "lucide-react";
@@ -8,6 +8,7 @@ import { useAppStore } from "../state/app-store";
 import { openInDefaultApp } from "../workflows/external-open";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import FaceRating from "./FaceRating";
 
 // One comparison card, shared by the main and secondary display surfaces.
 
@@ -140,13 +141,9 @@ export default function ComparisonSlot({
           <span className="flex shrink-0 gap-2">
             {/* A score is a best-face confidence/smile hint, not a percentage
                 rating. Zero/no-face and unscored stay quiet. */}
-            {faceStars > 0 ? (
-              <span
-                className="tracking-tight text-primary"
-                title={faceStarLabel(faceStars)}
-              >
-                <span aria-hidden="true">{"★".repeat(faceStars)}</span>
-                <span className="sr-only">{faceStarLabel(faceStars)}</span>
+            {faceStars !== 0 ? (
+              <span className="text-primary">
+                <FaceRating stars={faceStars} />
               </span>
             ) : null}
             {member.sharpness !== null ? (

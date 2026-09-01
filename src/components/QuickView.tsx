@@ -125,7 +125,7 @@ export default function QuickView() {
         )}
       </div>
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        ←/→: navigate · F: full screen · Space or Escape: back to the grid
+        Left/Right: navigate · F: full screen · Space or Escape: back to the grid
       </footer>
       {pendingDelete !== null ? (
         <ConfirmDialog

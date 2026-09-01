@@ -9,6 +9,12 @@ export interface PresentationBadge {
   tone: PresentationTone;
 }
 
+export interface FaceRatingPresentation {
+  stars: 1 | 2 | 3;
+  label: string;
+  tone: PresentationTone;
+}
+
 export interface SelectionMark {
   ordinal: number | null;
   label: string;
@@ -25,7 +31,7 @@ export interface ItemPresentation {
   selection: SelectionMark | null;
   status: PresentationBadge | null;
   relationships: PresentationBadge | null;
-  analysis: PresentationBadge | null;
+  analysis: PresentationBadge | FaceRatingPresentation | null;
 }
 
 const WORK_LABELS: Record<keyof ItemWorkStates, string> = {
@@ -201,9 +207,13 @@ export function itemPresentation(
 
   const stars = options.showFaceStars ? faceStarRating(item.faceScore) : 0;
   const transcript = item.derivedWork.transcripts;
+  const faceRating =
+    stars === 0
+      ? null
+      : { stars, label: faceStarLabel(stars), tone: "primary" as const };
   const analysis =
-    stars > 0
-      ? { text: "★".repeat(stars), label: faceStarLabel(stars), tone: "primary" as const }
+    faceRating !== null
+      ? faceRating
       : transcript?.state === "ready" && transcript.hasValue
         ? { text: "CC", label: "Transcript available", tone: "primary" as const }
         : null;

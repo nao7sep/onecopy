@@ -3,8 +3,9 @@
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ComparisonSlot from "../../src/components/ComparisonSlot";
+import type { GroupMember } from "../../src/state/comparison-store";
 
-const MEMBER = {
+const MEMBER: GroupMember = {
   hash: "hash-a",
   fileName: "photo.jpg",
   width: 4000,
@@ -18,13 +19,13 @@ const MEMBER = {
 
 afterEach(cleanup);
 
-function renderSlot() {
+function renderSlot(member: GroupMember = MEMBER) {
   const select = vi.fn();
   const decide = vi.fn();
   const reveal = vi.fn();
   const view = render(
     <ComparisonSlot
-      member={MEMBER}
+      member={member}
       slotKey="0"
       selected={false}
       anchor={false}
@@ -61,6 +62,16 @@ describe("comparison pointer selection", () => {
     const { getByRole, getByText } = renderSlot();
     expect(getByRole("option").getAttribute("aria-selected")).toBe("false");
     expect(getByText("0")).toBeTruthy();
+  });
+
+  it("draws face ratings as icons rather than font characters", () => {
+    const { getByRole } = renderSlot({ ...MEMBER, faceScore: 0.66 });
+    const rating = getByRole("img", {
+      name: "Advisory: 3 face stars — best-face confidence and smile hint",
+    });
+
+    expect(rating.querySelectorAll("svg.lucide-star")).toHaveLength(3);
+    expect(rating.textContent).not.toContain("★");
   });
 
   it("selects the card before either physical-file action", () => {

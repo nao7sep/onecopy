@@ -122,6 +122,13 @@ describe("Quick View", () => {
     opener.remove();
   });
 
+  it("spells the navigation keys in its footer", () => {
+    render(<Host />);
+
+    expect(screen.getByText(/Left\/Right: navigate/)).toBeTruthy();
+    expect(screen.queryByText(/←\/→/)).toBeNull();
+  });
+
   it("keeps viewer commands active while a notification control has focus", async () => {
     render(
       <>

@@ -295,6 +295,16 @@ describe("pointer selection", () => {
 });
 
 describe("thumbnail information hierarchy", () => {
+  it("draws face ratings as icons rather than font characters", () => {
+    const { view } = renderGrid([item(1, { faceScore: 0.66 })]);
+    const rating = view.getByRole("img", {
+      name: "Advisory: 3 face stars — best-face confidence and smile hint",
+    });
+
+    expect(rating.querySelectorAll("svg.lucide-star")).toHaveLength(3);
+    expect(rating.textContent).not.toContain("★");
+  });
+
   it("puts duration in the facts line and relationships in one labelled badge", () => {
     const related = [
       item(1, {

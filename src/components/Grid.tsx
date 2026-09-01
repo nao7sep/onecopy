@@ -25,6 +25,7 @@ import { rescanCurrentSection } from "../workflows/items";
 import {
   itemPresentation,
   type ItemPresentation,
+  type FaceRatingPresentation,
   type PresentationBadge,
 } from "../models/itemPresentation";
 import {
@@ -33,6 +34,7 @@ import {
 } from "../state/derived-work-store";
 import { useDestinationItemDrag } from "./DestinationDragProvider";
 import { requestComparisonFromMain } from "../workflows/comparison";
+import FaceRating from "./FaceRating";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -159,7 +161,7 @@ function TileBadge({
   badge,
   className,
 }: {
-  badge: PresentationBadge;
+  badge: PresentationBadge | FaceRatingPresentation;
   className: string;
 }) {
   const tone =
@@ -175,8 +177,14 @@ function TileBadge({
       className={`absolute truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium ${tone} ${className}`}
       title={badge.label}
     >
-      <span aria-hidden="true">{badge.text}</span>
-      <span className="sr-only">{badge.label}</span>
+      {"stars" in badge ? (
+        <FaceRating stars={badge.stars} />
+      ) : (
+        <>
+          <span aria-hidden="true">{badge.text}</span>
+          <span className="sr-only">{badge.label}</span>
+        </>
+      )}
     </span>
   );
 }
