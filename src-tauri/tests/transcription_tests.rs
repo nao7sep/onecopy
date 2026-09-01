@@ -3,7 +3,7 @@
 // and production model behavior, so the 1.6 GB default never enters an
 // ordinary test run.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::transcription::*;
@@ -260,7 +260,8 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
     assert!(text.contains("country"), "the known phrase must be heard: {text}");
 }
 
-// LIVE: downloads the exact production model (~1.6 GB), transcribes the
+// LIVE: uses ONECOPY_TEST_WHISPER_MODEL when supplied, otherwise downloads
+// the exact production model (~1.6 GB), transcribes the
 // shared synthetic noisy dialogue with a long silent tail, and rejects the
 // phrase-loop shape reported during dogfooding. This is deliberately separate
 // from the tiny linked-engine smoke above: model behavior is the fact under
@@ -269,59 +270,21 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
 #[ignore]
 #[serial(transcription)]
 fn live_production_model_does_not_loop_a_phrase_into_trailing_silence() {
-    use sha2::Digest;
-
-    let spec = onecopy_lib::binaries_manager::spec_of("whisper-large-v3-turbo")
-        .expect("production transcription model is registered");
-    let pin = spec.pinned.as_ref().expect("production model is pinned");
-
     let dir = tempfile::Builder::new()
         .prefix("onecopy-transcribe-production-live-")
         .tempdir()
         .unwrap();
-    let model = dir.path().join(spec.file_name);
-    let agent = ureq::config::Config::builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .build()
-        .new_agent();
-    let mut response = agent.get(pin.url).call().expect("model download");
-    let mut output = std::fs::File::create(&model).unwrap();
-    let downloaded = std::io::copy(&mut response.body_mut().as_reader(), &mut output).unwrap();
-    assert_eq!(downloaded, pin.bytes, "model byte count");
-    drop(output);
-    let mut input = std::io::BufReader::new(std::fs::File::open(&model).unwrap());
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = vec![0u8; 1024 * 1024];
-    loop {
-        let read = std::io::Read::read(&mut input, &mut buffer).unwrap();
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    assert_eq!(
-        hex::encode(hasher.finalize()),
-        pin.sha256,
-        "model integrity"
-    );
-
-    let ffmpeg = Path::new("/opt/homebrew/bin/ffmpeg");
-    assert!(
-        ffmpeg.is_file(),
-        "this macOS live test needs Homebrew ffmpeg"
-    );
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../company/assets/test-fixtures/video/dialogue/dialogue-english-with-noise.mp4");
-    assert!(fixture.is_file(), "shared synthetic fixture checkout");
-    let mut pcm = extract_pcm(ffmpeg, &fixture, &dir.path().join("pcm")).unwrap();
+    let model = production_model(dir.path());
+    let ffmpeg = live_ffmpeg();
+    let fixture = production_transcription_fixture();
+    let extraction_started = std::time::Instant::now();
+    let mut pcm = extract_pcm(&ffmpeg, &fixture, &dir.path().join("pcm")).unwrap();
+    eprintln!("production PCM extraction: {:?}", extraction_started.elapsed());
     pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
 
+    let inference_started = std::time::Instant::now();
     let segments = run_whisper(&model, &pcm, |_| {}).unwrap();
+    eprintln!("production inference: {:?}", inference_started.elapsed());
     for segment in &segments {
         eprintln!("{} ms: {}", segment.start_ms, segment.text);
     }
@@ -335,6 +298,66 @@ fn live_production_model_does_not_loop_a_phrase_into_trailing_silence() {
         "one decoder attempt emitted a repeated phrase loop: {}",
         transcript
     );
+}
+
+fn production_model(temp_dir: &Path) -> PathBuf {
+    use sha2::Digest;
+
+    let spec = onecopy_lib::binaries_manager::spec_of("whisper-large-v3-turbo")
+        .expect("production transcription model is registered");
+    let pin = spec.pinned.as_ref().expect("production model is pinned");
+    let model = std::env::var_os("ONECOPY_TEST_WHISPER_MODEL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let model = temp_dir.join(spec.file_name);
+            let agent = ureq::config::Config::builder()
+                .tls_config(
+                    ureq::tls::TlsConfig::builder()
+                        .provider(ureq::tls::TlsProvider::NativeTls)
+                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                        .build(),
+                )
+                .build()
+                .new_agent();
+            let mut response = agent.get(pin.url).call().expect("model download");
+            let mut output = std::fs::File::create(&model).unwrap();
+            let downloaded =
+                std::io::copy(&mut response.body_mut().as_reader(), &mut output).unwrap();
+            assert_eq!(downloaded, pin.bytes, "model byte count");
+            model
+        });
+    assert_eq!(
+        std::fs::metadata(&model).unwrap().len(),
+        pin.bytes,
+        "model byte count"
+    );
+    let mut input = std::io::BufReader::new(std::fs::File::open(&model).unwrap());
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut input, &mut buffer).unwrap();
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    assert_eq!(hex::encode(hasher.finalize()), pin.sha256, "model integrity");
+    model
+}
+
+fn live_ffmpeg() -> PathBuf {
+    let ffmpeg = std::env::var_os("ONECOPY_TEST_FFMPEG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/opt/homebrew/bin/ffmpeg"));
+    assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
+    ffmpeg
+}
+
+fn production_transcription_fixture() -> PathBuf {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../company/assets/test-fixtures/video/dialogue/dialogue-english-with-noise.mp4");
+    assert!(fixture.is_file(), "shared synthetic fixture checkout");
+    fixture
 }
 
 fn segments_have_phrase_loop(segments: &[Segment]) -> bool {

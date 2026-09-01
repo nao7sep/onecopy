@@ -655,3 +655,32 @@ fn ensure_fullres_short_circuits_and_reports_missing_ffmpeg_honestly() {
     let err = ensure_fullres(&conn, &cache, None, "def456").unwrap_err();
     assert!(err.contains("Managed tools"), "{err}");
 }
+
+// LIVE: measures the longest uncancellable portion of a native still-image
+// job. The supplied image must remain below the decoder's allocation ceiling,
+// otherwise the production route deliberately hands it to cancellable ffmpeg.
+// Run with ONECOPY_TEST_LARGE_STILL=/path/to/image and --ignored --nocapture.
+#[test]
+#[ignore]
+fn live_native_still_safe_boundary_cost() {
+    let source = std::env::var_os("ONECOPY_TEST_LARGE_STILL")
+        .map(PathBuf::from)
+        .expect("set ONECOPY_TEST_LARGE_STILL to a disposable large image");
+    assert!(source.is_file(), "large still fixture exists");
+    assert!(!needs_ffmpeg_decode(&source), "fixture uses the native decode route");
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-native-still-live-")
+        .tempdir()
+        .unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let started = std::time::Instant::now();
+    let facts = generate_for_image(&source, "large-native", &cache, 320, 1600, None).unwrap();
+    let elapsed = started.elapsed();
+    eprintln!(
+        "native still {}x{} safe boundary: {elapsed:?}",
+        facts.width, facts.height
+    );
+    assert!(cache.thumb("large-native").is_file());
+    assert!(cache.preview("large-native").is_file());
+}

@@ -11,7 +11,11 @@ use std::path::Path;
 
 use image::{DynamicImage, ImageReader, Limits};
 
-pub const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+// Release measurement puts a 108 MiB 6144×6144 native still at the one-second
+// pause boundary. Larger stills already have one bounded, process-supervised
+// ffmpeg route, so keeping the native ceiling below that measured edge avoids
+// a second image-worker architecture and lowers aggregate concurrency too.
+pub const MAX_DECODE_ALLOC: u64 = 96 * 1024 * 1024;
 const IMAGE_JOB_RESERVATION: u64 = 2 * MAX_DECODE_ALLOC;
 const IMAGE_CONCURRENCY_HEADROOM: u64 = 1024 * 1024 * 1024;
 pub const MAX_FFMPEG_STILL_OUTPUT: usize = 256 * 1024 * 1024;
