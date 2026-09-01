@@ -44,6 +44,7 @@ export async function bootstrapApplication(): Promise<void> {
   const wizard = useWizardStore.getState();
   const sources = stringArrayField(data.config, "sourceDirs");
   const checkAfterLaunch = data.config?.checkSourceFoldersAtLaunch !== false;
+  let sourceCheckStarted = false;
   if (
     checkAfterLaunch &&
     sources.length > 0 &&
@@ -54,6 +55,12 @@ export async function bootstrapApplication(): Promise<void> {
     // Event wiring, initial data, the first section projection, and source
     // presence are settled before this finite background pass starts. The
     // main interface is therefore usable and cannot miss its early state.
-    await useSectionsStore.getState().startSourceCheck();
+    sourceCheckStarted = await useSectionsStore.getState().startSourceCheck();
+  }
+  if (!sourceCheckStarted) {
+    // The source pass wakes this independent tail at its terminal boundary.
+    // Without that pass, Main explicitly admits the tail after event wiring
+    // and the first usable projection are ready.
+    await useSectionsStore.getState().admitBackgroundCompletion();
   }
 }

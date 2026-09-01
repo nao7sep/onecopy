@@ -35,15 +35,39 @@ function progress(done: number): ScanProgress {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  mockCommands({
+    index_work_snapshot: () => ({
+      sourceCheck: {
+        running: false,
+        stopping: false,
+        lastResult: "stopped",
+        eventSequence: 0,
+      },
+      fileInformation: {
+        running: false,
+        paused: false,
+        stopping: false,
+        queued: false,
+        eventSequence: 0,
+      },
+    }),
+  });
   useSectionsStore.setState({
     counts: null,
     error: null,
-    sourceCheck: { running: false, stopping: false, progress: null },
+    sourceCheck: {
+      running: false,
+      stopping: false,
+      lastResult: "stopped",
+      eventSequence: 0,
+      progress: null,
+    },
     fileInformation: {
       running: false,
       paused: false,
       stopping: false,
       queued: false,
+      eventSequence: 0,
       progress: null,
     },
     rescanNeeded: false,
@@ -72,6 +96,44 @@ describe("out-of-order count snapshots", () => {
 });
 
 describe("independent index work", () => {
+  it("does not let an older command snapshot overwrite newer runtime events", async () => {
+    useSectionsStore.setState({
+      sourceCheck: {
+        running: false,
+        stopping: false,
+        lastResult: "completed",
+        eventSequence: 5,
+        progress: null,
+      },
+    });
+    mockCommands({
+      index_work_snapshot: () => ({
+        sourceCheck: {
+          running: true,
+          stopping: true,
+          lastResult: "stopped",
+          eventSequence: 4,
+        },
+        fileInformation: {
+          running: false,
+          paused: false,
+          stopping: false,
+          queued: false,
+          eventSequence: 0,
+        },
+      }),
+    });
+
+    await useSectionsStore.getState().loadIndexWork();
+
+    expect(useSectionsStore.getState().sourceCheck).toMatchObject({
+      running: false,
+      stopping: false,
+      lastResult: "completed",
+      eventSequence: 5,
+    });
+  });
+
   it("keeps a failed background command visible", async () => {
     mockCommands({ start_source_check: () => Promise.reject(new Error("busy")) });
 
@@ -91,18 +153,41 @@ describe("independent index work", () => {
     });
     mockSectionItems(() => []);
 
-    fireEvent("file-information://progress", progress(1));
-    fireEvent("file-information://progress", progress(2));
-    fireEvent("file-information://progress", progress(3));
+    fireEvent("file-information://progress", { eventSequence: 1, progress: progress(1) });
+    fireEvent("file-information://progress", { eventSequence: 2, progress: progress(2) });
+    fireEvent("file-information://progress", { eventSequence: 3, progress: progress(3) });
     await new Promise((resolve) => setTimeout(resolve, 275));
 
     expect(loads).toBe(1);
   });
 
   it("marks only the source check as stopping after backend acceptance", async () => {
-    mockCommands({ stop_source_check: () => true });
+    mockCommands({
+      stop_source_check: () => true,
+      index_work_snapshot: () => ({
+        sourceCheck: {
+          running: true,
+          stopping: true,
+          lastResult: "stopped",
+          eventSequence: 2,
+        },
+        fileInformation: {
+          running: false,
+          paused: false,
+          stopping: false,
+          queued: false,
+          eventSequence: 0,
+        },
+      }),
+    });
     useSectionsStore.setState({
-      sourceCheck: { running: true, stopping: false, progress: null },
+      sourceCheck: {
+        running: true,
+        stopping: false,
+        lastResult: "stopped",
+        eventSequence: 1,
+        progress: null,
+      },
     });
 
     await useSectionsStore.getState().stopSourceCheck();

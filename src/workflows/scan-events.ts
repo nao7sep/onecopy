@@ -19,6 +19,11 @@ let installation: Promise<void> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let derivedIssuesTimer: ReturnType<typeof setTimeout> | null = null;
 
+interface SequencedProgress {
+  eventSequence: number;
+  progress: ScanProgress;
+}
+
 function refreshLibrarySoon(): void {
   if (refreshTimer !== null) return;
   refreshTimer = setTimeout(() => {
@@ -48,34 +53,61 @@ async function install(): Promise<void> {
     await listen<Omit<SourceCheckState, "progress">>(
       "source-check://state",
       (event) => {
-        useSectionsStore.setState((state) => ({
-          sourceCheck: {
-            ...event.payload,
-            progress: state.sourceCheck.progress,
-          },
-        }));
+        useSectionsStore.setState((state) =>
+          event.payload.eventSequence <= state.sourceCheck.eventSequence
+            ? state
+            : {
+                sourceCheck: {
+                  ...event.payload,
+                  progress: state.sourceCheck.progress,
+                },
+              },
+        );
       },
     );
-    await listen<ScanProgress>("source-check://progress", (event) => {
-      useSectionsStore.setState((state) => ({
-        sourceCheck: {
-          ...state.sourceCheck,
-          running: true,
-          progress: event.payload,
-        },
-      }));
-      refreshLibrarySoon();
+    await listen<SequencedProgress>("source-check://progress", (event) => {
+      let accepted = false;
+      useSectionsStore.setState((state) => {
+        if (event.payload.eventSequence <= state.sourceCheck.eventSequence) return state;
+        accepted = true;
+        return {
+          sourceCheck: {
+            ...state.sourceCheck,
+            running: true,
+            eventSequence: event.payload.eventSequence,
+            progress: event.payload.progress,
+          },
+        };
+      });
+      if (accepted) refreshLibrarySoon();
     });
-    await listen<{ stopped?: boolean; error?: string }>(
+    await listen<{ eventSequence: number; stopped?: boolean; error?: string }>(
       "source-check://done",
       (event) => {
-        useSectionsStore.setState((state) => ({
-          sourceCheck: { running: false, stopping: false, progress: null },
-          rescanNeeded:
-            event.payload.stopped === true || event.payload.error !== undefined
-              ? true
-              : state.rescanNeeded,
-        }));
+        let accepted = false;
+        useSectionsStore.setState((state) => {
+          if (event.payload.eventSequence <= state.sourceCheck.eventSequence) return state;
+          accepted = true;
+          return {
+            sourceCheck: {
+              running: false,
+              stopping: false,
+              lastResult:
+                event.payload.error !== undefined
+                  ? "failed"
+                  : event.payload.stopped === true
+                    ? "stopped"
+                    : "completed",
+              eventSequence: event.payload.eventSequence,
+              progress: null,
+            },
+            rescanNeeded:
+              event.payload.stopped === true || event.payload.error !== undefined
+                ? true
+                : state.rescanNeeded,
+          };
+        });
+        if (!accepted) return;
         if (event.payload.error !== undefined) {
           log.error("source-folder check failed", {
             error: { message: event.payload.error },
@@ -89,33 +121,50 @@ async function install(): Promise<void> {
     await listen<Omit<FileInformationState, "progress">>(
       "file-information://state",
       (event) => {
-        useSectionsStore.setState((state) => ({
-          fileInformation: {
-            ...event.payload,
-            progress: state.fileInformation.progress,
-          },
-        }));
+        useSectionsStore.setState((state) =>
+          event.payload.eventSequence <= state.fileInformation.eventSequence
+            ? state
+            : {
+                fileInformation: {
+                  ...event.payload,
+                  progress: state.fileInformation.progress,
+                },
+              },
+        );
       },
     );
-    await listen<ScanProgress>("file-information://progress", (event) => {
-      useSectionsStore.setState((state) => ({
-        fileInformation: {
-          ...state.fileInformation,
-          running: true,
-          progress: event.payload,
-        },
-      }));
-      refreshLibrarySoon();
+    await listen<SequencedProgress>("file-information://progress", (event) => {
+      let accepted = false;
+      useSectionsStore.setState((state) => {
+        if (event.payload.eventSequence <= state.fileInformation.eventSequence) return state;
+        accepted = true;
+        return {
+          fileInformation: {
+            ...state.fileInformation,
+            running: true,
+            eventSequence: event.payload.eventSequence,
+            progress: event.payload.progress,
+          },
+        };
+      });
+      if (accepted) refreshLibrarySoon();
     });
-    await listen<{ error?: string }>("file-information://done", (event) => {
-      useSectionsStore.setState((state) => ({
-        fileInformation: {
-          ...state.fileInformation,
-          running: false,
-          stopping: false,
-          progress: null,
-        },
-      }));
+    await listen<{ eventSequence: number; error?: string }>("file-information://done", (event) => {
+      let accepted = false;
+      useSectionsStore.setState((state) => {
+        if (event.payload.eventSequence <= state.fileInformation.eventSequence) return state;
+        accepted = true;
+        return {
+          fileInformation: {
+            ...state.fileInformation,
+            running: false,
+            stopping: false,
+            eventSequence: event.payload.eventSequence,
+            progress: null,
+          },
+        };
+      });
+      if (!accepted) return;
       if (event.payload.error !== undefined) {
         log.error("file-information completion failed", {
           error: { message: event.payload.error },

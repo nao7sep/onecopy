@@ -12,6 +12,8 @@ import { reportActionFailure } from "./notifications-store";
 export interface SourceCheckState {
   running: boolean;
   stopping: boolean;
+  lastResult: "stopped" | "completed" | "failed";
+  eventSequence: number;
   progress: ScanProgress | null;
 }
 
@@ -20,6 +22,7 @@ export interface FileInformationState {
   paused: boolean;
   stopping: boolean;
   queued: boolean;
+  eventSequence: number;
   progress: ScanProgress | null;
 }
 
@@ -37,8 +40,9 @@ interface SectionsState {
   rescanNeeded: boolean;
   loadCounts: () => Promise<void>;
   loadIndexWork: () => Promise<void>;
-  startSourceCheck: () => Promise<void>;
+  startSourceCheck: () => Promise<boolean>;
   stopSourceCheck: () => Promise<void>;
+  admitBackgroundCompletion: () => Promise<void>;
   setFileInformationPaused: (paused: boolean) => Promise<void>;
 }
 
@@ -48,6 +52,8 @@ const workLoad = requestSeq();
 const initialSourceCheck: SourceCheckState = {
   running: false,
   stopping: false,
+  lastResult: "stopped",
+  eventSequence: 0,
   progress: null,
 };
 
@@ -56,10 +62,11 @@ const initialFileInformation: FileInformationState = {
   paused: false,
   stopping: false,
   queued: false,
+  eventSequence: 0,
   progress: null,
 };
 
-export const useSectionsStore = create<SectionsState>((set) => ({
+export const useSectionsStore = create<SectionsState>((set, get) => ({
   counts: null,
   error: null,
   sourceCheck: initialSourceCheck,
@@ -91,11 +98,22 @@ export const useSectionsStore = create<SectionsState>((set) => ({
       if (!fresh()) return;
       set((state) => ({
         error: null,
-        sourceCheck: { ...snapshot.sourceCheck, progress: state.sourceCheck.progress },
-        fileInformation: {
-          ...snapshot.fileInformation,
-          progress: state.fileInformation.progress,
-        },
+        sourceCheck:
+          snapshot.sourceCheck.eventSequence < state.sourceCheck.eventSequence
+            ? state.sourceCheck
+            : {
+                ...snapshot.sourceCheck,
+                progress: snapshot.sourceCheck.running ? state.sourceCheck.progress : null,
+              },
+        fileInformation:
+          snapshot.fileInformation.eventSequence < state.fileInformation.eventSequence
+            ? state.fileInformation
+            : {
+                ...snapshot.fileInformation,
+                progress: snapshot.fileInformation.running
+                  ? state.fileInformation.progress
+                  : null,
+              },
       }));
     } catch (error) {
       log.error("library background-work status failed", toErrorFields(error));
@@ -115,16 +133,16 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     try {
       const started = await invoke<boolean>("start_source_check");
       if (started) {
-        set({
-          sourceCheck: { running: true, stopping: false, progress: null },
-          rescanNeeded: false,
-        });
+        set({ rescanNeeded: false });
+        await get().loadIndexWork();
         log.info("source-folder check started");
       }
+      return started;
     } catch (error) {
       log.error("source-folder check start failed", toErrorFields(error));
       set({ error: "Couldn’t start checking source folders." });
       reportActionFailure("source-check-start-failed", "Couldn’t start checking source folders.", error);
+      return false;
     }
   },
 
@@ -133,9 +151,7 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     try {
       const accepted = await invoke<boolean>("stop_source_check");
       if (accepted) {
-        set((state) => ({
-          sourceCheck: { ...state.sourceCheck, stopping: true },
-        }));
+        await get().loadIndexWork();
       }
     } catch (error) {
       log.error("source-folder stop failed", toErrorFields(error));
@@ -144,17 +160,25 @@ export const useSectionsStore = create<SectionsState>((set) => ({
     }
   },
 
+  admitBackgroundCompletion: async () => {
+    try {
+      await invoke("admit_background_completion");
+    } catch (error) {
+      log.error("file-information startup failed", toErrorFields(error));
+      set({ error: "Couldn’t start completing file information." });
+      reportActionFailure(
+        "file-information-start-failed",
+        "Couldn’t start completing file information.",
+        error,
+      );
+    }
+  },
+
   setFileInformationPaused: async (paused) => {
     set({ error: null });
     try {
       await invoke("set_file_information_paused", { paused });
-      set((state) => ({
-        fileInformation: {
-          ...state.fileInformation,
-          paused,
-          stopping: paused && state.fileInformation.running,
-        },
-      }));
+      await get().loadIndexWork();
     } catch (error) {
       log.error("file-information pause change failed", toErrorFields(error));
       set({ error: "Couldn’t change file-information background work." });

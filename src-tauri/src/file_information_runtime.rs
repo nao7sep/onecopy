@@ -3,7 +3,7 @@
 //! only ensure that one worker looks at it.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -15,6 +15,7 @@ static PAUSED: AtomicBool = AtomicBool::new(false);
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 static PREEMPTED: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +24,7 @@ pub struct Snapshot {
     paused: bool,
     stopping: bool,
     queued: bool,
+    event_sequence: u64,
 }
 
 pub fn snapshot(data_root: &std::path::Path) -> Snapshot {
@@ -34,7 +36,12 @@ pub fn snapshot(data_root: &std::path::Path) -> Snapshot {
         paused: PAUSED.load(Ordering::SeqCst),
         stopping: running() && (PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst)),
         queued,
+        event_sequence: EVENT_SEQUENCE.load(Ordering::SeqCst),
     }
+}
+
+pub(crate) fn next_event_sequence() -> u64 {
+    EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 pub fn running() -> bool {
@@ -59,7 +66,7 @@ pub fn wake(app: AppHandle) {
         PAUSED.store(true, Ordering::SeqCst);
         fail(&app, &error);
         emit_state(&app);
-        emit(&app, "file-information://done", json!({ "error": error }));
+        emit_done(&app, json!({ "error": error }));
     }
 }
 
@@ -110,7 +117,7 @@ fn worker_entry(app: AppHandle) {
         let error = crate::failure_runtime::panic_message(payload);
         fail(&app, &error);
         emit_state(&app);
-        emit(&app, "file-information://done", json!({ "error": error }));
+        emit_done(&app, json!({ "error": error }));
     }
 }
 
@@ -148,7 +155,7 @@ fn worker(app: AppHandle) {
     RUNNING.store(false, Ordering::SeqCst);
     PREEMPTED.store(false, Ordering::SeqCst);
     emit_state(&app);
-    emit(&app, "file-information://done", terminal);
+    emit_done(&app, terminal);
     if REQUESTED.load(Ordering::SeqCst)
         && !PAUSED.load(Ordering::SeqCst)
         && !crate::scan_runtime::foreground_pending()
@@ -158,9 +165,10 @@ fn worker(app: AppHandle) {
             PAUSED.store(true, Ordering::SeqCst);
             fail(&app, &error);
             emit_state(&app);
-            emit(&app, "file-information://done", json!({ "error": error }));
+            emit_done(&app, json!({ "error": error }));
         }
     }
+    crate::derived_work::wake();
 }
 
 fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>, String> {
@@ -176,8 +184,11 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
         chrono::Utc::now().timestamp_millis(),
     );
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
-    let progress =
-        crate::scan_runtime::progress_emitter(app.clone(), "file-information://progress");
+    let progress = crate::scan_runtime::progress_emitter(
+        app.clone(),
+        "file-information://progress",
+        next_event_sequence,
+    );
     let summary = crate::scan_runtime::with_owner(
         crate::scan_runtime::Owner::FileInformation,
         PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst),
@@ -283,7 +294,15 @@ fn emit_state(app: &AppHandle) {
             return;
         }
     };
-    emit(app, "file-information://state", snapshot(&data_root));
+    let sequence = next_event_sequence();
+    let mut state = snapshot(&data_root);
+    state.event_sequence = sequence;
+    emit(app, "file-information://state", state);
+}
+
+fn emit_done(app: &AppHandle, mut payload: serde_json::Value) {
+    payload["eventSequence"] = json!(next_event_sequence());
+    emit(app, "file-information://done", payload);
 }
 
 fn emit<T: Clone + Serialize>(app: &AppHandle, event: &str, payload: T) {

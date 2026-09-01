@@ -101,7 +101,11 @@ export default function BackgroundWorkModal() {
                 ? "Stopping after the current safe step…"
                 : sourceCheck.running
                   ? "Running…"
-                  : "Stopped"}
+                  : sourceCheck.lastResult === "completed"
+                    ? "Completed"
+                    : sourceCheck.lastResult === "failed"
+                      ? "Failed — open Issues to retry"
+                      : "Stopped"}
             </span>
           </span>
           <Button

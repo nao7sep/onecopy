@@ -96,6 +96,33 @@ pub(crate) fn with_watcher_claim<T>(work: impl FnOnce() -> T) -> T {
     with_owner(Owner::Watcher, false, work)
 }
 
+/// Automatic derived work owns one bounded turn only when no index lifecycle
+/// already owns or is waiting on the projection boundary. A source lifecycle
+/// may become active after this claim is taken; it then waits for this turn
+/// instead of racing a second SQLite writer.
+pub(crate) fn try_with_derived_claim<T>(work: impl FnOnce() -> T) -> Option<T> {
+    let _index = match INDEXING.try_lock() {
+        Ok(index) => index,
+        Err(TryLockError::WouldBlock) => return None,
+        Err(TryLockError::Poisoned(poisoned)) => {
+            crate::logging::error(
+                "index admission state recovered after a panic",
+                serde_json::json!({}),
+            );
+            INDEXING.clear_poison();
+            poisoned.into_inner()
+        }
+    };
+    if crate::source_check_runtime::running()
+        || crate::file_information_runtime::running()
+        || foreground_pending()
+        || ACTIVE_OWNER.load(Ordering::SeqCst) != 0
+    {
+        return None;
+    }
+    Some(work())
+}
+
 /// Runs a foreground index action after asking file-information completion to
 /// yield. Source checking is the one documented conflict and returns busy
 /// instead of placing the user's action into an invisible queue.
@@ -197,6 +224,7 @@ pub fn running() -> bool {
 pub(crate) fn progress_emitter(
     handle: AppHandle,
     event: &'static str,
+    next_sequence: fn() -> u64,
 ) -> impl Fn(crate::scanner::ScanProgress) {
     let last_phase = Cell::new(None::<crate::scanner::ScanPhase>);
     let last_emit = Cell::new(Instant::now() - Duration::from_secs(1));
@@ -210,7 +238,14 @@ pub(crate) fn progress_emitter(
         {
             last_phase.set(Some(progress.phase));
             last_emit.set(now);
-            crate::failure_runtime::emit_or_record(&handle, event, progress);
+            crate::failure_runtime::emit_or_record(
+                &handle,
+                event,
+                serde_json::json!({
+                    "eventSequence": next_sequence(),
+                    "progress": progress,
+                }),
+            );
         }
     }
 }

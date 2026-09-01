@@ -65,7 +65,24 @@ beforeEach(() => {
     error: null,
     activeItem: null,
   });
-  useSectionsStore.setState({ error: null });
+  useSectionsStore.setState({
+    error: null,
+    sourceCheck: {
+      running: false,
+      stopping: false,
+      lastResult: "stopped",
+      eventSequence: 0,
+      progress: null,
+    },
+    fileInformation: {
+      running: false,
+      paused: false,
+      stopping: false,
+      queued: false,
+      eventSequence: 0,
+      progress: null,
+    },
+  });
 });
 
 afterEach(cleanup);
@@ -182,6 +199,22 @@ describe("Background work", () => {
           call.args.paused === true,
       ),
     ).toBe(true);
+  });
+
+  it("distinguishes a completed source pass from a stopped or failed pass", () => {
+    useSectionsStore.setState((state) => ({
+      sourceCheck: { ...state.sourceCheck, lastResult: "completed" },
+    }));
+    const view = render(<BackgroundWorkModal />);
+    expect(document.body.textContent).toContain("Completed");
+
+    act(() => {
+      useSectionsStore.setState((state) => ({
+        sourceCheck: { ...state.sourceCheck, lastResult: "failed" },
+      }));
+    });
+    expect(document.body.textContent).toContain("Failed — open Issues to retry");
+    view.unmount();
   });
 
   it("does not allow resume to race a class that is still stopping", () => {

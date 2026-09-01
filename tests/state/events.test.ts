@@ -60,12 +60,19 @@ beforeAll(async () => {
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
   sections.setState({
-    sourceCheck: { running: false, stopping: false, progress: null },
+    sourceCheck: {
+      running: false,
+      stopping: false,
+      lastResult: "stopped",
+      eventSequence: 0,
+      progress: null,
+    },
     fileInformation: {
       running: false,
       paused: false,
       stopping: false,
       queued: false,
+      eventSequence: 0,
       progress: null,
     },
     rescanNeeded: false,
@@ -74,8 +81,19 @@ beforeEach(async () => {
     get_section_counts: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
     index_work_snapshot: () => ({
-      sourceCheck: { running: false, stopping: false },
-      fileInformation: { running: false, paused: false, stopping: false, queued: false },
+      sourceCheck: {
+        running: false,
+        stopping: false,
+        lastResult: "stopped",
+        eventSequence: 0,
+      },
+      fileInformation: {
+        running: false,
+        paused: false,
+        stopping: false,
+        queued: false,
+        eventSequence: 0,
+      },
     }),
     patch_state: () => ({}),
     binaries_state: () => ({ status: "up-to-date" }),
@@ -87,7 +105,7 @@ beforeEach(async () => {
 describe("library work events", () => {
   it("reports file-information progress independently", async () => {
     const progress = scanProgress({ phase: "hashing", done: 12, total: 40 });
-    fireEvent("file-information://progress", progress);
+    fireEvent("file-information://progress", { eventSequence: 1, progress });
 
     expect(sections.getState().fileInformation.running).toBe(true);
     expect(sections.getState().sourceCheck.running).toBe(false);
@@ -95,32 +113,71 @@ describe("library work events", () => {
   });
 
   it("clears file-information work on a clean finish", async () => {
-    fireEvent("file-information://progress", scanProgress());
-    fireEvent("file-information://done", {});
+    fireEvent("file-information://progress", {
+      eventSequence: 1,
+      progress: scanProgress(),
+    });
+    fireEvent("file-information://done", { eventSequence: 2 });
     expect(sections.getState().fileInformation.running).toBe(false);
     expect(sections.getState().fileInformation.progress).toBeNull();
   });
 
   it("marks a stopped source check as still needing reconciliation", async () => {
     sections.setState({
-      sourceCheck: { running: true, stopping: true, progress: scanProgress() },
+      sourceCheck: {
+        running: true,
+        stopping: true,
+        lastResult: "stopped",
+        eventSequence: 4,
+        progress: scanProgress(),
+      },
       rescanNeeded: false,
     });
 
-    fireEvent("source-check://done", { stopped: true });
+    fireEvent("source-check://done", { eventSequence: 5, stopped: true });
     expect(sections.getState().sourceCheck.running).toBe(false);
     expect(sections.getState().sourceCheck.stopping).toBe(false);
+    expect(sections.getState().sourceCheck.lastResult).toBe("stopped");
     expect(sections.getState().rescanNeeded).toBe(true);
   });
 
   it("clears a failed source check rather than leaving the footer stuck", async () => {
     sections.setState({
-      sourceCheck: { running: true, stopping: false, progress: scanProgress() },
+      sourceCheck: {
+        running: true,
+        stopping: false,
+        lastResult: "stopped",
+        eventSequence: 7,
+        progress: scanProgress(),
+      },
     });
 
-    fireEvent("source-check://done", { error: "index open failed" });
+    fireEvent("source-check://done", { eventSequence: 8, error: "index open failed" });
     expect(sections.getState().sourceCheck.running).toBe(false);
     expect(sections.getState().sourceCheck.progress).toBeNull();
+    expect(sections.getState().sourceCheck.lastResult).toBe("failed");
+  });
+
+  it("retains a clean source check as completed", () => {
+    fireEvent("source-check://done", { eventSequence: 1 });
+    expect(sections.getState().sourceCheck.lastResult).toBe("completed");
+  });
+
+  it("does not let delayed progress or state resurrect settled work", () => {
+    const progress = scanProgress();
+    fireEvent("source-check://progress", { eventSequence: 2, progress });
+    fireEvent("source-check://done", { eventSequence: 4 });
+    fireEvent("source-check://progress", { eventSequence: 3, progress });
+    fireEvent("source-check://state", {
+      running: true,
+      stopping: true,
+      lastResult: "stopped",
+      eventSequence: 1,
+    });
+
+    expect(sections.getState().sourceCheck.running).toBe(false);
+    expect(sections.getState().sourceCheck.stopping).toBe(false);
+    expect(sections.getState().sourceCheck.lastResult).toBe("completed");
   });
 });
 

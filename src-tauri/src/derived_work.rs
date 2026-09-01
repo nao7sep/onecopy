@@ -28,6 +28,7 @@ use crate::preview::CachePaths;
 
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
+static AUTOMATIC_ADMITTED: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 static PRIORITY: LazyLock<Mutex<PriorityHints>> =
     LazyLock::new(|| Mutex::new(PriorityHints::default()));
@@ -215,7 +216,18 @@ pub fn is_idle() -> bool {
 }
 
 pub(crate) fn available() -> bool {
-    !crate::derived_runtime::exclusive() && !crate::scan_runtime::running()
+    AUTOMATIC_ADMITTED.load(Ordering::SeqCst)
+        && !crate::derived_runtime::exclusive()
+        && !crate::scan_runtime::running()
+}
+
+/// Opens the automatic media queue only after the launch source decision has
+/// reached its terminal boundary. Starting the worker before this point keeps
+/// startup cheap, but it must not enrich stale rows before source
+/// reconciliation has had the first chance to retire them.
+pub(crate) fn admit_automatic() {
+    AUTOMATIC_ADMITTED.store(true, Ordering::SeqCst);
+    wake();
 }
 
 /// Wake after index, settings, tool, priority, or lifecycle changes. Durable
@@ -353,7 +365,12 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
         if !available() {
             continue;
         }
-        match run_one_pass(app, &mut cursors) {
+        let Some(pass) = crate::scan_runtime::try_with_derived_claim(|| {
+            run_one_pass(app, &mut cursors)
+        }) else {
+            continue;
+        };
+        match pass {
             Ok(did_work) => {
                 if !cleared_previous_failure {
                     crate::failure_runtime::clear(

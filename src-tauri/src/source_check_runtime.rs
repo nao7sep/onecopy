@@ -1,7 +1,7 @@
 //! Lifecycle owner for the finite `Check source folders` job.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -12,19 +12,51 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+static LAST_RESULT: AtomicU8 = AtomicU8::new(SourceCheckResult::Stopped as u8);
+static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SourceCheckResult {
+    Stopped = 0,
+    Completed = 1,
+    Failed = 2,
+}
+
+impl SourceCheckResult {
+    fn current() -> Self {
+        match LAST_RESULT.load(Ordering::SeqCst) {
+            1 => Self::Completed,
+            2 => Self::Failed,
+            _ => Self::Stopped,
+        }
+    }
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     running: bool,
     stopping: bool,
+    last_result: SourceCheckResult,
+    event_sequence: u64,
 }
 
 pub fn snapshot() -> Snapshot {
+    snapshot_at(EVENT_SEQUENCE.load(Ordering::SeqCst))
+}
+
+fn snapshot_at(event_sequence: u64) -> Snapshot {
     Snapshot {
         running: running(),
         stopping: running() && STOP_REQUESTED.load(Ordering::SeqCst),
+        last_result: SourceCheckResult::current(),
+        event_sequence,
     }
+}
+
+pub(crate) fn next_event_sequence() -> u64 {
+    EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 pub fn running() -> bool {
@@ -55,11 +87,14 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
         })
         .map_err(|error| {
             RUNNING.store(false, Ordering::SeqCst);
-            crate::file_information_runtime::wake(app.clone());
+            LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
+            crate::admit_background_completion(app.clone());
             format!("could not start source-folder check: {error}")
         })?;
     let mut workers = WORKERS.lock().map_err(|_| {
         RUNNING.store(false, Ordering::SeqCst);
+        LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
+        crate::admit_background_completion(app.clone());
         "source-folder worker state is unavailable".to_string()
     })?;
     workers.push(worker);
@@ -67,7 +102,9 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
     emit_state(&app);
     if release.send(()).is_err() {
         RUNNING.store(false, Ordering::SeqCst);
+        LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
         emit_state(&app);
+        crate::admit_background_completion(app);
         return Err("source-folder worker could not leave its start gate".to_string());
     }
     Ok(true)
@@ -79,11 +116,12 @@ fn worker_entry(app: AppHandle) {
         RUNNING.store(false, Ordering::SeqCst);
         STOP_REQUESTED.store(false, Ordering::SeqCst);
         RESTART_REQUESTED.store(false, Ordering::SeqCst);
+        LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
         let error = crate::failure_runtime::panic_message(payload);
         fail(&app, &error);
         emit_state(&app);
-        emit(&app, "source-check://done", json!({ "error": error }));
-        crate::file_information_runtime::wake(app);
+        emit_done(&app, json!({ "error": error }));
+        crate::admit_background_completion(app);
     }
 }
 
@@ -92,6 +130,7 @@ fn worker(app: AppHandle) {
     let terminal = match outcome {
         Ok(Ok(summary)) => {
             RESTART_REQUESTED.store(false, Ordering::SeqCst);
+            LAST_RESULT.store(SourceCheckResult::Completed as u8, Ordering::SeqCst);
             crate::logging::info(
                 "source-folder check complete",
                 json!({ "summary": summary }),
@@ -102,6 +141,7 @@ fn worker(app: AppHandle) {
             json!({ "summary": summary })
         }
         Ok(Err(error)) if error == crate::scanner::CANCELLED => {
+            LAST_RESULT.store(SourceCheckResult::Stopped as u8, Ordering::SeqCst);
             crate::logging::info("source-folder check stopped", json!({}));
             json!({
                 "stopped": !RESTART_REQUESTED.load(Ordering::SeqCst),
@@ -110,11 +150,13 @@ fn worker(app: AppHandle) {
         }
         Ok(Err(error)) => {
             RESTART_REQUESTED.store(false, Ordering::SeqCst);
+            LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
             fail(&app, &error);
             json!({ "error": error })
         }
         Err(payload) => {
             RESTART_REQUESTED.store(false, Ordering::SeqCst);
+            LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
             let error = crate::failure_runtime::panic_message(payload);
             fail(&app, &error);
             json!({ "error": error })
@@ -123,7 +165,7 @@ fn worker(app: AppHandle) {
     RUNNING.store(false, Ordering::SeqCst);
     STOP_REQUESTED.store(false, Ordering::SeqCst);
     emit_state(&app);
-    emit(&app, "source-check://done", terminal);
+    emit_done(&app, terminal);
     // A foreground action may have preempted this worker before it acquired
     // the index claim. In that order the foreground guard finishes first, so
     // its resume attempt sees this worker as still running. Retry here after
@@ -133,7 +175,7 @@ fn worker(app: AppHandle) {
     // its last safe boundary. Completion owns those durable rows regardless
     // of how the source check ended. A resumed source check has priority, so
     // wake() leaves this request queued until that check reaches its terminal.
-    crate::file_information_runtime::wake(app);
+    crate::admit_background_completion(app);
 }
 
 fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
@@ -145,7 +187,11 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
         chrono::Utc::now().timestamp_millis(),
     );
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
-    let progress = crate::scan_runtime::progress_emitter(app.clone(), "source-check://progress");
+    let progress = crate::scan_runtime::progress_emitter(
+        app.clone(),
+        "source-check://progress",
+        next_event_sequence,
+    );
     let summary = crate::scan_runtime::with_owner(
         crate::scan_runtime::Owner::SourceCheck,
         STOP_REQUESTED.load(Ordering::SeqCst),
@@ -181,7 +227,7 @@ pub(crate) fn resume_if_requested(app: AppHandle) {
     if RESTART_REQUESTED.swap(false, Ordering::SeqCst) && !running() {
         if let Err(error) = start(app.clone()) {
             fail(&app, &error);
-            emit(&app, "source-check://done", json!({ "error": error }));
+            emit_done(&app, json!({ "error": error }));
         }
     }
 }
@@ -240,7 +286,13 @@ fn fail(app: &AppHandle, error: &str) {
 }
 
 fn emit_state(app: &AppHandle) {
-    emit(app, "source-check://state", snapshot());
+    let sequence = next_event_sequence();
+    emit(app, "source-check://state", snapshot_at(sequence));
+}
+
+fn emit_done(app: &AppHandle, mut payload: serde_json::Value) {
+    payload["eventSequence"] = json!(next_event_sequence());
+    emit(app, "source-check://done", payload);
 }
 
 fn emit<T: Clone + Serialize>(app: &AppHandle, event: &str, payload: T) {

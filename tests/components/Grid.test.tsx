@@ -104,12 +104,19 @@ beforeEach(() => {
   useQuickViewStore.setState({ session: null, pendingDelete: null });
   useDerivedWorkStore.setState({ activeItem: null });
   useSectionsStore.setState({
-    sourceCheck: { running: false, stopping: false, progress: null },
+    sourceCheck: {
+      running: false,
+      stopping: false,
+      lastResult: "stopped",
+      eventSequence: 0,
+      progress: null,
+    },
     fileInformation: {
       running: false,
       paused: false,
       stopping: false,
       queued: false,
+      eventSequence: 0,
       progress: null,
     },
   });
@@ -140,7 +147,13 @@ beforeEach(() => {
 describe("section repair admission", () => {
   it("does not admit a second section repair while indexing owns the runtime", () => {
     useSectionsStore.setState({
-      sourceCheck: { running: true, stopping: false, progress: null },
+      sourceCheck: {
+        running: true,
+        stopping: false,
+        lastResult: "stopped",
+        eventSequence: 1,
+        progress: null,
+      },
     });
     renderGrid();
 

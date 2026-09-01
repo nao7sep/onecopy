@@ -244,6 +244,81 @@ fn section_counts_across_one_million_logical_items() {
 
 #[test]
 #[ignore]
+fn complete_walk_retires_one_million_vanished_paths() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-bench-vanished-paths-")
+        .tempdir()
+        .unwrap();
+    let source = dir.path().join("empty-source");
+    std::fs::create_dir(&source).unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let root = source.to_string_lossy().to_string();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO contents (hash, byte_size, kind)
+         VALUES ('same-content', 1, 'other');
+         INSERT INTO logical_projection_batch (singleton) VALUES (1);",
+    )
+    .unwrap();
+    conn.execute(
+        "WITH RECURSIVE seq(n) AS (
+             VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
+         )
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, missing)
+         SELECT ?1 || '/' || printf('%07d.txt', n), ?1,
+                printf('%07d.txt', n), 'other', 'same-content', 0
+         FROM seq",
+        [&root],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "DELETE FROM logical_projection_batch;
+         INSERT INTO logical_contents
+           (content_hash, kind, date_state, resolved_utc_ms,
+            representative_path_id, live_copy_count)
+         SELECT content_hash, kind, date_state, resolved_utc_ms,
+                representative_path_id, live_copy_count
+         FROM logical_content_projection;
+         COMMIT;",
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let stats = scanner::walk_root(
+        &conn,
+        &source,
+        &scanner::ScanLists {
+            images: Vec::new(),
+            videos: Vec::new(),
+            audio: Vec::new(),
+            companions: Vec::new(),
+        },
+    )
+    .unwrap();
+    eprintln!(
+        "retired one million vanished paths in {:?}",
+        started.elapsed()
+    );
+    assert_eq!(stats.marked_missing, 1_000_000);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM logical_contents", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM logical_projection_batch", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+#[ignore]
 fn first_issues_page_among_one_million_current_diagnostics() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-bench-issues-")

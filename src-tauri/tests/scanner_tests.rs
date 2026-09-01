@@ -147,6 +147,73 @@ fn walk_adds_then_skips_unchanged_then_marks_missing() {
 }
 
 #[test]
+fn complete_walk_republishes_a_shared_logical_item_once_after_one_copy_vanishes() {
+    let f = fixture("walk-shared-logical-item");
+    let vanished = f.root.join("vanished.jpg");
+    let survivor = f._dir.path().join("outside-root.jpg");
+    let vanished = vanished.to_string_lossy().to_string();
+    let survivor = survivor.to_string_lossy().to_string();
+    let root = f.root.to_string_lossy().to_string();
+    let outside = f._dir.path().to_string_lossy().to_string();
+    f.conn
+        .execute_batch(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('shared', 3, 'image');",
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO paths
+               (abs_path, dir_path, file_name, kind, content_hash, missing,
+                resolved_source, resolved_utc_ms)
+             VALUES (?1, ?2, 'vanished.jpg', 'image', 'shared', 0,
+                     'filesystem', 2000)",
+            rusqlite::params![vanished, root],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO paths
+               (abs_path, dir_path, file_name, kind, content_hash, missing,
+                resolved_source, resolved_utc_ms)
+             VALUES (?1, ?2, 'outside-root.jpg', 'image', 'shared', 0,
+                     'filesystem', 1000)",
+            rusqlite::params![survivor, outside],
+        )
+        .unwrap();
+
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(stats.marked_missing, 1);
+    assert_eq!(
+        f.conn
+            .query_row(
+                "SELECT live_copy_count FROM logical_contents WHERE content_hash = 'shared'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    let representative: String = f
+        .conn
+        .query_row(
+            "SELECT paths.abs_path FROM logical_contents
+             JOIN paths ON paths.id = logical_contents.representative_path_id
+             WHERE logical_contents.content_hash = 'shared'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(representative, survivor);
+    assert_eq!(
+        count(
+            &f.conn,
+            "SELECT COUNT(*) FROM logical_projection_batch"
+        ),
+        0
+    );
+}
+
+#[test]
 fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
     let f = fixture("incomplete-walk");
     let known = f.root.join("known.jpg");

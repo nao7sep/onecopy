@@ -251,6 +251,12 @@ fn set_file_information_paused(app: AppHandle, paused: bool) {
     file_information_runtime::set_paused(app, paused);
 }
 
+#[tauri::command]
+fn admit_background_completion(app: AppHandle) {
+    file_information_runtime::wake(app);
+    derived_work::admit_automatic();
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct IndexWorkSnapshot {
@@ -2166,12 +2172,6 @@ pub fn run() {
                 }
             }
 
-            // Pending rows are independent of source discovery and always get
-            // an opportunity to finish. The finite configured-source pass is
-            // admitted by the main-window bootstrap only after its event
-            // wiring and usable interface are ready.
-            file_information_runtime::wake(app.handle().clone());
-
             logging::info(
                 "app startup",
                 json!({
@@ -2196,6 +2196,7 @@ pub fn run() {
             start_source_check,
             stop_source_check,
             set_file_information_paused,
+            admit_background_completion,
             index_work_snapshot,
             rebuild_library_index,
             get_section_counts,

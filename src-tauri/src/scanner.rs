@@ -1084,8 +1084,25 @@ fn walk_root_with_progress(
     )
     .map_err(|e| e.to_string())?;
 
-    // Collect the currently-present set to diff against the DB afterwards.
-    let mut present: Vec<String> = Vec::new();
+    // A connection-local table makes the complete-walk absence publication
+    // bounded by SQLite rather than by a million-path Rust set plus one durable
+    // transaction per vanished file. An interrupted walk never reaches that
+    // publication boundary, so its partial table proves no absences.
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS walk_present_paths (\
+             abs_path TEXT PRIMARY KEY\
+         ) WITHOUT ROWID;\
+         CREATE TEMP TABLE IF NOT EXISTS walk_vanished_paths (\
+             abs_path TEXT PRIMARY KEY,\
+             content_hash TEXT\
+         ) WITHOUT ROWID;\
+         DELETE FROM walk_present_paths;\
+         DELETE FROM walk_vanished_paths;",
+    )
+    .map_err(|error| error.to_string())?;
+    let mut record_present = conn
+        .prepare_cached("INSERT OR IGNORE INTO walk_present_paths (abs_path) VALUES (?1)")
+        .map_err(|error| error.to_string())?;
     let mut walk_incomplete = false;
     let mut current_stat_failures = std::collections::HashSet::<String>::new();
     // One probe up front so a clean index never pays a per-file DELETE.
@@ -1124,7 +1141,9 @@ fn walk_root_with_progress(
         }
 
         stats.seen += 1;
-        present.push(abs.clone());
+        record_present
+            .execute([&abs])
+            .map_err(|error| error.to_string())?;
 
         match upsert_file(conn, path, lists) {
             Ok(outcome) => {
@@ -1158,6 +1177,7 @@ fn walk_root_with_progress(
             failures_before + stats.errors,
         ));
     }
+    drop(record_present);
 
     // Only a complete directory enumeration can prove absence. A path whose
     // richer stat failed was still seen and remains live with an exact Issue;
@@ -1173,21 +1193,76 @@ fn walk_root_with_progress(
             .replace('%', "!%")
             .replace('_', "!_");
         let placeholders_root = format!("{}%", ensure_trailing_separator(&escaped_root));
-        let mut select = conn
-            .prepare("SELECT abs_path FROM paths WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0")
-            .map_err(|e| e.to_string())?;
-        let known: Vec<String> = select
-            .query_map([&placeholders_root], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?;
-        let present_set: std::collections::HashSet<&String> = present.iter().collect();
-        for path in known {
-            if !present_set.contains(&path) {
-                mark_path_missing(conn, &path)?;
-                stats.marked_missing += 1;
-            }
-        }
+        check_cancel()?;
+        let publication = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        publication
+            .execute(
+                "INSERT INTO walk_vanished_paths (abs_path, content_hash) \
+                 SELECT paths.abs_path, paths.content_hash FROM paths \
+                 WHERE paths.abs_path LIKE ?1 ESCAPE '!' AND paths.missing = 0 \
+                 AND NOT EXISTS (\
+                     SELECT 1 FROM walk_present_paths \
+                     WHERE walk_present_paths.abs_path = paths.abs_path\
+                 )",
+                [&placeholders_root],
+            )
+            .map_err(|error| error.to_string())?;
+        publication
+            .execute(
+                "DELETE FROM issues WHERE kind IN (?1, ?2, ?3, ?4) \
+                 AND path IN (\
+                     SELECT abs_path FROM walk_vanished_paths\
+                 )",
+                params![
+                    WALK_ERROR,
+                    STAT_ERROR,
+                    READ_ERROR,
+                    COPIES_DISAGREE,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        publication
+            .execute(
+                "INSERT INTO logical_projection_batch (singleton) VALUES (1)",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        stats.marked_missing += publication
+            .execute(
+                "UPDATE paths SET missing = 1 \
+                 WHERE abs_path IN (SELECT abs_path FROM walk_vanished_paths)",
+                [],
+            )
+            .map_err(|error| error.to_string())? as u64;
+        publication
+            .execute(
+                "DELETE FROM logical_contents WHERE content_hash IN (\
+                     SELECT content_hash FROM walk_vanished_paths \
+                     WHERE content_hash IS NOT NULL\
+                 )",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        publication
+            .execute(
+                "INSERT INTO logical_contents \
+                   (content_hash, kind, date_state, resolved_utc_ms, \
+                    representative_path_id, live_copy_count) \
+                 SELECT projection.content_hash, projection.kind, \
+                        projection.date_state, projection.resolved_utc_ms, \
+                        projection.representative_path_id, projection.live_copy_count \
+                 FROM logical_content_projection projection \
+                 WHERE projection.content_hash IN (\
+                     SELECT content_hash FROM walk_vanished_paths \
+                     WHERE content_hash IS NOT NULL\
+                 )",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        publication
+            .execute("DELETE FROM logical_projection_batch", [])
+            .map_err(|error| error.to_string())?;
+        publication.commit().map_err(|error| error.to_string())?;
 
         // A complete walk also proves that old entry failures beneath this
         // root no longer exist, including when the failed entry itself was

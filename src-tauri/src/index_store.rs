@@ -23,7 +23,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 8;
+const SCHEMA_REVISION: i64 = 9;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -112,6 +112,40 @@ CREATE INDEX IF NOT EXISTS idx_logical_contents_section
 CREATE INDEX IF NOT EXISTS idx_logical_contents_work
   ON logical_contents (kind, content_hash);
 
+-- A path batch suppresses the row trigger while one transaction changes many
+-- physical copies, then republishes each affected logical item once from the
+-- canonical projection below. SQLite serializes writers, and the guard lives
+-- in the same transaction as the path writes, so no other writer can observe
+-- or join a half-published batch and rollback can never strand the guard.
+CREATE TABLE IF NOT EXISTS logical_projection_batch (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
+);
+
+CREATE VIEW IF NOT EXISTS logical_content_projection AS
+SELECT c.hash AS content_hash,
+       CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END AS kind,
+       CASE
+         WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
+           THEN 'pending'
+         WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
+         ELSE 'dated'
+       END AS date_state,
+       CASE
+         WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
+           THEN MIN(p.resolved_utc_ms)
+         ELSE NULL
+       END AS resolved_utc_ms,
+       (SELECT ranked.id FROM paths ranked
+        WHERE ranked.content_hash = c.hash
+          AND ranked.missing = 0 AND ranked.companion_of IS NULL
+        ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                 ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+        LIMIT 1) AS representative_path_id,
+       COUNT(*) AS live_copy_count
+FROM contents c JOIN paths p ON p.content_hash = c.hash
+WHERE p.missing = 0 AND p.companion_of IS NULL
+GROUP BY c.hash, c.kind;
+
 -- Similarity is published as complete UTC-month cohorts. Dirty buckets are
 -- reconstructible invalidation facts, not jobs: a revision changes whenever
 -- source facts affecting one cohort change, so stale computation can never
@@ -138,42 +172,22 @@ DROP TRIGGER IF EXISTS paths_logical_after_delete;
 CREATE TRIGGER IF NOT EXISTS paths_logical_after_insert_v2
 AFTER INSERT ON paths
 WHEN NEW.content_hash IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM logical_projection_batch)
 BEGIN
   DELETE FROM logical_contents WHERE content_hash = NEW.content_hash;
 
   INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
-  SELECT c.hash,
-         CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         CASE
-           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
-             THEN 'pending'
-           WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
-           ELSE 'dated'
-         END,
-         CASE
-           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
-             THEN MIN(p.resolved_utc_ms)
-           ELSE NULL
-         END,
-         (SELECT ranked.id FROM paths ranked
-          WHERE ranked.content_hash = c.hash
-            AND ranked.missing = 0 AND ranked.companion_of IS NULL
-          ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
-                   ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
-         LIMIT 1),
-         (SELECT COUNT(*) FROM paths cp
-          WHERE cp.content_hash = c.hash AND cp.missing = 0
-            AND cp.companion_of IS NULL)
-  FROM contents c JOIN paths p ON p.content_hash = c.hash
-  WHERE c.hash = NEW.content_hash AND p.missing = 0 AND p.companion_of IS NULL
-  GROUP BY c.hash, c.kind;
+  SELECT content_hash, kind, date_state, resolved_utc_ms,
+         representative_path_id, live_copy_count
+  FROM logical_content_projection WHERE content_hash = NEW.content_hash;
 END;
 
 CREATE TRIGGER IF NOT EXISTS paths_logical_after_update_v2
 AFTER UPDATE OF content_hash, resolved_utc_ms, resolved_source, missing,
                 companion_of, file_name ON paths
+WHEN NOT EXISTS (SELECT 1 FROM logical_projection_batch)
 BEGIN
   DELETE FROM logical_contents
   WHERE content_hash IN (OLD.content_hash, NEW.content_hash);
@@ -181,68 +195,25 @@ BEGIN
   INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
-  SELECT c.hash,
-         CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         CASE
-           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
-             THEN 'pending'
-           WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
-           ELSE 'dated'
-         END,
-         CASE
-           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
-             THEN MIN(p.resolved_utc_ms)
-           ELSE NULL
-         END,
-         (SELECT ranked.id FROM paths ranked
-          WHERE ranked.content_hash = c.hash
-            AND ranked.missing = 0 AND ranked.companion_of IS NULL
-          ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
-                   ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
-         LIMIT 1),
-         (SELECT COUNT(*) FROM paths cp
-          WHERE cp.content_hash = c.hash AND cp.missing = 0
-            AND cp.companion_of IS NULL)
-  FROM contents c JOIN paths p ON p.content_hash = c.hash
-  WHERE c.hash IN (OLD.content_hash, NEW.content_hash)
-    AND p.missing = 0 AND p.companion_of IS NULL
-  GROUP BY c.hash, c.kind;
+  SELECT content_hash, kind, date_state, resolved_utc_ms,
+         representative_path_id, live_copy_count
+  FROM logical_content_projection
+  WHERE content_hash IN (OLD.content_hash, NEW.content_hash);
 END;
 
 CREATE TRIGGER IF NOT EXISTS paths_logical_after_delete_v2
 AFTER DELETE ON paths
 WHEN OLD.content_hash IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM logical_projection_batch)
 BEGIN
   DELETE FROM logical_contents WHERE content_hash = OLD.content_hash;
 
   INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
      live_copy_count)
-  SELECT c.hash,
-         CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-         CASE
-           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
-             THEN 'pending'
-           WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
-           ELSE 'dated'
-         END,
-         CASE
-           WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
-             THEN MIN(p.resolved_utc_ms)
-           ELSE NULL
-         END,
-         (SELECT ranked.id FROM paths ranked
-          WHERE ranked.content_hash = c.hash
-            AND ranked.missing = 0 AND ranked.companion_of IS NULL
-          ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
-                   ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
-         LIMIT 1),
-         (SELECT COUNT(*) FROM paths cp
-          WHERE cp.content_hash = c.hash AND cp.missing = 0
-            AND cp.companion_of IS NULL)
-  FROM contents c JOIN paths p ON p.content_hash = c.hash
-  WHERE c.hash = OLD.content_hash AND p.missing = 0 AND p.companion_of IS NULL
-  GROUP BY c.hash, c.kind;
+  SELECT content_hash, kind, date_state, resolved_utc_ms,
+         representative_path_id, live_copy_count
+  FROM logical_content_projection WHERE content_hash = OLD.content_hash;
 END;
 
 CREATE TRIGGER IF NOT EXISTS logical_similarity_after_insert
@@ -421,6 +392,8 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
              DROP TABLE IF EXISTS similarity_state;
              DROP TABLE IF EXISTS similarity_dirty_buckets;
              DROP TABLE IF EXISTS evidence;
+             DROP VIEW IF EXISTS logical_content_projection;
+             DROP TABLE IF EXISTS logical_projection_batch;
              DROP TABLE IF EXISTS logical_contents;
              DROP TABLE IF EXISTS paths;
              DROP TABLE IF EXISTS contents;
@@ -529,6 +502,7 @@ pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
              DELETE FROM similar_group_members;
              DELETE FROM similar_groups;
              DELETE FROM evidence;
+             DELETE FROM logical_projection_batch;
              DELETE FROM logical_contents;
              DELETE FROM paths;
              DELETE FROM contents;
@@ -580,6 +554,7 @@ mod tests {
             "evidence",
             "issues",
             "logical_contents",
+            "logical_projection_batch",
             "paths",
             "recent_notifications",
             "scan_dirs",

@@ -21,8 +21,19 @@ beforeEach(() => {
     get_issues: () => ({ total: 0, rows: [] }),
     text_encodings: () => ["utf-8", "shift_jis"],
     index_work_snapshot: () => ({
-      sourceCheck: { running: true, stopping: false },
-      fileInformation: { running: false, paused: false, stopping: false, queued: false },
+      sourceCheck: {
+        running: true,
+        stopping: false,
+        lastResult: "stopped",
+        eventSequence: 1,
+      },
+      fileInformation: {
+        running: false,
+        paused: false,
+        stopping: false,
+        queued: false,
+        eventSequence: 0,
+      },
     }),
   });
   useSettingsStore.getState().openWith(config);

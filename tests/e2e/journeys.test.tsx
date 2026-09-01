@@ -86,6 +86,12 @@ const settle = () =>
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  let sourceCheckSnapshot = {
+    running: false,
+    stopping: false,
+    lastResult: "stopped",
+    eventSequence: 0,
+  };
   mockCommands({
     load_app_data: () => ({
       config: { sourceDirs: [], defaultTimezone: "UTC" },
@@ -107,16 +113,26 @@ beforeEach(() => {
       activeItem: null,
     }),
     index_work_snapshot: () => ({
-      sourceCheck: { running: false, stopping: false },
+      sourceCheck: sourceCheckSnapshot,
       fileInformation: {
         running: false,
         paused: false,
         stopping: false,
         queued: false,
+        eventSequence: 0,
       },
     }),
     get_item_detail: () => null,
-    start_source_check: () => true,
+    start_source_check: () => {
+      sourceCheckSnapshot = {
+        running: true,
+        stopping: false,
+        lastResult: "stopped",
+        eventSequence: sourceCheckSnapshot.eventSequence + 1,
+      };
+      return true;
+    },
+    admit_background_completion: () => null,
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
   useWizardStore.setState({
@@ -129,12 +145,19 @@ beforeEach(() => {
   useAppStore.setState({ appData: null, loadError: null, quarantines: [] });
   useSectionsStore.setState({
     counts: null,
-    sourceCheck: { running: false, stopping: false, progress: null },
+    sourceCheck: {
+      running: false,
+      stopping: false,
+      lastResult: "stopped",
+      eventSequence: 0,
+      progress: null,
+    },
     fileInformation: {
       running: false,
       paused: false,
       stopping: false,
       queued: false,
+      eventSequence: 0,
       progress: null,
     },
     rescanNeeded: false,
@@ -180,6 +203,31 @@ describe("the culling journey", () => {
 
     expect(invokeCalls.map((call) => call.command)).toContain("check_source_dirs");
     expect(invokeCalls.map((call) => call.command)).toContain("start_source_check");
+    expect(invokeCalls.map((call) => call.command)).not.toContain(
+      "admit_background_completion",
+    );
+  });
+
+  it("admits pending file information directly when the launch source check is off", async () => {
+    mockCommand("load_app_data", () => ({
+      config: {
+        sourceDirs: ["/photos"],
+        defaultTimezone: "UTC",
+        checkSourceFoldersAtLaunch: false,
+      },
+      state: {},
+      dataRoot: "/data",
+      debugEnabled: false,
+    }));
+
+    render(<App />);
+    await settle();
+    await settle();
+
+    expect(invokeCalls.map((call) => call.command)).not.toContain("start_source_check");
+    expect(invokeCalls.map((call) => call.command)).toContain(
+      "admit_background_completion",
+    );
   });
 
   it("runs wizard finish → scan → tree → month → arrows → Space → Enter → page decision → refresh", async () => {
@@ -203,15 +251,18 @@ describe("the culling journey", () => {
     // ---- Scan events: progress is visible, done populates the tree ----
     await act(async () => {
       fireEvent("source-check://progress", {
-        phase: "walk",
-        done: 0,
-        total: 1,
-        currentPath: "/photos",
-        discovered: 4,
-        bytesDone: null,
-        bytesTotal: null,
-        failures: 0,
-        nextPhase: "hash",
+        eventSequence: 2,
+        progress: {
+          phase: "walk",
+          done: 0,
+          total: 1,
+          currentPath: "/photos",
+          discovered: 4,
+          bytesDone: null,
+          bytesTotal: null,
+          failures: 0,
+          nextPhase: "hash",
+        },
       });
     });
     expect(useSectionsStore.getState().sourceCheck.progress?.phase).toBe(
@@ -225,7 +276,7 @@ describe("the culling journey", () => {
     }));
     mockSectionItems(() => SCENE);
     await act(async () => {
-      fireEvent("source-check://done", {});
+      fireEvent("source-check://done", { eventSequence: 3 });
     });
     await settle();
     expect(useSectionsStore.getState().sourceCheck.running).toBe(false);
