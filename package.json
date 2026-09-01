@@ -49,6 +49,6 @@
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "fsevents": false
+    "fsevents@2.3.3": false
   }
 }
