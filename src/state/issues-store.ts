@@ -7,7 +7,7 @@ import { create } from "zustand";
 import { requestSeq } from "./request-seq";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 
 export interface IssueRow {
   id: number;
@@ -133,7 +133,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     } catch (error) {
       log.error("issue dismissal failed", toErrorFields(error));
       set({ error: "Couldn’t dismiss the issue." });
-      reportActionFailure("issue-dismiss-failed", "Couldn’t dismiss the issue.", error);
+      recordActionFailure("issue-dismiss-failed", "Couldn’t dismiss the issue.", error);
     }
   },
 
@@ -145,7 +145,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     } catch (error) {
       log.error("dismiss all failed", toErrorFields(error));
       set({ error: "Couldn’t dismiss the issues." });
-      reportActionFailure("issues-dismiss-failed", "Couldn’t dismiss the issues.", error);
+      recordActionFailure("issues-dismiss-failed", "Couldn’t dismiss the issues.", error);
     }
   },
 
@@ -179,7 +179,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       log.error("issue recovery failed", toErrorFields(error));
       await get().loadActive();
       set({ error: "Couldn’t run the recovery." });
-      reportActionFailure("issue-recovery-failed", "Couldn’t run the issue recovery.", error);
+      recordActionFailure("issue-recovery-failed", "Couldn’t run the issue recovery.", error);
     }
   },
 
@@ -191,7 +191,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     } catch (error) {
       log.error("retry all issues failed", toErrorFields(error));
       set({ error: "Couldn’t retry the issues." });
-      reportActionFailure("issues-retry-failed", "Couldn’t retry the issues.", error);
+      recordActionFailure("issues-retry-failed", "Couldn’t retry the issues.", error);
     }
   },
 }));

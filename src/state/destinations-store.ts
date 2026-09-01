@@ -11,7 +11,7 @@ import type {
   PendingDestinationDrop,
   PendingDestinationConflicts,
 } from "../models/destinationTransfer";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 
 export interface DirEntry {
   name: string;
@@ -133,7 +133,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     } catch (error) {
       log.error("destination listing failed", toErrorFields(error));
       set({ listing: { ...get().listing, [path]: "error" } });
-      reportActionFailure(
+      recordActionFailure(
         "destination-list-failed",
         "Couldn’t read this destination folder.",
         error,
@@ -165,7 +165,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     } catch (error) {
       log.error("destination folder creation failed", toErrorFields(error));
       set({ message: String(error) });
-      reportActionFailure(
+      recordActionFailure(
         "destination-folder-create-failed",
         "Couldn’t create the destination folder.",
         error,
@@ -181,7 +181,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     } catch (error) {
       log.error("destination folder deletion failed", toErrorFields(error));
       set({ message: String(error) });
-      reportActionFailure(
+      recordActionFailure(
         "destination-folder-delete-failed",
         "Couldn’t delete the destination folder.",
         error,

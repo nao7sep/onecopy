@@ -9,7 +9,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { requestSeq } from "./request-seq";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 import {
   optionalFeatureSetup,
   type OptionalFeatureChoices,
@@ -141,7 +141,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     } catch (error) {
       log.error("directory picker failed", toErrorFields(error));
       set({ error: "Couldn’t open the directory picker." });
-      reportActionFailure("setup-source-picker-failed", "Couldn’t open the directory picker.", error);
+      recordActionFailure("setup-source-picker-failed", "Couldn’t open the directory picker.", error);
     }
   },
 
@@ -174,7 +174,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
           error: "Couldn’t check this timezone.",
         });
       }
-      reportActionFailure("setup-timezone-check-failed", "Couldn’t check this timezone.", error);
+      recordActionFailure("setup-timezone-check-failed", "Couldn’t check this timezone.", error);
     }
   },
 
@@ -194,7 +194,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     } catch (error) {
       log.error("presence check failed", toErrorFields(error));
       set({ error: "Couldn’t check the configured source folders." });
-      reportActionFailure(
+      recordActionFailure(
         "configured-source-check-failed",
         "Couldn’t check the configured source folders.",
         error,

@@ -10,7 +10,7 @@ import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { normalizeUiFontPreference } from "../utils/theme";
 import { requestSeq } from "./request-seq";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 
 export interface SettingsDraft {
   defaultTimezone: string;
@@ -226,7 +226,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           message: "Couldn’t check this timezone.",
         });
       }
-      reportActionFailure("timezone-check-failed", "Couldn’t check this timezone.", error);
+      recordActionFailure("timezone-check-failed", "Couldn’t check this timezone.", error);
     }
   },
 
@@ -244,7 +244,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     } catch (error) {
       log.error("settings source dir picker failed", toErrorFields(error));
       set({ message: "Couldn’t open the directory picker." });
-      reportActionFailure("source-picker-failed", "Couldn’t open the directory picker.", error);
+      recordActionFailure("source-picker-failed", "Couldn’t open the directory picker.", error);
     }
   },
 

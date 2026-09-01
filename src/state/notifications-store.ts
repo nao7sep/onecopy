@@ -155,16 +155,44 @@ export function reportActionFailure(
   error?: unknown,
 ): void {
   void errorNotification(kind, message, error).catch((recordingError) => {
-    log.error("action failure notification could not be recorded", {
-      kind,
-      actionError: toErrorFields(error).error,
-      recordingError: toErrorFields(recordingError).error,
-    });
-    const reason = recordingError instanceof Error
-      ? recordingError.message
-      : String(recordingError);
-    const direct = `${message} OneCopy could not save this notice: ${reason}`;
-    presentEscapedFailure(direct);
-    recordInterfaceFailure(direct);
+    handleActionFailureRecordingError(kind, message, error, recordingError);
   });
+}
+
+/** Records a failed modal-owned action in required Recent history without
+ * publishing a second live persistent notice over the modal's inline error. */
+export function recordActionFailure(
+  kind: string,
+  message: string,
+  error?: unknown,
+): void {
+  const reason = error instanceof Error ? error.message : error == null ? "" : String(error);
+  const detail = reason !== "" && !message.includes(reason) ? `${message} ${reason}` : message;
+  void recordRecentNotification({
+    kind,
+    level: "error",
+    presentation: "persistent",
+    message: detail,
+  }).catch((recordingError) => {
+    handleActionFailureRecordingError(kind, message, error, recordingError);
+  });
+}
+
+function handleActionFailureRecordingError(
+  kind: string,
+  message: string,
+  error: unknown,
+  recordingError: unknown,
+): void {
+  log.error("action failure notification could not be recorded", {
+    kind,
+    actionError: toErrorFields(error).error,
+    recordingError: toErrorFields(recordingError).error,
+  });
+  const reason = recordingError instanceof Error
+    ? recordingError.message
+    : String(recordingError);
+  const direct = `${message} OneCopy could not save this notice: ${reason}`;
+  presentEscapedFailure(direct);
+  recordInterfaceFailure(direct);
 }
