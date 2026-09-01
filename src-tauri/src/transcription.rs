@@ -73,6 +73,7 @@ pub fn is_cancelled() -> bool {
 
 /// 16 kHz mono f32 — the one input whisper accepts.
 pub const SAMPLE_RATE: u32 = 16_000;
+const PCM_SILENCE_PEAK: f32 = 1.0 / i16::MAX as f32;
 
 struct RemoveFile(PathBuf);
 
@@ -161,6 +162,14 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
 /// empty output alone after a non-zero exit.
 pub fn no_audio_output(stderr: &str) -> bool {
     stderr.contains("matches no streams") || stderr.contains("does not contain any stream")
+}
+
+/// Digital silence and sub-quantization noise contain no useful speech and
+/// make Whisper prone to inventing a short closing phrase. Rejecting them at
+/// the shared PCM boundary also avoids loading the multi-gigabyte model.
+pub fn has_audible_signal(pcm: &[f32]) -> bool {
+    pcm.iter()
+        .any(|sample| sample.is_finite() && sample.abs() > PCM_SILENCE_PEAK)
 }
 
 /// One transcribed segment, ready for display.
@@ -299,7 +308,7 @@ pub(crate) fn transcribe_to_cache_claimed(
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
     let pcm = extract_pcm(ffmpeg, media, temp_dir)?;
-    let text = if pcm.is_empty() {
+    let text = if !has_audible_signal(&pcm) {
         String::new()
     } else {
         render(&run_whisper(model, &pcm, on_progress)?)

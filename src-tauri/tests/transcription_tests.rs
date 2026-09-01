@@ -147,6 +147,47 @@ fn only_ffmpegs_explicit_no_audio_results_become_empty_success() {
     assert!(!no_audio_output("Invalid data found when processing input"));
 }
 
+#[test]
+fn digital_silence_never_reaches_whisper() {
+    assert!(!has_audible_signal(&[]));
+    assert!(!has_audible_signal(&[0.0; 128]));
+    assert!(!has_audible_signal(&[
+        1.0 / i16::MAX as f32,
+        -1.0 / i16::MAX as f32,
+    ]));
+    assert!(has_audible_signal(&[2.0 / i16::MAX as f32]));
+}
+
+#[cfg(unix)]
+#[test]
+#[serial(transcription)]
+fn extracted_digital_silence_publishes_empty_without_loading_a_model() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (dir, cache) = cache("digital-silence");
+    let ffmpeg = dir.path().join("ffmpeg");
+    std::fs::write(
+        &ffmpeg,
+        "#!/bin/sh\nfor last do :; done\nprintf '\\000\\000\\000\\000\\000\\000\\000\\000' > \"$last\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let text = transcribe_to_cache(
+        &cache,
+        &dir.path().join("temp"),
+        Some(Path::new("/model-that-must-not-be-loaded")),
+        Some(&ffmpeg),
+        Path::new("/media-that-the-fake-ffmpeg-ignores"),
+        "silence",
+        |_| {},
+    )
+    .unwrap();
+
+    assert!(text.is_empty());
+    assert_eq!(std::fs::read_to_string(cache.transcript("silence")).unwrap(), "");
+}
+
 #[cfg(unix)]
 #[test]
 #[serial(transcription)]
