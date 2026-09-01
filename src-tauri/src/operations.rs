@@ -1253,7 +1253,11 @@ fn reviewed_replacement_family(
         for entry in std::fs::read_dir(crate::winpath::for_fs(parent).as_ref())
             .map_err(|error| format!("could not inspect destination companions: {error}"))?
         {
-            let path = entry.map_err(|error| error.to_string())?.path();
+            // `read_dir` preserves the `\\?\` filesystem prefix from its input
+            // on Windows. Rebuild the child from the reviewed, user-facing
+            // parent so recovery manifests and plan tokens keep one canonical
+            // spelling while later filesystem calls can add the prefix again.
+            let path = parent.join(entry.map_err(|error| error.to_string())?.file_name());
             if path == target || path.file_stem() != Some(stem) {
                 continue;
             }
