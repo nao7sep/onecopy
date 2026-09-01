@@ -6,7 +6,7 @@ import { log, toErrorFields } from "../repositories";
 import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
 import Button from "./ui/Button";
-import { reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure } from "../state/notifications-store";
 import { revealInFileManager } from "../workflows/external-open";
 
 // The Trash surface: every trash on the system — the configured volumes,
@@ -63,7 +63,7 @@ export default function TrashModal({
       .catch((error) => {
         log.error("trash overview failed", toErrorFields(error));
         setError("Trash locations are unavailable.");
-        reportActionFailure("trash-overview-failed", "Trash locations are unavailable.", error);
+        recordActionFailure("trash-overview-failed", "Trash locations are unavailable.", error);
       });
   }, [open]);
 
@@ -83,7 +83,7 @@ export default function TrashModal({
     }).catch((error) => {
       log.warn("trash progress wiring failed", toErrorFields(error));
       if (alive) setError("Live trash progress is unavailable.");
-      reportActionFailure("trash-progress-unavailable", "Live Trash progress is unavailable.", error);
+      recordActionFailure("trash-progress-unavailable", "Live Trash progress is unavailable.", error);
     });
     return () => {
       alive = false;
@@ -116,12 +116,12 @@ export default function TrashModal({
       }
       setError(outcomeError);
       if (outcomeError !== null) {
-        reportActionFailure("trash-empty-partial", outcomeError);
+        recordActionFailure("trash-empty-partial", outcomeError);
       }
     } catch (error) {
       log.error("trash empty failed", toErrorFields(error));
       setError("Couldn’t empty this trash.");
-      reportActionFailure("trash-empty-failed", "Couldn’t empty this Trash.", error);
+      recordActionFailure("trash-empty-failed", "Couldn’t empty this Trash.", error);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -141,7 +141,7 @@ export default function TrashModal({
       setCancelling(false);
       log.error("trash empty cancellation failed", toErrorFields(error));
       setError("Couldn’t cancel emptying this trash.");
-      reportActionFailure("trash-empty-cancel-failed", "Couldn’t cancel emptying this Trash.", error);
+      recordActionFailure("trash-empty-cancel-failed", "Couldn’t cancel emptying this Trash.", error);
     }
   };
 

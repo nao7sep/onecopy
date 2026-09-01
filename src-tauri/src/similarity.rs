@@ -1013,4 +1013,22 @@ mod candidate_query_tests {
         assert_eq!(error, crate::scanner::CANCELLED);
         assert!(polls.get() >= 3);
     }
+
+    // Deliberate release-readiness measurement for the worst useful shape:
+    // every hash lands in the same bands, so cancellation is exercised inside
+    // the pairwise candidate loop rather than only between sparse buckets.
+    #[test]
+    #[ignore]
+    fn pathological_similarity_pause_releases_promptly() {
+        let phashes = vec![0i64; 1_000_000];
+        let times = vec![None; phashes.len()];
+        let started = std::time::Instant::now();
+        let stop = || started.elapsed() >= std::time::Duration::from_millis(100);
+        let error = cluster_by_appearance_cancellable(&phashes, &times, 4, 10, 90, 2, &stop)
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        eprintln!("pathological similarity cancellation: {elapsed:?}");
+        assert_eq!(error, crate::scanner::CANCELLED);
+        assert!(elapsed < std::time::Duration::from_secs(1));
+    }
 }

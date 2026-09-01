@@ -22,7 +22,7 @@ import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
 import { Plus } from "lucide-react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure } from "../state/notifications-store";
 
 /** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
  * comparison). Persisted as app STATE, not part of the config draft — screen
@@ -50,7 +50,7 @@ function ScreensSection() {
       .catch((error) => {
         log.warn("settings monitor query failed", toErrorFields(error));
         setScreenError("Couldn’t read the connected screens.");
-        reportActionFailure("screen-list-failed", "Couldn’t read the connected screens.", error);
+        recordActionFailure("screen-list-failed", "Couldn’t read the connected screens.", error);
       });
   }, []);
   if (screenError !== null) {
@@ -70,7 +70,7 @@ function ScreensSection() {
       .catch((error) => {
         log.error("screen priority save failed", toErrorFields(error));
         setScreenError("Couldn’t save the screen order.");
-        reportActionFailure("screen-order-save-failed", "Couldn’t save the screen order.", error);
+        recordActionFailure("screen-order-save-failed", "Couldn’t save the screen order.", error);
       });
   };
   const role = (index: number) =>
@@ -119,7 +119,7 @@ function ScreensSection() {
                   toErrorFields(failure),
                 );
                 setScreenError("Couldn’t identify the connected screens.");
-                reportActionFailure(
+                recordActionFailure(
                   "screen-identify-failed",
                   "Couldn’t identify the connected screens.",
                   failure,
@@ -130,7 +130,7 @@ function ScreensSection() {
           } catch (error) {
             log.warn("screen identification failed", toErrorFields(error));
             setScreenError("Couldn’t identify the connected screens.");
-            reportActionFailure(
+            recordActionFailure(
               "screen-identify-failed",
               "Couldn’t identify the connected screens.",
               error,
@@ -245,7 +245,7 @@ function UnlinkedPairsRow() {
       .catch((failure) => {
         log.warn("exclusions count failed", toErrorFields(failure));
         setError("Couldn’t read unlinked pairs.");
-        reportActionFailure("unlinked-pairs-load-failed", "Couldn’t read unlinked pairs.", failure);
+        recordActionFailure("unlinked-pairs-load-failed", "Couldn’t read unlinked pairs.", failure);
       });
   }, []);
   if (count === null) {
@@ -269,7 +269,7 @@ function UnlinkedPairsRow() {
             .catch((failure) => {
               log.warn("exclusions clear failed", toErrorFields(failure));
               setError("Couldn’t forget unlinked pairs.");
-              reportActionFailure("unlinked-pairs-clear-failed", "Couldn’t forget unlinked pairs.", failure);
+              recordActionFailure("unlinked-pairs-clear-failed", "Couldn’t forget unlinked pairs.", failure);
             });
         }}
       >
@@ -394,7 +394,7 @@ export default function SettingsModal() {
         useSettingsStore.setState({
           message: "Couldn’t read the supported text encodings.",
         });
-        reportActionFailure(
+        recordActionFailure(
           "text-encodings-load-failed",
           "Couldn’t read the supported text encodings.",
           error,
@@ -465,7 +465,7 @@ export default function SettingsModal() {
               .catch((error) => {
                 useSettingsStore.setState({ message: String(error) });
                 log.error("library index rebuild failed", toErrorFields(error));
-                reportActionFailure(
+                recordActionFailure(
                   "library-rebuild-failed",
                   "Couldn’t rebuild the library index.",
                   error,

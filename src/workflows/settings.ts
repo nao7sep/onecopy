@@ -9,7 +9,7 @@ import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
-import { reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure, reportActionFailure } from "../state/notifications-store";
 
 export async function saveSettings(): Promise<void> {
   const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
@@ -34,7 +34,7 @@ export async function saveSettings(): Promise<void> {
   } catch (error) {
     useSettingsStore.setState({ saving: false, message: String(error) });
     log.error("settings save failed", toErrorFields(error));
-    reportActionFailure("settings-save-failed", "Couldn’t save Settings.", error);
+    recordActionFailure("settings-save-failed", "Couldn’t save Settings.", error);
     return;
   }
 

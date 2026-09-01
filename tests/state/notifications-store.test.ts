@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installNotificationWiring,
+  recordActionFailure,
   reportActionFailure,
   useNotificationsStore,
 } from "../../src/state/notifications-store";
@@ -49,6 +50,47 @@ describe("notification failure containment", () => {
       (call) => call.command === "record_interface_failure",
     );
     expect(direct?.args.message).toContain("OneCopy could not save this notice");
+    expect(document.body.textContent).toContain("OneCopy needs to reload");
+  });
+
+  it("records a modal-owned failure in Recent without publishing a live notice", async () => {
+    mockCommands({
+      record_recent_notification: ({ request }) => ({
+        id: 1,
+        ...(request as Record<string, unknown>),
+      }),
+    });
+
+    recordActionFailure(
+      "settings-save-failed",
+      "Couldn’t save Settings.",
+      new Error("disk full"),
+    );
+
+    await vi.waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "record_recent_notification")).toBe(true);
+    });
+    expect(invokeCalls.some((call) => call.command === "publish_notification")).toBe(false);
+    const recent = invokeCalls.find((call) => call.command === "record_recent_notification");
+    expect(recent?.args.request).toMatchObject({
+      kind: "settings-save-failed",
+      level: "error",
+      presentation: "persistent",
+      message: "Couldn’t save Settings. disk full",
+    });
+  });
+
+  it("escalates only the distinct recording failure when Recent is unavailable", async () => {
+    mockCommands({
+      record_recent_notification: () => Promise.reject(new Error("history unavailable")),
+      record_interface_failure: () => undefined,
+    });
+
+    recordActionFailure("settings-save-failed", "Couldn’t save Settings.");
+
+    await vi.waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "record_interface_failure")).toBe(true);
+    });
     expect(document.body.textContent).toContain("OneCopy needs to reload");
   });
 });

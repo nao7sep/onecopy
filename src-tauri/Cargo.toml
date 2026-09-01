@@ -70,6 +70,10 @@ reqwest = { version = "0.13.4", default-features = false, features = ["native-tl
 tokio = { version = "1.53.1", features = ["rt", "time", "net", "macros", "fs", "io-util"] }
 zip = "8.6.0"
 notify = "8.2.0"
+# The production large-v3-turbo fixture is 3.9x faster in a release build on
+# Apple Silicon through whisper.cpp's Metal backend. Other platforms keep the
+# portable CPU backend until their own packaged measurements justify a native
+# accelerator.
 whisper-rs = "0.16.0"
 ort = "2.0.0-rc.13"
 ndarray = "0.17.2"
@@ -79,6 +83,9 @@ chardetng = "1.0.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW binds destructive reads to regular-file descriptors; on macOS,

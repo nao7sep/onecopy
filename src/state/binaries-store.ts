@@ -17,7 +17,7 @@ import {
 } from "../models/dependencyProgress";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure, reportActionFailure } from "./notifications-store";
 
 export type DependencyStatus =
   | "not-installed"
@@ -262,7 +262,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         };
       });
       if (failedMessage !== null) {
-        reportActionFailure(
+        recordActionFailure(
           "managed-tool-install-failed",
           "The managed-tool installation failed.",
           failedMessage,
@@ -283,7 +283,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         };
       });
       log.error("binaries install start failed", { id, ...toErrorFields(error) });
-      reportActionFailure(
+      recordActionFailure(
         "managed-tool-install-failed",
         "Couldn’t start installing this managed tool.",
         error,
@@ -425,7 +425,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       lastCheckOutcome: outcome,
     });
     if (failures > 0) {
-      reportActionFailure(
+      recordActionFailure(
         "managed-tool-check-failed",
         `${failures} managed-tool check${failures === 1 ? "" : "s"} failed.`,
       );
