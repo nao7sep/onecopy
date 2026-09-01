@@ -13,13 +13,40 @@
 // Non-menuitem children (the zoom stepper) are skipped by arrow navigation
 // because items are discovered via [role="menuitem"].
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { isComposingEvent } from "../hooks/useComposing";
 
 /** Lets an item close its menu (with focus restored to the trigger) before
  * running its action — provided by Menu, consumed by MenuItem. */
 const MenuCloseContext = createContext<() => void>(() => {});
+
+const VIEWPORT_GAP = 8;
+const TRIGGER_GAP = 4;
+
+interface MenuPosition {
+  top: number;
+  left: number;
+  maxHeight: number;
+  maxWidth: number;
+}
+
+function samePosition(a: MenuPosition | undefined, b: MenuPosition) {
+  return (
+    a?.top === b.top &&
+    a.left === b.left &&
+    a.maxHeight === b.maxHeight &&
+    a.maxWidth === b.maxWidth
+  );
+}
 
 export function Menu({
   trigger,
@@ -40,9 +67,8 @@ export function Menu({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  /** Fixed-position coordinates for the portalled panel, from the trigger's
-   * rect at open time. */
-  const [position, setPosition] = useState<{ top: number; left?: number; right?: number }>();
+  /** Viewport-owned coordinates for the portalled panel. */
+  const [position, setPosition] = useState<MenuPosition>();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -56,6 +82,72 @@ export function Menu({
     setOpen(false);
     if (refocus) triggerRef.current?.focus();
   };
+
+  const placePanel = useCallback(() => {
+    const trigger = triggerRef.current;
+    const panel = panelRef.current;
+    if (trigger === null || panel === null) return;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const maxWidth = Math.max(0, viewportWidth - VIEWPORT_GAP * 2);
+    const maxFullHeight = Math.max(0, viewportHeight - VIEWPORT_GAP * 2);
+    const visibleWidth = Math.min(panelRect.width, maxWidth);
+    const intrinsicHeight = panel.scrollHeight;
+
+    const belowTop = triggerRect.bottom + TRIGGER_GAP;
+    const belowHeight = Math.max(0, viewportHeight - VIEWPORT_GAP - belowTop);
+    const aboveBottom = triggerRect.top - TRIGGER_GAP;
+    const aboveHeight = Math.max(0, aboveBottom - VIEWPORT_GAP);
+
+    let top: number;
+    let maxHeight: number;
+    if (intrinsicHeight <= belowHeight) {
+      top = belowTop;
+      maxHeight = belowHeight;
+    } else if (intrinsicHeight <= aboveHeight) {
+      top = aboveBottom - intrinsicHeight;
+      maxHeight = aboveHeight;
+    } else {
+      // Neither side can hold the full menu. Use the whole viewport and let
+      // the one menu surface scroll, so every command remains reachable.
+      top = VIEWPORT_GAP;
+      maxHeight = maxFullHeight;
+    }
+
+    const preferredLeft =
+      align === "end" ? triggerRect.right - visibleWidth : triggerRect.left;
+    const maxLeft = Math.max(VIEWPORT_GAP, viewportWidth - VIEWPORT_GAP - visibleWidth);
+    const left = Math.min(Math.max(preferredLeft, VIEWPORT_GAP), maxLeft);
+    const next = { top, left, maxHeight, maxWidth };
+    setPosition((current) => (samePosition(current, next) ? current : next));
+  }, [align]);
+
+  // Measure after the portalled surface is rendered. Running after every
+  // render also catches the in-menu zoom stepper, whose webview zoom changes
+  // the panel and viewport without closing the menu.
+  useLayoutEffect(() => {
+    if (open) placePanel();
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    const viewport = window.visualViewport;
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => placePanel());
+    if (panelRef.current !== null) observer?.observe(panelRef.current);
+    window.addEventListener("resize", placePanel);
+    viewport?.addEventListener("resize", placePanel);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", placePanel);
+      viewport?.removeEventListener("resize", placePanel);
+    };
+  }, [open, placePanel]);
 
   useEffect(() => {
     if (!open) return;
@@ -131,15 +223,8 @@ export function Menu({
   };
 
   const openAtTrigger = () => {
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect) {
-      setPosition(
-        align === "end"
-          ? { top: rect.bottom + 4, right: window.innerWidth - rect.right }
-          : { top: rect.bottom + 4, left: rect.left },
-      );
-    }
-    setOpen((o) => !o);
+    setPosition(undefined);
+    setOpen((current) => !current);
   };
 
   return (
@@ -163,8 +248,11 @@ export function Menu({
                 ref={panelRef}
                 role="menu"
                 aria-label={ariaLabel}
-                style={position}
-                className="fixed z-40 min-w-56 rounded-lg border border-border bg-surface py-1 shadow-xl"
+                style={{
+                  ...position,
+                  visibility: position === undefined ? "hidden" : "visible",
+                }}
+                className="fixed z-40 max-w-[calc(100vw-1rem)] min-w-[min(14rem,calc(100vw-1rem))] overflow-auto rounded-lg border border-border bg-surface py-1 shadow-xl"
                 onKeyDown={onPanelKeyDown}
               >
                 {children}
