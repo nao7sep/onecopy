@@ -110,6 +110,9 @@ pub struct DependencySpec {
     pub id: &'static str,
     pub label: &'static str,
     pub kind: DependencyKind,
+    /// Missing this dependency prevents a built-in core presentation path,
+    /// rather than only withholding optional enrichment.
+    pub required_for_core: bool,
     pub file_name: &'static str,
     pub pinned: Option<PinnedModel>,
 }
@@ -136,6 +139,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         id: "ffmpeg",
         label: "ffmpeg",
         kind: DependencyKind::Binary,
+        required_for_core: true,
         file_name: "", // platform-resolved by ffmpeg_file_name()
         pinned: None,
     },
@@ -143,6 +147,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         id: "whisper-large-v3-turbo",
         label: "Transcription model (Whisper large-v3-turbo)",
         kind: DependencyKind::Model,
+        required_for_core: false,
         file_name: "ggml-large-v3-turbo.bin",
         pinned: Some(PinnedModel {
             // Canonical whisper.cpp model repository, fixed to the verified
@@ -155,8 +160,9 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
     },
     DependencySpec {
         id: "ultraface-rfb640",
-        label: "Face detector (optional — Settings > Score faces)",
+        label: "Face detector",
         kind: DependencyKind::Model,
+        required_for_core: false,
         file_name: "ultraface-rfb640.onnx",
         pinned: Some(PinnedModel {
             // Official ONNX model zoo (repo Apache-2.0; the Ultraface upstream
@@ -173,8 +179,9 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
     },
     DependencySpec {
         id: "hsemotion-enet-b2",
-        label: "Expression model (optional — Settings > Score faces)",
+        label: "Expression model",
         kind: DependencyKind::Model,
+        required_for_core: false,
         file_name: "hsemotion-enet-b2-8.onnx",
         pinned: Some(PinnedModel {
             // HSEmotion's AffectNet-trained EfficientNet-B2, from the project's
@@ -776,6 +783,10 @@ pub struct DependencyState {
     pub installed_version: Option<String>,
     pub facts: BinaryFacts,
     pub path: String,
+    /// True when absence blocks a core presentation path. The frontend uses
+    /// this only to distinguish missing-status emphasis; failures have their
+    /// own stronger presentation.
+    pub required_for_core: bool,
     /// True when this entry's "latest" is DISCOVERABLE — a binary resolved
     /// live from upstream. A model's latest is selected by the app build, so
     /// there is nothing to look up and nothing to check.
@@ -830,6 +841,7 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
         path: path.to_string_lossy().to_string(),
         installed_version,
         facts,
+        required_for_core: spec.required_for_core,
         checkable: matches!(spec.kind, DependencyKind::Binary),
         released: spec.pinned.as_ref().map(|p| p.released.to_string()),
     }

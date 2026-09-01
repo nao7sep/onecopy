@@ -42,6 +42,9 @@ export interface DependencyState {
     lastCheckedAtUtc: string | null;
   };
   path: string;
+  /** Absence blocks at least one built-in core presentation path, rather
+   * than only withholding optional enrichment. */
+  requiredForCore: boolean;
   /** True when this entry's "latest" is DISCOVERABLE — a binary resolved
    * live from upstream. A model's latest is selected by the app build, so
    * there is nothing to look up and nothing to check. */

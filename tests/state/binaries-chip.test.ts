@@ -23,6 +23,7 @@ function entry(id: string, status: DependencyState["status"]): DependencyState {
     installedVersion: status === "not-installed" ? null : "9.0",
     facts: { latestKnownVersion: null, lastCheckedAtUtc: null },
     path: "",
+    requiredForCore: id === "ffmpeg",
     checkable: id === "ffmpeg",
     released: id === "ffmpeg" ? null : "2024-10-01",
   };

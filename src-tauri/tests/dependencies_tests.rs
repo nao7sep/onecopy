@@ -30,6 +30,14 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
             "hsemotion-enet-b2",
         ]
     );
+    assert!(spec_of("ffmpeg").unwrap().required_for_core);
+    for model in DEPENDENCIES
+        .iter()
+        .filter(|dependency| dependency.kind == DependencyKind::Model)
+    {
+        assert!(!model.required_for_core);
+        assert!(!model.label.to_ascii_lowercase().contains("optional"));
+    }
 
     let whisper = spec_of("whisper-large-v3-turbo").unwrap();
     let pinned = whisper.pinned.as_ref().expect("models carry a pin");

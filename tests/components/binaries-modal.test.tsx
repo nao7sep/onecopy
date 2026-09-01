@@ -43,6 +43,7 @@ function entry(
       lastCheckedAtUtc: isBinary ? "2026-08-17T00:00:00.000Z" : null,
     },
     path: "",
+    requiredForCore: isBinary,
     checkable: isBinary,
     released: isBinary ? null : "2024-10-01",
     ...over,
@@ -168,7 +169,7 @@ describe("registry state", () => {
   });
 
   it("keeps long managed-model identities readable instead of ellipsizing them", () => {
-    const label = "Face detector (optional — Settings > Score faces)";
+    const label = "Transcription model (Whisper large-v3-turbo)";
     seed([entry("ultraface-rfb640", "not-installed", { label })]);
     render(<BinariesModal />);
 
@@ -177,6 +178,28 @@ describe("registry state", () => {
     );
     expect(renderedLabel?.className).toContain("break-words");
     expect(renderedLabel?.className).not.toContain("truncate");
+  });
+
+  it("emphasizes only a missing core prerequisite and explains tool roles nearby", () => {
+    seed([
+      entry("ffmpeg", "not-installed", { label: "ffmpeg", requiredForCore: true }),
+      entry("whisper-large-v3-turbo", "not-installed", {
+        label: "Transcription model (Whisper large-v3-turbo)",
+        requiredForCore: false,
+      }),
+    ]);
+    render(<BinariesModal />);
+
+    const rows = [...document.querySelectorAll("div.rounded-xl")];
+    const ffmpegStatus = rows
+      .find((row) => row.textContent?.includes("ffmpeg"))
+      ?.querySelector("span.text-warning");
+    const modelRow = rows.find((row) => row.textContent?.includes("Whisper large-v3-turbo"));
+
+    expect(ffmpegStatus?.textContent).toBe("Not installed");
+    expect(modelRow?.querySelector("span.text-warning")).toBeNull();
+    expect(document.body.textContent).toContain("ffmpeg is required for video preparation");
+    expect(document.body.textContent).toContain("models add only optional");
   });
 });
 

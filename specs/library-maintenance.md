@@ -71,6 +71,8 @@ When a concrete prerequisite or enforced storage or memory safety check makes an
 
 An enabled optional feature whose required managed tool is unavailable remains enabled and visibly `Waiting for required tool`. It offers a direct Managed Tools action but never installs the tool implicitly. When the prerequisite becomes runnable, already-enabled work becomes eligible automatically; a feature that remained off stays off until the user enables it.
 
+Managed Tools gives warning emphasis to a missing tool needed for core presentation, while a missing model used only by optional enrichment retains ordinary status text. Tool names remain factual rather than carrying repeated required/optional labels; nearby explanation states which core formats or optional features each tool enables. Installation, update-check, and runtime failures remain visually distinct from ordinary absence.
+
 ## Background Work controls
 
 Background Work exposes distinct rows for work with distinct completion and policy:

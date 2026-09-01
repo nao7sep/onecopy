@@ -109,6 +109,8 @@ function EntryRow({ entry }: { entry: DependencyState }) {
     entry.facts.lastCheckedAtUtc !== null
       ? `Checked ${formatLocalMinute(entry.facts.lastCheckedAtUtc)}`
       : null;
+  const missingCoreTool =
+    entry.status === "not-installed" && entry.requiredForCore;
 
   return (
     <div className="rounded-xl border border-border p-3 text-sm">
@@ -116,7 +118,13 @@ function EntryRow({ entry }: { entry: DependencyState }) {
         <span className="min-w-0 break-words font-semibold leading-snug text-ink-strong">
           {entry.label}
         </span>
-        <span className="shrink-0 text-xs text-ink-muted">{statusLabel(entry)}</span>
+        <span
+          className={`shrink-0 text-xs ${
+            missingCoreTool ? "font-semibold text-warning" : "text-ink-muted"
+          }`}
+        >
+          {statusLabel(entry)}
+        </span>
       </div>
       {fact !== null ? <p className="mt-1 text-xs text-ink-muted">{fact}</p> : null}
       {visibleHistory.length > 0 ? (
@@ -274,9 +282,10 @@ export default function BinariesModal() {
         </Row>
       </div>
       <p className="mt-2 text-xs text-ink-muted">
-        Video, audio transcription, and HEIC photos need ffmpeg; the models
-        power transcription and smarter similar-photo matching. Everything
-        else works without them.
+        ffmpeg is required for video preparation and HEIC photos; transcription
+        also uses it. The transcription and face models add only optional
+        transcription and comparison scoring. Files that do not need these
+        tools remain usable.
       </p>
     </ModalShell>
   );
