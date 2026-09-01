@@ -92,12 +92,6 @@ pub struct DerivedFacts {
 /// orientation rule, a new phash) — every row stamped with an older version
 /// becomes pending again on the next pass. Nothing on disk is touched: the
 /// cache is reconstructible by definition.
-///
-/// 2: the analysis luminance composites alpha over mid-gray (dhash and
-/// sharpness previously read the RGB hidden under transparent pixels), so
-/// every stored phash for an alpha-bearing image is wrong until re-derived.
-/// 3: rows gained the CLIP embedding; re-deriving lets the embed pass find
-/// every image pending once the similarity model is installed.
 pub use crate::derived_state::{DERIVE_VERSION, NEEDS_FFMPEG};
 
 /// Extensions the `image` crate cannot decode, which route through the

@@ -1,5 +1,5 @@
 //! Face scoring for group ordering (Design: Rating) — two small managed ONNX
-//! models run through the same linked ONNX Runtime as the embedding pass:
+//! models run through the same linked ONNX Runtime:
 //! Ultraface RFB-640 finds faces, HSEmotion reads the expression, and the
 //! combined score orders a group's face-bearing members ahead of sharpness.
 //! Advisory only, never auto-deletes, exactly like sharpness.
@@ -87,9 +87,8 @@ impl FaceScorer {
             .first()
             .map(|i| i.name().to_string())
             .ok_or("detector declares no inputs")?;
-        // Discovered by name at load with the honest error — the same rule
-        // the embedding session follows, so an artifact swap cannot silently
-        // hand boxes to the score reader.
+        // Discovered by name at load so an artifact swap cannot silently hand
+        // boxes to the score reader.
         let det_names: Vec<String> =
             detector.outputs().iter().map(|o| o.name().to_string()).collect();
         let det_scores = det_names

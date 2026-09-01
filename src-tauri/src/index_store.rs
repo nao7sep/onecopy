@@ -23,7 +23,7 @@ use rusqlite::Connection;
 // index is reconstructible and pre-release: bumping the stamp makes the next
 // open apply the complete current schema once, while ordinary read commands
 // avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 7;
+const SCHEMA_REVISION: i64 = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -44,9 +44,6 @@ CREATE TABLE IF NOT EXISTS contents (
   height          INTEGER,
   duration_ms     INTEGER,
   sharpness       REAL,
-  -- CLIP image embedding (f32 LE blob), present once the similarity model
-  -- has seen this content; the cross-device pairing signal.
-  embedding       BLOB,
   -- Face score (face.rs's contract): NULL never scored, 0.0 scored faceless,
   -- > 0 the smile-weighted best-face confidence. Orders groups ahead of
   -- sharpness for face-bearing members.
@@ -412,23 +409,10 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
     let schema_revision = conn
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| error.to_string())?;
-    let logical_table_exists = conn
-        .query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM sqlite_master
-               WHERE type = 'table' AND name = 'logical_contents')",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|e| e.to_string())?
-        != 0;
-    let needs_logical_hydration = !logical_table_exists;
-    if schema_revision > SCHEMA_REVISION {
-        return Err(format!(
-            "index schema revision {schema_revision} is newer than this app supports ({SCHEMA_REVISION})"
-        ));
-    }
-    if schema_revision > 0 && schema_revision < SCHEMA_REVISION {
+    if schema_revision != SCHEMA_REVISION {
+        // The index contains only reconstructible facts. Before release there
+        // is no compatibility ladder: any schema mismatch discards the old
+        // projection wholesale and creates the one current schema below.
         conn.execute_batch(
             "PRAGMA foreign_keys = OFF;
              DROP TABLE IF EXISTS analysis_receipts;
@@ -444,52 +428,18 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
              DROP TABLE IF EXISTS issues;
              DROP TABLE IF EXISTS recent_notifications;
              DROP TABLE IF EXISTS volumes;
+             DROP TABLE IF EXISTS source_volumes;
+             DROP TABLE IF EXISTS similar_exclusions;
              PRAGMA user_version = 0;
              PRAGMA foreign_keys = ON;",
         )
         .map_err(|error| error.to_string())?;
     }
-    if schema_revision < SCHEMA_REVISION || needs_logical_hydration {
+    if schema_revision != SCHEMA_REVISION {
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())?;
         let setup = (|| {
             conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
-            // Existing development indexes predate the logical read model.
-            // Hydrate inside the table-creation transaction so a crash cannot
-            // leave a permanently partial projection; later opens are O(1).
-            if needs_logical_hydration {
-                conn.execute_batch(
-                    "INSERT INTO logical_contents
-           (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
-            live_copy_count)
-         SELECT c.hash,
-                CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END,
-                CASE
-                  WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
-                    THEN 'pending'
-                  WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
-                  ELSE 'dated'
-                END,
-                CASE
-                  WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
-                    THEN MIN(p.resolved_utc_ms)
-                  ELSE NULL
-                END,
-                (SELECT ranked.id FROM paths ranked
-                 WHERE ranked.content_hash = c.hash
-                   AND ranked.missing = 0 AND ranked.companion_of IS NULL
-                 ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
-                          ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
-                LIMIT 1),
-                (SELECT COUNT(*) FROM paths cp
-                 WHERE cp.content_hash = c.hash AND cp.missing = 0
-                   AND cp.companion_of IS NULL)
-         FROM contents c JOIN paths p ON p.content_hash = c.hash
-         WHERE p.missing = 0 AND p.companion_of IS NULL
-         GROUP BY c.hash, c.kind",
-                )
-                .map_err(|e| e.to_string())?;
-            }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
@@ -614,7 +564,7 @@ mod tests {
                 .unwrap(),
             SCHEMA_REVISION
         );
-        // All v0 tables exist.
+        // Every table in the current schema exists.
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap();
@@ -678,33 +628,28 @@ mod tests {
     }
 
     #[test]
-    fn open_hydrates_an_existing_index_when_the_read_model_is_first_added() {
+    fn a_schema_mismatch_reconstructs_instead_of_migrating_old_rows() {
         let dir = tempfile::Builder::new()
             .prefix("onecopy-index-upgrade-")
             .tempdir()
             .unwrap();
         let db = dir.path().join("index.sqlite3");
         let conn = open(&db).unwrap();
-        conn.execute_batch(
-            "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image');
-             INSERT INTO paths
-               (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms,
-                resolved_source)
-             VALUES ('/a.jpg', '/', 'a.jpg', 'image', 'h1', 1000, 'metadata');
-             DROP TABLE logical_contents;",
-        )
-        .unwrap();
+        conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image')", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_REVISION - 1)
+            .unwrap();
         drop(conn);
 
         let conn = open(&db).unwrap();
-        let summary: (String, i64, i64) = conn
-            .query_row(
-                "SELECT date_state, resolved_utc_ms, live_copy_count FROM logical_contents \
-                 WHERE content_hash = 'h1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
+        let old_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contents WHERE hash = 'h1'", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(summary, ("dated".to_string(), 1000, 1));
+        assert_eq!(old_rows, 0);
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_REVISION
+        );
     }
 }

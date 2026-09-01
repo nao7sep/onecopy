@@ -2026,45 +2026,12 @@ pub fn run() {
             // Create/verify the index schema so a schema problem surfaces at
             // startup, not mid-scan. Phase 2 owns a long-lived connection; this
             // one closes on drop.
-            let index = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let imported_exclusions = similar_exclusions::migrate_legacy(&data_root, &index)?;
-            if imported_exclusions > 0 {
-                logging::info(
-                    "legacy similar exclusions imported",
-                    json!({ "pairs": imported_exclusions }),
-                );
-            }
+            drop(index_store::open(
+                &data_root.join(storage::INDEX_DB_FILE_NAME),
+            )?);
 
             // Download staging is crash debris by definition: wipe at launch.
             binaries_manager::reset_temp_dir(&data_root);
-
-            // Models the registry no longer knows: the SigLIP 2 tower was
-            // dropped with the embeddings (Phase 33) after two machines had
-            // downloaded it — 1.2 GB each of dead weight the registry can no
-            // longer even list for uninstall. One named sweep, not a general
-            // unknown-file purge: the models dir is OURS, but a rule that
-            // deletes anything unrecognized would eat a future version's
-            // files the moment the user runs an older build once.
-            for orphan in [
-                "siglip2-large-vision.onnx", // embeddings dropped 2026-08-18
-                "clip-vit-b32-vision.onnx",  // superseded by SigLIP 2026-08-17
-                "ultraface-rfb320.onnx",     // superseded by RFB-640
-                "emotion-ferplus-8.onnx",    // superseded by HSEmotion
-            ] {
-                let path = data_root.join(paths::MODELS_DIR_NAME).join(orphan);
-                if path.exists() {
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => logging::info(
-                            "orphaned model removed",
-                            json!({ "file": orphan }),
-                        ),
-                        Err(err) => logging::warn(
-                            "orphaned model removal failed",
-                            json!({ "file": orphan, "error": { "message": err.to_string() } }),
-                        ),
-                    }
-                }
-            }
 
             // The cache always lives under the managed data root. Existing
             // external cache trees from older builds are deliberately left

@@ -1744,10 +1744,9 @@ fn extract_pending_with_progress(
         ));
     }
 
-    // Existing pre-release indexes already have `indexed_at_utc` checkpoints
-    // but no Live Photo evidence. Backfill exactly those media rows once into
-    // the existing evidence store; a NULL raw value is the durable "checked,
-    // absent" result, so later scans do not reopen every family photo.
+    // A stopped metadata pass can leave already-indexed media without Live
+    // Photo evidence. Complete exactly those rows; a NULL raw value is the
+    // durable "checked, absent" result, so later passes do not reopen them.
     let mut after_id = 0;
     loop {
         let pending_live_photo = live_photo_repair_candidates(
@@ -1804,9 +1803,9 @@ fn extract_pending_with_progress(
     Ok(stats)
 }
 
-/// One stable page of legacy media rows missing the durable Live Photo
-/// evidence receipt. Each completed page disappears from this query, so the
-/// repair resumes naturally after cancellation without an in-memory ledger.
+/// One stable page of media rows missing the durable Live Photo evidence
+/// receipt. Each completed page disappears from this query, so completion
+/// resumes naturally after cancellation without an in-memory ledger.
 pub fn live_photo_repair_candidates(
     conn: &Connection,
     after_id: i64,
