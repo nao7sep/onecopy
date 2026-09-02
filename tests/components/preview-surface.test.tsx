@@ -279,6 +279,62 @@ describe("shared video presentation", () => {
     expect(screen.getByRole("button", { name: "Re-transcribe" })).toBeTruthy();
   });
 
+  it("clears a retained transcript-position failure after the matching choice succeeds", async () => {
+    mockCommands({ record_recent_notification: () => ({}) });
+    render(
+      <PreviewSurface
+        surface="preview-split"
+        hash="audio-hash"
+        detail={AUDIO_DETAIL}
+      />,
+    );
+    const transcript = (await screen.findByText("hello")).closest("ol")!;
+    emit.mockRejectedValueOnce(
+      new Error("EACCES /private/tmp/transcript IPC sentinel"),
+    );
+
+    fireEvent.scroll(transcript);
+    expect(
+      await screen.findByText("Couldn’t retain the transcript position."),
+    ).toBeTruthy();
+
+    emit.mockResolvedValueOnce(undefined);
+    fireEvent.keyUp(transcript);
+    await act(async () => {});
+
+    expect(
+      screen.queryByText("Couldn’t retain the transcript position."),
+    ).toBeNull();
+  });
+
+  it("does not let an older failed position write overwrite a newer success", async () => {
+    let rejectOlder!: (error: unknown) => void;
+    const older = new Promise<void>((_resolve, reject) => {
+      rejectOlder = reject;
+    });
+    mockCommands({ record_recent_notification: () => ({}) });
+    render(
+      <PreviewSurface
+        surface="preview-split"
+        hash="audio-hash"
+        detail={AUDIO_DETAIL}
+      />,
+    );
+    const transcript = (await screen.findByText("hello")).closest("ol")!;
+    emit.mockImplementationOnce(() => older);
+    emit.mockResolvedValueOnce(undefined);
+
+    fireEvent.scroll(transcript);
+    fireEvent.keyUp(transcript);
+    await act(async () => {
+      rejectOlder(new Error("stale transcript failure"));
+    });
+
+    expect(
+      screen.queryByText("Couldn’t retain the transcript position."),
+    ).toBeNull();
+  });
+
   it("shows bounded read-only text with session encoding and wrapping controls", async () => {
     render(
       <PreviewSurface

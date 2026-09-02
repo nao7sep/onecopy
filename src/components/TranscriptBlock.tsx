@@ -124,7 +124,11 @@ export default function TranscriptBlock({
     (state) => state.transcriptViews[hash],
   );
   const transcriptRef = useRef<HTMLOListElement | null>(null);
-  const [sessionError, setSessionError] = useState<string | null>(null);
+  const transcriptViewRequest = useRef(0);
+  const [sessionError, setSessionError] = useState<{
+    owner: "position" | "visibility";
+    message: string;
+  } | null>(null);
   const state = view ?? {
     status: "loading" as const,
     text: null,
@@ -176,20 +180,33 @@ export default function TranscriptBlock({
         : `${work.done}/${work.total}`
       : null;
 
-  const reportSessionFailure = (kind: string, message: string, error: unknown) => {
+  const reportSessionFailure = (
+    owner: "position" | "visibility",
+    kind: string,
+    message: string,
+    error: unknown,
+  ) => {
     log.warn("content session change failed", { kind, ...toErrorFields(error) });
-    setSessionError(message);
+    setSessionError({ owner, message });
     recordActionFailure(kind, message, error);
   };
 
   const retainTranscriptView = (next: TranscriptViewState) => {
-    void setTranscriptView(hash, next).catch((error) =>
-      reportSessionFailure(
-        "transcript-position-change-failed",
-        "Couldn’t retain the transcript position.",
-        error,
-      ),
-    );
+    const request = ++transcriptViewRequest.current;
+    void setTranscriptView(hash, next)
+      .then(() => {
+        if (request !== transcriptViewRequest.current) return;
+        setSessionError((current) => (current?.owner === "position" ? null : current));
+      })
+      .catch((error) => {
+        if (request !== transcriptViewRequest.current) return;
+        reportSessionFailure(
+          "position",
+          "transcript-position-change-failed",
+          "Couldn’t retain the transcript position.",
+          error,
+        );
+      });
   };
 
   const replacementNotice =
@@ -426,9 +443,14 @@ export default function TranscriptBlock({
             variant="ghost"
             onClick={() => {
               void setTranscriptOpen(medium, !transcriptOpen)
-                .then(() => setSessionError(null))
+                .then(() =>
+                  setSessionError((current) =>
+                    current?.owner === "visibility" ? null : current,
+                  ),
+                )
                 .catch((error) =>
                   reportSessionFailure(
+                    "visibility",
                     "transcript-visibility-change-failed",
                     "Couldn’t change the transcript view.",
                     error,
@@ -447,7 +469,7 @@ export default function TranscriptBlock({
       ) : null}
       {sessionError !== null ? (
         <OperationResult level="error" className="mb-2">
-          {sessionError}
+          {sessionError.message}
         </OperationResult>
       ) : null}
       {expanded ? (
