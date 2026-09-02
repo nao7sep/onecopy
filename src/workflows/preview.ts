@@ -15,7 +15,7 @@ import {
 } from "../state/preview-store";
 
 let persistenceInstalled = false;
-let commandsInstalled = false;
+let commandInstallation: Promise<void> | null = null;
 
 interface PreviewKeyMessage {
   key: string;
@@ -47,10 +47,8 @@ export function installPreviewPersistence(): void {
 
 /** The separate Preview is a follower, so it forwards library commands to
  * the Main grid instead of maintaining a second navigation implementation. */
-export async function installPreviewCommandWiring(): Promise<void> {
-  if (commandsInstalled) return;
-  commandsInstalled = true;
-  await listen<PreviewKeyMessage>("preview://key", async (event) => {
+export function installPreviewCommandWiring(): Promise<void> {
+  commandInstallation ??= listen<PreviewKeyMessage>("preview://key", async (event) => {
     const message = event.payload;
     const area = document.getElementById("main-item-area");
     if (area === null) return;
@@ -73,7 +71,13 @@ export async function installPreviewCommandWiring(): Promise<void> {
         cancelable: true,
       }),
     );
-  });
+  })
+    .then(() => undefined)
+    .catch((error) => {
+      commandInstallation = null;
+      throw error;
+    });
+  return commandInstallation;
 }
 
 export async function openPreview(

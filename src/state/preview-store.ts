@@ -107,22 +107,27 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
     height: 800,
     visible: false,
   });
-  await new Promise<void>((resolve, reject) => {
-    void window.once("tauri://created", () => resolve());
-    void window.once("tauri://error", (e) => reject(e.payload));
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      void window.once("tauri://created", () => resolve()).catch(reject);
+      void window.once("tauri://error", (e) => reject(e.payload)).catch(reject);
+    });
+    // The surface closing by any route (Escape in it, red button) clears the
+    // follow flag — otherwise P looks broken afterwards.
+    await window.once("tauri://destroyed", () => {
+      previewWindowOpen = false;
+      const store = usePreviewStore.getState();
+      if (store.placement === "window") {
+        // The placement PREFERENCE survives — closing the window means "not
+        // now", not "never on that screen again".
+        usePreviewStore.setState({ follow: false, placement: null, current: null });
+      }
+    });
+  } catch (error) {
+    await window.close().catch(reportWindowCall("preview cleanup after listener failure"));
+    throw error;
+  }
   previewWindowOpen = true;
-  // The surface closing by any route (Escape in it, red button) clears the
-  // follow flag — otherwise P looks broken afterwards.
-  void window.once("tauri://destroyed", () => {
-    previewWindowOpen = false;
-    const store = usePreviewStore.getState();
-    if (store.placement === "window") {
-      // The placement PREFERENCE survives — closing the window means "not
-      // now", not "never on that screen again".
-      usePreviewStore.setState({ follow: false, placement: null, current: null });
-    }
-  });
   try {
     const monitors = await availableMonitors();
     const saved = restorableBounds(

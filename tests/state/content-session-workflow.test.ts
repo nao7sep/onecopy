@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ContentSessionState } from "../../src/models/contentSession";
 import { installContentSessionWorkflow } from "../../src/workflows/content-session";
-import { emitCalls, fireEvent, resetTauriMocks } from "../mocks/tauri";
+import { setTextWrap } from "../../src/state/content-session-store";
+import { emit, emitCalls, fireEvent, resetTauriMocks } from "../mocks/tauri";
 
 function latestState(): ContentSessionState {
   const call = [...emitCalls]
@@ -16,6 +17,13 @@ beforeEach(async () => {
 });
 
 describe("content session workflow", () => {
+  it("returns the original transport rejection to the affected control", async () => {
+    const cause = new Error("EACCES /private/tmp/session IPC sentinel");
+    emit.mockRejectedValueOnce(cause);
+
+    await expect(setTextWrap(false)).rejects.toBe(cause);
+  });
+
   it("shares text and transcript presentation choices across webviews for one app run", () => {
     fireEvent("content-session://set-text-wrap", { wrap: false });
     fireEvent("content-session://set-text-encoding", {

@@ -15,6 +15,7 @@ import { useTranscriptStore } from "../../src/state/transcript-store";
 import { useContentSessionStore } from "../../src/state/content-session-store";
 import {
   emitCalls,
+  emit,
   fireEvent as fireTauriEvent,
   invokeCalls,
   mockCommands,
@@ -304,6 +305,32 @@ describe("shared video presentation", () => {
       event: "content-session://set-text-wrap",
       payload: { wrap: false },
     });
+  });
+
+  it("keeps a rejected session choice on the affected text preview and out of the copy", async () => {
+    mockCommands({ record_recent_notification: () => ({}) });
+    render(
+      <PreviewSurface
+        surface="quick"
+        hash={null}
+        pathId={8}
+        detail={OTHER_DETAIL}
+      />,
+    );
+    await screen.findByText(/first line/);
+    emit.mockRejectedValueOnce(
+      new Error("TypeError: EACCES /private/tmp/session IPC sentinel"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Wrap on" }));
+
+    expect(await screen.findByText("Couldn’t change text wrapping.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("EACCES");
+    expect(document.body.textContent).not.toContain("/private/tmp");
+    expect(document.body.textContent).not.toContain("IPC sentinel");
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
   });
 
   it("shows complete attributes when bounded content is binary", async () => {

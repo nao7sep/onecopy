@@ -147,8 +147,13 @@ const liveWindows = new Map<string, WebviewWindow>();
  * asserting what the app had published *by then* has to observe here — after
  * the call it is too late to tell an early publish from a late one. */
 let onWindowCreated: ((label: string) => void) | null = null;
+let nextWindowListenerFailure: unknown | null = null;
 export function setWindowCreatedHook(fn: ((label: string) => void) | null): void {
   onWindowCreated = fn;
+}
+
+export function rejectNextWindowListener(error: unknown): void {
+  nextWindowListenerFailure = error;
 }
 
 export class WebviewWindow {
@@ -157,6 +162,10 @@ export class WebviewWindow {
     this.label = label;
     createdWindows.push({ label, options });
     liveWindows.set(label, this);
+    if (nextWindowListenerFailure !== null) {
+      this.once.mockRejectedValueOnce(nextWindowListenerFailure);
+      nextWindowListenerFailure = null;
+    }
     onWindowCreated?.(label);
   }
   static getByLabel = vi.fn(
@@ -441,6 +450,7 @@ export function resetTauriMocks(
   createdWindows.length = 0;
   liveWindows.clear();
   onWindowCreated = null;
+  nextWindowListenerFailure = null;
   currentWindowLabel = "main";
   monitors = [];
   hostMonitor = null;

@@ -15,6 +15,7 @@ import {
 import Button from "./ui/Button";
 import { openInDefaultApp, revealInFileManager } from "../workflows/external-open";
 import OperationResult from "./ui/OperationResult";
+import { recordActionFailure } from "../state/notifications-store";
 
 interface TextBody {
   body: "text";
@@ -88,6 +89,12 @@ export default function TextOrAttributesSurface({
   const [error, setError] = useState<string | null>(null);
   const [encodings, setEncodings] = useState<string[]>([]);
   const loadedKey = useRef<string | null>(null);
+
+  const reportSessionFailure = (kind: string, message: string, failure: unknown) => {
+    log.warn("content session change failed", { kind, ...toErrorFields(failure) });
+    setError(message);
+    recordActionFailure(kind, message, failure);
+  };
 
   useEffect(() => {
     void installContentSessionClient().catch(() => undefined);
@@ -166,7 +173,17 @@ export default function TextOrAttributesSurface({
             <select
               className="h-7 rounded border border-border bg-background px-1.5 text-xs text-ink"
               value={selectedEncoding}
-              onChange={(event) => setTextEncoding(key, event.target.value)}
+              onChange={(event) => {
+                void setTextEncoding(key, event.target.value)
+                  .then(() => setError(null))
+                  .catch((failure) =>
+                    reportSessionFailure(
+                      "text-encoding-change-failed",
+                      "Couldn’t change the text encoding.",
+                      failure,
+                    ),
+                  );
+              }}
             >
               <option value="automatic">
                 Automatic{body.body === "text" ? ` (${body.encoding})` : ""}
@@ -178,7 +195,20 @@ export default function TextOrAttributesSurface({
               ))}
             </select>
           </label>
-          <Button variant="ghost" onClick={() => setTextWrap(!wrap)}>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              void setTextWrap(!wrap)
+                .then(() => setError(null))
+                .catch((failure) =>
+                  reportSessionFailure(
+                    "text-wrap-change-failed",
+                    "Couldn’t change text wrapping.",
+                    failure,
+                  ),
+                );
+            }}
+          >
             Wrap {wrap ? "on" : "off"}
           </Button>
           <Button variant="ghost" onClick={openExternal}>

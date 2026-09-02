@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useBinariesStore } from "../state/binaries-store";
 import { useDerivedWorkStore } from "../state/derived-work-store";
 import { useTranscriptStore } from "../state/transcript-store";
@@ -15,6 +15,9 @@ import { usePlaybackClientStore } from "../state/playback-client-store";
 import { useIssuesStore } from "../state/issues-store";
 import { requestPlaybackSeek } from "../workflows/playback";
 import OperationResult from "./ui/OperationResult";
+import type { TranscriptViewState } from "../models/contentSession";
+import { log, toErrorFields } from "../repositories";
+import { recordActionFailure } from "../state/notifications-store";
 
 interface TranscriptSegment {
   seconds: number;
@@ -121,6 +124,7 @@ export default function TranscriptBlock({
     (state) => state.transcriptViews[hash],
   );
   const transcriptRef = useRef<HTMLOListElement | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const state = view ?? {
     status: "loading" as const,
     text: null,
@@ -172,6 +176,22 @@ export default function TranscriptBlock({
         : `${work.done}/${work.total}`
       : null;
 
+  const reportSessionFailure = (kind: string, message: string, error: unknown) => {
+    log.warn("content session change failed", { kind, ...toErrorFields(error) });
+    setSessionError(message);
+    recordActionFailure(kind, message, error);
+  };
+
+  const retainTranscriptView = (next: TranscriptViewState) => {
+    void setTranscriptView(hash, next).catch((error) =>
+      reportSessionFailure(
+        "transcript-position-change-failed",
+        "Couldn’t retain the transcript position.",
+        error,
+      ),
+    );
+  };
+
   const replacementNotice =
     state.replacement?.status === "failed" ? (
       <OperationResult level="error" className="mb-2">
@@ -222,19 +242,19 @@ export default function TranscriptBlock({
             compact ? "max-h-24 text-xs" : "max-h-48 text-sm"
           }`}
           onScroll={(event) => {
-            setTranscriptView(hash, {
+            retainTranscriptView({
               scrollTop: event.currentTarget.scrollTop,
               selection: transcriptView?.selection ?? null,
             });
           }}
           onMouseUp={(event) => {
-            setTranscriptView(hash, {
+            retainTranscriptView({
               scrollTop: event.currentTarget.scrollTop,
               selection: selectionOffsets(event.currentTarget),
             });
           }}
           onKeyUp={(event) => {
-            setTranscriptView(hash, {
+            retainTranscriptView({
               scrollTop: event.currentTarget.scrollTop,
               selection: selectionOffsets(event.currentTarget),
             });
@@ -404,7 +424,17 @@ export default function TranscriptBlock({
           {actions}
           <Button
             variant="ghost"
-            onClick={() => setTranscriptOpen(medium, !transcriptOpen)}
+            onClick={() => {
+              void setTranscriptOpen(medium, !transcriptOpen)
+                .then(() => setSessionError(null))
+                .catch((error) =>
+                  reportSessionFailure(
+                    "transcript-visibility-change-failed",
+                    "Couldn’t change the transcript view.",
+                    error,
+                  ),
+                );
+            }}
           >
             {transcriptOpen ? "Collapse" : "Expand"}
           </Button>
@@ -413,6 +443,11 @@ export default function TranscriptBlock({
       {controlError !== null ? (
         <OperationResult level="error" className="mb-2">
           {controlError}
+        </OperationResult>
+      ) : null}
+      {sessionError !== null ? (
+        <OperationResult level="error" className="mb-2">
+          {sessionError}
         </OperationResult>
       ) : null}
       {expanded ? (

@@ -13,6 +13,7 @@ import {
   invokeCalls,
   mockCommands,
   resetTauriMocks,
+  rejectNextWindowListener,
   WebviewWindow,
 } from "../mocks/tauri";
 
@@ -144,6 +145,23 @@ describe("clearing the surface", () => {
 });
 
 describe("preview window failures", () => {
+  it("settles a rejected creation-listener registration as an authored Preview failure", async () => {
+    rejectNextWindowListener(
+      new Error("TypeError: EACCES /private/tmp/preview listener sentinel"),
+    );
+    usePreviewStore.setState({ placementPreference: "window" });
+
+    await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
+
+    expect(usePreviewStore.getState().error).toBe(
+      "Couldn’t open the Preview window.",
+    );
+    expect(usePreviewStore.getState().error).not.toContain("EACCES");
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
+  });
+
   it("keeps the failure on Preview while recording only Recent history", async () => {
     const window = new WebviewWindow("preview");
     window.show.mockRejectedValueOnce(new Error("window unavailable"));

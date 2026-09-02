@@ -28,24 +28,22 @@ export function installContentSessionClient(): Promise<void> {
   return installation;
 }
 
-function send(event: string, payload: unknown): void {
-  void emit(event, payload).catch((error) => {
-    log.error("content session change failed", { event, ...toErrorFields(error) });
-  });
+function send(event: string, payload: unknown): Promise<void> {
+  return emit(event, payload);
 }
 
-export function setTextWrap(wrap: boolean): void {
-  send("content-session://set-text-wrap", { wrap });
+export function setTextWrap(wrap: boolean): Promise<void> {
+  return send("content-session://set-text-wrap", { wrap });
 }
 
-export function setTextEncoding(key: string, encoding: string): void {
-  send("content-session://set-text-encoding", { key, encoding });
+export function setTextEncoding(key: string, encoding: string): Promise<void> {
+  return send("content-session://set-text-encoding", { key, encoding });
 }
 
-export function setTranscriptOpen(medium: PlaybackMedium, open: boolean): void {
-  send("content-session://set-transcript-open", { medium, open });
+export function setTranscriptOpen(medium: PlaybackMedium, open: boolean): Promise<void> {
+  return send("content-session://set-transcript-open", { medium, open });
 }
 
-export function setTranscriptView(key: string, view: TranscriptViewState): void {
-  send("content-session://set-transcript-view", { key, view });
+export function setTranscriptView(key: string, view: TranscriptViewState): Promise<void> {
+  return send("content-session://set-transcript-view", { key, view });
 }
