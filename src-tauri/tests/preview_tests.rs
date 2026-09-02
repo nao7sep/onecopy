@@ -445,6 +445,43 @@ fn stills_needing_ffmpeg_wait_for_it_instead_of_failing() {
     assert_eq!((again.derived, again.blocked_no_ffmpeg), (0, 0));
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_native_decode_limit_waits_for_ffmpeg_instead_of_failing_the_file() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-windows-decode-limit-")
+        .tempdir()
+        .unwrap();
+    let source = gradient_jpeg(dir.path(), "over-native-boundary.jpg", 1664, 1664);
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    conn.execute_batch(&format!(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('large01', 1, 'image');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+           VALUES ('{}', '{}', 'over-native-boundary.jpg', 'image', 'large01');",
+        source.display(),
+        dir.path().display(),
+    ))
+    .unwrap();
+
+    let stats = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
+    assert_eq!((stats.derived, stats.failed, stats.blocked_no_ffmpeg), (0, 0, 1));
+    assert_eq!(
+        conn.query_row(
+            "SELECT derived_at_utc FROM contents WHERE hash = 'large01'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        NEEDS_FFMPEG,
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0,
+    );
+}
+
 // Live end-to-end for the ffmpeg still route — THE still route since Phase 33
 // dropped the libheif accelerator: installs (or reuses) ffmpeg, derives the
 // two committed HEIC fixtures, and proves the orientation rule.
@@ -683,4 +720,51 @@ fn live_native_still_safe_boundary_cost() {
     );
     assert!(cache.thumb("large-native").is_file());
     assert!(cache.preview("large-native").is_file());
+}
+
+// LIVE Windows counterpart to the native-boundary measurement: the supplied
+// still must exceed the target's native ceiling, then complete through the
+// verified managed ffmpeg route. Run with ONECOPY_TEST_LARGE_STILL and
+// --release --ignored --nocapture.
+#[cfg(windows)]
+#[test]
+#[ignore]
+#[serial_test::serial(backup_store)]
+fn live_windows_oversized_still_uses_managed_ffmpeg() {
+    use onecopy_lib::binaries_manager;
+
+    let source = std::env::var_os("ONECOPY_TEST_LARGE_STILL")
+        .map(PathBuf::from)
+        .expect("set ONECOPY_TEST_LARGE_STILL to a disposable oversized image");
+    let native_error = onecopy_lib::resource_limits::decode_file(&source)
+        .expect_err("fixture exceeds the Windows native decode boundary");
+    assert!(onecopy_lib::resource_limits::is_decode_limit(&native_error));
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-windows-still-fallback-live-")
+        .tempdir()
+        .unwrap();
+    let root = dir.path();
+    binaries_manager::install_entry(root, "ffmpeg", |progress| eprintln!("{progress:?}"))
+        .expect("managed ffmpeg install");
+    let ffmpeg = binaries_manager::ffmpeg_path(root);
+    let cache = CachePaths::new(root.join("cache"));
+    let started = std::time::Instant::now();
+    let facts = generate_for_image(
+        &source,
+        "large-windows-fallback",
+        &cache,
+        320,
+        1600,
+        Some(&ffmpeg),
+    )
+    .unwrap();
+    eprintln!(
+        "managed ffmpeg still fallback {}x{}: {:?}",
+        facts.width,
+        facts.height,
+        started.elapsed(),
+    );
+    assert!(cache.thumb("large-windows-fallback").is_file());
+    assert!(cache.preview("large-windows-fallback").is_file());
 }

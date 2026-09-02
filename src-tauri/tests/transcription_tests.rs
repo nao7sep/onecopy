@@ -316,7 +316,7 @@ fn live_production_model_does_not_loop_a_phrase_into_trailing_silence() {
         .tempdir()
         .unwrap();
     let model = production_model(dir.path());
-    let ffmpeg = live_ffmpeg();
+    let ffmpeg = live_ffmpeg(&dir.path().join("managed-tools"));
     let fixture = production_transcription_fixture();
     let extraction_started = std::time::Instant::now();
     let mut pcm = extract_pcm(&ffmpeg, &fixture, &dir.path().join("pcm")).unwrap();
@@ -386,12 +386,28 @@ fn production_model(temp_dir: &Path) -> PathBuf {
     model
 }
 
-fn live_ffmpeg() -> PathBuf {
-    let ffmpeg = std::env::var_os("ONECOPY_TEST_FFMPEG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/opt/homebrew/bin/ffmpeg"));
-    assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
-    ffmpeg
+fn live_ffmpeg(test_root: &Path) -> PathBuf {
+    if let Some(ffmpeg) = std::env::var_os("ONECOPY_TEST_FFMPEG").map(PathBuf::from) {
+        assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
+        return ffmpeg;
+    }
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(test_root).unwrap();
+        onecopy_lib::binaries_manager::install_entry(test_root, "ffmpeg", |progress| {
+            eprintln!("ffmpeg {progress:?}");
+        })
+        .expect("managed ffmpeg install");
+        let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(test_root);
+        assert!(ffmpeg.is_file(), "managed ffmpeg exists");
+        return ffmpeg;
+    }
+    #[cfg(not(windows))]
+    {
+        let ffmpeg = PathBuf::from("/opt/homebrew/bin/ffmpeg");
+        assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
+        ffmpeg
+    }
 }
 
 fn production_transcription_fixture() -> PathBuf {

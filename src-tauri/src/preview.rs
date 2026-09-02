@@ -806,13 +806,26 @@ fn derive_candidate_rows(
             if outcome
                 .as_ref()
                 .is_err_and(|error| crate::resource_limits::is_decode_limit(error))
-                && ffmpeg.is_some()
             {
-                // The native worker hit its per-decode ceiling. Retry this one
-                // item through bounded ffmpeg only after every parallel native
-                // worker has joined, preserving subprocess exclusivity.
-                outcome =
-                    derive_candidate(hash, path, cache, thumb_edge, preview_long_edge, ffmpeg);
+                if ffmpeg.is_some() {
+                    // The native worker hit its per-decode ceiling. Retry this
+                    // one item through bounded ffmpeg only after every parallel
+                    // native worker has joined, preserving subprocess
+                    // exclusivity.
+                    outcome = derive_candidate(
+                        hash,
+                        path,
+                        cache,
+                        thumb_edge,
+                        preview_long_edge,
+                        ffmpeg,
+                    );
+                } else {
+                    // A large ordinary still needs the same managed fallback as
+                    // HEIC. Missing ffmpeg is dependency debt, not a bad file;
+                    // keep it inert and retryable until the tool arrives.
+                    outcome = Err(NEEDS_FFMPEG.to_string());
+                }
             }
 
             match outcome {

@@ -252,7 +252,10 @@ fn complete_walk_retires_one_million_vanished_paths() {
     let source = dir.path().join("empty-source");
     std::fs::create_dir(&source).unwrap();
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    let root = source.to_string_lossy().to_string();
+    let root = onecopy_lib::winpath::for_fs(&source)
+        .to_string_lossy()
+        .to_string();
+    let separator = std::path::MAIN_SEPARATOR.to_string();
     conn.execute_batch(
         "BEGIN;
          INSERT INTO contents (hash, byte_size, kind)
@@ -266,10 +269,10 @@ fn complete_walk_retires_one_million_vanished_paths() {
          )
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash, missing)
-         SELECT ?1 || '/' || printf('%07d.txt', n), ?1,
+         SELECT ?1 || ?2 || printf('%07d.txt', n), ?1,
                 printf('%07d.txt', n), 'other', 'same-content', 0
          FROM seq",
-        [&root],
+        params![root, separator],
     )
     .unwrap();
     conn.execute_batch(
@@ -445,7 +448,21 @@ fn background_work_snapshot_across_one_million_live_items() {
     );
     let value = serde_json::to_value(snapshot).unwrap();
     let classes = value["classes"].as_array().unwrap();
-    assert_eq!(classes.len(), 5);
+    assert_eq!(classes.len(), 6);
+    assert_eq!(
+        classes
+            .iter()
+            .map(|class| class["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "previews",
+            "snapshots",
+            "similarity",
+            "faces",
+            "video-transcripts",
+            "audio-transcripts",
+        ]
+    );
     assert_eq!(classes[0]["queued"], 500_000);
     assert_eq!(classes[1]["queued"], 250_000);
     assert_eq!(classes[3]["queued"], 250_000);
@@ -460,7 +477,7 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
         .tempdir()
         .unwrap();
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "BEGIN;
          INSERT INTO paths
            (id, abs_path, dir_path, file_name, kind, missing)
@@ -469,11 +486,11 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
            VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 999999
          )
          INSERT INTO contents
-           (hash, byte_size, kind, duration_ms, derived_at_utc)
+           (hash, byte_size, kind, duration_ms, derived_at_utc, derived_version)
          SELECT printf('pending-%07d', n), 1,
                 CASE WHEN n % 2 = 0 THEN 'video' ELSE 'image' END,
                 CASE WHEN n % 2 = 0 THEN 30000 ELSE NULL END,
-                'ready'
+                'ready', {derive_version}
          FROM seq;
          INSERT INTO logical_contents
            (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
@@ -490,7 +507,8 @@ fn capped_candidate_traversals_advance_once_across_one_million_pending_items() {
                 'ready', 0
          FROM seq;
          COMMIT;",
-    )
+        derive_version = derived_state::DERIVE_VERSION,
+    ))
     .unwrap();
 
     let mut strip_after = None;

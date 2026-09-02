@@ -12,9 +12,18 @@ use std::path::Path;
 use image::{DynamicImage, ImageReader, Limits};
 
 // Release measurement puts a 108 MiB 6144×6144 native still at the one-second
-// pause boundary. Larger stills already have one bounded, process-supervised
-// ffmpeg route, so keeping the native ceiling below that measured edge avoids
-// a second image-worker architecture and lowers aggregate concurrency too.
+// pause boundary on Apple Silicon. Larger stills already have one bounded,
+// process-supervised ffmpeg route, so keeping the native ceiling below that
+// measured edge avoids a second image-worker architecture and lowers aggregate
+// concurrency too.
+//
+// The physical Windows release probe found a much lower boundary on the Intel
+// notebook: 1600×1600 RGB completed in 298 ms, while 1664×1664 took 1.35 s.
+// 7.5 MiB admits the former decoded buffer and sends the latter through the
+// same supervised ffmpeg fallback instead of making pause wait on native code.
+#[cfg(windows)]
+pub const MAX_DECODE_ALLOC: u64 = 15 * 512 * 1024;
+#[cfg(not(windows))]
 pub const MAX_DECODE_ALLOC: u64 = 96 * 1024 * 1024;
 const IMAGE_JOB_RESERVATION: u64 = 2 * MAX_DECODE_ALLOC;
 const IMAGE_CONCURRENCY_HEADROOM: u64 = 1024 * 1024 * 1024;
