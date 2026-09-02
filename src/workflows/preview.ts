@@ -2,7 +2,7 @@
 // window mechanics; this edge supplies persisted app state and the current
 // item selection, and persists public Preview choices one way.
 
-import { useAppStore } from "../state/app-store";
+import { retainStatePatch, useAppStore } from "../state/app-store";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { reportWindowCall } from "../repositories";
@@ -40,7 +40,7 @@ export function installPreviewPersistence(): void {
       patch.previewPlacement = state.placementPreference;
     }
     if (Object.keys(patch).length > 0) {
-      void useAppStore.getState().patchState(patch);
+      retainStatePatch(patch);
     }
   });
 }

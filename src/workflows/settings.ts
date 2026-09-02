@@ -24,7 +24,10 @@ export async function saveSettings(): Promise<void> {
   // of a million-row rebuild or after a cancellable repair.
   try {
     await useAppStore.getState().patchConfig(configDraft, { reportFailure: false });
-    await useAppStore.getState().patchState({ soundEnabled, playbackVolume });
+    await useAppStore.getState().patchState(
+      { soundEnabled, playbackVolume },
+      { immediate: true },
+    );
     useSettingsStore.setState({
       open: false,
       draft: null,

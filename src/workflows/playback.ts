@@ -8,7 +8,7 @@ import {
   type PlaybackSurface,
 } from "../models/playback";
 import { log, toErrorFields } from "../repositories";
-import { useAppStore } from "../state/app-store";
+import { retainStatePatch, useAppStore } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 
@@ -119,12 +119,7 @@ function queueStatePatch(patch: Record<string, unknown>): void {
     pendingState = null;
     stateTimer = null;
     if (next === null) return;
-    void useAppStore
-      .getState()
-      .patchState(next)
-      .catch((error) => {
-        log.error("playback state save failed", toErrorFields(error));
-      });
+    retainStatePatch(next);
   }, 250);
 }
 
@@ -263,7 +258,10 @@ export async function setSoundEnabled(enabled: boolean): Promise<void> {
     session = { ...session, soundEnabled: enabled };
     broadcast();
   }
-  await useAppStore.getState().patchState({ soundEnabled: enabled });
+  await useAppStore.getState().patchState(
+    { soundEnabled: enabled },
+    { immediate: true },
+  );
 }
 
 export async function setMediumAutoplay(

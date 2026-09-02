@@ -71,7 +71,7 @@ function ScreensSection() {
     [keys[index], keys[target]] = [keys[target], keys[index]];
     void useAppStore
       .getState()
-      .patchState({ screenPriority: keys })
+      .patchState({ screenPriority: keys }, { immediate: true })
       .catch((error) => {
         log.error("screen priority save failed", toErrorFields(error));
         setScreenError("Couldn’t save the screen order.");

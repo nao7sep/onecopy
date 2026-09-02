@@ -14,7 +14,7 @@ import {
 } from "../models/items";
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
-import { useAppStore } from "../state/app-store";
+import { retainStatePatch, useAppStore } from "../state/app-store";
 import { handleSpaceQuickView, openViewerFromMain } from "../workflows/quick-view";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { formatLocalMinute } from "../utils/displayTime";
@@ -463,7 +463,7 @@ export default function Grid({
     setColumnWidthsRaw(widths);
     if (widthsSaveTimer.current !== null) clearTimeout(widthsSaveTimer.current);
     widthsSaveTimer.current = setTimeout(() => {
-      void useAppStore.getState().patchState({ otherColumnWidths: widths });
+      retainStatePatch({ otherColumnWidths: widths });
     }, 500);
   };
 

@@ -7,7 +7,7 @@ import type { LoadedAppData } from "../repositories";
 import type { SectionCounts } from "../models/sections";
 import { DEFAULT_DESC, type SortChoice, type SortOrder } from "../models/items";
 import { useItemsStore } from "../state/items-store";
-import { useAppStore } from "../state/app-store";
+import { retainStatePatch } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { bootstrapApplication } from "../workflows/app-lifecycle";
 import { parseAnchorContext } from "../models/mainSelection";
@@ -26,7 +26,7 @@ export function useAppBootstrapAndRestore({
   const [rightTab, setRightTabRaw] = useState<"details" | "destinations">("details");
   const setRightTab = useCallback((tab: "details" | "destinations") => {
     setRightTabRaw(tab);
-    void useAppStore.getState().patchState({ rightPaneTab: tab });
+    retainStatePatch({ rightPaneTab: tab });
   }, []);
 
   useEffect(() => {

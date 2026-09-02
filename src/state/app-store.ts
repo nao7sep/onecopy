@@ -20,6 +20,7 @@ import {
 import { applyTheme, applyUiFont } from "../utils/theme";
 import { listen } from "@tauri-apps/api/event";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { reportActionFailure } from "./notifications-store";
 
 interface AppState {
   appData: LoadedAppData | null;
@@ -33,7 +34,10 @@ interface AppState {
     patch: Record<string, unknown>,
     options?: { reportFailure?: boolean },
   ) => Promise<void>;
-  patchState: (patch: Record<string, unknown>) => Promise<void>;
+  patchState: (
+    patch: Record<string, unknown>,
+    options?: { immediate?: boolean },
+  ) => Promise<void>;
 }
 
 // State writes are debounced and coalesced: selection/zoom/pane state can
@@ -41,7 +45,27 @@ interface AppState {
 // dedups identical content, but churn is churn).
 let pendingStatePatch: Record<string, unknown> | null = null;
 let stateFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingStateWaiters: Array<{
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}> = [];
+let stateWriteTail: Promise<void> = Promise.resolve();
 const STATE_FLUSH_MS = 400;
+
+export function reportStatePatchFailure(error: unknown): void {
+  log.error("state patch failed", toErrorFields(error));
+  reportActionFailure(
+    "interface-state-save-failed",
+    "OneCopy couldn’t save the current interface state. Your changes remain available in this session.",
+    error,
+  );
+}
+
+/** Settles a passive view-state write at the app-state owner. Explicit actions
+ * that already have a local result await patchState directly instead. */
+export function retainStatePatch(patch: Record<string, unknown>): void {
+  void useAppStore.getState().patchState(patch).catch(reportStatePatchFailure);
+}
 
 // Startup appearance and application bootstrap both need the same document.
 // Keep that first read single-flight: load_app_data also carries one-shot
@@ -71,7 +95,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  patchState: async (patch) => {
+  patchState: async (patch, options) => {
     // Publish optimistically so readers see the new state immediately; the
     // disk write coalesces on a short timer.
     set((s) =>
@@ -81,15 +105,37 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
     pendingStatePatch = { ...(pendingStatePatch ?? {}), ...patch };
     if (stateFlushTimer !== null) clearTimeout(stateFlushTimer);
-    stateFlushTimer = setTimeout(() => {
-      const toWrite = pendingStatePatch;
-      pendingStatePatch = null;
-      stateFlushTimer = null;
-      if (toWrite === null) return;
-      patchStateFile(toWrite).catch((error) => {
-        log.error("state patch failed", toErrorFields(error));
-      });
-    }, STATE_FLUSH_MS);
+    return new Promise<void>((resolve, reject) => {
+      pendingStateWaiters.push({ resolve, reject });
+      const flush = () => {
+        const toWrite = pendingStatePatch;
+        const waiters = pendingStateWaiters;
+        pendingStatePatch = null;
+        pendingStateWaiters = [];
+        stateFlushTimer = null;
+        if (toWrite === null) {
+          for (const waiter of waiters) waiter.resolve();
+          return;
+        }
+        const write = stateWriteTail.then(() =>
+          patchStateFile(toWrite).then(() => undefined),
+        );
+        stateWriteTail = write.catch(() => undefined);
+        void write.then(
+          () => {
+            for (const waiter of waiters) waiter.resolve();
+          },
+          (error) => {
+            for (const waiter of waiters) waiter.reject(error);
+          },
+        );
+      };
+      if (options?.immediate === true) {
+        flush();
+      } else {
+        stateFlushTimer = setTimeout(flush, STATE_FLUSH_MS);
+      }
+    });
   },
 
   initialize: () => {

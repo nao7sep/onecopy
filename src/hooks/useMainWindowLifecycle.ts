@@ -14,7 +14,7 @@ import {
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { LoadedAppData } from "../repositories";
 import { reportWindowCall } from "../repositories";
-import { useAppStore } from "../state/app-store";
+import { reportStatePatchFailure, retainStatePatch, useAppStore } from "../state/app-store";
 import { installActivityPings } from "../state/derived-work-store";
 import { usePreviewStore } from "../state/preview-store";
 import { hasOpenModal } from "../utils/modalStack";
@@ -135,7 +135,7 @@ export function useMainWindowLifecycle({
         void (async () => {
           try {
             if (await appWindow.isMaximized()) {
-              await useAppStore.getState().patchState({ windowMaximized: true });
+              await useAppStore.getState().patchState({ windowMaximized: true }).catch(reportStatePatchFailure);
               return;
             }
             if (pendingMinSize.current !== null) {
@@ -153,7 +153,7 @@ export function useMainWindowLifecycle({
                 width: size.width,
                 height: size.height,
               },
-            });
+            }).catch(reportStatePatchFailure);
           } catch (error) {
             reportWindowCall("save bounds")(error);
           }
@@ -175,7 +175,7 @@ export function useMainWindowLifecycle({
     zoomRef.current = next;
     setZoomLevel(next);
     void getCurrentWebview().setZoom(next).catch(reportWindowCall("setZoom"));
-    void useAppStore.getState().patchState({ zoomLevel: next });
+    retainStatePatch({ zoomLevel: next });
   }, []);
 
   useEffect(() => {

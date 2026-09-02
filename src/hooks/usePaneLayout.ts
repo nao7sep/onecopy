@@ -8,7 +8,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { useAppStore } from "../state/app-store";
+import { retainStatePatch } from "../state/app-store";
 import {
   GRID_MIN_WIDTH,
   PREVIEW_PANE_DEFAULT_RATIO,
@@ -124,7 +124,7 @@ export function usePaneLayout(splitOpen: boolean) {
             : side === "right"
               ? { rightPaneWidth: finalIntents.right }
               : { previewPaneRatio: finalIntents.previewRatio };
-        void useAppStore.getState().patchState(patch);
+        retainStatePatch(patch);
       };
 
       activeDragCleanup.current = cleanup;
