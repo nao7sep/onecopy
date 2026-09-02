@@ -4,7 +4,7 @@ use onecopy_lib::background_work::snapshot;
 use onecopy_lib::derived_state;
 use onecopy_lib::derived_work::{
     ensure_exact_identity, priority_candidates, priority_candidates_for_class,
-    settings_from_config, SectionPriority,
+    settings_from_config, FaceAssets, SectionPriority,
 };
 use onecopy_lib::index_store;
 use rusqlite::params;
@@ -141,7 +141,11 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
     let mut settings = settings_from_config(None, dir.path());
     settings.ffmpeg = Some(dir.path().join("ffmpeg"));
     settings.face_enabled = true;
-    settings.face_models = Some((dir.path().join("detector"), dir.path().join("emotion")));
+    settings.face_models = Some(FaceAssets {
+        runtime: None,
+        detector: dir.path().join("detector"),
+        emotion: dir.path().join("emotion"),
+    });
     settings.transcription_model = Some(dir.path().join("whisper"));
     let image_section = SectionPriority {
         kind: "image".to_string(),

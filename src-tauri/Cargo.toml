@@ -75,14 +75,18 @@ notify = "8.2.0"
 # portable CPU backend until their own packaged measurements justify a native
 # accelerator.
 whisper-rs = "0.16.0"
-ort = "2.0.0-rc.13"
 ndarray = "0.17.2"
-libloading = "0.9.0"
 encoding_rs = "0.8.35"
 chardetng = "1.0.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+# Load the packaged runtime only when face scoring actually starts. This keeps
+# optional model code out of process initialization on older Windows CPUs.
+ort = { version = "2.0.0-rc.13", features = ["load-dynamic"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ort = "2.0.0-rc.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16.0", features = ["metal"] }

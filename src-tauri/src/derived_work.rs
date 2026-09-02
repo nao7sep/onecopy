@@ -86,11 +86,18 @@ pub struct Settings {
     pub video_snapshots_enabled: bool,
     pub similarity_enabled: bool,
     pub face_enabled: bool,
-    pub face_models: Option<(PathBuf, PathBuf)>,
+    pub face_models: Option<FaceAssets>,
     pub transcription_model: Option<PathBuf>,
     pub video_transcription_enabled: bool,
     pub audio_transcription_enabled: bool,
     pub temp_dir: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct FaceAssets {
+    pub runtime: Option<PathBuf>,
+    pub detector: PathBuf,
+    pub emotion: PathBuf,
 }
 
 impl Settings {
@@ -175,7 +182,19 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
         ),
         face_enabled: score_faces,
         face_models: score_faces
-            .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
+            .then(|| {
+                let detector = installed("ultraface-rfb640")?;
+                let emotion = installed("hsemotion-enet-b2")?;
+                #[cfg(windows)]
+                let runtime = Some(installed("onnxruntime-win-x64")?);
+                #[cfg(not(windows))]
+                let runtime = None;
+                Some(FaceAssets {
+                    runtime,
+                    detector,
+                    emotion,
+                })
+            })
             .flatten(),
         transcription_model: installed("whisper-large-v3-turbo"),
         video_transcription_enabled: bool_of(
@@ -809,14 +828,18 @@ fn run_optional_class(
             if !foreground && cursor.exhausted {
                 return Ok(false);
             }
-            let Some((detector, emotion)) = settings.face_models.as_ref() else {
+            let Some(assets) = settings.face_models.as_ref() else {
                 return Ok(false);
             };
             let result = with_active(app, class, || {
                 crate::face::face_scores_pending(
                     conn,
                     cache,
-                    Some((detector.as_path(), emotion.as_path())),
+                    Some((
+                        assets.runtime.as_deref(),
+                        assets.detector.as_path(),
+                        assets.emotion.as_path(),
+                    )),
                     priority,
                     |hash| crate::derived_runtime::active_item(app, class, hash),
                     |hash| notify_item_update(app, conn, projection, "faces", hash, hash),

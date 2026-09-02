@@ -187,32 +187,19 @@ fn iou_and_softmax_hold_their_edges() {
 #[test]
 #[ignore]
 fn live_face_models_find_nothing_in_a_face_free_image() {
-    use onecopy_lib::binaries_manager::spec_of;
-    use sha2::Digest;
+    use onecopy_lib::binaries_manager::{install_entry, installed_path, spec_of};
 
     let dir = tempfile::Builder::new().prefix("onecopy-face-live-").tempdir().unwrap();
-    let agent = ureq::config::Config::builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .build()
-        .new_agent();
-    let fetch = |id: &str, name: &str| {
-        let pin = spec_of(id).unwrap().pinned.as_ref().unwrap();
-        let path = dir.path().join(name);
-        let mut response = agent.get(pin.url).call().expect("download");
-        let mut file = std::fs::File::create(&path).unwrap();
-        std::io::copy(&mut response.body_mut().as_reader(), &mut file).unwrap();
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(std::fs::read(&path).unwrap());
-        assert_eq!(hex::encode(hasher.finalize()), pin.sha256, "{id} integrity");
-        path
+    let install = |id: &str| {
+        install_entry(dir.path(), id, |_| {}).expect("managed dependency install");
+        installed_path(dir.path(), spec_of(id).unwrap())
     };
-    let detector = fetch("ultraface-rfb640", "det.onnx");
-    let emotion = fetch("hsemotion-enet-b2", "emo.onnx");
+    #[cfg(windows)]
+    let runtime = Some(install("onnxruntime-win-x64"));
+    #[cfg(not(windows))]
+    let runtime: Option<std::path::PathBuf> = None;
+    let detector = install("ultraface-rfb640");
+    let emotion = install("hsemotion-enet-b2");
 
     // A gradient has structure but no face; a broken binding (wrong output
     // wiring, wrong preprocessing) shows up as phantom faces or an error.
@@ -220,11 +207,78 @@ fn live_face_models_find_nothing_in_a_face_free_image() {
         image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
     }));
     let load_started = std::time::Instant::now();
-    let mut scorer = face::FaceScorer::load(&detector, &emotion).unwrap();
+    let mut scorer = face::FaceScorer::load(runtime.as_deref(), &detector, &emotion).unwrap();
     let load_elapsed = load_started.elapsed();
+    let score_started = std::time::Instant::now();
     let score = scorer.score(&gradient).unwrap();
-    eprintln!("face-free gradient scored {score}");
+    let score_elapsed = score_started.elapsed();
+    eprintln!("face-free gradient scored {score} in {score_elapsed:?}");
     assert_eq!(score, 0.0, "no face may be found where none exists");
+
+    // Every graph run either observes termination or completes inside the pause
+    // budget before the signal can matter.
+    {
+        let finished = std::sync::atomic::AtomicBool::new(false);
+        let cancelled_started = std::time::Instant::now();
+        let result = std::thread::scope(|scope| {
+            let canceller = scope.spawn(|| {
+                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                    face::request_cancel();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            });
+            let result = scorer.score(&gradient);
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            canceller.join().unwrap();
+            result
+        });
+        let cancelled_elapsed = cancelled_started.elapsed();
+        assert!(
+            cancelled_elapsed < std::time::Duration::from_secs(1),
+            "face inference held the boundary for {cancelled_elapsed:?}"
+        );
+        eprintln!(
+            "face inference settled after cancellation in {cancelled_elapsed:?}: {}",
+            if result.is_err() { "terminated" } else { "completed" }
+        );
+    }
+
+    let full_frame = Face {
+        confidence: 1.0,
+        x1: 0.0,
+        y1: 0.0,
+        x2: 1.0,
+        y2: 1.0,
+    };
+    let smile_started = std::time::Instant::now();
+    assert!(scorer.smile(&gradient, &full_frame).unwrap().is_finite());
+    let smile_elapsed = smile_started.elapsed();
+    eprintln!("expression inference completed in {smile_elapsed:?}");
+    {
+        let finished = std::sync::atomic::AtomicBool::new(false);
+        let cancelled_started = std::time::Instant::now();
+        let result = std::thread::scope(|scope| {
+            let canceller = scope.spawn(|| {
+                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                    face::request_cancel();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            });
+            let result = scorer.smile(&gradient, &full_frame);
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            canceller.join().unwrap();
+            result
+        });
+        let cancelled_elapsed = cancelled_started.elapsed();
+        assert!(
+            cancelled_elapsed < std::time::Duration::from_secs(1),
+            "expression inference held the boundary for {cancelled_elapsed:?}"
+        );
+        eprintln!(
+            "expression inference settled after cancellation in {cancelled_elapsed:?}: {}",
+            if result.is_err() { "terminated" } else { "completed" }
+        );
+    }
 
     // Optional repeatable measurement over a harmless generated corpus:
     // ONECOPY_FACE_FIXTURES=/path/to/images cargo test live_face_models --
