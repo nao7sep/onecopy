@@ -163,23 +163,38 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
         Some(&image_section),
     )
     .unwrap();
-    assert_eq!(faces, ["image-selected", "image-visible", "image-section"]);
+    if onecopy_lib::platform_support::FACE_SCORING {
+        assert_eq!(faces, ["image-selected", "image-visible", "image-section"]);
+    } else {
+        assert!(faces.is_empty());
+    }
 
-    for class in ["snapshots", "video-transcripts"] {
-        let candidates = priority_candidates_for_class(
-            &conn,
-            &settings,
-            class,
-            Some("video-selected"),
-            &["video-visible".to_string()],
-            Some(&video_section),
-        )
-        .unwrap();
+    let snapshots = priority_candidates_for_class(
+        &conn,
+        &settings,
+        "snapshots",
+        Some("video-selected"),
+        &["video-visible".to_string()],
+        Some(&video_section),
+    )
+    .unwrap();
+    assert_eq!(snapshots, ["video-selected", "video-visible", "video-section"]);
+    let video_transcripts = priority_candidates_for_class(
+        &conn,
+        &settings,
+        "video-transcripts",
+        Some("video-selected"),
+        &["video-visible".to_string()],
+        Some(&video_section),
+    )
+    .unwrap();
+    if onecopy_lib::platform_support::TRANSCRIPTION {
         assert_eq!(
-            candidates,
-            ["video-selected", "video-visible", "video-section"],
-            "{class}"
+            video_transcripts,
+            ["video-selected", "video-visible", "video-section"]
         );
+    } else {
+        assert!(video_transcripts.is_empty());
     }
 
     let audio_section = SectionPriority {
@@ -196,7 +211,11 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
         Some(&audio_section),
     )
     .unwrap();
-    assert_eq!(audio, ["audio-selected", "audio-visible", "audio-section"]);
+    if onecopy_lib::platform_support::TRANSCRIPTION {
+        assert_eq!(audio, ["audio-selected", "audio-visible", "audio-section"]);
+    } else {
+        assert!(audio.is_empty());
+    }
 }
 
 #[test]
@@ -332,8 +351,10 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
                 ffmpeg: true,
                 video_snapshots_enabled: true,
                 similarity_enabled: true,
+                face_scoring_supported: true,
                 face_enabled: true,
                 face_models: true,
+                transcription_supported: true,
                 transcription_model: true,
                 video_transcription_enabled: true,
                 audio_transcription_enabled: true,

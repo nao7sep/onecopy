@@ -27,6 +27,8 @@ beforeEach(async () => {
       },
       dataRoot: "/app",
       debugEnabled: false,
+      faceScoringSupported: true,
+      transcriptionSupported: true,
       quarantines: [],
     },
   });

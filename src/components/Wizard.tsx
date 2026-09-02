@@ -5,9 +5,13 @@ import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Plus } from "lucide-react";
 import { Row, Toggle } from "./ui/Field";
-import type { OptionalFeatureId } from "../models/optionalFeatures";
+import {
+  optionalFeatureSupported,
+  type OptionalFeatureId,
+} from "../models/optionalFeatures";
 import { useId } from "react";
 import OperationResult from "./ui/OperationResult";
+import { useAppStore } from "../state/app-store";
 
 const WIZARD_STEPS = 3;
 
@@ -40,6 +44,16 @@ export default function Wizard() {
   const setOptionalFeature = useWizardStore((s) => s.setOptionalFeature);
   const setTimezone = useWizardStore((s) => s.setTimezone);
   const cancel = useWizardStore((s) => s.cancel);
+  const faceScoringSupported = useAppStore(
+    (s) => s.appData?.faceScoringSupported === true,
+  );
+  const transcriptionSupported = useAppStore(
+    (s) => s.appData?.transcriptionSupported === true,
+  );
+  const support = {
+    faceScoring: faceScoringSupported,
+    transcription: transcriptionSupported,
+  };
 
   useBlockingSurface();
 
@@ -181,6 +195,7 @@ export default function Wizard() {
               <Row key={id} label={label} hint={optionalFeatureReasons[id]}>
                 <Toggle
                   checked={optionalFeatures[id]}
+                  disabled={!optionalFeatureSupported(id, support)}
                   onChange={(enabled) => setOptionalFeature(id, enabled)}
                 />
               </Row>

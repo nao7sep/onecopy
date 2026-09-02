@@ -153,6 +153,33 @@ fn model_less_pass_is_a_silent_no_op_leaving_scores_null() {
     assert_eq!(score, None, "no models -> untouched, ordering identical to today");
 }
 
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[test]
+fn unsupported_target_rejects_a_model_backed_face_pass() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-face-unsupported-")
+        .tempdir()
+        .unwrap();
+    let conn = db();
+    let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+    let error = face::face_scores_pending(
+        &conn,
+        &cache,
+        Some((
+            std::path::Path::new("detector.onnx"),
+            std::path::Path::new("emotion.onnx"),
+        )),
+        &[],
+        |_| {},
+        |_| {},
+        |_, _| {},
+        None,
+        &|| false,
+    )
+    .unwrap_err();
+    assert_eq!(error, onecopy_lib::platform_support::MAC_ONLY_REASON);
+}
+
 #[test]
 fn nms_keeps_the_best_of_an_overlapping_pile_and_all_distinct_faces() {
     let at = |x: f32, confidence: f32| Face { confidence, x1: x, y1: 0.1, x2: x + 0.2, y2: 0.3 };
@@ -184,6 +211,7 @@ fn iou_and_softmax_hold_their_edges() {
 }
 
 // Run with `cargo test live_face_models -- --ignored --nocapture`.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 #[ignore]
 fn live_face_models_find_nothing_in_a_face_free_image() {

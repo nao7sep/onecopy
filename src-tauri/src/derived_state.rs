@@ -51,6 +51,16 @@ impl WorkClass {
         matches!(self, Self::VideoTranscripts | Self::AudioTranscripts)
     }
 
+    pub(crate) fn supported_on_platform(self) -> bool {
+        match self {
+            Self::Faces => crate::platform_support::FACE_SCORING,
+            Self::VideoTranscripts | Self::AudioTranscripts => {
+                crate::platform_support::TRANSCRIPTION
+            }
+            Self::Previews | Self::Snapshots | Self::Similarity => true,
+        }
+    }
+
     pub(crate) fn content_kind(self) -> Option<&'static str> {
         match self {
             Self::VideoTranscripts => Some("video"),
@@ -65,8 +75,10 @@ pub struct WorkCapabilities {
     pub ffmpeg: bool,
     pub video_snapshots_enabled: bool,
     pub similarity_enabled: bool,
+    pub face_scoring_supported: bool,
     pub face_enabled: bool,
     pub face_models: bool,
+    pub transcription_supported: bool,
     pub transcription_model: bool,
     pub video_transcription_enabled: bool,
     pub audio_transcription_enabled: bool,
@@ -211,7 +223,15 @@ pub(crate) fn work_debts(
             ..WorkDebt::default()
         }
     };
-    let faces = if !capabilities.face_enabled {
+    let faces = if !capabilities.face_scoring_supported {
+        WorkDebt {
+            blocked: counts.faces,
+            failed: counts.face_failures,
+            reason: Some(crate::platform_support::MAC_ONLY_REASON),
+            unavailable: true,
+            ..WorkDebt::default()
+        }
+    } else if !capabilities.face_enabled {
         WorkDebt {
             disabled: true,
             reason: Some("Turn on face scoring in Settings"),
@@ -233,7 +253,15 @@ pub(crate) fn work_debts(
         }
     };
     let transcript_debt = |enabled: bool, runnable: u64, failed: u64, setting: &'static str| {
-        if !enabled {
+        if !capabilities.transcription_supported {
+            WorkDebt {
+                blocked: runnable,
+                failed,
+                reason: Some(crate::platform_support::MAC_ONLY_REASON),
+                unavailable: true,
+                ..WorkDebt::default()
+            }
+        } else if !enabled {
             WorkDebt {
                 disabled: true,
                 reason: Some(setting),
@@ -338,7 +366,9 @@ pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;
 pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
 
 fn transcript_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
-    if capabilities.ffmpeg && !capabilities.transcription_model {
+    if !capabilities.transcription_supported {
+        crate::platform_support::MAC_ONLY_REASON
+    } else if capabilities.ffmpeg && !capabilities.transcription_model {
         "Waiting for transcription model"
     } else {
         "Waiting for ffmpeg"
@@ -452,6 +482,12 @@ pub(crate) fn item_work_states(
                 facts.face_score.is_some_and(|score| score > 0.0),
                 None,
             )
+        } else if !capabilities.face_scoring_supported {
+            item_state(
+                "unavailable",
+                false,
+                Some(crate::platform_support::MAC_ONLY_REASON),
+            )
         } else if !capabilities.face_enabled {
             item_state("disabled", false, Some("Face scoring is off"))
         } else if !capabilities.face_models {
@@ -477,6 +513,12 @@ pub(crate) fn item_work_states(
             item_state("ready", true, None)
         } else if facts.transcript_state == Some(READY_EMPTY) {
             item_state("ready", false, None)
+        } else if !capabilities.transcription_supported {
+            item_state(
+                "unavailable",
+                false,
+                Some(crate::platform_support::MAC_ONLY_REASON),
+            )
         } else if !enabled {
             item_state("disabled", false, Some("Automatic transcription is off"))
         } else if !capabilities.ffmpeg || !capabilities.transcription_model {
@@ -516,11 +558,16 @@ fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> Strin
              AND {preview_ready}"
             )
         }
-        WorkClass::Faces if capabilities.face_enabled && capabilities.face_models => {
+        WorkClass::Faces
+            if capabilities.face_scoring_supported
+                && capabilities.face_enabled
+                && capabilities.face_models =>
+        {
             format!("l.kind = 'image' AND r.face_state IS NULL AND {preview_ready}")
         }
         WorkClass::VideoTranscripts
-            if capabilities.video_transcription_enabled
+            if capabilities.transcription_supported
+                && capabilities.video_transcription_enabled
                 && capabilities.ffmpeg
                 && capabilities.transcription_model =>
         {
@@ -528,7 +575,8 @@ fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> Strin
                 .to_string()
         }
         WorkClass::AudioTranscripts
-            if capabilities.audio_transcription_enabled
+            if capabilities.transcription_supported
+                && capabilities.audio_transcription_enabled
                 && capabilities.ffmpeg
                 && capabilities.transcription_model =>
         {
@@ -1343,6 +1391,11 @@ pub fn retry_issue(conn: &Connection, issue_id: i64) -> Result<bool, String> {
     let Some((kind, _path, hash)) = content_hash_for_issue(conn, issue_id)? else {
         return Ok(false);
     };
+    if (kind == FACE_ERROR && !crate::platform_support::FACE_SCORING)
+        || (kind == TRANSCRIPT_ERROR && !crate::platform_support::TRANSCRIPTION)
+    {
+        return Ok(false);
+    }
     let changed = match kind.as_str() {
         PREVIEW_ERROR | VIDEO_POSTER_ERROR => conn.execute(
             "UPDATE contents SET derived_at_utc = NULL
@@ -1396,27 +1449,31 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
             [VIDEO_STRIP_ERROR],
         )
         .map_err(|error| error.to_string())? as u64;
-    retried += transaction
-        .execute(
+    if crate::platform_support::FACE_SCORING {
+        retried += transaction
+            .execute(
             "UPDATE analysis_receipts SET face_state = NULL, face_updated_at_utc = NULL \
              WHERE face_state IS NOT NULL \
                AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
                            WHERE p.content_hash = analysis_receipts.content_hash \
                              AND p.missing = 0 AND i.kind = ?1)",
-            [FACE_ERROR],
-        )
-        .map_err(|error| error.to_string())? as u64;
-    retried += transaction
-        .execute(
+                [FACE_ERROR],
+            )
+            .map_err(|error| error.to_string())? as u64;
+    }
+    if crate::platform_support::TRANSCRIPTION {
+        retried += transaction
+            .execute(
             "UPDATE analysis_receipts \
              SET transcript_state = NULL, transcript_updated_at_utc = NULL \
              WHERE transcript_state IS NOT NULL \
                AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
                            WHERE p.content_hash = analysis_receipts.content_hash \
                              AND p.missing = 0 AND i.kind = ?1)",
-            [TRANSCRIPT_ERROR],
-        )
-        .map_err(|error| error.to_string())? as u64;
+                [TRANSCRIPT_ERROR],
+            )
+            .map_err(|error| error.to_string())? as u64;
+    }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(retried)
 }
@@ -1425,7 +1482,7 @@ pub fn issue_recovery(
     conn: &Connection,
     issue_id: i64,
 ) -> Result<Option<crate::issue_recovery::IssueRecovery>, String> {
-    if resource_class_for_issue(conn, issue_id)?.is_some() {
+    if resource_class_for_issue(conn, issue_id)?.is_some_and(WorkClass::supported_on_platform) {
         return Ok(Some(crate::issue_recovery::IssueRecovery {
             action: "retry",
             label: "Resume",
@@ -1435,6 +1492,11 @@ pub fn issue_recovery(
     let Some((kind, _path, hash)) = content_hash_for_issue(conn, issue_id)? else {
         return Ok(None);
     };
+    if (kind == FACE_ERROR && !crate::platform_support::FACE_SCORING)
+        || (kind == TRANSCRIPT_ERROR && !crate::platform_support::TRANSCRIPTION)
+    {
+        return Ok(None);
+    }
     let queued = match kind.as_str() {
         PREVIEW_ERROR | VIDEO_POSTER_ERROR => conn
             .query_row(
@@ -1497,7 +1559,8 @@ pub(crate) fn take_resource_issue(
     conn: &Connection,
     issue_id: i64,
 ) -> Result<Option<WorkClass>, String> {
-    let class = resource_class_for_issue(conn, issue_id)?;
+    let class = resource_class_for_issue(conn, issue_id)?
+        .filter(|class| class.supported_on_platform());
     if class.is_some() {
         conn.execute("DELETE FROM issues WHERE id = ?1", [issue_id])
             .map_err(|error| error.to_string())?;
@@ -1521,9 +1584,17 @@ pub(crate) fn take_all_resource_issues(conn: &Connection) -> Result<Vec<WorkClas
                 .and_then(WorkClass::parse)
                 .ok_or_else(|| format!("unknown resource issue kind: {kind}"))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|class| class.supported_on_platform())
+        .collect::<Vec<_>>();
     drop(statement);
-    conn.execute("DELETE FROM issues WHERE kind LIKE 'resource-limit-%'", [])
+    for class in &classes {
+        conn.execute(
+            "DELETE FROM issues WHERE kind = ?1",
+            [format!("{RESOURCE_ISSUE_PREFIX}{}", class.id())],
+        )
         .map_err(|error| error.to_string())?;
+    }
     Ok(classes)
 }

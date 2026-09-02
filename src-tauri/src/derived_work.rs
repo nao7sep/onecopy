@@ -99,8 +99,10 @@ impl Settings {
             ffmpeg: self.ffmpeg.is_some(),
             video_snapshots_enabled: self.video_snapshots_enabled,
             similarity_enabled: self.similarity_enabled,
+            face_scoring_supported: crate::platform_support::FACE_SCORING,
             face_enabled: self.face_enabled,
             face_models: self.face_models.is_some(),
+            transcription_supported: crate::platform_support::TRANSCRIPTION,
             transcription_model: self.transcription_model.is_some(),
             video_transcription_enabled: self.video_transcription_enabled,
             audio_transcription_enabled: self.audio_transcription_enabled,
@@ -124,9 +126,10 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
                 .then(|| crate::binaries_manager::installed_path(data_root, spec))
         })
     };
-    let score_faces = get("scoreFaces")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(defaults.score_faces);
+    let score_faces = crate::platform_support::FACE_SCORING
+        && get("scoreFaces")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.score_faces);
     let bool_of = |key: &str, fallback: bool| {
         get(key)
             .and_then(|value| value.as_bool())
@@ -177,15 +180,19 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
         face_models: score_faces
             .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
             .flatten(),
-        transcription_model: installed("whisper-large-v3-turbo"),
-        video_transcription_enabled: bool_of(
-            "videoTranscriptionEnabled",
-            defaults.video_transcription_enabled,
-        ),
-        audio_transcription_enabled: bool_of(
-            "audioTranscriptionEnabled",
-            defaults.audio_transcription_enabled,
-        ),
+        transcription_model: crate::platform_support::TRANSCRIPTION
+            .then(|| installed("whisper-large-v3-turbo"))
+            .flatten(),
+        video_transcription_enabled: crate::platform_support::TRANSCRIPTION
+            && bool_of(
+                "videoTranscriptionEnabled",
+                defaults.video_transcription_enabled,
+            ),
+        audio_transcription_enabled: crate::platform_support::TRANSCRIPTION
+            && bool_of(
+                "audioTranscriptionEnabled",
+                defaults.audio_transcription_enabled,
+            ),
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
     }
 }
@@ -907,9 +914,13 @@ fn optional_enabled(settings: &Settings, class: WorkClass) -> bool {
     match class {
         WorkClass::Snapshots => settings.video_snapshots_enabled,
         WorkClass::Similarity => settings.similarity_enabled,
-        WorkClass::Faces => settings.face_enabled,
-        WorkClass::VideoTranscripts => settings.video_transcription_enabled,
-        WorkClass::AudioTranscripts => settings.audio_transcription_enabled,
+        WorkClass::Faces => crate::platform_support::FACE_SCORING && settings.face_enabled,
+        WorkClass::VideoTranscripts => {
+            crate::platform_support::TRANSCRIPTION && settings.video_transcription_enabled
+        }
+        WorkClass::AudioTranscripts => {
+            crate::platform_support::TRANSCRIPTION && settings.audio_transcription_enabled
+        }
         WorkClass::Previews => true,
     }
 }

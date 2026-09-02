@@ -65,9 +65,11 @@ Optional enrichment adds useful analysis or navigation while leaving OneCopy fun
 
 Each optional feature has its own durable Settings choice and defaults on when runnable. Settings controls whether the feature is enabled; Background Work controls whether currently enabled work is temporarily paused.
 
+Face scoring and transcription are currently supported only in the Apple-silicon macOS build. A shipping target gains either feature only after its production package passes correctness, cancellation, memory, responsiveness, fallback, and shutdown acceptance on physical hardware. Windows keeps both features unavailable rather than offering an unaccepted CPU or accelerator path; this does not limit required preparation, snapshots, similarity, playback, or file operations.
+
 The first-launch wizard separates `OneCopy always prepares` from `Additional features`. The required section explains the unswitched identity, metadata, companion, thumbnail, preview, video-playback, and live-watching work. The additional-features section provides switches only for optional enrichment.
 
-When a concrete prerequisite or enforced storage or memory safety check makes an optional feature unavailable, its wizard switch starts off and explains the condition. The user may still choose the feature, but unavailability is never represented as running or completed work, and the application retains its error-containment and resource-safety boundaries.
+When a concrete prerequisite or enforced storage or memory safety check makes a supported optional feature unavailable, its wizard switch starts off and explains the condition. The user may still choose that supported feature, but unavailability is never represented as running or completed work, and the application retains its error-containment and resource-safety boundaries. A feature unsupported on the current platform cannot be enabled, offers no model acquisition or manual generation action, and explains the platform boundary. An existing completed result remains viewable even where new generation is unsupported.
 
 An enabled optional feature whose required managed tool is unavailable remains enabled and visibly `Waiting for required tool`. It offers a direct Managed Tools action but never installs the tool implicitly. When the prerequisite becomes runnable, already-enabled work becomes eligible automatically; a feature that remained off stays off until the user enables it.
 
@@ -126,7 +128,7 @@ Database publication and user-visible state remain single-owned even when image 
 
 ## Transcription generation
 
-Supported videos with audio and supported audio files are eligible for transcription. Images and generic non-audio Other files are not. Video and audio have separate automatic-transcription settings, each enabled by default when runnable.
+On Apple-silicon macOS, supported videos with audio and supported audio files are eligible for transcription through the embedded Metal engine. Images and generic non-audio Other files are not. Video and audio have separate automatic-transcription settings, each enabled by default when runnable. Windows offers neither automatic nor manual transcription and does not use CPU-only Whisper as a fallback.
 
 Transcription detects spoken language automatically. OneCopy does not add a language selector or translation mode to this lifecycle. A completed attempt that finds no speech records `Checked — no speech found` as a successful empty result rather than remaining pending or failed.
 

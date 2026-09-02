@@ -203,6 +203,18 @@ pub fn spec_of(id: &str) -> Option<&'static DependencySpec> {
     DEPENDENCIES.iter().find(|d| d.id == id)
 }
 
+fn require_supported(spec: &DependencySpec) -> Result<(), String> {
+    if crate::platform_support::managed_dependency_supported(spec.id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} — {}",
+            spec.label,
+            crate::platform_support::MAC_ONLY_REASON
+        ))
+    }
+}
+
 /// A model pin's user-facing version: the digest's short prefix — changes
 /// exactly when the app re-pins, which is the only way a model updates.
 fn pin_version(pinned: &PinnedModel) -> String {
@@ -578,6 +590,7 @@ pub struct StartedInstall(BusyGuard);
 
 pub fn begin_install(id: &str, operation_id: &str) -> Result<StartedInstall, String> {
     let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    require_supported(spec)?;
     let expected = spec.pinned.as_ref().map(|pin| pin.bytes);
     claim(
         id,
@@ -594,6 +607,7 @@ pub fn install_entry_started(
 ) -> Result<BinaryFacts, String> {
     let id = started.0.id.clone();
     let spec = spec_of(&id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    require_supported(spec)?;
     match spec.kind {
         DependencyKind::Binary => install_ffmpeg_started(root, started.0, on_progress),
         DependencyKind::Model => {
@@ -831,6 +845,7 @@ pub fn check_entry_with_operation(
     operation_id: &str,
 ) -> Result<BinaryFacts, String> {
     let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    require_supported(spec)?;
     let guard = claim(
         id,
         operation_id,
@@ -935,7 +950,11 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
 
 /// Every registry entry's state, in display order.
 pub fn states(root: &Path) -> Vec<DependencyState> {
-    DEPENDENCIES.iter().map(|spec| state_of(root, spec)).collect()
+    DEPENDENCIES
+        .iter()
+        .filter(|spec| crate::platform_support::managed_dependency_supported(spec.id))
+        .map(|spec| state_of(root, spec))
+        .collect()
 }
 
 #[cfg(test)]
@@ -944,7 +963,7 @@ mod tests {
 
     #[test]
     fn cancellation_is_visible_to_chunked_work_and_released_with_the_claim() {
-        let id = "whisper-large-v3-turbo";
+        let id = "ffmpeg";
         let operation_id = "first-attempt";
         let started = begin_install(id, operation_id).unwrap();
         assert!(!cancel_entry(id, "older-attempt"));
@@ -954,6 +973,19 @@ mod tests {
         ));
         drop(started);
         assert!(!cancel_entry(id, operation_id));
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn unsupported_analysis_models_do_not_enter_the_managed_tools_surface() {
+        let root = tempfile::tempdir().unwrap();
+        let ids = states(root.path())
+            .into_iter()
+            .map(|state| state.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["ffmpeg"]);
+        assert!(begin_install("whisper-large-v3-turbo", "unsupported").is_err());
+        assert!(begin_install("ultraface-rfb640", "unsupported").is_err());
     }
 
     #[test]

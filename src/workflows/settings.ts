@@ -17,13 +17,22 @@ export async function saveSettings(): Promise<void> {
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
   const { soundEnabled, playbackVolume, ...configDraft } = draft;
+  const support = useAppStore.getState().appData;
+  const supportedConfigDraft = {
+    ...configDraft,
+    scoreFaces: support?.faceScoringSupported === true && configDraft.scoreFaces,
+    videoTranscriptionEnabled:
+      support?.transcriptionSupported === true && configDraft.videoTranscriptionEnabled,
+    audioTranscriptionEnabled:
+      support?.transcriptionSupported === true && configDraft.audioTranscriptionEnabled,
+  };
   useSettingsStore.setState({ saving: true, message: "", messageLevel: null });
   // Config publication is the Save transaction's commit point. Index
   // projection is durable follow-up work: once publication succeeds, close
   // the draft surface rather than leaving it looking unsaved for the duration
   // of a million-row rebuild or after a cancellable repair.
   try {
-    await useAppStore.getState().patchConfig(configDraft, { reportFailure: false });
+    await useAppStore.getState().patchConfig(supportedConfigDraft, { reportFailure: false });
     await useAppStore.getState().patchState({ soundEnabled, playbackVolume });
     useSettingsStore.setState({
       open: false,

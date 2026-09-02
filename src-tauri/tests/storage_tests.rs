@@ -44,9 +44,18 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
         value["similarPhotoAnalysisEnabled"],
         serde_json::json!(true)
     );
-    assert_eq!(value["scoreFaces"], serde_json::json!(true));
-    assert_eq!(value["videoTranscriptionEnabled"], serde_json::json!(true));
-    assert_eq!(value["audioTranscriptionEnabled"], serde_json::json!(true));
+    assert_eq!(
+        value["scoreFaces"],
+        serde_json::json!(onecopy_lib::platform_support::FACE_SCORING)
+    );
+    assert_eq!(
+        value["videoTranscriptionEnabled"],
+        serde_json::json!(onecopy_lib::platform_support::TRANSCRIPTION)
+    );
+    assert_eq!(
+        value["audioTranscriptionEnabled"],
+        serde_json::json!(onecopy_lib::platform_support::TRANSCRIPTION)
+    );
     assert_eq!(value["checkSourceFoldersAtLaunch"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert!(value.get("verifyAfterCopy").is_none());

@@ -19,6 +19,8 @@ describe("application initialization", () => {
         state: null,
         dataRoot: "/data",
         debugEnabled: false,
+        faceScoringSupported: true,
+        transcriptionSupported: true,
         quarantines: [quarantine],
       }),
       log_event: () => null,

@@ -297,16 +297,20 @@ function UnlinkedPairsRow() {
 
 function CheckField({
   label,
+  hint,
   checked,
+  disabled = false,
   onChange,
 }: {
   label: string;
+  hint?: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <Row label={label}>
-      <Toggle checked={checked} onChange={onChange} />
+    <Row label={label} hint={hint}>
+      <Toggle checked={checked} disabled={disabled} onChange={onChange} />
     </Row>
   );
 }
@@ -395,6 +399,12 @@ export default function SettingsModal() {
   const validateTimezone = useSettingsStore((s) => s.validateTimezone);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
+  const faceScoringSupported = useAppStore(
+    (s) => s.appData?.faceScoringSupported === true,
+  );
+  const transcriptionSupported = useAppStore(
+    (s) => s.appData?.transcriptionSupported === true,
+  );
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -700,7 +710,13 @@ export default function SettingsModal() {
           />
           <CheckField
             label="Transcribe videos automatically"
-            checked={draft.videoTranscriptionEnabled}
+            hint={
+              transcriptionSupported
+                ? undefined
+                : "Currently available only on Apple silicon Macs"
+            }
+            checked={transcriptionSupported && draft.videoTranscriptionEnabled}
+            disabled={!transcriptionSupported}
             onChange={(v) => update({ videoTranscriptionEnabled: v })}
           />
           <NumberField
@@ -731,7 +747,13 @@ export default function SettingsModal() {
           />
           <CheckField
             label="Transcribe audio automatically"
-            checked={draft.audioTranscriptionEnabled}
+            hint={
+              transcriptionSupported
+                ? undefined
+                : "Currently available only on Apple silicon Macs"
+            }
+            checked={transcriptionSupported && draft.audioTranscriptionEnabled}
+            disabled={!transcriptionSupported}
             onChange={(v) => update({ audioTranscriptionEnabled: v })}
           />
         </div>
@@ -810,7 +832,13 @@ export default function SettingsModal() {
           />
           <CheckField
             label="Score faces for photo ordering (background, needs the face models)"
-            checked={draft.scoreFaces}
+            hint={
+              faceScoringSupported
+                ? undefined
+                : "Currently available only on Apple silicon Macs"
+            }
+            checked={faceScoringSupported && draft.scoreFaces}
+            disabled={!faceScoringSupported}
             onChange={(v) => update({ scoreFaces: v })}
           />
           <CheckField

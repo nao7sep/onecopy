@@ -48,7 +48,11 @@ fn only_reconstructible_failures_offer_retry_and_stay_visible_while_queued() {
     assert_eq!(rows.len(), 6);
     assert!(rows
         .iter()
-        .filter(|row| row.kind != "delete-error")
+        .filter(|row| {
+            row.kind != "delete-error"
+                && row.kind != derived_state::FACE_ERROR
+                && row.kind != derived_state::TRANSCRIPT_ERROR
+        })
         .all(|row| row.recovery.as_ref().map(|action| action.status) == Some("available")));
     assert!(rows
         .iter()
@@ -61,7 +65,10 @@ fn only_reconstructible_failures_offer_retry_and_stay_visible_while_queued() {
         .iter()
         .find(|row| row.kind == derived_state::FACE_ERROR)
         .unwrap();
-    assert!(derived_state::retry_issue(&conn, face.id).unwrap());
+    assert_eq!(
+        derived_state::retry_issue(&conn, face.id).unwrap(),
+        onecopy_lib::platform_support::FACE_SCORING
+    );
 
     let (total, rows) = queries::issues(&conn, 20).unwrap();
     assert_eq!(total, 6, "retry never dismisses the evidence early");
@@ -69,7 +76,11 @@ fn only_reconstructible_failures_offer_retry_and_stay_visible_while_queued() {
         .iter()
         .find(|row| row.kind == derived_state::FACE_ERROR)
         .unwrap();
-    assert_eq!(face.recovery.as_ref().unwrap().status, "queued");
+    if onecopy_lib::platform_support::FACE_SCORING {
+        assert_eq!(face.recovery.as_ref().unwrap().status, "queued");
+    } else {
+        assert!(face.recovery.is_none());
+    }
 }
 
 #[test]
@@ -89,14 +100,20 @@ fn resource_safety_pause_offers_resume_without_attaching_to_one_file() {
         .find(|row| row.kind == "resource-limit-video-transcripts")
         .unwrap();
     assert!(issue.path.is_none());
-    assert_eq!(issue.recovery.as_ref().unwrap().label, "Resume");
-    assert_eq!(issue.recovery.as_ref().unwrap().status, "available");
+    if onecopy_lib::platform_support::TRANSCRIPTION {
+        assert_eq!(issue.recovery.as_ref().unwrap().label, "Resume");
+        assert_eq!(issue.recovery.as_ref().unwrap().status, "available");
+    } else {
+        assert!(issue.recovery.is_none());
+    }
 }
 
 #[test]
 fn retry_all_resets_each_safe_output_without_replaying_destructive_intent() {
     let (_dir, conn) = seeded();
-    assert_eq!(derived_state::retry_all(&conn).unwrap(), 5);
+    let supported_analysis = u64::from(onecopy_lib::platform_support::FACE_SCORING)
+        + u64::from(onecopy_lib::platform_support::TRANSCRIPTION);
+    assert_eq!(derived_state::retry_all(&conn).unwrap(), 3 + supported_analysis);
     assert_eq!(
         derived_state::retry_all(&conn).unwrap(),
         0,
@@ -121,7 +138,10 @@ fn retry_all_resets_each_safe_output_without_replaying_destructive_intent() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(face_state, None);
+    assert_eq!(
+        face_state,
+        (!onecopy_lib::platform_support::FACE_SCORING).then(|| "failed".to_string())
+    );
     let transcript: Option<String> = conn
         .query_row(
             "SELECT transcript_state FROM analysis_receipts
@@ -130,7 +150,10 @@ fn retry_all_resets_each_safe_output_without_replaying_destructive_intent() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(transcript, None);
+    assert_eq!(
+        transcript,
+        (!onecopy_lib::platform_support::TRANSCRIPTION).then(|| "failed".to_string())
+    );
 
     let (_, rows) = queries::issues(&conn, 20).unwrap();
     assert!(rows

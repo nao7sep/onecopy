@@ -11,6 +11,8 @@ export interface LoadedAppData {
   state: Record<string, unknown> | null;
   dataRoot: string;
   debugEnabled: boolean;
+  faceScoringSupported: boolean;
+  transcriptionSupported: boolean;
   /** Stores the core set aside this launch because they would not parse. The
    * app must SHOW these — an unreported quarantine is a silent reset with
    * extra steps (storage-path-conventions). */

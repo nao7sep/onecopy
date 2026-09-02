@@ -98,6 +98,8 @@ beforeEach(() => {
       state: {},
       dataRoot: "/data",
       debugEnabled: false,
+      faceScoringSupported: true,
+      transcriptionSupported: true,
     }),
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ issues: [], total: 0 }),
@@ -195,6 +197,8 @@ describe("the culling journey", () => {
       state: {},
       dataRoot: "/data",
       debugEnabled: false,
+      faceScoringSupported: true,
+      transcriptionSupported: true,
     }));
 
     render(<App />);
@@ -218,6 +222,8 @@ describe("the culling journey", () => {
       state: {},
       dataRoot: "/data",
       debugEnabled: false,
+      faceScoringSupported: true,
+      transcriptionSupported: true,
     }));
 
     render(<App />);
@@ -389,6 +395,8 @@ describe("the failure journey", () => {
       state: {},
       dataRoot: "/data",
       debugEnabled: false,
+      faceScoringSupported: true,
+      transcriptionSupported: true,
     }));
     mockSectionItems(() => SCENE);
     const view = render(<App />);

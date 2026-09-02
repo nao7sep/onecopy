@@ -107,10 +107,16 @@ export default function TranscriptBlock({
   );
   const automaticEnabled = useAppStore((state) => {
     const config = state.appData?.config;
-    return medium === "video"
-      ? config?.videoTranscriptionEnabled !== false
-      : config?.audioTranscriptionEnabled !== false;
+    return (
+      state.appData?.transcriptionSupported === true &&
+      (medium === "video"
+        ? config?.videoTranscriptionEnabled !== false
+        : config?.audioTranscriptionEnabled !== false)
+    );
   });
+  const transcriptionSupported = useAppStore(
+    (state) => state.appData?.transcriptionSupported === true,
+  );
   const transcriptOpen = useContentSessionStore(
     (state) => state.transcriptOpen[medium],
   );
@@ -158,7 +164,8 @@ export default function TranscriptBlock({
     transcriptWork?.state === "stopping";
   const compact = variant === "compact";
   const unavailable =
-    work !== null ? work.state === "unavailable" : !toolsAvailable;
+    !transcriptionSupported ||
+    (work !== null ? work.state === "unavailable" : !toolsAvailable);
   const waiting =
     paused || work?.state === "blocked" || work?.state === "waiting";
   const projectedRunning = work?.state === "running";
@@ -272,8 +279,10 @@ export default function TranscriptBlock({
     content = (
       <p className="text-xs text-ink-muted">
         Not available —{" "}
-        {work?.reason ??
-          "install ffmpeg and the transcription model from Managed tools"}
+        {!transcriptionSupported
+          ? "currently available only on Apple silicon Macs"
+          : (work?.reason ??
+            "install ffmpeg and the transcription model from Managed tools")}
         .
       </p>
     );
@@ -320,7 +329,7 @@ export default function TranscriptBlock({
           Background work
         </Button>,
       );
-    } else if (state.status === "ready") {
+    } else if (state.status === "ready" && transcriptionSupported) {
       actions.push(
         <Button
           key="replace"
@@ -357,14 +366,16 @@ export default function TranscriptBlock({
         </Button>,
       );
     } else if (unavailable) {
-      actions.push(
-        <Button
-          key="tools"
-          onClick={() => useBinariesStore.getState().setModalOpen(true)}
-        >
-          Managed tools
-        </Button>,
-      );
+      if (transcriptionSupported) {
+        actions.push(
+          <Button
+            key="tools"
+            onClick={() => useBinariesStore.getState().setModalOpen(true)}
+          >
+            Managed tools
+          </Button>,
+        );
+      }
       if (failed) {
         actions.push(
           <Button key="issues" variant="ghost" onClick={openIssues}>
@@ -382,8 +393,9 @@ export default function TranscriptBlock({
         </Button>,
       );
     } else if (
-      work?.state === "disabled" ||
-      (!automaticEnabled && work === null)
+      transcriptionSupported &&
+      (work?.state === "disabled" ||
+        (!automaticEnabled && work === null))
     ) {
       actions.push(
         <Button key="transcribe" onClick={() => void start(hash)}>

@@ -144,8 +144,8 @@ impl Default for DefaultConfig {
             video_strip_max_frames: 40,
             video_snapshots_enabled: true,
             similar_photo_analysis_enabled: true,
-            video_transcription_enabled: true,
-            audio_transcription_enabled: true,
+            video_transcription_enabled: crate::platform_support::TRANSCRIPTION,
+            audio_transcription_enabled: crate::platform_support::TRANSCRIPTION,
             video_autoplay: true,
             audio_autoplay: true,
             enlarge_small_images_in_preview: true,
@@ -160,7 +160,7 @@ impl Default for DefaultConfig {
             check_updates_at_launch: false,
             check_source_folders_at_launch: true,
             keep_awake_during_indexing: true,
-            score_faces: true,
+            score_faces: crate::platform_support::FACE_SCORING,
             show_face_stars: true,
             maximum_images_in_comparison: 16,
             notification_display_seconds: 6,
@@ -185,6 +185,8 @@ pub struct LoadedAppData {
     pub data_root: String,
     /// Set by the command layer from logging::debug_enabled(); storage leaves it false.
     pub debug_enabled: bool,
+    pub face_scoring_supported: bool,
+    pub transcription_supported: bool,
     /// Stores quarantined during this launch, for the frontend to REPORT. An
     /// unreported quarantine is a silent reset with extra steps
     /// (storage-path-conventions), so a log line alone is not enough.
@@ -254,6 +256,8 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
         state: state_read.value,
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,
+        face_scoring_supported: crate::platform_support::FACE_SCORING,
+        transcription_supported: crate::platform_support::TRANSCRIPTION,
         quarantines,
     })
 }
