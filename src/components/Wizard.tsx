@@ -6,6 +6,8 @@ import Button from "./ui/Button";
 import { Plus } from "lucide-react";
 import { Row, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
+import { useId } from "react";
+import OperationResult from "./ui/OperationResult";
 
 const WIZARD_STEPS = 3;
 
@@ -22,6 +24,7 @@ const WIZARD_STEPS = 3;
 // the Finish workflow is the sole writer).
 
 export default function Wizard() {
+  const timezoneErrorId = useId();
   const step = useWizardStore((s) => s.step);
   const dirs = useWizardStore((s) => s.dirs);
   const timezone = useWizardStore((s) => s.timezone);
@@ -68,7 +71,11 @@ export default function Wizard() {
         <p className="mt-1 mb-6 text-sm text-ink-muted">
           {`Step ${step} of ${WIZARD_STEPS}`}
         </p>
-        {error !== null ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
+        {error !== null ? (
+          <OperationResult level="error" className="mb-4 text-sm">
+            {error}
+          </OperationResult>
+        ) : null}
 
         {step === 1 ? (
           <section>
@@ -113,15 +120,25 @@ export default function Wizard() {
             </p>
             <input
               className="mb-1 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-ink outline-none transition-colors focus:border-border-strong focus-visible:ring-2 focus-visible:ring-primary-ring"
+              aria-invalid={
+                (!timezonePending && !timezoneValid) || undefined
+              }
+              aria-describedby={
+                !timezonePending && !timezoneValid ? timezoneErrorId : undefined
+              }
               value={timezone}
               onChange={(e) => void setTimezone(e.target.value)}
             />
-            <p className="mb-6 min-h-4 text-xs text-danger">
+            <p
+              id={timezoneErrorId}
+              role={!timezonePending && !timezoneValid ? "alert" : undefined}
+              className="mb-6 min-h-4 text-xs text-danger"
+            >
               {timezonePending
                 ? "Checking timezone…"
                 : timezoneValid
                   ? ""
-                  : "Not a recognized timezone name"}
+                  : "Error: Not a recognized timezone name"}
             </p>
             <div className="flex items-center justify-between">
               {leading}

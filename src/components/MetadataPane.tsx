@@ -28,6 +28,7 @@ import {
   workPresentationRows,
   type PresentationTone,
 } from "../models/itemPresentation";
+import OperationResult from "./ui/OperationResult";
 
 // The right pane's metadata tab: content facts, the resolved capture time
 // with its source, and the full copy-path list — the live health check (1 copy
@@ -55,6 +56,7 @@ function PathRow({ path }: { path: string }) {
         title={`Show in ${word}`}
         className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition-opacity hover:bg-surface-muted hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
         onClick={() => {
+          setError(false);
           void revealInFileManager(path).catch((error) => {
             // A copy on an unplugged drive is the ordinary failure here, and
             // it is worth a log line rather than silence.
@@ -65,7 +67,11 @@ function PathRow({ path }: { path: string }) {
       >
         <FolderOpen size={13} />
       </button>
-      {error ? <span className="text-xs text-danger">Couldn’t reveal</span> : null}
+      {error ? (
+        <OperationResult level="error" className="max-w-44 py-1">
+          Couldn’t reveal this copy.
+        </OperationResult>
+      ) : null}
     </dd>
   );
 }
@@ -98,7 +104,11 @@ function SimilarSection({ hash }: { hash: string }) {
     };
   }, [hash, generation]);
   if (members.length < 2) {
-    return error === null ? null : <p className="mt-3 text-xs text-danger">{error}</p>;
+    return error === null ? null : (
+      <OperationResult level="error" className="mt-3">
+        {error}
+      </OperationResult>
+    );
   }
   return (
     <div className="mb-1 mt-3">
@@ -153,7 +163,11 @@ function SimilarSection({ hash }: { hash: string }) {
           </span>
         ))}
       </dd>
-      {error !== null ? <p className="mt-1 text-xs text-danger">{error}</p> : null}
+      {error !== null ? (
+        <OperationResult level="error" className="mt-1">
+          {error}
+        </OperationResult>
+      ) : null}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure } from "../state/notifications-store";
 
 /** Opens only an indexed identity and permanently pauses any in-app session
  * for it before native delegation begins. */
@@ -17,7 +17,7 @@ export async function openInDefaultApp(
       pathId: hash === null ? pathId : null,
     });
   } catch (error) {
-    reportActionFailure(
+    recordActionFailure(
       "external-open-failed",
       "Couldn’t open this file in its default app.",
       error,
@@ -30,7 +30,7 @@ export async function revealInFileManager(path: string): Promise<void> {
   try {
     await revealItemInDir(path);
   } catch (error) {
-    reportActionFailure(
+    recordActionFailure(
       "reveal-file-failed",
       "Couldn’t reveal this file in the file manager.",
       error,

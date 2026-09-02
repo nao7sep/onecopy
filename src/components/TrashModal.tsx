@@ -8,6 +8,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import Button from "./ui/Button";
 import { recordActionFailure } from "../state/notifications-store";
 import { revealInFileManager } from "../workflows/external-open";
+import OperationResult from "./ui/OperationResult";
 
 // The Trash surface: every trash on the system — the configured volumes,
 // the app home, AND any mounted drive carrying one from an earlier
@@ -151,7 +152,11 @@ export default function TrashModal({
       onClose={onClose}
       closeDisabled={busy}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
-      footerStart={rows !== null ? error : undefined}
+      footerStart={
+        rows !== null && error !== null ? (
+          <OperationResult level="error">{error}</OperationResult>
+        ) : undefined
+      }
     >
       {confirm !== null ? (
         <ConfirmDialog
@@ -176,9 +181,13 @@ export default function TrashModal({
         manager is also always safe.
       </p>
       {rows === null ? (
-        <p className={`py-4 text-center text-sm ${error !== null ? "text-danger" : "text-ink-muted"}`}>
-          {error ?? "Measuring…"}
-        </p>
+        error !== null ? (
+          <OperationResult level="error" className="my-4">
+            {error}
+          </OperationResult>
+        ) : (
+          <p className="py-4 text-center text-sm text-ink-muted">Measuring…</p>
+        )
       ) : rows.length === 0 ? (
         <p className="py-4 text-center text-sm text-ink-muted">No trash locations</p>
       ) : (

@@ -4,6 +4,7 @@ import { useIssuesStore } from "../state/issues-store";
 import { formatLocalMinute } from "../utils/displayTime";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
+import OperationResult from "./ui/OperationResult";
 
 // Active is current-state diagnosis, oldest first; Recent is bounded history,
 // newest first. Scan-derived Active rows retire when resolved, user dismissal
@@ -45,13 +46,24 @@ export default function IssuesModal() {
       (recentTotal > recentRows.length
         ? `Showing the newest ${recentRows.length} of ${recentTotal}`
         : undefined);
+  const footerLevel = activeView
+    ? error === null
+      ? "info"
+      : "error"
+    : recentError === null
+      ? "info"
+      : "error";
 
   return (
     <ModalShell
       title="Issues"
       onClose={() => setOpen(false)}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
-      footerStart={footerError}
+      footerStart={
+        footerError === undefined ? undefined : (
+          <OperationResult level={footerLevel}>{footerError}</OperationResult>
+        )
+      }
       primaryAction={
         activeView && rows.length > 0 ? (
           <>
@@ -107,9 +119,15 @@ export default function IssuesModal() {
       {activeView ? (
         <div id="issues-panel-active" role="tabpanel" aria-labelledby="issues-tab-active">
           {rows.length === 0 ? (
-            <p className={`py-6 text-center text-sm ${error !== null ? "text-danger" : "text-ink-muted"}`}>
-              {loading ? "Loading active issues…" : error ?? "No active issues"}
-            </p>
+            error !== null ? (
+              <OperationResult level="error" className="my-4">
+                {error}
+              </OperationResult>
+            ) : (
+              <p className="py-6 text-center text-sm text-ink-muted">
+                {loading ? "Loading active issues…" : "No active issues"}
+              </p>
+            )
           ) : (
             <ul className="space-y-1.5">
               {rows.map((row) => (
@@ -165,9 +183,15 @@ export default function IssuesModal() {
       ) : (
         <div id="issues-panel-recent" role="tabpanel" aria-labelledby="issues-tab-recent">
           {recentRows.length === 0 ? (
-            <p className={`py-6 text-center text-sm ${recentError !== null ? "text-danger" : "text-ink-muted"}`}>
-              {recentLoading ? "Loading recent notifications…" : recentError ?? "No recent notifications"}
-            </p>
+            recentError !== null ? (
+              <OperationResult level="error" className="my-4">
+                {recentError}
+              </OperationResult>
+            ) : (
+              <p className="py-6 text-center text-sm text-ink-muted">
+                {recentLoading ? "Loading recent notifications…" : "No recent notifications"}
+              </p>
+            )
           ) : (
             <ul className="space-y-1.5">
               {recentRows.map((row) => (

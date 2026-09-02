@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 import type { ItemWorkStates } from "../models/items";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 
@@ -114,7 +114,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
     } catch (error) {
       set({ error: String(error) });
       log.warn("background-work pause failed", toErrorFields(error));
-      reportActionFailure(
+      recordActionFailure(
         "background-work-control-failed",
         "Couldn’t change background work.",
         error,

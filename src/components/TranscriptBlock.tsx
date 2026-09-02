@@ -14,6 +14,7 @@ import {
 import { usePlaybackClientStore } from "../state/playback-client-store";
 import { useIssuesStore } from "../state/issues-store";
 import { requestPlaybackSeek } from "../workflows/playback";
+import OperationResult from "./ui/OperationResult";
 
 interface TranscriptSegment {
   seconds: number;
@@ -173,10 +174,10 @@ export default function TranscriptBlock({
 
   const replacementNotice =
     state.replacement?.status === "failed" ? (
-      <p className="mb-2 break-words text-xs text-danger">
+      <OperationResult level="error" className="mb-2">
         The replacement failed. The previous transcript is still shown.{" "}
         {state.replacement.message}
-      </p>
+      </OperationResult>
     ) : state.replacement !== null ? (
       <p className="mb-2 text-xs text-primary">
         Updating transcript
@@ -204,11 +205,11 @@ export default function TranscriptBlock({
     );
   } else if (state.status === "failed" || work?.state === "failed") {
     content = (
-      <p className="break-words text-xs text-danger">
+      <OperationResult level="error">
         {state.status === "failed"
           ? (state.message ?? "Transcription failed.")
           : (work?.reason ?? "Transcription failed.")}
-      </p>
+      </OperationResult>
     );
   } else if (state.status === "ready") {
     content =
@@ -301,6 +302,8 @@ export default function TranscriptBlock({
   } else {
     content = <p className="text-xs text-ink-muted">Not transcribed yet.</p>;
   }
+
+  const controlError = state.controlError ?? null;
 
   const actions: React.ReactNode[] = [];
   if (!compact) {
@@ -407,6 +410,11 @@ export default function TranscriptBlock({
           </Button>
         </span>
       </div>
+      {controlError !== null ? (
+        <OperationResult level="error" className="mb-2">
+          {controlError}
+        </OperationResult>
+      ) : null}
       {expanded ? (
         <>
           {replacementNotice}

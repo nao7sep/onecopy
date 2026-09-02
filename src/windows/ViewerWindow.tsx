@@ -5,22 +5,32 @@ import { listenThenAnnounce } from "../utils/handshake";
 import type { ViewerBroadcast } from "../workflows/quick-view";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PreviewSurface from "../components/PreviewSurface";
-import { reportWindowCall } from "../repositories";
+import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { isAudioFile } from "../models/items";
 import NotificationHost from "../components/NotificationHost";
-
-function sendKey(key: string, shiftKey = false): void {
-  void emit("viewer://key", { key, shiftKey }).catch(reportWindowCall("viewer key forward"));
-}
+import { recordActionFailure } from "../state/notifications-store";
+import OperationResult from "../components/ui/OperationResult";
 
 export default function ViewerWindow() {
   const [state, setState] = useState<ViewerBroadcast | null>(null);
+  const [commandFailure, setCommandFailure] = useState<string | null>(null);
   const pendingDeleteRef = useRef<ViewerBroadcast["pendingDelete"]>(null);
   const sectionKindRef = useRef<ViewerBroadcast["sectionKind"]>(null);
   const itemRef = useRef<ViewerBroadcast["item"]>(null);
   pendingDeleteRef.current = state?.pendingDelete ?? null;
   sectionKindRef.current = state?.sectionKind ?? null;
   itemRef.current = state?.item ?? null;
+
+  const sendKey = (key: string, shiftKey = false): void => {
+    void emit("viewer://key", { key, shiftKey })
+      .then(() => setCommandFailure(null))
+      .catch((error) => {
+        log.error("viewer key forward failed", toErrorFields(error));
+        const message = "Couldn’t send this viewer command.";
+        setCommandFailure(message);
+        recordActionFailure("viewer-command-failed", message, error);
+      });
+  };
 
   useEffect(() => {
     const unlisten = listenThenAnnounce<ViewerBroadcast>(
@@ -56,7 +66,14 @@ export default function ViewerWindow() {
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,
-      }).catch(reportWindowCall("viewer key forward"));
+      })
+        .then(() => setCommandFailure(null))
+        .catch((error) => {
+          log.error("viewer key forward failed", toErrorFields(error));
+          const message = "Couldn’t send this viewer command.";
+          setCommandFailure(message);
+          recordActionFailure("viewer-command-failed", message, error);
+        });
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
@@ -106,6 +123,39 @@ export default function ViewerWindow() {
           />
         )}
       </div>
+      {state.failure !== null || commandFailure !== null ? (
+        <OperationResult
+          level="error"
+          className="absolute bottom-4 left-1/2 z-20 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 shadow-xl"
+          actions={
+            <button
+              className="font-medium underline"
+              onClick={() => {
+                setCommandFailure(null);
+                if (state.failure !== null) {
+                  void emit("viewer://dismiss-failure", {}).catch((error) => {
+                    log.error(
+                      "viewer failure dismissal failed",
+                      toErrorFields(error),
+                    );
+                    const message = "Couldn’t dismiss this viewer result.";
+                    setCommandFailure(message);
+                    recordActionFailure(
+                      "viewer-result-dismiss-failed",
+                      message,
+                      error,
+                    );
+                  });
+                }
+              }}
+            >
+              Dismiss
+            </button>
+          }
+        >
+          {commandFailure ?? state.failure}
+        </OperationResult>
+      ) : null}
       {state.pendingDelete !== null ? (
         <ConfirmDialog
           title={state.pendingDelete === "permanent" ? "Delete permanently?" : "Move to trash?"}

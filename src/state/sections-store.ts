@@ -7,7 +7,7 @@ import type { ScanProgress } from "../models/scan";
 import type { SectionCounts } from "../models/sections";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 
 export interface SourceCheckState {
   running: boolean;
@@ -82,7 +82,7 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       log.error("section counts load failed", toErrorFields(error));
       if (fresh()) {
         set({ error: "Couldn’t read the library sections." });
-        reportActionFailure(
+        recordActionFailure(
           "section-counts-load-failed",
           "Couldn’t read the library sections.",
           error,
@@ -119,7 +119,7 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       log.error("library background-work status failed", toErrorFields(error));
       if (fresh()) {
         set({ error: "Couldn’t read library background-work status." });
-        reportActionFailure(
+        recordActionFailure(
           "background-work-status-failed",
           "Couldn’t read library background-work status.",
           error,
@@ -141,7 +141,7 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     } catch (error) {
       log.error("source-folder check start failed", toErrorFields(error));
       set({ error: "Couldn’t start checking source folders." });
-      reportActionFailure("source-check-start-failed", "Couldn’t start checking source folders.", error);
+      recordActionFailure("source-check-start-failed", "Couldn’t start checking source folders.", error);
       return false;
     }
   },
@@ -156,7 +156,7 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     } catch (error) {
       log.error("source-folder stop failed", toErrorFields(error));
       set({ error: "Couldn’t stop checking source folders." });
-      reportActionFailure("source-check-stop-failed", "Couldn’t stop checking source folders.", error);
+      recordActionFailure("source-check-stop-failed", "Couldn’t stop checking source folders.", error);
     }
   },
 
@@ -166,7 +166,7 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     } catch (error) {
       log.error("file-information startup failed", toErrorFields(error));
       set({ error: "Couldn’t start completing file information." });
-      reportActionFailure(
+      recordActionFailure(
         "file-information-start-failed",
         "Couldn’t start completing file information.",
         error,
@@ -182,7 +182,7 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     } catch (error) {
       log.error("file-information pause change failed", toErrorFields(error));
       set({ error: "Couldn’t change file-information background work." });
-      reportActionFailure(
+      recordActionFailure(
         "file-information-control-failed",
         "Couldn’t change file-information background work.",
         error,

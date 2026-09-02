@@ -17,7 +17,7 @@ import {
 } from "../models/dependencyProgress";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
-import { recordActionFailure, reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 
 export type DependencyStatus =
   | "not-installed"
@@ -143,6 +143,7 @@ interface BinariesState {
   /** The last run's plain-words outcome, shown beside the button for the
    * cooldown minute — "You're up to date" beats a hover tooltip. */
   lastCheckOutcome: string | null;
+  lastCheckOutcomeLevel: "error" | "info" | null;
   modalOpen: boolean;
   load: () => Promise<void>;
   install: (id: string) => Promise<void>;
@@ -171,6 +172,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   checkCancelling: false,
   cooldownUntil: 0,
   lastCheckOutcome: null,
+  lastCheckOutcomeLevel: null,
   modalOpen: false,
 
   load: async () => {
@@ -307,7 +309,13 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       });
     } catch (error) {
       log.error("binaries install cancellation failed", { id, ...toErrorFields(error) });
-      reportActionFailure(
+      set((state) => ({
+        errors: {
+          ...state.errors,
+          [id]: "Couldn’t cancel this managed-tool installation.",
+        },
+      }));
+      recordActionFailure(
         "managed-tool-cancel-failed",
         "Couldn’t cancel this managed-tool installation.",
         error,
@@ -345,6 +353,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       checkingOperationId: null,
       checkCancelling: false,
       lastCheckOutcome: null,
+      lastCheckOutcomeLevel: null,
     });
     const installed = entries.filter(
       (entry) =>
@@ -423,6 +432,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       checkCancelling: false,
       cooldownUntil: cancelled ? 0 : Date.now() + COOLDOWN_MS,
       lastCheckOutcome: outcome,
+      lastCheckOutcomeLevel: failures > 0 ? "error" : "info",
     });
     if (failures > 0) {
       recordActionFailure(
@@ -433,7 +443,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     setTimeout(() => {
       useBinariesStore.setState((state) =>
         state.lastCheckOutcome === outcome && !state.checking
-          ? { cooldownUntil: 0, lastCheckOutcome: null }
+          ? {
+              cooldownUntil: 0,
+              lastCheckOutcome: null,
+              lastCheckOutcomeLevel: null,
+            }
           : state,
       );
     }, cancelled ? MIN_CHECKING_MS : COOLDOWN_MS);
@@ -454,9 +468,13 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       });
       if (!active) set({ checkCancelling: false });
     } catch (error) {
-      set({ checkCancelling: false });
+      set({
+        checkCancelling: false,
+        lastCheckOutcome: "Couldn’t cancel the managed-tool check.",
+        lastCheckOutcomeLevel: "error",
+      });
       log.error("binaries check cancellation failed", { id, ...toErrorFields(error) });
-      reportActionFailure(
+      recordActionFailure(
         "managed-tool-check-cancel-failed",
         "Couldn’t cancel the managed-tool check.",
         error,

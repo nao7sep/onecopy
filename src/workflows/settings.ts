@@ -9,7 +9,7 @@ import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
-import { recordActionFailure, reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure } from "../state/notifications-store";
 
 export async function saveSettings(): Promise<void> {
   const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
@@ -17,7 +17,7 @@ export async function saveSettings(): Promise<void> {
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
   const { soundEnabled, playbackVolume, ...configDraft } = draft;
-  useSettingsStore.setState({ saving: true, message: "" });
+  useSettingsStore.setState({ saving: true, message: "", messageLevel: null });
   // Config publication is the Save transaction's commit point. Index
   // projection is durable follow-up work: once publication succeeds, close
   // the draft surface rather than leaving it looking unsaved for the duration
@@ -35,6 +35,7 @@ export async function saveSettings(): Promise<void> {
     useSettingsStore.setState({
       saving: false,
       message: "Settings could not be saved. Your changes are still here; try again.",
+      messageLevel: "error",
     });
     log.error("settings save failed", toErrorFields(error));
     recordActionFailure("settings-save-failed", "Couldn’t save Settings.", error);
@@ -53,7 +54,7 @@ export async function saveSettings(): Promise<void> {
     }
     log.error("settings re-index failed after save", toErrorFields(error));
     if (!message.includes("scan cancelled")) {
-      reportActionFailure(
+      recordActionFailure(
         "settings-reindex-failed",
         "Settings were saved, but OneCopy couldn’t update the library.",
         error,
@@ -68,7 +69,10 @@ export async function saveSettings(): Promise<void> {
     ]);
   } catch (error) {
     log.error("settings projections refresh failed", toErrorFields(error));
-    reportActionFailure(
+    useItemsStore.setState({
+      message: "Settings were saved, but OneCopy couldn’t refresh the interface.",
+    });
+    recordActionFailure(
       "settings-refresh-failed",
       "Settings were saved, but OneCopy couldn’t refresh the interface.",
       error,
@@ -79,7 +83,7 @@ export async function saveSettings(): Promise<void> {
       await useSectionsStore.getState().startSourceCheck();
     } catch (error) {
       log.error("source-folder check failed to start after settings save", toErrorFields(error));
-      reportActionFailure(
+      recordActionFailure(
         "settings-source-check-failed",
         "Settings were saved, but OneCopy couldn’t start checking source folders.",
         error,

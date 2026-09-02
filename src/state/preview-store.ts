@@ -26,6 +26,7 @@ import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
 import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
+import { recordActionFailure } from "./notifications-store";
 
 export interface PreviewPayload {
   hash: string | null;
@@ -56,6 +57,9 @@ interface PreviewState {
   placementPreference: PlacementPreference;
   /** What the side pane renders (the window renders from events). */
   current: PreviewShowMessage | null;
+  /** Result owned by the Preview command surface, never the global host. */
+  error: string | null;
+  clearError: () => void;
   /** Opens the surface for the payload and turns follow on. */
   open: (
     payload: PreviewPayload,
@@ -143,19 +147,27 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
     if (state.previewWindowMaximized !== false) {
       await window.maximize();
     }
-    await window.show().catch(reportWindowCall("preview show"));
-    await raisePulse(window);
-    // Keep the keyboard where the culling happens.
-    await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
   } catch (error) {
     log.warn("preview window placement failed", toErrorFields(error));
   }
+  await window.show();
+  await raisePulse(window);
+  // Keep the keyboard where the culling happens.
+  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
 }
 
 export async function restorePreviewAfterComparison(): Promise<void> {
   const { follow, placement } = usePreviewStore.getState();
   if (!follow || placement !== "window") return;
-  await frontPreviewWindow();
+  try {
+    await frontPreviewWindow();
+  } catch (error) {
+    publishPreviewFailure(
+      "preview-restore-failed",
+      "Couldn’t restore the Preview window.",
+      error,
+    );
+  }
 }
 
 /** Raise WITHOUT stealing: a topmost pulse leaves the window above the main
@@ -172,13 +184,20 @@ async function raisePulse(window: WebviewWindow): Promise<void> {
  * refocus-main dance raised MAIN over an overlapping preview and made Space
  * look dead. */
 async function frontPreviewWindow(): Promise<void> {
-  const existing = await WebviewWindow.getByLabel("preview").catch((error) => {
-    reportWindowCall("preview lookup")(error);
-    return null;
-  });
-  if (existing === null) return;
-  await existing.show().catch(reportWindowCall("preview show"));
+  const existing = await WebviewWindow.getByLabel("preview");
+  if (existing === null) throw new Error("The Preview window is unavailable.");
+  await existing.show();
   await raisePulse(existing);
+}
+
+function publishPreviewFailure(
+  kind: string,
+  message: string,
+  error: unknown,
+): void {
+  log.error("preview action failed", { kind, ...toErrorFields(error) });
+  usePreviewStore.setState({ error: message });
+  recordActionFailure(kind, message, error);
 }
 
 // ---- Follow throttle ------------------------------------------------------
@@ -194,7 +213,15 @@ function deliver(message: PreviewShowMessage): void {
   // renders it; for the window it is the stale-guard baseline).
   usePreviewStore.setState({ current: message });
   if (placement === "window" && previewWindowOpen) {
-    void emit("preview://show", message);
+    void emit("preview://show", message)
+      .then(() => usePreviewStore.setState({ error: null }))
+      .catch((error) =>
+        publishPreviewFailure(
+          "preview-update-failed",
+          "Couldn’t update the Preview window.",
+          error,
+        ),
+      );
   }
 }
 
@@ -226,6 +253,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   placement: null,
   placementPreference: null,
   current: null,
+  error: null,
+  clearError: () => set({ error: null }),
 
   open: async (payload, detail, windowState = {}) => {
     try {
@@ -233,17 +262,28 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // State FIRST: the side pane renders `current` the moment this lands,
       // which is what makes the image appear immediately on activation.
       const message = { ...payload, detail };
-      set({ follow: true, placement, current: message });
+      set({ follow: true, placement, current: message, error: null });
       if (placement === "window") {
         await ensurePreviewWindow(windowState);
         await frontPreviewWindow();
         // A freshly created webview misses this emit (still booting) — its
         // ready announcement fetches the current state instead; an already
         // -open window hears it directly.
-        void emit("preview://show", message);
+        void emit("preview://show", message).catch((error) =>
+          publishPreviewFailure(
+            "preview-update-failed",
+            "Couldn’t update the Preview window.",
+            error,
+          ),
+        );
       }
     } catch (error) {
-      log.error("preview open failed", toErrorFields(error));
+      set({ placement: null });
+      publishPreviewFailure(
+        "preview-open-failed",
+        "Couldn’t open the Preview window.",
+        error,
+      );
     }
   },
 
@@ -256,7 +296,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   },
 
   setPlacementPreference: async (preference, windowState = {}) => {
-    const { follow, placement, current } = get();
+    const { follow, placement, current, placementPreference } = get();
     set({ placementPreference: preference });
     if (!follow) return;
     const next = resolvePlacement(preference);
@@ -268,17 +308,26 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     // every window→inline switch read as a manual close and disabled the
     // preview the user was in the middle of moving. With placement already
     // "split", that handler stands down and follow survives the switch.
-    set({ placement: next });
+    set({ placement: next, error: null });
     // Tearing the old surface down still happens: leaving the preview window
     // open behind a split pane would show the same photo twice and keep a
     // window the user just asked to be rid of.
-    if (placement === "window") {
-      await WebviewWindow.getByLabel("preview").then((w) => w?.close());
-    }
-    if (next === "window" && current !== null) {
-      await ensurePreviewWindow(windowState);
-      await frontPreviewWindow();
-      void emit("preview://show", current);
+    try {
+      if (placement === "window") {
+        await WebviewWindow.getByLabel("preview").then((w) => w?.close());
+      }
+      if (next === "window" && current !== null) {
+        await ensurePreviewWindow(windowState);
+        await frontPreviewWindow();
+        await emit("preview://show", current);
+      }
+    } catch (error) {
+      set({ placement: placement ?? null, placementPreference });
+      publishPreviewFailure(
+        "preview-placement-failed",
+        "Couldn’t change the Preview placement.",
+        error,
+      );
     }
   },
 

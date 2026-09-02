@@ -9,24 +9,27 @@ import type {
 interface QuickViewState {
   session: ActiveViewerSession | null;
   pendingDelete: "trash" | "permanent" | null;
+  failure: string | null;
   currentKey: () => string | null;
   start: (snapshot: ViewerSequenceSnapshot, presentation: ViewerPresentation) => void;
   update: (snapshot: ViewerSequenceSnapshot) => void;
   setPresentation: (presentation: ViewerPresentation) => void;
   requestDelete: (kind: "trash" | "permanent") => void;
   cancelDelete: () => void;
+  setFailure: (failure: string | null) => void;
   close: () => void;
 }
 
 export const useQuickViewStore = create<QuickViewState>((set, get) => ({
   session: null,
   pendingDelete: null,
+  failure: null,
   currentKey: () => {
     const session = get().session;
     return session === null ? null : identityKey(session.member);
   },
   start: (snapshot, presentation) => {
-    set({ session: { ...snapshot, presentation }, pendingDelete: null });
+    set({ session: { ...snapshot, presentation }, pendingDelete: null, failure: null });
   },
   update: (snapshot) => {
     const session = get().session;
@@ -40,5 +43,6 @@ export const useQuickViewStore = create<QuickViewState>((set, get) => ({
   },
   requestDelete: (pendingDelete) => set({ pendingDelete }),
   cancelDelete: () => set({ pendingDelete: null }),
-  close: () => set({ session: null, pendingDelete: null }),
+  setFailure: (failure) => set({ failure }),
+  close: () => set({ session: null, pendingDelete: null, failure: null }),
 }));

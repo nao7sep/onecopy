@@ -10,7 +10,7 @@ import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
-import { reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure } from "../state/notifications-store";
 
 interface DeleteBatchOutcome {
   error: string | null;
@@ -139,7 +139,7 @@ export async function deleteItems(
     await useSectionsStore.getState().loadCounts();
   } catch (error) {
     log.error("delete failed", toErrorFields(error));
-    reportActionFailure("delete-start-failed", "The delete operation could not start.", error);
+    recordActionFailure("delete-start-failed", "The delete operation could not start.", error);
     useItemsStore.setState({
       message: error instanceof Error ? error.message : String(error),
     });
@@ -167,7 +167,7 @@ export async function rescanCurrentSection(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("scan cancelled")) {
       useItemsStore.setState({ message });
-      reportActionFailure("section-refresh-failed", "Couldn’t refresh this section.", error);
+      recordActionFailure("section-refresh-failed", "Couldn’t refresh this section.", error);
       await useIssuesStore.getState().load();
     }
   }

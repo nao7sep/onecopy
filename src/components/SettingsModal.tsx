@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { availableMonitors } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -23,6 +23,7 @@ import { Row, Select, TextInput, Toggle } from "./ui/Field";
 import { Plus } from "lucide-react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { recordActionFailure } from "../state/notifications-store";
+import OperationResult from "./ui/OperationResult";
 
 /** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
  * comparison). Persisted as app STATE, not part of the config draft — screen
@@ -54,7 +55,11 @@ function ScreensSection() {
       });
   }, []);
   if (screenError !== null) {
-    return <p className="mt-6 text-xs text-danger">{screenError}</p>;
+    return (
+      <OperationResult level="error" className="mt-6">
+        {screenError}
+      </OperationResult>
+    );
   }
   if (monitors.length < 2) return null;
 
@@ -250,35 +255,43 @@ function UnlinkedPairsRow() {
   }, []);
   if (count === null) {
     return error === null ? null : (
-      <p className="text-xs text-danger">{error}</p>
+      <OperationResult level="error">{error}</OperationResult>
     );
   }
   if (count === 0) return null;
   return (
-    <Row
-      label={`Unlinked pairs (${count})`}
-      hint="Photos you marked as not similar. Forgetting lets them group again on the next scan."
-    >
-      <Button
-        onClick={() => {
-          void invoke("similar_exclusions_clear")
-            .then(() => {
-              setCount(0);
-              setError(null);
-            })
-            .catch((failure) => {
-              log.warn("exclusions clear failed", toErrorFields(failure));
-              setError("Couldn’t forget unlinked pairs.");
-              recordActionFailure("unlinked-pairs-clear-failed", "Couldn’t forget unlinked pairs.", failure);
-            });
-        }}
+    <>
+      <Row
+        label={`Unlinked pairs (${count})`}
+        hint="Photos you marked as not similar. Forgetting lets them group again on the next scan."
       >
-        Forget all
-      </Button>
+        <Button
+          onClick={() => {
+            void invoke("similar_exclusions_clear")
+              .then(() => {
+                setCount(0);
+                setError(null);
+              })
+              .catch((failure) => {
+                log.warn("exclusions clear failed", toErrorFields(failure));
+                setError("Couldn’t forget unlinked pairs.");
+                recordActionFailure(
+                  "unlinked-pairs-clear-failed",
+                  "Couldn’t forget unlinked pairs.",
+                  failure,
+                );
+              });
+          }}
+        >
+          Forget all
+        </Button>
+      </Row>
       {error !== null ? (
-        <span className="text-xs text-danger">{error}</span>
+        <OperationResult level="error" className="mt-1">
+          {error}
+        </OperationResult>
       ) : null}
-    </Row>
+    </>
   );
 }
 
@@ -364,6 +377,7 @@ function SettingsTabList({
 }
 
 export default function SettingsModal() {
+  const timezoneErrorId = useId();
   const [activeTab, setActiveTab] = useState<SettingsTab>("library");
   const open = useSettingsStore((s) => s.open);
   const draft = useSettingsStore((s) => s.draft);
@@ -372,6 +386,7 @@ export default function SettingsModal() {
   const timezonePending = useSettingsStore((s) => s.timezonePending);
   const saving = useSettingsStore((s) => s.saving);
   const message = useSettingsStore((s) => s.message);
+  const messageLevel = useSettingsStore((s) => s.messageLevel);
   const close = useSettingsStore((s) => s.close);
   const update = useSettingsStore((s) => s.update);
   const resetSimilarPhotoSettings = useSettingsStore(
@@ -393,6 +408,7 @@ export default function SettingsModal() {
         log.warn("text encoding list failed", toErrorFields(error));
         useSettingsStore.setState({
           message: "Couldn’t read the supported text encodings.",
+          messageLevel: "error",
         });
         recordActionFailure(
           "text-encodings-load-failed",
@@ -417,7 +433,11 @@ export default function SettingsModal() {
       closeLabel="Cancel"
       closeDisabled={saving}
       widthClass="w-[min(760px,calc(100vw-3rem))]"
-      footerStart={message}
+      footerStart={
+        message === "" ? undefined : (
+          <OperationResult level={messageLevel ?? "info"}>{message}</OperationResult>
+        )
+      }
       primaryAction={
         <Button
           variant="primary"
@@ -449,7 +469,10 @@ export default function SettingsModal() {
           onConfirm={() => {
             setConfirmRebuild(false);
             setRebuilding(true);
-            useSettingsStore.setState({ message: "Rebuilding library index…" });
+            useSettingsStore.setState({
+              message: "Rebuilding library index…",
+              messageLevel: "info",
+            });
             void invoke("rebuild_library_index")
               .then(async () => {
                 await Promise.all([
@@ -460,10 +483,14 @@ export default function SettingsModal() {
                 ]);
                 useSettingsStore.setState({
                   message: "Library index cleared. Checking source folders…",
+                  messageLevel: "info",
                 });
               })
               .catch((error) => {
-                useSettingsStore.setState({ message: String(error) });
+                useSettingsStore.setState({
+                  message: String(error),
+                  messageLevel: "error",
+                });
                 log.error("library index rebuild failed", toErrorFields(error));
                 recordActionFailure(
                   "library-rebuild-failed",
@@ -517,15 +544,22 @@ export default function SettingsModal() {
               <TextInput
                 className="w-48"
                 invalid={!timezonePending && !timezoneValid}
+                aria-describedby={
+                  !timezonePending && !timezoneValid ? timezoneErrorId : undefined
+                }
                 value={draft.defaultTimezone}
                 onChange={(e) => void validateTimezone(e.target.value)}
               />
-              <span className="mt-1 block min-h-4 text-xs text-danger">
+              <span
+                id={timezoneErrorId}
+                role={!timezonePending && !timezoneValid ? "alert" : undefined}
+                className="mt-1 block min-h-4 text-xs text-danger"
+              >
                 {timezonePending
                   ? "Checking timezone…"
                   : timezoneValid
                     ? ""
-                    : "Not a recognized timezone name"}
+                    : "Error: Not a recognized timezone name"}
               </span>
             </span>
           </Row>

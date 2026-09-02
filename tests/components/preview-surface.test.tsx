@@ -16,6 +16,7 @@ import { useContentSessionStore } from "../../src/state/content-session-store";
 import {
   emitCalls,
   fireEvent as fireTauriEvent,
+  invokeCalls,
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
@@ -333,6 +334,35 @@ describe("shared video presentation", () => {
     expect(
       screen.getByRole("button", { name: "Open in default app" }),
     ).toBeTruthy();
+  });
+
+  it("keeps an external-open failure on the affected preview and out of live global notices", async () => {
+    mockCommands({
+      open_item_externally: () => Promise.reject(new Error("native open failed")),
+      record_recent_notification: () => ({}),
+    });
+
+    render(
+      <PreviewSurface
+        surface="quick"
+        hash="image-hash"
+        detail={IMAGE_DETAIL}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open in default app" }),
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Error: Couldn’t open this image in its default app.",
+    );
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
+    expect(
+      invokeCalls.some((call) => call.command === "publish_notification"),
+    ).toBe(false);
   });
 
   it("keeps alternative encodings available after automatic decoding fails", async () => {

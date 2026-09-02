@@ -7,6 +7,9 @@ import { invoke } from "@tauri-apps/api/core";
 import PreviewSurface from "../components/PreviewSurface";
 import type { PreviewShowMessage } from "../state/preview-store";
 import { reportWindowCall } from "../repositories";
+import { log, toErrorFields } from "../repositories";
+import { recordActionFailure } from "../state/notifications-store";
+import OperationResult from "../components/ui/OperationResult";
 
 // The preview window placement (screen 2): renders the shared PreviewSurface
 // from `preview://show` messages — payload AND detail arrive together from
@@ -17,6 +20,13 @@ import { reportWindowCall } from "../repositories";
 
 export default function PreviewWindow() {
   const [message, setMessage] = useState<PreviewShowMessage | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const reportActionError = (kind: string, message: string, error: unknown) => {
+    log.error("preview window action failed", { kind, ...toErrorFields(error) });
+    setActionError(message);
+    recordActionFailure(kind, message, error);
+  };
 
   // This window's own memory (Phase 33): geometry persists via patch_state —
   // written HERE because only this window sees its own moves. Maximized is a
@@ -84,11 +94,26 @@ export default function PreviewWindow() {
         event.stopPropagation();
         void currentMonitor()
           .then((monitor) => emit("preview://fullscreen", monitor))
-          .catch(reportWindowCall("preview current monitor"));
+          .then(() => setActionError(null))
+          .catch((error) =>
+            reportActionError(
+              "preview-fullscreen-failed",
+              "Couldn’t open full screen from Preview.",
+              error,
+            ),
+          );
       } else if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        void getCurrentWindow().close().catch(reportWindowCall("preview close"));
+        void getCurrentWindow()
+          .close()
+          .catch((error) =>
+            reportActionError(
+              "preview-close-failed",
+              "Couldn’t close the Preview window.",
+              error,
+            ),
+          );
       } else if (
         [
           "ArrowLeft",
@@ -119,7 +144,15 @@ export default function PreviewWindow() {
           metaKey: event.metaKey,
           ctrlKey: event.ctrlKey,
           altKey: event.altKey,
-        }).catch(reportWindowCall("preview key forward"));
+        })
+          .then(() => setActionError(null))
+          .catch((error) =>
+            reportActionError(
+              "preview-command-failed",
+              "Couldn’t send this Preview command.",
+              error,
+            ),
+          );
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -147,6 +180,22 @@ export default function PreviewWindow() {
           pathId={message.pathId}
         />
       </div>
+      {actionError !== null ? (
+        <OperationResult
+          level="error"
+          className="mx-3 mb-2 shrink-0"
+          actions={
+            <button
+              className="font-medium underline"
+              onClick={() => setActionError(null)}
+            >
+              Dismiss
+            </button>
+          }
+        >
+          {actionError}
+        </OperationResult>
+      ) : null}
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span className="truncate" title={message.detail?.fileName ?? ""}>
           {message.detail?.fileName ?? "…"}

@@ -71,7 +71,9 @@ beforeEach(() => {
     return sequenceSnapshot();
   });
   mockCommand("viewer_sequence_close", () => null);
-  useQuickViewStore.setState({ session: null, pendingDelete: null });
+  mockCommand("log_event", () => null);
+  mockCommand("record_recent_notification", () => ({}));
+  useQuickViewStore.setState({ session: null, pendingDelete: null, failure: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: [item("c", 3), item("a", 1), item("b", 2)],
@@ -156,5 +158,26 @@ describe("viewer workflow", () => {
     expect(viewer.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
     expect(viewer.hide).toHaveBeenCalled();
     expect(useQuickViewStore.getState().session).toBeNull();
+  });
+
+  it("keeps navigation failure on the viewer while recording only Recent history", async () => {
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    mockCommand("viewer_sequence_move", () =>
+      Promise.reject(new Error("sequence unavailable")),
+    );
+
+    moveViewer("next");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(useQuickViewStore.getState().failure).toBe(
+      "Couldn’t move in the viewer.",
+    );
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
+    expect(
+      invokeCalls.some((call) => call.command === "publish_notification"),
+    ).toBe(false);
   });
 });
