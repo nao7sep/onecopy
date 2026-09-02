@@ -888,7 +888,10 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
         })
         .collect::<Vec<_>>();
     assert!(originals.contains(&dest.join("x.jpg").to_string_lossy().into_owned()));
-    assert!(originals.contains(&dest.join("x.xmp").to_string_lossy().into_owned()));
+    assert!(
+        originals.contains(&dest.join("x.xmp").to_string_lossy().into_owned()),
+        "trash manifest originals: {originals:?}"
+    );
 }
 
 #[test]
