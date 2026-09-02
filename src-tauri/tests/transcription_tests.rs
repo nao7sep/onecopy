@@ -9,6 +9,8 @@ use onecopy_lib::preview::CachePaths;
 use onecopy_lib::transcription::*;
 use serial_test::serial;
 
+mod support;
+
 fn cache(label: &str) -> (tempfile::TempDir, CachePaths) {
     let dir = tempfile::Builder::new()
         .prefix(&format!("onecopy-transcribe-{label}-"))
@@ -251,10 +253,8 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
     const SAMPLE_URL: &str =
         "https://raw.githubusercontent.com/ggerganov/whisper.cpp/45f1593fd326b3435c04392e3151dff65967e523/samples/jfk.wav";
 
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-transcribe-live-")
-        .tempdir()
-        .unwrap();
+    let dir = support::managed_root().join("test-artifacts");
+    std::fs::create_dir_all(&dir).unwrap();
     let agent = ureq::config::Config::builder()
         .tls_config(
             ureq::tls::TlsConfig::builder()
@@ -269,8 +269,10 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
         let mut file = std::fs::File::create(dest).unwrap();
         std::io::copy(&mut response.body_mut().as_reader(), &mut file).unwrap();
     };
-    let model = dir.path().join("ggml-tiny.bin");
-    fetch(TINY_URL, &model);
+    let model = dir.join("ggml-tiny.bin");
+    if !model.is_file() {
+        fetch(TINY_URL, &model);
+    }
     {
         use sha2::Digest;
         let mut hasher = sha2::Sha256::new();
@@ -281,8 +283,10 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
         "model: {TINY_URL} ({} bytes, sha256 {TINY_SHA256})",
         std::fs::metadata(&model).unwrap().len()
     );
-    let sample = dir.path().join("jfk.wav");
-    fetch(SAMPLE_URL, &sample);
+    let sample = dir.join("jfk.wav");
+    if !sample.is_file() {
+        fetch(SAMPLE_URL, &sample);
+    }
     eprintln!(
         "sample: {SAMPLE_URL} ({} bytes)",
         std::fs::metadata(&sample).unwrap().len()
@@ -310,38 +314,52 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
 #[test]
 #[ignore]
 #[serial(transcription)]
-fn live_production_model_does_not_loop_a_phrase_into_trailing_silence() {
+fn live_production_model_transcribes_canonical_audio_and_video_without_loops() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-transcribe-production-live-")
         .tempdir()
         .unwrap();
     let model = production_model(dir.path());
     let ffmpeg = live_ffmpeg(&dir.path().join("managed-tools"));
-    let fixture = production_transcription_fixture();
-    let extraction_started = std::time::Instant::now();
-    let mut pcm = extract_pcm(&ffmpeg, &fixture, &dir.path().join("pcm")).unwrap();
-    eprintln!("production PCM extraction: {:?}", extraction_started.elapsed());
-    pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
+    for (kind, fixture) in production_transcription_fixtures() {
+        let extraction_started = std::time::Instant::now();
+        let mut pcm = extract_pcm(
+            &ffmpeg,
+            &fixture,
+            &dir.path().join(format!("pcm-{kind}")),
+        )
+        .unwrap();
+        eprintln!("{kind} PCM extraction: {:?}", extraction_started.elapsed());
+        if kind == "video" {
+            // Reproduce the dogfood failure shape: ordinary speech followed by
+            // enough silence to tempt a decoder into repeating its last phrase.
+            pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
+        }
 
-    let inference_started = std::time::Instant::now();
-    let segments = run_whisper(&model, &pcm, |_| {}).unwrap();
-    eprintln!("production inference: {:?}", inference_started.elapsed());
-    for segment in &segments {
-        eprintln!("{} ms: {}", segment.start_ms, segment.text);
+        let inference_started = std::time::Instant::now();
+        let segments = run_whisper(&model, &pcm, |_| {}).unwrap();
+        eprintln!("{kind} production inference: {:?}", inference_started.elapsed());
+        for segment in &segments {
+            eprintln!("{kind} {} ms: {}", segment.start_ms, segment.text);
+        }
+        let transcript = render(&segments);
+        let normalized = transcript.to_lowercase();
+        // Stable semantic stems tolerate harmless morphology (photo vs
+        // photograph, share vs sharing) without accepting unrelated speech.
+        for expected in ["photo", "file", "coordinate", "shar"] {
+            assert!(
+                normalized.contains(expected),
+                "{kind} fixture must contain {expected:?}: {transcript}"
+            );
+        }
+        assert!(
+            !segments_have_phrase_loop(&segments),
+            "{kind} decoder emitted a repeated phrase loop: {transcript}"
+        );
     }
-    let transcript = render(&segments);
-    assert!(
-        transcript.to_lowercase().contains("coordinates"),
-        "the known fixture dialogue must be heard: {transcript}"
-    );
-    assert!(
-        !segments_have_phrase_loop(&segments),
-        "one decoder attempt emitted a repeated phrase loop: {}",
-        transcript
-    );
 }
 
-fn production_model(temp_dir: &Path) -> PathBuf {
+fn production_model(_temp_dir: &Path) -> PathBuf {
     use sha2::Digest;
 
     let spec = onecopy_lib::binaries_manager::spec_of("whisper-large-v3-turbo")
@@ -349,24 +367,7 @@ fn production_model(temp_dir: &Path) -> PathBuf {
     let pin = spec.pinned.as_ref().expect("production model is pinned");
     let model = std::env::var_os("ONECOPY_TEST_WHISPER_MODEL")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let model = temp_dir.join(spec.file_name);
-            let agent = ureq::config::Config::builder()
-                .tls_config(
-                    ureq::tls::TlsConfig::builder()
-                        .provider(ureq::tls::TlsProvider::NativeTls)
-                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                        .build(),
-                )
-                .build()
-                .new_agent();
-            let mut response = agent.get(pin.url).call().expect("model download");
-            let mut output = std::fs::File::create(&model).unwrap();
-            let downloaded =
-                std::io::copy(&mut response.body_mut().as_reader(), &mut output).unwrap();
-            assert_eq!(downloaded, pin.bytes, "model byte count");
-            model
-        });
+        .unwrap_or_else(|| support::ensure_managed("whisper-large-v3-turbo"));
     assert_eq!(
         std::fs::metadata(&model).unwrap().len(),
         pin.bytes,
@@ -391,30 +392,20 @@ fn live_ffmpeg(test_root: &Path) -> PathBuf {
         assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
         return ffmpeg;
     }
-    #[cfg(windows)]
-    {
-        std::fs::create_dir_all(test_root).unwrap();
-        onecopy_lib::binaries_manager::install_entry(test_root, "ffmpeg", |progress| {
-            eprintln!("ffmpeg {progress:?}");
-        })
-        .expect("managed ffmpeg install");
-        let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(test_root);
-        assert!(ffmpeg.is_file(), "managed ffmpeg exists");
-        return ffmpeg;
-    }
-    #[cfg(not(windows))]
-    {
-        let ffmpeg = PathBuf::from("/opt/homebrew/bin/ffmpeg");
-        assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
-        ffmpeg
-    }
+    let _ = test_root;
+    support::ensure_managed("ffmpeg")
 }
 
-fn production_transcription_fixture() -> PathBuf {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../company/assets/test-fixtures/video/dialogue/dialogue-english-with-noise.mp4");
-    assert!(fixture.is_file(), "shared synthetic fixture checkout");
-    fixture
+fn production_transcription_fixtures() -> [(&'static str, PathBuf); 2] {
+    let root = support::company_fixtures();
+    let fixtures = [
+        ("audio", root.join("audio/dialogue/dialogue-english-with-noise.flac")),
+        ("video", root.join("video/dialogue/dialogue-english-with-noise.mp4")),
+    ];
+    for (_, fixture) in &fixtures {
+        assert!(fixture.is_file(), "shared synthetic fixture: {}", fixture.display());
+    }
+    fixtures
 }
 
 fn segments_have_phrase_loop(segments: &[Segment]) -> bool {

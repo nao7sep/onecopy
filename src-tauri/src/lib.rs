@@ -2037,11 +2037,19 @@ pub fn run() {
             .map(|v| v == "1")
             .unwrap_or(false);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Process ownership is the FIRST plugin setup. Its OS file lock is the
         // atomic authority; a secondary routes activation to the owner and exits
         // before logs, stores, the index, watchers, or destructive commands start.
-        .plugin(instance_owner::init())
+        .plugin(instance_owner::init());
+    // The embedded WebDriver is a compile-time acceptance-test flavor. A
+    // production build has neither the dependency feature nor this server.
+    #[cfg(feature = "app-e2e")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .register_uri_scheme_protocol("mediacache", |_ctx, request| {

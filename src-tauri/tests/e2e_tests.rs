@@ -1,9 +1,8 @@
-// The Rust-layer end-to-end journeys (Phase 28): the whole promise of the app
-// walked through the PUBLIC API against a generated corpus, model-free and on
-// every `cargo test`. No webview driver exists for this platform, so these
-// two journeys are the deepest honest e2e the app can have — the wiring
-// BETWEEN subsystems (scan → group → cull → verified move-out; cancel →
-// resume) that the per-module suites structurally cannot see.
+// Model-free core integration journeys: the app's public Rust API is exercised
+// against a generated corpus on every `cargo test`. These cover wiring between
+// subsystems (scan → group → cull → verified move-out; cancel →
+// resume). The separate running-app acceptance suite covers the Tauri/webview
+// boundary and real AI-backed orchestration.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;

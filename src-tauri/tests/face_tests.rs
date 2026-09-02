@@ -9,6 +9,8 @@ use onecopy_lib::face::{self, Face};
 use onecopy_lib::{index_store, queries};
 use rusqlite::{params, Connection};
 
+mod support;
+
 fn db() -> Connection {
     let dir = tempfile::Builder::new().prefix("onecopy-face-db-").tempdir().unwrap();
     // Leak the tempdir handle so the SQLite file outlives this helper; the OS
@@ -186,20 +188,13 @@ fn iou_and_softmax_hold_their_edges() {
 // Run with `cargo test live_face_models -- --ignored --nocapture`.
 #[test]
 #[ignore]
-fn live_face_models_find_nothing_in_a_face_free_image() {
-    use onecopy_lib::binaries_manager::{install_entry, installed_path, spec_of};
-
-    let dir = tempfile::Builder::new().prefix("onecopy-face-live-").tempdir().unwrap();
-    let install = |id: &str| {
-        install_entry(dir.path(), id, |_| {}).expect("managed dependency install");
-        installed_path(dir.path(), spec_of(id).unwrap())
-    };
+fn live_face_models_score_canonical_company_fixtures() {
     #[cfg(windows)]
-    let runtime = Some(install("onnxruntime-win-x64"));
+    let runtime = Some(support::ensure_managed("onnxruntime-win-x64"));
     #[cfg(not(windows))]
     let runtime: Option<std::path::PathBuf> = None;
-    let detector = install("ultraface-rfb640");
-    let emotion = install("hsemotion-enet-b2");
+    let detector = support::ensure_managed("ultraface-rfb640");
+    let emotion = support::ensure_managed("hsemotion-enet-b2");
 
     // A gradient has structure but no face; a broken binding (wrong output
     // wiring, wrong preprocessing) shows up as phantom faces or an error.
@@ -280,39 +275,51 @@ fn live_face_models_find_nothing_in_a_face_free_image() {
         );
     }
 
-    // Optional repeatable measurement over a harmless generated corpus:
-    // ONECOPY_FACE_FIXTURES=/path/to/images cargo test live_face_models --
-    // --ignored --nocapture. No private or repo-specific path is embedded.
-    if let Some(root) = std::env::var_os("ONECOPY_FACE_FIXTURES") {
-        let mut images = std::fs::read_dir(root)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png")
-                    })
+    // The canonical company corpus is synthetic and stable. Each portrait is
+    // specified as one fictional adult; this proves detector threshold/NMS,
+    // the eight-class expression graph, and the composite score together.
+    let root = support::company_fixtures().join("photos/faces");
+    let mut portraits = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("face-") && name.ends_with(".jpg"))
+        })
+        .collect::<Vec<_>>();
+    portraits.sort();
+    assert_eq!(portraits.len(), 12, "six reference/variation fixture pairs");
+    let inference_started = std::time::Instant::now();
+    for path in &portraits {
+        let image = image::open(path).unwrap();
+        let started = std::time::Instant::now();
+        let faces = scorer.detect(&image).unwrap();
+        assert!(!faces.is_empty(), "the portrait face is found in {}", path.display());
+        eprintln!("{} detections: {faces:?}", path.file_name().unwrap().to_string_lossy());
+        let scored_faces = faces
+            .iter()
+            .map(|face| {
+                let happiness = scorer.smile(&image, face).unwrap();
+                assert!((0.0..=1.0).contains(&happiness));
+                (happiness, face.confidence * (0.5 + 0.5 * happiness))
             })
             .collect::<Vec<_>>();
-        images.sort();
-        assert!(!images.is_empty(), "fixture directory contains no images");
-        let inference_started = std::time::Instant::now();
-        for path in &images {
-            let image = image::open(path).unwrap();
-            let started = std::time::Instant::now();
-            let score = scorer.score(&image).unwrap();
-            eprintln!(
-                "{}\t{score:.6}\t{:?}",
-                path.file_name().unwrap().to_string_lossy(),
-                started.elapsed()
-            );
-            assert!(score.is_finite() && (0.0..=1.0).contains(&score));
-        }
+        let score = scored_faces
+            .iter()
+            .map(|(_, score)| *score)
+            .fold(0.0_f32, f32::max);
         eprintln!(
-            "model load: {load_elapsed:?}; inference total: {:?}; images: {}",
-            inference_started.elapsed(),
-            images.len()
+            "{}\tfaces={}\tscored={scored_faces:?}\tbest={score:.6}\t{:?}",
+            path.file_name().unwrap().to_string_lossy(),
+            faces.len(),
+            started.elapsed()
         );
+        assert!((0.5..=1.0).contains(&score));
     }
+    eprintln!(
+        "model load: {load_elapsed:?}; canonical inference total: {:?}; portraits: {}",
+        inference_started.elapsed(),
+        portraits.len()
+    );
 }

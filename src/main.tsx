@@ -15,6 +15,13 @@ import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
 
+// WDIO's guest bridge is present only in the dedicated acceptance build.
+// Vite folds this branch away in every normal development/release bundle.
+const acceptanceBridgeReady =
+  import.meta.env.MODE === "e2e"
+    ? import("@wdio/tauri-plugin").then(() => undefined)
+    : Promise.resolve();
+
 // One bundle serves every window; the `view` query parameter routes.
 const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
@@ -90,7 +97,8 @@ window.addEventListener("unhandledrejection", (event) => {
   presentEscapedFailure(presentation);
 });
 
-void installMediaUseBoundary()
+void acceptanceBridgeReady
+  .then(() => installMediaUseBoundary())
   .then(() => {
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
