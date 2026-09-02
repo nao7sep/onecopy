@@ -40,6 +40,11 @@
    "icons/icon.icns",
    "icons/icon.ico"
   ],
-  "resources": ["Assets.car"]
+  "resources": ["Assets.car"],
+  "windows": {
+   "nsis": {
+    "installMode": "both"
+   }
+  }
  }
 }
