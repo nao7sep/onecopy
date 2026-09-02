@@ -166,12 +166,7 @@ fn an_unidentified_model_stays_unchecked_and_needs_no_network_check() {
     assert!(spec_of("ffmpeg").is_some_and(|_| state_of(dir.path(), spec_of("ffmpeg").unwrap()).checkable));
 
     let refused = check_entry(dir.path(), spec.id).expect_err("models cannot be checked");
-    let expected = if onecopy_lib::platform_support::TRANSCRIPTION {
-        "selected by this app build"
-    } else {
-        onecopy_lib::platform_support::MAC_ONLY_REASON
-    };
-    assert!(refused.contains(expected), "honest refusal, got: {refused}");
+    assert!(refused.contains("selected by this app build"), "honest refusal, got: {refused}");
     // And nothing was written: no fake "checked at" stamp appeared.
     assert_eq!(
         load_facts_for(dir.path(), spec.id).last_checked_at_utc.as_deref(),

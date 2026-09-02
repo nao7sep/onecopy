@@ -1,5 +1,5 @@
-//! Apple-silicon macOS face scoring for group ordering (Design: Rating) — two
-//! small managed ONNX models run through the linked ONNX Runtime:
+//! Face scoring for group ordering (Design: Rating) — two small managed ONNX
+//! models run through the same linked ONNX Runtime:
 //! Ultraface RFB-640 finds faces, HSEmotion reads the expression, and the
 //! combined score orders a group's face-bearing members ahead of sharpness.
 //! Advisory only, never auto-deletes, exactly like sharpness.
@@ -19,9 +19,6 @@
 //! model it replaces put happiness at index 1. Assuming an order carried
 //! over would have scored a different emotion entirely, silently.
 //!
-//! Unsupported targets compile only the model-free score projection and a
-//! rejecting pass stub; ONNX Runtime is absent from their shipping graph.
-//!
 //! Storage contract: `analysis_receipts.face_state` distinguishes pending,
 //! ready, and failed; `contents.face_score` holds the ready value (0 means no
 //! face, positive means a face was found). Ordering treats NULL and 0.0
@@ -29,7 +26,6 @@
 
 use std::path::Path;
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use image::DynamicImage;
 
 /// Detections below this confidence are noise, not faces (the Ultraface
@@ -37,25 +33,18 @@ use image::DynamicImage;
 pub const MIN_FACE_CONFIDENCE: f32 = 0.7;
 
 /// The detector's published input size (RFB-640).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const DETECT_WIDTH: u32 = 640;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const DETECT_HEIGHT: u32 = 480;
 
 /// The expression model's published input size (EfficientNet-B2) and the
 /// ImageNet normalization it was trained with.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const EXPRESSION_EDGE: u32 = 260;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Index of "Happiness" in the model's AffectNet class order
 /// (Anger, Contempt, Disgust, Fear, HAPPINESS, Neutral, Sadness, Surprise).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const HAPPINESS_CLASS: usize = 4;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const EXPRESSION_CLASSES: usize = 8;
 /// Greedy NMS overlap bound — boxes overlapping more than this are one face.
 pub const NMS_MAX_IOU: f32 = 0.3;
@@ -73,7 +62,6 @@ pub struct Face {
 
 /// Both sessions loaded once per pass — model load costs real time, one
 /// image costs milliseconds.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub struct FaceScorer {
     detector: ort::session::Session,
     det_input: String,
@@ -84,7 +72,6 @@ pub struct FaceScorer {
     emo_output: String,
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl FaceScorer {
     pub fn load(detector_model: &Path, emotion_model: &Path) -> Result<FaceScorer, String> {
         crate::resource_limits::require_available(
@@ -309,7 +296,6 @@ pub struct FaceStats {
 /// through one session pair. Either model absent → an empty pass, silently:
 /// sharpness-only ordering is the designed fallback. Cancellable between
 /// items like every pipeline stage.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn face_scores_pending(
     conn: &rusqlite::Connection,
     cache: &crate::preview::CachePaths,
@@ -381,23 +367,4 @@ pub fn face_scores_pending(
         on_progress(stats.attempted, total);
     }
     Ok(stats)
-}
-
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-pub fn face_scores_pending(
-    _conn: &rusqlite::Connection,
-    _cache: &crate::preview::CachePaths,
-    models: Option<(&Path, &Path)>,
-    _priority_hashes: &[String],
-    _on_item: impl FnMut(&str),
-    _on_change: impl FnMut(&str),
-    _on_progress: impl FnMut(u64, u64),
-    _after_hash: Option<&str>,
-    _stop: &dyn Fn() -> bool,
-) -> Result<FaceStats, String> {
-    if models.is_some() {
-        Err(crate::platform_support::MAC_ONLY_REASON.to_string())
-    } else {
-        Ok(FaceStats::default())
-    }
 }

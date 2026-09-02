@@ -98,12 +98,7 @@ describe("timezone validation", () => {
 
 describe("loaded directory projection", () => {
   it("wrong-shape source members cannot suppress first-run setup", async () => {
-    await useWizardStore
-      .getState()
-      .init(
-        { sourceDirs: [123, null, { path: "/wrong" }] },
-        { faceScoring: false, transcription: false },
-      );
+    await useWizardStore.getState().init({ sourceDirs: [123, null, { path: "/wrong" }] });
 
     expect(useWizardStore.getState().open).toBe(true);
     expect(useWizardStore.getState().dirs).toEqual([]);

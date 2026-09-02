@@ -41,10 +41,8 @@ fn projection() -> queries::ItemProjectionContext {
             ffmpeg: true,
             video_snapshots_enabled: true,
             similarity_enabled: true,
-            face_scoring_supported: true,
             face_enabled: false,
             face_models: false,
-            transcription_supported: true,
             transcription_model: false,
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
@@ -456,10 +454,8 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
             ffmpeg: false,
             video_snapshots_enabled: true,
             similarity_enabled: true,
-            face_scoring_supported: true,
             face_enabled: false,
             face_models: false,
-            transcription_supported: true,
             transcription_model: false,
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
@@ -504,10 +500,8 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
                 ffmpeg: true,
                 video_snapshots_enabled: true,
                 similarity_enabled: true,
-                face_scoring_supported: true,
                 face_enabled: false,
                 face_models: false,
-                transcription_supported: true,
                 transcription_model: false,
                 video_transcription_enabled: true,
                 audio_transcription_enabled: true,
@@ -524,48 +518,6 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
             .unwrap()
             .reason,
         Some("Waiting for transcription model")
-    );
-
-    let unsupported = queries::ItemProjectionContext {
-        capabilities: derived_state::WorkCapabilities {
-            face_scoring_supported: false,
-            transcription_supported: false,
-            ..projection.capabilities
-        },
-    };
-    let unsupported_video = queries::item_by_hash(&conn, "video", unsupported)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        unsupported_video
-            .derived_work
-            .transcripts
-            .as_ref()
-            .unwrap()
-            .state,
-        "unavailable"
-    );
-    assert_eq!(
-        unsupported_video
-            .derived_work
-            .transcripts
-            .as_ref()
-            .unwrap()
-            .reason,
-        Some(onecopy_lib::platform_support::MAC_ONLY_REASON)
-    );
-
-    conn.execute(
-        "UPDATE analysis_receipts SET face_state = NULL WHERE content_hash = 'photo'",
-        [],
-    )
-    .unwrap();
-    let unsupported_photo = queries::item_by_hash(&conn, "photo", unsupported)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        unsupported_photo.derived_work.faces.as_ref().unwrap().state,
-        "unavailable"
     );
 }
 
@@ -592,10 +544,8 @@ fn stale_preview_is_pending_everywhere_and_is_not_advertised_as_current() {
                 ffmpeg: true,
                 video_snapshots_enabled: true,
                 similarity_enabled: true,
-                face_scoring_supported: true,
                 face_enabled: true,
                 face_models: true,
-                transcription_supported: true,
                 transcription_model: true,
                 video_transcription_enabled: true,
                 audio_transcription_enabled: true,

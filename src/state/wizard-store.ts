@@ -12,11 +12,9 @@ import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
 import {
   optionalFeatureSetup,
-  NO_OPTIONAL_ANALYSIS_SUPPORT,
   type OptionalFeatureChoices,
   type OptionalFeatureId,
   type OptionalFeatureReasons,
-  type OptionalFeatureSupport,
 } from "../models/optionalFeatures";
 import { useBinariesStore } from "./binaries-store";
 
@@ -39,16 +37,10 @@ interface WizardState {
   optionalFeatureReasons: OptionalFeatureReasons;
   missingDirs: string[];
   substitutedDirs: string[];
-  init: (
-    config: Record<string, unknown> | null,
-    support: OptionalFeatureSupport,
-  ) => Promise<void>;
+  init: (config: Record<string, unknown> | null) => Promise<void>;
   /** Re-runs the wizard as RECONFIGURE: seeded from the current config, never
    * from empty — the only trigger a first-run wizard has after first run. */
-  reopen: (
-    config: Record<string, unknown> | null,
-    support: OptionalFeatureSupport,
-  ) => void;
+  reopen: (config: Record<string, unknown> | null) => void;
   addDirs: () => Promise<void>;
   removeDir: (path: string) => void;
   setStep: (step: 1 | 2 | 3) => void;
@@ -70,17 +62,12 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   timezonePending: false,
   error: null,
   reconfigure: false,
-  optionalFeatures: optionalFeatureSetup(
-    null,
-    [],
-    true,
-    NO_OPTIONAL_ANALYSIS_SUPPORT,
-  ).choices,
+  optionalFeatures: optionalFeatureSetup(null, [], true).choices,
   optionalFeatureReasons: {},
   missingDirs: [],
   substitutedDirs: [],
 
-  init: async (config, support) => {
+  init: async (config) => {
     timezoneValidation.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
@@ -90,7 +77,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         config,
         useBinariesStore.getState().entries,
         true,
-        support,
       );
       set({
         open: true,
@@ -117,7 +103,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     }
   },
 
-  reopen: (config, support) => {
+  reopen: (config) => {
     timezoneValidation.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
@@ -126,7 +112,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       config,
       useBinariesStore.getState().entries,
       false,
-      support,
     );
     set({
       open: true,

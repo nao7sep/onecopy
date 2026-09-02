@@ -32,7 +32,6 @@ pub mod notifications;
 pub mod operations;
 pub mod path_identity;
 pub mod paths;
-pub mod platform_support;
 pub mod preview;
 pub mod queries;
 pub mod resolution;
@@ -1094,9 +1093,6 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 // requests queue in submission order; cancellation applies to the active run.
 #[tauri::command(async)]
 fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(), String> {
-    if !platform_support::TRANSCRIPTION {
-        return Err(platform_support::MAC_ONLY_REASON.to_string());
-    }
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
     let class = {

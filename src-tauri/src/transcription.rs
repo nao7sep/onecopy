@@ -1,7 +1,6 @@
-//! Shared video/audio transcription. The shipping Apple-silicon macOS build
-//! links whisper.cpp through `whisper-rs` with Metal; unsupported shipping
-//! targets keep the orchestration and existing-cache reader without linking an
-//! inference engine. The two media kinds keep separate product policy and
+//! Shared video/audio transcription — whisper.cpp linked into the app via
+//! `whisper-rs`, with the large-v3-turbo model provisioned by the managed
+//! dependency registry. The two media kinds keep separate product policy and
 //! queues while this module owns their common extraction and inference engine.
 //!
 //! The transcript is DERIVED data keyed by content hash, cached in the
@@ -182,10 +181,6 @@ pub struct Segment {
 /// Runs the whisper engine over PCM. Language auto-detected (the developer's
 /// library mixes Japanese and English); progress is 0–100; the abort callback
 /// polls the cancel flag so a quit or Cancel stops the engine mid-run.
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-))]
 pub fn run_whisper(
     model: &Path,
     pcm: &[f32],
@@ -235,18 +230,6 @@ pub fn run_whisper(
         });
     }
     Ok(segments)
-}
-
-#[cfg(not(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-)))]
-pub fn run_whisper(
-    _model: &Path,
-    _pcm: &[f32],
-    _on_progress: impl FnMut(i32) + 'static,
-) -> Result<Vec<Segment>, String> {
-    Err(crate::platform_support::MAC_ONLY_REASON.to_string())
 }
 
 /// Renders segments as the cached transcript: one `[m:ss] text` line each —

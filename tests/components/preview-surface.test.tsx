@@ -108,8 +108,6 @@ beforeEach(() => {
       state: null,
       dataRoot: "/app",
       debugEnabled: false,
-      faceScoringSupported: true,
-      transcriptionSupported: true,
       quarantines: [],
     },
   });
@@ -278,27 +276,6 @@ describe("shared video presentation", () => {
     expect(await screen.findByRole("button", { name: "0:01" })).toBeTruthy();
     expect(screen.getByText("hello")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Re-transcribe" })).toBeTruthy();
-  });
-
-  it("keeps a completed transcript readable when generation is unsupported", async () => {
-    useAppStore.setState((state) => ({
-      appData:
-        state.appData === null
-          ? null
-          : { ...state.appData, transcriptionSupported: false },
-    }));
-
-    render(
-      <PreviewSurface
-        surface="preview-split"
-        hash="audio-hash"
-        detail={AUDIO_DETAIL}
-      />,
-    );
-
-    expect(await screen.findByText("hello")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Re-transcribe" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Managed tools" })).toBeNull();
   });
 
   it("shows bounded read-only text with session encoding and wrapping controls", async () => {

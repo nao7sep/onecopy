@@ -258,13 +258,9 @@ export default function App() {
                 {sourceCheck.running ? "Checking source folders…" : "Check source folders"}
               </MenuItem>
               <MenuItem
-                onSelect={() => {
-                  const appData = useAppStore.getState().appData;
-                  useWizardStore.getState().reopen(appData?.config ?? null, {
-                    faceScoring: appData?.faceScoringSupported === true,
-                    transcription: appData?.transcriptionSupported === true,
-                  });
-                }}
+                onSelect={() =>
+                  useWizardStore.getState().reopen(useAppStore.getState().appData?.config ?? null)
+                }
               >
                 Re-run setup wizard…
               </MenuItem>

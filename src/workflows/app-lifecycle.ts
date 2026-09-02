@@ -39,10 +39,7 @@ export async function bootstrapApplication(): Promise<void> {
     useBinariesStore.getState().load(),
   ]);
   if (data === null) return;
-  await useWizardStore.getState().init(data.config, {
-    faceScoring: data.faceScoringSupported,
-    transcription: data.transcriptionSupported,
-  });
+  await useWizardStore.getState().init(data.config);
   useDestinationsStore.getState().init(data.config);
   const wizard = useWizardStore.getState();
   const sources = stringArrayField(data.config, "sourceDirs");

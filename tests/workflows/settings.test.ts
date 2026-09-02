@@ -31,8 +31,6 @@ beforeEach(() => {
       state: {},
       dataRoot: "/app",
       debugEnabled: false,
-      faceScoringSupported: true,
-      transcriptionSupported: true,
       quarantines: [],
     },
   });
@@ -116,32 +114,6 @@ describe("Settings save boundary", () => {
     expect(useAppStore.getState().appData?.state).toMatchObject({
       soundEnabled: false,
       playbackVolume: 0.35,
-    });
-  });
-
-  it("cannot publish unaccepted analysis features on this platform", async () => {
-    useAppStore.setState((state) => ({
-      appData:
-        state.appData === null
-          ? null
-          : {
-              ...state.appData,
-              faceScoringSupported: false,
-              transcriptionSupported: false,
-            },
-    }));
-    useSettingsStore.getState().update({
-      scoreFaces: true,
-      videoTranscriptionEnabled: true,
-      audioTranscriptionEnabled: true,
-    });
-
-    await saveSettings();
-
-    expect(invokeCalls.find((call) => call.command === "patch_config")?.args.patch).toMatchObject({
-      scoreFaces: false,
-      videoTranscriptionEnabled: false,
-      audioTranscriptionEnabled: false,
     });
   });
 });

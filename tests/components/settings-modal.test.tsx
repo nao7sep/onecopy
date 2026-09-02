@@ -4,7 +4,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import SettingsModal from "../../src/components/SettingsModal";
-import { useAppStore } from "../../src/state/app-store";
 import { useSettingsStore } from "../../src/state/settings-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
@@ -38,17 +37,6 @@ beforeEach(() => {
     }),
   });
   useSettingsStore.getState().openWith(config);
-  useAppStore.setState({
-    appData: {
-      config,
-      state: {},
-      dataRoot: "/app",
-      debugEnabled: false,
-      faceScoringSupported: true,
-      transcriptionSupported: true,
-      quarantines: [],
-    },
-  });
 });
 
 afterEach(() => {
@@ -58,7 +46,6 @@ afterEach(() => {
     opened: null,
     saving: false,
   });
-  useAppStore.setState({ appData: null });
   cleanup();
 });
 
@@ -152,37 +139,6 @@ describe("Settings categories", () => {
     expect(
       (screen.getByLabelText(/Maximum images in Comparison/) as HTMLInputElement).value,
     ).toBe("16");
-  });
-
-  it("shows unaccepted analysis as unavailable instead of offering a toggle", () => {
-    useAppStore.setState((state) => ({
-      appData:
-        state.appData === null
-          ? null
-          : {
-              ...state.appData,
-              faceScoringSupported: false,
-              transcriptionSupported: false,
-            },
-    }));
-    useSettingsStore.getState().openWith({
-      ...config,
-      scoreFaces: true,
-      videoTranscriptionEnabled: true,
-      audioTranscriptionEnabled: true,
-    });
-    render(<SettingsModal />);
-
-    fireEvent.click(screen.getByRole("tab", { name: "Media" }));
-    expect(
-      (screen.getByLabelText(/Transcribe videos automatically/) as HTMLInputElement).disabled,
-    ).toBe(true);
-    expect(screen.getAllByText(/available only on Apple silicon Macs/i)).toHaveLength(2);
-
-    fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
-    expect(
-      (screen.getByLabelText(/Score faces for photo ordering/) as HTMLInputElement).disabled,
-    ).toBe(true);
   });
 });
 

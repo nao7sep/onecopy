@@ -3,13 +3,7 @@
 // and production model behavior, so the 1.6 GB default never enters an
 // ordinary test run.
 
-use std::path::Path;
-
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::transcription::*;
@@ -164,19 +158,6 @@ fn digital_silence_never_reaches_whisper() {
     assert!(has_audible_signal(&[2.0 / i16::MAX as f32]));
 }
 
-#[cfg(not(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-)))]
-#[test]
-fn unsupported_target_has_no_callable_whisper_engine() {
-    let error = match run_whisper(Path::new("model.bin"), &[0.25], |_| {}) {
-        Err(error) => error,
-        Ok(_) => panic!("unsupported target ran Whisper"),
-    };
-    assert_eq!(error, onecopy_lib::platform_support::MAC_ONLY_REASON);
-}
-
 #[cfg(unix)]
 #[test]
 #[serial(transcription)]
@@ -260,10 +241,6 @@ fn pcm_is_staged_then_streamed_once_into_the_float_buffer() {
 // mono s16 — no ffmpeg needed here; production's ffmpeg extraction is covered
 // by its own subprocess contracts), and asserts the engine hears the known
 // phrase. Run: cargo test --test transcription_tests -- --ignored --nocapture
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-))]
 #[test]
 #[ignore]
 #[serial(transcription)]
@@ -330,10 +307,6 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
 // phrase-loop shape reported during dogfooding. This is deliberately separate
 // from the tiny linked-engine smoke above: model behavior is the fact under
 // test. Run explicitly by name with --ignored and one test thread.
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-))]
 #[test]
 #[ignore]
 #[serial(transcription)]
@@ -368,10 +341,6 @@ fn live_production_model_does_not_loop_a_phrase_into_trailing_silence() {
     );
 }
 
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-))]
 fn production_model(temp_dir: &Path) -> PathBuf {
     use sha2::Digest;
 
@@ -417,10 +386,6 @@ fn production_model(temp_dir: &Path) -> PathBuf {
     model
 }
 
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-))]
 fn live_ffmpeg(test_root: &Path) -> PathBuf {
     if let Some(ffmpeg) = std::env::var_os("ONECOPY_TEST_FFMPEG").map(PathBuf::from) {
         assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
@@ -445,10 +410,6 @@ fn live_ffmpeg(test_root: &Path) -> PathBuf {
     }
 }
 
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(windows, feature = "windows-vulkan-acceptance")
-))]
 fn production_transcription_fixture() -> PathBuf {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../company/assets/test-fixtures/video/dialogue/dialogue-english-with-noise.mp4");
@@ -484,55 +445,6 @@ fn segments_have_phrase_loop(segments: &[Segment]) -> bool {
         }
     }
     false
-}
-
-// This deliberately opt-in probe preserves the current Windows Vulkan
-// candidate without letting it into a shipping build. Promotion requires the
-// production model to stop within one second after an in-flight cancel request.
-// Run only on a physical candidate machine. On Windows, use a short
-// CARGO_TARGET_DIR (for example C:\ocvt) because whisper.cpp's nested Vulkan
-// shader build otherwise exceeds the MSVC file-tracker path limit:
-// cargo test --features windows-vulkan-acceptance --test transcription_tests
-// windows_vulkan_cancels_in_flight_inference_within_one_second -- --ignored --nocapture
-#[cfg(all(windows, feature = "windows-vulkan-acceptance"))]
-#[test]
-#[ignore]
-#[serial(transcription)]
-fn windows_vulkan_cancels_in_flight_inference_within_one_second() {
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
-
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-transcribe-vulkan-cancel-")
-        .tempdir()
-        .unwrap();
-    let model = production_model(dir.path());
-    let ffmpeg = live_ffmpeg(&dir.path().join("managed-tools"));
-    let fixture = production_transcription_fixture();
-    let mut pcm = extract_pcm(&ffmpeg, &fixture, &dir.path().join("pcm")).unwrap();
-    pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
-
-    let (progress_tx, progress_rx) = mpsc::sync_channel(1);
-    let worker = std::thread::spawn(move || {
-        let _claim = claim().unwrap();
-        run_whisper(&model, &pcm, move |_| {
-            let _ = progress_tx.try_send(());
-        })
-    });
-    progress_rx
-        .recv_timeout(Duration::from_secs(300))
-        .expect("Vulkan inference reached its progress callback");
-
-    let requested = Instant::now();
-    assert!(request_cancel(), "the in-flight run accepted cancellation");
-    let result = worker.join().expect("Vulkan worker did not panic");
-    let latency = requested.elapsed();
-    eprintln!("Windows Vulkan cancellation latency: {latency:?}");
-    assert!(result.is_err(), "cancelled inference must not publish a result");
-    assert!(
-        latency <= Duration::from_secs(1),
-        "Windows Vulkan cancellation took {latency:?}; keep it unsupported"
-    );
 }
 
 #[test]
