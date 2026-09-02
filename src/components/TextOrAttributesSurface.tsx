@@ -112,7 +112,11 @@ export default function TextOrAttributesSurface({
       })
       .catch((failure) => {
         log.warn("text preview failed", toErrorFields(failure));
-        if (current) setError(String(failure));
+        if (current) {
+          setError(
+            "OneCopy couldn’t prepare this text preview. The original file was not changed.",
+          );
+        }
       });
     return () => {
       current = false;

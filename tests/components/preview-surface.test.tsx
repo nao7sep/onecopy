@@ -336,6 +336,32 @@ describe("shared video presentation", () => {
     ).toBeTruthy();
   });
 
+  it("keeps rejected preview diagnostics out of the interface", async () => {
+    const diagnostic =
+      "TypeError: EACCES /private/tmp/onecopy-secret IPC sentinel";
+    mockCommands({
+      text_preview: () => Promise.reject(new Error(diagnostic)),
+    });
+
+    render(
+      <PreviewSurface
+        surface="quick"
+        hash={null}
+        pathId={8}
+        detail={OTHER_DETAIL}
+      />,
+    );
+
+    expect(
+      await screen.findByText(
+        "OneCopy couldn’t prepare this text preview. The original file was not changed.",
+      ),
+    ).toBeTruthy();
+    expect(document.body.textContent).not.toContain("EACCES");
+    expect(document.body.textContent).not.toContain("/private/tmp");
+    expect(document.body.textContent).not.toContain("IPC sentinel");
+  });
+
   it("keeps an external-open failure on the affected preview and out of live global notices", async () => {
     mockCommands({
       open_item_externally: () => Promise.reject(new Error("native open failed")),
