@@ -14,6 +14,7 @@ import {
 } from "../state/content-session-store";
 import Button from "./ui/Button";
 import { openInDefaultApp, revealInFileManager } from "../workflows/external-open";
+import OperationResult from "./ui/OperationResult";
 
 interface TextBody {
   body: "text";
@@ -182,10 +183,14 @@ export default function TextOrAttributesSurface({
         </span>
       </div>
       {specializedFailure !== null ? (
-        <p className="shrink-0 text-xs text-danger">{specializedFailure}</p>
+        <OperationResult level="error" className="shrink-0">
+          {specializedFailure}
+        </OperationResult>
       ) : null}
       {error !== null ? (
-        <p className="shrink-0 text-xs text-danger">{error}</p>
+        <OperationResult level="error" className="shrink-0">
+          {error}
+        </OperationResult>
       ) : null}
       {body.body === "text" ? (
         <pre
@@ -197,9 +202,9 @@ export default function TextOrAttributesSurface({
           {body.text}
         </pre>
       ) : (
-        <p className="rounded border border-border bg-background p-3 text-sm text-danger">
+        <OperationResult level="error" className="text-sm">
           {body.reason}
-        </p>
+        </OperationResult>
       )}
     </div>
   );
@@ -232,7 +237,9 @@ function AttributesBodyView({
           </Button>
         </div>
         {revealError !== null ? (
-          <p className="mt-2 text-xs text-danger">{revealError}</p>
+          <OperationResult level="error" className="mt-2">
+            {revealError}
+          </OperationResult>
         ) : null}
         <dl className="mt-5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
           <dt className="text-ink-muted">Type</dt>

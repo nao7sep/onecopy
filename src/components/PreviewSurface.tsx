@@ -33,6 +33,7 @@ import { useAppStore } from "../state/app-store";
 import TextOrAttributesSurface from "./TextOrAttributesSurface";
 import { openInDefaultApp } from "../workflows/external-open";
 import Button from "./ui/Button";
+import OperationResult from "./ui/OperationResult";
 
 function VideoSurface({
   hash,
@@ -291,7 +292,9 @@ function VideoSurface({
         </p>
       ) : null}
       {externalError !== null ? (
-        <p className="shrink-0 text-xs text-danger">{externalError}</p>
+        <OperationResult level="error" className="shrink-0">
+          {externalError}
+        </OperationResult>
       ) : null}
       {playbackFailed ? (
         <div className="max-h-[35%] min-h-28 shrink-0 overflow-hidden">
@@ -411,9 +414,12 @@ function ImageSurface({
         <ExternalLink size={13} /> Open in default app
       </button>
       {externalError !== null ? (
-        <p className="absolute bottom-2 left-2 rounded bg-background/90 px-2 py-1 text-xs text-danger">
+        <OperationResult
+          level="error"
+          className="absolute bottom-2 left-2 right-2 shadow-sm"
+        >
           {externalError}
-        </p>
+        </OperationResult>
       ) : null}
     </div>
   );
@@ -502,7 +508,7 @@ function AudioSurface({
           <ExternalLink size={13} /> Open in default app
         </Button>
         {externalError !== null ? (
-          <p className="text-xs text-danger">{externalError}</p>
+          <OperationResult level="error">{externalError}</OperationResult>
         ) : null}
       </div>
       {hash !== null ? (

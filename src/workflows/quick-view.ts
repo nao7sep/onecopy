@@ -17,7 +17,7 @@ import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
-import { reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure } from "../state/notifications-store";
 import { deleteItems } from "./items";
 import { toggleMainPlayback } from "./playback";
 import {
@@ -34,6 +34,7 @@ export interface ViewerBroadcast {
   length: number;
   pendingDelete: "trash" | "permanent" | null;
   sectionKind: "image" | "video" | "other" | null;
+  failure: string | null;
 }
 
 interface ViewerKeyMessage {
@@ -70,6 +71,7 @@ export function viewerBroadcast(): ViewerBroadcast {
     length: session?.length ?? 0,
     pendingDelete: useQuickViewStore.getState().pendingDelete,
     sectionKind: items.selected?.kind ?? null,
+    failure: useQuickViewStore.getState().failure,
   };
 }
 
@@ -88,6 +90,7 @@ function clearFullscreenSurface(): void {
     length: 0,
     pendingDelete: null,
     sectionKind: null,
+    failure: null,
   } satisfies ViewerBroadcast).catch(reportWindowCall("viewer clear broadcast"));
 }
 
@@ -138,8 +141,12 @@ function recoverFullscreenFailure(
     } else {
       void closeViewer();
     }
-    useItemsStore.setState({ message: "Couldn’t open full screen." });
-    reportActionFailure("fullscreen-open-failed", "Couldn’t open full screen.", error);
+    if (fallback === "quick") {
+      useQuickViewStore.getState().setFailure("Couldn’t open full screen.");
+    } else {
+      useItemsStore.setState({ message: "Couldn’t open full screen." });
+    }
+    recordActionFailure("fullscreen-open-failed", "Couldn’t open full screen.", error);
   }
   if (fallback === "quick") {
     clearFullscreenSurface();
@@ -161,6 +168,9 @@ export async function installViewerWorkflow(): Promise<void> {
     }),
     listen("viewer://cancel-delete", () => {
       useQuickViewStore.getState().cancelDelete();
+    }),
+    listen("viewer://dismiss-failure", () => {
+      useQuickViewStore.getState().setFailure(null);
     }),
     listen<ViewerMonitor | null>("preview://fullscreen", (event) => {
       openViewerFromMain("fullscreen", event.payload ?? undefined);
@@ -200,12 +210,15 @@ async function reconcileViewerSequence(): Promise<void> {
         return;
       }
       useQuickViewStore.getState().update(snapshot);
+      useQuickViewStore.getState().setFailure(null);
       if (identityKey(snapshot.member) !== before) syncMainAnchor();
     } catch (error) {
       log.error("viewer sequence reconciliation failed", toErrorFields(error));
-      reportActionFailure(
+      const message = "Couldn’t refresh the open viewer.";
+      useQuickViewStore.getState().setFailure(message);
+      recordActionFailure(
         "viewer-reconcile-failed",
-        "Couldn’t refresh the open viewer.",
+        message,
         error,
       );
     }
@@ -256,7 +269,7 @@ export function openViewerFromMain(
       if (request !== viewerOpenRequest) return;
       log.error("viewer sequence start failed", toErrorFields(error));
       useItemsStore.setState({ message: "Couldn’t open the viewer." });
-      reportActionFailure("viewer-open-failed", "Couldn’t open the viewer.", error);
+      recordActionFailure("viewer-open-failed", "Couldn’t open the viewer.", error);
     });
   return true;
 }
@@ -297,10 +310,13 @@ export function moveViewer(move: ViewerMove): void {
       });
       if (useQuickViewStore.getState().session?.token !== session.token) return;
       useQuickViewStore.getState().update(snapshot);
+      useQuickViewStore.getState().setFailure(null);
       syncMainAnchor();
     } catch (error) {
       log.error("viewer navigation failed", toErrorFields(error));
-      reportActionFailure("viewer-navigation-failed", "Couldn’t move in the viewer.", error);
+      const message = "Couldn’t move in the viewer.";
+      useQuickViewStore.getState().setFailure(message);
+      recordActionFailure("viewer-navigation-failed", message, error);
     }
   });
 }

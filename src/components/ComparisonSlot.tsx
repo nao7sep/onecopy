@@ -7,8 +7,8 @@ import InspectableImage from "./InspectableImage";
 import { useAppStore } from "../state/app-store";
 import { openInDefaultApp } from "../workflows/external-open";
 import { log, toErrorFields } from "../repositories";
-import { recordInterfaceFailure } from "../utils/failureSurface";
 import FaceRating from "./FaceRating";
+import OperationResult from "./ui/OperationResult";
 
 // One comparison card, shared by the main and secondary display surfaces.
 
@@ -74,9 +74,20 @@ export default function ComparisonSlot({
           onError={() => setPreviewFailed(true)}
         />
         {previewFailed ? (
-          <p className="absolute inset-x-3 top-1/2 -translate-y-1/2 rounded bg-background/90 p-2 text-center text-sm text-ink-muted">
+          <OperationResult
+            level="error"
+            className="absolute inset-x-3 top-1/2 -translate-y-1/2 text-sm shadow-sm"
+          >
             Preview unavailable. File actions and known details remain available.
-          </p>
+          </OperationResult>
+        ) : null}
+        {externalError ? (
+          <OperationResult
+            level="error"
+            className="absolute bottom-2 left-2 right-2 shadow-sm"
+          >
+            Couldn’t open this image in its default app.
+          </OperationResult>
         ) : null}
       </div>
       {slotKey !== null ? (
@@ -105,9 +116,6 @@ export default function ComparisonSlot({
           setExternalError(false);
           void openInDefaultApp(member.hash, null).catch((error) => {
             log.warn("comparison external open failed", toErrorFields(error));
-            recordInterfaceFailure(
-              `Couldn’t open ${member.fileName} in the default app.`,
-            );
             setExternalError(true);
           });
         }}
@@ -128,11 +136,6 @@ export default function ComparisonSlot({
       >
         <FolderOpen size={14} />
       </button>
-      {externalError ? (
-        <span className="absolute bottom-8 left-10 rounded bg-background px-1 text-xs text-danger">
-          Couldn’t open
-        </span>
-      ) : null}
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">
           <span className="truncate text-ink" title={member.fileName}>

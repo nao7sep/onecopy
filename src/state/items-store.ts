@@ -4,7 +4,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 import {
   DEFAULT_DESC,
   SORT_ORDERS,
@@ -253,7 +253,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       log.error("section window load failed", toErrorFields(error));
       if (fresh()) {
         set({ loadError: "Couldn’t load this part of the section." });
-        reportActionFailure(
+        recordActionFailure(
           "section-window-load-failed",
           "Couldn’t load this part of the section.",
           error,
@@ -416,7 +416,8 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       loadAnchorDetail(key);
     } catch (error) {
       log.error("section range selection failed", toErrorFields(error));
-      reportActionFailure("section-range-load-failed", "Couldn’t extend the selection.", error);
+      set({ message: "Couldn’t extend the selection." });
+      recordActionFailure("section-range-load-failed", "Couldn’t extend the selection.", error);
     }
   },
 
@@ -563,7 +564,7 @@ async function reconcileCurrent(
     log.error("section reconciliation failed", toErrorFields(error));
     if (fresh()) {
       set({ loading: false, loadError: "Couldn’t load this section." });
-      reportActionFailure("section-items-load-failed", "Couldn’t load this section.", error);
+      recordActionFailure("section-items-load-failed", "Couldn’t load this section.", error);
     }
   }
 }
@@ -598,7 +599,7 @@ function loadAnchorDetail(key: string | null): void {
       log.error("item detail load failed", toErrorFields(error));
       if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ message: "Couldn’t load details for this item." });
-        reportActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
+        recordActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
       }
     });
 }

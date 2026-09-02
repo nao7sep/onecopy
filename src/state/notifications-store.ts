@@ -159,8 +159,8 @@ export function reportActionFailure(
   });
 }
 
-/** Records a failed modal-owned action in required Recent history without
- * publishing a second live persistent notice over the modal's inline error. */
+/** Records a failed locally owned action in required Recent history without
+ * publishing a second live persistent notice over its inline result. */
 export function recordActionFailure(
   kind: string,
   message: string,

@@ -4,8 +4,9 @@ import { revealInFileManager } from "../workflows/external-open";
 import type { ItemDetail } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import { fileManagerWord } from "../utils/shortcuts";
-import { recordInterfaceFailure } from "../utils/failureSurface";
+import { recordActionFailure } from "../state/notifications-store";
 import ModalShell from "./ModalShell";
+import OperationResult from "./ui/OperationResult";
 
 export default function RevealCopiesDialog({
   hash,
@@ -31,8 +32,10 @@ export default function RevealCopiesDialog({
           hash,
           ...toErrorFields(failure),
         });
-        recordInterfaceFailure(
+        recordActionFailure(
+          "comparison-copies-load-failed",
           `Couldn’t load the physical copies for ${fileName}.`,
+          failure,
         );
         if (current) setError("Couldn’t load the available copies.");
       });
@@ -45,7 +48,11 @@ export default function RevealCopiesDialog({
     <ModalShell
       title={`Show a copy of ${fileName}`}
       onClose={onClose}
-      footerStart={error}
+      footerStart={
+        error === null ? undefined : (
+          <OperationResult level="error">{error}</OperationResult>
+        )
+      }
     >
       {paths === null && error === null ? (
         <p className="text-sm text-ink-muted">Loading copies…</p>

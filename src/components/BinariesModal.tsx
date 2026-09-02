@@ -9,6 +9,7 @@ import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
+import OperationResult from "./ui/OperationResult";
 
 const NO_INSTALL_HISTORY: InstallStep[] = [];
 
@@ -76,6 +77,9 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const checkCancelling = useBinariesStore((s) => s.checkCancelling);
   const cooldownUntil = useBinariesStore((s) => s.cooldownUntil);
   const lastCheckOutcome = useBinariesStore((s) => s.lastCheckOutcome);
+  const lastCheckOutcomeLevel = useBinariesStore(
+    (s) => s.lastCheckOutcomeLevel,
+  );
   const install = useBinariesStore((s) => s.install);
   const cancel = useBinariesStore((s) => s.cancel);
   const checkAll = useBinariesStore((s) => s.checkAll);
@@ -148,8 +152,10 @@ function EntryRow({ entry }: { entry: DependencyState }) {
           ))}
         </ol>
       ) : null}
-      {error !== undefined && !installing ? (
-        <p className="mt-1 text-xs text-danger">{error}</p>
+      {error !== undefined ? (
+        <OperationResult level="error" className="mt-2">
+          {error}
+        </OperationResult>
       ) : null}
       {installing ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -187,7 +193,9 @@ function EntryRow({ entry }: { entry: DependencyState }) {
                 </Button>
               )}
               {lastCheckOutcome !== null ? (
-                <span className="text-xs font-medium text-ink">{lastCheckOutcome}</span>
+                <OperationResult level={lastCheckOutcomeLevel ?? "info"}>
+                  {lastCheckOutcome}
+                </OperationResult>
               ) : checked !== null ? (
                 <span className="text-xs text-ink-muted">{checked}</span>
               ) : null}
@@ -225,7 +233,11 @@ export default function BinariesModal() {
       title="Managed tools"
       onClose={() => setModalOpen(false)}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
-      footerStart={entries.length > 0 ? loadError : undefined}
+      footerStart={
+        entries.length > 0 && loadError !== null ? (
+          <OperationResult level="error">{loadError}</OperationResult>
+        ) : undefined
+      }
     >
       {actionable > 1 ? (
         <div className="mb-3">
@@ -236,11 +248,15 @@ export default function BinariesModal() {
       ) : null}
 
       {entries.length === 0 ? (
-        <p className={`py-4 text-center text-sm ${loadError !== null ? "text-danger" : "text-ink-muted"}`}>
-          {loading
-            ? "Loading managed tools…"
-            : loadError ?? "No managed tools are configured."}
-        </p>
+        loadError !== null ? (
+          <OperationResult level="error" className="my-4">
+            {loadError}
+          </OperationResult>
+        ) : (
+          <p className="py-4 text-center text-sm text-ink-muted">
+            {loading ? "Loading managed tools…" : "No managed tools are configured."}
+          </p>
+        )
       ) : null}
 
       <div className="space-y-2">

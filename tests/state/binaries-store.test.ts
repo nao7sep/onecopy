@@ -46,6 +46,7 @@ function seed(entries: DependencyState[]): void {
     checkCancelling: false,
     cooldownUntil: 0,
     lastCheckOutcome: null,
+    lastCheckOutcomeLevel: null,
     modalOpen: true,
   });
 }

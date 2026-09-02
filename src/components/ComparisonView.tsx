@@ -19,6 +19,7 @@ import {
 import ComparisonSlot from "./ComparisonSlot";
 import ConfirmDialog from "./ConfirmDialog";
 import RevealCopiesDialog from "./RevealCopiesDialog";
+import OperationResult from "./ui/OperationResult";
 
 function interactiveTarget(target: EventTarget | null): boolean {
   return (
@@ -242,15 +243,20 @@ export default function ComparisonView() {
       ) : null}
 
       {failure !== null ? (
-        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-danger/30 bg-danger-surface px-3 py-1 text-xs text-danger">
-          <span>{failure.message}</span>
-          <button
-            className="rounded border border-danger/40 px-2 py-0.5 hover:bg-danger/10"
-            onClick={() => void retryComparisonFailure()}
-          >
-            Retry remaining
-          </button>
-        </footer>
+        <OperationResult
+          level="error"
+          className="mx-3 mb-2 shrink-0"
+          actions={
+            <button
+              className="rounded border border-danger/40 px-2 py-0.5 hover:bg-danger/10"
+              onClick={() => void retryComparisonFailure()}
+            >
+              Retry remaining
+            </button>
+          }
+        >
+          {failure.message}
+        </OperationResult>
       ) : null}
     </div>
   );

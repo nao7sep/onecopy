@@ -9,8 +9,18 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import InspectableImage from "../../src/components/InspectableImage";
+import {
+  invokeCalls,
+  mockCommands,
+  resetTauriMocks,
+} from "../mocks/tauri";
 
 beforeEach(() => {
+  resetTauriMocks();
+  mockCommands({
+    log_event: () => null,
+    record_recent_notification: () => ({}),
+  });
   vi.useFakeTimers();
 });
 
@@ -115,7 +125,17 @@ describe("momentary original-pixel inspection", () => {
     act(() => vi.advanceTimersByTime(135));
 
     fireEvent.error(screen.getByAltText("family.jpg at original size"));
+    fireEvent.pointerUp(window, { pointerId: 5 });
 
-    expect(screen.getByText("Original pixels unavailable.")).toBeTruthy();
+    expect(screen.queryByText("Original pixels unavailable.")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Error: Couldn’t show the original pixels for family.jpg.",
+    );
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
+    expect(
+      invokeCalls.some((call) => call.command === "publish_notification"),
+    ).toBe(false);
   });
 });

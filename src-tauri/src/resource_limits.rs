@@ -209,11 +209,13 @@ fn available_memory_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{image_worker_capacity_for, IMAGE_JOB_RESERVATION};
+    use super::{
+        image_worker_capacity_for, IMAGE_CONCURRENCY_HEADROOM, IMAGE_JOB_RESERVATION,
+    };
 
     #[test]
     fn active_image_work_leaves_cpu_headroom() {
-        let abundant = Some(64 * IMAGE_JOB_RESERVATION);
+        let abundant = Some(IMAGE_CONCURRENCY_HEADROOM + 64 * IMAGE_JOB_RESERVATION);
         assert_eq!(image_worker_capacity_for(8, abundant, false), 4);
         assert_eq!(image_worker_capacity_for(8, abundant, true), 7);
     }

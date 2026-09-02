@@ -11,6 +11,7 @@ import {
 } from "../models/sectionTree";
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
+import OperationResult from "./ui/OperationResult";
 
 // The left pane as ONE tree composite (the composite-control conventions):
 // the container is the single tab stop, Up/Down walk the VISIBLE rows,
@@ -254,7 +255,9 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       })}
 
       {error !== null ? (
-        <p className="mt-2 px-2 text-sm text-danger">{error}</p>
+        <OperationResult level="error" className="mx-2 mt-2">
+          {error}
+        </OperationResult>
       ) : allEmpty ? (
         // Background reconciliation and a settled empty library look
         // IDENTICAL from the counts alone — both are an empty tree. Saying

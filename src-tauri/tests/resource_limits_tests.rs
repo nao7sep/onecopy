@@ -20,7 +20,11 @@ fn oversized_bitmap_is_rejected_before_pixel_allocation() {
     bytes[28..30].copy_from_slice(&24u16.to_le_bytes());
 
     let error = resource_limits::decode_bytes(&bytes).unwrap_err();
-    assert!(error.contains("96 MiB safety limit"), "{error}");
+    let expected_limit = resource_limits::MAX_DECODE_ALLOC / 1024 / 1024;
+    assert!(
+        error.contains(&format!("{expected_limit} MiB safety limit")),
+        "{error}"
+    );
 }
 
 #[cfg(unix)]

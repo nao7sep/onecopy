@@ -7,6 +7,7 @@ import {
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { useSectionsStore } from "../state/sections-store";
+import OperationResult from "./ui/OperationResult";
 
 function stateText(row: BackgroundClassSnapshot): string {
   switch (row.state) {
@@ -66,7 +67,11 @@ export default function BackgroundWorkModal() {
       title="Background work"
       onClose={() => setOpen(false)}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
-      footerStart={indexError ?? error}
+      footerStart={
+        indexError !== null || error !== null ? (
+          <OperationResult level="error">{indexError ?? error}</OperationResult>
+        ) : undefined
+      }
       primaryAction={
         snapshot !== null ? (
           <Button

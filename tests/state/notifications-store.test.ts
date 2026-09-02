@@ -53,7 +53,7 @@ describe("notification failure containment", () => {
     expect(document.body.textContent).toContain("OneCopy needs to reload");
   });
 
-  it("records a modal-owned failure in Recent without publishing a live notice", async () => {
+  it("records a locally owned failure in Recent without publishing a live notice", async () => {
     mockCommands({
       record_recent_notification: ({ request }) => ({
         id: 1,

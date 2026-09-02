@@ -8,7 +8,13 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePreviewStore } from "../../src/state/preview-store";
-import { emitCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import {
+  emitCalls,
+  invokeCalls,
+  mockCommands,
+  resetTauriMocks,
+  WebviewWindow,
+} from "../mocks/tauri";
 
 const ITEM_A = { hash: "ha", pathId: null };
 const ITEM_B = { hash: "hb", pathId: null };
@@ -48,8 +54,19 @@ afterAll(() => vi.useRealTimers());
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  mockCommands({ patch_state: () => ({}), get_item_detail: () => null });
-  usePreviewStore.setState({ follow: false, placement: null, current: null });
+  mockCommands({
+    patch_state: () => ({}),
+    get_item_detail: () => null,
+    log_event: () => null,
+    record_recent_notification: () => ({}),
+  });
+  usePreviewStore.setState({
+    follow: false,
+    placement: null,
+    placementPreference: null,
+    current: null,
+    error: null,
+  });
   // Step past the throttle window so each spec starts on a leading edge.
   vi.advanceTimersByTime(500);
 });
@@ -123,5 +140,25 @@ describe("clearing the surface", () => {
     usePreviewStore.getState().anchorChanged(ITEM_A, null);
     // The split placement renders in-window; no preview://show is warranted.
     expect(emitCalls.filter((c) => c.event === "preview://show")).toHaveLength(0);
+  });
+});
+
+describe("preview window failures", () => {
+  it("keeps the failure on Preview while recording only Recent history", async () => {
+    const window = new WebviewWindow("preview");
+    window.show.mockRejectedValueOnce(new Error("window unavailable"));
+    usePreviewStore.setState({ placementPreference: "window" });
+
+    await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
+
+    expect(usePreviewStore.getState().error).toBe(
+      "Couldn’t open the Preview window.",
+    );
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
+    expect(
+      invokeCalls.some((call) => call.command === "publish_notification"),
+    ).toBe(false);
   });
 });

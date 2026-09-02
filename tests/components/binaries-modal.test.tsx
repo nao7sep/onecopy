@@ -63,6 +63,7 @@ function seed(entries: DependencyState[]): void {
     checkCancelling: false,
     cooldownUntil: 0,
     lastCheckOutcome: null,
+    lastCheckOutcomeLevel: null,
     entries,
     loading: false,
     loadError: null,

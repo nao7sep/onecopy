@@ -159,6 +159,7 @@ interface SettingsState {
   timezonePending: boolean;
   saving: boolean;
   message: string;
+  messageLevel: "error" | "info" | null;
   openWith: (
     config: Record<string, unknown> | null,
     state?: Record<string, unknown> | null,
@@ -181,6 +182,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   timezonePending: false,
   saving: false,
   message: "",
+  messageLevel: null,
 
   openWith: (config, state = null) => {
     timezoneValidation.begin();
@@ -191,6 +193,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       timezoneValid: true,
       timezonePending: false,
       message: "",
+      messageLevel: null,
     });
   },
 
@@ -209,7 +212,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   validateTimezone: async (name) => {
     const fresh = timezoneValidation.begin();
     get().update({ defaultTimezone: name });
-    set({ timezoneValid: false, timezonePending: true, message: "" });
+    set({ timezoneValid: false, timezonePending: true, message: "", messageLevel: null });
     if (name.trim() === "") {
       if (fresh()) set({ timezonePending: false });
       return;
@@ -224,6 +227,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           timezoneValid: false,
           timezonePending: false,
           message: "Couldn’t check this timezone.",
+          messageLevel: "error",
         });
       }
       recordActionFailure("timezone-check-failed", "Couldn’t check this timezone.", error);
@@ -243,7 +247,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       get().update({ sourceDirs: merged });
     } catch (error) {
       log.error("settings source dir picker failed", toErrorFields(error));
-      set({ message: "Couldn’t open the directory picker." });
+      set({ message: "Couldn’t open the directory picker.", messageLevel: "error" });
       recordActionFailure("source-picker-failed", "Couldn’t open the directory picker.", error);
     }
   },

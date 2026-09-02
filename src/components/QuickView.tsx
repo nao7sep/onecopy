@@ -13,10 +13,12 @@ import {
 import ConfirmDialog from "./ConfirmDialog";
 import PreviewSurface from "./PreviewSurface";
 import { identityKey, isAudioFile } from "../models/items";
+import OperationResult from "./ui/OperationResult";
 
 export default function QuickView() {
   const session = useQuickViewStore((state) => state.session);
   const pendingDelete = useQuickViewStore((state) => state.pendingDelete);
+  const failure = useQuickViewStore((state) => state.failure);
   const selectedItem = useItemsStore((state) => state.selectedItem);
   const detail = useItemsStore((state) => state.detail);
   const sectionKind = useItemsStore((state) => state.selected?.kind ?? null);
@@ -109,6 +111,22 @@ export default function QuickView() {
           <X size={16} />
         </button>
       </header>
+      {failure !== null ? (
+        <OperationResult
+          level="error"
+          className="mx-3 mt-2 shrink-0"
+          actions={
+            <button
+              className="font-medium underline"
+              onClick={() => useQuickViewStore.getState().setFailure(null)}
+            >
+              Dismiss
+            </button>
+          }
+        >
+          {failure}
+        </OperationResult>
+      ) : null}
       <div className="min-h-0 flex-1">
         {currentDetail === null ? (
           <div className="flex h-full items-center justify-center text-sm text-ink-muted">

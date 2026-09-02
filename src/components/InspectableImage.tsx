@@ -8,7 +8,8 @@ import {
 } from "../models/items";
 import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
 import { log, toErrorFields } from "../repositories";
-import { reportActionFailure } from "../state/notifications-store";
+import { recordActionFailure } from "../state/notifications-store";
+import OperationResult from "./ui/OperationResult";
 
 /** Cursor position mapped into the source, with a forgiving edge margin. */
 export function panFraction(position: number, extent: number): number {
@@ -75,18 +76,24 @@ export default function InspectableImage({
   });
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
   const [originalFailed, setOriginalFailed] = useState(false);
+  const [inspectionError, setInspectionError] = useState<string | null>(null);
   const converted = needsConvertedFullres(fileName);
   const [convertedSrc, setConvertedSrc] = useState<string | null>(null);
   useEffect(() => {
     setConvertedSrc(null);
     setOriginalFailed(false);
+    setInspectionError(null);
     setSourceSize({ width: 0, height: 0 });
   }, [hash]);
   const updatePosition = (point: PointerPoint) => {
     setPosition(inspectPosition(viewportRef.current, point));
   };
   const hold = useHoldInspect({
-    onStart: updatePosition,
+    onStart: (point) => {
+      setOriginalFailed(false);
+      setInspectionError(null);
+      updatePosition(point);
+    },
     onMove: updatePosition,
     onEnd: () => undefined,
   });
@@ -149,6 +156,7 @@ export default function InspectableImage({
               draggable={false}
               className="pointer-events-none absolute max-h-none max-w-none"
               onLoad={(event) => {
+                setInspectionError(null);
                 setSourceSize({
                   width: event.currentTarget.naturalWidth,
                   height: event.currentTarget.naturalHeight,
@@ -156,10 +164,13 @@ export default function InspectableImage({
               }}
               onError={() => {
                 if (!originalFailed) {
-                  reportActionFailure(
+                  const message = `Couldn’t show the original pixels for ${fileName}.`;
+                  log.warn("original-pixel inspection failed", { hash, fileName });
+                  recordActionFailure(
                     "original-pixels-failed",
-                    `Couldn’t show the original pixels for ${fileName}.`,
+                    message,
                   );
+                  setInspectionError(message);
                 }
                 setOriginalFailed(true);
               }}
@@ -167,6 +178,14 @@ export default function InspectableImage({
             />
           )}
         </div>
+      ) : null}
+      {inspectionError !== null ? (
+        <OperationResult
+          level="error"
+          className="absolute bottom-2 left-2 right-2 z-10 shadow-sm"
+        >
+          {inspectionError}
+        </OperationResult>
       ) : null}
     </div>
   );

@@ -55,7 +55,7 @@ import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
 import DestinationDragProvider from "./components/DestinationDragProvider";
 import { setMediumAutoplay, setSoundEnabled } from "./workflows/playback";
 import NotificationHost from "./components/NotificationHost";
-import { reportActionFailure } from "./state/notifications-store";
+import { recordActionFailure } from "./state/notifications-store";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -305,7 +305,7 @@ export default function App() {
                   void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
                     log.warn("reveal logs failed", toErrorFields(error));
                     useItemsStore.setState({ message: "Couldn’t reveal the logs folder." });
-                    reportActionFailure("reveal-logs-failed", "Couldn’t reveal the logs folder.", error);
+                    recordActionFailure("reveal-logs-failed", "Couldn’t reveal the logs folder.", error);
                   });
                 }}
               >
@@ -497,7 +497,7 @@ export default function App() {
               void setSoundEnabled(!soundEnabled).catch((error) => {
                 log.error("sound setting failed", toErrorFields(error));
                 useItemsStore.setState({ message: "Couldn’t change Sound." });
-                reportActionFailure("sound-setting-failed", "Couldn’t change Sound.", error);
+                recordActionFailure("sound-setting-failed", "Couldn’t change Sound.", error);
               });
             }}
           >
@@ -511,7 +511,7 @@ export default function App() {
               void setMediumAutoplay("video", !videoAutoplay).catch((error) => {
                 log.error("video autoplay setting failed", toErrorFields(error));
                 useItemsStore.setState({ message: "Couldn’t change video autoplay." });
-                reportActionFailure("video-autoplay-setting-failed", "Couldn’t change video autoplay.", error);
+                recordActionFailure("video-autoplay-setting-failed", "Couldn’t change video autoplay.", error);
               });
             }}
           >
@@ -525,7 +525,7 @@ export default function App() {
               void setMediumAutoplay("audio", !audioAutoplay).catch((error) => {
                 log.error("audio autoplay setting failed", toErrorFields(error));
                 useItemsStore.setState({ message: "Couldn’t change audio autoplay." });
-                reportActionFailure("audio-autoplay-setting-failed", "Couldn’t change audio autoplay.", error);
+                recordActionFailure("audio-autoplay-setting-failed", "Couldn’t change audio autoplay.", error);
               });
             }}
           >

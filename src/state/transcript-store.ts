@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
-import { reportActionFailure } from "./notifications-store";
+import { recordActionFailure } from "./notifications-store";
 
 export type TranscriptStatus =
   "loading" | "pending" | "queued" | "running" | "ready" | "failed";
@@ -22,6 +22,7 @@ export interface TranscriptView {
     message: string | null;
     percent: number | null;
   } | null;
+  controlError?: string | null;
 }
 
 interface TranscriptResult {
@@ -49,6 +50,7 @@ const EMPTY: TranscriptView = {
   message: null,
   percent: null,
   replacement: null,
+  controlError: null,
 };
 
 function patch(hash: string, value: Partial<TranscriptView>): void {
@@ -122,6 +124,7 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
   },
 
   start: async (hash, replace = false) => {
+    patch(hash, { controlError: null });
     if (replace) {
       publish(hash, {
         replacement: { status: "queued", message: null, percent: null },
@@ -148,7 +151,7 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         });
       }
       log.error("transcribe start failed", toErrorFields(error));
-      reportActionFailure(
+      recordActionFailure(
         "transcription-start-failed",
         "Couldn’t start transcription.",
         error,
@@ -159,11 +162,14 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
   cancel: async () => {
     try {
       await invoke("transcribe_cancel");
+      if (active !== null) patch(active.hash, { controlError: null });
     } catch (error) {
       log.warn("transcription cancellation failed", toErrorFields(error));
-      reportActionFailure(
+      const message = "Couldn’t cancel transcription.";
+      if (active !== null) patch(active.hash, { controlError: message });
+      recordActionFailure(
         "transcription-cancel-failed",
-        "Couldn’t cancel transcription.",
+        message,
         error,
       );
     }

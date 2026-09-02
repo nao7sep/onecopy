@@ -35,6 +35,9 @@ import {
 import { useDestinationItemDrag } from "./DestinationDragProvider";
 import { requestComparisonFromMain } from "../workflows/comparison";
 import FaceRating from "./FaceRating";
+import { usePreviewStore } from "../state/preview-store";
+import { setPreviewPlacement } from "../workflows/preview";
+import OperationResult from "./ui/OperationResult";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -417,6 +420,8 @@ export default function Grid({
   const selectedSection = useItemsStore((s) => s.selected);
   const sourceChecking = useSectionsStore((s) => s.sourceCheck.running);
   const activeWork = useDerivedWorkStore((s) => s.activeItem);
+  const previewError = usePreviewStore((s) => s.error);
+  const clearPreviewError = usePreviewStore((s) => s.clearError);
   const showFaceStars = useAppStore(
     (state) => state.appData?.config?.showFaceStars !== false,
   );
@@ -705,6 +710,27 @@ export default function Grid({
           {sortChoice.desc ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
       </div>
+      {previewError !== null ? (
+        <OperationResult
+          level="error"
+          className="mx-2 mt-2 shrink-0"
+          actions={
+            <>
+              <button
+                className="font-medium underline"
+                onClick={() => void setPreviewPlacement("split")}
+              >
+                Show in this window
+              </button>
+              <button className="font-medium underline" onClick={clearPreviewError}>
+                Dismiss
+              </button>
+            </>
+          }
+        >
+          {previewError}
+        </OperationResult>
+      ) : null}
       {layout === "list" ? (
         // The table header lives OUTSIDE the scroll container, so the
         // virtualization geometry below never has to account for it.
@@ -737,14 +763,21 @@ export default function Grid({
         onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
       >
         {loadError !== null && items.length > 0 ? (
-          <p role="alert" className="w-full shrink-0 basis-full text-center text-danger">
+          <OperationResult
+            level="error"
+            className="mx-auto w-[min(520px,calc(100%-1rem))] shrink-0 basis-full"
+          >
             {loadError}
-          </p>
+          </OperationResult>
         ) : null}
         {emptyState !== null ? (
-          <p className={`m-auto ${loadError !== null ? "text-danger" : "text-ink-muted"}`}>
-            {emptyState}
-          </p>
+          loadError !== null ? (
+            <OperationResult level="error" className="m-auto">
+              {emptyState}
+            </OperationResult>
+          ) : (
+            <p className="m-auto text-ink-muted">{emptyState}</p>
+          )
         ) : null}
         {/* The spacers stand in for the unmounted rows, keeping the
             scrollbar's geometry honest. basis-full forces each onto its own

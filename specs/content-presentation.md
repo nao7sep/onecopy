@@ -75,7 +75,7 @@
 - Activating a timestamp seeks the current OneCopy playback session and begins playback. Ordinary transcript text selection never seeks. A transcript creates no second player.
 - A focused transcript uses Up/Down and Page Up/Page Down for scrolling. Enter on a focused timestamp seeks and plays. Space, `F`, Escape, and read-only Delete/Backspace retain the owning view's meanings unless a genuinely editable control owns the key.
 - Re-transcription leaves the prior completed transcript visible until the replacement succeeds. Failure or cancellation preserves the prior result and reports the new attempt.
-- OneCopy adds no transcript-only search. When ordinary library search is designed, completed transcript text participates alongside other searchable facts under that future contract.
+- OneCopy provides neither transcript-only search nor library-wide search. Completed transcript text supports inspection and copying only; it does not turn the inbox-zero organizing queue into a retained searchable photo library.
 
 ## External delegation and physical copies
 
