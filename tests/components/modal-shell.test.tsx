@@ -57,5 +57,19 @@ describe("modal result growth", () => {
     expect(alert.className).toContain("items-start");
     expect(alert.querySelectorAll("svg")).toHaveLength(1);
     expect(dismiss.querySelector("svg")).not.toBeNull();
+    expect(dismiss.className).toContain("-my-1");
+  });
+
+  it("centers a message beside its labelled action without changing top-aligned dismissals", () => {
+    render(
+      <OperationResult level="error" actions={<Button variant="ghost">Retry</Button>}>
+        Playback controls could not be connected. Try again.
+      </OperationResult>,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert.className).toContain("items-center");
+    expect(alert.className).not.toContain("items-start");
+    expect(screen.getByRole("button", { name: "Retry" }).parentElement?.className).toContain("[&>button]:h-6");
   });
 });
