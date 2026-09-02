@@ -2,7 +2,7 @@
 
 ## Scope
 
-Main is the library workspace for choosing a section, maintaining a visible selection, resuming a work position, inspecting the anchor through Details and Preview, and invoking review or file-operation actions. Main owns the displayed order, selection set, range origin, and one anchor. Viewer sessions, Comparison decisions, background discovery, and filesystem effects have separate contracts.
+Main is the inbox-zero workspace for choosing a section, maintaining a visible selection, resuming a work position, inspecting the anchor through Details and Preview, and invoking review or file-operation actions. OneCopy is a photo-organizing work queue rather than a retained photo library: reaching no remaining items is the intended successful state, and Main provides no library-wide search. Main owns the displayed order, selection set, range origin, and one anchor. Viewer sessions, Comparison decisions, background discovery, and filesystem effects have separate contracts.
 
 ## Selection and anchor
 
