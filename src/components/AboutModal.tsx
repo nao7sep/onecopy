@@ -1,7 +1,7 @@
 // The About surface (modal-dialog conventions' required payload): name,
 // version, one-line description, repository/issues links, copyright, license.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
@@ -18,18 +18,26 @@ export default function AboutModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const [linkFailure, setLinkFailure] = useState<string | null>(null);
+  const [linkFailures, setLinkFailures] = useState<Partial<Record<"repository" | "issues", string>>>({});
+  const linkAttempts = useRef({ repository: 0, issues: 0 });
   if (!open) return null;
 
-  const openProjectPage = async (url: string, page: string) => {
-    setLinkFailure(null);
+  const openProjectPage = async (owner: "repository" | "issues", url: string, page: string) => {
+    const attempt = ++linkAttempts.current[owner];
     try {
       await openUrl(url);
+      if (linkAttempts.current[owner] !== attempt) return;
+      setLinkFailures((current) => {
+        const next = { ...current };
+        delete next[owner];
+        return next;
+      });
     } catch (error) {
       const message = `Couldn’t open ${page}. Try again or open it in your browser.`;
       log.warn("about link open failed", { url, ...toErrorFields(error) });
-      setLinkFailure(message);
       recordActionFailure("about-link-open-failed", message, error);
+      if (linkAttempts.current[owner] !== attempt) return;
+      setLinkFailures((current) => ({ ...current, [owner]: message }));
     }
   };
 
@@ -45,17 +53,35 @@ export default function AboutModal({
           An inbox-zero dedup handler for photos, videos, and other files.
         </p>
         <div className="mt-4 flex gap-2">
-          <Button onClick={() => void openProjectPage(REPO_URL, "GitHub")}>GitHub</Button>
-          <Button onClick={() => void openProjectPage(`${REPO_URL}/issues`, "Report an issue")}>Report an issue</Button>
+          <Button onClick={() => void openProjectPage("repository", REPO_URL, "GitHub")}>GitHub</Button>
+          <Button onClick={() => void openProjectPage("issues", `${REPO_URL}/issues`, "Report an issue")}>Report an issue</Button>
         </div>
-        {linkFailure !== null ? (
+        {linkFailures.repository ? (
           <OperationResult
             level="error"
             className="mt-3"
-            onDismiss={() => setLinkFailure(null)}
-            dismissLabel="Dismiss link result"
+            onDismiss={() => setLinkFailures((current) => {
+              const next = { ...current };
+              delete next.repository;
+              return next;
+            })}
+            dismissLabel="Close GitHub result"
           >
-            {linkFailure}
+            {linkFailures.repository}
+          </OperationResult>
+        ) : null}
+        {linkFailures.issues ? (
+          <OperationResult
+            level="error"
+            className="mt-3"
+            onDismiss={() => setLinkFailures((current) => {
+              const next = { ...current };
+              delete next.issues;
+              return next;
+            })}
+            dismissLabel="Close Report an issue result"
+          >
+            {linkFailures.issues}
           </OperationResult>
         ) : null}
         <p className="mt-5 text-xs text-ink-muted">© 2026 Yoshinao Inoguchi · MIT License</p>

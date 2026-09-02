@@ -71,16 +71,14 @@ export function installPlaybackClient(): Promise<void> {
  * registrations, so no stale cleanup can race the replacement registration. */
 export function registerPlaybackClient(
   registration: PlaybackRegistration,
-): void {
+): Promise<void> {
   registrations.set(registration.surface, registration);
-  void installPlaybackClient()
-    .then(() => {
-      const current = registrations.get(registration.surface);
-      if (sameRegistration(current, registration)) {
-        emitPlayback("playback://register", registration);
-      }
-    })
-    .catch(() => undefined);
+  return installPlaybackClient().then(() => {
+    const current = registrations.get(registration.surface);
+    if (sameRegistration(current, registration)) {
+      emitPlayback("playback://register", registration);
+    }
+  });
 }
 
 export function unregisterPlaybackClient(

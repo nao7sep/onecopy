@@ -296,6 +296,15 @@ function VideoSurface({
           {externalError}
         </OperationResult>
       ) : null}
+      {playback.setupFailed ? (
+        <OperationResult
+          level="error"
+          className="shrink-0"
+          actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>Retry</Button>}
+        >
+          Playback controls could not be connected. Try again.
+        </OperationResult>
+      ) : null}
       {playbackFailed ? (
         <div className="max-h-[35%] min-h-28 shrink-0 overflow-hidden">
           <TextOrAttributesSurface
@@ -512,6 +521,14 @@ function AudioSurface({
         </Button>
         {externalError !== null ? (
           <OperationResult level="error">{externalError}</OperationResult>
+        ) : null}
+        {playback.setupFailed ? (
+          <OperationResult
+            level="error"
+            actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>Retry</Button>}
+          >
+            Playback controls could not be connected. Try again.
+          </OperationResult>
         ) : null}
       </div>
       {hash !== null ? (

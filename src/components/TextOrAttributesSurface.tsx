@@ -87,21 +87,20 @@ export default function TextOrAttributesSurface({
   );
   const wrap = useContentSessionStore((state) => state.textWrap);
   const [error, setError] = useState<string | null>(null);
-  const [sessionError, setSessionError] = useState<{
-    owner: "installation" | "encoding" | "wrap";
-    message: string;
-  } | null>(null);
+  type SessionOwner = "installation" | "encoding" | "wrap";
+  const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, string>>>({});
+  const sessionAttempts = useRef({ encoding: 0, wrap: 0 });
   const [encodings, setEncodings] = useState<string[]>([]);
   const loadedKey = useRef<string | null>(null);
 
   const reportSessionFailure = (
-    owner: "installation" | "encoding" | "wrap",
+    owner: SessionOwner,
     kind: string,
     message: string,
     failure: unknown,
   ) => {
     log.warn("content session change failed", { kind, ...toErrorFields(failure) });
-    setSessionError({ owner, message });
+    setSessionErrors((current) => ({ ...current, installation: undefined, [owner]: message }));
     recordActionFailure(kind, message, failure);
   };
 
@@ -109,10 +108,10 @@ export default function TextOrAttributesSurface({
     let active = true;
     void installContentSessionClient().catch(() => {
       if (active) {
-        setSessionError({
-          owner: "installation",
-          message: "Preview settings could not be synchronized. Try a preview control again.",
-        });
+        setSessionErrors((current) => ({
+          ...current,
+          installation: "Preview settings could not be synchronized. Try a preview control again.",
+        }));
       }
     });
     return () => { active = false; };
@@ -192,22 +191,25 @@ export default function TextOrAttributesSurface({
               className="h-7 rounded border border-border bg-background px-1.5 text-xs text-ink"
               value={selectedEncoding}
               onChange={(event) => {
+                const attempt = ++sessionAttempts.current.encoding;
                 void setTextEncoding(key, event.target.value)
-                  .then(() =>
-                    setSessionError((current) =>
-                      current?.owner === "encoding" || current?.owner === "installation"
-                        ? null
-                        : current,
-                    ),
-                  )
-                  .catch((failure) =>
+                  .then(() => {
+                    if (sessionAttempts.current.encoding !== attempt) return;
+                    setSessionErrors((current) => ({
+                      ...current,
+                      installation: undefined,
+                      encoding: undefined,
+                    }));
+                  })
+                  .catch((failure) => {
+                    if (sessionAttempts.current.encoding !== attempt) return;
                     reportSessionFailure(
                       "encoding",
                       "text-encoding-change-failed",
                       "Couldn’t change the text encoding.",
                       failure,
-                    ),
-                  );
+                    );
+                  });
               }}
             >
               <option value="automatic">
@@ -223,22 +225,25 @@ export default function TextOrAttributesSurface({
           <Button
             variant="ghost"
             onClick={() => {
+              const attempt = ++sessionAttempts.current.wrap;
               void setTextWrap(!wrap)
-                .then(() =>
-                  setSessionError((current) =>
-                    current?.owner === "wrap" || current?.owner === "installation"
-                      ? null
-                      : current,
-                  ),
-                )
-                .catch((failure) =>
+                .then(() => {
+                  if (sessionAttempts.current.wrap !== attempt) return;
+                  setSessionErrors((current) => ({
+                    ...current,
+                    installation: undefined,
+                    wrap: undefined,
+                  }));
+                })
+                .catch((failure) => {
+                  if (sessionAttempts.current.wrap !== attempt) return;
                   reportSessionFailure(
                     "wrap",
                     "text-wrap-change-failed",
                     "Couldn’t change text wrapping.",
                     failure,
-                  ),
-                );
+                  );
+                });
             }}
           >
             Wrap {wrap ? "on" : "off"}
@@ -253,11 +258,19 @@ export default function TextOrAttributesSurface({
           {specializedFailure}
         </OperationResult>
       ) : null}
-      {sessionError !== null ? (
-        <OperationResult level="error" className="shrink-0">
-          {sessionError.message}
-        </OperationResult>
-      ) : null}
+      {(Object.entries(sessionErrors) as Array<[SessionOwner, string | undefined]>).map(([owner, message]) =>
+        message ? (
+          <OperationResult
+            key={owner}
+            level="error"
+            className="shrink-0"
+            onDismiss={() => setSessionErrors((current) => ({ ...current, [owner]: undefined }))}
+            dismissLabel={`Close ${owner} result`}
+          >
+            {message}
+          </OperationResult>
+        ) : null,
+      )}
       {error !== null ? (
         <OperationResult level="error" className="shrink-0">
           {error}

@@ -125,10 +125,9 @@ export default function TranscriptBlock({
   );
   const transcriptRef = useRef<HTMLOListElement | null>(null);
   const transcriptViewRequest = useRef(0);
-  const [sessionError, setSessionError] = useState<{
-    owner: "installation" | "position" | "visibility";
-    message: string;
-  } | null>(null);
+  type SessionOwner = "installation" | "position" | "visibility";
+  const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, string>>>({});
+  const visibilityRequest = useRef(0);
   const state = view ?? {
     status: "loading" as const,
     text: null,
@@ -177,13 +176,13 @@ export default function TranscriptBlock({
       : null;
 
   const reportSessionFailure = (
-    owner: "installation" | "position" | "visibility",
+    owner: SessionOwner,
     kind: string,
     message: string,
     error: unknown,
   ) => {
     log.warn("content session change failed", { kind, ...toErrorFields(error) });
-    setSessionError({ owner, message });
+    setSessionErrors((current) => ({ ...current, installation: undefined, [owner]: message }));
     recordActionFailure(kind, message, error);
   };
 
@@ -191,10 +190,10 @@ export default function TranscriptBlock({
     let active = true;
     void installContentSessionClient().catch(() => {
       if (active) {
-        setSessionError({
-          owner: "installation",
-          message: "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
-        });
+        setSessionErrors((current) => ({
+          ...current,
+          installation: "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
+        }));
       }
     });
     return () => { active = false; };
@@ -205,11 +204,11 @@ export default function TranscriptBlock({
     void setTranscriptView(hash, next)
       .then(() => {
         if (request !== transcriptViewRequest.current) return;
-        setSessionError((current) =>
-          current?.owner === "position" || current?.owner === "installation"
-            ? null
-            : current,
-        );
+        setSessionErrors((current) => ({
+          ...current,
+          installation: undefined,
+          position: undefined,
+        }));
       })
       .catch((error) => {
         if (request !== transcriptViewRequest.current) return;
@@ -455,22 +454,25 @@ export default function TranscriptBlock({
           <Button
             variant="ghost"
             onClick={() => {
+              const request = ++visibilityRequest.current;
               void setTranscriptOpen(medium, !transcriptOpen)
-                .then(() =>
-                  setSessionError((current) =>
-                    current?.owner === "visibility" || current?.owner === "installation"
-                      ? null
-                      : current,
-                  ),
-                )
-                .catch((error) =>
+                .then(() => {
+                  if (request !== visibilityRequest.current) return;
+                  setSessionErrors((current) => ({
+                    ...current,
+                    installation: undefined,
+                    visibility: undefined,
+                  }));
+                })
+                .catch((error) => {
+                  if (request !== visibilityRequest.current) return;
                   reportSessionFailure(
                     "visibility",
                     "transcript-visibility-change-failed",
                     "Couldn’t change the transcript view.",
                     error,
-                  ),
-                );
+                  );
+                });
             }}
           >
             {transcriptOpen ? "Collapse" : "Expand"}
@@ -482,11 +484,19 @@ export default function TranscriptBlock({
           {controlError}
         </OperationResult>
       ) : null}
-      {sessionError !== null ? (
-        <OperationResult level="error" className="mb-2">
-          {sessionError.message}
-        </OperationResult>
-      ) : null}
+      {(Object.entries(sessionErrors) as Array<[SessionOwner, string | undefined]>).map(([owner, message]) =>
+        message ? (
+          <OperationResult
+            key={owner}
+            level="error"
+            className="mb-2"
+            onDismiss={() => setSessionErrors((current) => ({ ...current, [owner]: undefined }))}
+            dismissLabel={`Close ${owner} result`}
+          >
+            {message}
+          </OperationResult>
+        ) : null,
+      )}
       {expanded ? (
         <>
           {replacementNotice}

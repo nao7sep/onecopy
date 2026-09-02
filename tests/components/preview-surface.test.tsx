@@ -440,6 +440,45 @@ describe("shared video presentation", () => {
     ).toBe(true);
   });
 
+  it("keeps independent text-session failures and clears only the chosen result", async () => {
+    mockCommands({ record_recent_notification: () => ({}) });
+    render(
+      <PreviewSurface surface="quick" hash={null} pathId={8} detail={OTHER_DETAIL} />,
+    );
+    await screen.findByText(/first line/);
+
+    emit.mockRejectedValueOnce(new Error("wrap failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Wrap on" }));
+    expect(await screen.findByText("Couldn’t change text wrapping.")).toBeTruthy();
+
+    emit.mockRejectedValueOnce(new Error("encoding failed"));
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "shift_jis" } });
+    expect(await screen.findByText("Couldn’t change the text encoding.")).toBeTruthy();
+    expect(screen.getByText("Couldn’t change text wrapping.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close encoding result" }));
+    expect(screen.queryByText("Couldn’t change the text encoding.")).toBeNull();
+    expect(screen.getByText("Couldn’t change text wrapping.")).toBeTruthy();
+  });
+
+  it("does not let an older transcript-visibility failure overwrite a newer success", async () => {
+    let rejectOlder!: (error: unknown) => void;
+    const older = new Promise<void>((_resolve, reject) => { rejectOlder = reject; });
+    mockCommands({ record_recent_notification: () => ({}) });
+    render(
+      <PreviewSurface surface="preview-split" hash="audio-hash" detail={AUDIO_DETAIL} />,
+    );
+    await screen.findByRole("button", { name: "Collapse" });
+    emit.mockImplementationOnce(() => older);
+    emit.mockResolvedValueOnce(undefined);
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse" }));
+    fireEvent.click(screen.getByRole("button", { name: "Collapse" }));
+    await act(async () => rejectOlder(new Error("stale visibility failure")));
+
+    expect(screen.queryByText("Couldn’t change the transcript view.")).toBeNull();
+  });
+
   it("shows complete attributes when bounded content is binary", async () => {
     mockCommands({
       text_preview: () => ({

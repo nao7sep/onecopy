@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AboutModal from "../../src/components/AboutModal";
 
 const mocks = vi.hoisted(() => ({
@@ -47,8 +47,25 @@ describe("About link results", () => {
     fireEvent.click(screen.getByRole("button", { name: "Report an issue" }));
     await screen.findByRole("alert");
 
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss link result" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Report an issue result" }));
 
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps link results independent and ignores an older same-link failure", async () => {
+    let rejectOlder!: (error: unknown) => void;
+    mocks.openUrl
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectOlder = reject; }))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("issues unavailable"));
+    render(<AboutModal open onClose={() => undefined} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "GitHub" }));
+    fireEvent.click(screen.getByRole("button", { name: "GitHub" }));
+    await act(async () => rejectOlder(new Error("stale EACCES /private/tmp/ONECOPY_STALE")));
+    expect(screen.queryByText(/Couldn’t open GitHub/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Report an issue" }));
+    expect(await screen.findByText(/Couldn’t open Report an issue/)).toBeTruthy();
   });
 });

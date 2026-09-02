@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import type {
   PlaybackMedium,
@@ -29,16 +29,34 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
   enabled = true,
 ) {
   const [elementRef, setElementRef] = useOwnedMedia<T>();
+  const [setupFailed, setSetupFailed] = useState(false);
+  const setupAttempt = useRef(0);
   const session = usePlaybackClientStore((state) => state.session);
-  const registration: PlaybackRegistration = { surface, key, medium };
+  const register = useCallback(async () => {
+    const attempt = ++setupAttempt.current;
+    const registration: PlaybackRegistration = { surface, key, medium };
+    try {
+      await registerPlaybackClient(registration);
+      if (setupAttempt.current === attempt) setSetupFailed(false);
+    } catch {
+      // installPlaybackClient preserves the original diagnostic. This hook owns
+      // only the authored, per-media recovery result.
+      if (setupAttempt.current === attempt) setSetupFailed(true);
+    }
+  }, [key, medium, surface]);
 
   useEffect(() => {
-    if (!enabled) return;
-    registerPlaybackClient(registration);
+    const registration: PlaybackRegistration = { surface, key, medium };
+    if (!enabled) {
+      setSetupFailed(false);
+      return;
+    }
+    void register();
     return () => {
+      setupAttempt.current += 1;
       unregisterPlaybackClient(registration);
     };
-  }, [enabled, key, medium, surface]);
+  }, [enabled, key, medium, register, surface]);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -115,5 +133,7 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
         position,
         play: session?.key === key ? session.playing : false,
       }),
+    setupFailed,
+    retrySetup: register,
   };
 }
