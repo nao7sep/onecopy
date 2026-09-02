@@ -386,19 +386,19 @@ fn production_model(temp_dir: &Path) -> PathBuf {
     model
 }
 
-fn live_ffmpeg(test_root: &Path) -> PathBuf {
+fn live_ffmpeg(_test_root: &Path) -> PathBuf {
     if let Some(ffmpeg) = std::env::var_os("ONECOPY_TEST_FFMPEG").map(PathBuf::from) {
         assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
         return ffmpeg;
     }
     #[cfg(windows)]
     {
-        std::fs::create_dir_all(test_root).unwrap();
-        onecopy_lib::binaries_manager::install_entry(test_root, "ffmpeg", |progress| {
+        std::fs::create_dir_all(_test_root).unwrap();
+        onecopy_lib::binaries_manager::install_entry(_test_root, "ffmpeg", |progress| {
             eprintln!("ffmpeg {progress:?}");
         })
         .expect("managed ffmpeg install");
-        let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(test_root);
+        let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(_test_root);
         assert!(ffmpeg.is_file(), "managed ffmpeg exists");
         return ffmpeg;
     }
