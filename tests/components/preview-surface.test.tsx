@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PreviewSurface from "../../src/components/PreviewSurface";
@@ -18,6 +19,7 @@ import {
   emit,
   fireEvent as fireTauriEvent,
   invokeCalls,
+  listen,
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
@@ -123,6 +125,51 @@ afterEach(() => {
 });
 
 describe("shared video presentation", () => {
+  it("retains a failed shared-session listener at each visible owner and retries from a control", async () => {
+    mockCommands({ record_recent_notification: () => ({}) });
+    listen.mockRejectedValueOnce(
+      new Error("TypeError: EACCES /private/tmp/content listener IPC sentinel"),
+    );
+
+    render(
+      <>
+        <PreviewSurface surface="quick" hash={null} pathId={8} detail={OTHER_DETAIL} />
+        <PreviewSurface surface="preview-split" hash="audio-hash" detail={AUDIO_DETAIL} />
+      </>,
+    );
+
+    expect(
+      await screen.findByText(
+        "Preview settings could not be synchronized. Try a preview control again.",
+      ),
+    ).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
+      ),
+    ).toBeTruthy();
+    expect(document.body.textContent).not.toContain("EACCES");
+    expect(document.body.textContent).not.toContain("/private/tmp");
+    expect(document.body.textContent).not.toContain("IPC sentinel");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Wrap on" }));
+    await act(async () => {});
+
+    expect(
+      screen.queryByText(
+        "Preview settings could not be synchronized. Try a preview control again.",
+      ),
+    ).toBeNull();
+    expect(
+      screen.getByText(
+        "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
+      ),
+    ).toBeTruthy();
+    expect(
+      listen.mock.calls.filter(([event]) => event === "content-session://state"),
+    ).toHaveLength(2);
+  });
+
   it("registers one named playback surface for central ownership", async () => {
     render(
       <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />,
@@ -352,15 +399,19 @@ describe("shared video presentation", () => {
     fireEvent.change(screen.getByRole("combobox"), {
       target: { value: "shift_jis" },
     });
-    expect(emitCalls).toContainEqual({
-      event: "content-session://set-text-encoding",
-      payload: { key: "text-content-hash", encoding: "shift_jis" },
-    });
+    await waitFor(() =>
+      expect(emitCalls).toContainEqual({
+        event: "content-session://set-text-encoding",
+        payload: { key: "text-content-hash", encoding: "shift_jis" },
+      }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Wrap on" }));
-    expect(emitCalls).toContainEqual({
-      event: "content-session://set-text-wrap",
-      payload: { wrap: false },
-    });
+    await waitFor(() =>
+      expect(emitCalls).toContainEqual({
+        event: "content-session://set-text-wrap",
+        payload: { wrap: false },
+      }),
+    );
   });
 
   it("keeps a rejected session choice on the affected text preview and out of the copy", async () => {

@@ -28,8 +28,9 @@ export function installContentSessionClient(): Promise<void> {
   return installation;
 }
 
-function send(event: string, payload: unknown): Promise<void> {
-  return emit(event, payload);
+async function send(event: string, payload: unknown): Promise<void> {
+  await installContentSessionClient();
+  await emit(event, payload);
 }
 
 export function setTextWrap(wrap: boolean): Promise<void> {

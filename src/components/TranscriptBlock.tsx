@@ -126,7 +126,7 @@ export default function TranscriptBlock({
   const transcriptRef = useRef<HTMLOListElement | null>(null);
   const transcriptViewRequest = useRef(0);
   const [sessionError, setSessionError] = useState<{
-    owner: "position" | "visibility";
+    owner: "installation" | "position" | "visibility";
     message: string;
   } | null>(null);
   const state = view ?? {
@@ -140,10 +140,6 @@ export default function TranscriptBlock({
   useEffect(() => {
     void load(hash);
   }, [hash, load]);
-
-  useEffect(() => {
-    void installContentSessionClient().catch(() => undefined);
-  }, []);
 
   useEffect(() => {
     const element = transcriptRef.current;
@@ -181,7 +177,7 @@ export default function TranscriptBlock({
       : null;
 
   const reportSessionFailure = (
-    owner: "position" | "visibility",
+    owner: "installation" | "position" | "visibility",
     kind: string,
     message: string,
     error: unknown,
@@ -191,12 +187,29 @@ export default function TranscriptBlock({
     recordActionFailure(kind, message, error);
   };
 
+  useEffect(() => {
+    let active = true;
+    void installContentSessionClient().catch(() => {
+      if (active) {
+        setSessionError({
+          owner: "installation",
+          message: "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
+        });
+      }
+    });
+    return () => { active = false; };
+  }, []);
+
   const retainTranscriptView = (next: TranscriptViewState) => {
     const request = ++transcriptViewRequest.current;
     void setTranscriptView(hash, next)
       .then(() => {
         if (request !== transcriptViewRequest.current) return;
-        setSessionError((current) => (current?.owner === "position" ? null : current));
+        setSessionError((current) =>
+          current?.owner === "position" || current?.owner === "installation"
+            ? null
+            : current,
+        );
       })
       .catch((error) => {
         if (request !== transcriptViewRequest.current) return;
@@ -445,7 +458,9 @@ export default function TranscriptBlock({
               void setTranscriptOpen(medium, !transcriptOpen)
                 .then(() =>
                   setSessionError((current) =>
-                    current?.owner === "visibility" ? null : current,
+                    current?.owner === "visibility" || current?.owner === "installation"
+                      ? null
+                      : current,
                   ),
                 )
                 .catch((error) =>

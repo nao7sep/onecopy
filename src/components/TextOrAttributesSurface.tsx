@@ -87,17 +87,35 @@ export default function TextOrAttributesSurface({
   );
   const wrap = useContentSessionStore((state) => state.textWrap);
   const [error, setError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<{
+    owner: "installation" | "encoding" | "wrap";
+    message: string;
+  } | null>(null);
   const [encodings, setEncodings] = useState<string[]>([]);
   const loadedKey = useRef<string | null>(null);
 
-  const reportSessionFailure = (kind: string, message: string, failure: unknown) => {
+  const reportSessionFailure = (
+    owner: "installation" | "encoding" | "wrap",
+    kind: string,
+    message: string,
+    failure: unknown,
+  ) => {
     log.warn("content session change failed", { kind, ...toErrorFields(failure) });
-    setError(message);
+    setSessionError({ owner, message });
     recordActionFailure(kind, message, failure);
   };
 
   useEffect(() => {
-    void installContentSessionClient().catch(() => undefined);
+    let active = true;
+    void installContentSessionClient().catch(() => {
+      if (active) {
+        setSessionError({
+          owner: "installation",
+          message: "Preview settings could not be synchronized. Try a preview control again.",
+        });
+      }
+    });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -175,9 +193,16 @@ export default function TextOrAttributesSurface({
               value={selectedEncoding}
               onChange={(event) => {
                 void setTextEncoding(key, event.target.value)
-                  .then(() => setError(null))
+                  .then(() =>
+                    setSessionError((current) =>
+                      current?.owner === "encoding" || current?.owner === "installation"
+                        ? null
+                        : current,
+                    ),
+                  )
                   .catch((failure) =>
                     reportSessionFailure(
+                      "encoding",
                       "text-encoding-change-failed",
                       "Couldn’t change the text encoding.",
                       failure,
@@ -199,9 +224,16 @@ export default function TextOrAttributesSurface({
             variant="ghost"
             onClick={() => {
               void setTextWrap(!wrap)
-                .then(() => setError(null))
+                .then(() =>
+                  setSessionError((current) =>
+                    current?.owner === "wrap" || current?.owner === "installation"
+                      ? null
+                      : current,
+                  ),
+                )
                 .catch((failure) =>
                   reportSessionFailure(
+                    "wrap",
                     "text-wrap-change-failed",
                     "Couldn’t change text wrapping.",
                     failure,
@@ -219,6 +251,11 @@ export default function TextOrAttributesSurface({
       {specializedFailure !== null ? (
         <OperationResult level="error" className="shrink-0">
           {specializedFailure}
+        </OperationResult>
+      ) : null}
+      {sessionError !== null ? (
+        <OperationResult level="error" className="shrink-0">
+          {sessionError.message}
         </OperationResult>
       ) : null}
       {error !== null ? (
