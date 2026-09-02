@@ -54,6 +54,7 @@ describe("modal result growth", () => {
     const alert = screen.getByRole("alert");
     const dismiss = screen.getByRole("button", { name: "Dismiss result" });
     expect(alert.textContent).toBe("The settings could not be saved.");
+    expect(alert.className).toContain("items-start");
     expect(alert.querySelectorAll("svg")).toHaveLength(1);
     expect(dismiss.querySelector("svg")).not.toBeNull();
   });

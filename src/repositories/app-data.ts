@@ -21,8 +21,8 @@ export interface LoadedAppData {
 export interface QuarantineRecord {
   /** The store's file name — `config.json`, `state.json`. */
   file: string;
-  /** Where the original bytes were moved, verbatim, so the user can go get
-   * them. */
+  /** Where the original bytes were moved. Diagnostic-only; presentation code
+   * uses authored recovery copy. */
   quarantinedTo: string;
 }
 

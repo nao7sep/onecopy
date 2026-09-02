@@ -9,9 +9,9 @@ import Button from "./ui/Button";
 // preserves whatever was in there — but a set-aside nobody mentions is just a
 // silent reset with extra steps (storage-path-conventions). So this surface is
 // half of that recovery, not a courtesy: it names the file it could not read,
-// the exact path the original bytes are waiting at, what the app is running on
-// instead, and what it did NOT touch. Dismissible, because there is nothing to
-// decide — the recovery already happened.
+// says that the original bytes were preserved and locatable through the log,
+// explains what the app is running on instead, and says what it did NOT touch.
+// Dismissible, because there is nothing to decide — the recovery already happened.
 
 /** What starting over means for each store, in the user's terms. Falls back to
  * a neutral phrasing so an unlisted store still reports honestly. */
@@ -33,9 +33,9 @@ function Record({ record }: { record: QuarantineRecord }) {
         <span className="font-semibold">{record.file}</span> could not be read.
       </p>
       <p className="mt-1 text-sm text-ink">{startedWith(record.file)}</p>
-      <p className="mt-2 text-xs text-ink-muted">Your original file is kept here:</p>
-      {/* Selectable: the whole point is that the user can go get these bytes. */}
-      <p className="select-text break-all text-xs text-ink">{record.quarantinedTo}</p>
+      <p className="mt-2 text-xs text-ink-muted">
+        Your original file was preserved. Its location is recorded in the application log.
+      </p>
     </li>
   );
 }

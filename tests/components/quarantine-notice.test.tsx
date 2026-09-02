@@ -3,8 +3,9 @@
 // The user-facing half of corrupt-store recovery. Setting the unreadable file
 // aside preserves the bytes, but a set-aside nobody mentions is a silent reset
 // with extra steps (storage-path-conventions), so what this surface says IS
-// the contract: which file, where its bytes are now, what the app is running
-// on instead, and what was left alone.
+// the contract: which file was affected, that its bytes were preserved and are
+// locatable through the log, what the app is running on instead, and what was
+// left alone. Internal recovery paths stay diagnostic-only.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
@@ -40,13 +41,13 @@ describe("when a store was set aside", () => {
     useAppStore.setState({ quarantines: [CONFIG] });
   });
 
-  it("names the file, the exact path holding the bytes, and what it started with", () => {
+  it("names the file and recovery consequence without exposing the internal path", () => {
     render(<QuarantineNotice />);
     const text = document.body.textContent ?? "";
     expect(text).toContain("config.json");
-    // The path must be exact — its whole purpose is that the user can go get
-    // the original bytes.
-    expect(text).toContain(CONFIG.quarantinedTo);
+    expect(text).toContain("preserved");
+    expect(text).toContain("application log");
+    expect(text).not.toContain(CONFIG.quarantinedTo);
     expect(text).toContain("built-in settings");
     // And the reassurance that the reset was scoped to that one file.
     expect(text).toContain("photos");
@@ -57,7 +58,7 @@ describe("when a store was set aside", () => {
     render(<QuarantineNotice />);
     const text = document.body.textContent ?? "";
     expect(text).toContain("sort order");
-    expect(text).toContain(STATE.quarantinedTo);
+    expect(text).not.toContain(STATE.quarantinedTo);
   });
 
   it("reports every store on its own line when several failed", () => {
