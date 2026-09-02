@@ -20,6 +20,7 @@ import ComparisonSlot from "./ComparisonSlot";
 import ConfirmDialog from "./ConfirmDialog";
 import RevealCopiesDialog from "./RevealCopiesDialog";
 import OperationResult from "./ui/OperationResult";
+import { X } from "lucide-react";
 
 function interactiveTarget(target: EventTarget | null): boolean {
   return (
@@ -233,10 +234,12 @@ export default function ComparisonView() {
             </button>
           ) : mutationResult !== null && !exitQuiescing ? (
             <button
-              className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
+              aria-label="Dismiss file-operation result"
+              title="Dismiss"
               onClick={dismissMutationResult}
             >
-              Dismiss result
+              <X size={14} strokeWidth={2} aria-hidden="true" />
             </button>
           ) : null}
         </footer>

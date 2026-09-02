@@ -26,8 +26,8 @@ async function install(): Promise<void> {
       presentation: "persistent",
       message: mutationResultLine(result),
     }).catch((error) => {
-      const reason = error instanceof Error ? error.message : String(error);
-      recordInterfaceFailure(`OneCopy could not save the file-operation result: ${reason}`);
+      log.error("file-operation result recording failed", toErrorFields(error));
+      recordInterfaceFailure("OneCopy could not save the file-operation result.");
     });
   };
   try {
@@ -98,8 +98,9 @@ async function install(): Promise<void> {
     });
   } catch (error) {
     log.warn("file operation event wiring failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    recordInterfaceFailure(message);
+    recordInterfaceFailure(
+      "Live file-operation status is unavailable. Restart OneCopy before changing more files.",
+    );
     useMutationStore.setState({ progress: null, cancelling: false });
     useItemsStore.setState({
       message: "Live file-operation status is unavailable. Restart OneCopy before changing more files.",

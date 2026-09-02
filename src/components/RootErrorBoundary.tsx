@@ -24,7 +24,7 @@ export default class RootErrorBoundary extends Component<Props, State> {
       ...toErrorFields(error),
       componentStack: info.componentStack,
     });
-    recordInterfaceFailure(error instanceof Error ? error.message : String(error));
+    recordInterfaceFailure("This window could not finish drawing. Reload it before continuing.");
     this.props.onFailure?.();
   }
 

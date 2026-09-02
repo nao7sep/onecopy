@@ -129,7 +129,7 @@ describe("momentary original-pixel inspection", () => {
 
     expect(screen.queryByText("Original pixels unavailable.")).toBeNull();
     expect(screen.getByRole("alert").textContent).toContain(
-      "Error: Couldn’t show the original pixels for family.jpg.",
+      "Couldn’t show the original pixels for family.jpg.",
     );
     expect(
       invokeCalls.some((call) => call.command === "record_recent_notification"),

@@ -95,7 +95,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
         set({ snapshot, activeItem, loading: false, error: null });
       }
     } catch (error) {
-      if (fresh()) set({ loading: false, error: String(error) });
+      if (fresh()) set({ loading: false, error: "Background work could not be loaded. Try reopening this window." });
       log.warn("background-work snapshot failed", toErrorFields(error));
     }
   },
@@ -112,7 +112,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
       await invoke("background_work_set_paused", { classId, paused });
       await get().load();
     } catch (error) {
-      set({ error: String(error) });
+      set({ error: "Background work could not be changed. Try again." });
       log.warn("background-work pause failed", toErrorFields(error));
       recordActionFailure(
         "background-work-control-failed",
@@ -260,8 +260,7 @@ void (async () => {
     await useDerivedWorkStore.getState().load();
   } catch (error) {
     log.warn("derived-work event wiring failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    recordInterfaceFailure(message);
+    recordInterfaceFailure("Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.");
     useDerivedWorkStore.setState({
       error: "Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.",
     });

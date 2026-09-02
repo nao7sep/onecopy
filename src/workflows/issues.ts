@@ -29,9 +29,8 @@ export function installIssuesEventWiring(): Promise<void> {
   installation ??= install().catch((error) => {
     installation = null;
     log.error("issues event wiring failed", toErrorFields(error));
-    const reason = error instanceof Error ? error.message : String(error);
     recordInterfaceFailure(
-      `Issue history will not update while it is open. Reopen it to refresh: ${reason}`,
+      "Issue history will not update while it is open. Reopen it to refresh.",
     );
   });
   return installation;

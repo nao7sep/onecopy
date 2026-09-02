@@ -17,6 +17,10 @@ interface DeleteBatchOutcome {
   failedFiles: number;
 }
 
+type RescanSectionOutcome =
+  | { status: "completed"; changed: number }
+  | { status: "cancelled" };
+
 let installed = false;
 
 function appWindowState(): Record<string, unknown> {
@@ -124,7 +128,10 @@ export async function deleteItems(
       permanent,
     });
     if (outcome.error !== null) {
-      useItemsStore.setState({ message: outcome.error });
+      useItemsStore.setState({
+        message:
+          "The delete operation stopped before it could finish. Review Issues before retrying.",
+      });
       await useIssuesStore.getState().load();
     } else if (outcome.failedFiles > 0) {
       useItemsStore.setState({
@@ -141,7 +148,7 @@ export async function deleteItems(
     log.error("delete failed", toErrorFields(error));
     recordActionFailure("delete-start-failed", "The delete operation could not start.", error);
     useItemsStore.setState({
-      message: error instanceof Error ? error.message : String(error),
+      message: "The delete operation could not start. No further files were changed.",
     });
     // A structural error can arrive after earlier logical units committed.
     // Re-read every durable owner instead of leaving removed rows projected.
@@ -156,19 +163,17 @@ export async function rescanCurrentSection(): Promise<void> {
   const selected = useItemsStore.getState().selected;
   if (!selected) return;
   try {
-    await invoke<number>("rescan_section", {
+    const outcome = await invoke<RescanSectionOutcome>("rescan_section", {
       kind: selected.kind,
       month: selected.month,
     });
+    if (outcome.status === "cancelled") return;
     await useItemsStore.getState().refresh();
     await useSectionsStore.getState().loadCounts();
   } catch (error) {
     log.error("section rescan failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("scan cancelled")) {
-      useItemsStore.setState({ message });
-      recordActionFailure("section-refresh-failed", "Couldn’t refresh this section.", error);
-      await useIssuesStore.getState().load();
-    }
+    useItemsStore.setState({ message: "This section could not be refreshed. Try again." });
+    recordActionFailure("section-refresh-failed", "Couldn’t refresh this section.", error);
+    await useIssuesStore.getState().load();
   }
 }

@@ -959,8 +959,9 @@ async function executeAction(
         ? `${outcome.failedFiles} file${outcome.failedFiles === 1 ? "" : "s"} could not be deleted.`
         : outcome.cancelled
           ? "Deletion stopped safely."
-          : (outcome.error ??
-            `${remaining.length} image${remaining.length === 1 ? "" : "s"} remain.`);
+          : outcome.error !== null
+            ? "Deletion stopped before it could finish."
+            : `${remaining.length} image${remaining.length === 1 ? "" : "s"} remain.`;
     const failure: ComparisonFailure = {
       ...action,
       keepHashes: [],

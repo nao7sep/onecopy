@@ -80,7 +80,9 @@ export function mutationResultLine(result: MutationResult): string {
   if (summary.filesUnstarted > 0 && summary.itemsUnstarted === 0) {
     parts.push(`${summary.filesUnstarted.toLocaleString()} file steps unstarted`);
   }
-  if (summary.error !== null) parts.push(summary.error);
+  if (summary.error !== null) {
+    parts.push("the operation stopped before it could finish");
+  }
   const state = summary.error !== null
     ? "stopped"
     : result.cancelled

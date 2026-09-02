@@ -10,12 +10,51 @@ use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
+/// User-facing failure copy is owned here, where arbitrary runtime diagnostics
+/// cross into Issues, Recent, and the direct last-resort surface. Callers keep
+/// supplying the complete diagnostic for the log; no exception prose is
+/// persisted as presentation.
+fn presentation_for(kind: &str) -> &'static str {
+    match kind {
+        "config-save-failed" | "state-save-failed" =>
+            "OneCopy could not save an application setting. Your library files were not changed.",
+        "source-check-failed" | "watcher-failed" | "watcher-root-failed" =>
+            "OneCopy could not monitor a source folder. Check that the folder is available, then retry the scan.",
+        "file-information-state-failed" | "background-work-state-failed" =>
+            "OneCopy could not save background-work progress. Restart OneCopy before continuing.",
+        "file-operation-state-failed" | "trash-empty-entry-failed" =>
+            "OneCopy could not finish a file operation. Review the affected items in Issues before retrying.",
+        "external-open-failed" =>
+            "OneCopy could not open this item in another application. Check that the file is available, then try again.",
+        "text-preview-failed" =>
+            "OneCopy could not prepare this text preview. The original file was not changed.",
+        "dependency-install-failed" | "update-check-failed" =>
+            "OneCopy could not finish the managed-tool operation. Try again.",
+        "instance-activation-failed" | "instance-listener-failed" =>
+            "OneCopy could not connect this window to the running application. Restart OneCopy.",
+        "media-use-state-failed" =>
+            "OneCopy could not save media-use state. Restart OneCopy before continuing.",
+        "transcription-worker-failed" =>
+            "Transcription stopped unexpectedly. Restart OneCopy, then try again.",
+        "shutdown-media-release-failed" | "shutdown-window-recovery-failed" | "shutdown-worker-failed" =>
+            "OneCopy could not finish shutting down cleanly. Restart it before continuing.",
+        "event-delivery-failed" =>
+            "OneCopy could not update part of the interface. Reload the window before continuing.",
+        "interface-failed" =>
+            "This window could not finish an interface operation. Reload it before continuing.",
+        "issue-recovery-failed" =>
+            "OneCopy could not complete the selected recovery. Review Issues, then try again.",
+        _ => "A OneCopy background operation stopped unexpectedly. Restart OneCopy before continuing.",
+    }
+}
+
 pub fn report(
     app: &AppHandle,
     kind: &str,
     path: Option<&str>,
     message: &str,
 ) -> Result<(), String> {
+    let presentation = presentation_for(kind);
     record_active(app, kind, path, message)?;
     crate::notifications::publish(
         app,
@@ -24,7 +63,7 @@ pub fn report(
             path: path.map(str::to_string),
             level: crate::notifications::NotificationLevel::Error,
             presentation: crate::notifications::NotificationPresentation::Persistent,
-            message: message.to_string(),
+            message: presentation.to_string(),
         },
     )
     .map_err(|error| present_unrecorded(app, kind, path, message, "Recent", &error))?;
@@ -40,6 +79,7 @@ pub fn record_active(
     path: Option<&str>,
     message: &str,
 ) -> Result<(), String> {
+    let presentation = presentation_for(kind);
     crate::logging::error(
         "application failure",
         json!({
@@ -51,7 +91,7 @@ pub fn record_active(
     let conn = crate::paths::data_root(app)
         .and_then(|root| crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME)))
         .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
-    crate::index_store::upsert_issue(&conn, path, kind, message)
+    crate::index_store::upsert_issue(&conn, path, kind, presentation)
         .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
     if let Err(emit_error) = emit_checked(app, "failure://reported", json!({ "kind": kind })) {
         crate::logging::error(
@@ -62,7 +102,7 @@ pub fn record_active(
             &conn,
             Some("failure://reported"),
             "event-delivery-failed",
-            &emit_error,
+            presentation_for("event-delivery-failed"),
         )
         .map_err(|save_error| {
             present_unrecorded(
@@ -81,7 +121,7 @@ pub fn record_active(
                 path: Some("failure://reported".to_string()),
                 level: crate::notifications::NotificationLevel::Error,
                 presentation: crate::notifications::NotificationPresentation::Persistent,
-                message: emit_error.clone(),
+                message: presentation_for("event-delivery-failed").to_string(),
             },
         )
         .map_err(|save_error| {
@@ -106,8 +146,9 @@ fn present_unrecorded(
     record_name: &str,
     save_error: &str,
 ) -> String {
+    let presentation = presentation_for(kind);
     let direct = format!(
-        "{message} OneCopy also could not save this failure to {record_name}: {save_error}"
+        "{presentation} OneCopy also could not save this failure to {record_name}. Reload the window before continuing."
     );
     crate::logging::error(
         "application failure could not be saved",
@@ -155,6 +196,24 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         .map(|value| (*value).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "worker stopped unexpectedly".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::presentation_for;
+
+    #[test]
+    fn runtime_diagnostics_are_not_user_presentation() {
+        let hostile =
+            "Error invoking remote method: EACCES /private/tmp/HOSTILE-SENTINEL";
+        let presentation = presentation_for("file-operation-state-failed");
+
+        assert!(!presentation.contains(hostile));
+        assert!(!presentation.contains("EACCES"));
+        assert!(!presentation.contains("/private/tmp"));
+        assert!(!presentation.contains("Error invoking remote method"));
+        assert!(presentation.contains("file operation"));
+    }
 }
 
 pub fn spawn_reported(

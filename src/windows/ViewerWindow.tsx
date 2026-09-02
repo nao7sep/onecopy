@@ -127,10 +127,7 @@ export default function ViewerWindow() {
         <OperationResult
           level="error"
           className="absolute bottom-4 left-1/2 z-20 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 shadow-xl"
-          actions={
-            <button
-              className="font-medium underline"
-              onClick={() => {
+          onDismiss={() => {
                 setCommandFailure(null);
                 if (state.failure !== null) {
                   void emit("viewer://dismiss-failure", {}).catch((error) => {
@@ -148,10 +145,7 @@ export default function ViewerWindow() {
                   });
                 }
               }}
-            >
-              Dismiss
-            </button>
-          }
+          dismissLabel="Dismiss viewer result"
         >
           {commandFailure ?? state.failure}
         </OperationResult>

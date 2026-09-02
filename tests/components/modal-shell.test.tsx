@@ -43,4 +43,18 @@ describe("modal result growth", () => {
     expect(screen.getByText("Close").closest("button")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
+
+  it("renders only the quiet dismiss mark, with no severity decoration or prefix", () => {
+    render(
+      <OperationResult level="error" onDismiss={() => undefined}>
+        The settings could not be saved.
+      </OperationResult>,
+    );
+
+    const alert = screen.getByRole("alert");
+    const dismiss = screen.getByRole("button", { name: "Dismiss result" });
+    expect(alert.textContent).toBe("The settings could not be saved.");
+    expect(alert.querySelectorAll("svg")).toHaveLength(1);
+    expect(dismiss.querySelector("svg")).not.toBeNull();
+  });
 });

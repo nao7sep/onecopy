@@ -288,7 +288,9 @@ async function executeMoveBatch(
       );
     }
     if (outcome.cancelled) parts.push("Stopped; unstarted items are untouched");
-    if (outcome.error !== null) parts.push(`Stopped: ${outcome.error}`);
+    if (outcome.error !== null) {
+      parts.push("The operation stopped before it could finish");
+    }
     if (
       parts.length === 0 &&
       outcome.exported === 0 &&
@@ -326,7 +328,8 @@ async function executeMoveBatch(
     useDestinationsStore.setState({
       result: {
         severity: "error",
-        message: String(error),
+        message:
+          "The file operation could not finish. Check that the destination is available, then try again.",
         operationKey,
       },
       confirmation: null,

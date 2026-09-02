@@ -70,24 +70,24 @@ function recoverComparisonPresentation(): void {
 }
 
 window.addEventListener("error", (event) => {
-  const message = event.error instanceof Error ? event.error.message : String(event.message);
   log.error("uncaught error", {
     ...toErrorFields(event.error ?? event.message),
     source: event.filename,
     line: event.lineno,
     column: event.colno,
   });
-  recordInterfaceFailure(message);
+  const presentation = "This window stopped unexpectedly. Reload it before continuing.";
+  recordInterfaceFailure(presentation);
   recoverComparisonPresentation();
-  presentEscapedFailure(`This window stopped unexpectedly: ${message}`);
+  presentEscapedFailure(presentation);
 });
 
 window.addEventListener("unhandledrejection", (event) => {
   log.error("unhandled promise rejection", toErrorFields(event.reason));
-  const message = event.reason instanceof Error ? event.reason.message : String(event.reason);
-  recordInterfaceFailure(message);
+  const presentation = "This window could not finish an action. Reload it before continuing.";
+  recordInterfaceFailure(presentation);
   recoverComparisonPresentation();
-  presentEscapedFailure(`This window could not finish an action: ${message}`);
+  presentEscapedFailure(presentation);
 });
 
 void installMediaUseBoundary()
@@ -112,7 +112,7 @@ void installMediaUseBoundary()
   })
   .catch((error) => {
     log.error("media ownership bootstrap failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    recordInterfaceFailure(message);
-    presentEscapedFailure(`This window could not start safely: ${message}`);
+    const presentation = "This window could not start safely. Reload it before continuing.";
+    recordInterfaceFailure(presentation);
+    presentEscapedFailure(presentation);
   });

@@ -46,20 +46,15 @@ export async function saveSettings(): Promise<void> {
   try {
     resolved = await invoke<number>("re_resolve_all");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("scan cancelled")) {
-      useItemsStore.setState({
-        message: `Settings were saved, but re-indexing failed: ${message}`,
-      });
-    }
+    useItemsStore.setState({
+      message: "Settings were saved, but the library could not be updated. Try refreshing the section.",
+    });
     log.error("settings re-index failed after save", toErrorFields(error));
-    if (!message.includes("scan cancelled")) {
-      recordActionFailure(
-        "settings-reindex-failed",
-        "Settings were saved, but OneCopy couldn’t update the library.",
-        error,
-      );
-    }
+    recordActionFailure(
+      "settings-reindex-failed",
+      "Settings were saved, but OneCopy couldn’t update the library.",
+      error,
+    );
   }
   try {
     await Promise.all([

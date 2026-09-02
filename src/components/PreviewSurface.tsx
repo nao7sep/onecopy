@@ -397,7 +397,10 @@ function ImageSurface({
             )
             .catch((error) => {
               log.warn("on-demand preview derive failed", toErrorFields(error));
-              setPhase({ kind: "failed", reason: String(error) });
+              setPhase({
+                kind: "failed",
+                reason: "A preview could not be prepared for this file. File actions and known details remain available.",
+              });
             });
         }}
       />

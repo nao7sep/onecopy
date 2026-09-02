@@ -934,13 +934,24 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
 // Scoped rescan: re-stats exactly the directories that contributed files to
 // one section (never the whole roots), then runs the pending pipeline tail.
 // The full per-root walk remains the Scan button's escape hatch.
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum RescanSectionOutcome {
+    Completed { changed: u64 },
+    Cancelled,
+}
+
 #[tauri::command(async)]
-fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, String> {
+fn rescan_section(
+    app: AppHandle,
+    kind: String,
+    month: String,
+) -> Result<RescanSectionOutcome, String> {
     logging::boundary(
         "rescan_section",
         json!({ "kind": kind, "month": month }),
         || {
-            scan_runtime::run_section(&app, || {
+            match scan_runtime::run_section(&app, || {
                 let data_root = paths::data_root(&app)?;
                 let config = storage::read_config_for_setup(&data_root)?;
                 let settings = scanner::settings_from_config(
@@ -973,9 +984,16 @@ fn rescan_section(app: AppHandle, kind: String, month: String) -> Result<u64, St
                 }
                 scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
                 Ok(changed)
-            })
+            }) {
+                Ok(changed) => Ok(RescanSectionOutcome::Completed { changed }),
+                Err(error) if error == scanner::CANCELLED => Ok(RescanSectionOutcome::Cancelled),
+                Err(error) => Err(error),
+            }
         },
-        |changed| json!({ "changed": changed }),
+        |outcome| match outcome {
+            RescanSectionOutcome::Completed { changed } => json!({ "status": "completed", "changed": changed }),
+            RescanSectionOutcome::Cancelled => json!({ "status": "cancelled" }),
+        },
     )
 }
 
@@ -1796,21 +1814,42 @@ fn binaries_cancel(id: String, operation_id: String) -> bool {
 }
 
 // Version check for one entry — never installs; a failure writes nothing.
+#[derive(serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+enum BinaryCheckOutcome {
+    Completed {
+        states: Vec<binaries_manager::DependencyState>,
+    },
+    Cancelled,
+}
+
 #[tauri::command(async)]
 fn binaries_check(
     app: AppHandle,
     id: String,
     operation_id: String,
-) -> Result<Vec<binaries_manager::DependencyState>, String> {
+) -> Result<BinaryCheckOutcome, String> {
     logging::boundary(
         "binaries_check",
         json!({ "id": id }),
         || {
             let data_root = paths::data_root(&app)?;
-            binaries_manager::check_entry_with_operation(&data_root, &id, &operation_id)?;
-            Ok(binaries_manager::states(&data_root))
+            match binaries_manager::check_entry_with_operation(&data_root, &id, &operation_id) {
+                Ok(_) => Ok(BinaryCheckOutcome::Completed {
+                    states: binaries_manager::states(&data_root),
+                }),
+                Err(error) if error == binaries_acquisition::CANCELLED_ERROR => {
+                    Ok(BinaryCheckOutcome::Cancelled)
+                }
+                Err(error) => Err(error),
+            }
         },
-        |states| json!({ "entries": states.len() }),
+        |outcome| match outcome {
+            BinaryCheckOutcome::Completed { states } => {
+                json!({ "outcome": "completed", "entries": states.len() })
+            }
+            BinaryCheckOutcome::Cancelled => json!({ "outcome": "cancelled" }),
+        },
     )
 }
 

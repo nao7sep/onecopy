@@ -17,7 +17,7 @@ beforeEach(() => {
 
 describe("section repair outcome", () => {
   it("leaves intentional cancellation to the resumable-index warning", async () => {
-    mockCommands({ rescan_section: () => Promise.reject(new Error("scan cancelled")) });
+    mockCommands({ rescan_section: () => ({ status: "cancelled" }) });
 
     await rescanCurrentSection();
 
@@ -25,10 +25,18 @@ describe("section repair outcome", () => {
   });
 
   it("keeps an unexpected repair failure visible", async () => {
-    mockCommands({ rescan_section: () => Promise.reject(new Error("directory unreadable")) });
+    mockCommands({
+      rescan_section: () =>
+        Promise.reject(
+          new Error("Error invoking remote method: EACCES /private/tmp/HOSTILE-SENTINEL"),
+        ),
+    });
 
     await rescanCurrentSection();
 
-    expect(useItemsStore.getState().message).toContain("directory unreadable");
+    expect(useItemsStore.getState().message).toBe(
+      "This section could not be refreshed. Try again.",
+    );
+    expect(useItemsStore.getState().message).not.toContain("HOSTILE-SENTINEL");
   });
 });

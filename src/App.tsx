@@ -533,10 +533,12 @@ export default function App() {
           </button>
           {mutationProgress === null && mutationResult !== null && !exitQuiescing ? (
             <button
-              className="text-ink-muted hover:text-ink hover:underline"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
+              aria-label="Dismiss file-operation result"
+              title="Dismiss"
               onClick={dismissMutationResult}
             >
-              Dismiss result
+              <X size={14} strokeWidth={2} aria-hidden="true" />
             </button>
           ) : null}
           {mutationProgress !== null && !exitQuiescing ? (

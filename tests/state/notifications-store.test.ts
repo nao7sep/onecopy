@@ -53,7 +53,7 @@ describe("notification failure containment", () => {
     expect(document.body.textContent).toContain("OneCopy needs to reload");
   });
 
-  it("records a locally owned failure in Recent without publishing a live notice", async () => {
+  it("records safe operation copy in Recent without publishing raw diagnostics", async () => {
     mockCommands({
       record_recent_notification: ({ request }) => ({
         id: 1,
@@ -64,7 +64,7 @@ describe("notification failure containment", () => {
     recordActionFailure(
       "settings-save-failed",
       "Couldn’t save Settings.",
-      new Error("disk full"),
+      new Error("TypeError EACCES /private/tmp/HOSTILE-SENTINEL IPC wrapper"),
     );
 
     await vi.waitFor(() => {
@@ -76,8 +76,9 @@ describe("notification failure containment", () => {
       kind: "settings-save-failed",
       level: "error",
       presentation: "persistent",
-      message: "Couldn’t save Settings. disk full",
+      message: "Couldn’t save Settings.",
     });
+    expect(JSON.stringify(recent?.args.request)).not.toContain("HOSTILE-SENTINEL");
   });
 
   it("escalates only the distinct recording failure when Recent is unavailable", async () => {
