@@ -195,11 +195,17 @@ export default function IssuesModal() {
           ) : (
             <ul className="space-y-1.5">
               {recentRows.map((row) => (
-                <li key={row.id} className="rounded-lg border border-border bg-surface p-3 text-xs">
-                  <div className="flex items-start justify-between gap-2">
-                    <span className={row.level === "error" ? "font-semibold text-danger" : row.level === "warning" ? "font-semibold text-warning" : "font-semibold text-ink"}>
-                      {row.level === "error" ? "Error" : row.level === "warning" ? "Warning" : "Notice"}
-                    </span>
+                <li
+                  key={row.id}
+                  className={`rounded-lg border bg-surface p-3 text-xs ${
+                    row.level === "error"
+                      ? "border-danger/40"
+                      : row.level === "warning"
+                        ? "border-warning/40"
+                        : "border-border"
+                  }`}
+                >
+                  <div className="flex items-start justify-end gap-2">
                     <span className="flex shrink-0 items-center gap-2 text-ink-muted">
                       {row.occurrenceCount > 1 ? <span>×{row.occurrenceCount}</span> : null}
                       <span title={`First seen ${formatLocalMinute(row.firstSeenUtc)}`}>

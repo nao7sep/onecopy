@@ -138,7 +138,7 @@ export default function Wizard() {
                 ? "Checking timezone…"
                 : timezoneValid
                   ? ""
-                  : "Error: Not a recognized timezone name"}
+                  : "Not a recognized timezone name"}
             </p>
             <div className="flex items-center justify-between">
               {leading}

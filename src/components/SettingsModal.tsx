@@ -488,7 +488,8 @@ export default function SettingsModal() {
               })
               .catch((error) => {
                 useSettingsStore.setState({
-                  message: String(error),
+                  message:
+                    "The library index could not be rebuilt. Check the source folders, then try again.",
                   messageLevel: "error",
                 });
                 log.error("library index rebuild failed", toErrorFields(error));
@@ -559,7 +560,7 @@ export default function SettingsModal() {
                   ? "Checking timezone…"
                   : timezoneValid
                     ? ""
-                    : "Error: Not a recognized timezone name"}
+                    : "Not a recognized timezone name"}
               </span>
             </span>
           </Row>

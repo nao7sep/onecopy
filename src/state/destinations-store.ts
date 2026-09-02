@@ -164,7 +164,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       });
     } catch (error) {
       log.error("destination folder creation failed", toErrorFields(error));
-      set({ message: String(error) });
+      set({ message: "The destination folder could not be created. Check the destination and try again." });
       recordActionFailure(
         "destination-folder-create-failed",
         "Couldn’t create the destination folder.",
@@ -180,7 +180,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       set({ message: "" });
     } catch (error) {
       log.error("destination folder deletion failed", toErrorFields(error));
-      set({ message: String(error) });
+      set({ message: "The destination folder could not be deleted. Check that it is empty and try again." });
       recordActionFailure(
         "destination-folder-delete-failed",
         "Couldn’t delete the destination folder.",

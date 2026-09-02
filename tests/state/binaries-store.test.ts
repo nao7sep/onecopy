@@ -126,7 +126,7 @@ describe("managed-tool terminal ownership", () => {
 
     expect(useBinariesStore.getState().entries[0]?.status).toBe("installed-unchecked");
     expect(useBinariesStore.getState().errors.ffmpeg).toBe(
-      "version sidecar could not be saved",
+      "The managed-tool installation could not finish. Try again.",
     );
     expect(useBinariesStore.getState().installing.ffmpeg).toBeUndefined();
   });
@@ -278,10 +278,13 @@ describe("managed-tool terminal ownership", () => {
         entry("whisper-large-v3-turbo", "not-installed"),
       ]);
       mockCommands({
-        binaries_check: () => [
-          checked,
-          entry("whisper-large-v3-turbo", "not-installed"),
-        ],
+        binaries_check: () => ({
+          outcome: "completed",
+          states: [
+            checked,
+            entry("whisper-large-v3-turbo", "not-installed"),
+          ],
+        }),
       });
 
       const checking = useBinariesStore.getState().checkAll();

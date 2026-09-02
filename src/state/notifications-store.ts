@@ -137,13 +137,14 @@ export function errorNotification(
   message: string,
   error?: unknown,
 ): Promise<NotificationRecord> {
-  const reason = error instanceof Error ? error.message : error == null ? "" : String(error);
-  const detail = reason !== "" && !message.includes(reason) ? `${message} ${reason}` : message;
+  if (error !== undefined) {
+    log.error("notification action failed", { kind, ...toErrorFields(error) });
+  }
   return publishNotification({
     kind,
     level: "error",
     presentation: "persistent",
-    message: detail,
+    message,
   });
 }
 
@@ -166,13 +167,11 @@ export function recordActionFailure(
   message: string,
   error?: unknown,
 ): void {
-  const reason = error instanceof Error ? error.message : error == null ? "" : String(error);
-  const detail = reason !== "" && !message.includes(reason) ? `${message} ${reason}` : message;
   void recordRecentNotification({
     kind,
     level: "error",
     presentation: "persistent",
-    message: detail,
+    message,
   }).catch((recordingError) => {
     handleActionFailureRecordingError(kind, message, error, recordingError);
   });
@@ -189,10 +188,7 @@ function handleActionFailureRecordingError(
     actionError: toErrorFields(error).error,
     recordingError: toErrorFields(recordingError).error,
   });
-  const reason = recordingError instanceof Error
-    ? recordingError.message
-    : String(recordingError);
-  const direct = `${message} OneCopy could not save this notice: ${reason}`;
+  const direct = `${message} OneCopy could not save this notice. Reload the window before continuing.`;
   presentEscapedFailure(direct);
   recordInterfaceFailure(direct);
 }

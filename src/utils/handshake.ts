@@ -42,9 +42,10 @@ export function listenThenAnnounce<T>(
         ready,
         ...toErrorFields(error),
       });
-      const message = error instanceof Error ? error.message : String(error);
-      recordInterfaceFailure(message);
-      presentEscapedFailure(`This window could not connect to OneCopy: ${message}`);
+      const presentation =
+        "This window could not connect to OneCopy. Close it and try opening it again.";
+      recordInterfaceFailure(presentation);
+      presentEscapedFailure(presentation);
     }
   })();
   return () => {

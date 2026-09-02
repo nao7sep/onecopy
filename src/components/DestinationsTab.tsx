@@ -6,7 +6,7 @@ import {
 import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
 import ConfirmDialog from "./ConfirmDialog";
 import ModalShell from "./ModalShell";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, X } from "lucide-react";
 import {
   addDestinationRoot,
   moveDestinationSelectionTo,
@@ -503,14 +503,14 @@ export default function DestinationsTab() {
           className="mt-2 flex shrink-0 items-start gap-2 rounded-md border border-border-strong bg-surface-muted px-2.5 py-2 text-xs text-ink"
         >
           <span className="min-w-0 flex-1 break-words">
-            <strong className="font-semibold">Done:</strong> {confirmation}
+            {confirmation}
           </span>
           <button
-            className="shrink-0 rounded px-1 font-medium underline-offset-2 hover:underline"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
             onClick={dismissConfirmation}
             aria-label="Dismiss confirmation"
           >
-            Dismiss
+            <X aria-hidden="true" size={14} />
           </button>
         </div>
       ) : null}
@@ -525,23 +525,13 @@ export default function DestinationsTab() {
                 : "border-border-strong bg-surface-muted text-ink"
           }`}
         >
-          <span className="min-w-0 flex-1 break-words">
-            <strong className="font-semibold">
-              {result.severity === "error"
-                ? "Error"
-                : result.severity === "warning"
-                  ? "Needs attention"
-                  : "Information"}
-              :
-            </strong>{" "}
-            {result.message}
-          </span>
+          <span className="min-w-0 flex-1 break-words">{result.message}</span>
           <button
-            className="shrink-0 rounded px-1 font-medium underline-offset-2 hover:underline"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
             onClick={dismissResult}
             aria-label="Dismiss result"
           >
-            Dismiss
+            <X aria-hidden="true" size={14} />
           </button>
         </div>
       ) : null}

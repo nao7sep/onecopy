@@ -714,18 +714,15 @@ export default function Grid({
         <OperationResult
           level="error"
           className="mx-2 mt-2 shrink-0"
+          onDismiss={clearPreviewError}
+          dismissLabel="Dismiss preview result"
           actions={
-            <>
               <button
                 className="font-medium underline"
                 onClick={() => void setPreviewPlacement("split")}
               >
                 Show in this window
               </button>
-              <button className="font-medium underline" onClick={clearPreviewError}>
-                Dismiss
-              </button>
-            </>
           }
         >
           {previewError}

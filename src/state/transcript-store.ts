@@ -111,12 +111,15 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         patch(hash, {
           status: result.status,
           text: result.text,
-          message: result.message,
+          message:
+            result.status === "failed"
+              ? "Transcription could not finish. Check the media file and managed tools, then try again."
+              : result.message,
           percent: null,
         });
       }
     } catch (error) {
-      patch(hash, { status: "failed", message: String(error), percent: null });
+      patch(hash, { status: "failed", message: "The transcript could not be loaded. Try again." , percent: null });
       log.warn("transcript load failed", toErrorFields(error));
     } finally {
       loading.delete(hash);
@@ -139,14 +142,14 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         publish(hash, {
           replacement: {
             status: "failed",
-            message: String(error),
+            message: "The replacement transcript could not be started. The previous transcript is still shown.",
             percent: null,
           },
         });
       } else {
         publish(hash, {
           status: "failed",
-          message: String(error),
+          message: "Transcription could not be started. Try again.",
           percent: null,
         });
       }
@@ -219,6 +222,10 @@ void (async () => {
     await listen<{ hash: string; message: string }>(
       "transcribe://error",
       (event) => {
+        log.error("transcription event reported failure", {
+          hash: event.payload.hash,
+          error: { message: event.payload.message },
+        });
         if (active?.hash === event.payload.hash) active = null;
         const current = useTranscriptStore.getState().rows[event.payload.hash];
         if (
@@ -228,14 +235,16 @@ void (async () => {
           publishIfLoaded(event.payload.hash, {
             replacement: {
               status: "failed",
-              message: event.payload.message,
+              message:
+                "Transcription could not finish. Check the media file and managed tools, then try again.",
               percent: null,
             },
           });
         } else {
           publishIfLoaded(event.payload.hash, {
             status: "failed",
-            message: event.payload.message,
+            message:
+              "Transcription could not finish. Check the media file and managed tools, then try again.",
             percent: null,
           });
         }
@@ -256,8 +265,7 @@ void (async () => {
     });
   } catch (error) {
     log.warn("transcript event wiring failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    recordInterfaceFailure(message);
+    recordInterfaceFailure("Live transcription updates are unavailable. Restart OneCopy to repair them.");
     const interrupted = active as { hash: string; percent: number } | null;
     if (interrupted !== null) {
       publishIfLoaded(interrupted.hash, {

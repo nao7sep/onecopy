@@ -88,7 +88,10 @@ beforeEach(() => {
       };
     },
     binaries_cancel: () => true,
-    binaries_check: () => useBinariesStore.getState().entries,
+    binaries_check: () => ({
+      outcome: "completed",
+      states: useBinariesStore.getState().entries,
+    }),
     binaries_state: () => [],
   });
   seed([
@@ -385,14 +388,14 @@ describe("check feedback", () => {
   it("offers cancellation while a manual network check is running", async () => {
     vi.useFakeTimers();
     try {
-      let rejectCheck: ((error: Error) => void) | undefined;
+      let finishCheck: (() => void) | undefined;
       mockCommands({
         binaries_check: () =>
-          new Promise<void>((_resolve, reject) => {
-            rejectCheck = reject;
+          new Promise((resolve) => {
+            finishCheck = () => resolve({ outcome: "cancelled" });
           }),
         binaries_cancel: () => {
-          rejectCheck?.(new Error("dependency operation cancelled"));
+          finishCheck?.();
           return true;
         },
       });

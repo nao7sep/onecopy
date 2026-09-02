@@ -10,6 +10,7 @@ import {
   presentEscapedFailure,
   recordInterfaceFailure,
 } from "../utils/failureSurface";
+import { log, toErrorFields } from "../repositories";
 
 function Toast({
   record,
@@ -83,7 +84,7 @@ function Toast({
           aria-label="Dismiss notification"
           title="Dismiss"
           disabled={dismissing}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-black/10 hover:opacity-100 disabled:opacity-30"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100 disabled:opacity-30"
           onClick={() => void dismiss(record.id)}
         >
           <X size={14} />
@@ -106,8 +107,8 @@ export default function NotificationHost() {
 
   useEffect(() => {
     void installNotificationWiring().catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      const direct = `Notifications are unavailable: ${message}`;
+      log.error("notification interface wiring failed", toErrorFields(error));
+      const direct = "Notifications are unavailable. Reload the window to restore them.";
       presentEscapedFailure(direct);
       recordInterfaceFailure(direct);
     });

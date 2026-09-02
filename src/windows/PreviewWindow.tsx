@@ -184,14 +184,8 @@ export default function PreviewWindow() {
         <OperationResult
           level="error"
           className="mx-3 mb-2 shrink-0"
-          actions={
-            <button
-              className="font-medium underline"
-              onClick={() => setActionError(null)}
-            >
-              Dismiss
-            </button>
-          }
+          onDismiss={() => setActionError(null)}
+          dismissLabel="Dismiss preview result"
         >
           {actionError}
         </OperationResult>

@@ -83,7 +83,7 @@ describe("Settings save boundary", () => {
 
     expect(useSettingsStore.getState().open).toBe(false);
     expect(useItemsStore.getState().message).toContain(
-      "Settings were saved, but re-indexing failed",
+      "Settings were saved, but the library could not be updated",
     );
   });
 

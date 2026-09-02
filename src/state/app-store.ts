@@ -114,7 +114,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
         return data;
       } catch (error) {
-        set({ loadError: String(error) });
+        set({ loadError: "OneCopy could not load its saved application data. Your existing files were not changed." });
         log.error("app data load failed", toErrorFields(error));
         return null;
       } finally {
@@ -137,6 +137,6 @@ void (async () => {
     });
   } catch (error) {
     log.warn("quarantine event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(error instanceof Error ? error.message : String(error));
+    recordInterfaceFailure("OneCopy could not monitor saved-data recovery. Reload the window before continuing.");
   }
 })();

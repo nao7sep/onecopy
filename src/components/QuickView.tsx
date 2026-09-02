@@ -115,14 +115,8 @@ export default function QuickView() {
         <OperationResult
           level="error"
           className="mx-3 mt-2 shrink-0"
-          actions={
-            <button
-              className="font-medium underline"
-              onClick={() => useQuickViewStore.getState().setFailure(null)}
-            >
-              Dismiss
-            </button>
-          }
+          onDismiss={() => useQuickViewStore.getState().setFailure(null)}
+          dismissLabel="Dismiss Quick View result"
         >
           {failure}
         </OperationResult>

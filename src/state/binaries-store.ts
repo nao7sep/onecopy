@@ -54,6 +54,10 @@ export interface DependencyState {
   released: string | null;
 }
 
+type BinaryCheckOutcome =
+  | { outcome: "completed"; states: DependencyState[] }
+  | { outcome: "cancelled" };
+
 export interface InstallStep {
   phase: string;
   text: string;
@@ -241,7 +245,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         const errors = { ...s.errors };
         delete installing[id];
         if (result.outcome === "failed") {
-          errors[id] = result.error;
+          errors[id] = "The managed-tool installation could not finish. Try again.";
           failedMessage = result.error;
         } else {
           delete errors[id];
@@ -281,7 +285,10 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
             ...s.installHistory,
             [id]: terminalStep(s.installHistory[id], "Install failed"),
           },
-          errors: { ...s.errors, [id]: messageOf(error) },
+          errors: {
+            ...s.errors,
+            [id]: "The managed-tool installation could not start. Try again.",
+          },
         };
       });
       log.error("binaries install start failed", { id, ...toErrorFields(error) });
@@ -367,10 +374,15 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       const currentOperationId = operationId();
       set({ checkingId: entry.id, checkingOperationId: currentOperationId });
       try {
-        const states = await invoke<DependencyState[]>("binaries_check", {
+        const outcome = await invoke<BinaryCheckOutcome>("binaries_check", {
           id: entry.id,
           operationId: currentOperationId,
         });
+        if (outcome.outcome === "cancelled") {
+          cancelled = true;
+          break;
+        }
+        const states = outcome.states;
         set((s) => {
           if (s.checkingOperationId !== currentOperationId) return s;
           const errors = { ...s.errors };
@@ -382,17 +394,15 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           };
         });
       } catch (error) {
-        const message = messageOf(error);
-        if (message.includes("dependency operation cancelled")) {
-          cancelled = true;
-          break;
-        }
         // A failed check writes nothing core-side (the honest-state rule) —
         // but silence here read as "the button does nothing", so the row
         // carries the reason.
         failures += 1;
         set((s) => ({
-          errors: { ...s.errors, [entry.id]: `Check failed — ${message}` },
+          errors: {
+            ...s.errors,
+            [entry.id]: "This managed tool could not be checked. Try again.",
+          },
         }));
         log.error("binaries check failed", { id: entry.id, ...toErrorFields(error) });
       }
@@ -504,10 +514,6 @@ export const COOLDOWN_MS = 60_000;
  * up to date") persists for the cooldown minute as the durable proof. */
 export const MIN_CHECKING_MS = 600;
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** The ffmpeg entry — the chip and the scan honesty both read this one row. */
 export function ffmpegEntry(
   entries: DependencyState[] | null | undefined,
@@ -551,8 +557,9 @@ void (async () => {
     });
   } catch (error) {
     log.warn("binaries event wiring failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    recordInterfaceFailure(message);
+    recordInterfaceFailure(
+      "Live managed-tool status is unavailable. Restart OneCopy to repair it.",
+    );
     useBinariesStore.setState({
       loadError: "Live managed-tool status is unavailable. Restart OneCopy to repair it.",
     });

@@ -355,7 +355,7 @@ describe("shared video presentation", () => {
     );
 
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "Error: Couldn’t open this image in its default app.",
+      "Couldn’t open this image in its default app.",
     );
     expect(
       invokeCalls.some((call) => call.command === "record_recent_notification"),

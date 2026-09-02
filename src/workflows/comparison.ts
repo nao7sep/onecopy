@@ -374,8 +374,9 @@ async function installEvents(): Promise<void> {
     });
   } catch (error) {
     log.warn("comparison display wiring failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    recordInterfaceFailure(message);
+    recordInterfaceFailure(
+      "Comparison-display controls are unavailable. Restart OneCopy to repair them.",
+    );
     useItemsStore.setState({
       message:
         "Comparison-display controls are unavailable. Restart OneCopy to repair them.",

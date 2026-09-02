@@ -97,7 +97,11 @@ describe("transcript projection", () => {
     expect(useTranscriptStore.getState().rows.video).toMatchObject({
       status: "ready",
       text: "previous words",
-      replacement: { status: "failed", message: "model stopped" },
+      replacement: {
+        status: "failed",
+        message:
+          "Transcription could not finish. Check the media file and managed tools, then try again.",
+      },
     });
   });
 });

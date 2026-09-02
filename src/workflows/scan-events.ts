@@ -188,8 +188,11 @@ async function install(): Promise<void> {
     );
     await listen("derived://issues", refreshDerivedIssues);
     await listen<{ message: string }>("derived://worker-failed", (event) => {
+      log.error("previews and analysis worker stopped", {
+        error: { message: event.payload.message },
+      });
       useItemsStore.setState({
-        message: `Previews and analysis stopped: ${event.payload.message}`,
+        message: "Previews and analysis stopped. Restart OneCopy, then try again.",
       });
       void useIssuesStore.getState().load();
     });
@@ -215,8 +218,9 @@ async function install(): Promise<void> {
     await useSectionsStore.getState().loadIndexWork();
   } catch (error) {
     log.warn("library event wiring failed", toErrorFields(error));
-    const message = error instanceof Error ? error.message : String(error);
-    recordInterfaceFailure(message);
+    recordInterfaceFailure(
+      "Live library updates are unavailable. Restart OneCopy to repair them.",
+    );
     useItemsStore.setState({
       message:
         "Live library updates are unavailable. Restart OneCopy to repair them.",
