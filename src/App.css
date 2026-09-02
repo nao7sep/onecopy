@@ -119,7 +119,7 @@ body.row-resizing * {
   --primary-ring: var(--color-sky-500);
   --primary-surface: var(--color-sky-900);
 
-  --danger: var(--color-red-400);
+  --danger: var(--color-red-300);
   --danger-solid: var(--color-red-600);
   --danger-solid-hover: var(--color-red-500);
   --danger-surface: var(--color-red-900);
