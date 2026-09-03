@@ -693,13 +693,13 @@ fn ensure_fullres_short_circuits_and_reports_missing_ffmpeg_honestly() {
     assert!(err.contains("Managed tools"), "{err}");
 }
 
-// LIVE: measures the longest uncancellable portion of a native still-image
+// SCALE: measures the longest uncancellable portion of a native still-image
 // job. The supplied image must remain below the decoder's allocation ceiling,
 // otherwise the production route deliberately hands it to cancellable ffmpeg.
 // Run with ONECOPY_TEST_LARGE_STILL=/path/to/image and --ignored --nocapture.
 #[test]
 #[ignore]
-fn live_native_still_safe_boundary_cost() {
+fn scale_native_still_safe_boundary_cost() {
     let source = std::env::var_os("ONECOPY_TEST_LARGE_STILL")
         .map(PathBuf::from)
         .expect("set ONECOPY_TEST_LARGE_STILL to a disposable large image");
@@ -722,7 +722,7 @@ fn live_native_still_safe_boundary_cost() {
     assert!(cache.preview("large-native").is_file());
 }
 
-// LIVE Windows counterpart to the native-boundary measurement: the supplied
+// SCALE Windows counterpart to the native-boundary measurement: the supplied
 // still must exceed the target's native ceiling, then complete through the
 // verified managed ffmpeg route. Run with ONECOPY_TEST_LARGE_STILL and
 // --release --ignored --nocapture.
@@ -730,7 +730,7 @@ fn live_native_still_safe_boundary_cost() {
 #[test]
 #[ignore]
 #[serial_test::serial(backup_store)]
-fn live_windows_oversized_still_uses_managed_ffmpeg() {
+fn scale_windows_oversized_still_uses_managed_ffmpeg() {
     use onecopy_lib::binaries_manager;
 
     let source = std::env::var_os("ONECOPY_TEST_LARGE_STILL")
