@@ -85,6 +85,17 @@ jobs:
       - name: Package (host OS)
         run: ${{ matrix.package }}
 
+      - name: Upload private Windows validation artifacts
+        if: github.event_name == 'workflow_dispatch' && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ github.sha }}
+          path: |
+            artifacts/*-setup.exe
+            artifacts/*-win.zip
+          if-no-files-found: error
+          retention-days: 1
+
       # The managed-runtime-dependencies conventions' arch gate as a GATE, not
       # a pre-publish habit: an x86_64-only macOS artifact fails the job.
       - name: Verify native arm64 (macOS)
