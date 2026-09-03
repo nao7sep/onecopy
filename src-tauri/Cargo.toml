@@ -6,6 +6,7 @@ authors = ["Yoshinao Inoguchi <yoshinao@inoguchi.com>"]
 license = "MIT"
 repository = "https://github.com/nao7sep/onecopy"
 edition = "2021"
+default-run = "onecopy"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
