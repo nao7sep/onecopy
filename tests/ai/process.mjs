@@ -49,6 +49,22 @@ async function treeBytes(rootPid) {
   return rows.filter(({ pid }) => included.has(pid)).reduce((sum, row) => sum + row.bytes, 0);
 }
 
+async function rootBytes(rootPid) {
+  if (process.platform !== "win32") return 0;
+  try {
+    const { stdout } = await execFileAsync(
+      "tasklist",
+      ["/FI", `PID eq ${rootPid}`, "/FO", "CSV", "/NH"],
+      { encoding: "utf8", timeout: 5_000, windowsHide: true },
+    );
+    const lastField = stdout.trim().match(/"([^"]*)"\s*$/)?.[1] ?? "";
+    const kib = Number(lastField.replace(/\D/g, ""));
+    return Number.isFinite(kib) ? kib * 1024 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function terminateTree(child) {
   if (child.exitCode !== null) return;
   if (process.platform === "win32") {
@@ -83,19 +99,35 @@ export function runOwned(command, args, { cwd, env = {}, timeoutMs }) {
     let stdout = "";
     let stderr = "";
     let peakProcessTreeBytes = 0;
-    let sampling = false;
+    let treeSampling = Promise.resolve();
+    let rootSampling = Promise.resolve();
+    let treeBusy = false;
+    let rootBusy = false;
     let timedOut = false;
     let interrupted = false;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    const sample = setInterval(async () => {
-      if (sampling) return;
-      sampling = true;
-      peakProcessTreeBytes = Math.max(peakProcessTreeBytes, await treeBytes(child.pid));
-      sampling = false;
-    }, 1_000);
+    const sampleTree = () => {
+      if (treeBusy) return;
+      treeBusy = true;
+      treeSampling = (async () => {
+        peakProcessTreeBytes = Math.max(peakProcessTreeBytes, await treeBytes(child.pid));
+        treeBusy = false;
+      })();
+    };
+    const sampleRoot = () => {
+      if (rootBusy) return;
+      rootBusy = true;
+      rootSampling = (async () => {
+        peakProcessTreeBytes = Math.max(peakProcessTreeBytes, await rootBytes(child.pid));
+        rootBusy = false;
+      })();
+    };
+    sampleRoot();
+    const treeSample = setInterval(sampleTree, 2_000);
+    const rootSample = setInterval(sampleRoot, 250);
     const timeout = setTimeout(() => {
       timedOut = true;
       terminateTree(child);
@@ -107,17 +139,20 @@ export function runOwned(command, args, { cwd, env = {}, timeoutMs }) {
     process.once("SIGINT", interrupt);
     process.once("SIGTERM", interrupt);
     child.once("error", (error) => {
-      clearInterval(sample);
+      clearInterval(treeSample);
+      clearInterval(rootSample);
       clearTimeout(timeout);
       process.off("SIGINT", interrupt);
       process.off("SIGTERM", interrupt);
       reject(error);
     });
-    child.once("close", (code, signal) => {
-      clearInterval(sample);
+    child.once("close", async (code, signal) => {
+      clearInterval(treeSample);
+      clearInterval(rootSample);
       clearTimeout(timeout);
       process.off("SIGINT", interrupt);
       process.off("SIGTERM", interrupt);
+      await Promise.allSettled([treeSampling, rootSampling]);
       resolve({
         code: code ?? 1,
         signal,
