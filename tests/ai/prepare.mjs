@@ -1,27 +1,43 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  constants,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { arch, platform } from "node:os";
 import { basename, resolve } from "node:path";
 import { cloneArtifactTree } from "./artifact-tree.mjs";
 import { dependenciesFor, validateParameters } from "./contracts.mjs";
 import { indexFixtureRoot, resolveFixtures, sha256File } from "./fixtures.mjs";
-import { assertPrivacySafe } from "./report.mjs";
+import { runOwned } from "./process.mjs";
+import { assertPrivacySafe, writeAtomicReport } from "./report.mjs";
 import { sourceState } from "./source-state.mjs";
 
 const executable = (name) => (process.platform === "win32" ? `${name}.exe` : name);
 
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+export async function runPreparationStep(command, args, options = {}) {
+  const result = await runOwned(command, args, {
     cwd: options.cwd,
-    encoding: "utf8",
-    stdio: options.capture ? "pipe" : "inherit",
-    timeout: options.timeout ?? 4 * 60 * 60 * 1_000,
-    windowsHide: true,
+    timeoutMs: options.timeout ?? 4 * 60 * 60 * 1_000,
+    measureMemory: false,
+    signal: options.signal,
+    onStdout: options.capture ? undefined : (chunk) => process.stdout.write(chunk),
+    onStderr: options.capture ? undefined : (chunk) => process.stderr.write(chunk),
   });
-  if (result.status !== 0) {
+  if (result.interrupted) {
+    throw new Error(`${basename(command)} was interrupted during preparation`);
+  }
+  if (result.timedOut) {
+    throw new Error(`${basename(command)} timed out during preparation`);
+  }
+  if (result.code !== 0) {
     throw new Error(`${basename(command)} failed during preparation${result.stderr ? `: ${result.stderr.trim()}` : ""}`);
   }
-  return result.stdout?.trim() ?? "";
+  return result.stdout.trim();
 }
 
 function version(command, args) {
@@ -41,7 +57,40 @@ function rustTargetTriple() {
   return host;
 }
 
-export function prepare({ repositoryRoot, parameterPath, fixtureRoot, preparedRoot, reuseManagedRoot }) {
+export function publishVersionedBinary(source, outputBin, stem) {
+  mkdirSync(outputBin, { recursive: true });
+  const sha256 = sha256File(source);
+  const extension = process.platform === "win32" ? ".exe" : "";
+  const publishedBasename = `${stem}-${sha256.slice(0, 16)}${extension}`;
+  const published = resolve(outputBin, publishedBasename);
+  if (existsSync(published)) {
+    if (sha256File(published) !== sha256) {
+      throw new Error(`prepared ${stem} digest-named file is corrupt`);
+    }
+    return { basename: publishedBasename, sha256 };
+  }
+  const partial = resolve(outputBin, `.${publishedBasename}.${process.pid}.partial`);
+  rmSync(partial, { force: true });
+  try {
+    copyFileSync(source, partial, constants.COPYFILE_EXCL);
+    if (sha256File(partial) !== sha256) {
+      throw new Error(`prepared ${stem} copy digest mismatch`);
+    }
+    renameSync(partial, published);
+  } finally {
+    rmSync(partial, { force: true });
+  }
+  return { basename: publishedBasename, sha256 };
+}
+
+export async function prepare({
+  repositoryRoot,
+  parameterPath,
+  fixtureRoot,
+  preparedRoot,
+  reuseManagedRoot,
+  signal,
+}) {
   const parameters = validateParameters(JSON.parse(readFileSync(parameterPath, "utf8")));
   const references = parameters.cases.flatMap((item) => item.fixtures);
   resolveFixtures(indexFixtureRoot(fixtureRoot), references);
@@ -59,7 +108,7 @@ export function prepare({ repositoryRoot, parameterPath, fixtureRoot, preparedRo
     if (existsSync(facts)) copyFileSync(facts, resolve(artifactHome, "dependencies.json"));
   }
 
-  run("cargo", [
+  await runPreparationStep("cargo", [
     "build",
     "--manifest-path",
     "src-tauri/Cargo.toml",
@@ -67,13 +116,14 @@ export function prepare({ repositoryRoot, parameterPath, fixtureRoot, preparedRo
     "app-e2e",
     "--bin",
     "onecopy-ai-preparer",
-  ], { cwd: repositoryRoot });
+  ], { cwd: repositoryRoot, signal });
 
   const preparer = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy-ai-preparer"));
   const dependencyIds = dependenciesFor(parameters);
-  const prepareOutput = run(preparer, ["prepare", artifactHome, ...dependencyIds], {
+  const prepareOutput = await runPreparationStep(preparer, ["prepare", artifactHome, ...dependencyIds], {
     cwd: repositoryRoot,
     capture: true,
+    signal,
   });
   const ready = prepareOutput
     .split(/\r?\n/)
@@ -84,17 +134,19 @@ export function prepare({ repositoryRoot, parameterPath, fixtureRoot, preparedRo
 
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error("npm executable path is unavailable");
-  run(process.execPath, [npmCli, "run", "build:e2e"], { cwd: repositoryRoot });
+  await runPreparationStep(process.execPath, [npmCli, "run", "build:e2e"], {
+    cwd: repositoryRoot,
+    signal,
+  });
   const builtApp = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy"));
-  const preparedApp = resolve(outputBin, executable("onecopy"));
-  const preparedDriver = resolve(outputBin, executable("onecopy-ai-preparer"));
-  copyFileSync(builtApp, preparedApp);
-  copyFileSync(preparer, preparedDriver);
 
-  const capabilities = JSON.parse(run(preparer, ["capabilities"], {
+  const capabilities = JSON.parse(await runPreparationStep(preparer, ["capabilities"], {
     cwd: repositoryRoot,
     capture: true,
+    signal,
   }));
+  const binary = publishVersionedBinary(builtApp, outputBin, "onecopy");
+  const driver = publishVersionedBinary(preparer, outputBin, "onecopy-ai-preparer");
   const manifest = {
     schemaVersion: 1,
     source: sourceState(repositoryRoot),
@@ -111,8 +163,8 @@ export function prepare({ repositoryRoot, parameterPath, fixtureRoot, preparedRo
       feature,
       modes: options.map(({ id }) => id),
     })),
-    binary: { basename: basename(preparedApp), sha256: sha256File(preparedApp) },
-    driver: { basename: basename(preparedDriver), sha256: sha256File(preparedDriver) },
+    binary,
+    driver,
     dependencies: ready.artifacts.map(({ id, sha256, bytes, version: artifactVersion }) => ({
       id,
       sha256,
@@ -122,6 +174,6 @@ export function prepare({ repositoryRoot, parameterPath, fixtureRoot, preparedRo
   };
   assertPrivacySafe(manifest);
   const manifestPath = resolve(outputBin, "onecopy.ai-build.json");
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeAtomicReport(manifestPath, manifest);
   return { manifestPath, artifactHome, parameters };
 }

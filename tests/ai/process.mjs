@@ -86,7 +86,19 @@ function terminateTree(child) {
   }
 }
 
-export function runOwned(command, args, { cwd, env = {}, timeoutMs }) {
+export function runOwned(
+  command,
+  args,
+  {
+    cwd,
+    env = {},
+    timeoutMs,
+    measureMemory = true,
+    onStdout = () => {},
+    onStderr = () => {},
+    signal,
+  },
+) {
   return new Promise((resolve, reject) => {
     const started = process.hrtime.bigint();
     const child = spawn(command, args, {
@@ -107,8 +119,14 @@ export function runOwned(command, args, { cwd, env = {}, timeoutMs }) {
     let interrupted = false;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      onStdout(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      onStderr(chunk);
+    });
     const sampleTree = () => {
       if (treeBusy) return;
       treeBusy = true;
@@ -125,9 +143,9 @@ export function runOwned(command, args, { cwd, env = {}, timeoutMs }) {
         rootBusy = false;
       })();
     };
-    sampleRoot();
-    const treeSample = setInterval(sampleTree, 2_000);
-    const rootSample = setInterval(sampleRoot, 250);
+    if (measureMemory) sampleRoot();
+    const treeSample = measureMemory ? setInterval(sampleTree, 2_000) : null;
+    const rootSample = measureMemory ? setInterval(sampleRoot, 250) : null;
     const timeout = setTimeout(() => {
       timedOut = true;
       terminateTree(child);
@@ -136,26 +154,31 @@ export function runOwned(command, args, { cwd, env = {}, timeoutMs }) {
       interrupted = true;
       terminateTree(child);
     };
+    const abort = () => interrupt();
     process.once("SIGINT", interrupt);
     process.once("SIGTERM", interrupt);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
     child.once("error", (error) => {
-      clearInterval(treeSample);
-      clearInterval(rootSample);
+      if (treeSample) clearInterval(treeSample);
+      if (rootSample) clearInterval(rootSample);
       clearTimeout(timeout);
       process.off("SIGINT", interrupt);
       process.off("SIGTERM", interrupt);
+      signal?.removeEventListener("abort", abort);
       reject(error);
     });
-    child.once("close", async (code, signal) => {
-      clearInterval(treeSample);
-      clearInterval(rootSample);
+    child.once("close", async (code, exitSignal) => {
+      if (treeSample) clearInterval(treeSample);
+      if (rootSample) clearInterval(rootSample);
       clearTimeout(timeout);
       process.off("SIGINT", interrupt);
       process.off("SIGTERM", interrupt);
-      await Promise.allSettled([treeSampling, rootSampling]);
+      signal?.removeEventListener("abort", abort);
+      if (measureMemory) await Promise.allSettled([treeSampling, rootSampling]);
       resolve({
         code: code ?? 1,
-        signal,
+        signal: exitSignal,
         timedOut,
         interrupted,
         stdout,

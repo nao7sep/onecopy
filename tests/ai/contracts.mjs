@@ -139,6 +139,12 @@ export function validateBuildManifest(value, parameters) {
   if (!manifest.driver || !SHA256.test(manifest.driver.sha256)) {
     throw new TypeError("build manifest test-driver digest is invalid");
   }
+  for (const [label, artifact] of [["binary", manifest.binary], ["test driver", manifest.driver]]) {
+    const name = text(artifact.basename, `build manifest ${label} basename`);
+    if (name !== name.split(/[\\/]/).at(-1)) {
+      throw new TypeError(`build manifest ${label} basename must not contain a path`);
+    }
+  }
   if (!Array.isArray(manifest.compileFeatures) || !manifest.compileFeatures.includes("app-e2e")) {
     throw new TypeError("build manifest is not an app-e2e binary");
   }

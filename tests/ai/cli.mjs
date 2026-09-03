@@ -65,7 +65,7 @@ try {
   if (!existsSync(defaults.parameterPath)) throw new Error("parameter file does not exist");
   if (!existsSync(defaults.fixtureRoot)) throw new Error("fixture root does not exist");
   if (action === "prepare") {
-    const result = prepare(defaults);
+    const result = await prepare(defaults);
     console.log(`Prepared AI artifacts and application (${result.parameters.profileId}).`);
   } else if (action === "live" || action === "benchmark") {
     const reportPath = resolve(

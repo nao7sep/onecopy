@@ -71,3 +71,16 @@ test("post-resolution replacement is detected", () => {
   writeFileSync(path, Buffer.from("after!"));
   assert.throws(() => materializeFixtures(fixtureRoot("replace-output"), matches), /changed after preflight/);
 });
+
+test("a requested fixture that becomes unreadable is reported without hiding other failures", () => {
+  const root = fixtureRoot("unreadable");
+  const bytes = Buffer.from("present during indexing");
+  const path = join(root, "present.bin");
+  writeFileSync(path, bytes);
+  const indexed = indexFixtureRoot(root);
+  rmSync(path);
+  assert.throws(
+    () => resolveFixtures(indexed, [reference("present.bin", bytes), reference("missing.bin", bytes)]),
+    /present\.bin: file became unreadable.*missing\.bin/s,
+  );
+});

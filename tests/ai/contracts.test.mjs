@@ -45,8 +45,8 @@ test("fixture references cannot carry paths or uppercase hashes", () => {
 test("stale or mismatched prepared manifests are rejected", () => {
   const manifest = {
     schemaVersion: 1,
-    binary: { sha256: "a".repeat(64) },
-    driver: { sha256: "b".repeat(64) },
+    binary: { basename: "onecopy.test", sha256: "a".repeat(64) },
+    driver: { basename: "onecopy-driver.test", sha256: "b".repeat(64) },
     compileFeatures: ["app-e2e"],
     accelerationCapabilities: [
       { feature: "face-scoring", modes: ["none"] },

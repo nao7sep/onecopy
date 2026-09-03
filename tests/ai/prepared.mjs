@@ -1,11 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { dependenciesFor, validateBuildManifest } from "./contracts.mjs";
 import { sha256File } from "./fixtures.mjs";
 import { sourceState } from "./source-state.mjs";
-
-const executable = (name) => (process.platform === "win32" ? `${name}.exe` : name);
 
 function runJsonLines(command, args, repositoryRoot) {
   const result = spawnSync(command, args, {
@@ -35,8 +33,11 @@ export function loadPrepared(repositoryRoot, preparedRoot, parameters) {
     readFileSync(resolve(preparedRoot, "bin", "onecopy.ai-build.json"), "utf8"),
   );
   validateBuildManifest(manifest, parameters);
-  const binary = resolve(preparedRoot, "bin", executable("onecopy"));
-  const driver = resolve(preparedRoot, "bin", executable("onecopy-ai-preparer"));
+  const binary = resolve(preparedRoot, "bin", manifest.binary.basename);
+  const driver = resolve(preparedRoot, "bin", manifest.driver.basename);
+  if (basename(binary) !== manifest.binary.basename || basename(driver) !== manifest.driver.basename) {
+    throw new Error("prepared manifest binary names must not contain paths");
+  }
   if (sha256File(binary) !== manifest.binary.sha256) {
     throw new Error("prepared application digest mismatch");
   }
