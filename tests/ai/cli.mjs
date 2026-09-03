@@ -5,7 +5,7 @@ import { runBenchmark } from "./benchmark.mjs";
 import { compare } from "./compare.mjs";
 import { runLive } from "./live.mjs";
 import { prepare } from "./prepare.mjs";
-import { safeFailure } from "./report.mjs";
+import { recoverInterruptedReport, safeFailure } from "./report.mjs";
 
 function options(args) {
   const parsed = { positionals: [] };
@@ -72,6 +72,9 @@ try {
       parsed.report ??
         `artifacts/ai-benchmark/${action}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
     );
+    if (recoverInterruptedReport(reportPath)) {
+      throw new Error("the prior running result was sealed as interrupted; choose a new report file");
+    }
     const result = action === "live"
       ? await runLive({ ...defaults, reportPath })
       : await runBenchmark({ ...defaults, reportPath });

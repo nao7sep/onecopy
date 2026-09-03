@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { compare } from "./compare.mjs";
-import { assertPrivacySafe, compatibleResults, safeFailure, writeAtomicReport } from "./report.mjs";
+import {
+  assertPrivacySafe,
+  compatibleResults,
+  recoverInterruptedReport,
+  safeFailure,
+  writeAtomicReport,
+} from "./report.mjs";
 
 const result = {
   schemaVersion: 1,
@@ -50,6 +56,22 @@ test("partial reports are atomically replaceable", () => {
     writeAtomicReport(path, { ...result, outcome: "running" });
     writeAtomicReport(path, result);
     assert.equal(JSON.parse(readFileSync(path, "utf8")).outcome, "passed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a stale running report is recoverable without erasing completed cases", () => {
+  const root = join(tmpdir(), `onecopy-ai-recovery-${process.pid}-${Date.now()}`);
+  mkdirSync(root);
+  const path = join(root, "result.json");
+  try {
+    writeAtomicReport(path, { ...result, outcome: "running" });
+    assert.equal(recoverInterruptedReport(path), true);
+    const recovered = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(recovered.outcome, "interrupted");
+    assert.equal(recovered.cases.length, result.cases.length);
+    assert.equal(recoverInterruptedReport(path), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

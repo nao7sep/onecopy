@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
 const FORBIDDEN_KEYS = /(host.?name|user.?name|absolute.?path|(^|_)path$|home.?dir|environment|command.?line|git.?remote|transcript|embedding|raw.?content|serial|drive.?(identity|id))/i;
@@ -36,6 +36,20 @@ export function writeAtomicReport(path, report) {
   writeFileSync(temporary, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
   renameSync(temporary, path);
   return basename(path);
+}
+
+export function recoverInterruptedReport(path) {
+  if (!existsSync(path)) return false;
+  const prior = JSON.parse(readFileSync(path, "utf8"));
+  if (prior.outcome !== "running") return false;
+  prior.outcome = "interrupted";
+  prior.finishedAtUtc = new Date().toISOString();
+  prior.failure = {
+    category: "runner-interrupted",
+    message: "The prior runner exited before recording its terminal state.",
+  };
+  writeAtomicReport(path, prior);
+  return true;
 }
 
 export function compatibleResults(left, right) {
