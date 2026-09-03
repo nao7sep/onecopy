@@ -1,5 +1,6 @@
 //! Face scoring for group ordering (Design: Rating) — two small managed ONNX
-//! models run through the same linked ONNX Runtime:
+//! models run through ONNX Runtime. Windows loads an app-managed CPU runtime
+//! by absolute path only; other targets use their linked package runtime:
 //! Ultraface RFB-640 finds faces, HSEmotion reads the expression, and the
 //! combined score orders a group's face-bearing members ahead of sharpness.
 //! Advisory only, never auto-deletes, exactly like sharpness.
@@ -25,8 +26,88 @@
 //! identically, which keeps a model-less install ordering exactly as today.
 
 use std::path::Path;
+use std::sync::{Arc, Weak};
 
 use image::DynamicImage;
+
+static ACTIVE_RUN: std::sync::LazyLock<
+    std::sync::Mutex<Option<Weak<ort::session::RunOptions>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+struct ActiveRun {
+    options: Arc<ort::session::RunOptions>,
+}
+
+impl ActiveRun {
+    fn claim(options: Arc<ort::session::RunOptions>) -> Result<Self, String> {
+        let mut active = ACTIVE_RUN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.as_ref().and_then(Weak::upgrade).is_some() {
+            return Err("another face inference is already running".to_string());
+        }
+        *active = Some(Arc::downgrade(&options));
+        Ok(Self { options })
+    }
+}
+
+impl Drop for ActiveRun {
+    fn drop(&mut self) {
+        let mut active = ACTIVE_RUN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|current| Arc::ptr_eq(&current, &self.options))
+        {
+            *active = None;
+        }
+    }
+}
+
+/// Interrupts the one active ONNX graph run. Pause, preemption, mutation, and
+/// shutdown call this from the runtime owner; no-op when face work is idle.
+pub fn request_cancel() {
+    let active = ACTIVE_RUN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(Weak::upgrade);
+    if let Some(options) = active {
+        let _ = options.terminate();
+    }
+}
+
+#[cfg(windows)]
+static LOADED_RUNTIME: std::sync::LazyLock<std::sync::Mutex<Option<std::path::PathBuf>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+#[cfg(windows)]
+fn load_managed_runtime(runtime: Option<&Path>) -> Result<(), String> {
+    let runtime = runtime.ok_or("face-scoring runtime is not installed")?;
+    if !runtime.is_absolute() {
+        return Err("face-scoring runtime path is not absolute".to_string());
+    }
+    let mut loaded = LOADED_RUNTIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = loaded.as_ref() {
+        return if existing == runtime {
+            Ok(())
+        } else {
+            Err("face-scoring runtime changed after it was loaded; restart OneCopy".to_string())
+        };
+    }
+    let configured = ort::init_from(runtime)
+        .map_err(|error| format!("face-scoring runtime load failed: {error}"))?
+        .commit();
+    if !configured {
+        return Err("ONNX Runtime was initialized outside OneCopy's managed loader".to_string());
+    }
+    *loaded = Some(runtime.to_path_buf());
+    Ok(())
+}
 
 /// Detections below this confidence are noise, not faces (the Ultraface
 /// paper's own evaluation threshold).
@@ -73,11 +154,26 @@ pub struct FaceScorer {
 }
 
 impl FaceScorer {
-    pub fn load(detector_model: &Path, emotion_model: &Path) -> Result<FaceScorer, String> {
+    pub fn load(
+        runtime: Option<&Path>,
+        detector_model: &Path,
+        emotion_model: &Path,
+    ) -> Result<FaceScorer, String> {
+        #[cfg(feature = "app-e2e")]
+        let _timing = crate::ai_test_instrumentation::Span::begin("face", "model-initialization");
+        #[cfg(feature = "app-e2e")]
+        crate::ai_test_instrumentation::acceleration(
+            crate::ai_acceleration::Mode::None,
+            crate::ai_acceleration::Mode::None,
+        );
         crate::resource_limits::require_available(
             crate::resource_limits::FACE_REQUIRED_AVAILABLE,
             "Face scoring",
         )?;
+        #[cfg(windows)]
+        load_managed_runtime(runtime)?;
+        #[cfg(not(windows))]
+        let _ = runtime;
         let detector = ort::session::Session::builder()
             .map_err(|e| e.to_string())?
             .commit_from_file(detector_model)
@@ -144,9 +240,17 @@ impl FaceScorer {
             }
         }
         let input = self.det_input.clone();
+        let options = Arc::new(ort::session::RunOptions::new().map_err(|e| e.to_string())?);
+        let _active = ActiveRun::claim(options.clone())?;
+        if crate::derived_runtime::cancelled() {
+            let _ = options.terminate();
+        }
         let outputs = self
             .detector
-            .run(ort::inputs![input.as_str() => ort::value::Tensor::from_array(tensor).map_err(|e| e.to_string())?])
+            .run_with_options(
+                ort::inputs![input.as_str() => ort::value::Tensor::from_array(tensor).map_err(|e| e.to_string())?],
+                options.as_ref(),
+            )
             .map_err(|e| format!("face detection failed: {e}"))?;
         let (_, scores) = outputs
             .get(self.det_scores.as_str())
@@ -212,9 +316,17 @@ impl FaceScorer {
             }
         }
         let input = self.emo_input.clone();
+        let options = Arc::new(ort::session::RunOptions::new().map_err(|e| e.to_string())?);
+        let _active = ActiveRun::claim(options.clone())?;
+        if crate::derived_runtime::cancelled() {
+            let _ = options.terminate();
+        }
         let outputs = self
             .emotion
-            .run(ort::inputs![input.as_str() => ort::value::Tensor::from_array(tensor).map_err(|e| e.to_string())?])
+            .run_with_options(
+                ort::inputs![input.as_str() => ort::value::Tensor::from_array(tensor).map_err(|e| e.to_string())?],
+                options.as_ref(),
+            )
             .map_err(|e| format!("expression inference failed: {e}"))?;
         let (_, logits) = outputs
             .get(self.emo_output.as_str())
@@ -237,8 +349,13 @@ impl FaceScorer {
     /// The composite: 0.0 = no face; otherwise the best face's
     /// `conf × (0.5 + 0.5 × P(happiness))`.
     pub fn score(&mut self, img: &DynamicImage) -> Result<f32, String> {
+        #[cfg(feature = "app-e2e")]
+        let _timing = crate::ai_test_instrumentation::Span::begin("face", "inference");
         let mut best = 0.0_f32;
         for face in self.detect(img)? {
+            if crate::derived_runtime::cancelled() {
+                return Err(crate::scanner::CANCELLED.to_string());
+            }
             // A failed crop degrades to the neutral-expression weight rather
             // than sinking the photo: the face is still real.
             let smile = self.smile(img, &face).unwrap_or(0.0);
@@ -299,7 +416,7 @@ pub struct FaceStats {
 pub fn face_scores_pending(
     conn: &rusqlite::Connection,
     cache: &crate::preview::CachePaths,
-    models: Option<(&Path, &Path)>,
+    models: Option<(Option<&Path>, &Path, &Path)>,
     priority_hashes: &[String],
     mut on_item: impl FnMut(&str),
     mut on_change: impl FnMut(&str),
@@ -308,7 +425,7 @@ pub fn face_scores_pending(
     stop: &dyn Fn() -> bool,
 ) -> Result<FaceStats, String> {
     let mut stats = FaceStats::default();
-    let Some((detector_model, emotion_model)) = models else {
+    let Some((runtime, detector_model, emotion_model)) = models else {
         return Ok(stats);
     };
     let pending = if priority_hashes.is_empty() {
@@ -329,7 +446,7 @@ pub fn face_scores_pending(
     }
     stats.candidates_found = true;
 
-    let mut scorer = FaceScorer::load(detector_model, emotion_model)?;
+    let mut scorer = FaceScorer::load(runtime, detector_model, emotion_model)?;
     let total = pending.len() as u64;
     for (hash, path) in pending {
         if crate::scanner::cancelled() {
@@ -350,9 +467,15 @@ pub fn face_scores_pending(
             .and_then(|img| scorer.score(&img));
         match outcome {
             Ok(score) => {
+                #[cfg(feature = "app-e2e")]
+                let _timing =
+                    crate::ai_test_instrumentation::Span::begin("face", "durable-publication");
                 crate::derived_state::record_face_success(conn, &hash, &path, score as f64)?;
                 on_change(&hash);
                 stats.scored += 1;
+            }
+            Err(_) if stop() || crate::scanner::cancelled() => {
+                return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) => {
                 crate::logging::warn(

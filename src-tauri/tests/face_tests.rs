@@ -1,9 +1,6 @@
-// Face scoring's model-free contracts (Phase 28 test doctrine): the ordering
-// the score buys, the fallback a model-less install keeps, and the pure
-// geometry the detector's post-processing runs on. The LIVE test at the
-// bottom downloads the real pinned artifacts and proves the runtime binding
-// against a face-free image — the sanity floor that needs no real faces in
-// the corpus.
+// Face scoring's model-free contracts: ordering, model-less fallback, and the
+// pure geometry used by detector post-processing. Real models belong to the
+// separately prepared live-integration and benchmark surfaces.
 
 use onecopy_lib::face::{self, Face};
 use onecopy_lib::{index_store, queries};
@@ -17,7 +14,6 @@ fn db() -> Connection {
     std::mem::forget(dir);
     conn
 }
-
 fn seed_image(conn: &Connection, hash: &str, name: &str) {
     conn.execute(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, sharpness) \
@@ -32,7 +28,6 @@ fn seed_image(conn: &Connection, hash: &str, name: &str) {
     )
     .unwrap();
 }
-
 fn group(conn: &Connection, hashes: &[&str]) {
     conn.execute("INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x')", [])
         .unwrap();
@@ -181,84 +176,4 @@ fn iou_and_softmax_hold_their_edges() {
     assert!(face::softmax(&[]).is_empty());
     // Large logits must not overflow to NaN — the stability the max-shift buys.
     assert!(face::softmax(&[1000.0, 999.0]).iter().all(|p| p.is_finite()));
-}
-
-// Run with `cargo test live_face_models -- --ignored --nocapture`.
-#[test]
-#[ignore]
-fn live_face_models_find_nothing_in_a_face_free_image() {
-    use onecopy_lib::binaries_manager::spec_of;
-    use sha2::Digest;
-
-    let dir = tempfile::Builder::new().prefix("onecopy-face-live-").tempdir().unwrap();
-    let agent = ureq::config::Config::builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .build()
-        .new_agent();
-    let fetch = |id: &str, name: &str| {
-        let pin = spec_of(id).unwrap().pinned.as_ref().unwrap();
-        let path = dir.path().join(name);
-        let mut response = agent.get(pin.url).call().expect("download");
-        let mut file = std::fs::File::create(&path).unwrap();
-        std::io::copy(&mut response.body_mut().as_reader(), &mut file).unwrap();
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(std::fs::read(&path).unwrap());
-        assert_eq!(hex::encode(hasher.finalize()), pin.sha256, "{id} integrity");
-        path
-    };
-    let detector = fetch("ultraface-rfb640", "det.onnx");
-    let emotion = fetch("hsemotion-enet-b2", "emo.onnx");
-
-    // A gradient has structure but no face; a broken binding (wrong output
-    // wiring, wrong preprocessing) shows up as phantom faces or an error.
-    let gradient = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(640, 480, |x, y| {
-        image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
-    }));
-    let load_started = std::time::Instant::now();
-    let mut scorer = face::FaceScorer::load(&detector, &emotion).unwrap();
-    let load_elapsed = load_started.elapsed();
-    let score = scorer.score(&gradient).unwrap();
-    eprintln!("face-free gradient scored {score}");
-    assert_eq!(score, 0.0, "no face may be found where none exists");
-
-    // Optional repeatable measurement over a harmless generated corpus:
-    // ONECOPY_FACE_FIXTURES=/path/to/images cargo test live_face_models --
-    // --ignored --nocapture. No private or repo-specific path is embedded.
-    if let Some(root) = std::env::var_os("ONECOPY_FACE_FIXTURES") {
-        let mut images = std::fs::read_dir(root)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png")
-                    })
-            })
-            .collect::<Vec<_>>();
-        images.sort();
-        assert!(!images.is_empty(), "fixture directory contains no images");
-        let inference_started = std::time::Instant::now();
-        for path in &images {
-            let image = image::open(path).unwrap();
-            let started = std::time::Instant::now();
-            let score = scorer.score(&image).unwrap();
-            eprintln!(
-                "{}\t{score:.6}\t{:?}",
-                path.file_name().unwrap().to_string_lossy(),
-                started.elapsed()
-            );
-            assert!(score.is_finite() && (0.0..=1.0).contains(&score));
-        }
-        eprintln!(
-            "model load: {load_elapsed:?}; inference total: {:?}; images: {}",
-            inference_started.elapsed(),
-            images.len()
-        );
-    }
 }

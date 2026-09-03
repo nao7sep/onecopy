@@ -23,7 +23,7 @@ const NO_INSTALL_HISTORY: InstallStep[] = [];
 //   updates" that in truth only ever checked ffmpeg was a promise the app
 //   could not keep.
 //
-//   The models are chosen BY THIS APP BUILD. There is no upstream to ask, so
+//   Pinned runtimes and models are chosen BY THIS APP BUILD. There is no upstream to ask, so
 //   they never say "Up to date" (a claim about a comparison nobody made) —
 //   installed is simply "Installed" — and they never carry a "checked at"
 //   stamp. They do show their upstream RELEASE DATE, which is the only
@@ -39,7 +39,7 @@ function statusLabel(entry: DependencyState): string {
   if (entry.status === "not-installed") return "Not installed";
   if (entry.status === "update-available") return "Update available";
   // Only a live-resolved entry may claim up-to-date: it was actually
-  // compared against its upstream. A model has nothing to compare with.
+  // compared against its upstream. A pinned artifact has nothing to compare with.
   if (!entry.checkable) return "Installed";
   return entry.status === "up-to-date" ? "Up to date" : "Installed";
 }

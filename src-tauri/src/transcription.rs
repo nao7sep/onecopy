@@ -184,6 +184,7 @@ pub struct Segment {
 pub fn run_whisper(
     model: &Path,
     pcm: &[f32],
+    acceleration: crate::ai_acceleration::Mode,
     mut on_progress: impl FnMut(i32) + 'static,
 ) -> Result<Vec<Segment>, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -193,12 +194,26 @@ pub fn run_whisper(
         "Transcription",
     )?;
 
+    crate::ai_acceleration::require_supported(
+        crate::ai_acceleration::TRANSCRIPTION,
+        acceleration,
+    )?;
+    #[cfg(feature = "app-e2e")]
+    crate::ai_test_instrumentation::acceleration(acceleration, acceleration);
+
     // whisper.cpp otherwise writes its internal decoder trace directly to
     // stderr. The app owns useful progress and errors; the repeated token
     // dumps are neither and made run-dev unreadable.
     whisper_rs::install_logging_hooks();
-    let context = WhisperContext::new_with_params(model, WhisperContextParameters::default())
-        .map_err(|e| format!("model load failed: {e}"))?;
+    let mut context_params = WhisperContextParameters::default();
+    context_params.use_gpu(matches!(acceleration, crate::ai_acceleration::Mode::Metal));
+    let context = {
+        #[cfg(feature = "app-e2e")]
+        let _timing =
+            crate::ai_test_instrumentation::Span::begin("transcription", "model-initialization");
+        WhisperContext::new_with_params(model, context_params)
+            .map_err(|e| format!("model load failed: {e}"))?
+    };
     let mut state = context
         .create_state()
         .map_err(|e| format!("whisper state failed: {e}"))?;
@@ -212,9 +227,13 @@ pub fn run_whisper(
     params.set_progress_callback_safe(move |progress: i32| on_progress(progress));
     params.set_abort_callback_safe(is_cancelled);
 
-    state
-        .full(params, pcm)
-        .map_err(|e| format!("transcription failed: {e}"))?;
+    {
+        #[cfg(feature = "app-e2e")]
+        let _timing = crate::ai_test_instrumentation::Span::begin("transcription", "inference");
+        state
+            .full(params, pcm)
+            .map_err(|e| format!("transcription failed: {e}"))?;
+    }
 
     let count = state.full_n_segments();
     let mut segments = Vec::with_capacity(count.max(0) as usize);
@@ -277,6 +296,7 @@ pub fn transcribe_to_cache(
         media,
         hash,
         false,
+        crate::ai_acceleration::default_for(crate::ai_acceleration::TRANSCRIPTION)?,
         on_progress,
     )
 }
@@ -290,6 +310,7 @@ pub(crate) fn transcribe_to_cache_claimed(
     media: &Path,
     hash: &str,
     replace_existing: bool,
+    acceleration: crate::ai_acceleration::Mode,
     on_progress: impl FnMut(i32) + 'static,
 ) -> Result<String, String> {
     let target = cache.transcript(hash);
@@ -307,12 +328,25 @@ pub(crate) fn transcribe_to_cache_claimed(
     let Some(ffmpeg) = ffmpeg else {
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
-    let pcm = extract_pcm(ffmpeg, media, temp_dir)?;
+    let pcm = {
+        #[cfg(feature = "app-e2e")]
+        let _timing =
+            crate::ai_test_instrumentation::Span::begin("transcription", "media-extraction");
+        extract_pcm(ffmpeg, media, temp_dir)?
+    };
     let text = if !has_audible_signal(&pcm) {
         String::new()
     } else {
-        render(&run_whisper(model, &pcm, on_progress)?)
+        render(&run_whisper(model, &pcm, acceleration, on_progress)?)
     };
+    #[cfg(feature = "app-e2e")]
+    let _publication_timing =
+        crate::ai_test_instrumentation::Span::begin("transcription", "durable-publication");
+    publish_transcript(&target, &text)?;
+    Ok(text)
+}
+
+pub(crate) fn publish_transcript(target: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -327,5 +361,5 @@ pub(crate) fn transcribe_to_cache_claimed(
         crate::fs_recovery::remove_file(&tmp, "transcript publication cleanup");
         e.to_string()
     })?;
-    Ok(text)
+    Ok(())
 }

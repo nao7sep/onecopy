@@ -25,6 +25,7 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
         ids,
         [
             "ffmpeg",
+            "onnxruntime-win-x64",
             "whisper-large-v3-turbo",
             "ultraface-rfb640",
             "hsemotion-enet-b2",
@@ -45,6 +46,17 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     assert_eq!(pinned.sha256.len(), 64);
     assert!(pinned.bytes > 1_000_000_000, "large-v3-turbo is ~1.6 GB");
 
+    #[cfg(windows)]
+    {
+        let runtime = spec_of("onnxruntime-win-x64").expect("Windows runtime is registered");
+        assert_eq!(runtime.kind, DependencyKind::Runtime);
+        let pin = runtime.pinned.as_ref().expect("runtime carries a pin");
+        let extracted = pin.extracted.as_ref().expect("runtime is extracted from NuGet");
+        assert_eq!(extracted.archive_entry, "runtimes/win-x64/native/onnxruntime.dll");
+        assert_eq!(extracted.bytes, 15_809_848);
+        assert_eq!(extracted.sha256.len(), 64);
+    }
+
     // The face pair: every model entry carries a complete pin, and the two
     // stay distinct artifacts (the score needs BOTH installed).
     for id in ["ultraface-rfb640", "hsemotion-enet-b2"] {
@@ -54,7 +66,7 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
         assert!(pin.bytes > 1_000_000);
     }
 
-    // Every model states when its artifact was PUBLISHED — the only honest
+    // Every pinned artifact states when it was PUBLISHED — the only honest
     // answer to "how old is this?", and the thing that made these two face
     // models' age visible enough to act on.
     for spec in DEPENDENCIES.iter().filter(|d| d.pinned.is_some()) {
@@ -127,6 +139,21 @@ fn a_models_presence_check_is_size_exact() {
 
     let state = state_of(dir.path(), spec);
     assert_eq!(state.status, BinaryStatus::NotInstalled);
+}
+
+#[cfg(windows)]
+#[test]
+fn the_runtime_presence_check_uses_the_extracted_dll_size() {
+    let dir = home("runtime-size");
+    let spec = spec_of("onnxruntime-win-x64").unwrap();
+    let pin = spec.pinned.as_ref().unwrap();
+    let target = installed_path(dir.path(), spec);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(&target).unwrap();
+    file.set_len(pin.bytes).unwrap();
+
+    assert_ne!(pin.bytes, pin.extracted.as_ref().unwrap().bytes);
+    assert_eq!(state_of(dir.path(), spec).status, BinaryStatus::NotInstalled);
 }
 
 #[test]
@@ -211,4 +238,11 @@ fn installed_paths_split_binaries_from_models() {
     assert!(ffmpeg.starts_with(dir.path().join(BIN_DIR_NAME)));
     assert!(model.starts_with(dir.path().join(MODELS_DIR_NAME)));
     assert_ne!(ffmpeg, model);
+
+    #[cfg(windows)]
+    {
+        let runtime = installed_path(dir.path(), spec_of("onnxruntime-win-x64").unwrap());
+        assert!(runtime.starts_with(dir.path().join(BIN_DIR_NAME)));
+        assert_eq!(runtime.file_name().unwrap(), "onnxruntime.dll");
+    }
 }

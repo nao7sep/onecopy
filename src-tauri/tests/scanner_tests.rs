@@ -110,6 +110,12 @@ fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
+fn stored_path(path: &std::path::Path) -> String {
+    onecopy_lib::winpath::for_fs(path)
+        .to_string_lossy()
+        .to_string()
+}
+
 #[test]
 fn walk_adds_then_skips_unchanged_then_marks_missing() {
     let f = fixture("walk");
@@ -123,7 +129,7 @@ fn walk_adds_then_skips_unchanged_then_marks_missing() {
     let vanished_before_insert = f.root.join("never-indexed.jpg");
     index_store::upsert_issue(
         &f.conn,
-        Some(vanished_before_insert.to_string_lossy().as_ref()),
+        Some(&stored_path(&vanished_before_insert)),
         STAT_ERROR,
         "stat failed before the row could be inserted",
     )
@@ -151,10 +157,10 @@ fn complete_walk_republishes_a_shared_logical_item_once_after_one_copy_vanishes(
     let f = fixture("walk-shared-logical-item");
     let vanished = f.root.join("vanished.jpg");
     let survivor = f._dir.path().join("outside-root.jpg");
-    let vanished = vanished.to_string_lossy().to_string();
-    let survivor = survivor.to_string_lossy().to_string();
-    let root = f.root.to_string_lossy().to_string();
-    let outside = f._dir.path().to_string_lossy().to_string();
+    let vanished = stored_path(&vanished);
+    let survivor = stored_path(&survivor);
+    let root = stored_path(&f.root);
+    let outside = stored_path(f._dir.path());
     f.conn
         .execute_batch(
             "INSERT INTO contents (hash, byte_size, kind) VALUES ('shared', 3, 'image');",
@@ -609,12 +615,12 @@ fn scoped_pairing_repairs_only_the_affected_directory() {
         .conn
         .query_row(
             "SELECT companion_of FROM paths WHERE dir_path = ?1 AND kind = 'companion'",
-            [right.to_string_lossy().as_ref()],
+            [stored_path(&right)],
             |row| row.get(0),
         )
         .unwrap();
 
-    let dirs = vec![left.to_string_lossy().to_string()];
+    let dirs = vec![stored_path(&left)];
     assert_eq!(
         pair_companions_in_dirs(&f.conn, true, &dirs)
             .unwrap()
@@ -625,14 +631,14 @@ fn scoped_pairing_repairs_only_the_affected_directory() {
         f.conn
             .query_row(
                 "SELECT companion_of FROM paths WHERE dir_path = ?1 AND kind = 'companion'",
-                [left.to_string_lossy().as_ref()],
+                [stored_path(&left)],
                 |row| row.get(0),
             )
             .unwrap(),
         f.conn
             .query_row(
                 "SELECT companion_of FROM paths WHERE dir_path = ?1 AND kind = 'companion'",
-                [right.to_string_lossy().as_ref()],
+                [stored_path(&right)],
                 |row| row.get(0),
             )
             .unwrap(),

@@ -59,6 +59,14 @@ static POISON_LOGGED: std::sync::atomic::AtomicBool =
 static POISON_ISSUE_REPORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+fn request_active_cancel(class: WorkClass) {
+    if class.is_transcription() {
+        crate::transcription::request_cancel();
+    } else if class == WorkClass::Faces {
+        crate::face::request_cancel();
+    }
+}
+
 fn report_poison_once(app: Option<&AppHandle>) {
     if !POISON_LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         crate::logging::error(
@@ -169,9 +177,7 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
     if let Some(active) = runtime.active {
         runtime.preempt_requested = true;
         drop(runtime);
-        if active.class.is_transcription() {
-            crate::transcription::request_cancel();
-        }
+        request_active_cancel(active.class);
         emit_state_changed(app);
         runtime = RUNTIME
             .0
@@ -236,13 +242,11 @@ pub fn begin_manual_queued(app: &AppHandle, class: &str) -> Result<ManualWorkGua
     runtime.next_manual_ticket = runtime.next_manual_ticket.wrapping_add(1);
 
     if runtime.active.is_some_and(|active| !active.manual) {
-        let cancel_transcription = runtime
-            .active
-            .is_some_and(|active| active.class.is_transcription());
+        let cancel_class = runtime.active.map(|active| active.class);
         runtime.preempt_requested = true;
         drop(runtime);
-        if cancel_transcription {
-            crate::transcription::request_cancel();
+        if let Some(class) = cancel_class {
+            request_active_cancel(class);
         }
         emit_state_changed(app);
         runtime = RUNTIME
@@ -324,9 +328,7 @@ pub fn begin_exclusive(app: &AppHandle) -> Result<ExclusiveGuard, String> {
     if let Some(active) = runtime.active {
         runtime.preempt_requested = true;
         drop(runtime);
-        if active.class.is_transcription() {
-            crate::transcription::request_cancel();
-        }
+        request_active_cancel(active.class);
         emit_state_changed(app);
         runtime = RUNTIME
             .0
@@ -386,15 +388,15 @@ pub(crate) fn automatic_optional_active() -> bool {
 }
 
 pub(crate) fn preempt_automatic_optional_for_required() {
-    let transcript = RUNTIME.0.lock().ok().and_then(|mut runtime| {
+    let active_class = RUNTIME.0.lock().ok().and_then(|mut runtime| {
         let active = runtime
             .active
             .filter(|active| !active.manual && active.class != WorkClass::Previews)?;
         runtime.preempt_requested = true;
-        Some(active.class.is_transcription())
+        Some(active.class)
     });
-    if transcript == Some(true) {
-        crate::transcription::request_cancel();
+    if let Some(class) = active_class {
+        request_active_cancel(class);
     }
 }
 
@@ -463,13 +465,12 @@ pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<
         runtime.active
     };
 
-    if paused
-        && active
-            .map(|active| class.is_none() || class == Some(active.class.id()))
-            .unwrap_or(false)
-        && active.map(|active| active.class.is_transcription()) == Some(true)
-    {
-        crate::transcription::request_cancel();
+    if paused {
+        if let Some(active) = active.filter(|active| {
+            class.is_none() || class == Some(active.class.id())
+        }) {
+            request_active_cancel(active.class);
+        }
     }
     emit_state_changed(app);
     Ok(())

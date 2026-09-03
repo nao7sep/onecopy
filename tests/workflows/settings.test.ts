@@ -116,4 +116,39 @@ describe("Settings save boundary", () => {
       playbackVolume: 0.35,
     });
   });
+
+  it("publishes an explicit runtime acceleration selection as configuration", async () => {
+    useSettingsStore.getState().openWith(
+      { aiAcceleration: { transcription: "metal", "face-scoring": "none" } },
+      null,
+      [
+        {
+          feature: "transcription",
+          label: "Transcription",
+          selected: "metal",
+          default: "metal",
+          options: [
+            { id: "none", label: "CPU only" },
+            { id: "metal", label: "Metal" },
+          ],
+        },
+        {
+          feature: "face-scoring",
+          label: "Face scoring",
+          selected: "none",
+          default: "none",
+          options: [{ id: "none", label: "CPU only" }],
+        },
+      ],
+    );
+    useSettingsStore.getState().update({
+      aiAcceleration: { transcription: "none", "face-scoring": "none" },
+    });
+
+    await saveSettings();
+
+    expect(invokeCalls.find((call) => call.command === "patch_config")?.args.patch).toMatchObject({
+      aiAcceleration: { transcription: "none", "face-scoring": "none" },
+    });
+  });
 });

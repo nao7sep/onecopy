@@ -1,13 +1,13 @@
-// Transcription's model-free contracts (the always-on majority per the Phase
-// 28 test doctrine) plus explicit ignored LIVE tests for the linked engine
-// and production model behavior, so the 1.6 GB default never enters an
-// ordinary test run.
+// Transcription's model-free contracts. Real models belong to the separately
+// prepared live-integration and benchmark surfaces, so the production model
+// never enters an ordinary test run.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::transcription::*;
 use serial_test::serial;
+
 
 fn cache(label: &str) -> (tempfile::TempDir, CachePaths) {
     let dir = tempfile::Builder::new()
@@ -234,187 +234,6 @@ fn pcm_is_staged_then_streamed_once_into_the_float_buffer() {
     let pcm = extract_pcm(&ffmpeg, Path::new("ignored.mov"), &temp).unwrap();
     assert_eq!(pcm, vec![0.5, -0.5]);
     assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
-}
-
-// LIVE: downloads the tiny model (~75 MB; sha256 from the upstream's LFS
-// metadata) and the canonical jfk.wav sample, parses the WAV directly (16 kHz
-// mono s16 — no ffmpeg needed here; production's ffmpeg extraction is covered
-// by its own subprocess contracts), and asserts the engine hears the known
-// phrase. Run: cargo test --test transcription_tests -- --ignored --nocapture
-#[test]
-#[ignore]
-#[serial(transcription)]
-fn live_tiny_model_transcribes_the_canonical_sample() {
-    const TINY_URL: &str =
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-tiny.bin";
-    const TINY_SHA256: &str = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21";
-    const SAMPLE_URL: &str =
-        "https://raw.githubusercontent.com/ggerganov/whisper.cpp/45f1593fd326b3435c04392e3151dff65967e523/samples/jfk.wav";
-
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-transcribe-live-")
-        .tempdir()
-        .unwrap();
-    let agent = ureq::config::Config::builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .build()
-        .new_agent();
-    let fetch = |url: &str, dest: &Path| {
-        let mut response = agent.get(url).call().expect("download");
-        let mut file = std::fs::File::create(dest).unwrap();
-        std::io::copy(&mut response.body_mut().as_reader(), &mut file).unwrap();
-    };
-    let model = dir.path().join("ggml-tiny.bin");
-    fetch(TINY_URL, &model);
-    {
-        use sha2::Digest;
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(std::fs::read(&model).unwrap());
-        assert_eq!(hex::encode(hasher.finalize()), TINY_SHA256, "model integrity");
-    }
-    eprintln!(
-        "model: {TINY_URL} ({} bytes, sha256 {TINY_SHA256})",
-        std::fs::metadata(&model).unwrap().len()
-    );
-    let sample = dir.path().join("jfk.wav");
-    fetch(SAMPLE_URL, &sample);
-    eprintln!(
-        "sample: {SAMPLE_URL} ({} bytes)",
-        std::fs::metadata(&sample).unwrap().len()
-    );
-
-    // 16 kHz mono s16 WAV → f32 PCM: skip the 44-byte header, scale.
-    let bytes = std::fs::read(&sample).unwrap();
-    let pcm: Vec<f32> = bytes[44..]
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-        .collect();
-
-    let segments = run_whisper(&model, &pcm, |p| eprintln!("progress {p}%")).unwrap();
-    let text = render(&segments).to_lowercase();
-    eprintln!("transcript: {text}");
-    assert!(text.contains("country"), "the known phrase must be heard: {text}");
-}
-
-// LIVE: uses ONECOPY_TEST_WHISPER_MODEL when supplied, otherwise downloads
-// the exact production model (~1.6 GB), transcribes the
-// shared synthetic noisy dialogue with a long silent tail, and rejects the
-// phrase-loop shape reported during dogfooding. This is deliberately separate
-// from the tiny linked-engine smoke above: model behavior is the fact under
-// test. Run explicitly by name with --ignored and one test thread.
-#[test]
-#[ignore]
-#[serial(transcription)]
-fn live_production_model_does_not_loop_a_phrase_into_trailing_silence() {
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-transcribe-production-live-")
-        .tempdir()
-        .unwrap();
-    let model = production_model(dir.path());
-    let ffmpeg = live_ffmpeg(&dir.path().join("managed-tools"));
-    let fixture = production_transcription_fixture();
-    let extraction_started = std::time::Instant::now();
-    let mut pcm = extract_pcm(&ffmpeg, &fixture, &dir.path().join("pcm")).unwrap();
-    eprintln!("production PCM extraction: {:?}", extraction_started.elapsed());
-    pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
-
-    let inference_started = std::time::Instant::now();
-    let segments = run_whisper(&model, &pcm, |_| {}).unwrap();
-    eprintln!("production inference: {:?}", inference_started.elapsed());
-    for segment in &segments {
-        eprintln!("{} ms: {}", segment.start_ms, segment.text);
-    }
-    let transcript = render(&segments);
-    assert!(
-        transcript.to_lowercase().contains("coordinates"),
-        "the known fixture dialogue must be heard: {transcript}"
-    );
-    assert!(
-        !segments_have_phrase_loop(&segments),
-        "one decoder attempt emitted a repeated phrase loop: {}",
-        transcript
-    );
-}
-
-fn production_model(temp_dir: &Path) -> PathBuf {
-    use sha2::Digest;
-
-    let spec = onecopy_lib::binaries_manager::spec_of("whisper-large-v3-turbo")
-        .expect("production transcription model is registered");
-    let pin = spec.pinned.as_ref().expect("production model is pinned");
-    let model = std::env::var_os("ONECOPY_TEST_WHISPER_MODEL")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let model = temp_dir.join(spec.file_name);
-            let agent = ureq::config::Config::builder()
-                .tls_config(
-                    ureq::tls::TlsConfig::builder()
-                        .provider(ureq::tls::TlsProvider::NativeTls)
-                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                        .build(),
-                )
-                .build()
-                .new_agent();
-            let mut response = agent.get(pin.url).call().expect("model download");
-            let mut output = std::fs::File::create(&model).unwrap();
-            let downloaded =
-                std::io::copy(&mut response.body_mut().as_reader(), &mut output).unwrap();
-            assert_eq!(downloaded, pin.bytes, "model byte count");
-            model
-        });
-    assert_eq!(
-        std::fs::metadata(&model).unwrap().len(),
-        pin.bytes,
-        "model byte count"
-    );
-    let mut input = std::io::BufReader::new(std::fs::File::open(&model).unwrap());
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = vec![0u8; 1024 * 1024];
-    loop {
-        let read = std::io::Read::read(&mut input, &mut buffer).unwrap();
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    assert_eq!(hex::encode(hasher.finalize()), pin.sha256, "model integrity");
-    model
-}
-
-fn live_ffmpeg(_test_root: &Path) -> PathBuf {
-    if let Some(ffmpeg) = std::env::var_os("ONECOPY_TEST_FFMPEG").map(PathBuf::from) {
-        assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
-        return ffmpeg;
-    }
-    #[cfg(windows)]
-    {
-        std::fs::create_dir_all(_test_root).unwrap();
-        onecopy_lib::binaries_manager::install_entry(_test_root, "ffmpeg", |progress| {
-            eprintln!("ffmpeg {progress:?}");
-        })
-        .expect("managed ffmpeg install");
-        let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(_test_root);
-        assert!(ffmpeg.is_file(), "managed ffmpeg exists");
-        return ffmpeg;
-    }
-    #[cfg(not(windows))]
-    {
-        let ffmpeg = PathBuf::from("/opt/homebrew/bin/ffmpeg");
-        assert!(ffmpeg.is_file(), "live transcription needs ffmpeg");
-        ffmpeg
-    }
-}
-
-fn production_transcription_fixture() -> PathBuf {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../company/assets/test-fixtures/video/dialogue/dialogue-english-with-noise.mp4");
-    assert!(fixture.is_file(), "shared synthetic fixture checkout");
-    fixture
 }
 
 fn segments_have_phrase_loop(segments: &[Segment]) -> bool {

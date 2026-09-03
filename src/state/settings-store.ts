@@ -11,6 +11,7 @@ import { stringArrayField } from "../utils/configProjection";
 import { normalizeUiFontPreference } from "../utils/theme";
 import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
+import type { AiAccelerationCapability } from "../repositories";
 
 export interface SettingsDraft {
   defaultTimezone: string;
@@ -28,6 +29,7 @@ export interface SettingsDraft {
   similarPhotoAnalysisEnabled: boolean;
   videoTranscriptionEnabled: boolean;
   audioTranscriptionEnabled: boolean;
+  aiAcceleration: Record<string, string>;
   videoAutoplay: boolean;
   audioAutoplay: boolean;
   soundEnabled: boolean;
@@ -70,7 +72,20 @@ function numberOr(value: unknown, fallback: number): number {
 function draftFrom(
   config: Record<string, unknown> | null,
   state: Record<string, unknown> | null,
+  accelerationCapabilities: AiAccelerationCapability[],
 ): SettingsDraft {
+  const storedAcceleration =
+    config?.aiAcceleration &&
+    typeof config.aiAcceleration === "object" &&
+    !Array.isArray(config.aiAcceleration)
+      ? (config.aiAcceleration as Record<string, unknown>)
+      : {};
+  const aiAcceleration: Record<string, string> = {};
+  for (const capability of accelerationCapabilities) {
+    const stored = storedAcceleration[capability.feature];
+    aiAcceleration[capability.feature] =
+      typeof stored === "string" ? stored : capability.default;
+  }
   return {
     defaultTimezone:
       typeof config?.defaultTimezone === "string"
@@ -102,6 +117,7 @@ function draftFrom(
     similarPhotoAnalysisEnabled: config?.similarPhotoAnalysisEnabled !== false,
     videoTranscriptionEnabled: config?.videoTranscriptionEnabled !== false,
     audioTranscriptionEnabled: config?.audioTranscriptionEnabled !== false,
+    aiAcceleration,
     videoAutoplay: config?.videoAutoplay !== false,
     audioAutoplay: config?.audioAutoplay !== false,
     soundEnabled: state?.soundEnabled !== false,
@@ -153,6 +169,7 @@ function draftFrom(
 interface SettingsState {
   open: boolean;
   draft: SettingsDraft | null;
+  accelerationCapabilities: AiAccelerationCapability[];
   /** The draft as it was when the modal opened — the dirty-check baseline. */
   opened: SettingsDraft | null;
   timezoneValid: boolean;
@@ -163,6 +180,7 @@ interface SettingsState {
   openWith: (
     config: Record<string, unknown> | null,
     state?: Record<string, unknown> | null,
+    accelerationCapabilities?: AiAccelerationCapability[],
   ) => void;
   close: () => void;
   update: (patch: Partial<SettingsDraft>) => void;
@@ -177,6 +195,7 @@ const timezoneValidation = requestSeq();
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   open: false,
   draft: null,
+  accelerationCapabilities: [],
   opened: null,
   timezoneValid: true,
   timezonePending: false,
@@ -184,12 +203,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   message: "",
   messageLevel: null,
 
-  openWith: (config, state = null) => {
+  openWith: (config, state = null, accelerationCapabilities = []) => {
     timezoneValidation.begin();
     set({
       open: true,
-      draft: draftFrom(config, state),
-      opened: draftFrom(config, state),
+      accelerationCapabilities,
+      draft: draftFrom(config, state, accelerationCapabilities),
+      opened: draftFrom(config, state, accelerationCapabilities),
       timezoneValid: true,
       timezonePending: false,
       message: "",
@@ -199,7 +219,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   close: () => {
     if (get().saving) return;
-    set({ open: false, draft: null, opened: null });
+    set({ open: false, draft: null, opened: null, accelerationCapabilities: [] });
   },
 
   update: (patch) => {

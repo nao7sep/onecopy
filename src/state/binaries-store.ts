@@ -1,5 +1,5 @@
 // Managed-dependency state: one entry per registry row (the ffmpeg binary,
-// the model files), the footer chip reading the whole registry, a named
+// native runtimes and model files), the footer chip reading the whole registry, a named
 // modal with per-row actions, progress from the install events. Installs run
 // IN PARALLEL per entry (developer, 2026-08-17) — the map below narrates each
 // one independently, and only a second operation on the SAME entry is
@@ -28,10 +28,10 @@ export type DependencyStatus =
 export interface DependencyState {
   id: string;
   label: string;
-  kind: "binary" | "model";
+  kind: "binary" | "runtime" | "model";
   status: DependencyStatus;
   /** Read from the artifact on every status — the binary's own banner, the
-   * sidecar beside it, or a model's verified-install identity, never from the
+   * sidecar beside it, or a pinned artifact's verified-install identity, never from the
    * facts store. Null on a present entry means the version could not be read:
    * not absent, and never dressed up as up to date. */
   installedVersion: string | null;
@@ -46,11 +46,11 @@ export interface DependencyState {
    * than only withholding optional enrichment. */
   requiredForCore: boolean;
   /** True when this entry's "latest" is DISCOVERABLE — a binary resolved
-   * live from upstream. A model's latest is selected by the app build, so
+   * live from upstream. A pinned artifact's latest is selected by the app build, so
    * there is nothing to look up and nothing to check. */
   checkable: boolean;
-  /** A pinned artifact's upstream publication date — how old the model
-   * actually is; null for binaries, whose live version answers that. */
+  /** A pinned artifact's upstream publication date; null for binaries, whose
+   * live version answers that. */
   released: string | null;
 }
 

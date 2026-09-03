@@ -1,7 +1,8 @@
 //! Registry and orchestration for managed dependencies (`binaries.rs` owns
 //! pure status decisions; `binaries_acquisition.rs` owns acquisition): N
-//! entries of two kinds — binaries
-//! (resolved live per platform) and model files (pinned artifacts) — each
+//! entries of three kinds — binaries
+//! (resolved live per platform), native runtimes, and model files (the latter
+//! two are pinned artifacts) — each
 //! downloading to `temp/` staging, verifying, then publishing with a
 //! same-volume rename. One install/check at a time per entry, with different
 //! entries allowed in parallel; a failed check writes nothing.
@@ -55,7 +56,14 @@ pub use crate::paths::{BIN_DIR_NAME, DEPENDENCIES_FILE_NAME, MODELS_DIR_NAME, TE
 #[serde(rename_all = "kebab-case")]
 pub enum DependencyKind {
     Binary,
+    Runtime,
     Model,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DependencyPlatform {
+    Any,
+    Windows,
 }
 
 /// One typed snapshot of an entry's acquisition. Fixed phases use one unit;
@@ -104,8 +112,8 @@ impl InstallProgress {
     }
 }
 
-/// One managed dependency. `pinned` is Some for model entries — the canonical
-/// artifact the app provisions; None for binaries, which resolve live.
+/// One managed dependency. `pinned` is Some for opaque artifacts selected by
+/// the app; None for binaries that resolve live.
 pub struct DependencySpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -114,14 +122,19 @@ pub struct DependencySpec {
     /// rather than only withholding optional enrichment.
     pub required_for_core: bool,
     pub file_name: &'static str,
-    pub pinned: Option<PinnedModel>,
+    pub platform: DependencyPlatform,
+    pub pinned: Option<PinnedArtifact>,
 }
 
-pub struct PinnedModel {
+pub struct PinnedArtifact {
     pub url: &'static str,
-    /// From the upstream repository's own LFS metadata, not our download.
+    /// Digest and exact size of the downloaded object.
     pub sha256: &'static str,
     pub bytes: u64,
+    /// Some upstreams publish the accepted file inside an archive. The archive
+    /// and the one extracted file are independently pinned; no path or DLL
+    /// search is trusted at runtime.
+    pub extracted: Option<ExtractedArtifact>,
     /// When this artifact was PUBLISHED upstream (probed from the upstream's
     /// own commit history 2026-08-17) — the only honest answer to "how old is
     /// this model?", since a content hash carries no date. Note for the ONNX
@@ -129,6 +142,12 @@ pub struct PinnedModel {
     /// restructure in Dec 2023, so these dates come from the pre-restructure
     /// path, where the artifact actually first appeared.
     pub released: &'static str,
+}
+
+pub struct ExtractedArtifact {
+    pub archive_entry: &'static str,
+    pub sha256: &'static str,
+    pub bytes: u64,
 }
 
 /// The registry. Order is display order in Managed tools. Adding an entry
@@ -141,7 +160,30 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         kind: DependencyKind::Binary,
         required_for_core: true,
         file_name: "", // platform-resolved by ffmpeg_file_name()
+        platform: DependencyPlatform::Any,
         pinned: None,
+    },
+    DependencySpec {
+        id: "onnxruntime-win-x64",
+        label: "Face-scoring runtime (ONNX Runtime 1.28)",
+        kind: DependencyKind::Runtime,
+        required_for_core: false,
+        file_name: "onnxruntime.dll",
+        platform: DependencyPlatform::Windows,
+        pinned: Some(PinnedArtifact {
+            // Official Microsoft NuGet package. Pin both the package and the
+            // exact x64 CPU runtime extracted from it so System32 and PATH can
+            // never choose a different ONNX Runtime build.
+            url: "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/1.28.0",
+            sha256: "769d1d3ea8ab6cd69f737c9dd4d4462aa4ad0ccfa106eaf506efc40d7bead5db",
+            bytes: 139_145_017,
+            extracted: Some(ExtractedArtifact {
+                archive_entry: "runtimes/win-x64/native/onnxruntime.dll",
+                sha256: "18370c375f07357fa5874344a9d9ac17e6b6fe1eb18b1dd209d79483b4470257",
+                bytes: 15_809_848,
+            }),
+            released: "2026-07-25",
+        }),
     },
     DependencySpec {
         id: "whisper-large-v3-turbo",
@@ -149,12 +191,14 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         kind: DependencyKind::Model,
         required_for_core: false,
         file_name: "ggml-large-v3-turbo.bin",
-        pinned: Some(PinnedModel {
+        platform: DependencyPlatform::Any,
+        pinned: Some(PinnedArtifact {
             // Canonical whisper.cpp model repository, fixed to the verified
             // commit that added this file; sha256 matches its Xet metadata.
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-large-v3-turbo.bin",
             sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
             bytes: 1_624_555_275,
+            extracted: None,
             released: "2024-10-01",
         }),
     },
@@ -164,7 +208,8 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         kind: DependencyKind::Model,
         required_for_core: false,
         file_name: "ultraface-rfb640.onnx",
-        pinned: Some(PinnedModel {
+        platform: DependencyPlatform::Any,
+        pinned: Some(PinnedArtifact {
             // Official ONNX model zoo (repo Apache-2.0; the Ultraface upstream
             // is MIT), fixed to the file's immutable commit; sha256 verified
             // against the bytes at that revision 2026-08-22.
@@ -174,6 +219,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             url: "https://media.githubusercontent.com/media/onnx/models/4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177/validated/vision/body_analysis/ultraface/models/version-RFB-640.onnx",
             sha256: "8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430",
             bytes: 1_588_012,
+            extracted: None,
             released: "2020-12-17",
         }),
     },
@@ -183,7 +229,8 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
         kind: DependencyKind::Model,
         required_for_core: false,
         file_name: "hsemotion-enet-b2-8.onnx",
-        pinned: Some(PinnedModel {
+        platform: DependencyPlatform::Any,
+        pinned: Some(PinnedArtifact {
             // HSEmotion's AffectNet-trained EfficientNet-B2, from the project's
             // current home (sb-ai-lab/EmotiEffLib, Apache-2.0 — the old
             // av-savchenko repo redirects here); sha256 computed from the
@@ -194,18 +241,28 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             url: "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/af833487321c3efdcb1768a91a6c656a1986fdf6/models/affectnet_emotions/onnx/enet_b2_8.onnx",
             sha256: "180a9d4845b59393de4511598a0d1d34b705034691ea32959ce5009db7cf52b7",
             bytes: 30_779_724,
+            extracted: None,
             released: "2022-11-09",
         }),
     },
 ];
 
 pub fn spec_of(id: &str) -> Option<&'static DependencySpec> {
-    DEPENDENCIES.iter().find(|d| d.id == id)
+    DEPENDENCIES
+        .iter()
+        .find(|d| d.id == id && available_on_current_platform(d))
+}
+
+fn available_on_current_platform(spec: &DependencySpec) -> bool {
+    match spec.platform {
+        DependencyPlatform::Any => true,
+        DependencyPlatform::Windows => cfg!(windows),
+    }
 }
 
 /// A model pin's user-facing version: the digest's short prefix — changes
 /// exactly when the app re-pins, which is the only way a model updates.
-fn pin_version(pinned: &PinnedModel) -> String {
+fn pin_version(pinned: &PinnedArtifact) -> String {
     pinned.sha256[..12].to_string()
 }
 
@@ -213,8 +270,17 @@ fn pin_version(pinned: &PinnedModel) -> String {
 pub fn installed_path(root: &Path, spec: &DependencySpec) -> PathBuf {
     match spec.kind {
         DependencyKind::Binary => root.join(BIN_DIR_NAME).join(ffmpeg_file_name()),
+        DependencyKind::Runtime => root.join(BIN_DIR_NAME).join(spec.file_name),
         DependencyKind::Model => root.join(MODELS_DIR_NAME).join(spec.file_name),
     }
+}
+
+#[cfg(windows)]
+pub fn onnx_runtime_path(root: &Path) -> Option<PathBuf> {
+    spec_of("onnxruntime-win-x64").and_then(|spec| {
+        let state = state_of(root, spec);
+        (state.status != BinaryStatus::NotInstalled).then(|| installed_path(root, spec))
+    })
 }
 
 pub fn ffmpeg_file_name() -> &'static str {
@@ -368,17 +434,25 @@ fn read_model_identity(root: &Path, spec: &DependencySpec, bytes: u64) -> Option
 fn write_model_identity(
     root: &Path,
     spec: &DependencySpec,
-    pinned: &PinnedModel,
+    pinned: &PinnedArtifact,
 ) -> Result<(), String> {
     let identity = ModelIdentity {
         sha256: pinned.sha256.to_string(),
-        bytes: pinned.bytes,
+        bytes: installed_bytes(pinned),
     };
     let mut text = serde_json::to_string_pretty(&identity).map_err(|e| e.to_string())?;
     text.push('\n');
     // not recorded: identity for a re-downloadable model, colocated with and
     // meaningless without that model. It is invalidated before replacement.
     storage::write_atomic_unrecorded(&model_identity_path(root, spec), text.as_bytes())
+}
+
+fn installed_bytes(pinned: &PinnedArtifact) -> u64 {
+    pinned
+        .extracted
+        .as_ref()
+        .map(|extracted| extracted.bytes)
+        .unwrap_or(pinned.bytes)
 }
 
 fn invalidate_model_identity(root: &Path, spec: &DependencySpec) -> Result<(), String> {
@@ -560,8 +634,9 @@ pub fn wait_for_idle() {
 
 /// The full install/update for any registry entry. Binaries: resolve →
 /// download → verify → extract → make runnable → publish. Models: pinned
-/// download → sha256 verify → publish. Both stage in `temp/` and land with a
-/// same-volume rename; both record facts only on success.
+/// download → sha256 verify → optional exact-entry extraction → publish. All
+/// stage in `temp/` and land with a same-volume rename; all record facts only
+/// on success.
 pub fn install_entry(
     root: &Path,
     id: &str,
@@ -596,13 +671,15 @@ pub fn install_entry_started(
     let spec = spec_of(&id).ok_or_else(|| format!("unknown dependency: {id}"))?;
     match spec.kind {
         DependencyKind::Binary => install_ffmpeg_started(root, started.0, on_progress),
-        DependencyKind::Model => {
+        DependencyKind::Runtime | DependencyKind::Model => {
             let guard = started.0;
-            let pinned = spec.pinned.as_ref().ok_or("model entry carries no pin")?;
+            let pinned = spec.pinned.as_ref().ok_or("pinned entry carries no pin")?;
             let temp = root.join(TEMP_DIR_NAME);
             std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
             let partial = temp.join(format!("{id}-{}.partial", nanoid::generate()?));
-            let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone()]);
+            let staged = temp.join(format!("{id}-{}.staged", nanoid::generate()?));
+            let _cleanup =
+                acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]);
             let result = (|| -> Result<BinaryFacts, String> {
                 on_progress(InstallProgress::bytes(
                     InstallPhase::Download,
@@ -644,6 +721,38 @@ pub fn install_entry_started(
                         pinned.sha256
                     ));
                 }
+                let publish_source = if let Some(extracted) = pinned.extracted.as_ref() {
+                    acquisition::extract_pinned_zip_entry(
+                        &partial,
+                        &staged,
+                        extracted.archive_entry,
+                        extracted.bytes,
+                        &guard.cancelled,
+                        &guard.deadline,
+                    )?;
+                    let actual = acquisition::file_sha256(
+                        &staged,
+                        &guard.cancelled,
+                        &guard.deadline,
+                        |done, total| {
+                            on_progress(InstallProgress::bytes(
+                                InstallPhase::Verify,
+                                done,
+                                Some(total),
+                                InstallPhase::Install,
+                            ));
+                        },
+                    )?;
+                    if actual != extracted.sha256 {
+                        return Err(format!(
+                            "checksum mismatch for extracted {id}: expected {}, got {actual}",
+                            extracted.sha256
+                        ));
+                    }
+                    &staged
+                } else {
+                    &partial
+                };
                 let target = installed_path(root, spec);
                 let parent = target
                     .parent()
@@ -662,7 +771,7 @@ pub fn install_entry_started(
                 guard.deadline.check(&guard.cancelled)?;
                 // Replace-in-place over any previous model (same volume).
                 // not recorded: the model file is a re-downloadable artifact.
-                acquisition::publish_staged(&partial, &target)?;
+                acquisition::publish_staged(publish_source, &target)?;
                 write_model_identity(root, spec, pinned)?;
                 on_progress(InstallProgress::fixed(
                     InstallPhase::Install,
@@ -677,7 +786,7 @@ pub fn install_entry_started(
                     last_checked_at_utc: None,
                 };
                 logging::info(
-                    "model installed",
+                    "pinned dependency installed",
                     serde_json::json!({ "id": id, "path": target.to_string_lossy() }),
                 );
                 Ok(facts)
@@ -842,9 +951,9 @@ pub fn check_entry_with_operation(
             let resolved = acquisition::resolve_latest(&guard.cancelled, &guard.deadline)?;
             facts.latest_known_version = Some(resolved.version);
         }
-        // Refused rather than faked: a model has no upstream to ask. Its
+        // Refused rather than faked: a pinned artifact has no upstream to ask. Its
         // selected version belongs to this app build, and `state_of` derives it.
-        DependencyKind::Model => {
+        DependencyKind::Runtime | DependencyKind::Model => {
             return Err(format!(
                 "{id} is selected by this app build — there is no update to check for"
             ));
@@ -899,8 +1008,8 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
     }
     let present = match spec.kind {
         DependencyKind::Binary => binaries::is_usable_binary(&path),
-        DependencyKind::Model => {
-            let expected = spec.pinned.as_ref().map(|p| p.bytes);
+        DependencyKind::Runtime | DependencyKind::Model => {
+            let expected = spec.pinned.as_ref().map(installed_bytes);
             std::fs::metadata(&path)
                 .map(|m| m.is_file() && Some(m.len()) == expected)
                 .unwrap_or(false)
@@ -935,7 +1044,11 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
 
 /// Every registry entry's state, in display order.
 pub fn states(root: &Path) -> Vec<DependencyState> {
-    DEPENDENCIES.iter().map(|spec| state_of(root, spec)).collect()
+    DEPENDENCIES
+        .iter()
+        .filter(|spec| available_on_current_platform(spec))
+        .map(|spec| state_of(root, spec))
+        .collect()
 }
 
 #[cfg(test)]

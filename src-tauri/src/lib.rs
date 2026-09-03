@@ -1,6 +1,11 @@
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
+pub mod ai_acceleration;
+#[cfg(feature = "ai-test-engine")]
+pub mod ai_test_engine;
+#[cfg(feature = "app-e2e")]
+pub mod ai_test_instrumentation;
 pub mod background_work;
 pub mod backup_store;
 pub mod binaries;
@@ -177,6 +182,7 @@ fn patch_config(
                     .ok_or("Default timezone must be an IANA timezone name")?;
                 *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
             }
+            ai_acceleration::validate_patch(&patch)?;
             let outcome = storage::patch_config(&app, &patch)?;
             report_quarantine(&app, outcome.quarantined);
             let current_source_dirs = outcome
@@ -1113,6 +1119,9 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(), String> {
     let data_root = paths::data_root(&app)?;
     let cache_root = cache_root().ok_or("data root unset")?;
+    let config = storage::read_config_for_setup(&data_root)?;
+    let transcription_acceleration =
+        ai_acceleration::selection_from_config(config.as_ref())?.transcription;
     let class = {
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
         let kind: String = conn
@@ -1195,6 +1204,7 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                         std::path::Path::new(&source_path),
                         &exact_hash,
                         replace.unwrap_or(false),
+                        transcription_acceleration,
                         move |percent| {
                             let percent = percent.clamp(0, 100);
                             derived_runtime::report_manual_progress(
@@ -1956,7 +1966,7 @@ fn similar_exclusions_clear(app: AppHandle) -> Result<u64, String> {
             }
             let config = storage::read_config_for_setup(&data_root)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let settings = derived_work::settings_from_config(config.as_ref(), &data_root);
+            let settings = derived_work::settings_from_config(config.as_ref(), &data_root)?;
             similarity::ensure_config_current(&conn, &settings.similarity)?;
             similarity::mark_all_buckets_dirty(&conn)?;
             let cleared = similar_exclusions::clear(&data_root)?;
@@ -2037,11 +2047,19 @@ pub fn run() {
             .map(|v| v == "1")
             .unwrap_or(false);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Process ownership is the FIRST plugin setup. Its OS file lock is the
         // atomic authority; a secondary routes activation to the owner and exits
         // before logs, stores, the index, watchers, or destructive commands start.
-        .plugin(instance_owner::init())
+        .plugin(instance_owner::init());
+    // The embedded WebDriver is a compile-time acceptance-test flavor. A
+    // production build has neither the dependency feature nor this server.
+    #[cfg(feature = "app-e2e")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .register_uri_scheme_protocol("mediacache", |_ctx, request| {

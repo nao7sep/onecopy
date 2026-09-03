@@ -79,6 +79,9 @@ pub struct DefaultConfig {
     pub similar_photo_analysis_enabled: bool,
     pub video_transcription_enabled: bool,
     pub audio_transcription_enabled: bool,
+    /// Runtime-selected backend per AI engine. The acceleration owner
+    /// validates known keys and platform availability before publication.
+    pub ai_acceleration: JsonValue,
     pub video_autoplay: bool,
     pub audio_autoplay: bool,
     pub enlarge_small_images_in_preview: bool,
@@ -146,6 +149,7 @@ impl Default for DefaultConfig {
             similar_photo_analysis_enabled: true,
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
+            ai_acceleration: crate::ai_acceleration::default_config(),
             video_autoplay: true,
             audio_autoplay: true,
             enlarge_small_images_in_preview: true,
@@ -185,6 +189,9 @@ pub struct LoadedAppData {
     pub data_root: String,
     /// Set by the command layer from logging::debug_enabled(); storage leaves it false.
     pub debug_enabled: bool,
+    /// Platform and packaged-binary capability facts for Settings. These are
+    /// independent of config validity so a bad saved choice remains repairable.
+    pub ai_acceleration_capabilities: Vec<crate::ai_acceleration::Capability>,
     /// Stores quarantined during this launch, for the frontend to REPORT. An
     /// unreported quarantine is a silent reset with extra steps
     /// (storage-path-conventions), so a log line alone is not enough.
@@ -254,6 +261,8 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
         state: state_read.value,
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,
+        ai_acceleration_capabilities: crate::ai_acceleration::capabilities(None)
+            .expect("built-in acceleration features are valid"),
         quarantines,
     })
 }

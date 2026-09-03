@@ -6,6 +6,7 @@ authors = ["Yoshinao Inoguchi <yoshinao@inoguchi.com>"]
 license = "MIT"
 repository = "https://github.com/nao7sep/onecopy"
 edition = "2021"
+default-run = "onecopy"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -29,6 +30,19 @@ linker_messages = "allow"
 name = "onecopy_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "onecopy-ai-preparer"
+path = "tests/ai/preparer.rs"
+required-features = ["app-e2e"]
+
+[features]
+# The embedded WebDriver server is an acceptance-test build flavor. Normal
+# development and release binaries do not compile or register it.
+app-e2e = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
+# Deterministic AI adapter seams used by the canonical fast integration suite.
+# Normal development and release builds do not compile them.
+ai-test-engine = []
+
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
 
@@ -36,6 +50,8 @@ tauri-build = { version = "2.6", features = [] }
 tauri = { version = "2.11", features = [] }
 tauri-plugin-opener = "2.5"
 tauri-plugin-dialog = "2.7"
+tauri-plugin-wdio = { version = "1.3.0", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1.3.0", optional = true }
 # Native message box for a startup halt: the app has no AppHandle yet when the Tauri
 # build fails, so the dialog plugin is unusable at exactly the moment a halt must be
 # reported. rfd is what that plugin uses underneath.
@@ -75,14 +91,18 @@ notify = "8.2.0"
 # portable CPU backend until their own packaged measurements justify a native
 # accelerator.
 whisper-rs = "0.16.0"
-ort = "2.0.0-rc.13"
 ndarray = "0.17.2"
-libloading = "0.9.0"
 encoding_rs = "0.8.35"
 chardetng = "1.0.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+# Load the packaged runtime only when face scoring actually starts. This keeps
+# optional model code out of process initialization on older Windows CPUs.
+ort = { version = "2.0.0-rc.13", features = ["load-dynamic"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ort = "2.0.0-rc.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16.0", features = ["metal"] }
@@ -104,8 +124,3 @@ opt-level = 2
 # (`static STORE` in backup_store.rs); unrelated tests still parallelize.
 serial_test = { version = "4", default-features = false }
 tempfile = "3.24"
-# The ignored live test downloads pinned whisper.cpp tiny GGML and WAV files.
-# Use the platform TLS stack already present in the graph; the test configures
-# that provider explicitly, and default ureq features would add Rustls and
-# compression only for this test.
-ureq = { version = "3.4.0", default-features = false, features = ["native-tls"] }

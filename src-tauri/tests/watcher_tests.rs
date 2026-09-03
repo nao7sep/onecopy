@@ -69,7 +69,7 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
     let issues: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM issues WHERE kind = 'walk-error' AND path = ?1",
-            [root.to_string_lossy().as_ref()],
+            [onecopy_lib::winpath::for_fs(&root).to_string_lossy().as_ref()],
             |row| row.get(0),
         )
         .unwrap();

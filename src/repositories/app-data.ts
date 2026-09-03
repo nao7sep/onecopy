@@ -11,10 +11,20 @@ export interface LoadedAppData {
   state: Record<string, unknown> | null;
   dataRoot: string;
   debugEnabled: boolean;
+  /** Backend-owned acceleration choices compiled into this platform build. */
+  aiAccelerationCapabilities?: AiAccelerationCapability[];
   /** Stores the core set aside this launch because they would not parse. The
    * app must SHOW these — an unreported quarantine is a silent reset with
    * extra steps (storage-path-conventions). */
   quarantines: QuarantineRecord[];
+}
+
+export interface AiAccelerationCapability {
+  feature: string;
+  label: string;
+  selected: string;
+  default: string;
+  options: { id: string; label: string }[];
 }
 
 /** Mirrors storage::QuarantineRecord. */

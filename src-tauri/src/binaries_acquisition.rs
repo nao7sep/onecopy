@@ -487,6 +487,54 @@ pub(crate) fn extract_ffmpeg(
     Ok(())
 }
 
+/// Extracts one explicitly pinned file from a ZIP-compatible package. The
+/// entry name and uncompressed size are exact, and output goes to one staging
+/// file rather than honoring any archive path.
+pub(crate) fn extract_pinned_zip_entry(
+    archive_path: &Path,
+    staged: &Path,
+    wanted: &str,
+    expected_bytes: u64,
+    cancelled: &AtomicBool,
+    deadline: &OperationDeadline,
+) -> Result<(), String> {
+    let file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut entry = archive
+        .by_name(wanted)
+        .map_err(|_| format!("archive holds no exact entry {wanted}"))?;
+    if entry.is_dir() || entry.size() != expected_bytes {
+        return Err(format!(
+            "archive entry {wanted} has size {}, expected {expected_bytes}",
+            entry.size()
+        ));
+    }
+    let mut out = std::fs::File::create(staged).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut extracted = 0u64;
+    loop {
+        deadline.check(cancelled)?;
+        let n = entry.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        extracted = extracted
+            .checked_add(n as u64)
+            .ok_or_else(|| format!("archive entry {wanted} size overflow"))?;
+        if extracted > expected_bytes {
+            return Err(format!("archive entry {wanted} exceeds its pinned size"));
+        }
+        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+    }
+    if extracted != expected_bytes {
+        return Err(format!(
+            "archive entry {wanted} extracted {extracted} bytes, expected {expected_bytes}"
+        ));
+    }
+    out.sync_all().map_err(|e| e.to_string())?;
+    deadline.check(cancelled)
+}
+
 /// Publishes a verified same-volume staged artifact, replacing an older one.
 /// `std::fs::rename` already has replace semantics on Unix; Windows requires
 /// MoveFileExW for the same atomic update behavior.

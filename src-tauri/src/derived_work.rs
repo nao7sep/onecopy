@@ -86,11 +86,19 @@ pub struct Settings {
     pub video_snapshots_enabled: bool,
     pub similarity_enabled: bool,
     pub face_enabled: bool,
-    pub face_models: Option<(PathBuf, PathBuf)>,
+    pub face_models: Option<FaceAssets>,
     pub transcription_model: Option<PathBuf>,
+    pub transcription_acceleration: crate::ai_acceleration::Mode,
     pub video_transcription_enabled: bool,
     pub audio_transcription_enabled: bool,
     pub temp_dir: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct FaceAssets {
+    pub runtime: Option<PathBuf>,
+    pub detector: PathBuf,
+    pub emotion: PathBuf,
 }
 
 impl Settings {
@@ -108,8 +116,12 @@ impl Settings {
     }
 }
 
-pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path) -> Settings {
+pub fn settings_from_config(
+    config: Option<&serde_json::Value>,
+    data_root: &Path,
+) -> Result<Settings, String> {
     let defaults = crate::storage::DefaultConfig::default();
+    let acceleration = crate::ai_acceleration::selection_from_config(config)?;
     let get = |key: &str| config.and_then(|c| c.get(key));
     let u32_of = |key: &str, fallback: u32| -> u32 {
         get(key)
@@ -133,7 +145,7 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
             .unwrap_or(fallback)
     };
 
-    Settings {
+    Ok(Settings {
         data_root: data_root.to_path_buf(),
         cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),
         similarity: crate::similarity::SimilarityConfig {
@@ -175,9 +187,22 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
         ),
         face_enabled: score_faces,
         face_models: score_faces
-            .then(|| installed("ultraface-rfb640").zip(installed("hsemotion-enet-b2")))
+            .then(|| {
+                let detector = installed("ultraface-rfb640")?;
+                let emotion = installed("hsemotion-enet-b2")?;
+                #[cfg(windows)]
+                let runtime = Some(installed("onnxruntime-win-x64")?);
+                #[cfg(not(windows))]
+                let runtime = None;
+                Some(FaceAssets {
+                    runtime,
+                    detector,
+                    emotion,
+                })
+            })
             .flatten(),
         transcription_model: installed("whisper-large-v3-turbo"),
+        transcription_acceleration: acceleration.transcription,
         video_transcription_enabled: bool_of(
             "videoTranscriptionEnabled",
             defaults.video_transcription_enabled,
@@ -187,14 +212,14 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
             defaults.audio_transcription_enabled,
         ),
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
-    }
+    })
 }
 
 pub fn work_capabilities(
     data_root: &Path,
 ) -> Result<crate::derived_state::WorkCapabilities, String> {
     let config = crate::storage::read_config_for_setup(data_root)?;
-    let settings = settings_from_config(config.as_ref(), data_root);
+    let settings = settings_from_config(config.as_ref(), data_root)?;
     Ok(settings.capabilities())
 }
 
@@ -273,7 +298,9 @@ fn required_priority_pending(selected: Option<&str>, visible: &[String]) -> bool
     let Ok(config) = crate::storage::read_config_for_setup(data_root) else {
         return false;
     };
-    let settings = settings_from_config(config.as_ref(), data_root);
+    let Ok(settings) = settings_from_config(config.as_ref(), data_root) else {
+        return false;
+    };
     let Ok(conn) = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))
     else {
         return false;
@@ -401,7 +428,7 @@ pub fn ensure_preview(
 ) -> Result<String, String> {
     let _active = crate::derived_runtime::begin_manual(app, WorkClass::Previews.id())?;
     crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
-    let settings = settings_from_config(config, data_root);
+    let settings = settings_from_config(config, data_root)?;
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
     let result = crate::preview::derive_one(
@@ -437,7 +464,7 @@ pub fn ensure_preview(
 fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
     let data_root = crate::DATA_ROOT.get().ok_or("data root unset")?.clone();
     let config = crate::storage::read_config_for_setup(&data_root)?;
-    let settings = settings_from_config(config.as_ref(), &data_root);
+    let settings = settings_from_config(config.as_ref(), &data_root)?;
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     crate::similarity::ensure_config_current(&conn, &settings.similarity)?;
     let cache = CachePaths::new(settings.cache_root.clone());
@@ -809,14 +836,18 @@ fn run_optional_class(
             if !foreground && cursor.exhausted {
                 return Ok(false);
             }
-            let Some((detector, emotion)) = settings.face_models.as_ref() else {
+            let Some(assets) = settings.face_models.as_ref() else {
                 return Ok(false);
             };
             let result = with_active(app, class, || {
                 crate::face::face_scores_pending(
                     conn,
                     cache,
-                    Some((detector.as_path(), emotion.as_path())),
+                    Some((
+                        assets.runtime.as_deref(),
+                        assets.detector.as_path(),
+                        assets.emotion.as_path(),
+                    )),
                     priority,
                     |hash| crate::derived_runtime::active_item(app, class, hash),
                     |hash| notify_item_update(app, conn, projection, "faces", hash, hash),
@@ -870,6 +901,7 @@ fn run_optional_class(
                 temp_dir: &settings.temp_dir,
                 model,
                 ffmpeg,
+                transcription_acceleration: settings.transcription_acceleration,
                 app,
                 projection,
             };
@@ -1042,6 +1074,7 @@ struct TranscriptContext<'a> {
     temp_dir: &'a Path,
     model: &'a Path,
     ffmpeg: &'a Path,
+    transcription_acceleration: crate::ai_acceleration::Mode,
     app: &'a AppHandle,
     projection: crate::queries::ItemProjectionContext,
 }
@@ -1177,6 +1210,7 @@ fn transcribe_next(
         Path::new(&path),
         &hash,
         false,
+        context.transcription_acceleration,
         {
             let progress_handle = context.app.clone();
             let progress_hash = hash.clone();
