@@ -20,12 +20,14 @@ test("privacy gate accepts portable facts and rejects private fields and paths",
     { hostname: "private" },
     { username: "private" },
     { transcript: "hello" },
+    { driveIdentity: "private" },
     { nested: { commandLine: "cargo test" } },
     { failure: "C:\\Users\\Someone\\secret.jpg" },
     { failure: "/Users/someone/secret.jpg" },
   ]) {
     assert.throws(() => assertPrivacySafe(candidate), /prohibited|path-shaped/);
   }
+  assert.equal(assertPrivacySafe({ driver: { sha256: "a".repeat(64) } }).driver.sha256.length, 64);
   assert.deepEqual(safeFailure("fixture", new Error("C:\\Users\\Me\\secret.jpg")), {
     category: "fixture",
     message: "<local-path>",

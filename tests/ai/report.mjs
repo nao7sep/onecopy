@@ -1,7 +1,7 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
-const FORBIDDEN_KEYS = /(host.?name|user.?name|absolute.?path|(^|_)path$|home.?dir|environment|command.?line|git.?remote|transcript|embedding|raw.?content|serial|drive)/i;
+const FORBIDDEN_KEYS = /(host.?name|user.?name|absolute.?path|(^|_)path$|home.?dir|environment|command.?line|git.?remote|transcript|embedding|raw.?content|serial|drive.?(identity|id))/i;
 const PATH_VALUE = /(?:^[a-z]:[\\/]|^\\\\|^\/(?:Users|home|var|tmp|private|opt|mnt)\/|[\\/](?:Users|home)[\\/])/i;
 
 export function assertPrivacySafe(value, location = "result") {
