@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { compare } from "./compare.mjs";
 import { assertPrivacySafe, compatibleResults, safeFailure, writeAtomicReport } from "./report.mjs";
 
 const result = {
@@ -49,6 +50,42 @@ test("partial reports are atomically replaceable", () => {
     writeAtomicReport(path, { ...result, outcome: "running" });
     writeAtomicReport(path, result);
     assert.equal(JSON.parse(readFileSync(path, "utf8")).outcome, "passed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("comparison includes aggregate engine phases and correctness equivalence", () => {
+  const root = join(tmpdir(), `onecopy-ai-compare-${process.pid}-${Date.now()}`);
+  mkdirSync(root);
+  const leftPath = join(root, "left.json");
+  const rightPath = join(root, "right.json");
+  const measured = {
+    ...result,
+    source: { commit: "a".repeat(40) },
+    binary: { sha256: "c".repeat(64) },
+    cases: [{
+      ...result.cases[0],
+      outcome: "passed",
+      effectiveAcceleration: "none",
+      correctness: { ready: 1 },
+      totalWallMs: 10,
+      peakProcessTreeBytes: 100,
+      phases: {
+        queueWaitMs: 4,
+        engine: [
+          { feature: "face", phase: "inference", wallMs: 2 },
+          { feature: "face", phase: "inference", wallMs: 3 },
+        ],
+      },
+    }],
+  };
+  try {
+    writeAtomicReport(leftPath, measured);
+    writeAtomicReport(rightPath, measured);
+    const comparison = compare(leftPath, rightPath).cases[0];
+    assert.equal(comparison.correctnessEquivalent, true);
+    assert.equal(comparison.phaseTimeRatios["engine.face.inference"], 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
