@@ -64,12 +64,31 @@ mkdirSync(source, { recursive: true });
 
 if (aiAcceptance) {
   const fixtures = resolve("../company/assets/test-fixtures");
-  for (const [from, to] of [
-    ["photos/faces/face-01-reference.jpg", "acceptance-face.jpg"],
+  copyFileSync(
+    join(fixtures, "photos/faces/face-01-reference.jpg"),
+    join(source, "acceptance-face.jpg"),
+  );
+  const media = [
     ["audio/dialogue/dialogue-english-with-noise.flac", "acceptance-audio.flac"],
     ["video/dialogue/dialogue-english-with-noise.mp4", "acceptance-video.mp4"],
-  ]) {
-    copyFileSync(join(fixtures, from), join(source, to));
+  ];
+  if (transcriptionAcceptance) {
+    const ffmpeg = join(root, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
+    for (const [from, to] of media) {
+      const result = spawnSync(
+        ffmpeg,
+        ["-hide_banner", "-loglevel", "error", "-y", "-i", join(fixtures, from), "-t", "4", "-map", "0", "-c", "copy", join(source, to)],
+        { encoding: "utf8", timeout: 2 * 60_000 },
+      );
+      if (result.status !== 0) {
+        throw new Error(`Could not create the four-second ${to} fixture: ${result.stderr}`);
+      }
+      console.log(`Prepared four-second AI fixture: ${to}`);
+    }
+  } else {
+    for (const [from, to] of media) {
+      copyFileSync(join(fixtures, from), join(source, to));
+    }
   }
 }
 

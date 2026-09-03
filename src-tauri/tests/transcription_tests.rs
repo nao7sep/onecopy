@@ -305,58 +305,83 @@ fn live_tiny_model_transcribes_the_canonical_sample() {
     assert!(text.contains("country"), "the known phrase must be heard: {text}");
 }
 
-// LIVE: uses ONECOPY_TEST_WHISPER_MODEL when supplied, otherwise downloads
-// the exact production model (~1.6 GB), transcribes the
-// shared synthetic noisy dialogue with a long silent tail, and rejects the
-// phrase-loop shape reported during dogfooding. This is deliberately separate
-// from the tiny linked-engine smoke above: model behavior is the fact under
-// test. Run explicitly by name with --ignored and one test thread.
+// LIVE: the routine cross-machine acceptance uses one short production-model
+// inference. It is deliberately separate from the tiny linked-engine control:
+// model compatibility and output are the facts under test.
 #[test]
 #[ignore]
 #[serial(transcription)]
-fn live_production_model_transcribes_canonical_audio_and_video_without_loops() {
+fn live_production_model_transcribes_short_canonical_audio() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-transcribe-production-live-")
         .tempdir()
         .unwrap();
     let model = production_model(dir.path());
     let ffmpeg = live_ffmpeg(&dir.path().join("managed-tools"));
-    for (kind, fixture) in production_transcription_fixtures() {
-        let extraction_started = std::time::Instant::now();
-        let mut pcm = extract_pcm(
-            &ffmpeg,
-            &fixture,
-            &dir.path().join(format!("pcm-{kind}")),
-        )
+    let (_, fixture) = production_transcription_fixtures()
+        .into_iter()
+        .find(|(kind, _)| *kind == "audio")
         .unwrap();
-        eprintln!("{kind} PCM extraction: {:?}", extraction_started.elapsed());
-        if kind == "video" {
-            // Reproduce the dogfood failure shape: ordinary speech followed by
-            // enough silence to tempt a decoder into repeating its last phrase.
-            pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
-        }
+    let extraction_started = std::time::Instant::now();
+    let mut pcm = extract_pcm(&ffmpeg, &fixture, &dir.path().join("pcm-short")).unwrap();
+    pcm.truncate(4 * SAMPLE_RATE as usize);
+    eprintln!("short PCM extraction: {:?}", extraction_started.elapsed());
 
-        let inference_started = std::time::Instant::now();
-        let segments = run_whisper(&model, &pcm, |_| {}).unwrap();
-        eprintln!("{kind} production inference: {:?}", inference_started.elapsed());
-        for segment in &segments {
-            eprintln!("{kind} {} ms: {}", segment.start_ms, segment.text);
-        }
-        let transcript = render(&segments);
-        let normalized = transcript.to_lowercase();
-        // Stable semantic stems tolerate harmless morphology (photo vs
-        // photograph, share vs sharing) without accepting unrelated speech.
-        for expected in ["photo", "file", "coordinate", "shar"] {
-            assert!(
-                normalized.contains(expected),
-                "{kind} fixture must contain {expected:?}: {transcript}"
-            );
-        }
+    let inference_started = std::time::Instant::now();
+    let segments = run_whisper(&model, &pcm, |progress| {
+        eprintln!("production progress {progress}%")
+    })
+    .unwrap();
+    eprintln!(
+        "short production inference: {:?}",
+        inference_started.elapsed()
+    );
+    let transcript = render(&segments);
+    eprintln!("short production transcript: {transcript}");
+    assert!(
+        transcript.to_lowercase().contains("photo"),
+        "the first canonical sentence must be heard: {transcript}"
+    );
+    assert!(
+        !segments_have_phrase_loop(&segments),
+        "short decoder output contains a phrase loop: {transcript}"
+    );
+}
+
+// LIVE: the longer dogfood regression remains separately callable, but is not
+// part of routine four-machine acceptance. It uses the production model and a
+// 45-second silent tail to reproduce the historical phrase-loop shape.
+#[test]
+#[ignore]
+#[serial(transcription)]
+fn live_production_model_does_not_loop_into_a_long_silent_tail() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-transcribe-production-loop-live-")
+        .tempdir()
+        .unwrap();
+    let model = production_model(dir.path());
+    let ffmpeg = live_ffmpeg(&dir.path().join("managed-tools"));
+    let (_, fixture) = production_transcription_fixtures()
+        .into_iter()
+        .find(|(kind, _)| *kind == "video")
+        .unwrap();
+    let mut pcm = extract_pcm(&ffmpeg, &fixture, &dir.path().join("pcm-loop")).unwrap();
+    pcm.resize(pcm.len() + 45 * SAMPLE_RATE as usize, 0.0);
+    let segments = run_whisper(&model, &pcm, |progress| {
+        eprintln!("long-tail progress {progress}%")
+    })
+    .unwrap();
+    let transcript = render(&segments);
+    for expected in ["photo", "file", "coordinate", "shar"] {
         assert!(
-            !segments_have_phrase_loop(&segments),
-            "{kind} decoder emitted a repeated phrase loop: {transcript}"
+            transcript.to_lowercase().contains(expected),
+            "long-tail fixture must contain {expected:?}: {transcript}"
         );
     }
+    assert!(
+        !segments_have_phrase_loop(&segments),
+        "decoder emitted a repeated phrase loop: {transcript}"
+    );
 }
 
 fn production_model(_temp_dir: &Path) -> PathBuf {
