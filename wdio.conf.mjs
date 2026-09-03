@@ -6,21 +6,14 @@ const binary = resolve(
     ? "src-tauri/target/debug/onecopy.exe"
     : "src-tauri/target/debug/onecopy",
 );
-const aiAcceptance = process.env.ONECOPY_AI_ACCEPTANCE === "1";
 const home = process.env.ONECOPY_E2E_HOME ??
-  (aiAcceptance
-    ? resolve("src-tauri/target/ai-acceptance-home")
-    : join(tmpdir(), "onecopy-wdio-acceptance"));
+  join(tmpdir(), "onecopy-wdio-acceptance");
 process.env.ONECOPY_E2E_HOME = home;
 process.env.ONECOPY_HOME = home;
 
 export const config = {
   runner: "local",
-  specs: [
-    aiAcceptance
-      ? "./tests/acceptance/ai-features.e2e.mjs"
-      : "./tests/acceptance/initialization.e2e.mjs",
-  ],
+  specs: ["./tests/acceptance/initialization.e2e.mjs"],
   maxInstances: 1,
   capabilities: [
     {
@@ -42,11 +35,11 @@ export const config = {
   framework: "mocha",
   reporters: ["spec"],
   logLevel: "warn",
-  waitforTimeout: aiAcceptance ? 12 * 60 * 60 * 1_000 : 5 * 60_000,
+  waitforTimeout: 5 * 60_000,
   connectionRetryTimeout: 5 * 60_000,
   connectionRetryCount: 1,
   mochaOpts: {
     ui: "bdd",
-    timeout: aiAcceptance ? 12 * 60 * 60 * 1_000 : 10 * 60_000,
+    timeout: 10 * 60_000,
   },
 };

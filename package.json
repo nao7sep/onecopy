@@ -19,7 +19,6 @@
     "build:e2e:frontend": "vite build --mode e2e",
     "build:e2e": "tauri build --debug --no-bundle --features app-e2e --config src-tauri/tauri.e2e.conf.json",
     "test:e2e": "npm run build:e2e && node scripts/prepare-e2e.mjs && wdio run wdio.conf.mjs",
-    "test:ai:acceptance": "node scripts/run-ai-acceptance.mjs",
     "test:watch": "vitest",
     "tauri": "tauri",
     "test:coverage": "vitest run --coverage",

@@ -3711,7 +3711,6 @@ dependencies = [
  "tauri-plugin-wdio-webdriver",
  "tempfile",
  "tokio",
- "ureq",
  "walkdir",
  "webp",
  "whisper-rs",

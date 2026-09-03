@@ -25,19 +25,6 @@ OneCopy never empties or prunes this storage on its own. The *OneCopy Trash…* 
 
 Grab the installer or portable build for your OS from [Releases](https://github.com/nao7sep/onecopy/releases/latest). The builds are unsigned: on macOS, right-click the app and choose **Open** the first time; on Windows, SmartScreen → **More info** → **Run anyway**. First launch asks for the source directories and default timezone, explains the preparation OneCopy always needs, and lets you review optional background analysis. Managed tools and models are never downloaded merely because an optional feature is enabled.
 
-## AI acceptance on a real computer
-
-Close OneCopy first. With this repository and `company` checked out beside each other, run the same commands on macOS and Windows:
-
-```text
-npm ci --allow-remote=all
-npm run test:ai:acceptance
-```
-
-The first run downloads and verifies the pinned managed artifacts, including the roughly 1.6 GB production Whisper model. They remain under `src-tauri/target/ai-acceptance-home` for later runs. The command tests the face detector and expression model against the canonical synthetic portrait corpus, checks the Whisper engine against its pinned control, and checks the production model directly with the first four seconds of the canonical audio. It then launches the real feature-gated desktop app with four-second audio and video fixtures plus a face fixture, verifying source admission, coordinated background execution, durable results, IPC, and presentation for every AI feature. Slow inference does not fail the test; each phase allows up to 12 hours and reports elapsed time separately.
-
-The final machine-readable result is `src-tauri/target/ai-acceptance-home/acceptance-result.json`; it includes the host, both repository revisions, fixture digests, phase results, and timings. Save one copy from each test computer. A normal app build excludes the WebDriver backend and guest bridge entirely.
-
 ## Run from source
 
 For a production-faithful compiled build, double-click `scripts/rebuild.command` on macOS or run `scripts/rebuild.ps1` on Windows. Once built, `scripts/run-built.command` / `scripts/run-built.ps1` launches the existing binary without rebuilding. For live-reload development, use `scripts/run-dev.command` / `scripts/run-dev.ps1`.

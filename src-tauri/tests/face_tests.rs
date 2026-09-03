@@ -1,15 +1,10 @@
-// Face scoring's model-free contracts (Phase 28 test doctrine): the ordering
-// the score buys, the fallback a model-less install keeps, and the pure
-// geometry the detector's post-processing runs on. The LIVE test at the
-// bottom downloads the real pinned artifacts and proves the runtime binding
-// against a face-free image — the sanity floor that needs no real faces in
-// the corpus.
+// Face scoring's model-free contracts: ordering, model-less fallback, and the
+// pure geometry used by detector post-processing. Real models belong to the
+// separately prepared live-integration and benchmark surfaces.
 
 use onecopy_lib::face::{self, Face};
 use onecopy_lib::{index_store, queries};
 use rusqlite::{params, Connection};
-
-mod support;
 
 fn db() -> Connection {
     let dir = tempfile::Builder::new().prefix("onecopy-face-db-").tempdir().unwrap();
@@ -19,7 +14,6 @@ fn db() -> Connection {
     std::mem::forget(dir);
     conn
 }
-
 fn seed_image(conn: &Connection, hash: &str, name: &str) {
     conn.execute(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, sharpness) \
@@ -34,7 +28,6 @@ fn seed_image(conn: &Connection, hash: &str, name: &str) {
     )
     .unwrap();
 }
-
 fn group(conn: &Connection, hashes: &[&str]) {
     conn.execute("INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x')", [])
         .unwrap();
@@ -183,143 +176,4 @@ fn iou_and_softmax_hold_their_edges() {
     assert!(face::softmax(&[]).is_empty());
     // Large logits must not overflow to NaN — the stability the max-shift buys.
     assert!(face::softmax(&[1000.0, 999.0]).iter().all(|p| p.is_finite()));
-}
-
-// Run with `cargo test live_face_models -- --ignored --nocapture`.
-#[test]
-#[ignore]
-fn live_face_models_score_canonical_company_fixtures() {
-    #[cfg(windows)]
-    let runtime = Some(support::ensure_managed("onnxruntime-win-x64"));
-    #[cfg(not(windows))]
-    let runtime: Option<std::path::PathBuf> = None;
-    let detector = support::ensure_managed("ultraface-rfb640");
-    let emotion = support::ensure_managed("hsemotion-enet-b2");
-
-    // A gradient has structure but no face; a broken binding (wrong output
-    // wiring, wrong preprocessing) shows up as phantom faces or an error.
-    let gradient = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(640, 480, |x, y| {
-        image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
-    }));
-    let load_started = std::time::Instant::now();
-    let mut scorer = face::FaceScorer::load(runtime.as_deref(), &detector, &emotion).unwrap();
-    let load_elapsed = load_started.elapsed();
-    let score_started = std::time::Instant::now();
-    let score = scorer.score(&gradient).unwrap();
-    let score_elapsed = score_started.elapsed();
-    eprintln!("face-free gradient scored {score} in {score_elapsed:?}");
-    assert_eq!(score, 0.0, "no face may be found where none exists");
-
-    // Every graph run either observes termination or completes inside the pause
-    // budget before the signal can matter.
-    {
-        let finished = std::sync::atomic::AtomicBool::new(false);
-        let cancelled_started = std::time::Instant::now();
-        let result = std::thread::scope(|scope| {
-            let canceller = scope.spawn(|| {
-                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
-                    face::request_cancel();
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-            });
-            let result = scorer.score(&gradient);
-            finished.store(true, std::sync::atomic::Ordering::Relaxed);
-            canceller.join().unwrap();
-            result
-        });
-        let cancelled_elapsed = cancelled_started.elapsed();
-        assert!(
-            cancelled_elapsed < std::time::Duration::from_secs(1),
-            "face inference held the boundary for {cancelled_elapsed:?}"
-        );
-        eprintln!(
-            "face inference settled after cancellation in {cancelled_elapsed:?}: {}",
-            if result.is_err() { "terminated" } else { "completed" }
-        );
-    }
-
-    let full_frame = Face {
-        confidence: 1.0,
-        x1: 0.0,
-        y1: 0.0,
-        x2: 1.0,
-        y2: 1.0,
-    };
-    let smile_started = std::time::Instant::now();
-    assert!(scorer.smile(&gradient, &full_frame).unwrap().is_finite());
-    let smile_elapsed = smile_started.elapsed();
-    eprintln!("expression inference completed in {smile_elapsed:?}");
-    {
-        let finished = std::sync::atomic::AtomicBool::new(false);
-        let cancelled_started = std::time::Instant::now();
-        let result = std::thread::scope(|scope| {
-            let canceller = scope.spawn(|| {
-                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
-                    face::request_cancel();
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-            });
-            let result = scorer.smile(&gradient, &full_frame);
-            finished.store(true, std::sync::atomic::Ordering::Relaxed);
-            canceller.join().unwrap();
-            result
-        });
-        let cancelled_elapsed = cancelled_started.elapsed();
-        assert!(
-            cancelled_elapsed < std::time::Duration::from_secs(1),
-            "expression inference held the boundary for {cancelled_elapsed:?}"
-        );
-        eprintln!(
-            "expression inference settled after cancellation in {cancelled_elapsed:?}: {}",
-            if result.is_err() { "terminated" } else { "completed" }
-        );
-    }
-
-    // The canonical company corpus is synthetic and stable. Each portrait is
-    // specified as one fictional adult; this proves detector threshold/NMS,
-    // the eight-class expression graph, and the composite score together.
-    let root = support::company_fixtures().join("photos/faces");
-    let mut portraits = std::fs::read_dir(&root)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("face-") && name.ends_with(".jpg"))
-        })
-        .collect::<Vec<_>>();
-    portraits.sort();
-    assert_eq!(portraits.len(), 12, "six reference/variation fixture pairs");
-    let inference_started = std::time::Instant::now();
-    for path in &portraits {
-        let image = image::open(path).unwrap();
-        let started = std::time::Instant::now();
-        let faces = scorer.detect(&image).unwrap();
-        assert!(!faces.is_empty(), "the portrait face is found in {}", path.display());
-        eprintln!("{} detections: {faces:?}", path.file_name().unwrap().to_string_lossy());
-        let scored_faces = faces
-            .iter()
-            .map(|face| {
-                let happiness = scorer.smile(&image, face).unwrap();
-                assert!((0.0..=1.0).contains(&happiness));
-                (happiness, face.confidence * (0.5 + 0.5 * happiness))
-            })
-            .collect::<Vec<_>>();
-        let score = scored_faces
-            .iter()
-            .map(|(_, score)| *score)
-            .fold(0.0_f32, f32::max);
-        eprintln!(
-            "{}\tfaces={}\tscored={scored_faces:?}\tbest={score:.6}\t{:?}",
-            path.file_name().unwrap().to_string_lossy(),
-            faces.len(),
-            started.elapsed()
-        );
-        assert!((0.5..=1.0).contains(&score));
-    }
-    eprintln!(
-        "model load: {load_elapsed:?}; canonical inference total: {:?}; portraits: {}",
-        inference_started.elapsed(),
-        portraits.len()
-    );
 }
