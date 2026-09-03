@@ -159,6 +159,13 @@ impl FaceScorer {
         detector_model: &Path,
         emotion_model: &Path,
     ) -> Result<FaceScorer, String> {
+        #[cfg(feature = "app-e2e")]
+        let _timing = crate::ai_test_instrumentation::Span::begin("face", "model-initialization");
+        #[cfg(feature = "app-e2e")]
+        crate::ai_test_instrumentation::acceleration(
+            crate::ai_acceleration::Mode::None,
+            crate::ai_acceleration::Mode::None,
+        );
         crate::resource_limits::require_available(
             crate::resource_limits::FACE_REQUIRED_AVAILABLE,
             "Face scoring",
@@ -342,6 +349,8 @@ impl FaceScorer {
     /// The composite: 0.0 = no face; otherwise the best face's
     /// `conf × (0.5 + 0.5 × P(happiness))`.
     pub fn score(&mut self, img: &DynamicImage) -> Result<f32, String> {
+        #[cfg(feature = "app-e2e")]
+        let _timing = crate::ai_test_instrumentation::Span::begin("face", "inference");
         let mut best = 0.0_f32;
         for face in self.detect(img)? {
             if crate::derived_runtime::cancelled() {
@@ -458,6 +467,9 @@ pub fn face_scores_pending(
             .and_then(|img| scorer.score(&img));
         match outcome {
             Ok(score) => {
+                #[cfg(feature = "app-e2e")]
+                let _timing =
+                    crate::ai_test_instrumentation::Span::begin("face", "durable-publication");
                 crate::derived_state::record_face_success(conn, &hash, &path, score as f64)?;
                 on_change(&hash);
                 stats.scored += 1;

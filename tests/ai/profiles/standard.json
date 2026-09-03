@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "profileId": "onecopy-standard-ai",
+  "profileVersion": 1,
+  "cases": [
+    {
+      "id": "face",
+      "surface": "app",
+      "models": ["ultraface-rfb640", "hsemotion-enet-b2"],
+      "fixtures": [
+        { "basename": "face-01-reference.jpg", "sha256": "e0a29520f9e871415d289eea9589b05671f6c6c5b179848ba386d9ebb0dc1917", "bytes": 54778 },
+        { "basename": "face-01-variation.jpg", "sha256": "fe2eda47682fbf5e8436c0c0fcb460c328431333dfdfa0026d6f11d064f379e8", "bytes": 52345 },
+        { "basename": "face-02-reference.jpg", "sha256": "91c4e331cdbfbb309133b25009243fc3b542d25339b7d87d6f438fdbd812b223", "bytes": 45721 },
+        { "basename": "face-02-variation.jpg", "sha256": "6f1b0e88171a250ad2bc2a1830f46c3e69289c00d52f8ae99b0e19951daddd19", "bytes": 43431 },
+        { "basename": "face-03-reference.jpg", "sha256": "018e0d3cdf14e5faeb5a01b5ee41daac747f055ee80e33c9a5b02b17d5239e57", "bytes": 49395 },
+        { "basename": "face-03-variation.jpg", "sha256": "feb5d41c04392c5ec18535df7a1cb83b427cd687752e10454826e4b20e1ec598", "bytes": 47658 },
+        { "basename": "face-04-reference.jpg", "sha256": "609688e6be7f27a9682ac7a0cf5f7e513b5306885da429ebbc74df4bfd664607", "bytes": 47447 },
+        { "basename": "face-04-variation.jpg", "sha256": "9fe42f7b288f10b8fe99a1a815fb3aa886844398d25b08dd68d3fef730fad92b", "bytes": 43344 },
+        { "basename": "face-05-reference.jpg", "sha256": "899c75b507ed54d6e363fa38e03d1ead50bbab82f9193d6687299da1b2791b9b", "bytes": 63335 },
+        { "basename": "face-05-variation.jpg", "sha256": "0af9bdc32b921144924c92f1b4ec1e5ee8eac7d6dcd3740d19747a9e886163e5", "bytes": 53496 },
+        { "basename": "face-06-reference.jpg", "sha256": "73d88911b4e3936896ee439f98e552a44bbdd56b19244830ff31e9a71c27c518", "bytes": 57394 },
+        { "basename": "face-06-variation.jpg", "sha256": "55c47a914d0f1dd1584691836572d68571b8db582c9003d7dbc6bc2a6f986ed6", "bytes": 54240 }
+      ],
+      "oracle": { "minimumReady": 12, "minimumScore": 0.01, "maximumScore": 1 },
+      "timeoutMs": 14400000,
+      "repetitions": 1,
+      "cache": "cold"
+    },
+    {
+      "id": "audio-transcription",
+      "surface": "app",
+      "models": ["whisper-large-v3-turbo"],
+      "fixtures": [
+        { "basename": "dialogue-english-with-noise.flac", "sha256": "fe91bfa1e93803bbd563a53c0c2fc8ab458fc73d869776c9efad482639de7736", "bytes": 1406475 }
+      ],
+      "oracle": {
+        "semanticTerms": ["upload", "photograph", "noon", "file", "location", "coordinates", "sharing"],
+        "minimumTermMatches": 4,
+        "rejectPhraseLoop": true
+      },
+      "timeoutMs": 14400000,
+      "repetitions": 1,
+      "cache": "cold"
+    },
+    {
+      "id": "video-transcription",
+      "surface": "app",
+      "models": ["whisper-large-v3-turbo"],
+      "fixtures": [
+        { "basename": "dialogue-english-with-noise.mp4", "sha256": "5480c2c3ee2b237f8830fd969e59d8da91971eb8ee9b2f5ce1f390bba68e6b04", "bytes": 234478 }
+      ],
+      "oracle": {
+        "semanticTerms": ["upload", "photograph", "noon", "file", "location", "coordinates", "sharing"],
+        "minimumTermMatches": 4,
+        "rejectPhraseLoop": true
+      },
+      "timeoutMs": 14400000,
+      "repetitions": 1,
+      "cache": "cold"
+    }
+  ]
+}

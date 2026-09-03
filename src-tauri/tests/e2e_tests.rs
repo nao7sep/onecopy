@@ -125,7 +125,7 @@ fn scan(conn: &Connection, world: &World) -> Result<scanner::ScanSummary, String
 
 fn derive_all(conn: &Connection, world: &World) {
     let config = serde_json::json!({});
-    let settings = derived_work::settings_from_config(Some(&config), &world.home);
+    let settings = derived_work::settings_from_config(Some(&config), &world.home).unwrap();
     let cache = CachePaths::new(settings.cache_root.clone());
     let stats = preview::derive_images_pending(
         conn,

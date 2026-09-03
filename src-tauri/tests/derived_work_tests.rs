@@ -90,7 +90,7 @@ fn selected_visible_and_section_backlog_keep_their_priority_without_duplicates()
     )
     .unwrap();
 
-    let settings = settings_from_config(None, dir.path());
+    let settings = settings_from_config(None, dir.path()).unwrap();
     let section = SectionPriority {
         kind: "image".to_string(),
         start_ms: Some(100),
@@ -138,7 +138,7 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
     )
     .unwrap();
 
-    let mut settings = settings_from_config(None, dir.path());
+    let mut settings = settings_from_config(None, dir.path()).unwrap();
     settings.ffmpeg = Some(dir.path().join("ffmpeg"));
     settings.face_enabled = true;
     settings.face_models = Some(FaceAssets {

@@ -67,6 +67,10 @@ Each optional feature has its own durable Settings choice and defaults on when r
 
 Every supported desktop platform exposes the same optional feature set. Hardware acceleration is an implementation optimization, not a product capability boundary: an accelerator backend remains unsupported until its packaged correctness, cancellation, memory, responsiveness, fallback, and shutdown behavior pass physical acceptance, while the platform retains a reliable CPU path. In particular, Windows keeps face scoring and transcription available without claiming Vulkan, DirectML, CUDA, or another unaccepted accelerator.
 
+Settings exposes acceleration per AI engine rather than one application-wide switch. The backend supplies a typed capability list for the current packaged binary and platform; the interface derives its choices from that list so a future Windows-only backend can be added without duplicating platform rules in the interface. `CPU only` is always available. Apple-silicon macOS additionally offers `Metal` for the shared transcription engine; face scoring has only the CPU path until another backend passes acceptance. Audio and video share the selected transcription acceleration because they share one engine, while their enablement remains independent.
+
+The selected acceleration is durable and takes effect for new work after the current heavy operation reaches its safe boundary; changing it never requires recompilation or a separately built application. A distributed binary contains every backend it offers in its capability list. An absent setting uses the accepted platform default: Metal for transcription on Apple-silicon macOS and CPU-only otherwise. A saved backend that the current binary or platform does not offer is contained as an explicit configuration failure and never silently falls back or disables the feature. Resource-safety limits remain mandatory for every backend.
+
 The first-launch wizard separates `OneCopy always prepares` from `Additional features`. The required section explains the unswitched identity, metadata, companion, thumbnail, preview, video-playback, and live-watching work. The additional-features section provides switches only for optional enrichment.
 
 When a concrete prerequisite or enforced storage or memory safety check makes an optional feature unavailable, its wizard switch starts off and explains the condition. The user may still choose the feature, but unavailability is never represented as running or completed work, and the application retains its error-containment and resource-safety boundaries.
@@ -128,7 +132,7 @@ Database publication and user-visible state remain single-owned even when image 
 
 ## Transcription generation
 
-Supported videos with audio and supported audio files are eligible for transcription. Images and generic non-audio Other files are not. Video and audio have separate automatic-transcription settings, each enabled by default when runnable. Apple-silicon macOS uses the accepted Metal backend; Windows uses the portable CPU backend until an accelerator independently passes the release bar.
+Supported videos with audio and supported audio files are eligible for transcription. Images and generic non-audio Other files are not. Video and audio have separate automatic-transcription settings, each enabled by default when runnable. The shared transcription engine uses the persisted platform-aware acceleration choice described above. Apple-silicon macOS defaults to its accepted Metal backend but can be switched to CPU-only; Windows currently offers and defaults to the portable CPU backend until another packaged accelerator independently passes the release bar.
 
 Transcription detects spoken language automatically. OneCopy does not add a language selector or translation mode to this lifecycle. A completed attempt that finds no speech records `Checked — no speech found` as a successful empty result rather than remaining pending or failed.
 

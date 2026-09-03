@@ -10,7 +10,28 @@ import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 const config = {
   sourceDirs: ["C:\\Photos"],
   defaultTimezone: "Asia/Tokyo",
+  aiAcceleration: { transcription: "metal", "face-scoring": "none" },
 };
+
+const accelerationCapabilities = [
+  {
+    feature: "transcription",
+    label: "Transcription",
+    selected: "metal",
+    default: "metal",
+    options: [
+      { id: "none", label: "CPU only" },
+      { id: "metal", label: "Metal" },
+    ],
+  },
+  {
+    feature: "face-scoring",
+    label: "Face scoring",
+    selected: "none",
+    default: "none",
+    options: [{ id: "none", label: "CPU only" }],
+  },
+];
 
 beforeEach(() => {
   resetTauriMocks();
@@ -36,7 +57,7 @@ beforeEach(() => {
       },
     }),
   });
-  useSettingsStore.getState().openWith(config);
+  useSettingsStore.getState().openWith(config, null, accelerationCapabilities);
 });
 
 afterEach(() => {
@@ -139,6 +160,20 @@ describe("Settings categories", () => {
     expect(
       (screen.getByLabelText(/Maximum images in Comparison/) as HTMLInputElement).value,
     ).toBe("16");
+  });
+
+  it("renders backend-owned acceleration choices and switches Metal at runtime", () => {
+    render(<SettingsModal />);
+    fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
+
+    const transcription = screen.getByLabelText("Transcription acceleration") as HTMLSelectElement;
+    expect(transcription.value).toBe("metal");
+    fireEvent.change(transcription, { target: { value: "none" } });
+    expect(useSettingsStore.getState().draft?.aiAcceleration).toEqual({
+      transcription: "none",
+      "face-scoring": "none",
+    });
+    expect(screen.getByText("CPU only", { selector: "span" })).toBeTruthy();
   });
 });
 

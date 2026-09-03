@@ -47,6 +47,15 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["scoreFaces"], serde_json::json!(true));
     assert_eq!(value["videoTranscriptionEnabled"], serde_json::json!(true));
     assert_eq!(value["audioTranscriptionEnabled"], serde_json::json!(true));
+    assert_eq!(value["aiAcceleration"]["face-scoring"], "none");
+    assert_eq!(
+        value["aiAcceleration"]["transcription"],
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            "metal"
+        } else {
+            "none"
+        }
+    );
     assert_eq!(value["checkSourceFoldersAtLaunch"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert!(value.get("verifyAfterCopy").is_none());

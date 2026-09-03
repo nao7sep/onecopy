@@ -395,6 +395,9 @@ export default function SettingsModal() {
   const validateTimezone = useSettingsStore((s) => s.validateTimezone);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
+  const accelerationCapabilities = useSettingsStore(
+    (s) => s.accelerationCapabilities,
+  );
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -814,6 +817,57 @@ export default function SettingsModal() {
             checked={draft.scoreFaces}
             onChange={(v) => update({ scoreFaces: v })}
           />
+          {accelerationCapabilities.length > 0 ? (
+            <>
+              <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                AI acceleration
+              </h2>
+              <p className="mb-2 text-xs text-ink-muted">
+                Choices are limited to backends available in this application on this computer.
+                CPU-only keeps every AI feature available without special acceleration.
+              </p>
+              {accelerationCapabilities.map((capability) => {
+                const selected =
+                  draft.aiAcceleration[capability.feature] ?? capability.default;
+                const supported = capability.options.some(
+                  (option) => option.id === selected,
+                );
+                return (
+                  <Row key={capability.feature} label={`${capability.label} acceleration`}>
+                    {capability.options.length === 1 && supported ? (
+                      <span className="text-sm text-ink-muted">
+                        {capability.options[0].label}
+                      </span>
+                    ) : (
+                      <Select
+                        value={selected}
+                        aria-label={`${capability.label} acceleration`}
+                        onChange={(event) =>
+                          update({
+                            aiAcceleration: {
+                              ...draft.aiAcceleration,
+                              [capability.feature]: event.target.value,
+                            },
+                          })
+                        }
+                      >
+                        {!supported ? (
+                          <option value={selected} disabled>
+                            Unavailable: {selected}
+                          </option>
+                        ) : null}
+                        {capability.options.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </Select>
+                    )}
+                  </Row>
+                );
+              })}
+            </>
+          ) : null}
           <CheckField
             label="Show face-score stars on photos"
             checked={draft.showFaceStars}

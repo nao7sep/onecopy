@@ -31,6 +31,7 @@ export function useGlobalCommands() {
     useSettingsStore.getState().openWith(
       appData?.config ?? null,
       appData?.state ?? null,
+      appData?.aiAccelerationCapabilities ?? [],
     );
   }, []);
 
