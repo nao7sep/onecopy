@@ -3,7 +3,7 @@ import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { resolve } from "node:path";
 import { validateParameters, validateResult } from "./contracts.mjs";
 import { indexFixtureRoot, materializeFixtures, resolveFixtures } from "./fixtures.mjs";
-import { dependenciesForCase, loadPrepared } from "./prepared.mjs";
+import { assertPreparedUnchanged, dependenciesForCase, loadPrepared } from "./prepared.mjs";
 import { runOwned } from "./process.mjs";
 import { jsonLineEvents } from "./progress.mjs";
 import { writeAtomicReport } from "./report.mjs";
@@ -96,14 +96,16 @@ export async function runScenarios({
     scenarioExecutable,
     managedRoot,
     preparedContext,
+    preparedGuard,
   } = (edges.loadPrepared ?? loadPrepared)(repositoryRoot, preparedRoot, parameters);
   const executeScenario = edges.runOwned ?? runOwned;
+  const verifyPreparedGuard = edges.assertPreparedUnchanged ?? assertPreparedUnchanged;
   const capabilities = preparedContext.capabilities.map(({ feature, options }) => ({
     feature,
     options: options.map(({ id }) => id),
   }));
   const report = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     profileId: parameters.profileId,
     profileVersion: parameters.profileVersion,
     mode: observe ? "benchmark" : "live",
@@ -141,6 +143,18 @@ export async function runScenarios({
     };
     report.cases.push(caseResult);
     persist();
+    try {
+      verifyPreparedGuard(preparedGuard);
+    } catch {
+      finishCase(caseResult, "failed", {
+        failure: fixedFailure(
+          "prepared-stale",
+          "prepared files changed after complete preflight",
+        ),
+      });
+      persist();
+      break;
+    }
     const caseStarted = process.hrtime.bigint();
 
     let scratch;

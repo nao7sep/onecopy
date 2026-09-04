@@ -15,7 +15,7 @@ import {
 } from "./report.mjs";
 
 const result = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   profileId: "standard",
   profileVersion: 1,
   mode: "benchmark",
@@ -57,6 +57,14 @@ const result = {
     observations: { wallMs: 10, peakProcessTreeBytes: 100, phases: [] },
   }],
 };
+
+function legacyResult() {
+  const legacy = structuredClone(result);
+  legacy.schemaVersion = 2;
+  delete legacy.build;
+  for (const item of legacy.cases) delete item.timeoutMs;
+  return legacy;
+}
 
 test("privacy gate accepts portable facts and rejects private fields and paths", () => {
   assert.equal(assertPrivacySafe(result), result);
@@ -127,6 +135,28 @@ test("result validation rejects incomplete evidence and accepts unavailable fail
   mismatchedAcceleration.cases[0].configuredAcceleration = "none";
   mismatchedAcceleration.cases[0].observedAcceleration = "metal";
   assert.throws(() => validateResult(mismatchedAcceleration), /differs from configuredAcceleration/);
+
+  const missingBuild = structuredClone(result);
+  delete missingBuild.build;
+  assert.throws(() => validateResult(missingBuild), /result.build/);
+  const missingTimeout = structuredClone(result);
+  delete missingTimeout.cases[0].timeoutMs;
+  assert.throws(() => validateResult(missingTimeout), /timeoutMs/);
+});
+
+test("legacy schema v2 remains readable, comparable, and distinct from v3", () => {
+  const left = legacyResult();
+  left.machine.platform = "darwin";
+  left.machine.architecture = "arm64";
+  left.cases[0].scenarioId = "audio-transcription";
+  const right = structuredClone(left);
+  right.cases[0].configuredAcceleration = "metal";
+  right.cases[0].observedAcceleration = "metal";
+
+  assert.equal(validateResult(left), left);
+  assert.equal(validateResult(right), right);
+  assert.deepEqual(compatibleResults(left, right), { machineFactsMatch: true });
+  assert.throws(() => compatibleResults(left, result), /schemaVersion/);
 });
 
 test("partial reports are atomically replaceable", () => {
@@ -203,6 +233,30 @@ test("recovery preserves a completed case when the runner stops between cases", 
     const recovered = validateResult(JSON.parse(readFileSync(path, "utf8")));
     assert.equal(recovered.outcome, "interrupted");
     assert.equal(recovered.cases[0].outcome, "passed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy schema v2 running reports remain recoverable", () => {
+  const root = join(tmpdir(), `onecopy-ai-v2-recovery-${process.pid}-${Date.now()}`);
+  mkdirSync(root);
+  const path = join(root, "result.json");
+  try {
+    const partial = legacyResult();
+    partial.outcome = "running";
+    delete partial.finishedAtUtc;
+    partial.cases[0].outcome = "running";
+    delete partial.cases[0].finishedAtUtc;
+    delete partial.cases[0].correctness;
+    partial.cases[0].observations = null;
+    writeAtomicReport(path, partial);
+
+    assert.equal(recoverInterruptedReport(path), true);
+    const recovered = validateResult(JSON.parse(readFileSync(path, "utf8")));
+    assert.equal(recovered.schemaVersion, 2);
+    assert.equal(recovered.outcome, "interrupted");
+    assert.equal(recovered.cases[0].outcome, "interrupted");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

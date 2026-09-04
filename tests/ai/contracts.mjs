@@ -178,9 +178,10 @@ export function validateParameters(value) {
 
 export function validateResult(value) {
   const result = object(value, "result");
-  if (result.schemaVersion !== 2) {
+  if (result.schemaVersion !== 2 && result.schemaVersion !== 3) {
     throw new TypeError(`unsupported result schema version ${String(result.schemaVersion)}`);
   }
+  const legacy = result.schemaVersion === 2;
   if (!["running", "passed", "failed", "interrupted"].includes(result.outcome)) {
     throw new TypeError("result.outcome is invalid");
   }
@@ -206,7 +207,7 @@ export function validateResult(value) {
   }
   digest(executable.sha256, "result.executable.sha256");
   digest(result.buildManifestSha256, "result.buildManifestSha256");
-  validateBuildFacts(result.build, "result.build");
+  if (!legacy) validateBuildFacts(result.build, "result.build");
   const machine = object(result.machine, "result.machine");
   if (!new Set(["darwin", "win32"]).has(machine.platform)) {
     throw new TypeError("result.machine.platform is invalid");
@@ -236,7 +237,7 @@ export function validateResult(value) {
       throw new TypeError(`result.cases[${index}].outcome is invalid`);
     }
     timestamp(item.startedAtUtc, `result.cases[${index}].startedAtUtc`);
-    integer(item.timeoutMs, `result.cases[${index}].timeoutMs`, 1_000);
+    if (!legacy) integer(item.timeoutMs, `result.cases[${index}].timeoutMs`, 1_000);
     if (item.outcome === "running") {
       if ("finishedAtUtc" in item) {
         throw new TypeError(`result.cases[${index}] running case must not have finishedAtUtc`);
@@ -264,7 +265,7 @@ export function validateResult(value) {
       `result.cases[${index}].configuredAcceleration`);
     const observedAcceleration = acceleration(item.scenarioId, item.observedAcceleration,
       `result.cases[${index}].observedAcceleration`, { nullable: true });
-    if (observedAcceleration !== null && observedAcceleration !== configuredAcceleration) {
+    if (!legacy && observedAcceleration !== null && observedAcceleration !== configuredAcceleration) {
       throw new TypeError(`result.cases[${index}].observedAcceleration differs from configuredAcceleration`);
     }
     if (item.outcome === "passed") {

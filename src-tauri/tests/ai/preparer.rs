@@ -47,9 +47,25 @@ fn run() -> Result<(), String> {
         require_offline_mode()?;
     }
     let context = ai_dependencies::require_prepared(&root, &requirements)?;
+    let artifact_paths = ai_dependencies::dependency_ids(&requirements)
+        .into_iter()
+        .map(|id| {
+            let spec = binaries_manager::spec_of(id)
+                .ok_or_else(|| format!("dependency is not available on this platform: {id}"))?;
+            let path = binaries_manager::installed_path(&root, spec);
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| "prepared artifact path escaped its managed root".to_string())?;
+            Ok(json!({ "id": id, "relativePath": relative }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     println!(
         "{}",
         json!({ "event": "prepared-context", "context": context })
+    );
+    println!(
+        "{}",
+        json!({ "event": "prepared-artifact-paths", "artifacts": artifact_paths })
     );
     Ok(())
 }
