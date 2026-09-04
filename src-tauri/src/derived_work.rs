@@ -889,18 +889,13 @@ fn run_optional_class(
             if !foreground && cursor.exhausted {
                 return Ok(false);
             }
-            let (Some(model), Some(ffmpeg)) = (
-                settings.transcription_model.as_deref(),
-                settings.ffmpeg.as_deref(),
-            ) else {
+            if settings.transcription_model.is_none() || settings.ffmpeg.is_none() {
                 return Ok(false);
-            };
+            }
             let context = TranscriptContext {
                 conn,
                 cache,
-                temp_dir: &settings.temp_dir,
-                model,
-                ffmpeg,
+                data_root: &settings.data_root,
                 transcription_acceleration: settings.transcription_acceleration,
                 app,
                 projection,
@@ -1071,9 +1066,7 @@ struct TranscriptStep {
 struct TranscriptContext<'a> {
     conn: &'a Connection,
     cache: &'a CachePaths,
-    temp_dir: &'a Path,
-    model: &'a Path,
-    ffmpeg: &'a Path,
+    data_root: &'a Path,
     transcription_acceleration: crate::ai_acceleration::Mode,
     app: &'a AppHandle,
     projection: crate::queries::ItemProjectionContext,
@@ -1105,6 +1098,179 @@ pub fn ensure_exact_identity(
     })?;
     crate::scanner::promote_identity(conn, cache, hash, &real)?;
     Ok(real)
+}
+
+pub struct TranscriptionAttempt<'a> {
+    pub conn: &'a Connection,
+    pub cache: &'a CachePaths,
+    pub data_root: &'a Path,
+    pub source_hash: &'a str,
+    pub source_path: &'a str,
+    pub replace_existing: bool,
+    pub acceleration: crate::ai_acceleration::Mode,
+    pub cancel_when: Option<Box<dyn Fn() -> bool + Send + 'static>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TranscriptionAttemptOutcome {
+    Completed { hash: String, text: String },
+    Cancelled { hash: String },
+    Unavailable { hash: String, message: String },
+    ResourceSafety { hash: String, message: String },
+    Failed { hash: String, message: String },
+}
+
+/// Complete one production transcription attempt. Manual and automatic callers
+/// retain their different admission, priority, preemption, and UI-event
+/// responsibilities; this operation owns the common identity, cache reuse,
+/// dependency, engine claim, generation, durable-result, and terminal-
+/// classification boundary.
+pub fn complete_transcription_attempt(
+    attempt: TranscriptionAttempt<'_>,
+    mut on_identity: impl FnMut(&str),
+    on_started: impl FnOnce(&str),
+    mut on_progress: impl FnMut(&str, i32) + 'static,
+) -> Result<TranscriptionAttemptOutcome, String> {
+    let hash = match ensure_exact_identity(
+        attempt.conn,
+        attempt.cache,
+        attempt.source_hash,
+        Path::new(attempt.source_path),
+    ) {
+        Ok(hash) => hash,
+        Err(error) if error == crate::scanner::CANCELLED => {
+            return Ok(TranscriptionAttemptOutcome::Cancelled {
+                hash: attempt.source_hash.to_string(),
+            })
+        }
+        Err(error) => return Err(error),
+    };
+    on_identity(&hash);
+    if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
+        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
+    }
+
+    if !attempt.replace_existing {
+        let existing = crate::derived_state::transcript_result(attempt.conn, attempt.cache, &hash)?;
+        if existing.status == crate::derived_state::READY {
+            return Ok(TranscriptionAttemptOutcome::Completed {
+                hash,
+                text: existing.text.unwrap_or_default(),
+            });
+        }
+    }
+
+    let model_spec = crate::binaries_manager::spec_of("whisper-large-v3-turbo")
+        .ok_or("whisper model is not registered")?;
+    let model_state = crate::binaries_manager::state_of(attempt.data_root, model_spec);
+    if model_state.status == crate::binaries::BinaryStatus::NotInstalled {
+        return Ok(TranscriptionAttemptOutcome::Unavailable {
+            hash,
+            message: "the transcription model is not installed — install it from Managed tools"
+                .to_string(),
+        });
+    }
+    let model = crate::binaries_manager::installed_path(attempt.data_root, model_spec);
+    let ffmpeg = crate::binaries_manager::ffmpeg_path(attempt.data_root);
+    if !ffmpeg.exists() {
+        return Ok(TranscriptionAttemptOutcome::Unavailable {
+            hash,
+            message: "ffmpeg is not installed — install it from Managed tools".to_string(),
+        });
+    }
+    if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
+        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
+    }
+    let claim = crate::transcription::claim()?;
+    let finished = std::sync::Arc::new(AtomicBool::new(false));
+    let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
+    let watch = attempt
+        .cancel_when
+        .map(|cancel_when| {
+            std::thread::Builder::new()
+                .name("onecopy-transcription-cancel-watch".to_string())
+                .spawn(move || loop {
+                    if finished.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if cancel_when() {
+                        crate::transcription::request_cancel();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                })
+                .map_err(|error| {
+                    format!("could not start transcription cancel watcher: {error}")
+                })
+        })
+        .transpose()?;
+    on_started(&hash);
+    let progress_hash = hash.clone();
+
+    let result = crate::transcription::transcribe_to_cache_claimed(
+        &claim,
+        attempt.cache,
+        &attempt
+            .data_root
+            .join(crate::binaries_manager::TEMP_DIR_NAME),
+        Some(&model),
+        Some(&ffmpeg),
+        Path::new(attempt.source_path),
+        &hash,
+        attempt.replace_existing,
+        attempt.acceleration,
+        move |percent| on_progress(&progress_hash, percent),
+    );
+    drop(finish_signal);
+    if let Some(watch) = watch {
+        watch
+            .join()
+            .map_err(crate::failure_runtime::panic_message)?;
+    }
+    // The claim resets cancellation when dropped, so classify while this
+    // operation still has proof that it owns the process-wide Whisper slot.
+    let was_cancelled = crate::transcription::is_cancelled();
+
+    match result {
+        Ok(text) => {
+            crate::derived_state::record_transcript_success(
+                attempt.conn,
+                &hash,
+                attempt.source_path,
+                !text.trim().is_empty(),
+            )?;
+            Ok(TranscriptionAttemptOutcome::Completed { hash, text })
+        }
+        Err(error) if error == crate::scanner::CANCELLED || was_cancelled => {
+            Ok(TranscriptionAttemptOutcome::Cancelled { hash })
+        }
+        Err(error) if crate::resource_limits::is_safety_error(&error) => {
+            Ok(TranscriptionAttemptOutcome::ResourceSafety {
+                hash,
+                message: error,
+            })
+        }
+        Err(error) => {
+            if attempt.replace_existing {
+                crate::derived_state::record_transcript_replacement_failure(
+                    attempt.conn,
+                    attempt.source_path,
+                    &error,
+                )?;
+            } else {
+                crate::derived_state::record_transcript_failure(
+                    attempt.conn,
+                    &hash,
+                    attempt.source_path,
+                    &error,
+                )?;
+            }
+            Ok(TranscriptionAttemptOutcome::Failed {
+                hash,
+                message: error,
+            })
+        }
+    }
 }
 
 fn transcribe_next(
@@ -1139,82 +1305,47 @@ fn transcribe_next(
         });
     };
 
-    let hash = ensure_exact_identity(
-        context.conn,
-        context.cache,
-        &candidate_hash,
-        Path::new(&path),
-    )?;
-    if crate::derived_state::transcript_result(context.conn, context.cache, &hash)?.status
-        == crate::derived_state::READY
-    {
-        return Ok(TranscriptStep {
-            attempted_hash: Some(hash),
-            exhausted: false,
-        });
-    }
     if !foreground && !is_idle() {
         return Ok(TranscriptStep::default());
     }
-    let claim = match crate::transcription::claim() {
-        Ok(claim) => claim,
-        Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
-            return Ok(TranscriptStep::default())
-        }
-        Err(error) => return Err(error),
-    };
-    crate::derived_runtime::active_item(context.app, class, &hash);
-    if candidate_hash != hash {
-        notify_item_update(
-            context.app,
-            context.conn,
-            context.projection,
-            class.id(),
-            &candidate_hash,
-            &hash,
-        );
-    }
-    emit_progress(context.app, class, None);
-    // Audio extraction and model loading happen before Whisper's first
-    // percentage callback; publish ownership now so an open video never
-    // looks pending while its expensive work is already underway.
-    crate::failure_runtime::emit_or_record(
-        context.app,
-        "transcribe://progress",
-        json!({ "hash": hash, "percent": 0 }),
-    );
-    let finished = std::sync::Arc::new(AtomicBool::new(false));
-    let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
-    let watch = std::thread::Builder::new()
-        .name("onecopy-transcription-cancel-watch".to_string())
-        .spawn({
-            let finished = std::sync::Arc::clone(&finished);
-            move || loop {
-                if finished.load(Ordering::SeqCst) {
-                    return;
-                }
-                if (!foreground && !is_idle()) || cancelled() {
-                    crate::transcription::request_cancel();
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500));
+    let result = complete_transcription_attempt(
+        TranscriptionAttempt {
+            conn: context.conn,
+            cache: context.cache,
+            data_root: context.data_root,
+            source_hash: &candidate_hash,
+            source_path: &path,
+            replace_existing: false,
+            acceleration: context.transcription_acceleration,
+            cancel_when: Some(Box::new(move || {
+                (!foreground && !is_idle()) || cancelled()
+            })),
+        },
+        |hash| {
+            if candidate_hash != hash {
+                notify_item_update(
+                    context.app,
+                    context.conn,
+                    context.projection,
+                    class.id(),
+                    &candidate_hash,
+                    hash,
+                );
             }
-        })
-        .map_err(|error| format!("could not start transcription cancel watcher: {error}"))?;
-    let result = crate::transcription::transcribe_to_cache_claimed(
-        &claim,
-        context.cache,
-        context.temp_dir,
-        Some(context.model),
-        Some(context.ffmpeg),
-        Path::new(&path),
-        &hash,
-        false,
-        context.transcription_acceleration,
+        },
+        |hash| {
+            crate::derived_runtime::active_item(context.app, class, hash);
+            emit_progress(context.app, class, None);
+            // Extraction and model loading precede Whisper's first percentage.
+            crate::failure_runtime::emit_or_record(
+                context.app,
+                "transcribe://progress",
+                json!({ "hash": hash, "percent": 0 }),
+            );
+        },
         {
             let progress_handle = context.app.clone();
-            let progress_hash = hash.clone();
-            move |percent| {
+            move |progress_hash, percent| {
                 let percent = percent.clamp(0, 100);
                 record_progress(&progress_handle, class, Some((percent as u64, 100)));
                 crate::failure_runtime::emit_or_record(
@@ -1225,22 +1356,14 @@ fn transcribe_next(
             }
         },
     );
-    drop(finish_signal);
-    watch
-        .join()
-        .map_err(crate::failure_runtime::panic_message)?;
-    // The claim resets cancellation when dropped, so classify this run while
-    // it still owns the Whisper slot.
-    let was_cancelled = crate::transcription::is_cancelled();
-    drop(claim);
+    let result = match result {
+        Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
+            return Ok(TranscriptStep::default())
+        }
+        other => other?,
+    };
     match result {
-        Ok(text) => {
-            crate::derived_state::record_transcript_success(
-                context.conn,
-                &hash,
-                &path,
-                !text.trim().is_empty(),
-            )?;
+        TranscriptionAttemptOutcome::Completed { hash, text } => {
             notify_item_update(
                 context.app,
                 context.conn,
@@ -1259,7 +1382,7 @@ fn transcribe_next(
                 exhausted: false,
             })
         }
-        Err(error) if error == crate::scanner::CANCELLED || was_cancelled => {
+        TranscriptionAttemptOutcome::Cancelled { hash } => {
             logging::debug(
                 "derived transcription stopped",
                 json!({ "hash": hash, "reason": "cancelled" }),
@@ -1271,12 +1394,18 @@ fn transcribe_next(
             );
             Ok(TranscriptStep::default())
         }
-        Err(error) if crate::resource_limits::is_safety_error(&error) => {
-            pause_for_resource_safety(context.app, context.conn, class, &error)?;
+        TranscriptionAttemptOutcome::Unavailable { message, .. } => {
+            logging::debug(
+                "derived transcription unavailable",
+                json!({ "message": message }),
+            );
             Ok(TranscriptStep::default())
         }
-        Err(error) => {
-            crate::derived_state::record_transcript_failure(context.conn, &hash, &path, &error)?;
+        TranscriptionAttemptOutcome::ResourceSafety { message, .. } => {
+            pause_for_resource_safety(context.app, context.conn, class, &message)?;
+            Ok(TranscriptStep::default())
+        }
+        TranscriptionAttemptOutcome::Failed { hash, message } => {
             notify_item_update(
                 context.app,
                 context.conn,
@@ -1287,12 +1416,12 @@ fn transcribe_next(
             );
             logging::debug(
                 "derived transcription failed",
-                json!({ "hash": hash, "error": { "message": error } }),
+                json!({ "hash": hash, "error": { "message": message } }),
             );
             crate::failure_runtime::emit_or_record(
                 context.app,
                 "transcribe://error",
-                json!({ "hash": hash, "message": error }),
+                json!({ "hash": hash, "message": message }),
             );
             Ok(TranscriptStep {
                 attempted_hash: Some(hash),

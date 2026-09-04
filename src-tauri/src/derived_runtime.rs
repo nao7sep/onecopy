@@ -67,6 +67,25 @@ fn request_active_cancel(class: WorkClass) {
     }
 }
 
+pub fn cancel_active_transcription() -> bool {
+    match RUNTIME.0.lock() {
+        Ok(mut runtime) => {
+            let Some(active) = runtime.active.filter(|active| active.class.is_transcription()) else {
+                return false;
+            };
+            runtime.preempt_requested = true;
+            // Keep the process-global signal tied to the runtime owner selected
+            // above; a queued transcription cannot take over between the two.
+            request_active_cancel(active.class);
+            true
+        }
+        Err(_) => {
+            report_poison_once(None);
+            false
+        }
+    }
+}
+
 fn report_poison_once(app: Option<&AppHandle>) {
     if !POISON_LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         crate::logging::error(

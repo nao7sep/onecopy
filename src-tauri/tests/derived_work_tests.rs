@@ -1,10 +1,13 @@
 // Tests exercising the crate's public API from outside shipped source.
 
+use std::cell::Cell;
+
 use onecopy_lib::background_work::snapshot;
 use onecopy_lib::derived_state;
 use onecopy_lib::derived_work::{
-    ensure_exact_identity, priority_candidates, priority_candidates_for_class,
-    settings_from_config, FaceAssets, SectionPriority,
+    complete_transcription_attempt, ensure_exact_identity, priority_candidates,
+    priority_candidates_for_class, settings_from_config, FaceAssets, SectionPriority,
+    TranscriptionAttempt, TranscriptionAttemptOutcome,
 };
 use onecopy_lib::index_store;
 use rusqlite::params;
@@ -51,6 +54,130 @@ fn transcription_promotes_a_provisional_identity_before_owning_a_result() {
         )
         .unwrap();
     assert_eq!(provisional_rows, 0);
+}
+
+#[test]
+fn transcription_attempt_owns_cached_publication_and_dependency_classification() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-transcription-attempt-")
+        .tempdir()
+        .unwrap();
+    let cached_media = dir.path().join("cached.m4a");
+    let uncached_media = dir.path().join("uncached.m4a");
+    std::fs::write(&cached_media, b"audio fixture").unwrap();
+    std::fs::write(&uncached_media, b"audio fixture").unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('cached', 13, 'audio');
+         INSERT INTO contents (hash, byte_size, kind) VALUES ('uncached', 13, 'audio');",
+    )
+    .unwrap();
+    for (hash, media) in [
+        ("cached", cached_media.as_path()),
+        ("uncached", uncached_media.as_path()),
+    ] {
+        conn.execute(
+            "INSERT INTO paths
+               (abs_path, dir_path, file_name, kind, content_hash, missing)
+             VALUES (?1, ?2, ?3, 'audio', ?4, 0)",
+            params![
+                media.to_string_lossy(),
+                dir.path().to_string_lossy(),
+                format!("{hash}.m4a"),
+                hash,
+            ],
+        )
+        .unwrap();
+    }
+
+    let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+    let transcript = cache.transcript("cached");
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "already complete").unwrap();
+    let starts = Cell::new(0);
+
+    let completed = complete_transcription_attempt(
+        TranscriptionAttempt {
+            conn: &conn,
+            cache: &cache,
+            data_root: dir.path(),
+            source_hash: "cached",
+            source_path: cached_media.to_str().unwrap(),
+            replace_existing: false,
+            acceleration: onecopy_lib::ai_acceleration::Mode::None,
+            cancel_when: None,
+        },
+        |_| {},
+        |_| {
+            starts.set(starts.get() + 1);
+        },
+        |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        completed,
+        TranscriptionAttemptOutcome::Completed {
+            hash: "cached".to_string(),
+            text: "already complete".to_string(),
+        }
+    );
+    let published = derived_state::transcript_result(&conn, &cache, "cached").unwrap();
+    assert_eq!(published.status, derived_state::READY);
+    assert_eq!(published.text.as_deref(), Some("already complete"));
+    assert_eq!(starts.get(), 0);
+
+    let cancelled = complete_transcription_attempt(
+        TranscriptionAttempt {
+            conn: &conn,
+            cache: &cache,
+            data_root: dir.path(),
+            source_hash: "uncached",
+            source_path: uncached_media.to_str().unwrap(),
+            replace_existing: false,
+            acceleration: onecopy_lib::ai_acceleration::Mode::None,
+            cancel_when: Some(Box::new(|| true)),
+        },
+        |_| {},
+        |_| {
+            starts.set(starts.get() + 1);
+        },
+        |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        cancelled,
+        TranscriptionAttemptOutcome::Cancelled {
+            hash: "uncached".to_string(),
+        }
+    );
+    assert_eq!(starts.get(), 0);
+
+    let unavailable = complete_transcription_attempt(
+        TranscriptionAttempt {
+            conn: &conn,
+            cache: &cache,
+            data_root: dir.path(),
+            source_hash: "uncached",
+            source_path: uncached_media.to_str().unwrap(),
+            replace_existing: false,
+            acceleration: onecopy_lib::ai_acceleration::Mode::None,
+            cancel_when: None,
+        },
+        |_| {},
+        |_| {
+            starts.set(starts.get() + 1);
+        },
+        |_, _| {},
+    )
+    .unwrap();
+    assert!(matches!(
+        unavailable,
+        TranscriptionAttemptOutcome::Unavailable { ref hash, .. } if hash == "uncached"
+    ));
+    let pending = derived_state::transcript_result(&conn, &cache, "uncached").unwrap();
+    assert_eq!(pending.status, "pending");
+    assert_eq!(pending.message, None);
+    assert_eq!(starts.get(), 0);
 }
 
 #[test]

@@ -1151,7 +1151,6 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                 let result = (|| -> Result<(String, String), String> {
                     let _work = derived_runtime::begin_manual_queued(&handle, class.id())?;
                     derived_runtime::active_item(&handle, class, &hash);
-                    let claim = transcription::claim()?;
                     let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                     let projection = queries::ItemProjectionContext {
                         capabilities: derived_work::work_capabilities(&data_root)?,
@@ -1169,43 +1168,32 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                             other => format!("could not read the file path: {other}"),
                         })?;
                     let cache = preview::CachePaths::new(cache_root);
-                    let exact_hash = derived_work::ensure_exact_identity(
-                        &conn,
-                        &cache,
-                        &hash,
-                        std::path::Path::new(&source_path),
-                    )?;
-                    if exact_hash != hash {
-                        derived_work::notify_item_update(
-                            &handle,
-                            &conn,
-                            projection,
-                            class.id(),
-                            &hash,
-                            &exact_hash,
-                        );
-                    }
-                    let model_spec = binaries_manager::spec_of("whisper-large-v3-turbo")
-                        .ok_or("whisper model is not registered")?;
-                    let model_state = binaries_manager::state_of(&data_root, model_spec);
-                    let model = (model_state.status != binaries::BinaryStatus::NotInstalled)
-                        .then(|| binaries_manager::installed_path(&data_root, model_spec));
-                    let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
-                    let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
-                    let tools_available = model.is_some() && ffmpeg.is_some();
                     let progress_handle = handle.clone();
-                    let progress_hash = exact_hash.clone();
-                    let text = transcription::transcribe_to_cache_claimed(
-                        &claim,
-                        &cache,
-                        &data_root.join(binaries_manager::TEMP_DIR_NAME),
-                        model.as_deref(),
-                        ffmpeg.as_deref(),
-                        std::path::Path::new(&source_path),
-                        &exact_hash,
-                        replace.unwrap_or(false),
-                        transcription_acceleration,
-                        move |percent| {
+                    let outcome = derived_work::complete_transcription_attempt(
+                        derived_work::TranscriptionAttempt {
+                            conn: &conn,
+                            cache: &cache,
+                            data_root: &data_root,
+                            source_hash: &hash,
+                            source_path: &source_path,
+                            replace_existing: replace.unwrap_or(false),
+                            acceleration: transcription_acceleration,
+                            cancel_when: Some(Box::new(derived_runtime::cancelled)),
+                        },
+                        |exact_hash| {
+                            if exact_hash != hash {
+                                derived_work::notify_item_update(
+                                    &handle,
+                                    &conn,
+                                    projection,
+                                    class.id(),
+                                    &hash,
+                                    exact_hash,
+                                );
+                            }
+                        },
+                        |_| {},
+                        move |progress_hash, percent| {
                             let percent = percent.clamp(0, 100);
                             derived_runtime::report_manual_progress(
                                 &progress_handle,
@@ -1219,15 +1207,12 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                                 json!({ "hash": progress_hash, "percent": percent }),
                             );
                         },
-                    );
-                    match text {
-                        Ok(text) => {
-                            derived_state::record_transcript_success(
-                                &conn,
-                                &exact_hash,
-                                &source_path,
-                                !text.trim().is_empty(),
-                            )?;
+                    )?;
+                    match outcome {
+                        derived_work::TranscriptionAttemptOutcome::Completed {
+                            hash: exact_hash,
+                            text,
+                        } => {
                             derived_work::notify_item_update(
                                 &handle,
                                 &conn,
@@ -1238,15 +1223,15 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                             );
                             Ok((exact_hash, text))
                         }
-                        Err(error)
-                            if error == scanner::CANCELLED
-                                || transcription::is_cancelled() =>
-                        {
+                        derived_work::TranscriptionAttemptOutcome::Cancelled { .. } => {
                             // Preserve a typed cancellation after the claim resets its
                             // process-wide flag at the end of this worker.
                             Err(scanner::CANCELLED.to_string())
                         }
-                        Err(error) if !tools_available => {
+                        derived_work::TranscriptionAttemptOutcome::Unavailable {
+                            hash: exact_hash,
+                            message,
+                        } => {
                             derived_work::notify_item_update(
                                 &handle,
                                 &conn,
@@ -1255,32 +1240,24 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                                 &hash,
                                 &exact_hash,
                             );
-                            Err(error)
+                            Err(message)
                         }
-                        Err(error) if resource_limits::is_safety_error(&error) => {
+                        derived_work::TranscriptionAttemptOutcome::ResourceSafety {
+                            message,
+                            ..
+                        } => {
                             derived_work::pause_for_resource_safety(
                                 &handle,
                                 &conn,
                                 class,
-                                &error,
+                                &message,
                             )?;
-                            Err(error)
+                            Err(message)
                         }
-                        Err(error) => {
-                            if replace.unwrap_or(false) {
-                                derived_state::record_transcript_replacement_failure(
-                                    &conn,
-                                    &source_path,
-                                    &error,
-                                )?;
-                            } else {
-                                derived_state::record_transcript_failure(
-                                    &conn,
-                                    &exact_hash,
-                                    &source_path,
-                                    &error,
-                                )?;
-                            }
+                        derived_work::TranscriptionAttemptOutcome::Failed {
+                            hash: exact_hash,
+                            message,
+                        } => {
                             derived_work::notify_item_update(
                                 &handle,
                                 &conn,
@@ -1289,7 +1266,7 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                                 &hash,
                                 &exact_hash,
                             );
-                            Err(error)
+                            Err(message)
                         }
                     }
                 })();
@@ -1469,7 +1446,7 @@ fn prioritize_derived_work(
 
 #[tauri::command]
 fn transcribe_cancel() -> bool {
-    transcription::request_cancel()
+    derived_runtime::cancel_active_transcription()
 }
 
 // The Trash surface: standing sizes per trash root and the one deliberately
