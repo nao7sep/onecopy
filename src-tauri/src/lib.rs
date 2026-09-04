@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub mod ai_acceleration;
+pub mod ai_dependencies;
 #[cfg(feature = "app-e2e")]
 pub mod ai_test_instrumentation;
 pub mod background_work;

@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  dependenciesFor,
   normalizeAcceleration,
+  requirementsFor,
   validateBuildManifest,
   validateParameters,
+  validatePreparedContext,
   validateResult,
 } from "./contracts.mjs";
 
@@ -14,13 +15,13 @@ const standard = JSON.parse(readFileSync(new URL("./profiles/standard.json", imp
 test("standard profile is valid and omission means no acceleration", () => {
   const parsed = validateParameters(standard);
   assert.deepEqual(parsed.cases.map(({ acceleration }) => acceleration), ["none", "none", "none"]);
-  assert.deepEqual(dependenciesFor(standard), [
-    ...(process.platform === "win32" ? ["onnxruntime-win-x64"] : []),
-    "ultraface-rfb640",
-    "hsemotion-enet-b2",
-    "ffmpeg",
-    "whisper-large-v3-turbo",
+  assert.deepEqual(parsed.cases.map(({ requirement }) => requirement), [
+    "face-scoring",
+    "transcription",
+    "transcription",
   ]);
+  assert.deepEqual(requirementsFor(standard), ["face-scoring", "transcription"]);
+  assert.equal(parsed.cases.some((item) => "models" in item), false);
 });
 
 test("schema versions and unsupported accelerators fail before execution", () => {
@@ -43,21 +44,43 @@ test("fixture references cannot carry paths or uppercase hashes", () => {
 });
 
 test("stale or mismatched prepared manifests are rejected", () => {
+  const preparedContext = {
+    requirements: ["face-scoring", "transcription"],
+    artifacts: [
+      {
+        id: "face-artifact",
+        kind: "model",
+        requirements: ["face-scoring"],
+        readiness: "current",
+        identity: { sha256: "c".repeat(64), bytes: 10, version: "face-v1" },
+      },
+      {
+        id: "transcription-artifact",
+        kind: "model",
+        requirements: ["transcription"],
+        readiness: "current",
+        identity: { sha256: "d".repeat(64), bytes: 20, version: "speech-v1" },
+      },
+    ],
+    capabilities: [
+      { feature: "face-scoring", options: [{ id: "none" }] },
+      { feature: "transcription", options: [{ id: "none" }] },
+    ],
+  };
   const manifest = {
     schemaVersion: 1,
     binary: { basename: "onecopy.test", sha256: "a".repeat(64) },
     driver: { basename: "onecopy-driver.test", sha256: "b".repeat(64) },
     compileFeatures: ["app-e2e"],
-    accelerationCapabilities: [
-      { feature: "face-scoring", modes: ["none"] },
-      { feature: "transcription", modes: ["none"] },
-    ],
-    dependencies: dependenciesFor(standard).map((id) => ({ id })),
+    preparedContext,
   };
   assert.equal(validateBuildManifest(manifest, standard), manifest);
   const missing = structuredClone(manifest);
-  missing.dependencies.pop();
-  assert.throws(() => validateBuildManifest(missing, standard), /missing dependency/);
+  missing.preparedContext.requirements.pop();
+  assert.throws(() => validateBuildManifest(missing, standard), /invalid requirements|missing requirement/);
+  const stale = structuredClone(manifest);
+  stale.preparedContext.artifacts[0].readiness = "update-available";
+  assert.throws(() => validatePreparedContext(stale.preparedContext), /not current/);
   const wrongFeature = structuredClone(manifest);
   wrongFeature.compileFeatures = [];
   assert.throws(() => validateBuildManifest(wrongFeature, standard), /not an app-e2e/);

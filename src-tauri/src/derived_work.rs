@@ -94,12 +94,7 @@ pub struct Settings {
     pub temp_dir: PathBuf,
 }
 
-#[derive(Clone)]
-pub struct FaceAssets {
-    pub runtime: Option<PathBuf>,
-    pub detector: PathBuf,
-    pub emotion: PathBuf,
-}
+pub type FaceAssets = crate::ai_dependencies::FaceScoringDependencies;
 
 impl Settings {
     fn capabilities(&self) -> crate::derived_state::WorkCapabilities {
@@ -129,13 +124,7 @@ pub fn settings_from_config(
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(fallback)
     };
-    let installed = |id: &str| {
-        crate::binaries_manager::spec_of(id).and_then(|spec| {
-            let state = crate::binaries_manager::state_of(data_root, spec);
-            (state.status != crate::binaries::BinaryStatus::NotInstalled)
-                .then(|| crate::binaries_manager::installed_path(data_root, spec))
-        })
-    };
+    let transcription_dependencies = crate::ai_dependencies::production_transcription(data_root);
     let score_faces = get("scoreFaces")
         .and_then(|v| v.as_bool())
         .unwrap_or(defaults.score_faces);
@@ -176,10 +165,7 @@ pub fn settings_from_config(
         },
         thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
         preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
-        ffmpeg: {
-            let path = crate::binaries_manager::ffmpeg_path(data_root);
-            path.is_file().then_some(path)
-        },
+        ffmpeg: transcription_dependencies.ffmpeg,
         video_snapshots_enabled: bool_of("videoSnapshotsEnabled", defaults.video_snapshots_enabled),
         similarity_enabled: bool_of(
             "similarPhotoAnalysisEnabled",
@@ -187,21 +173,9 @@ pub fn settings_from_config(
         ),
         face_enabled: score_faces,
         face_models: score_faces
-            .then(|| {
-                let detector = installed("ultraface-rfb640")?;
-                let emotion = installed("hsemotion-enet-b2")?;
-                #[cfg(windows)]
-                let runtime = Some(installed("onnxruntime-win-x64")?);
-                #[cfg(not(windows))]
-                let runtime = None;
-                Some(FaceAssets {
-                    runtime,
-                    detector,
-                    emotion,
-                })
-            })
+            .then(|| crate::ai_dependencies::production_face_scoring(data_root))
             .flatten(),
-        transcription_model: installed("whisper-large-v3-turbo"),
+        transcription_model: transcription_dependencies.model,
         transcription_acceleration: acceleration.transcription,
         video_transcription_enabled: bool_of(
             "videoTranscriptionEnabled",
@@ -1237,24 +1211,20 @@ pub fn complete_transcription_attempt(
         TranscriptionPreparation::Terminal(outcome) => return Ok(outcome),
     };
 
-    let model_spec = crate::binaries_manager::spec_of("whisper-large-v3-turbo")
-        .ok_or("whisper model is not registered")?;
-    let model_state = crate::binaries_manager::state_of(attempt.data_root, model_spec);
-    if model_state.status == crate::binaries::BinaryStatus::NotInstalled {
+    let dependencies = crate::ai_dependencies::production_transcription(attempt.data_root);
+    let Some(model) = dependencies.model else {
         return Ok(TranscriptionAttemptOutcome::Unavailable {
             hash,
             message: "the transcription model is not installed — install it from Managed tools"
                 .to_string(),
         });
-    }
-    let model = crate::binaries_manager::installed_path(attempt.data_root, model_spec);
-    let ffmpeg = crate::binaries_manager::ffmpeg_path(attempt.data_root);
-    if !ffmpeg.exists() {
+    };
+    let Some(ffmpeg) = dependencies.ffmpeg else {
         return Ok(TranscriptionAttemptOutcome::Unavailable {
             hash,
             message: "ffmpeg is not installed — install it from Managed tools".to_string(),
         });
-    }
+    };
     if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
         return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
     }

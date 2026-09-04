@@ -2,9 +2,9 @@ import { cpus, arch, platform, release, totalmem } from "node:os";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cloneArtifactTree } from "./artifact-tree.mjs";
-import { dependencySets, validateParameters } from "./contracts.mjs";
+import { validateParameters } from "./contracts.mjs";
 import { indexFixtureRoot, materializeFixtures, resolveFixtures } from "./fixtures.mjs";
-import { loadPrepared } from "./prepared.mjs";
+import { dependenciesForCase, loadPrepared } from "./prepared.mjs";
 import { runOwned } from "./process.mjs";
 import { safeFailure, writeAtomicReport } from "./report.mjs";
 
@@ -19,14 +19,6 @@ function machineFacts() {
   };
 }
 
-function preflightAcceleration(item, manifest) {
-  const feature = item.id === "face" ? "face-scoring" : "transcription";
-  const capability = manifest.accelerationCapabilities.find((candidate) => candidate.feature === feature);
-  if (!capability?.modes.includes(item.acceleration)) {
-    throw new Error(`${feature} acceleration is absent from the prepared binary: ${item.acceleration}`);
-  }
-}
-
 export async function runBenchmark({ repositoryRoot, parameterPath, fixtureRoot, preparedRoot, reportPath }) {
   const parameters = validateParameters(JSON.parse(readFileSync(parameterPath, "utf8")));
   const selected = parameters.cases.filter(({ surface }) => surface === "app");
@@ -35,8 +27,11 @@ export async function runBenchmark({ repositoryRoot, parameterPath, fixtureRoot,
     indexFixtureRoot(fixtureRoot),
     selected.flatMap(({ fixtures }) => fixtures),
   );
-  const { manifest, binary } = loadPrepared(repositoryRoot, preparedRoot, parameters);
-  selected.forEach((item) => preflightAcceleration(item, manifest));
+  const { manifest, binary, managedRoot, preparedContext } = loadPrepared(
+    repositoryRoot,
+    preparedRoot,
+    parameters,
+  );
 
   const runRoot = resolve(
     preparedRoot,
@@ -66,7 +61,7 @@ export async function runBenchmark({ repositoryRoot, parameterPath, fixtureRoot,
     const timingPath = resolve(caseRoot, "timing.json");
     mkdirSync(home, { recursive: true });
     mkdirSync(source, { recursive: true });
-    cloneArtifactTree(resolve(preparedRoot, "managed"), home);
+    cloneArtifactTree(managedRoot, home);
     const resolvedForCase = item.fixtures.map((fixture) =>
       allResolved.find((resolved) => resolved.reference.sha256 === fixture.sha256),
     );
@@ -129,7 +124,7 @@ export async function runBenchmark({ repositoryRoot, parameterPath, fixtureRoot,
         outcome: "passed",
         startedAtUtc,
         finishedAtUtc: new Date().toISOString(),
-        dependencies: manifest.dependencies.filter(({ id }) => dependencySets[item.id].includes(id)),
+        dependencies: dependenciesForCase(preparedContext, item),
         fixtures: item.fixtures,
         requestedAcceleration: item.acceleration,
         effectiveAcceleration: instrumentation.effectiveAcceleration,
@@ -148,7 +143,7 @@ export async function runBenchmark({ repositoryRoot, parameterPath, fixtureRoot,
         outcome: "failed",
         startedAtUtc,
         finishedAtUtc: new Date().toISOString(),
-        dependencies: manifest.dependencies.filter(({ id }) => dependencySets[item.id].includes(id)),
+        dependencies: dependenciesForCase(preparedContext, item),
         fixtures: item.fixtures,
         requestedAcceleration: item.acceleration,
         failure: safeFailure("running-app", error),

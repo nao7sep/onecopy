@@ -11,7 +11,7 @@ import {
 import { arch, platform } from "node:os";
 import { basename, resolve } from "node:path";
 import { cloneArtifactTree } from "./artifact-tree.mjs";
-import { dependenciesFor, validateParameters } from "./contracts.mjs";
+import { requirementsFor, validateParameters } from "./contracts.mjs";
 import { indexFixtureRoot, resolveFixtures, sha256File } from "./fixtures.mjs";
 import { runOwned } from "./process.mjs";
 import { assertPrivacySafe, writeAtomicReport } from "./report.mjs";
@@ -119,18 +119,18 @@ export async function prepare({
   ], { cwd: repositoryRoot, signal });
 
   const preparer = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy-ai-preparer"));
-  const dependencyIds = dependenciesFor(parameters);
-  const prepareOutput = await runPreparationStep(preparer, ["prepare", artifactHome, ...dependencyIds], {
+  const requirements = requirementsFor(parameters);
+  const prepareOutput = await runPreparationStep(preparer, ["prepare", artifactHome, ...requirements], {
     cwd: repositoryRoot,
     capture: true,
     signal,
   });
-  const ready = prepareOutput
+  const preparedContext = prepareOutput
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => JSON.parse(line))
-    .findLast((event) => event.event === "ready");
-  if (!ready) throw new Error("managed dependency preparation did not report readiness");
+    .findLast((event) => event.event === "prepared-context")?.context;
+  if (!preparedContext) throw new Error("managed dependency preparation did not return a context");
 
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error("npm executable path is unavailable");
@@ -140,11 +140,6 @@ export async function prepare({
   });
   const builtApp = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy"));
 
-  const capabilities = JSON.parse(await runPreparationStep(preparer, ["capabilities"], {
-    cwd: repositoryRoot,
-    capture: true,
-    signal,
-  }));
   const binary = publishVersionedBinary(builtApp, outputBin, "onecopy");
   const driver = publishVersionedBinary(preparer, outputBin, "onecopy-ai-preparer");
   const manifest = {
@@ -159,18 +154,9 @@ export async function prepare({
       node: process.version,
     },
     compileFeatures: ["app-e2e"],
-    accelerationCapabilities: capabilities.map(({ feature, options }) => ({
-      feature,
-      modes: options.map(({ id }) => id),
-    })),
     binary,
     driver,
-    dependencies: ready.artifacts.map(({ id, sha256, bytes, version: artifactVersion }) => ({
-      id,
-      sha256,
-      bytes,
-      version: artifactVersion,
-    })),
+    preparedContext,
   };
   assertPrivacySafe(manifest);
   const manifestPath = resolve(outputBin, "onecopy.ai-build.json");

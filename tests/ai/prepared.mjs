@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { dependenciesFor, validateBuildManifest } from "./contracts.mjs";
+import { requirementsFor, validateBuildManifest, validatePreparedContext } from "./contracts.mjs";
 import { sha256File } from "./fixtures.mjs";
 import { sourceState } from "./source-state.mjs";
 
@@ -19,13 +19,15 @@ function runJsonLines(command, args, repositoryRoot) {
   return result.stdout.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
-function dependencyIdentity(artifact) {
-  return {
-    id: artifact.id,
-    sha256: artifact.sha256,
-    bytes: artifact.bytes,
-    version: artifact.version ?? null,
-  };
+export function dependenciesForCase(context, item) {
+  return context.artifacts
+    .filter(({ requirements }) => requirements.includes(item.requirement))
+    .map(({ id, identity }) => ({
+      id,
+      sha256: identity.sha256,
+      bytes: identity.bytes,
+      version: identity.version ?? null,
+    }));
 }
 
 export function loadPrepared(repositoryRoot, preparedRoot, parameters) {
@@ -48,31 +50,19 @@ export function loadPrepared(repositoryRoot, preparedRoot, parameters) {
     throw new Error("prepared application does not match the current source state");
   }
 
-  const dependencyIds = dependenciesFor(parameters);
-  const ready = runJsonLines(
+  const managedRoot = resolve(preparedRoot, "managed");
+  const requirements = requirementsFor(parameters);
+  const preparedContext = runJsonLines(
     driver,
-    ["verify", resolve(preparedRoot, "managed"), ...dependencyIds],
+    ["verify", managedRoot, ...requirements],
     repositoryRoot,
-  ).findLast((event) => event.event === "ready");
-  if (!ready) throw new Error("prepared dependency verification emitted no readiness result");
-  const expected = manifest.dependencies
-    .filter(({ id }) => dependencyIds.includes(id))
-    .map(dependencyIdentity)
-    .sort((left, right) => left.id.localeCompare(right.id));
-  const actual = ready.artifacts
-    .map(dependencyIdentity)
-    .sort((left, right) => left.id.localeCompare(right.id));
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error("prepared dependency bytes differ from the build manifest");
+  ).findLast((event) => event.event === "prepared-context")?.context;
+  if (!preparedContext) {
+    throw new Error("prepared dependency verification emitted no prepared context");
   }
-
-  const capabilities = runJsonLines(driver, ["capabilities"], repositoryRoot).at(-1);
-  const actualCapabilities = capabilities.map(({ feature, options }) => ({
-    feature,
-    modes: options.map(({ id }) => id),
-  }));
-  if (JSON.stringify(actualCapabilities) !== JSON.stringify(manifest.accelerationCapabilities)) {
-    throw new Error("prepared test-driver capabilities differ from the build manifest");
+  validatePreparedContext(preparedContext);
+  if (JSON.stringify(preparedContext) !== JSON.stringify(manifest.preparedContext)) {
+    throw new Error("prepared context differs from the build manifest");
   }
-  return { manifest, binary, driver };
+  return Object.freeze({ manifest, binary, driver, managedRoot, preparedContext });
 }

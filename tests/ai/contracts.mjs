@@ -1,6 +1,7 @@
 const SHA256 = /^[0-9a-f]{64}$/;
 const TEST_IDS = new Set(["face", "audio-transcription", "video-transcription"]);
 const SURFACES = new Set(["adapter", "app"]);
+const REQUIREMENTS = new Set(["face-scoring", "transcription"]);
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -49,6 +50,14 @@ export function normalizeAcceleration(testId, value) {
   return selected;
 }
 
+export function requirementFor(testId) {
+  if (testId === "face") return "face-scoring";
+  if (testId === "audio-transcription" || testId === "video-transcription") {
+    return "transcription";
+  }
+  throw new TypeError(`unknown AI test id ${String(testId)}`);
+}
+
 export function validateParameters(value) {
   const input = object(value, "parameters");
   if (input.schemaVersion !== 1) {
@@ -70,12 +79,6 @@ export function validateParameters(value) {
     if (!SURFACES.has(item.surface)) {
       throw new TypeError(`cases[${index}].surface must be adapter or app`);
     }
-    if (!Array.isArray(item.models) || item.models.length === 0) {
-      throw new TypeError(`cases[${index}].models must be a non-empty array`);
-    }
-    const models = item.models.map((model, modelIndex) =>
-      text(model, `cases[${index}].models[${modelIndex}]`),
-    );
     const fixtures = item.fixtures?.map((fixture, fixtureIndex) =>
       validateFixtureReference(fixture, `cases[${index}].fixtures[${fixtureIndex}]`),
     );
@@ -88,7 +91,17 @@ export function validateParameters(value) {
     const acceleration = normalizeAcceleration(id, item.acceleration);
     const cache = item.cache ?? "cold";
     if (cache !== "cold") throw new TypeError("only cold cache is supported");
-    return { id, surface: item.surface, models, fixtures, oracle, timeoutMs, repetitions, acceleration, cache };
+    return {
+      id,
+      requirement: requirementFor(id),
+      surface: item.surface,
+      fixtures,
+      oracle,
+      timeoutMs,
+      repetitions,
+      acceleration,
+      cache,
+    };
   });
   return {
     schemaVersion: 1,
@@ -112,22 +125,64 @@ export function validateResult(value) {
   return result;
 }
 
-export const dependencySets = Object.freeze({
-  face: Object.freeze([
-    ...(process.platform === "win32" ? ["onnxruntime-win-x64"] : []),
-    "ultraface-rfb640",
-    "hsemotion-enet-b2",
-  ]),
-  "audio-transcription": Object.freeze(["ffmpeg", "whisper-large-v3-turbo"]),
-  "video-transcription": Object.freeze(["ffmpeg", "whisper-large-v3-turbo"]),
-});
+export function requirementsFor(parameters) {
+  return [...new Set(validateParameters(parameters).cases.map(({ requirement }) => requirement))];
+}
 
-export function dependenciesFor(parameters) {
-  const ids = new Set();
-  for (const item of validateParameters(parameters).cases) {
-    for (const dependency of dependencySets[item.id]) ids.add(dependency);
+export function validatePreparedContext(value) {
+  const context = object(value, "prepared context");
+  if (!Array.isArray(context.requirements) || context.requirements.length === 0) {
+    throw new TypeError("prepared context requirements must be a non-empty array");
   }
-  return [...ids];
+  const requirements = new Set();
+  for (const requirement of context.requirements) {
+    if (!REQUIREMENTS.has(requirement) || requirements.has(requirement)) {
+      throw new TypeError("prepared context requirements must be unique and supported");
+    }
+    requirements.add(requirement);
+  }
+  if (!Array.isArray(context.artifacts) || context.artifacts.length === 0) {
+    throw new TypeError("prepared context artifacts must be a non-empty array");
+  }
+  const artifactIds = new Set();
+  for (const artifact of context.artifacts) {
+    object(artifact, "prepared artifact");
+    const id = text(artifact.id, "prepared artifact id");
+    if (artifactIds.has(id)) throw new TypeError(`prepared artifact is duplicated: ${id}`);
+    artifactIds.add(id);
+    if (!["binary", "runtime", "model"].includes(artifact.kind)) {
+      throw new TypeError(`prepared artifact ${id} has an invalid kind`);
+    }
+    if (!Array.isArray(artifact.requirements) || artifact.requirements.length === 0 ||
+        artifact.requirements.some((requirement) => !requirements.has(requirement))) {
+      throw new TypeError(`prepared artifact ${id} has invalid requirements`);
+    }
+    if (artifact.readiness !== "current") {
+      throw new TypeError(`prepared artifact ${id} is not current`);
+    }
+    const identity = object(artifact.identity, `prepared artifact ${id} identity`);
+    if (!SHA256.test(identity.sha256)) {
+      throw new TypeError(`prepared artifact ${id} digest is invalid`);
+    }
+    integer(identity.bytes, `prepared artifact ${id} bytes`, 1);
+    if (identity.version !== null) text(identity.version, `prepared artifact ${id} version`);
+  }
+  for (const requirement of requirements) {
+    if (!context.artifacts.some((artifact) => artifact.requirements.includes(requirement))) {
+      throw new TypeError(`prepared context has no artifact for ${requirement}`);
+    }
+  }
+  if (!Array.isArray(context.capabilities)) {
+    throw new TypeError("prepared context capabilities must be an array");
+  }
+  for (const capability of context.capabilities) {
+    text(capability.feature, "prepared capability feature");
+    if (!Array.isArray(capability.options) || capability.options.length === 0) {
+      throw new TypeError("prepared capability options must be a non-empty array");
+    }
+    capability.options.forEach((option) => text(option.id, "prepared capability option"));
+  }
+  return context;
 }
 
 export function validateBuildManifest(value, parameters) {
@@ -148,18 +203,22 @@ export function validateBuildManifest(value, parameters) {
   if (!Array.isArray(manifest.compileFeatures) || !manifest.compileFeatures.includes("app-e2e")) {
     throw new TypeError("build manifest is not an app-e2e binary");
   }
-  const capabilities = new Map(
-    manifest.accelerationCapabilities?.map(({ feature, modes }) => [feature, new Set(modes)]) ?? [],
-  );
+  const prepared = validatePreparedContext(manifest.preparedContext);
+  const capabilities = new Map(prepared.capabilities.map(({ feature, options }) => [
+    feature,
+    new Set(options.map(({ id }) => id)),
+  ]));
   for (const item of validateParameters(parameters).cases) {
     const feature = item.id === "face" ? "face-scoring" : "transcription";
     if (!capabilities.get(feature)?.has(item.acceleration)) {
       throw new TypeError(`prepared binary does not offer ${item.acceleration} for ${feature}`);
     }
   }
-  const present = new Set(manifest.dependencies?.map(({ id }) => id));
-  for (const id of dependenciesFor(parameters)) {
-    if (!present.has(id)) throw new TypeError(`build manifest is missing dependency ${id}`);
+  const present = new Set(prepared.requirements);
+  for (const requirement of requirementsFor(parameters)) {
+    if (!present.has(requirement)) {
+      throw new TypeError(`build manifest is missing requirement ${requirement}`);
+    }
   }
   return manifest;
 }

@@ -186,6 +186,25 @@ fn assert_https(url: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(feature = "ai-test-support")]
+fn require_online_acquisition() -> Result<(), String> {
+    offline_acquisition_guard(std::env::var_os("ONECOPY_AI_OFFLINE").as_deref())
+}
+
+#[cfg(feature = "ai-test-support")]
+fn offline_acquisition_guard(value: Option<&std::ffi::OsStr>) -> Result<(), String> {
+    if value == Some(std::ffi::OsStr::new("1")) {
+        Err("managed dependency network access is disabled in offline AI execution".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(feature = "ai-test-support"))]
+fn require_online_acquisition() -> Result<(), String> {
+    Ok(())
+}
+
 /// Resolves the latest ffmpeg build for this platform. Errors on platforms
 /// with no managed build (Linux, Intel macs) — manual install applies there.
 pub(crate) fn resolve_latest(
@@ -252,6 +271,7 @@ pub(crate) fn download_to(
     expected_bytes: Option<u64>,
     mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<u64, String> {
+    require_online_acquisition()?;
     assert_https(url)?;
     check_cancelled(cancelled)?;
     let ceiling = download_ceiling(expected_bytes);
@@ -337,6 +357,7 @@ fn fetch_metadata(
     cancelled: &AtomicBool,
     deadline: &OperationDeadline,
 ) -> Result<(reqwest::Url, Vec<u8>), String> {
+    require_online_acquisition()?;
     assert_https(url)?;
     check_cancelled(cancelled)?;
     block_on_network(cancellable_with_timeout(
@@ -691,6 +712,24 @@ mod tests {
         assert!(assert_https("http://example.test/artifact")
             .unwrap_err()
             .contains("refusing non-https"));
+    }
+
+    #[cfg(feature = "ai-test-support")]
+    // This proof stays beside the private acquisition edge so it can exercise
+    // the exact guard used by both metadata and artifact network requests.
+    #[test]
+    fn offline_ai_execution_blocks_the_network_edge() {
+        let previous = std::env::var_os("ONECOPY_AI_OFFLINE");
+        std::env::set_var("ONECOPY_AI_OFFLINE", "1");
+        let blocked = require_online_acquisition();
+        if let Some(value) = previous {
+            std::env::set_var("ONECOPY_AI_OFFLINE", value);
+        } else {
+            std::env::remove_var("ONECOPY_AI_OFFLINE");
+        }
+
+        let error = blocked.unwrap_err();
+        assert!(error.contains("network access is disabled"), "{error}");
     }
 
     #[test]

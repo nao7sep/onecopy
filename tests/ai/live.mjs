@@ -1,9 +1,9 @@
-import { readFileSync } from "node:fs";
-import { arch, cpus, platform, release, totalmem } from "node:os";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { resolve } from "node:path";
-import { dependencySets, validateParameters } from "./contracts.mjs";
+import { validateParameters } from "./contracts.mjs";
 import { indexFixtureRoot, resolveFixtures } from "./fixtures.mjs";
-import { loadPrepared } from "./prepared.mjs";
+import { dependenciesForCase, loadPrepared } from "./prepared.mjs";
 import { runOwned } from "./process.mjs";
 import { assertPrivacySafe, safeFailure, writeAtomicReport } from "./report.mjs";
 
@@ -53,7 +53,11 @@ export async function runLive({ repositoryRoot, parameterPath, fixtureRoot, prep
     indexFixtureRoot(fixtureRoot),
     selected.flatMap(({ fixtures }) => fixtures),
   );
-  const { manifest, driver } = loadPrepared(repositoryRoot, preparedRoot, parameters);
+  const { manifest, driver, managedRoot, preparedContext } = loadPrepared(
+    repositoryRoot,
+    preparedRoot,
+    parameters,
+  );
   const report = {
     schemaVersion: 1,
     profileId: parameters.profileId,
@@ -71,11 +75,15 @@ export async function runLive({ repositoryRoot, parameterPath, fixtureRoot, prep
       allResolved.find((resolved) => resolved.reference.sha256 === fixture.sha256),
     );
     if (resolvedFixtures.some((fixture) => !fixture)) throw new Error("resolved fixture mapping failed");
+    const scratch = item.id === "face"
+      ? null
+      : mkdtempSync(resolve(tmpdir(), "onecopy-ai-live-"));
     const args = item.id === "face"
-      ? ["live-face", resolve(preparedRoot, "managed"), ...resolvedFixtures.map(({ path }) => path)]
+      ? ["live-face", managedRoot, ...resolvedFixtures.map(({ path }) => path)]
       : [
           "live-transcription",
-          resolve(preparedRoot, "managed"),
+          managedRoot,
+          scratch,
           item.acceleration,
           resolvedFixtures[0].path,
           ...item.oracle.semanticTerms,
@@ -101,7 +109,7 @@ export async function runLive({ repositoryRoot, parameterPath, fixtureRoot, prep
         outcome: "passed",
         startedAtUtc,
         finishedAtUtc: new Date().toISOString(),
-        dependencies: manifest.dependencies.filter(({ id }) => dependencySets[item.id].includes(id)),
+        dependencies: dependenciesForCase(preparedContext, item),
         fixtures: item.fixtures,
         requestedAcceleration: item.acceleration,
         effectiveAcceleration: output.effectiveAcceleration,
@@ -121,12 +129,14 @@ export async function runLive({ repositoryRoot, parameterPath, fixtureRoot, prep
         outcome: "failed",
         startedAtUtc,
         finishedAtUtc: new Date().toISOString(),
-        dependencies: manifest.dependencies.filter(({ id }) => dependencySets[item.id].includes(id)),
+        dependencies: dependenciesForCase(preparedContext, item),
         fixtures: item.fixtures,
         requestedAcceleration: item.acceleration,
         failure: safeFailure("live-adapter", error),
       });
       report.outcome = error.interrupted ? "interrupted" : "failed";
+    } finally {
+      if (scratch) rmSync(scratch, { recursive: true, force: true });
     }
     assertPrivacySafe(report);
     writeAtomicReport(reportPath, report);

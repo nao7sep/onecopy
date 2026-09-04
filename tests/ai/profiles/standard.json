@@ -6,7 +6,6 @@
     {
       "id": "face",
       "surface": "app",
-      "models": ["ultraface-rfb640", "hsemotion-enet-b2"],
       "fixtures": [
         { "basename": "face-01-reference.jpg", "sha256": "e0a29520f9e871415d289eea9589b05671f6c6c5b179848ba386d9ebb0dc1917", "bytes": 54778 },
         { "basename": "face-01-variation.jpg", "sha256": "fe2eda47682fbf5e8436c0c0fcb460c328431333dfdfa0026d6f11d064f379e8", "bytes": 52345 },
@@ -29,7 +28,6 @@
     {
       "id": "audio-transcription",
       "surface": "app",
-      "models": ["whisper-large-v3-turbo"],
       "fixtures": [
         { "basename": "dialogue-english-with-noise.flac", "sha256": "fe91bfa1e93803bbd563a53c0c2fc8ab458fc73d869776c9efad482639de7736", "bytes": 1406475 }
       ],
@@ -45,7 +43,6 @@
     {
       "id": "video-transcription",
       "surface": "app",
-      "models": ["whisper-large-v3-turbo"],
       "fixtures": [
         { "basename": "dialogue-english-with-noise.mp4", "sha256": "5480c2c3ee2b237f8830fd969e59d8da91971eb8ee9b2f5ce1f390bba68e6b04", "bytes": 234478 }
       ],
