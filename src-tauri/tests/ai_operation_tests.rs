@@ -3,6 +3,7 @@
 // remain owned by the same code used by the application.
 
 use std::cell::{Cell, RefCell};
+use std::time::Duration;
 
 use onecopy_lib::derived_state;
 use onecopy_lib::derived_work::{
@@ -12,6 +13,19 @@ use onecopy_lib::derived_work::{
 use onecopy_lib::face::{complete_face_scoring_attempt, FaceScoringAttemptOutcome};
 use onecopy_lib::{index_store, preview};
 use rusqlite::{params, OptionalExtension};
+
+#[derive(Default)]
+struct PhaseRecorder(RefCell<Vec<&'static str>>);
+
+impl onecopy_lib::ai_measurement::Observer for PhaseRecorder {
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    fn phase(&self, name: &'static str, _elapsed: Duration) {
+        self.0.borrow_mut().push(name);
+    }
+}
 
 fn insert(conn: &rusqlite::Connection, hash: &str, kind: &str, path: &str) {
     conn.execute(
@@ -64,10 +78,12 @@ fn transcript_attempt<'a>(
         conn,
         cache,
         data_root,
+        temp_dir: data_root.join("temp"),
         source_hash: hash,
         source_path: path,
         replace_existing,
         acceleration: onecopy_lib::ai_acceleration::Mode::None,
+        observer: &onecopy_lib::ai_measurement::NOOP,
         cancel_when: None,
     }
 }
@@ -84,8 +100,11 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
     for (hash, path) in [("audio", "voice.flac"), ("video", "clip.mp4")] {
         let starts = Cell::new(0);
         let progress = RefCell::new(Vec::new());
+        let measurements = PhaseRecorder::default();
+        let mut attempt = transcript_attempt(&conn, &cache, root.path(), hash, path, false);
+        attempt.observer = &measurements;
         let outcome = complete_transcription_attempt_with_inference(
-            transcript_attempt(&conn, &cache, root.path(), hash, path, false),
+            attempt,
             |_| {},
             |_| starts.set(starts.get() + 1),
             |_, value| progress.borrow_mut().push(value),
@@ -100,6 +119,10 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
         .unwrap();
         assert_eq!(starts.get(), 1);
         assert_eq!(*progress.borrow(), [0, 25, 100]);
+        assert_eq!(
+            *measurements.0.borrow(),
+            ["inference", "cache-publication", "receipt-publication"]
+        );
         assert_eq!(
             outcome,
             TranscriptionAttemptOutcome::Completed {
@@ -270,6 +293,7 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         write_preview(&cache, hash);
     }
     let changed = RefCell::new(Vec::new());
+    let measurements = PhaseRecorder::default();
 
     let smile = complete_face_scoring_attempt(
         &conn,
@@ -277,17 +301,23 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         "smile",
         "smile.jpg",
         &|| false,
+        &measurements,
         |hash| changed.borrow_mut().push(hash.to_string()),
         |_| Ok(0.75),
     )
     .unwrap();
     assert_eq!(smile, FaceScoringAttemptOutcome::Completed { score: 0.75 });
+    assert_eq!(
+        *measurements.0.borrow(),
+        ["input-decode", "inference", "durable-publication"]
+    );
     let none = complete_face_scoring_attempt(
         &conn,
         &cache,
         "none",
         "none.jpg",
         &|| false,
+        &onecopy_lib::ai_measurement::NOOP,
         |hash| changed.borrow_mut().push(hash.to_string()),
         |_| Ok(0.0),
     )
@@ -299,6 +329,7 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         "failed",
         "failed.jpg",
         &|| false,
+        &onecopy_lib::ai_measurement::NOOP,
         |hash| changed.borrow_mut().push(hash.to_string()),
         |_| Err("detector failed".to_string()),
     )
@@ -313,6 +344,7 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         "cancelled",
         "cancelled.jpg",
         &|| true,
+        &onecopy_lib::ai_measurement::NOOP,
         |_| panic!("cancelled face attempt must not publish a change"),
         |_| Err(onecopy_lib::scanner::CANCELLED.to_string()),
     )

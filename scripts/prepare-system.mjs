@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
-const home = process.env.ONECOPY_E2E_HOME ??
-  join(tmpdir(), "onecopy-wdio-acceptance");
+const home = process.env.ONECOPY_SYSTEM_HOME ??
+  join(tmpdir(), "onecopy-wdio-system");
 const source = join(home, "source");
 
 function assertOneCopyIsClosed() {
@@ -17,19 +17,19 @@ function assertOneCopyIsClosed() {
     ? probe.stdout.toLowerCase().includes("onecopy.exe")
     : probe.status === 0 && probe.stdout.trim().length > 0;
   if (running) {
-    throw new Error("Close every running OneCopy window before preparing its isolated E2E home.");
+    throw new Error("Close every running OneCopy window before preparing its isolated system-test home.");
   }
 }
 
 function assertHome(path) {
   const resolved = resolve(path);
   const expectedParent = resolve(tmpdir());
-  const expectedName = "onecopy-wdio-acceptance";
+  const expectedName = "onecopy-wdio-system";
   if (
     basename(resolved) !== expectedName ||
     !resolved.startsWith(`${expectedParent}${process.platform === "win32" ? "\\" : "/"}`)
   ) {
-    throw new Error(`Refusing to manage unexpected E2E home: ${resolved}`);
+    throw new Error(`Refusing to manage unexpected system-test home: ${resolved}`);
   }
   return resolved;
 }
@@ -61,4 +61,4 @@ writeFileSync(
     2,
   )}\n`,
 );
-console.log(`Prepared initialization E2E home: ${root}`);
+console.log(`Prepared initialization system-test home: ${root}`);

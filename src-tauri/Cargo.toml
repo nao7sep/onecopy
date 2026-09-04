@@ -35,19 +35,23 @@ name = "onecopy-ai-preparer"
 path = "tests/ai/preparer.rs"
 required-features = ["ai-test-support"]
 
+[[bin]]
+name = "onecopy-ai-scenario"
+path = "tests/ai/scenario.rs"
+required-features = ["ai-test-support"]
+
 [[test]]
 name = "ai_prepared_context_tests"
 path = "tests/ai_prepared_context_tests.rs"
 required-features = ["ai-test-support"]
 
 [features]
-# Deterministic AI preparation and offline proof surface. The app-e2e build
-# includes it, but focused checks do not need to compile the WebDriver stack.
+# Deterministic AI preparation and offline proof surface. Focused checks do
+# not need to compile the unrelated WebDriver stack.
 ai-test-support = []
-# The embedded WebDriver server is an acceptance-test build flavor. Normal
+# The embedded WebDriver server is a system-test build flavor. Normal
 # development and release binaries do not compile or register it.
-app-e2e = [
-    "ai-test-support",
+app-system = [
     "dep:tauri-plugin-wdio",
     "dep:tauri-plugin-wdio-webdriver",
 ]

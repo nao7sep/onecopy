@@ -1078,10 +1078,12 @@ pub struct TranscriptionAttempt<'a> {
     pub conn: &'a Connection,
     pub cache: &'a CachePaths,
     pub data_root: &'a Path,
+    pub temp_dir: PathBuf,
     pub source_hash: &'a str,
     pub source_path: &'a str,
     pub replace_existing: bool,
     pub acceleration: crate::ai_acceleration::Mode,
+    pub observer: &'a dyn crate::ai_measurement::Observer,
     pub cancel_when: Option<Box<dyn Fn() -> bool + Send + 'static>>,
 }
 
@@ -1147,14 +1149,15 @@ fn finish_transcription_attempt(
     was_cancelled: bool,
 ) -> Result<TranscriptionAttemptOutcome, String> {
     let result = result.and_then(|text| {
-        #[cfg(feature = "app-e2e")]
-        let _publication_timing =
-            crate::ai_test_instrumentation::Span::begin("transcription", "durable-publication");
+        let _measurement =
+            crate::ai_measurement::Span::begin(attempt.observer, "cache-publication");
         crate::transcription::publish_transcript(&attempt.cache.transcript(&hash), &text)?;
         Ok(text)
     });
     match result {
         Ok(text) => {
+            let _measurement =
+                crate::ai_measurement::Span::begin(attempt.observer, "receipt-publication");
             crate::derived_state::record_transcript_success(
                 attempt.conn,
                 &hash,
@@ -1255,13 +1258,12 @@ pub fn complete_transcription_attempt(
 
     let result = crate::transcription::generate_transcript_claimed(
         &claim,
-        &attempt
-            .data_root
-            .join(crate::binaries_manager::TEMP_DIR_NAME),
+        &attempt.temp_dir,
         &model,
         &ffmpeg,
         Path::new(attempt.source_path),
         attempt.acceleration,
+        attempt.observer,
         move |percent| on_progress(&progress_hash, percent),
     );
     drop(finish_signal);
@@ -1295,7 +1297,10 @@ pub fn complete_transcription_attempt_with_inference(
     on_started(&hash);
     let progress_hash = hash.clone();
     let mut progress = |percent| on_progress(&progress_hash, percent);
-    let result = inference(&mut progress);
+    let result = {
+        let _measurement = crate::ai_measurement::Span::begin(attempt.observer, "inference");
+        inference(&mut progress)
+    };
     let was_cancelled = attempt.cancel_when.as_ref().is_some_and(|stop| stop());
     finish_transcription_attempt(&attempt, hash, result, was_cancelled)
 }
@@ -1340,10 +1345,14 @@ fn transcribe_next(
             conn: context.conn,
             cache: context.cache,
             data_root: context.data_root,
+            temp_dir: context
+                .data_root
+                .join(crate::binaries_manager::TEMP_DIR_NAME),
             source_hash: &candidate_hash,
             source_path: &path,
             replace_existing: false,
             acceleration: context.transcription_acceleration,
+            observer: &crate::ai_measurement::NOOP,
             cancel_when: Some(Box::new(move || {
                 (!foreground && !is_idle()) || cancelled()
             })),

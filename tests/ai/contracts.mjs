@@ -1,6 +1,5 @@
 const SHA256 = /^[0-9a-f]{64}$/;
 const TEST_IDS = new Set(["face", "audio-transcription", "video-transcription"]);
-const SURFACES = new Set(["adapter", "app"]);
 const REQUIREMENTS = new Set(["face-scoring", "transcription"]);
 
 function object(value, label) {
@@ -22,6 +21,43 @@ function integer(value, label, minimum = 0) {
     throw new TypeError(`${label} must be an integer >= ${minimum}`);
   }
   return value;
+}
+
+function finite(value, label, minimum = 0, { nullable = false } = {}) {
+  if (nullable && value === null) return value;
+  if (!Number.isFinite(value) || value < minimum) {
+    throw new TypeError(`${label} must be a finite number >= ${minimum}${nullable ? " or null" : ""}`);
+  }
+  return value;
+}
+
+function timestamp(value, label) {
+  text(value, label);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) ||
+      new Date(value).toISOString() !== value) {
+    throw new TypeError(`${label} must be a canonical UTC millisecond timestamp`);
+  }
+  return value;
+}
+
+function digest(value, label) {
+  const selected = text(value, label);
+  if (!SHA256.test(selected)) throw new TypeError(`${label} is invalid`);
+  return selected;
+}
+
+function acceleration(testId, value, label, { nullable = false } = {}) {
+  if (nullable && value === null) return value;
+  const allowed = testId === "face" ? new Set(["none"]) : new Set(["none", "metal"]);
+  if (!allowed.has(value)) throw new TypeError(`${label} is invalid`);
+  return value;
+}
+
+function failure(value, label) {
+  const input = object(value, label);
+  text(input.category, `${label}.category`);
+  text(input.message, `${label}.message`);
+  return input;
 }
 
 export function validateFixtureReference(value, label = "fixture") {
@@ -60,7 +96,7 @@ export function requirementFor(testId) {
 
 export function validateParameters(value) {
   const input = object(value, "parameters");
-  if (input.schemaVersion !== 1) {
+  if (input.schemaVersion !== 2) {
     throw new TypeError(`unsupported parameter schema version ${String(input.schemaVersion)}`);
   }
   text(input.profileId, "profileId");
@@ -76,35 +112,24 @@ export function validateParameters(value) {
       throw new TypeError(`cases[${index}].id must be unique and supported`);
     }
     ids.add(id);
-    if (!SURFACES.has(item.surface)) {
-      throw new TypeError(`cases[${index}].surface must be adapter or app`);
-    }
     const fixtures = item.fixtures?.map((fixture, fixtureIndex) =>
       validateFixtureReference(fixture, `cases[${index}].fixtures[${fixtureIndex}]`),
     );
     if (!fixtures?.length) {
       throw new TypeError(`cases[${index}].fixtures must be a non-empty array`);
     }
-    const oracle = object(item.oracle, `cases[${index}].oracle`);
     const timeoutMs = integer(item.timeoutMs, `cases[${index}].timeoutMs`, 1_000);
-    const repetitions = integer(item.repetitions ?? 1, `cases[${index}].repetitions`, 1);
     const acceleration = normalizeAcceleration(id, item.acceleration);
-    const cache = item.cache ?? "cold";
-    if (cache !== "cold") throw new TypeError("only cold cache is supported");
     return {
       id,
       requirement: requirementFor(id),
-      surface: item.surface,
       fixtures,
-      oracle,
       timeoutMs,
-      repetitions,
       acceleration,
-      cache,
     };
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     profileId: input.profileId,
     profileVersion: input.profileVersion,
     cases,
@@ -113,7 +138,7 @@ export function validateParameters(value) {
 
 export function validateResult(value) {
   const result = object(value, "result");
-  if (result.schemaVersion !== 1) {
+  if (result.schemaVersion !== 2) {
     throw new TypeError(`unsupported result schema version ${String(result.schemaVersion)}`);
   }
   if (!["running", "passed", "failed", "interrupted"].includes(result.outcome)) {
@@ -121,7 +146,126 @@ export function validateResult(value) {
   }
   text(result.profileId, "result.profileId");
   integer(result.profileVersion, "result.profileVersion", 1);
+  if (!new Set(["live", "benchmark"]).has(result.mode)) {
+    throw new TypeError("result.mode is invalid");
+  }
+  timestamp(result.startedAtUtc, "result.startedAtUtc");
+  if (result.outcome === "running") {
+    if ("finishedAtUtc" in result) throw new TypeError("running result must not have finishedAtUtc");
+  } else {
+    timestamp(result.finishedAtUtc, "result.finishedAtUtc");
+  }
+  if ("failure" in result) failure(result.failure, "result.failure");
+  if (["running", "passed"].includes(result.outcome) && "failure" in result) {
+    throw new TypeError(`${result.outcome} result must not have failure`);
+  }
+  const executable = object(result.executable, "result.executable");
+  const executableBasename = text(executable.basename, "result.executable.basename");
+  if (executableBasename !== executableBasename.split(/[\\/]/).at(-1)) {
+    throw new TypeError("result.executable.basename must not contain a path");
+  }
+  digest(executable.sha256, "result.executable.sha256");
+  digest(result.buildManifestSha256, "result.buildManifestSha256");
+  const machine = object(result.machine, "result.machine");
+  if (!new Set(["darwin", "win32"]).has(machine.platform)) {
+    throw new TypeError("result.machine.platform is invalid");
+  }
+  text(machine.osVersion, "result.machine.osVersion");
+  text(machine.architecture, "result.machine.architecture");
+  text(machine.cpuModel, "result.machine.cpuModel");
+  integer(machine.logicalCpuCount, "result.machine.logicalCpuCount", 1);
+  integer(machine.totalMemoryBytes, "result.machine.totalMemoryBytes", 1);
+  const source = object(result.source, "result.source");
+  if (!/^[0-9a-f]{40}$/.test(text(source.commit, "result.source.commit"))) {
+    throw new TypeError("result.source.commit is invalid");
+  }
+  if (typeof source.dirty !== "boolean") throw new TypeError("result.source.dirty must be boolean");
+  digest(source.trackedDiffSha256, "result.source.trackedDiffSha256");
+  integer(source.untrackedCount, "result.source.untrackedCount");
+  digest(source.untrackedContentSha256, "result.source.untrackedContentSha256");
   if (!Array.isArray(result.cases)) throw new TypeError("result.cases must be an array");
+  const scenarioIds = new Set();
+  for (const [index, item] of result.cases.entries()) {
+    object(item, `result.cases[${index}]`);
+    if (!TEST_IDS.has(item.scenarioId) || scenarioIds.has(item.scenarioId)) {
+      throw new TypeError(`result.cases[${index}].scenarioId is invalid`);
+    }
+    scenarioIds.add(item.scenarioId);
+    if (!["running", "passed", "failed", "interrupted"].includes(item.outcome)) {
+      throw new TypeError(`result.cases[${index}].outcome is invalid`);
+    }
+    timestamp(item.startedAtUtc, `result.cases[${index}].startedAtUtc`);
+    if (item.outcome === "running") {
+      if ("finishedAtUtc" in item) {
+        throw new TypeError(`result.cases[${index}] running case must not have finishedAtUtc`);
+      }
+    } else {
+      timestamp(item.finishedAtUtc, `result.cases[${index}].finishedAtUtc`);
+    }
+    if (!Array.isArray(item.dependencies) || item.dependencies.length === 0) {
+      throw new TypeError(`result.cases[${index}].dependencies must be non-empty`);
+    }
+    for (const [dependencyIndex, dependency] of item.dependencies.entries()) {
+      const label = `result.cases[${index}].dependencies[${dependencyIndex}]`;
+      object(dependency, label);
+      text(dependency.id, `${label}.id`);
+      digest(dependency.sha256, `${label}.sha256`);
+      integer(dependency.bytes, `${label}.bytes`, 1);
+      if (dependency.version !== null) text(dependency.version, `${label}.version`);
+    }
+    if (!Array.isArray(item.fixtures) || item.fixtures.length === 0) {
+      throw new TypeError(`result.cases[${index}].fixtures must be non-empty`);
+    }
+    item.fixtures.forEach((fixture, fixtureIndex) =>
+      validateFixtureReference(fixture, `result.cases[${index}].fixtures[${fixtureIndex}]`));
+    acceleration(item.scenarioId, item.configuredAcceleration,
+      `result.cases[${index}].configuredAcceleration`);
+    acceleration(item.scenarioId, item.observedAcceleration,
+      `result.cases[${index}].observedAcceleration`, { nullable: true });
+    if (item.outcome === "passed") {
+      object(item.correctness, `result.cases[${index}].correctness`);
+      if ("failure" in item) throw new TypeError(`result.cases[${index}] passed case has failure`);
+    } else if (item.outcome !== "running") {
+      failure(item.failure, `result.cases[${index}].failure`);
+    }
+    if (result.mode === "live") {
+      if (item.observations !== null) {
+        throw new TypeError(`result.cases[${index}].observations must be null in live mode`);
+      }
+    } else if (item.outcome === "running") {
+      if (item.observations !== null) {
+        throw new TypeError(`result.cases[${index}] running observations must be null`);
+      }
+    } else if (item.outcome === "passed" || item.observations !== null) {
+      const observations = object(item.observations, `result.cases[${index}].observations`);
+      finite(observations.wallMs, `result.cases[${index}].observations.wallMs`, Number.MIN_VALUE);
+      finite(observations.peakProcessTreeBytes,
+        `result.cases[${index}].observations.peakProcessTreeBytes`, 0, { nullable: true });
+      if (!Array.isArray(observations.phases)) {
+        throw new TypeError(`result.cases[${index}].observations.phases must be an array`);
+      }
+      for (const [phaseIndex, phase] of observations.phases.entries()) {
+        const label = `result.cases[${index}].observations.phases[${phaseIndex}]`;
+        object(phase, label);
+        text(phase.phase, `${label}.phase`);
+        finite(phase.wallMs, `${label}.wallMs`);
+      }
+    }
+  }
+  if (result.outcome !== "running" && result.cases.some(({ outcome }) => outcome === "running")) {
+    throw new TypeError("terminal result contains a running case");
+  }
+  if (result.outcome === "passed" &&
+      (result.cases.length === 0 || result.cases.some(({ outcome }) => outcome !== "passed"))) {
+    throw new TypeError("passed result must contain only passed cases");
+  }
+  if (result.outcome === "failed" && !result.cases.some(({ outcome }) => outcome === "failed")) {
+    throw new TypeError("failed result must contain a failed case");
+  }
+  if (result.outcome === "interrupted" &&
+      !result.cases.some(({ outcome }) => outcome === "interrupted") && !("failure" in result)) {
+    throw new TypeError("interrupted result must contain an interrupted case or runner failure");
+  }
   return result;
 }
 
@@ -187,21 +331,24 @@ export function validatePreparedContext(value) {
 
 export function validateBuildManifest(value, parameters) {
   const manifest = object(value, "build manifest");
-  if (manifest.schemaVersion !== 1) throw new TypeError("unsupported build manifest schema version");
-  if (!manifest.binary || !SHA256.test(manifest.binary.sha256)) {
-    throw new TypeError("build manifest binary digest is invalid");
+  if (manifest.schemaVersion !== 2) throw new TypeError("unsupported build manifest schema version");
+  if (!manifest.preparer || !SHA256.test(manifest.preparer.sha256)) {
+    throw new TypeError("build manifest preparer digest is invalid");
   }
-  if (!manifest.driver || !SHA256.test(manifest.driver.sha256)) {
-    throw new TypeError("build manifest test-driver digest is invalid");
+  if (!manifest.scenarioExecutable || !SHA256.test(manifest.scenarioExecutable.sha256)) {
+    throw new TypeError("build manifest scenario executable digest is invalid");
   }
-  for (const [label, artifact] of [["binary", manifest.binary], ["test driver", manifest.driver]]) {
+  for (const [label, artifact] of [
+    ["preparer", manifest.preparer],
+    ["scenario executable", manifest.scenarioExecutable],
+  ]) {
     const name = text(artifact.basename, `build manifest ${label} basename`);
     if (name !== name.split(/[\\/]/).at(-1)) {
       throw new TypeError(`build manifest ${label} basename must not contain a path`);
     }
   }
-  if (!Array.isArray(manifest.compileFeatures) || !manifest.compileFeatures.includes("app-e2e")) {
-    throw new TypeError("build manifest is not an app-e2e binary");
+  if (!Array.isArray(manifest.compileFeatures) || !manifest.compileFeatures.includes("ai-test-support")) {
+    throw new TypeError("build manifest does not contain AI test support");
   }
   const prepared = validatePreparedContext(manifest.preparedContext);
   const capabilities = new Map(prepared.capabilities.map(({ feature, options }) => [

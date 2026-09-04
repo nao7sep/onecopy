@@ -1,11 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "profileId": "onecopy-standard-ai",
   "profileVersion": 1,
   "cases": [
     {
       "id": "face",
-      "surface": "app",
       "fixtures": [
         { "basename": "face-01-reference.jpg", "sha256": "e0a29520f9e871415d289eea9589b05671f6c6c5b179848ba386d9ebb0dc1917", "bytes": 54778 },
         { "basename": "face-01-variation.jpg", "sha256": "fe2eda47682fbf5e8436c0c0fcb460c328431333dfdfa0026d6f11d064f379e8", "bytes": 52345 },
@@ -20,40 +19,21 @@
         { "basename": "face-06-reference.jpg", "sha256": "73d88911b4e3936896ee439f98e552a44bbdd56b19244830ff31e9a71c27c518", "bytes": 57394 },
         { "basename": "face-06-variation.jpg", "sha256": "55c47a914d0f1dd1584691836572d68571b8db582c9003d7dbc6bc2a6f986ed6", "bytes": 54240 }
       ],
-      "oracle": { "minimumReady": 12, "minimumScore": 0.01, "maximumScore": 1 },
-      "timeoutMs": 14400000,
-      "repetitions": 1,
-      "cache": "cold"
+      "timeoutMs": 14400000
     },
     {
       "id": "audio-transcription",
-      "surface": "app",
       "fixtures": [
         { "basename": "dialogue-english-with-noise.flac", "sha256": "fe91bfa1e93803bbd563a53c0c2fc8ab458fc73d869776c9efad482639de7736", "bytes": 1406475 }
       ],
-      "oracle": {
-        "semanticTerms": ["upload", "photograph", "noon", "file", "location", "coordinates", "sharing"],
-        "minimumTermMatches": 4,
-        "rejectPhraseLoop": true
-      },
-      "timeoutMs": 14400000,
-      "repetitions": 1,
-      "cache": "cold"
+      "timeoutMs": 14400000
     },
     {
       "id": "video-transcription",
-      "surface": "app",
       "fixtures": [
         { "basename": "dialogue-english-with-noise.mp4", "sha256": "5480c2c3ee2b237f8830fd969e59d8da91971eb8ee9b2f5ce1f390bba68e6b04", "bytes": 234478 }
       ],
-      "oracle": {
-        "semanticTerms": ["upload", "photograph", "noon", "file", "location", "coordinates", "sharing"],
-        "minimumTermMatches": 4,
-        "rejectPhraseLoop": true
-      },
-      "timeoutMs": 14400000,
-      "repetitions": 1,
-      "cache": "cold"
+      "timeoutMs": 14400000
     }
   ]
 }

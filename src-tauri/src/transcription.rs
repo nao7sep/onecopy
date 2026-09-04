@@ -185,6 +185,7 @@ pub fn run_whisper(
     model: &Path,
     pcm: &[f32],
     acceleration: crate::ai_acceleration::Mode,
+    observer: &dyn crate::ai_measurement::Observer,
     mut on_progress: impl FnMut(i32) + 'static,
 ) -> Result<Vec<Segment>, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -198,25 +199,21 @@ pub fn run_whisper(
         crate::ai_acceleration::TRANSCRIPTION,
         acceleration,
     )?;
-    #[cfg(feature = "app-e2e")]
-    crate::ai_test_instrumentation::acceleration(acceleration, acceleration);
-
     // whisper.cpp otherwise writes its internal decoder trace directly to
     // stderr. The app owns useful progress and errors; the repeated token
     // dumps are neither and made run-dev unreadable.
     whisper_rs::install_logging_hooks();
     let mut context_params = WhisperContextParameters::default();
     context_params.use_gpu(matches!(acceleration, crate::ai_acceleration::Mode::Metal));
-    let context = {
-        #[cfg(feature = "app-e2e")]
-        let _timing =
-            crate::ai_test_instrumentation::Span::begin("transcription", "model-initialization");
-        WhisperContext::new_with_params(model, context_params)
-            .map_err(|e| format!("model load failed: {e}"))?
+    let mut state = {
+        let _measurement =
+            crate::ai_measurement::Span::begin(observer, "model-initialization");
+        let context = WhisperContext::new_with_params(model, context_params)
+            .map_err(|e| format!("model load failed: {e}"))?;
+        context
+            .create_state()
+            .map_err(|e| format!("whisper state failed: {e}"))?
     };
-    let mut state = context
-        .create_state()
-        .map_err(|e| format!("whisper state failed: {e}"))?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_language(Some("auto"));
@@ -228,8 +225,7 @@ pub fn run_whisper(
     params.set_abort_callback_safe(is_cancelled);
 
     {
-        #[cfg(feature = "app-e2e")]
-        let _timing = crate::ai_test_instrumentation::Span::begin("transcription", "inference");
+        let _measurement = crate::ai_measurement::Span::begin(observer, "inference");
         state
             .full(params, pcm)
             .map_err(|e| format!("transcription failed: {e}"))?;
@@ -335,11 +331,9 @@ pub(crate) fn transcribe_to_cache_claimed(
         ffmpeg,
         media,
         acceleration,
+        &crate::ai_measurement::NOOP,
         on_progress,
     )?;
-    #[cfg(feature = "app-e2e")]
-    let _publication_timing =
-        crate::ai_test_instrumentation::Span::begin("transcription", "durable-publication");
     publish_transcript(&target, &text)?;
     Ok(text)
 }
@@ -351,18 +345,23 @@ pub(crate) fn generate_transcript_claimed(
     ffmpeg: &Path,
     media: &Path,
     acceleration: crate::ai_acceleration::Mode,
+    observer: &dyn crate::ai_measurement::Observer,
     on_progress: impl FnMut(i32) + 'static,
 ) -> Result<String, String> {
     let pcm = {
-        #[cfg(feature = "app-e2e")]
-        let _timing =
-            crate::ai_test_instrumentation::Span::begin("transcription", "media-extraction");
+        let _measurement = crate::ai_measurement::Span::begin(observer, "media-extraction");
         extract_pcm(ffmpeg, media, temp_dir)?
     };
     let text = if !has_audible_signal(&pcm) {
         String::new()
     } else {
-        render(&run_whisper(model, &pcm, acceleration, on_progress)?)
+        render(&run_whisper(
+            model,
+            &pcm,
+            acceleration,
+            observer,
+            on_progress,
+        )?)
     };
     Ok(text)
 }

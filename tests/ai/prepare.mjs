@@ -14,7 +14,7 @@ import { cloneArtifactTree } from "./artifact-tree.mjs";
 import { requirementsFor, validateParameters } from "./contracts.mjs";
 import { indexFixtureRoot, resolveFixtures, sha256File } from "./fixtures.mjs";
 import { runOwned } from "./process.mjs";
-import { assertPrivacySafe, writeAtomicReport } from "./report.mjs";
+import { writeAtomicReport } from "./report.mjs";
 import { sourceState } from "./source-state.mjs";
 
 const executable = (name) => (process.platform === "win32" ? `${name}.exe` : name);
@@ -113,9 +113,11 @@ export async function prepare({
     "--manifest-path",
     "src-tauri/Cargo.toml",
     "--features",
-    "app-e2e",
+    "ai-test-support",
     "--bin",
     "onecopy-ai-preparer",
+    "--bin",
+    "onecopy-ai-scenario",
   ], { cwd: repositoryRoot, signal });
 
   const preparer = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy-ai-preparer"));
@@ -132,18 +134,11 @@ export async function prepare({
     .findLast((event) => event.event === "prepared-context")?.context;
   if (!preparedContext) throw new Error("managed dependency preparation did not return a context");
 
-  const npmCli = process.env.npm_execpath;
-  if (!npmCli) throw new Error("npm executable path is unavailable");
-  await runPreparationStep(process.execPath, [npmCli, "run", "build:e2e"], {
-    cwd: repositoryRoot,
-    signal,
-  });
-  const builtApp = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy"));
-
-  const binary = publishVersionedBinary(builtApp, outputBin, "onecopy");
-  const driver = publishVersionedBinary(preparer, outputBin, "onecopy-ai-preparer");
+  const scenario = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy-ai-scenario"));
+  const publishedPreparer = publishVersionedBinary(preparer, outputBin, "onecopy-ai-preparer");
+  const scenarioExecutable = publishVersionedBinary(scenario, outputBin, "onecopy-ai-scenario");
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: sourceState(repositoryRoot),
     platform: platform(),
     architecture: arch(),
@@ -153,12 +148,11 @@ export async function prepare({
       cargo: version("cargo", ["--version"]),
       node: process.version,
     },
-    compileFeatures: ["app-e2e"],
-    binary,
-    driver,
+    compileFeatures: ["ai-test-support"],
+    preparer: publishedPreparer,
+    scenarioExecutable,
     preparedContext,
   };
-  assertPrivacySafe(manifest);
   const manifestPath = resolve(outputBin, "onecopy.ai-build.json");
   writeAtomicReport(manifestPath, manifest);
   return { manifestPath, artifactHome, parameters };

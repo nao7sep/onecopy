@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 //
-// The frontend journeys (Phase 28): full user paths ACROSS stores and
+// Frontend integration workflows: full user paths ACROSS stores and
 // components together, through the mocked IPC layer — the wiring BETWEEN
 // stores that the per-unit specs structurally cannot see. The app is rendered
-// whole; the journey is driven by the same events a user produces (backend
+// whole; each scenario is driven by the same events a user produces (backend
 // events, sidebar clicks, window and grid keystrokes), and every assertion is
 // about what the user would see or what the core was actually told.
 
@@ -64,7 +64,7 @@ function member(hash: string, sharpness: number) {
   };
 }
 
-/** The scene the journey culls: three similar shots and one unrelated. */
+/** The scene the workflow culls: three similar shots and one unrelated. */
 const SCENE = [
   item(1, { similarGroupId: 7 }),
   item(2, { similarGroupId: 7 }),
@@ -184,7 +184,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe("the culling journey", () => {
+describe("the culling workflow", () => {
   it("starts the configured source check only after usable bootstrap", async () => {
     mockCommand("load_app_data", () => ({
       config: {
@@ -380,7 +380,7 @@ describe("the culling journey", () => {
   }, 30_000);
 });
 
-describe("the failure journey", () => {
+describe("the failure workflow", () => {
   it("surfaces a disk-failed delete in the status bar and Issues without breaking the selection", async () => {
     // A CONFIGURED boot — with source dirs the wizard stays closed, so the
     // window command layer (Delete) is live.

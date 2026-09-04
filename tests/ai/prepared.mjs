@@ -31,20 +31,20 @@ export function dependenciesForCase(context, item) {
 }
 
 export function loadPrepared(repositoryRoot, preparedRoot, parameters) {
-  const manifest = JSON.parse(
-    readFileSync(resolve(preparedRoot, "bin", "onecopy.ai-build.json"), "utf8"),
-  );
+  const manifestPath = resolve(preparedRoot, "bin", "onecopy.ai-build.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   validateBuildManifest(manifest, parameters);
-  const binary = resolve(preparedRoot, "bin", manifest.binary.basename);
-  const driver = resolve(preparedRoot, "bin", manifest.driver.basename);
-  if (basename(binary) !== manifest.binary.basename || basename(driver) !== manifest.driver.basename) {
-    throw new Error("prepared manifest binary names must not contain paths");
+  const preparer = resolve(preparedRoot, "bin", manifest.preparer.basename);
+  const scenarioExecutable = resolve(preparedRoot, "bin", manifest.scenarioExecutable.basename);
+  if (basename(preparer) !== manifest.preparer.basename ||
+      basename(scenarioExecutable) !== manifest.scenarioExecutable.basename) {
+    throw new Error("prepared manifest executable names must not contain paths");
   }
-  if (sha256File(binary) !== manifest.binary.sha256) {
-    throw new Error("prepared application digest mismatch");
+  if (sha256File(preparer) !== manifest.preparer.sha256) {
+    throw new Error("prepared preparer digest mismatch");
   }
-  if (sha256File(driver) !== manifest.driver.sha256) {
-    throw new Error("prepared test-driver digest mismatch");
+  if (sha256File(scenarioExecutable) !== manifest.scenarioExecutable.sha256) {
+    throw new Error("prepared scenario executable digest mismatch");
   }
   if (JSON.stringify(sourceState(repositoryRoot)) !== JSON.stringify(manifest.source)) {
     throw new Error("prepared application does not match the current source state");
@@ -53,7 +53,7 @@ export function loadPrepared(repositoryRoot, preparedRoot, parameters) {
   const managedRoot = resolve(preparedRoot, "managed");
   const requirements = requirementsFor(parameters);
   const preparedContext = runJsonLines(
-    driver,
+    preparer,
     ["verify", managedRoot, ...requirements],
     repositoryRoot,
   ).findLast((event) => event.event === "prepared-context")?.context;
@@ -64,5 +64,12 @@ export function loadPrepared(repositoryRoot, preparedRoot, parameters) {
   if (JSON.stringify(preparedContext) !== JSON.stringify(manifest.preparedContext)) {
     throw new Error("prepared context differs from the build manifest");
   }
-  return Object.freeze({ manifest, binary, driver, managedRoot, preparedContext });
+  return Object.freeze({
+    manifest,
+    buildManifestSha256: sha256File(manifestPath),
+    preparer,
+    scenarioExecutable,
+    managedRoot,
+    preparedContext,
+  });
 }

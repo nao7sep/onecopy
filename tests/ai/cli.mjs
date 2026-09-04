@@ -1,11 +1,10 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBenchmark } from "./benchmark.mjs";
 import { compare } from "./compare.mjs";
-import { runLive } from "./live.mjs";
 import { prepare } from "./prepare.mjs";
-import { recoverInterruptedReport, safeFailure } from "./report.mjs";
+import { requireUnusedReportPath, safeConsoleMessage } from "./report.mjs";
+import { runScenarios } from "./scenario-runner.mjs";
 
 function options(args) {
   const parsed = { positionals: [] };
@@ -25,7 +24,7 @@ function options(args) {
 }
 
 function usage() {
-  console.log(`OneCopy AI test system
+  console.log(`OneCopy AI integration harness
 
   npm run test:ai:prepare -- [--parameters FILE] [--fixtures DIR] [--prepared DIR] [--reuse-managed DIR]
   npm run test:ai:live -- [--parameters FILE] [--fixtures DIR] [--prepared DIR] [--report FILE]
@@ -34,6 +33,11 @@ function usage() {
 
 Benchmark acceleration is explicit in the parameter file; omission means CPU-only.
 Preparation may download/build. Live and benchmark execution are offline and never do either.`);
+}
+
+function timestampForFile(now = new Date()) {
+  const iso = now.toISOString();
+  return `${iso.slice(0, 10).replaceAll("-", "")}-${iso.slice(11, 19).replaceAll(":", "")}-${iso.slice(20, 23)}-utc`;
 }
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -53,8 +57,7 @@ try {
   const defaults = {
     repositoryRoot,
     parameterPath: resolve(
-      parsed.parameters ??
-        (action === "live" ? "tests/ai/profiles/live.json" : "tests/ai/profiles/standard.json"),
+      parsed.parameters ?? "tests/ai/profiles/standard.json",
     ),
     fixtureRoot: resolve(parsed.fixtures ?? "../company/assets/test-fixtures"),
     preparedRoot: resolve(parsed.prepared ?? "src-tauri/target/ai-benchmark"),
@@ -66,18 +69,18 @@ try {
   if (!existsSync(defaults.fixtureRoot)) throw new Error("fixture root does not exist");
   if (action === "prepare") {
     const result = await prepare(defaults);
-    console.log(`Prepared AI artifacts and application (${result.parameters.profileId}).`);
+    console.log(`Prepared AI artifacts and scenario executables (${result.parameters.profileId}).`);
   } else if (action === "live" || action === "benchmark") {
     const reportPath = resolve(
       parsed.report ??
-        `artifacts/ai-benchmark/${action}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+        `artifacts/ai-benchmark/${action}-${timestampForFile()}.json`,
     );
-    if (recoverInterruptedReport(reportPath)) {
-      throw new Error("the prior running result was sealed as interrupted; choose a new report file");
-    }
-    const result = action === "live"
-      ? await runLive({ ...defaults, reportPath })
-      : await runBenchmark({ ...defaults, reportPath });
+    requireUnusedReportPath(reportPath);
+    const result = await runScenarios({
+      ...defaults,
+      reportPath,
+      observe: action === "benchmark",
+    });
     console.log(`${action} ${result.outcome}; result file: ${reportPath.split(/[\\/]/).at(-1)}`);
     if (result.outcome !== "passed") process.exitCode = 1;
   } else {
@@ -85,6 +88,6 @@ try {
     process.exitCode = 2;
   }
 } catch (error) {
-  console.error(safeFailure("test-system", error).message);
+  console.error(safeConsoleMessage(error));
   process.exitCode = 1;
 }

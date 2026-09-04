@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
+import { validateResult } from "./contracts.mjs";
 
 const FORBIDDEN_KEYS = /(host.?name|user.?name|absolute.?path|(^|_)path$|home.?dir|environment|command.?line|git.?remote|transcript|embedding|raw.?content|serial|drive.?(identity|id))/i;
-const PATH_VALUE = /(?:^[a-z]:[\\/]|^\\\\|^\/(?:Users|home|var|tmp|private|opt|mnt)\/|[\\/](?:Users|home)[\\/])/i;
+const PATH_VALUE = /(?:^|[\s'":(])(?:[a-z]:[\\/]|\\\\|\/(?!\/))|[\\/](?:Users|home)[\\/]/i;
 
 export function assertPrivacySafe(value, location = "result") {
   if (Array.isArray(value)) {
@@ -22,19 +23,28 @@ export function assertPrivacySafe(value, location = "result") {
   return value;
 }
 
-export function safeFailure(category, error) {
+export function safeConsoleMessage(error) {
   const message = String(error instanceof Error ? error.message : error)
-    .replace(/[a-z]:[\\/][^;\n]*/gi, "<local-path>")
-    .replace(/\/(?:Users|home|var|tmp|private|opt|mnt)\/[^;\n]*/gi, "<local-path>");
-  return { category, message };
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim();
+  if (PATH_VALUE.test(message)) {
+    return "The command could not finish because a local path was unavailable.";
+  }
+  return message || "The command could not finish.";
 }
 
 export function writeAtomicReport(path, report) {
   assertPrivacySafe(report);
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.partial`;
-  writeFileSync(temporary, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
+    renameSync(temporary, path);
+  } finally {
+    if (existsSync(temporary)) {
+      rmSync(temporary, { force: true });
+    }
+  }
   return basename(path);
 }
 
@@ -44,21 +54,38 @@ export function recoverInterruptedReport(path) {
   if (prior.outcome !== "running") return false;
   prior.outcome = "interrupted";
   prior.finishedAtUtc = new Date().toISOString();
+  for (const item of prior.cases ?? []) {
+    if (item.outcome !== "running") continue;
+    item.outcome = "interrupted";
+    item.finishedAtUtc = prior.finishedAtUtc;
+    item.failure = {
+      category: "runner-interrupted",
+      message: "The prior runner exited before recording this scenario's terminal state.",
+    };
+  }
   prior.failure = {
     category: "runner-interrupted",
     message: "The prior runner exited before recording its terminal state.",
   };
-  writeAtomicReport(path, prior);
+  writeAtomicReport(path, validateResult(prior));
   return true;
 }
 
+export function requireUnusedReportPath(path) {
+  if (!existsSync(path)) return;
+  if (recoverInterruptedReport(path)) {
+    throw new Error("the prior running result was sealed as interrupted; choose a new report file");
+  }
+  throw new Error("the report file already exists; choose a new report file");
+}
+
 export function compatibleResults(left, right) {
-  const fields = ["schemaVersion", "profileId", "profileVersion"];
+  const fields = ["schemaVersion", "profileId", "profileVersion", "mode", "buildManifestSha256"];
   for (const field of fields) {
     if (left[field] !== right[field]) throw new Error(`results differ at ${field}`);
   }
-  const identity = (result) => result.cases.map(({ id, dependencies, fixtures }) => ({
-    id,
+  const identity = (result) => result.cases.map(({ scenarioId, dependencies, fixtures }) => ({
+    scenarioId,
     dependencies,
     fixtures,
   }));
@@ -68,8 +95,8 @@ export function compatibleResults(left, right) {
   if (JSON.stringify(left.source) !== JSON.stringify(right.source)) {
     throw new Error("results use different source states");
   }
-  if (left.binary?.sha256 !== right.binary?.sha256) {
-    throw new Error("results use different application binaries");
+  if (JSON.stringify(left.executable) !== JSON.stringify(right.executable)) {
+    throw new Error("results use different scenario executables");
   }
-  return true;
+  return { machineFactsMatch: JSON.stringify(left.machine) === JSON.stringify(right.machine) };
 }

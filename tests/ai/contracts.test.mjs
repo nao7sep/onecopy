@@ -21,17 +21,19 @@ test("standard profile is valid and omission means no acceleration", () => {
     "transcription",
   ]);
   assert.deepEqual(requirementsFor(standard), ["face-scoring", "transcription"]);
-  assert.equal(parsed.cases.some((item) => "models" in item), false);
+  for (const removed of ["models", "surface", "oracle", "repetitions", "cache"]) {
+    assert.equal(parsed.cases.some((item) => removed in item), false);
+  }
 });
 
 test("schema versions and unsupported accelerators fail before execution", () => {
-  assert.throws(() => validateParameters({ ...standard, schemaVersion: 2 }), /unsupported parameter schema/);
+  assert.throws(() => validateParameters({ ...standard, schemaVersion: 1 }), /unsupported parameter schema/);
   assert.throws(() => normalizeAcceleration("face", "metal"), /does not support/);
   assert.throws(() => normalizeAcceleration("audio-transcription", "cuda"), /does not support/);
   if (!(process.platform === "darwin" && process.arch === "arm64")) {
     assert.throws(() => normalizeAcceleration("audio-transcription", "metal"), /Apple-silicon/);
   }
-  assert.throws(() => validateResult({ schemaVersion: 2 }), /unsupported result schema/);
+  assert.throws(() => validateResult({ schemaVersion: 1 }), /unsupported result schema/);
 });
 
 test("fixture references cannot carry paths or uppercase hashes", () => {
@@ -68,10 +70,10 @@ test("stale or mismatched prepared manifests are rejected", () => {
     ],
   };
   const manifest = {
-    schemaVersion: 1,
-    binary: { basename: "onecopy.test", sha256: "a".repeat(64) },
-    driver: { basename: "onecopy-driver.test", sha256: "b".repeat(64) },
-    compileFeatures: ["app-e2e"],
+    schemaVersion: 2,
+    preparer: { basename: "onecopy-ai-preparer.test", sha256: "a".repeat(64) },
+    scenarioExecutable: { basename: "onecopy-ai-scenario.test", sha256: "b".repeat(64) },
+    compileFeatures: ["ai-test-support"],
     preparedContext,
   };
   assert.equal(validateBuildManifest(manifest, standard), manifest);
@@ -83,5 +85,5 @@ test("stale or mismatched prepared manifests are rejected", () => {
   assert.throws(() => validatePreparedContext(stale.preparedContext), /not current/);
   const wrongFeature = structuredClone(manifest);
   wrongFeature.compileFeatures = [];
-  assert.throws(() => validateBuildManifest(wrongFeature, standard), /not an app-e2e/);
+  assert.throws(() => validateBuildManifest(wrongFeature, standard), /does not contain AI test support/);
 });

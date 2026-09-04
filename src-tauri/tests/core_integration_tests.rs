@@ -1,8 +1,8 @@
-// Model-free core integration journeys: the app's public Rust API is exercised
+// Model-free core integration workflows: the app's public Rust API is exercised
 // against a generated corpus on every `cargo test`. These cover wiring between
 // subsystems (scan → group → cull → verified move-out; cancel →
-// resume). The separate running-app acceptance suite covers the Tauri/webview
-// boundary and real AI-backed orchestration.
+// resume). The separate running-app system suite covers the Tauri/webview
+// boundary; the explicit live integration scenarios cover real AI operations.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -82,7 +82,7 @@ struct World {
 /// unrelated photo an hour later.
 fn world(label: &str) -> World {
     let dir = tempfile::Builder::new()
-        .prefix(&format!("onecopy-e2e-{label}-"))
+        .prefix(&format!("onecopy-integration-{label}-"))
         .tempdir()
         .unwrap();
     let home = dir.path().join("home");
@@ -171,7 +171,7 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
 #[serial_test::serial(scan_cancel)]
 fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     scanner::SCAN_CANCEL.store(false, Ordering::Relaxed);
-    let w = world("journey");
+    let w = world("workflow");
     let conn = index_store::open(&w.home.join("index.sqlite3")).unwrap();
     let cache = CachePaths::new(w.home.join("cache"));
 
@@ -368,7 +368,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     let items = january_images(&conn);
     assert_eq!(items.len(), 1);
     let (issue_total, _) = queries::issues(&conn, 10).unwrap();
-    assert_eq!(issue_total, 0, "a clean journey raises no issues");
+    assert_eq!(issue_total, 0, "a clean workflow raises no issues");
 }
 
 #[test]
@@ -378,7 +378,7 @@ fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
     let control = World {
         home: interrupted._dir.path().join("control-home"),
         corpus: interrupted.corpus.clone(),
-        _dir: tempfile::Builder::new().prefix("onecopy-e2e-unused-").tempdir().unwrap(),
+        _dir: tempfile::Builder::new().prefix("onecopy-integration-unused-").tempdir().unwrap(),
     };
     std::fs::create_dir_all(&control.home).unwrap();
 

@@ -1,47 +1,74 @@
 import { readFileSync } from "node:fs";
+import { validateResult } from "./contracts.mjs";
 import { compatibleResults } from "./report.mjs";
 
 export function compare(leftPath, rightPath) {
-  const left = JSON.parse(readFileSync(leftPath, "utf8"));
-  const right = JSON.parse(readFileSync(rightPath, "utf8"));
-  compatibleResults(left, right);
+  const left = validateResult(JSON.parse(readFileSync(leftPath, "utf8")));
+  const right = validateResult(JSON.parse(readFileSync(rightPath, "utf8")));
+  if (left.outcome === "running" || right.outcome === "running") {
+    throw new Error("running results cannot be compared");
+  }
+  const { machineFactsMatch } = compatibleResults(left, right);
   const cases = left.cases.map((leftCase, index) => {
     const rightCase = right.cases[index];
-    if (leftCase.id !== rightCase.id) throw new Error("result case order differs");
+    if (leftCase.scenarioId !== rightCase.scenarioId) throw new Error("result scenario order differs");
     if (leftCase.outcome !== "passed" || rightCase.outcome !== "passed") {
-      return { id: leftCase.id, comparable: false, reason: "one or both cases did not pass" };
+      return {
+        scenarioId: leftCase.scenarioId,
+        correctnessEquivalent: false,
+        performanceComparable: false,
+        reason: "one or both scenarios did not pass",
+      };
     }
-    const numericPhases = (phases) => {
-      const values = Object.fromEntries(
-        Object.entries(phases ?? {}).filter(([, value]) => Number.isFinite(value)),
-      );
-      for (const event of phases?.engine ?? []) {
+    const numericPhases = (observations) => {
+      const values = {};
+      for (const event of observations?.phases ?? []) {
         if (!Number.isFinite(event.wallMs)) continue;
-        const key = `engine.${event.feature}.${event.phase}`;
-        values[key] = (values[key] ?? 0) + event.wallMs;
+        values[event.phase] = (values[event.phase] ?? 0) + event.wallMs;
       }
       return values;
     };
-    const leftPhases = numericPhases(leftCase.phases);
-    const rightPhases = numericPhases(rightCase.phases);
+    const leftPhases = numericPhases(leftCase.observations);
+    const rightPhases = numericPhases(rightCase.observations);
     const phaseTimeRatios = Object.fromEntries(
-      Object.keys(leftPhases)
-        .filter((phase) => Number.isFinite(rightPhases[phase]) && rightPhases[phase] > 0)
-        .map((phase) => [phase, leftPhases[phase] / rightPhases[phase]]),
+      [...new Set([...Object.keys(leftPhases), ...Object.keys(rightPhases)])]
+        .map((phase) => [
+          phase,
+          machineFactsMatch && Number.isFinite(leftPhases[phase]) &&
+            Number.isFinite(rightPhases[phase]) && rightPhases[phase] > 0
+            ? leftPhases[phase] / rightPhases[phase]
+            : null,
+        ]),
     );
+    const leftWall = leftCase.observations?.wallMs;
+    const rightWall = rightCase.observations?.wallMs;
+    const hasWall = Number.isFinite(leftWall) && Number.isFinite(rightWall) && rightWall > 0;
+    const leftMemory = leftCase.observations?.peakProcessTreeBytes;
+    const rightMemory = rightCase.observations?.peakProcessTreeBytes;
+    const hasMemory = Number.isFinite(leftMemory) && Number.isFinite(rightMemory);
+    const performanceComparable = machineFactsMatch && hasWall;
     return {
-      id: leftCase.id,
-      comparable: true,
-      leftAcceleration: leftCase.effectiveAcceleration,
-      rightAcceleration: rightCase.effectiveAcceleration,
+      scenarioId: leftCase.scenarioId,
+      performanceComparable,
+      ...(performanceComparable ? {} : {
+        reason: machineFactsMatch ? "measurement observations are unavailable" : "machine facts differ",
+      }),
+      leftConfiguredAcceleration: leftCase.configuredAcceleration,
+      rightConfiguredAcceleration: rightCase.configuredAcceleration,
+      leftObservedAcceleration: leftCase.observedAcceleration,
+      rightObservedAcceleration: rightCase.observedAcceleration,
       correctnessEquivalent:
         JSON.stringify(leftCase.correctness) === JSON.stringify(rightCase.correctness),
-      normalizedOutputEquivalent:
-        leftCase.normalizedOutputSha256 === rightCase.normalizedOutputSha256,
-      wallTimeRatio: leftCase.totalWallMs / rightCase.totalWallMs,
+      wallTimeRatio: performanceComparable ? leftWall / rightWall : null,
       phaseTimeRatios,
-      peakMemoryDifferenceBytes: rightCase.peakProcessTreeBytes - leftCase.peakProcessTreeBytes,
+      peakMemoryDifferenceBytes: machineFactsMatch && hasMemory ? rightMemory - leftMemory : null,
     };
   });
-  return { profileId: left.profileId, profileVersion: left.profileVersion, cases };
+  return {
+    profileId: left.profileId,
+    profileVersion: left.profileVersion,
+    machineFactsMatch,
+    crossMachineUse: machineFactsMatch ? null : "descriptive-only",
+    cases,
+  };
 }

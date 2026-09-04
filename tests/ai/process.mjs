@@ -29,12 +29,13 @@ async function processRows() {
       .map((line) => line.trim().split(/\s+/).map(Number))
       .map(([pid, parent, kib]) => ({ pid, parent, bytes: kib * 1024 }));
   } catch {
-    return [];
+    return null;
   }
 }
 
 async function treeBytes(rootPid) {
   const rows = await processRows();
+  if (!rows?.some(({ pid }) => pid === rootPid)) return null;
   const included = new Set([rootPid]);
   let changed = true;
   while (changed) {
@@ -50,7 +51,7 @@ async function treeBytes(rootPid) {
 }
 
 async function rootBytes(rootPid) {
-  if (process.platform !== "win32") return 0;
+  if (process.platform !== "win32") return null;
   try {
     const { stdout } = await execFileAsync(
       "tasklist",
@@ -59,17 +60,17 @@ async function rootBytes(rootPid) {
     );
     const lastField = stdout.trim().match(/"([^"]*)"\s*$/)?.[1] ?? "";
     const kib = Number(lastField.replace(/\D/g, ""));
-    return Number.isFinite(kib) ? kib * 1024 : 0;
+    return Number.isFinite(kib) && kib > 0 ? kib * 1024 : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 
 function terminateTree(child) {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null) return null;
   if (process.platform === "win32") {
     try {
-      execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      execFileSync("taskkill", ["/PID", String(child.pid), "/T"], {
         stdio: "ignore",
         timeout: 30_000,
         windowsHide: true,
@@ -77,12 +78,32 @@ function terminateTree(child) {
     } catch {
       child.kill();
     }
+    return setTimeout(() => {
+      if (child.exitCode !== null) return;
+      try {
+        execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+          stdio: "ignore",
+          timeout: 30_000,
+          windowsHide: true,
+        });
+      } catch {
+        child.kill();
+      }
+    }, 5_000);
   } else {
     try {
       process.kill(-child.pid, "SIGTERM");
     } catch {
       child.kill("SIGTERM");
     }
+    return setTimeout(() => {
+      if (child.exitCode !== null) return;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, 5_000);
   }
 }
 
@@ -108,15 +129,18 @@ export function runOwned(
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const launchMs = Number(process.hrtime.bigint() - started) / 1_000_000;
     let stdout = "";
     let stderr = "";
-    let peakProcessTreeBytes = 0;
+    let peakProcessTreeBytes = null;
     let treeSampling = Promise.resolve();
     let rootSampling = Promise.resolve();
     let treeBusy = false;
     let rootBusy = false;
     let timedOut = false;
     let interrupted = false;
+    let forceKill = null;
+    let terminationRequested = false;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -131,7 +155,12 @@ export function runOwned(
       if (treeBusy) return;
       treeBusy = true;
       treeSampling = (async () => {
-        peakProcessTreeBytes = Math.max(peakProcessTreeBytes, await treeBytes(child.pid));
+        const bytes = await treeBytes(child.pid);
+        if (Number.isFinite(bytes)) {
+          peakProcessTreeBytes = peakProcessTreeBytes === null
+            ? bytes
+            : Math.max(peakProcessTreeBytes, bytes);
+        }
         treeBusy = false;
       })();
     };
@@ -139,20 +168,33 @@ export function runOwned(
       if (rootBusy) return;
       rootBusy = true;
       rootSampling = (async () => {
-        peakProcessTreeBytes = Math.max(peakProcessTreeBytes, await rootBytes(child.pid));
+        const bytes = await rootBytes(child.pid);
+        if (Number.isFinite(bytes)) {
+          peakProcessTreeBytes = peakProcessTreeBytes === null
+            ? bytes
+            : Math.max(peakProcessTreeBytes, bytes);
+        }
         rootBusy = false;
       })();
     };
-    if (measureMemory) sampleRoot();
+    if (measureMemory) {
+      sampleTree();
+      sampleRoot();
+    }
     const treeSample = measureMemory ? setInterval(sampleTree, 2_000) : null;
     const rootSample = measureMemory ? setInterval(sampleRoot, 250) : null;
+    const requestTermination = () => {
+      if (terminationRequested || child.exitCode !== null) return;
+      terminationRequested = true;
+      forceKill = terminateTree(child);
+    };
     const timeout = setTimeout(() => {
       timedOut = true;
-      terminateTree(child);
+      requestTermination();
     }, timeoutMs);
     const interrupt = () => {
       interrupted = true;
-      terminateTree(child);
+      requestTermination();
     };
     const abort = () => interrupt();
     process.once("SIGINT", interrupt);
@@ -163,6 +205,7 @@ export function runOwned(
       if (treeSample) clearInterval(treeSample);
       if (rootSample) clearInterval(rootSample);
       clearTimeout(timeout);
+      if (forceKill) clearTimeout(forceKill);
       process.off("SIGINT", interrupt);
       process.off("SIGTERM", interrupt);
       signal?.removeEventListener("abort", abort);
@@ -172,6 +215,7 @@ export function runOwned(
       if (treeSample) clearInterval(treeSample);
       if (rootSample) clearInterval(rootSample);
       clearTimeout(timeout);
+      if (forceKill) clearTimeout(forceKill);
       process.off("SIGINT", interrupt);
       process.off("SIGTERM", interrupt);
       signal?.removeEventListener("abort", abort);
@@ -183,6 +227,7 @@ export function runOwned(
         interrupted,
         stdout,
         stderr,
+        launchMs,
         wallMs: Number(process.hrtime.bigint() - started) / 1_000_000,
         peakProcessTreeBytes,
       });

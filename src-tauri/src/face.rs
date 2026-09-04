@@ -158,14 +158,10 @@ impl FaceScorer {
         runtime: Option<&Path>,
         detector_model: &Path,
         emotion_model: &Path,
+        observer: &dyn crate::ai_measurement::Observer,
     ) -> Result<FaceScorer, String> {
-        #[cfg(feature = "app-e2e")]
-        let _timing = crate::ai_test_instrumentation::Span::begin("face", "model-initialization");
-        #[cfg(feature = "app-e2e")]
-        crate::ai_test_instrumentation::acceleration(
-            crate::ai_acceleration::Mode::None,
-            crate::ai_acceleration::Mode::None,
-        );
+        let _measurement =
+            crate::ai_measurement::Span::begin(observer, "model-initialization");
         crate::resource_limits::require_available(
             crate::resource_limits::FACE_REQUIRED_AVAILABLE,
             "Face scoring",
@@ -349,8 +345,6 @@ impl FaceScorer {
     /// The composite: 0.0 = no face; otherwise the best face's
     /// `conf × (0.5 + 0.5 × P(happiness))`.
     pub fn score(&mut self, img: &DynamicImage) -> Result<f32, String> {
-        #[cfg(feature = "app-e2e")]
-        let _timing = crate::ai_test_instrumentation::Span::begin("face", "inference");
         let mut best = 0.0_f32;
         for face in self.detect(img)? {
             if crate::derived_runtime::cancelled() {
@@ -425,19 +419,25 @@ pub fn complete_face_scoring_attempt(
     hash: &str,
     source_path: &str,
     cancel_when: &dyn Fn() -> bool,
+    observer: &dyn crate::ai_measurement::Observer,
     mut on_change: impl FnMut(&str),
     inference: impl FnOnce(&DynamicImage) -> Result<f32, String>,
 ) -> Result<FaceScoringAttemptOutcome, String> {
     let preview = cache.preview(hash);
-    let outcome = std::fs::read(&preview)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| crate::resource_limits::decode_bytes(&bytes))
-        .and_then(|image| inference(&image));
+    let decoded = {
+        let _measurement = crate::ai_measurement::Span::begin(observer, "input-decode");
+        std::fs::read(&preview)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| crate::resource_limits::decode_bytes(&bytes))
+    };
+    let outcome = decoded.and_then(|image| {
+        let _measurement = crate::ai_measurement::Span::begin(observer, "inference");
+        inference(&image)
+    });
     match outcome {
         Ok(score) => {
-            #[cfg(feature = "app-e2e")]
-            let _timing =
-                crate::ai_test_instrumentation::Span::begin("face", "durable-publication");
+            let _measurement =
+                crate::ai_measurement::Span::begin(observer, "durable-publication");
             crate::derived_state::record_face_success(conn, hash, source_path, score as f64)?;
             on_change(hash);
             Ok(FaceScoringAttemptOutcome::Completed { score })
@@ -495,7 +495,12 @@ pub fn face_scores_pending(
     }
     stats.candidates_found = true;
 
-    let mut scorer = FaceScorer::load(runtime, detector_model, emotion_model)?;
+    let mut scorer = FaceScorer::load(
+        runtime,
+        detector_model,
+        emotion_model,
+        &crate::ai_measurement::NOOP,
+    )?;
     let total = pending.len() as u64;
     for (hash, path) in pending {
         if crate::scanner::cancelled() {
@@ -515,6 +520,7 @@ pub fn face_scores_pending(
             &hash,
             &path,
             stop,
+            &crate::ai_measurement::NOOP,
             |changed| on_change(changed),
             |image| scorer.score(image),
         )?;

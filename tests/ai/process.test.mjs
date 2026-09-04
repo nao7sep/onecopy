@@ -21,3 +21,25 @@ test("owned child timeout is terminal", async () => {
   assert.equal(result.timedOut, true);
   assert.notEqual(result.code, 0);
 });
+
+test("memory is null when observation is not requested", async () => {
+  const result = await runOwned(process.execPath, ["-e", "process.exit(0)"], {
+    cwd: process.cwd(),
+    timeoutMs: 5_000,
+    measureMemory: false,
+  });
+  assert.equal(result.peakProcessTreeBytes, null);
+});
+
+test("an uncooperative POSIX child escalates from TERM to KILL", {
+  skip: process.platform === "win32",
+}, async () => {
+  const result = await runOwned(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    { cwd: process.cwd(), timeoutMs: 100, measureMemory: false },
+  );
+  assert.equal(result.timedOut, true);
+  assert.equal(result.signal, "SIGKILL");
+  assert(result.wallMs >= 5_000 && result.wallMs < 10_000, `wallMs=${result.wallMs}`);
+});

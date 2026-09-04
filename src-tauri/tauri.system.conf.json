@@ -1,13 +1,13 @@
 {
   "build": {
-    "beforeBuildCommand": "npm run build:e2e:frontend"
+    "beforeBuildCommand": "npm run build:system:frontend"
   },
   "app": {
     "withGlobalTauri": true,
     "security": {
       "capabilities": [
         {
-          "identifier": "app-e2e",
+          "identifier": "app-system",
           "description": "Test-only capability for the embedded WebDriver build",
           "windows": ["main"],
           "permissions": [
