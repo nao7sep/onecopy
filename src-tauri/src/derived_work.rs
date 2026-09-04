@@ -1283,6 +1283,7 @@ pub fn complete_transcription_attempt(
 /// Production callers use [`complete_transcription_attempt`]; this narrow seam
 /// lets integration tests replace native model execution without adding a
 /// second persistence workflow or a runtime-selectable test provider.
+#[cfg(feature = "ai-test-support")]
 pub fn complete_transcription_attempt_with_inference(
     attempt: TranscriptionAttempt<'_>,
     mut on_identity: impl FnMut(&str),

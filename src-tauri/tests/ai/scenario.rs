@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use onecopy_lib::ai_acceleration::Mode;
-use onecopy_lib::ai_dependencies::{self, Requirement};
+use onecopy_lib::ai_dependencies;
 use onecopy_lib::ai_measurement::Observer;
 use onecopy_lib::derived_work::{
     complete_transcription_attempt, TranscriptionAttempt, TranscriptionAttemptOutcome,
@@ -18,6 +18,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+mod oracles;
 
 const SEMANTIC_TERMS: &[&str] = &[
     "upload",
@@ -44,13 +46,6 @@ impl ScenarioId {
             Self::Face => "face",
             Self::AudioTranscription => "audio-transcription",
             Self::VideoTranscription => "video-transcription",
-        }
-    }
-
-    fn requirement(self) -> Requirement {
-        match self {
-            Self::Face => Requirement::FaceScoring,
-            Self::AudioTranscription | Self::VideoTranscription => Requirement::Transcription,
         }
     }
 
@@ -223,7 +218,16 @@ fn run_face(
     )?;
 
     let mut scores = Vec::new();
-    for fixture in &request.fixtures {
+    for (index, fixture) in request.fixtures.iter().enumerate() {
+        println!(
+            "{}",
+            json!({
+                "event": "scenario-progress",
+                "scenarioId": request.scenario_id.id(),
+                "completed": index,
+                "total": request.fixtures.len(),
+            })
+        );
         insert_fixture(conn, fixture, request.scenario_id.content_kind())?;
         let preview = cache.preview(&fixture.sha256);
         std::fs::create_dir_all(
@@ -278,6 +282,15 @@ fn run_face(
         }
         scores.push(score);
     }
+    println!(
+        "{}",
+        json!({
+            "event": "scenario-progress",
+            "scenarioId": request.scenario_id.id(),
+            "completed": request.fixtures.len(),
+            "total": request.fixtures.len(),
+        })
+    );
     Ok(result(
         request,
         "passed",
@@ -285,37 +298,6 @@ fn run_face(
         None,
         collector,
     ))
-}
-
-fn phrase_loop(text: &str) -> bool {
-    let segments = text
-        .lines()
-        .map(|line| {
-            let content = line
-                .split_once(']')
-                .map(|(_, remainder)| remainder)
-                .unwrap_or(line);
-            content
-                .split_whitespace()
-                .map(|token| token.to_lowercase())
-                .collect::<Vec<_>>()
-        })
-        .filter(|tokens| !tokens.is_empty())
-        .collect::<Vec<_>>();
-    if segments.windows(2).any(|pair| pair.first() == pair.get(1)) {
-        return true;
-    }
-    let tokens = segments.into_iter().flatten().collect::<Vec<_>>();
-    for width in 3..=16.min(tokens.len() / 3) {
-        for start in 0..=tokens.len() - width * 3 {
-            if tokens[start..start + width] == tokens[start + width..start + width * 2]
-                && tokens[start..start + width] == tokens[start + width * 2..start + width * 3]
-            {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn run_transcription(
@@ -342,6 +324,7 @@ fn run_transcription(
         .path
         .to_str()
         .ok_or("scenario fixture path is not valid UTF-8")?;
+    let scenario_id = request.scenario_id.id();
     let outcome = complete_transcription_attempt(
         TranscriptionAttempt {
             conn,
@@ -357,7 +340,16 @@ fn run_transcription(
         },
         |_| {},
         |_| {},
-        |_, _| {},
+        move |_, percent| {
+            println!(
+                "{}",
+                json!({
+                    "event": "scenario-progress",
+                    "scenarioId": scenario_id,
+                    "percent": percent.clamp(0, 100),
+                })
+            );
+        },
     )?;
     let TranscriptionAttemptOutcome::Completed { hash, text } = outcome else {
         return Ok(failure(
@@ -385,7 +377,7 @@ fn run_transcription(
         .iter()
         .filter(|term| normalized.contains(**term))
         .count();
-    let has_phrase_loop = phrase_loop(&text);
+    let has_phrase_loop = oracles::phrase_loop(&text);
     if matched_terms < MINIMUM_TERM_MATCHES || has_phrase_loop {
         return Ok(failure(
             request,
@@ -412,7 +404,9 @@ fn run(request: &Request) -> Result<Value, String> {
     if request.schema_version != 1 {
         return Err("unsupported scenario request schema".to_string());
     }
-    ai_dependencies::require_prepared(&request.managed_root, &[request.scenario_id.requirement()])?;
+    if std::env::var("ONECOPY_AI_OFFLINE").as_deref() != Ok("1") {
+        return Err("AI scenario execution requires ONECOPY_AI_OFFLINE=1".to_string());
+    }
     std::fs::create_dir_all(&request.scratch_root).map_err(|error| error.to_string())?;
     let conn = index_store::open(&request.scratch_root.join("index.sqlite3"))?;
     let cache = preview::CachePaths::new(request.scratch_root.join("cache"));

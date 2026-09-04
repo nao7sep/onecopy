@@ -31,9 +31,21 @@ const result = {
   },
   executable: { basename: "onecopy-ai-scenario", sha256: "c".repeat(64) },
   buildManifestSha256: "d".repeat(64),
+  build: {
+    platform: "win32",
+    architecture: "x64",
+    targetTriple: "x86_64-pc-windows-msvc",
+    toolchain: { rustc: "rustc test", cargo: "cargo test", node: "v26.0.0" },
+    compileFeatures: ["ai-test-support"],
+    capabilities: [
+      { feature: "face-scoring", options: ["none"] },
+      { feature: "transcription", options: ["none"] },
+    ],
+  },
   machine: { platform: "win32", osVersion: "10.0", architecture: "x64", cpuModel: "CPU", logicalCpuCount: 2, totalMemoryBytes: 1 },
   cases: [{
     scenarioId: "face",
+    timeoutMs: 10_000,
     outcome: "passed",
     startedAtUtc: "2026-09-04T00:00:00.000Z",
     finishedAtUtc: "2026-09-04T00:00:01.000Z",
@@ -81,6 +93,12 @@ test("comparison rejects incompatible fixture identity", () => {
   const changed = structuredClone(result);
   changed.cases[0].fixtures[0].sha256 = "c".repeat(64);
   assert.throws(() => compatibleResults(result, changed), /different cases/);
+  const differentTimeout = structuredClone(result);
+  differentTimeout.cases[0].timeoutMs += 1;
+  assert.throws(() => compatibleResults(result, differentTimeout), /different cases/);
+  const differentBuild = structuredClone(result);
+  differentBuild.build.toolchain.node = "v27.0.0";
+  assert.throws(() => compatibleResults(result, differentBuild), /different build facts/);
 });
 
 test("result validation rejects incomplete evidence and accepts unavailable failed observations", () => {
@@ -103,6 +121,12 @@ test("result validation rejects incomplete evidence and accepts unavailable fail
   delete running.cases[0].finishedAtUtc;
   delete running.cases[0].correctness;
   assert.throws(() => validateResult(running), /running observations must be null/);
+
+  const mismatchedAcceleration = structuredClone(result);
+  mismatchedAcceleration.cases[0].scenarioId = "audio-transcription";
+  mismatchedAcceleration.cases[0].configuredAcceleration = "none";
+  mismatchedAcceleration.cases[0].observedAcceleration = "metal";
+  assert.throws(() => validateResult(mismatchedAcceleration), /differs from configuredAcceleration/);
 });
 
 test("partial reports are atomically replaceable", () => {

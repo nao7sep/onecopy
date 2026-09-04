@@ -5,6 +5,7 @@ import { validateParameters, validateResult } from "./contracts.mjs";
 import { indexFixtureRoot, materializeFixtures, resolveFixtures } from "./fixtures.mjs";
 import { dependenciesForCase, loadPrepared } from "./prepared.mjs";
 import { runOwned } from "./process.mjs";
+import { jsonLineEvents } from "./progress.mjs";
 import { writeAtomicReport } from "./report.mjs";
 
 function machineFacts() {
@@ -40,7 +41,8 @@ function validScenarioTerminal(terminal, item, observe) {
   }
   const allowedAcceleration = item.id === "face" ? ["none"] : ["none", "metal"];
   if (terminal.observedAcceleration !== null &&
-      !allowedAcceleration.includes(terminal.observedAcceleration)) {
+      (!allowedAcceleration.includes(terminal.observedAcceleration) ||
+       terminal.observedAcceleration !== item.acceleration)) {
     return false;
   }
   const correctness = terminal.correctness;
@@ -82,7 +84,7 @@ export async function runScenarios({
   preparedRoot,
   reportPath,
   observe,
-}) {
+}, edges = {}) {
   const parameters = validateParameters(JSON.parse(readFileSync(parameterPath, "utf8")));
   const allResolved = resolveFixtures(
     indexFixtureRoot(fixtureRoot),
@@ -94,7 +96,12 @@ export async function runScenarios({
     scenarioExecutable,
     managedRoot,
     preparedContext,
-  } = loadPrepared(repositoryRoot, preparedRoot, parameters);
+  } = (edges.loadPrepared ?? loadPrepared)(repositoryRoot, preparedRoot, parameters);
+  const executeScenario = edges.runOwned ?? runOwned;
+  const capabilities = preparedContext.capabilities.map(({ feature, options }) => ({
+    feature,
+    options: options.map(({ id }) => id),
+  }));
   const report = {
     schemaVersion: 2,
     profileId: parameters.profileId,
@@ -106,6 +113,14 @@ export async function runScenarios({
     source: manifest.source,
     executable: manifest.scenarioExecutable,
     buildManifestSha256,
+    build: {
+      platform: manifest.platform,
+      architecture: manifest.architecture,
+      targetTriple: manifest.targetTriple,
+      toolchain: manifest.toolchain,
+      compileFeatures: manifest.compileFeatures,
+      capabilities,
+    },
     cases: [],
   };
   const persist = () => writeAtomicReport(reportPath, validateResult(report));
@@ -115,6 +130,7 @@ export async function runScenarios({
     const runnerPhases = [];
     const caseResult = {
       scenarioId: item.id,
+      timeoutMs: item.timeoutMs,
       outcome: "running",
       startedAtUtc: new Date().toISOString(),
       dependencies: dependenciesForCase(preparedContext, item),
@@ -134,7 +150,8 @@ export async function runScenarios({
       scratch = mkdtempSync(resolve(tmpdir(), "onecopy-ai-scenario-"));
       const materializationStarted = process.hrtime.bigint();
       const resolvedForCase = item.fixtures.map((fixture) =>
-        allResolved.find(({ reference }) => reference.sha256 === fixture.sha256),
+        allResolved.find(({ reference }) =>
+          reference.basename === fixture.basename && reference.sha256 === fixture.sha256),
       );
       if (resolvedForCase.some((fixture) => !fixture)) {
         throw new Error("resolved fixture mapping failed");
@@ -154,12 +171,23 @@ export async function runScenarios({
         })),
       })}\n`);
       runnerPhases.push({ phase: "input-materialization", wallMs: elapsedMs(materializationStarted) });
-      const execution = await runOwned(scenarioExecutable, [requestPath], {
+      const progress = jsonLineEvents((event) => {
+        if (event?.event !== "scenario-progress" || event.scenarioId !== item.id) return;
+        if (Number.isSafeInteger(event.percent)) {
+          process.stdout.write(`${item.id}: ${Math.max(0, Math.min(100, event.percent))}%\n`);
+        } else if (Number.isSafeInteger(event.completed) && Number.isSafeInteger(event.total) &&
+                   event.total > 0) {
+          process.stdout.write(`${item.id}: ${event.completed}/${event.total}\n`);
+        }
+      });
+      const execution = await executeScenario(scenarioExecutable, [requestPath], {
         cwd: repositoryRoot,
         env: { ONECOPY_AI_OFFLINE: "1" },
         timeoutMs: item.timeoutMs,
         measureMemory: observe,
+        onStdout: progress.push,
       });
+      progress.finish();
       runnerPhases.push({ phase: "process-launch", wallMs: execution.launchMs });
       if (execution.interrupted) {
         finishCase(caseResult, "interrupted", {

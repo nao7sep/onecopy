@@ -13,8 +13,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::preview::CachePaths;
-
 pub const TRANSCRIPTION_BUSY: &str = "a transcription is already running";
 
 #[derive(Default)]
@@ -264,78 +262,6 @@ pub fn render(segments: &[Segment]) -> String {
         ));
     }
     out
-}
-
-/// The ordinary job short-circuits on an existing transcript. Generation has
-/// honest errors for missing pieces and publishes one complete staged result;
-/// cancellation or failure leaves no partial cache entry.
-pub fn transcribe_to_cache(
-    cache: &CachePaths,
-    temp_dir: &Path,
-    model: Option<&Path>,
-    ffmpeg: Option<&Path>,
-    media: &Path,
-    hash: &str,
-    on_progress: impl FnMut(i32) + 'static,
-) -> Result<String, String> {
-    let target = cache.transcript(hash);
-    if let Ok(existing) = std::fs::read_to_string(&target) {
-        return Ok(existing);
-    }
-    let claim = claim()?;
-    transcribe_to_cache_claimed(
-        &claim,
-        cache,
-        temp_dir,
-        model,
-        ffmpeg,
-        media,
-        hash,
-        false,
-        crate::ai_acceleration::default_for(crate::ai_acceleration::TRANSCRIPTION)?,
-        on_progress,
-    )
-}
-
-pub(crate) fn transcribe_to_cache_claimed(
-    claim: &TranscriptionClaim,
-    cache: &CachePaths,
-    temp_dir: &Path,
-    model: Option<&Path>,
-    ffmpeg: Option<&Path>,
-    media: &Path,
-    hash: &str,
-    replace_existing: bool,
-    acceleration: crate::ai_acceleration::Mode,
-    on_progress: impl FnMut(i32) + 'static,
-) -> Result<String, String> {
-    let target = cache.transcript(hash);
-    if !replace_existing {
-        if let Ok(existing) = std::fs::read_to_string(&target) {
-            return Ok(existing);
-        }
-    }
-    let Some(model) = model else {
-        return Err(
-            "the transcription model is not installed — install it from Managed tools"
-                .to_string(),
-        );
-    };
-    let Some(ffmpeg) = ffmpeg else {
-        return Err("ffmpeg is not installed — install it from Managed tools".to_string());
-    };
-    let text = generate_transcript_claimed(
-        claim,
-        temp_dir,
-        model,
-        ffmpeg,
-        media,
-        acceleration,
-        &crate::ai_measurement::NOOP,
-        on_progress,
-    )?;
-    publish_transcript(&target, &text)?;
-    Ok(text)
 }
 
 pub(crate) fn generate_transcript_claimed(

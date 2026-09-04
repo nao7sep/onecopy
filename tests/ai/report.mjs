@@ -84,8 +84,9 @@ export function compatibleResults(left, right) {
   for (const field of fields) {
     if (left[field] !== right[field]) throw new Error(`results differ at ${field}`);
   }
-  const identity = (result) => result.cases.map(({ scenarioId, dependencies, fixtures }) => ({
+  const identity = (result) => result.cases.map(({ scenarioId, timeoutMs, dependencies, fixtures }) => ({
     scenarioId,
+    timeoutMs,
     dependencies,
     fixtures,
   }));
@@ -97,6 +98,9 @@ export function compatibleResults(left, right) {
   }
   if (JSON.stringify(left.executable) !== JSON.stringify(right.executable)) {
     throw new Error("results use different scenario executables");
+  }
+  if (JSON.stringify(left.build) !== JSON.stringify(right.build)) {
+    throw new Error("results use different build facts");
   }
   return { machineFactsMatch: JSON.stringify(left.machine) === JSON.stringify(right.machine) };
 }

@@ -60,6 +60,46 @@ function failure(value, label) {
   return input;
 }
 
+function validateBuildFacts(value, label) {
+  const build = object(value, label);
+  if (!new Set(["darwin", "win32"]).has(build.platform)) {
+    throw new TypeError(`${label}.platform is invalid`);
+  }
+  text(build.architecture, `${label}.architecture`);
+  text(build.targetTriple, `${label}.targetTriple`);
+  const toolchain = object(build.toolchain, `${label}.toolchain`);
+  for (const name of ["rustc", "cargo", "node"]) text(toolchain[name], `${label}.toolchain.${name}`);
+  if (!Array.isArray(build.compileFeatures) || build.compileFeatures.length === 0) {
+    throw new TypeError(`${label}.compileFeatures must be a non-empty array`);
+  }
+  const features = new Set();
+  for (const feature of build.compileFeatures) {
+    text(feature, `${label}.compileFeatures entry`);
+    if (features.has(feature)) throw new TypeError(`${label}.compileFeatures must be unique`);
+    features.add(feature);
+  }
+  if (!Array.isArray(build.capabilities) || build.capabilities.length === 0) {
+    throw new TypeError(`${label}.capabilities must be a non-empty array`);
+  }
+  const capabilityIds = new Set();
+  for (const capability of build.capabilities) {
+    object(capability, `${label}.capability`);
+    const feature = text(capability.feature, `${label}.capability.feature`);
+    if (capabilityIds.has(feature)) throw new TypeError(`${label}.capabilities must be unique`);
+    capabilityIds.add(feature);
+    if (!Array.isArray(capability.options) || capability.options.length === 0) {
+      throw new TypeError(`${label}.capability.options must be a non-empty array`);
+    }
+    const options = new Set();
+    for (const option of capability.options) {
+      text(option, `${label}.capability.option`);
+      if (options.has(option)) throw new TypeError(`${label}.capability.options must be unique`);
+      options.add(option);
+    }
+  }
+  return build;
+}
+
 export function validateFixtureReference(value, label = "fixture") {
   const input = object(value, label);
   const basename = text(input.basename, `${label}.basename`);
@@ -166,6 +206,7 @@ export function validateResult(value) {
   }
   digest(executable.sha256, "result.executable.sha256");
   digest(result.buildManifestSha256, "result.buildManifestSha256");
+  validateBuildFacts(result.build, "result.build");
   const machine = object(result.machine, "result.machine");
   if (!new Set(["darwin", "win32"]).has(machine.platform)) {
     throw new TypeError("result.machine.platform is invalid");
@@ -195,6 +236,7 @@ export function validateResult(value) {
       throw new TypeError(`result.cases[${index}].outcome is invalid`);
     }
     timestamp(item.startedAtUtc, `result.cases[${index}].startedAtUtc`);
+    integer(item.timeoutMs, `result.cases[${index}].timeoutMs`, 1_000);
     if (item.outcome === "running") {
       if ("finishedAtUtc" in item) {
         throw new TypeError(`result.cases[${index}] running case must not have finishedAtUtc`);
@@ -218,10 +260,13 @@ export function validateResult(value) {
     }
     item.fixtures.forEach((fixture, fixtureIndex) =>
       validateFixtureReference(fixture, `result.cases[${index}].fixtures[${fixtureIndex}]`));
-    acceleration(item.scenarioId, item.configuredAcceleration,
+    const configuredAcceleration = acceleration(item.scenarioId, item.configuredAcceleration,
       `result.cases[${index}].configuredAcceleration`);
-    acceleration(item.scenarioId, item.observedAcceleration,
+    const observedAcceleration = acceleration(item.scenarioId, item.observedAcceleration,
       `result.cases[${index}].observedAcceleration`, { nullable: true });
+    if (observedAcceleration !== null && observedAcceleration !== configuredAcceleration) {
+      throw new TypeError(`result.cases[${index}].observedAcceleration differs from configuredAcceleration`);
+    }
     if (item.outcome === "passed") {
       object(item.correctness, `result.cases[${index}].correctness`);
       if ("failure" in item) throw new TypeError(`result.cases[${index}] passed case has failure`);
@@ -347,7 +392,18 @@ export function validateBuildManifest(value, parameters) {
       throw new TypeError(`build manifest ${label} basename must not contain a path`);
     }
   }
-  if (!Array.isArray(manifest.compileFeatures) || !manifest.compileFeatures.includes("ai-test-support")) {
+  const build = validateBuildFacts({
+    platform: manifest.platform,
+    architecture: manifest.architecture,
+    targetTriple: manifest.targetTriple,
+    toolchain: manifest.toolchain,
+    compileFeatures: manifest.compileFeatures,
+    capabilities: manifest.preparedContext?.capabilities?.map(({ feature, options }) => ({
+      feature,
+      options: options?.map(({ id }) => id),
+    })),
+  }, "build manifest");
+  if (!build.compileFeatures.includes("ai-test-support")) {
     throw new TypeError("build manifest does not contain AI test support");
   }
   const prepared = validatePreparedContext(manifest.preparedContext);

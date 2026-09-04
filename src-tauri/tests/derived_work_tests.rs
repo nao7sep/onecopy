@@ -11,6 +11,23 @@ use onecopy_lib::derived_work::{
 };
 use onecopy_lib::index_store;
 use rusqlite::params;
+use serial_test::serial;
+
+fn materialize_transcription_model(root: &std::path::Path) {
+    let spec = onecopy_lib::binaries_manager::spec_of("whisper-large-v3-turbo").unwrap();
+    let target = onecopy_lib::binaries_manager::installed_path(root, spec);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    let bytes = spec
+        .pinned
+        .as_ref()
+        .and_then(|pin| pin.extracted.as_ref().map(|artifact| artifact.bytes))
+        .or_else(|| spec.pinned.as_ref().map(|pin| pin.bytes))
+        .unwrap();
+    std::fs::File::create(target)
+        .unwrap()
+        .set_len(bytes)
+        .unwrap();
+}
 
 #[test]
 fn transcription_promotes_a_provisional_identity_before_owning_a_result() {
@@ -57,6 +74,7 @@ fn transcription_promotes_a_provisional_identity_before_owning_a_result() {
 }
 
 #[test]
+#[serial(transcription)]
 fn transcription_attempt_owns_cached_publication_and_dependency_classification() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-transcription-attempt-")
@@ -184,6 +202,128 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
     assert_eq!(pending.status, "pending");
     assert_eq!(pending.message, None);
     assert_eq!(starts.get(), 0);
+
+    materialize_transcription_model(dir.path());
+    let unavailable = complete_transcription_attempt(
+        TranscriptionAttempt {
+            conn: &conn,
+            cache: &cache,
+            data_root: dir.path(),
+            temp_dir: dir.path().join("temp"),
+            source_hash: "uncached",
+            source_path: uncached_media.to_str().unwrap(),
+            replace_existing: false,
+            acceleration: onecopy_lib::ai_acceleration::Mode::None,
+            observer: &onecopy_lib::ai_measurement::NOOP,
+            cancel_when: None,
+        },
+        |_| {},
+        |_| {},
+        |_, _| {},
+    )
+    .unwrap();
+    assert!(matches!(
+        unavailable,
+        TranscriptionAttemptOutcome::Unavailable { ref message, .. }
+            if message.contains("ffmpeg") && message.contains("Managed tools")
+    ));
+
+    let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(dir.path());
+    std::fs::create_dir_all(ffmpeg.parent().unwrap()).unwrap();
+    std::fs::write(&ffmpeg, b"not invoked while the engine is busy").unwrap();
+    let active = onecopy_lib::transcription::claim().unwrap();
+    let busy = complete_transcription_attempt(
+        TranscriptionAttempt {
+            conn: &conn,
+            cache: &cache,
+            data_root: dir.path(),
+            temp_dir: dir.path().join("temp"),
+            source_hash: "uncached",
+            source_path: uncached_media.to_str().unwrap(),
+            replace_existing: false,
+            acceleration: onecopy_lib::ai_acceleration::Mode::None,
+            observer: &onecopy_lib::ai_measurement::NOOP,
+            cancel_when: None,
+        },
+        |_| {},
+        |_| {},
+        |_, _| {},
+    )
+    .unwrap_err();
+    assert_eq!(busy, onecopy_lib::transcription::TRANSCRIPTION_BUSY);
+    drop(active);
+}
+
+#[cfg(unix)]
+#[test]
+#[serial(transcription)]
+fn transcription_attempt_publishes_digital_silence_without_loading_the_model() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let media = dir.path().join("silence.m4a");
+    std::fs::write(&media, b"the fake ffmpeg ignores this").unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('silence', ?1, 'audio')",
+        [std::fs::metadata(&media).unwrap().len() as i64],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, missing)
+         VALUES (?1, ?2, 'silence.m4a', 'audio', 'silence', 0)",
+        params![media.to_string_lossy(), dir.path().to_string_lossy()],
+    )
+    .unwrap();
+    materialize_transcription_model(dir.path());
+    let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(dir.path());
+    std::fs::create_dir_all(ffmpeg.parent().unwrap()).unwrap();
+    std::fs::write(
+        &ffmpeg,
+        "#!/bin/sh\nfor last do :; done\nprintf '\\000\\000\\000\\000\\000\\000\\000\\000' > \"$last\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+
+    let outcome = complete_transcription_attempt(
+        TranscriptionAttempt {
+            conn: &conn,
+            cache: &cache,
+            data_root: dir.path(),
+            temp_dir: dir.path().join("temp"),
+            source_hash: "silence",
+            source_path: media.to_str().unwrap(),
+            replace_existing: false,
+            acceleration: onecopy_lib::ai_acceleration::Mode::None,
+            observer: &onecopy_lib::ai_measurement::NOOP,
+            cancel_when: None,
+        },
+        |_| {},
+        |_| {},
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        outcome,
+        TranscriptionAttemptOutcome::Completed {
+            hash: "silence".to_string(),
+            text: String::new(),
+        }
+    );
+    let persisted = derived_state::transcript_result(&conn, &cache, "silence").unwrap();
+    assert_eq!(persisted.status, derived_state::READY);
+    assert_eq!(persisted.text.as_deref(), Some(""));
+    let receipt: String = conn
+        .query_row(
+            "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'silence'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt, derived_state::READY_EMPTY);
 }
 
 #[test]

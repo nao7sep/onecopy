@@ -45,6 +45,11 @@ name = "ai_prepared_context_tests"
 path = "tests/ai_prepared_context_tests.rs"
 required-features = ["ai-test-support"]
 
+[[test]]
+name = "ai_operation_tests"
+path = "tests/ai_operation_tests.rs"
+required-features = ["ai-test-support"]
+
 [features]
 # Deterministic AI preparation and offline proof surface. Focused checks do
 # not need to compile the unrelated WebDriver stack.

@@ -14,10 +14,12 @@ import { cloneArtifactTree } from "./artifact-tree.mjs";
 import { requirementsFor, validateParameters } from "./contracts.mjs";
 import { indexFixtureRoot, resolveFixtures, sha256File } from "./fixtures.mjs";
 import { runOwned } from "./process.mjs";
+import { jsonLineEvents } from "./progress.mjs";
 import { writeAtomicReport } from "./report.mjs";
 import { sourceState } from "./source-state.mjs";
 
 const executable = (name) => (process.platform === "win32" ? `${name}.exe` : name);
+const SAFE_PROGRESS_TOKEN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export async function runPreparationStep(command, args, options = {}) {
   const result = await runOwned(command, args, {
@@ -25,7 +27,7 @@ export async function runPreparationStep(command, args, options = {}) {
     timeoutMs: options.timeout ?? 4 * 60 * 60 * 1_000,
     measureMemory: false,
     signal: options.signal,
-    onStdout: options.capture ? undefined : (chunk) => process.stdout.write(chunk),
+    onStdout: options.onStdout ?? (options.capture ? undefined : (chunk) => process.stdout.write(chunk)),
     onStderr: options.capture ? undefined : (chunk) => process.stderr.write(chunk),
   });
   if (result.interrupted) {
@@ -122,11 +124,25 @@ export async function prepare({
 
   const preparer = resolve(repositoryRoot, "src-tauri", "target", "debug", executable("onecopy-ai-preparer"));
   const requirements = requirementsFor(parameters);
+  const progress = jsonLineEvents((event) => {
+    if (event?.event !== "dependency-progress" ||
+        typeof event.id !== "string" || !SAFE_PROGRESS_TOKEN.test(event.id)) return;
+    const phase = event.progress?.phase;
+    const done = event.progress?.done;
+    const total = event.progress?.total;
+    if (typeof phase !== "string" || !SAFE_PROGRESS_TOKEN.test(phase) ||
+        !Number.isSafeInteger(done) ||
+        !(total === null || Number.isSafeInteger(total))) return;
+    const amount = total && total > 0 ? ` ${Math.min(100, Math.round(done / total * 100))}%` : "";
+    process.stdout.write(`Preparing ${event.id}: ${phase}${amount}\n`);
+  });
   const prepareOutput = await runPreparationStep(preparer, ["prepare", artifactHome, ...requirements], {
     cwd: repositoryRoot,
     capture: true,
     signal,
+    onStdout: progress.push,
   });
+  progress.finish();
   const preparedContext = prepareOutput
     .split(/\r?\n/)
     .filter(Boolean)

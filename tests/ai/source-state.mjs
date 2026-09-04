@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { resolve } from "node:path";
 
 function git(root, args, encoding = "utf8") {
@@ -23,9 +23,19 @@ export function sourceState(root) {
     .sort();
   const untrackedDigest = createHash("sha256");
   for (const file of untracked) {
+    const path = resolve(root, file);
+    const stat = lstatSync(path);
     untrackedDigest.update(file);
     untrackedDigest.update("\0");
-    untrackedDigest.update(readFileSync(resolve(root, file)));
+    if (stat.isSymbolicLink()) {
+      untrackedDigest.update("symlink\0");
+      untrackedDigest.update(readlinkSync(path));
+    } else if (stat.isFile()) {
+      untrackedDigest.update("file\0");
+      untrackedDigest.update(readFileSync(path));
+    } else {
+      throw new Error("untracked source state contains an unsupported entry type");
+    }
     untrackedDigest.update("\0");
   }
   return {

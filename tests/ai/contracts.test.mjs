@@ -71,6 +71,14 @@ test("stale or mismatched prepared manifests are rejected", () => {
   };
   const manifest = {
     schemaVersion: 2,
+    platform: "win32",
+    architecture: "x64",
+    targetTriple: "x86_64-pc-windows-msvc",
+    toolchain: {
+      rustc: "rustc test",
+      cargo: "cargo test",
+      node: "v26.0.0",
+    },
     preparer: { basename: "onecopy-ai-preparer.test", sha256: "a".repeat(64) },
     scenarioExecutable: { basename: "onecopy-ai-scenario.test", sha256: "b".repeat(64) },
     compileFeatures: ["ai-test-support"],
@@ -85,5 +93,8 @@ test("stale or mismatched prepared manifests are rejected", () => {
   assert.throws(() => validatePreparedContext(stale.preparedContext), /not current/);
   const wrongFeature = structuredClone(manifest);
   wrongFeature.compileFeatures = [];
-  assert.throws(() => validateBuildManifest(wrongFeature, standard), /does not contain AI test support/);
+  assert.throws(() => validateBuildManifest(wrongFeature, standard), /compileFeatures/);
+  const missingTarget = structuredClone(manifest);
+  delete missingTarget.targetTriple;
+  assert.throws(() => validateBuildManifest(missingTarget, standard), /targetTriple/);
 });
