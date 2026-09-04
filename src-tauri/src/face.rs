@@ -408,6 +408,55 @@ pub struct FaceStats {
     pub last_attempted_hash: Option<String>,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum FaceScoringAttemptOutcome {
+    Completed { score: f32 },
+    Cancelled,
+    Failed { message: String },
+}
+
+/// Scores and publishes one already-admitted face candidate. Candidate
+/// selection, model-session reuse, priority, and pass cancellation remain with
+/// the coordinator; this operation owns preview decode, one inference result,
+/// its durable receipt, and the corresponding change callback.
+pub fn complete_face_scoring_attempt(
+    conn: &rusqlite::Connection,
+    cache: &crate::preview::CachePaths,
+    hash: &str,
+    source_path: &str,
+    cancel_when: &dyn Fn() -> bool,
+    mut on_change: impl FnMut(&str),
+    inference: impl FnOnce(&DynamicImage) -> Result<f32, String>,
+) -> Result<FaceScoringAttemptOutcome, String> {
+    let preview = cache.preview(hash);
+    let outcome = std::fs::read(&preview)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| crate::resource_limits::decode_bytes(&bytes))
+        .and_then(|image| inference(&image));
+    match outcome {
+        Ok(score) => {
+            #[cfg(feature = "app-e2e")]
+            let _timing =
+                crate::ai_test_instrumentation::Span::begin("face", "durable-publication");
+            crate::derived_state::record_face_success(conn, hash, source_path, score as f64)?;
+            on_change(hash);
+            Ok(FaceScoringAttemptOutcome::Completed { score })
+        }
+        Err(_) if cancel_when() || crate::scanner::cancelled() => {
+            Ok(FaceScoringAttemptOutcome::Cancelled)
+        }
+        Err(message) => {
+            crate::logging::warn(
+                "face scoring failed",
+                serde_json::json!({ "hash": hash, "error": { "message": message.clone() } }),
+            );
+            crate::derived_state::record_face_failure(conn, hash, source_path, &message)?;
+            on_change(hash);
+            Ok(FaceScoringAttemptOutcome::Failed { message })
+        }
+    }
+}
+
 /// The face pass over the index — the embed pass's exact shape: images with a
 /// derived preview and no score yet, read FROM THE CACHE, scored serially
 /// through one session pair. Either model absent → an empty pass, silently:
@@ -460,30 +509,23 @@ pub fn face_scores_pending(
         on_item(&hash);
         stats.attempted += 1;
         stats.last_attempted_hash = Some(hash.clone());
-        let preview = cache.preview(&hash);
-        let outcome = std::fs::read(&preview)
-            .map_err(|e| e.to_string())
-            .and_then(|bytes| crate::resource_limits::decode_bytes(&bytes))
-            .and_then(|img| scorer.score(&img));
+        let outcome = complete_face_scoring_attempt(
+            conn,
+            cache,
+            &hash,
+            &path,
+            stop,
+            |changed| on_change(changed),
+            |image| scorer.score(image),
+        )?;
         match outcome {
-            Ok(score) => {
-                #[cfg(feature = "app-e2e")]
-                let _timing =
-                    crate::ai_test_instrumentation::Span::begin("face", "durable-publication");
-                crate::derived_state::record_face_success(conn, &hash, &path, score as f64)?;
-                on_change(&hash);
+            FaceScoringAttemptOutcome::Completed { .. } => {
                 stats.scored += 1;
             }
-            Err(_) if stop() || crate::scanner::cancelled() => {
+            FaceScoringAttemptOutcome::Cancelled => {
                 return Err(crate::scanner::CANCELLED.to_string());
             }
-            Err(err) => {
-                crate::logging::warn(
-                    "face scoring failed",
-                    serde_json::json!({ "hash": hash, "error": { "message": err.clone() } }),
-                );
-                crate::derived_state::record_face_failure(conn, &hash, &path, &err)?;
-                on_change(&hash);
+            FaceScoringAttemptOutcome::Failed { .. } => {
                 stats.failed += 1;
             }
         }

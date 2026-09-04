@@ -39,9 +39,6 @@ required-features = ["app-e2e"]
 # The embedded WebDriver server is an acceptance-test build flavor. Normal
 # development and release binaries do not compile or register it.
 app-e2e = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
-# Deterministic AI adapter seams used by the canonical fast integration suite.
-# Normal development and release builds do not compile them.
-ai-test-engine = []
 
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }

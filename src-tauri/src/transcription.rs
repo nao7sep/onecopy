@@ -302,7 +302,7 @@ pub fn transcribe_to_cache(
 }
 
 pub(crate) fn transcribe_to_cache_claimed(
-    _claim: &TranscriptionClaim,
+    claim: &TranscriptionClaim,
     cache: &CachePaths,
     temp_dir: &Path,
     model: Option<&Path>,
@@ -328,6 +328,31 @@ pub(crate) fn transcribe_to_cache_claimed(
     let Some(ffmpeg) = ffmpeg else {
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
+    let text = generate_transcript_claimed(
+        claim,
+        temp_dir,
+        model,
+        ffmpeg,
+        media,
+        acceleration,
+        on_progress,
+    )?;
+    #[cfg(feature = "app-e2e")]
+    let _publication_timing =
+        crate::ai_test_instrumentation::Span::begin("transcription", "durable-publication");
+    publish_transcript(&target, &text)?;
+    Ok(text)
+}
+
+pub(crate) fn generate_transcript_claimed(
+    _claim: &TranscriptionClaim,
+    temp_dir: &Path,
+    model: &Path,
+    ffmpeg: &Path,
+    media: &Path,
+    acceleration: crate::ai_acceleration::Mode,
+    on_progress: impl FnMut(i32) + 'static,
+) -> Result<String, String> {
     let pcm = {
         #[cfg(feature = "app-e2e")]
         let _timing =
@@ -339,10 +364,6 @@ pub(crate) fn transcribe_to_cache_claimed(
     } else {
         render(&run_whisper(model, &pcm, acceleration, on_progress)?)
     };
-    #[cfg(feature = "app-e2e")]
-    let _publication_timing =
-        crate::ai_test_instrumentation::Span::begin("transcription", "durable-publication");
-    publish_transcript(&target, &text)?;
     Ok(text)
 }
 

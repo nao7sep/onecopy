@@ -33,7 +33,7 @@ By hand, install the locked packages with `npm ci`, run checks with `npm run che
 
 ## AI tests and benchmark
 
-`npm run check` includes the fast AI contracts and deterministic Rust integration tests. They exercise the production transcript/cache and face-receipt boundaries for success, empty results, failure, cancellation, replacement, restart readback, and explicit acceleration without models, downloads, private files, or a GPU. Run them after every change; the focused command is `npm run test:ai:fast`.
+`npm run check` includes the AI contract tests and deterministic Rust integration tests. They exercise the production transcript/cache and face-receipt operations for success, empty results, failure, cancellation, replacement, restart readback, and explicit acceleration without models, downloads, private files, or a GPU. Run them after every change; the focused command is `npm run test:ai:integration`.
 
 Real-model work is explicit and manual. From the repository root, run `npm run test:ai:prepare` once to verify or acquire the pinned production dependencies and build the test application. Preparation is untimed and may download about 1.6 GiB on a computer without the Whisper model. Then run `npm run test:ai:live` for direct production-adapter checks or `npm run test:ai:benchmark` for the standard isolated running-app face, audio, and video benchmark. Neither execution command downloads or compiles.
 

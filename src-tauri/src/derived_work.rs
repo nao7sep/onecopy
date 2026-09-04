@@ -1120,17 +1120,15 @@ pub enum TranscriptionAttemptOutcome {
     Failed { hash: String, message: String },
 }
 
-/// Complete one production transcription attempt. Manual and automatic callers
-/// retain their different admission, priority, preemption, and UI-event
-/// responsibilities; this operation owns the common identity, cache reuse,
-/// dependency, engine claim, generation, durable-result, and terminal-
-/// classification boundary.
-pub fn complete_transcription_attempt(
-    attempt: TranscriptionAttempt<'_>,
-    mut on_identity: impl FnMut(&str),
-    on_started: impl FnOnce(&str),
-    mut on_progress: impl FnMut(&str, i32) + 'static,
-) -> Result<TranscriptionAttemptOutcome, String> {
+enum TranscriptionPreparation {
+    Ready(String),
+    Terminal(TranscriptionAttemptOutcome),
+}
+
+fn prepare_transcription_attempt(
+    attempt: &TranscriptionAttempt<'_>,
+    on_identity: &mut impl FnMut(&str),
+) -> Result<TranscriptionPreparation, String> {
     let hash = match ensure_exact_identity(
         attempt.conn,
         attempt.cache,
@@ -1139,98 +1137,48 @@ pub fn complete_transcription_attempt(
     ) {
         Ok(hash) => hash,
         Err(error) if error == crate::scanner::CANCELLED => {
-            return Ok(TranscriptionAttemptOutcome::Cancelled {
-                hash: attempt.source_hash.to_string(),
-            })
+            return Ok(TranscriptionPreparation::Terminal(
+                TranscriptionAttemptOutcome::Cancelled {
+                    hash: attempt.source_hash.to_string(),
+                },
+            ))
         }
         Err(error) => return Err(error),
     };
     on_identity(&hash);
     if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
-        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
+        return Ok(TranscriptionPreparation::Terminal(
+            TranscriptionAttemptOutcome::Cancelled { hash },
+        ));
     }
 
     if !attempt.replace_existing {
         let existing = crate::derived_state::transcript_result(attempt.conn, attempt.cache, &hash)?;
         if existing.status == crate::derived_state::READY {
-            return Ok(TranscriptionAttemptOutcome::Completed {
-                hash,
-                text: existing.text.unwrap_or_default(),
-            });
+            return Ok(TranscriptionPreparation::Terminal(
+                TranscriptionAttemptOutcome::Completed {
+                    hash,
+                    text: existing.text.unwrap_or_default(),
+                },
+            ));
         }
     }
+    Ok(TranscriptionPreparation::Ready(hash))
+}
 
-    let model_spec = crate::binaries_manager::spec_of("whisper-large-v3-turbo")
-        .ok_or("whisper model is not registered")?;
-    let model_state = crate::binaries_manager::state_of(attempt.data_root, model_spec);
-    if model_state.status == crate::binaries::BinaryStatus::NotInstalled {
-        return Ok(TranscriptionAttemptOutcome::Unavailable {
-            hash,
-            message: "the transcription model is not installed — install it from Managed tools"
-                .to_string(),
-        });
-    }
-    let model = crate::binaries_manager::installed_path(attempt.data_root, model_spec);
-    let ffmpeg = crate::binaries_manager::ffmpeg_path(attempt.data_root);
-    if !ffmpeg.exists() {
-        return Ok(TranscriptionAttemptOutcome::Unavailable {
-            hash,
-            message: "ffmpeg is not installed — install it from Managed tools".to_string(),
-        });
-    }
-    if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
-        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
-    }
-    let claim = crate::transcription::claim()?;
-    let finished = std::sync::Arc::new(AtomicBool::new(false));
-    let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
-    let watch = attempt
-        .cancel_when
-        .map(|cancel_when| {
-            std::thread::Builder::new()
-                .name("onecopy-transcription-cancel-watch".to_string())
-                .spawn(move || loop {
-                    if finished.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    if cancel_when() {
-                        crate::transcription::request_cancel();
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                })
-                .map_err(|error| {
-                    format!("could not start transcription cancel watcher: {error}")
-                })
-        })
-        .transpose()?;
-    on_started(&hash);
-    let progress_hash = hash.clone();
-
-    let result = crate::transcription::transcribe_to_cache_claimed(
-        &claim,
-        attempt.cache,
-        &attempt
-            .data_root
-            .join(crate::binaries_manager::TEMP_DIR_NAME),
-        Some(&model),
-        Some(&ffmpeg),
-        Path::new(attempt.source_path),
-        &hash,
-        attempt.replace_existing,
-        attempt.acceleration,
-        move |percent| on_progress(&progress_hash, percent),
-    );
-    drop(finish_signal);
-    if let Some(watch) = watch {
-        watch
-            .join()
-            .map_err(crate::failure_runtime::panic_message)?;
-    }
-    // The claim resets cancellation when dropped, so classify while this
-    // operation still has proof that it owns the process-wide Whisper slot.
-    let was_cancelled = crate::transcription::is_cancelled();
-
+fn finish_transcription_attempt(
+    attempt: &TranscriptionAttempt<'_>,
+    hash: String,
+    result: Result<String, String>,
+    was_cancelled: bool,
+) -> Result<TranscriptionAttemptOutcome, String> {
+    let result = result.and_then(|text| {
+        #[cfg(feature = "app-e2e")]
+        let _publication_timing =
+            crate::ai_test_instrumentation::Span::begin("transcription", "durable-publication");
+        crate::transcription::publish_transcript(&attempt.cache.transcript(&hash), &text)?;
+        Ok(text)
+    });
     match result {
         Ok(text) => {
             crate::derived_state::record_transcript_success(
@@ -1271,6 +1219,115 @@ pub fn complete_transcription_attempt(
             })
         }
     }
+}
+
+/// Complete one production transcription attempt. Manual and automatic callers
+/// retain their different admission, priority, preemption, and UI-event
+/// responsibilities; this operation owns the common identity, cache reuse,
+/// dependency, engine claim, generation, durable-result, and terminal-
+/// classification boundary.
+pub fn complete_transcription_attempt(
+    mut attempt: TranscriptionAttempt<'_>,
+    mut on_identity: impl FnMut(&str),
+    on_started: impl FnOnce(&str),
+    mut on_progress: impl FnMut(&str, i32) + 'static,
+) -> Result<TranscriptionAttemptOutcome, String> {
+    let hash = match prepare_transcription_attempt(&attempt, &mut on_identity)? {
+        TranscriptionPreparation::Ready(hash) => hash,
+        TranscriptionPreparation::Terminal(outcome) => return Ok(outcome),
+    };
+
+    let model_spec = crate::binaries_manager::spec_of("whisper-large-v3-turbo")
+        .ok_or("whisper model is not registered")?;
+    let model_state = crate::binaries_manager::state_of(attempt.data_root, model_spec);
+    if model_state.status == crate::binaries::BinaryStatus::NotInstalled {
+        return Ok(TranscriptionAttemptOutcome::Unavailable {
+            hash,
+            message: "the transcription model is not installed — install it from Managed tools"
+                .to_string(),
+        });
+    }
+    let model = crate::binaries_manager::installed_path(attempt.data_root, model_spec);
+    let ffmpeg = crate::binaries_manager::ffmpeg_path(attempt.data_root);
+    if !ffmpeg.exists() {
+        return Ok(TranscriptionAttemptOutcome::Unavailable {
+            hash,
+            message: "ffmpeg is not installed — install it from Managed tools".to_string(),
+        });
+    }
+    if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
+        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
+    }
+    let claim = crate::transcription::claim()?;
+    let finished = std::sync::Arc::new(AtomicBool::new(false));
+    let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
+    let watch = attempt
+        .cancel_when
+        .take()
+        .map(|cancel_when| {
+            std::thread::Builder::new()
+                .name("onecopy-transcription-cancel-watch".to_string())
+                .spawn(move || loop {
+                    if finished.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if cancel_when() {
+                        crate::transcription::request_cancel();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                })
+                .map_err(|error| format!("could not start transcription cancel watcher: {error}"))
+        })
+        .transpose()?;
+    on_started(&hash);
+    let progress_hash = hash.clone();
+
+    let result = crate::transcription::generate_transcript_claimed(
+        &claim,
+        &attempt
+            .data_root
+            .join(crate::binaries_manager::TEMP_DIR_NAME),
+        &model,
+        &ffmpeg,
+        Path::new(attempt.source_path),
+        attempt.acceleration,
+        move |percent| on_progress(&progress_hash, percent),
+    );
+    drop(finish_signal);
+    if let Some(watch) = watch {
+        watch
+            .join()
+            .map_err(crate::failure_runtime::panic_message)?;
+    }
+    // The claim resets cancellation when dropped, so classify while this
+    // operation still has proof that it owns the process-wide Whisper slot.
+    let was_cancelled = crate::transcription::is_cancelled();
+    finish_transcription_attempt(&attempt, hash, result, was_cancelled)
+}
+
+/// Runs the same identity, cache, publication, receipt, replacement, and
+/// terminal-classification operation with a caller-supplied inference step.
+/// Production callers use [`complete_transcription_attempt`]; this narrow seam
+/// lets integration tests replace native model execution without adding a
+/// second persistence workflow or a runtime-selectable test provider.
+pub fn complete_transcription_attempt_with_inference(
+    attempt: TranscriptionAttempt<'_>,
+    mut on_identity: impl FnMut(&str),
+    on_started: impl FnOnce(&str),
+    mut on_progress: impl FnMut(&str, i32),
+    inference: impl FnOnce(&mut dyn FnMut(i32)) -> Result<String, String>,
+) -> Result<TranscriptionAttemptOutcome, String> {
+    let hash = match prepare_transcription_attempt(&attempt, &mut on_identity)? {
+        TranscriptionPreparation::Ready(hash) => hash,
+        TranscriptionPreparation::Terminal(outcome) => return Ok(outcome),
+    };
+    on_started(&hash);
+    let progress_hash = hash.clone();
+    let mut progress = |percent| on_progress(&progress_hash, percent);
+    let result = inference(&mut progress);
+    let was_cancelled = attempt.cancel_when.as_ref().is_some_and(|stop| stop());
+    finish_transcription_attempt(&attempt, hash, result, was_cancelled)
 }
 
 fn transcribe_next(
