@@ -1360,7 +1360,7 @@ mod transcript_replacement_tests {
             issue,
             (
                 TRANSCRIPT_ERROR.to_string(),
-                "replacement failed".to_string()
+                derived_issue_presentation(TRANSCRIPT_ERROR).to_string()
             )
         );
     }
