@@ -446,10 +446,6 @@ pub fn complete_face_scoring_attempt(
             Ok(FaceScoringAttemptOutcome::Cancelled)
         }
         Err(message) => {
-            crate::logging::warn(
-                "face scoring failed",
-                serde_json::json!({ "hash": hash, "error": { "message": message.clone() } }),
-            );
             crate::derived_state::record_face_failure(conn, hash, source_path, &message)?;
             on_change(hash);
             Ok(FaceScoringAttemptOutcome::Failed { message })

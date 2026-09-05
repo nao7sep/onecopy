@@ -244,7 +244,12 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
 
     let failed = derived_state::transcript_result(&conn, &cache, "speech").unwrap();
     assert_eq!(failed.status, "failed");
-    assert_eq!(failed.message.as_deref(), Some("decoder failed"));
+    assert_eq!(
+        failed.message.as_deref(),
+        Some(
+            "OneCopy could not transcribe this media file. The original file was not changed. Try again."
+        )
+    );
 
     let pending = derived_state::transcript_result(&conn, &cache, "poster").unwrap();
     assert_eq!(pending.status, "pending");
@@ -275,4 +280,40 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
         )
         .unwrap();
     assert_eq!(state, None);
+}
+
+#[test]
+fn derived_failure_issues_keep_hostile_diagnostics_out_of_user_copy() {
+    let (_dir, conn) = seeded();
+    let hostile =
+        "DecoderError EACCES /private/tmp/HOSTILE-SENTINEL [52, 49, 46, 46]";
+
+    derived_state::record_preview_failure(&conn, "image", "/image.jpg", hostile).unwrap();
+    derived_state::record_poster_failure(&conn, "poster", "/poster.mov", hostile).unwrap();
+    derived_state::record_strip_failure(&conn, "strip", "/strip.mov", hostile).unwrap();
+    derived_state::record_face_failure(&conn, "face", "/face.jpg", hostile).unwrap();
+    derived_state::record_transcript_failure(&conn, "speech", "/speech.mov", hostile).unwrap();
+
+    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    for kind in [
+        derived_state::PREVIEW_ERROR,
+        derived_state::VIDEO_POSTER_ERROR,
+        derived_state::VIDEO_STRIP_ERROR,
+        derived_state::FACE_ERROR,
+        derived_state::TRANSCRIPT_ERROR,
+    ] {
+        let message = issues
+            .iter()
+            .find(|row| row.kind == kind)
+            .unwrap()
+            .message
+            .as_deref()
+            .unwrap();
+        assert!(message.starts_with("OneCopy could not"));
+        assert!(message.contains("original file was not changed"));
+        assert!(!message.contains("HOSTILE-SENTINEL"));
+        assert!(!message.contains("EACCES"));
+        assert!(!message.contains("/private/tmp"));
+        assert!(!message.contains("DecoderError"));
+    }
 }

@@ -5,6 +5,7 @@
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::json;
 
 use crate::preview::CachePaths;
 
@@ -1072,8 +1073,53 @@ fn record_content_failure(
             params![hash, FAILED],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::upsert_issue(&transaction, Some(path), issue_kind, message)?;
+    record_derived_issue(&transaction, path, issue_kind, message)?;
     transaction.commit().map_err(|error| error.to_string())
+}
+
+fn derived_issue_presentation(issue_kind: &str) -> &'static str {
+    match issue_kind {
+        PREVIEW_ERROR => {
+            "OneCopy could not prepare a preview for this file. The original file was not changed. Repair or replace the file, then retry."
+        }
+        VIDEO_POSTER_ERROR => {
+            "OneCopy could not prepare this video for playback. The original file was not changed. Repair or replace the file, then retry."
+        }
+        VIDEO_STRIP_ERROR => {
+            "OneCopy could not generate scene snapshots for this video. The original file was not changed. Repair or replace the file, then retry."
+        }
+        FACE_ERROR => {
+            "OneCopy could not score faces in this photo. The original file was not changed. Try again."
+        }
+        TRANSCRIPT_ERROR => {
+            "OneCopy could not transcribe this media file. The original file was not changed. Try again."
+        }
+        _ => {
+            "OneCopy could not finish preparing this file. The original file was not changed. Try again."
+        }
+    }
+}
+
+fn record_derived_issue(
+    conn: &Connection,
+    path: &str,
+    issue_kind: &str,
+    diagnostic: &str,
+) -> Result<(), String> {
+    crate::logging::warn(
+        "derived media work failed",
+        json!({
+            "kind": issue_kind,
+            "path": path,
+            "error": { "message": diagnostic },
+        }),
+    );
+    crate::index_store::upsert_issue(
+        conn,
+        Some(path),
+        issue_kind,
+        derived_issue_presentation(issue_kind),
+    )
 }
 
 pub fn record_preview_failure(
@@ -1150,7 +1196,7 @@ pub fn record_strip_failure(
             params![hash, STRIP_FAILED],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::upsert_issue(&transaction, Some(path), VIDEO_STRIP_ERROR, message)?;
+    record_derived_issue(&transaction, path, VIDEO_STRIP_ERROR, message)?;
     transaction.commit().map_err(|error| error.to_string())
 }
 
@@ -1210,7 +1256,7 @@ pub fn record_face_failure(
             params![hash, FAILED, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::upsert_issue(&transaction, Some(path), FACE_ERROR, message)?;
+    record_derived_issue(&transaction, path, FACE_ERROR, message)?;
     transaction.commit().map_err(|error| error.to_string())
 }
 
@@ -1259,7 +1305,7 @@ pub fn record_transcript_failure(
             params![hash, FAILED, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::upsert_issue(&transaction, Some(path), TRANSCRIPT_ERROR, message)?;
+    record_derived_issue(&transaction, path, TRANSCRIPT_ERROR, message)?;
     transaction.commit().map_err(|error| error.to_string())
 }
 
@@ -1271,7 +1317,7 @@ pub fn record_transcript_replacement_failure(
     path: &str,
     message: &str,
 ) -> Result<(), String> {
-    crate::index_store::upsert_issue(conn, Some(path), TRANSCRIPT_ERROR, message)
+    record_derived_issue(conn, path, TRANSCRIPT_ERROR, message)
 }
 
 // EXCEPTION (tests-folder convention): this pins a private database-state
