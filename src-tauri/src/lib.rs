@@ -2199,6 +2199,7 @@ pub fn run() {
             }
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
+            watcher::shutdown();
             binaries_manager::begin_shutdown();
             derived_work::shutdown(app_handle);
             if let Err(error) = mutation_runtime::request_shutdown() {
@@ -2212,6 +2213,7 @@ pub fn run() {
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         source_check_runtime::join();
                         file_information_runtime::join();
+                        watcher::join();
                         binaries_manager::wait_for_idle();
                         derived_work::join();
                         if let Err(error) = mutation_runtime::wait_for_idle() {
@@ -2258,10 +2260,12 @@ pub fn run() {
         tauri::RunEvent::Exit => {
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
+            watcher::shutdown();
             binaries_manager::begin_shutdown();
             derived_work::shutdown(app_handle);
             source_check_runtime::join();
             file_information_runtime::join();
+            watcher::join();
             binaries_manager::wait_for_idle();
             derived_work::join();
             logging::info("app shutdown", json!({ "reason": "exit" }));

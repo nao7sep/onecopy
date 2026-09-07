@@ -12,8 +12,10 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::Mutex;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use notify::Watcher;
@@ -23,6 +25,20 @@ use crate::logging;
 use crate::scanner::{self, ScanLists};
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
+fn generation_is_live(current: u64, owned: u64, shutting_down: bool) -> bool {
+    !shutting_down && current == owned
+}
+
+fn owns_generation(generation: u64) -> bool {
+    generation_is_live(
+        GENERATION.load(Ordering::SeqCst),
+        generation,
+        SHUTTING_DOWN.load(Ordering::SeqCst),
+    )
+}
 
 pub fn restart_from_config(app: tauri::AppHandle) -> Result<(), String> {
     let data_root = crate::paths::data_root(&app)?;
@@ -142,6 +158,17 @@ pub fn restat_dir(
 /// a watcher that cannot start logs one warn and the app continues (rescan
 /// remains the manual path).
 pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) {
+    let mut workers = match WORKERS.lock() {
+        Ok(workers) => workers,
+        Err(_) => {
+            report_failure(&app, "watcher worker state is unavailable");
+            return;
+        }
+    };
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return;
+    }
+    join_finished(&mut workers);
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     if source_dirs.is_empty() {
         return;
@@ -155,7 +182,10 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) {
             }));
             match outcome {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => report_failure(&handle, &error),
+                Ok(Err(error)) if owns_generation(generation) => {
+                    report_failure(&handle, &error)
+                }
+                Ok(Err(_)) => {}
                 Err(payload) => {
                     let error = payload
                         .downcast_ref::<&str>()
@@ -166,8 +196,9 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) {
                 }
             }
         });
-    if let Err(error) = started {
-        report_failure(&app, &format!("could not start watcher thread: {error}"));
+    match started {
+        Ok(worker) => workers.push(worker),
+        Err(error) => report_failure(&app, &format!("could not start watcher thread: {error}")),
     }
 }
 
@@ -196,7 +227,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     let mut dirty: HashSet<PathBuf> = HashSet::new();
     let mut overflowed = false;
     loop {
-        if GENERATION.load(Ordering::SeqCst) != generation {
+        if !owns_generation(generation) {
             return Ok(());
         }
         // Wake periodically so a settings-driven watcher replacement can
@@ -230,7 +261,11 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             continue;
         }
         let dirs: Vec<PathBuf> = dirty.drain().collect();
-        match process_dirty(&app, &dirs) {
+        let outcome = process_dirty(&app, &dirs);
+        if !owns_generation(generation) {
+            return Ok(());
+        }
+        match outcome {
             Ok(0) => crate::failure_runtime::clear(&app, "watcher-failed", None)?,
             Ok(changed) => {
                 crate::failure_runtime::clear(&app, "watcher-failed", None)?;
@@ -251,11 +286,70 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     }
 }
 
+/// Closes watcher admission and invalidates every generation before the app's
+/// shutdown owner joins their retained handles.
+pub fn shutdown() {
+    let _workers = match WORKERS.lock() {
+        Ok(workers) => workers,
+        Err(_) => {
+            logging::error("watcher worker state is unavailable", json!({}));
+            SHUTTING_DOWN.store(true, Ordering::SeqCst);
+            GENERATION.fetch_add(1, Ordering::SeqCst);
+            crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::Watcher);
+            return;
+        }
+    };
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+    crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::Watcher);
+}
+
+pub fn join() {
+    let workers = match WORKERS.lock() {
+        Ok(mut workers) => workers.drain(..).collect::<Vec<_>>(),
+        Err(_) => {
+            logging::error("watcher worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    for worker in workers {
+        if worker.join().is_err() {
+            logging::error("watcher worker join failed", json!({}));
+        }
+    }
+}
+
+fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            if worker.join().is_err() {
+                logging::error("watcher worker join failed", json!({}));
+            }
+        } else {
+            index += 1;
+        }
+    }
+}
+
 fn report_failure(app: &tauri::AppHandle, error: &str) {
     logging::error("watcher failed", json!({ "error": { "message": error } }));
     crate::scan_runtime::record_runtime_failure(app, "watcher-failed", error);
     for event in ["watch://failed", "watch://rescan-needed"] {
         crate::failure_runtime::emit_or_record(app, event, json!({ "reason": error }));
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::generation_is_live;
+
+    #[test]
+    fn replacement_and_shutdown_each_retire_an_owned_generation() {
+        assert!(generation_is_live(4, 4, false));
+        assert!(!generation_is_live(5, 4, false));
+        assert!(!generation_is_live(4, 4, true));
     }
 }
 
