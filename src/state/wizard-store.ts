@@ -160,14 +160,13 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       const valid = await invoke<boolean>("validate_timezone", { name });
       if (fresh()) set({ timezoneValid: valid, timezonePending: false });
     } catch (error) {
+      if (!fresh()) return;
       log.error("wizard timezone validation failed", toErrorFields(error));
-      if (fresh()) {
-        set({
-          timezoneValid: false,
-          timezonePending: false,
-          error: "Couldn’t check this timezone.",
-        });
-      }
+      set({
+        timezoneValid: false,
+        timezonePending: false,
+        error: "Couldn’t check this timezone.",
+      });
       recordActionFailure("setup-timezone-check-failed", "Couldn’t check this timezone.", error);
     }
   },
@@ -189,8 +188,9 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         set({ missingDirs: status.missing, substitutedDirs: status.substituted, error: null });
       }
     } catch (error) {
+      if (!fresh()) return;
       log.error("presence check failed", toErrorFields(error));
-      if (fresh()) set({ error: "Couldn’t check the configured source folders." });
+      set({ error: "Couldn’t check the configured source folders." });
       recordActionFailure(
         "configured-source-check-failed",
         "Couldn’t check the configured source folders.",

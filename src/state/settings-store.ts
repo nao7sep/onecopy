@@ -241,15 +241,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const valid = await invoke<boolean>("validate_timezone", { name });
       if (fresh()) set({ timezoneValid: valid, timezonePending: false });
     } catch (error) {
+      if (!fresh()) return;
       log.error("settings timezone validation failed", toErrorFields(error));
-      if (fresh()) {
-        set({
-          timezoneValid: false,
-          timezonePending: false,
-          message: "Couldn’t check this timezone.",
-          messageLevel: "error",
-        });
-      }
+      set({
+        timezoneValid: false,
+        timezonePending: false,
+        message: "Couldn’t check this timezone.",
+        messageLevel: "error",
+      });
       recordActionFailure("timezone-check-failed", "Couldn’t check this timezone.", error);
     }
   },

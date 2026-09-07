@@ -16,20 +16,50 @@ const config = JSON.parse(
 
 const csp = config.app?.security?.csp;
 
-// The exact production CSP, snapshotted so any future drop or weakening fails.
-// Keep this in lock-step with src-tauri/tauri.conf.json → app.security.csp;
-// a deliberate policy change updates both, an accidental one trips this test.
-const EXPECTED_CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost mediacache: http://mediacache.localhost mediafile: http://mediafile.localhost data: blob:; media-src 'self' mediafile: http://mediafile.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+const EXPECTED_DIRECTIVES: Record<string, string[]> = {
+  "default-src": ["'self'"],
+  "script-src": ["'self'"],
+  "style-src": ["'self'", "'unsafe-inline'"],
+  "img-src": [
+    "'self'",
+    "asset:",
+    "http://asset.localhost",
+    "mediacache:",
+    "http://mediacache.localhost",
+    "mediafile:",
+    "http://mediafile.localhost",
+    "data:",
+    "blob:",
+  ],
+  "media-src": ["'self'", "mediafile:", "http://mediafile.localhost"],
+  "font-src": ["'self'", "data:"],
+  "connect-src": ["'self'", "ipc:", "http://ipc.localhost"],
+  "object-src": ["'none'"],
+  "base-uri": ["'self'"],
+  "frame-ancestors": ["'none'"],
+};
+
+function directives(value: unknown): Record<string, string[]> {
+  if (typeof value !== "string") return {};
+  return Object.fromEntries(
+    value
+      .split(";")
+      .map((directive) => directive.trim().split(/\s+/))
+      .filter(([name]) => name !== "")
+      .map(([name, ...sources]) => [name, [...new Set(sources)].sort()]),
+  );
+}
 
 describe("Tauri production CSP (src-tauri/tauri.conf.json)", () => {
-  // The exact-match case below subsumes present/non-empty, no-unsafe-eval and
-  // strict-script-src: any of those regressions changes the string. What it
-  // could NOT see is devCsp, which legitimately carries 'unsafe-eval' and
-  // 'unsafe-inline' for the Vite dev server — so the one thing worth asserting
-  // separately is that the two never get confused.
-  it("matches the snapshotted production policy exactly", () => {
-    expect(csp).toBe(EXPECTED_CSP);
+  it("keeps the complete production policy regardless of harmless token ordering", () => {
+    expect(directives(csp)).toEqual(
+      Object.fromEntries(
+        Object.entries(EXPECTED_DIRECTIVES).map(([name, sources]) => [
+          name,
+          [...sources].sort(),
+        ]),
+      ),
+    );
   });
 
   it("keeps the permissive dev policy out of the production one", () => {

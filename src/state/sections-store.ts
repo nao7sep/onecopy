@@ -80,15 +80,14 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       const counts = await invoke<SectionCounts>("get_section_counts");
       if (fresh()) set({ counts, error: null });
     } catch (error) {
+      if (!fresh()) return;
       log.error("section counts load failed", toErrorFields(error));
-      if (fresh()) {
-        set({ error: "Couldn’t read the library sections." });
-        recordActionFailure(
-          "section-counts-load-failed",
-          "Couldn’t read the library sections.",
-          error,
-        );
-      }
+      set({ error: "Couldn’t read the library sections." });
+      recordActionFailure(
+        "section-counts-load-failed",
+        "Couldn’t read the library sections.",
+        error,
+      );
     }
   },
 
@@ -117,15 +116,14 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
               },
       }));
     } catch (error) {
+      if (!fresh()) return;
       log.error("library background-work status failed", toErrorFields(error));
-      if (fresh()) {
-        set({ error: "Couldn’t read library background-work status." });
-        recordActionFailure(
-          "background-work-status-failed",
-          "Couldn’t read library background-work status.",
-          error,
-        );
-      }
+      set({ error: "Couldn’t read library background-work status." });
+      recordActionFailure(
+        "background-work-status-failed",
+        "Couldn’t read library background-work status.",
+        error,
+      );
     }
   },
 

@@ -112,6 +112,12 @@ pub(crate) fn with_owner<T>(
     if crate::app_lifecycle::shutting_down() {
         return Err(crate::scanner::CANCELLED.to_string());
     }
+    // A request already retired while waiting for the projection lock never
+    // becomes the published process-global owner. `enter` still samples on
+    // both sides of publication to close the later cancel-vs-admission race.
+    if cancelled() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     let _active = enter(owner, cancelled);
     if crate::scanner::SCAN_CANCEL.load(Ordering::SeqCst) {
         return Err(crate::scanner::CANCELLED.to_string());

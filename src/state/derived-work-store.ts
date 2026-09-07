@@ -82,11 +82,11 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
         set({ snapshot, activeItem, loading: false, error: null });
       }
     } catch (error) {
-      if (fresh())
-        set({
-          loading: false,
-          error: "Background work could not be loaded. Try reopening this window.",
-        });
+      if (!fresh()) return;
+      set({
+        loading: false,
+        error: "Background work could not be loaded. Try reopening this window.",
+      });
       log.warn("background-work snapshot failed", toErrorFields(error));
     }
   },

@@ -156,6 +156,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   setSortOrder: (order) => {
+    rangeLoad.begin();
     const state = get();
     const lane = state.selected?.kind === "other" ? "other" : "media";
     const current = state.sortOrders[lane];
@@ -166,6 +167,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   select: async (section, restore) => {
+    rangeLoad.begin();
     const before = get();
     const sameSection = before.selected?.kind === section.kind && before.selected.month === section.month;
     if (!sameSection) {
@@ -267,15 +269,15 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         });
       }
     } catch (error) {
+      if (!fresh()) return;
       log.error("section window load failed", toErrorFields(error));
-      if (fresh()) {
-        set({ loadError: "Couldn’t load this part of the section." });
-        recordActionFailure("section-window-load-failed", "Couldn’t load this part of the section.", error);
-      }
+      set({ loadError: "Couldn’t load this part of the section." });
+      recordActionFailure("section-window-load-failed", "Couldn’t load this part of the section.", error);
     }
   },
 
   selectPosition: async (requestedIndex, extend) => {
+    const ownsIntent = rangeLoad.begin();
     const before = get();
     const total = before.totalItems > 0 ? before.totalItems : before.windowStart + before.items.length;
     if (total === 0) return;
@@ -285,21 +287,32 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       .find((candidate) => candidate[1] === index);
     if (entry === undefined) {
       await get().loadWindow(index - Math.floor(SECTION_WINDOW_LIMIT / 2));
+      if (!ownsIntent()) return;
       const state = get();
       entry = state.items
         .map((item, offset) => [itemKey(item), state.windowStart + offset] as const)
         .find((candidate) => candidate[1] === index);
     }
-    if (entry === undefined) return;
+    if (entry === undefined || !ownsIntent()) return;
     if (extend) await get().rangeSelect(entry[0], index);
     else get().selectItem(entry[0], "nearest", index);
   },
 
   selectIdentity: async (key) => {
-    await reconcileCurrent(set, get, false, "center", { anchor: key, context: null }, true);
+    const ownsIntent = rangeLoad.begin();
+    await reconcileCurrent(
+      set,
+      get,
+      false,
+      "center",
+      { anchor: key, context: null },
+      true,
+      ownsIntent,
+    );
   },
 
   selectItem: (key, align = "nearest", position) => {
+    rangeLoad.begin();
     if (key === null) {
       const operationId = latestActivityOperationId("selection");
       if (get().selectedKeys.size > 0) {
@@ -367,6 +380,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   setAnchor: (key, position) => {
+    rangeLoad.begin();
     const previousAnchor = get().selectedItem;
     const operationId = newActivityOperationId("anchor");
     const recordAnchor = (itemCount: number) => {
@@ -408,6 +422,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   toggleItem: (key, position) => {
+    rangeLoad.begin();
     const state = get();
     const index = position ?? knownPosition(state, key);
     if (index === undefined) return;
@@ -452,17 +467,24 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       get().selectItem(key, "nearest", target);
       return;
     }
+    const sort = state.currentSort();
     const [start, end] = origin <= target ? [origin, target + 1] : [target, origin + 1];
     const fresh = rangeLoad.begin();
     try {
       const members = await invoke<PositionedSectionIdentity[]>("get_section_range", {
         kind: section.kind,
         month: section.month,
-        sort: state.currentSort(),
+        sort,
         start,
         end,
       });
-      if (!fresh()) return;
+      const current = get();
+      if (
+        !fresh() ||
+        current.selected?.kind !== section.kind ||
+        current.selected.month !== section.month ||
+        !sameSort(current.currentSort(), sort)
+      ) return;
       const selectedPositions = new Map(state.rangeBasePositions);
       for (const member of members) selectedPositions.set(identityKey(member), member.index);
       set({
@@ -475,6 +497,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       });
       loadAnchorDetail(key);
     } catch (error) {
+      if (!fresh()) return;
       log.error("section range selection failed", toErrorFields(error));
       set({ message: "Couldn’t extend the selection." });
       recordActionFailure("section-range-load-failed", "Couldn’t extend the selection.", error);
@@ -527,6 +550,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       get().selectItem(null);
       return;
     }
+    const ownsIntent = rangeLoad.begin();
     await reconcileCurrent(
       set,
       get,
@@ -534,6 +558,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       "center",
       { anchor: "__comparison-family-boundary__", context: recovery },
       true,
+      ownsIntent,
     );
   },
 }));
@@ -545,6 +570,7 @@ async function reconcileCurrent(
   align: "nearest" | "center",
   remembered?: { anchor: string | null; context: AnchorContext | null } | null,
   replaceSelection = false,
+  ownsIntent?: () => boolean,
 ): Promise<void> {
   const before = get();
   const section = before.selected;
@@ -579,6 +605,7 @@ async function reconcileCurrent(
     const current = get();
     if (
       !fresh() ||
+      (ownsIntent !== undefined && !ownsIntent()) ||
       current.selected?.kind !== section.kind ||
       current.selected.month !== section.month ||
       !sameSort(current.currentSort(), sort)
@@ -615,11 +642,10 @@ async function reconcileCurrent(
     });
     if (anchor !== before.selectedItem) loadAnchorDetail(anchor);
   } catch (error) {
+    if (!fresh()) return;
     log.error("section reconciliation failed", toErrorFields(error));
-    if (fresh()) {
-      set({ loading: false, loadError: "Couldn’t load this section." });
-      recordActionFailure("section-items-load-failed", "Couldn’t load this section.", error);
-    }
+    set({ loading: false, loadError: "Couldn’t load this section." });
+    recordActionFailure("section-items-load-failed", "Couldn’t load this section.", error);
   }
 }
 
@@ -650,12 +676,11 @@ function loadAnchorDetail(key: string | null): void {
       }
     })
     .catch((error) => {
+      if (!fresh() || useItemsStore.getState().selectedItem !== key) return;
       log.error("item detail load failed", toErrorFields(error));
-      if (fresh() && useItemsStore.getState().selectedItem === key) {
-        useItemsStore.setState({
-          message: "Couldn’t load details for this item.",
-        });
-        recordActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
-      }
+      useItemsStore.setState({
+        message: "Couldn’t load details for this item.",
+      });
+      recordActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
     });
 }

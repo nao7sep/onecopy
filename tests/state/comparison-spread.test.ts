@@ -76,6 +76,32 @@ beforeEach(() => {
 });
 
 describe("opening Comparison across displays", () => {
+  it("does not surface an obsolete open failure after a newer group opens", async () => {
+    let rejectOld: ((error: Error) => void) | undefined;
+    let request = 0;
+    mockCommands({
+      get_similar_group: () => {
+        request += 1;
+        return request === 1
+          ? new Promise<GroupMember[]>((_resolve, reject) => {
+              rejectOld = reject;
+            })
+          : members(2);
+      },
+      record_interface_failure: () => null,
+    });
+
+    const old = useComparisonStore.getState().openGroup("old");
+    expect(await useComparisonStore.getState().openGroup("m0")).toBe("opened");
+    rejectOld?.(new Error("obsolete group failure"));
+    expect(await old).toBe("opened");
+
+    expect(useComparisonStore.getState().open).toBe(true);
+    expect(
+      invokeCalls.filter((call) => call.command === "record_interface_failure"),
+    ).toEqual([]);
+  });
+
   it("does not hide Preview for an invalid group", async () => {
     const preview = new WebviewWindow("preview");
     mockCommands({ get_similar_group: () => [member(0)] });

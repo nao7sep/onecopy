@@ -634,6 +634,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       });
       return "opened";
     } catch (error) {
+      if (!fresh()) return "opened";
       log.error("similar group load failed", toErrorFields(error));
       recordInterfaceFailure("Couldn’t open the similar-image group.");
       return "failed";

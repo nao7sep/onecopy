@@ -74,6 +74,7 @@ beforeEach(() => {
   resetStore();
   mockCommands({
     activity_record: () => null,
+    record_recent_notification: () => ({}),
     patch_state: () => ({}),
     get_item_detail: () => ({ fileName: "item", kind: "image" }),
     get_section_counts: () => [],
@@ -182,6 +183,83 @@ describe("explicit selection", () => {
 
     await useItemsStore.getState().rangeSelect("h4", 3);
     expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2", "h3", "h4"]);
+  });
+
+  it("does not let a delayed Shift range replace a newer ordinary selection", async () => {
+    const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+
+    let settleRange: ((members: Array<{ hash: string; pathId: null; index: number }>) => void) | undefined;
+    mockCommands({
+      get_section_range: () =>
+        new Promise<Array<{ hash: string; pathId: null; index: number }>>((resolve) => {
+          settleRange = resolve;
+        }),
+    });
+    const olderRange = useItemsStore.getState().rangeSelect("h6", 5);
+    useItemsStore.getState().selectItem("h8", "nearest", 7);
+    settleRange?.(
+      rows.slice(1, 6).map((row, offset) => ({
+        hash: row.hash!,
+        pathId: null,
+        index: offset + 1,
+      })),
+    );
+    await olderRange;
+
+    expect(useItemsStore.getState().selectedItem).toBe("h8");
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h8"]);
+  });
+
+  it("does not publish a delayed Shift-range failure after a newer selection", async () => {
+    const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+
+    let rejectRange: ((error: Error) => void) | undefined;
+    mockCommands({
+      get_section_range: () =>
+        new Promise((_resolve, reject) => {
+          rejectRange = reject;
+        }),
+    });
+    const olderRange = useItemsStore.getState().rangeSelect("h6", 5);
+    useItemsStore.getState().selectItem("h8", "nearest", 7);
+    rejectRange?.(new Error("obsolete range failure"));
+    await olderRange;
+
+    expect(useItemsStore.getState().message).toBeNull();
+    expect(
+      invokeCalls.filter((call) => call.command === "record_recent_notification"),
+    ).toEqual([]);
+  });
+
+  it("does not let delayed off-window keyboard navigation replace a newer click", async () => {
+    const rows = Array.from({ length: 900 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+
+    let settleWindow: ((window: {
+      total: number;
+      start: number;
+      items: SectionItem[];
+    }) => void) | undefined;
+    mockCommands({
+      get_section_window: () =>
+        new Promise((resolve) => {
+          settleWindow = resolve;
+        }),
+    });
+    const olderNavigation = useItemsStore.getState().selectPosition(700, false);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    settleWindow?.({ total: rows.length, start: 388, items: rows.slice(388) });
+    await olderNavigation;
+
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2"]);
   });
 
   it("preserves modifier-selected keys outside a changing Shift range", async () => {

@@ -20,6 +20,7 @@ beforeEach(() => {
     check_source_dirs: () => ({ missing: [], substituted: [] }),
     start_source_check: () => true,
     get_section_counts: () => [],
+    record_recent_notification: () => ({}),
   });
   useWizardStore.setState({
     open: true,
@@ -124,6 +125,32 @@ describe("timezone validation", () => {
       timezonePending: false,
     });
   });
+
+  it("does not publish an obsolete validation failure after a newer value succeeds", async () => {
+    let rejectOld: ((error: Error) => void) | undefined;
+    mockCommands({
+      validate_timezone: ({ name }) =>
+        name === "Tokyo"
+          ? new Promise<boolean>((_resolve, reject) => {
+              rejectOld = reject;
+            })
+          : true,
+    });
+
+    const old = useWizardStore.getState().setTimezone("Tokyo");
+    await useWizardStore.getState().setTimezone("Asia/Tokyo");
+    rejectOld?.(new Error("obsolete validation failure"));
+    await old;
+
+    expect(useWizardStore.getState()).toMatchObject({
+      timezone: "Asia/Tokyo",
+      timezoneValid: true,
+      error: null,
+    });
+    expect(
+      invokeCalls.filter((call) => call.command === "record_recent_notification"),
+    ).toEqual([]);
+  });
 });
 
 describe("loaded directory projection", () => {
@@ -155,5 +182,30 @@ describe("loaded directory projection", () => {
     await old;
 
     expect(useWizardStore.getState().missingDirs).toEqual(["/current"]);
+  });
+
+  it("does not publish an obsolete presence failure after a newer check succeeds", async () => {
+    let rejectOld: ((error: Error) => void) | undefined;
+    let request = 0;
+    mockCommands({
+      check_source_dirs: () => {
+        request += 1;
+        return request === 1
+          ? new Promise<{ missing: string[]; substituted: string[] }>((_resolve, reject) => {
+              rejectOld = reject;
+            })
+          : { missing: [], substituted: [] };
+      },
+    });
+
+    const old = useWizardStore.getState().recheckPresence();
+    await useWizardStore.getState().recheckPresence();
+    rejectOld?.(new Error("obsolete presence failure"));
+    await old;
+
+    expect(useWizardStore.getState().error).toBeNull();
+    expect(
+      invokeCalls.filter((call) => call.command === "record_recent_notification"),
+    ).toEqual([]);
   });
 });

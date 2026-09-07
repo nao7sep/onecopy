@@ -93,8 +93,9 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       });
       if (fresh()) set({ total: result.total, rows: result.rows, loading: false, error: null });
     } catch (error) {
+      if (!fresh()) return;
       log.error("issues load failed", toErrorFields(error));
-      if (fresh()) set({ loading: false, error: "Issues are unavailable." });
+      set({ loading: false, error: "Issues are unavailable." });
     }
   },
 
@@ -115,10 +116,9 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         });
       }
     } catch (error) {
+      if (!fresh()) return;
       log.error("recent notifications load failed", toErrorFields(error));
-      if (fresh()) {
-        set({ recentLoading: false, recentError: "Recent notifications are unavailable." });
-      }
+      set({ recentLoading: false, recentError: "Recent notifications are unavailable." });
     }
   },
 

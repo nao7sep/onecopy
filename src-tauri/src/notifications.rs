@@ -11,7 +11,7 @@ use chrono::{Duration, SecondsFormat, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 const RECENT_LIMIT: i64 = 500;
 const RECENT_DAYS: i64 = 30;
@@ -205,10 +205,9 @@ pub fn publish(app: &AppHandle, request: NotificationRequest) -> Result<Notifica
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let record = record_recent(&conn, &request)?;
     remember_active(record.clone());
-    if let Some(Err(error)) = crate::app_lifecycle::publish_if_running(|| {
-        app.emit("notification://published", &record)
-    }) {
-        let message = format!("could not publish notification://published: {error}");
+    if let Err(message) =
+        crate::failure_runtime::emit_checked(app, "notification://published", &record)
+    {
         record_delivery_failure(app, "notification://published", &message)?;
     }
     Ok(record)
@@ -246,20 +245,14 @@ pub fn dismiss(app: &AppHandle, id: i64) -> Result<bool, String> {
     if !exists {
         return Ok(false);
     }
-    crate::app_lifecycle::publish_if_running(|| {
-        app.emit("notification://dismissed", json!({ "id": id }))
-    })
-    .transpose()
-    .map_err(|error| format!("could not publish notification://dismissed: {error}"))?;
+    crate::failure_runtime::emit_checked(app, "notification://dismissed", json!({ "id": id }))?;
     let mut active = ACTIVE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     active.retain(|record| record.id != id);
     Ok(true)
 }
 
 pub fn clear_active(app: &AppHandle) -> Result<(), String> {
-    crate::app_lifecycle::publish_if_running(|| app.emit("notification://cleared", ()))
-        .transpose()
-        .map_err(|error| format!("could not publish notification://cleared: {error}"))?;
+    crate::failure_runtime::emit_checked(app, "notification://cleared", ())?;
     ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

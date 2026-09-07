@@ -45,6 +45,31 @@ describe("settings timezone validation", () => {
       "Asia/Tokyo",
     );
   });
+
+  it("does not publish a failure from an earlier modal session", async () => {
+    let reject: ((error: Error) => void) | undefined;
+    mockCommands({
+      validate_timezone: () =>
+        new Promise<boolean>((_resolve, rejectPromise) => {
+          reject = rejectPromise;
+        }),
+      record_recent_notification: () => ({}),
+    });
+
+    const validation = useSettingsStore.getState().validateTimezone("Tokyo");
+    useSettingsStore.getState().openWith(config);
+    reject?.(new Error("obsolete validation failure"));
+    await validation;
+
+    expect(useSettingsStore.getState()).toMatchObject({
+      timezoneValid: true,
+      timezonePending: false,
+      message: "",
+    });
+    expect(
+      invokeCalls.filter((call) => call.command === "record_recent_notification"),
+    ).toEqual([]);
+  });
 });
 
 describe("playback preferences", () => {
