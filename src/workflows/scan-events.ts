@@ -1,11 +1,11 @@
 // Application-edge reactions to source checking, file-information completion,
 // watcher updates, and derived-output events.
 
-import { listen } from "@tauri-apps/api/event";
 import type { SectionItem } from "../models/items";
 import type { ScanProgress } from "../models/scan";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { createEventInstaller } from "../utils/eventInstallation";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import {
@@ -15,7 +15,6 @@ import {
 } from "../state/sections-store";
 import { reconcileComparisonMembership } from "./comparison";
 
-let installation: Promise<void> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let derivedIssuesTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -48,9 +47,9 @@ function refreshDerivedIssues(): void {
   }, 500);
 }
 
-async function install(): Promise<void> {
-  try {
-    await listen<Omit<SourceCheckState, "progress">>(
+const install = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<Omit<SourceCheckState, "progress">>(
       "source-check://state",
       (event) => {
         useSectionsStore.setState((state) =>
@@ -65,7 +64,7 @@ async function install(): Promise<void> {
         );
       },
     );
-    await listen<SequencedProgress>("source-check://progress", (event) => {
+    await listeners.listen<SequencedProgress>("source-check://progress", (event) => {
       let accepted = false;
       useSectionsStore.setState((state) => {
         if (event.payload.eventSequence <= state.sourceCheck.eventSequence) return state;
@@ -81,7 +80,7 @@ async function install(): Promise<void> {
       });
       if (accepted) refreshLibrarySoon();
     });
-    await listen<{ eventSequence: number; stopped?: boolean; error?: string }>(
+    await listeners.listen<{ eventSequence: number; stopped?: boolean; error?: string }>(
       "source-check://done",
       (event) => {
         let accepted = false;
@@ -118,7 +117,7 @@ async function install(): Promise<void> {
       },
     );
 
-    await listen<Omit<FileInformationState, "progress">>(
+    await listeners.listen<Omit<FileInformationState, "progress">>(
       "file-information://state",
       (event) => {
         useSectionsStore.setState((state) =>
@@ -133,7 +132,7 @@ async function install(): Promise<void> {
         );
       },
     );
-    await listen<SequencedProgress>("file-information://progress", (event) => {
+    await listeners.listen<SequencedProgress>("file-information://progress", (event) => {
       let accepted = false;
       useSectionsStore.setState((state) => {
         if (event.payload.eventSequence <= state.fileInformation.eventSequence) return state;
@@ -149,7 +148,7 @@ async function install(): Promise<void> {
       });
       if (accepted) refreshLibrarySoon();
     });
-    await listen<{ eventSequence: number; error?: string }>("file-information://done", (event) => {
+    await listeners.listen<{ eventSequence: number; error?: string }>("file-information://done", (event) => {
       let accepted = false;
       useSectionsStore.setState((state) => {
         if (event.payload.eventSequence <= state.fileInformation.eventSequence) return state;
@@ -174,11 +173,11 @@ async function install(): Promise<void> {
       void useSectionsStore.getState().loadIndexWork();
     });
 
-    await listen("watch://updated", () => {
+    await listeners.listen("watch://updated", () => {
       refreshLibrarySoon();
       void reconcileComparisonMembership();
     });
-    await listen<{ previousHash: string; item: SectionItem }>(
+    await listeners.listen<{ previousHash: string; item: SectionItem }>(
       "derived://item",
       (event) => {
         useItemsStore
@@ -186,8 +185,8 @@ async function install(): Promise<void> {
           .applyDerivedItem(event.payload.previousHash, event.payload.item);
       },
     );
-    await listen("derived://issues", refreshDerivedIssues);
-    await listen<{ message: string }>("derived://worker-failed", (event) => {
+    await listeners.listen("derived://issues", refreshDerivedIssues);
+    await listeners.listen<{ message: string }>("derived://worker-failed", (event) => {
       log.error("previews and analysis worker stopped", {
         error: { message: event.payload.message },
       });
@@ -196,27 +195,28 @@ async function install(): Promise<void> {
       });
       void useIssuesStore.getState().load();
     });
-    await listen("derived://similarity-updated", () => {
+    await listeners.listen("derived://similarity-updated", () => {
       void useItemsStore.getState().refresh();
     });
-    await listen("watch://rescan-needed", () => {
+    await listeners.listen("watch://rescan-needed", () => {
       useSectionsStore.setState({ rescanNeeded: true });
     });
-    await listen<{ reason: string }>("watch://failed", (event) => {
+    await listeners.listen<{ reason: string }>("watch://failed", (event) => {
       useSectionsStore.setState({ rescanNeeded: true });
       log.error("filesystem watcher failed", {
         error: { message: event.payload.reason },
       });
       void useIssuesStore.getState().load();
     });
-    await listen("failure://reported", () => {
+    await listeners.listen("failure://reported", () => {
       void useIssuesStore.getState().load();
     });
-    await listen<{ message: string }>("failure://direct", (event) => {
+    await listeners.listen<{ message: string }>("failure://direct", (event) => {
       useItemsStore.setState({ message: event.payload.message });
     });
     await useSectionsStore.getState().loadIndexWork();
-  } catch (error) {
+  },
+  (error) => {
     log.warn("library event wiring failed", toErrorFields(error));
     recordInterfaceFailure(
       "Live library updates are unavailable. Restart OneCopy to repair them.",
@@ -225,10 +225,9 @@ async function install(): Promise<void> {
       message:
         "Live library updates are unavailable. Restart OneCopy to repair them.",
     });
-  }
-}
+  },
+);
 
 export function installScanEventWiring(): Promise<void> {
-  installation ??= install();
-  return installation;
+  return install();
 }

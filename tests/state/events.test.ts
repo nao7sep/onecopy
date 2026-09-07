@@ -12,7 +12,10 @@ import {
   resetTauriMocks,
 } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
-import { useBinariesStore } from "../../src/state/binaries-store";
+import {
+  installBinariesEventWiring,
+  useBinariesStore,
+} from "../../src/state/binaries-store";
 import { installScanEventWiring } from "../../src/workflows/scan-events";
 import type { ScanProgress } from "../../src/models/scan";
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
@@ -49,6 +52,7 @@ async function settleUntil(predicate: () => boolean) {
 }
 
 beforeAll(async () => {
+  await installBinariesEventWiring();
   for (let i = 0; i < 20 && listenerCount("derived://item") === 0; i += 1) {
     await Promise.resolve();
   }

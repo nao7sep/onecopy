@@ -3,13 +3,13 @@
 // pause/resume intent back to that single owner.
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
 import type { ItemWorkStates } from "../models/items";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { createEventInstaller } from "../utils/eventInstallation";
 
 const PING_EVERY_MS = 10_000;
 
@@ -244,27 +244,32 @@ export function installActivityPings(target: Window): () => void {
   };
 }
 
-/** Installs the app-lifetime projection only after startup has admitted the
- * feature application. Importing this module must never contact the backend. */
-export async function installDerivedWorkEventWiring(): Promise<void> {
-  try {
-    await listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
+const installEvents = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
       useDerivedWorkStore.setState((state) => ({
         snapshot: mergeBackgroundRuntime(state.snapshot, event.payload),
         activeItem: event.payload.active,
       }));
     });
-    await listen("derived://quiet", () => {
+    await listeners.listen("derived://quiet", () => {
       if (useDerivedWorkStore.getState().open) {
         void useDerivedWorkStore.getState().load();
       }
     });
     await useDerivedWorkStore.getState().load();
-  } catch (error) {
+  },
+  (error) => {
     log.warn("derived-work event wiring failed", toErrorFields(error));
     recordInterfaceFailure("Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.");
     useDerivedWorkStore.setState({
       error: "Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.",
     });
-  }
+  },
+);
+
+/** Installs the app-lifetime projection only after startup has admitted the
+ * feature application. Importing this module must never contact the backend. */
+export function installDerivedWorkEventWiring(): Promise<void> {
+  return installEvents();
 }

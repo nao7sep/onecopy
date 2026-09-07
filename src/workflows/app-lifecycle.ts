@@ -3,7 +3,10 @@
 // stores. No store imports a peer to make startup happen.
 
 import { useAppStore } from "../state/app-store";
-import { useBinariesStore } from "../state/binaries-store";
+import {
+  installBinariesEventWiring,
+  useBinariesStore,
+} from "../state/binaries-store";
 import { useDestinationsStore } from "../state/destinations-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useSectionsStore } from "../state/sections-store";
@@ -19,6 +22,7 @@ import { installPlaybackWorkflow } from "./playback";
 import { installContentSessionWorkflow } from "./content-session";
 import { installIssuesEventWiring } from "./issues";
 import { installDerivedWorkEventWiring } from "../state/derived-work-store";
+import { installTranscriptEventWiring } from "../state/transcript-store";
 import type { LoadedAppData } from "../repositories";
 
 let completedData: LoadedAppData | null = null;
@@ -55,6 +59,8 @@ async function bootstrapOnce(): Promise<void> {
     installContentSessionWorkflow(),
     installIssuesEventWiring(),
     installDerivedWorkEventWiring(),
+    installBinariesEventWiring(),
+    installTranscriptEventWiring(),
   ]);
   await Promise.all([
     useSectionsStore.getState().loadCounts(),

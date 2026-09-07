@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   anchorContextFromPayload,
@@ -23,9 +22,9 @@ import { useMutationStore } from "../state/mutation-store";
 import { restorePreviewAfterComparison } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { createEventInstaller } from "../utils/eventInstallation";
 import { hasOpenModal } from "../utils/modalStack";
 
-let eventInstallation: Promise<void> | null = null;
 let mainRecoveryAfterFamily: AnchorContext | null = null;
 
 function appState(): Record<string, unknown> {
@@ -343,10 +342,10 @@ export function handleComparisonKey(event: {
   return false;
 }
 
-async function installEvents(): Promise<void> {
-  try {
+const installEvents = createEventInstaller(
+  async (listeners) => {
     if (getCurrentWindow().label !== "main") return;
-    await listen<{
+    await listeners.listen<{
       key: string;
       repeat?: boolean;
       shiftKey?: boolean;
@@ -356,7 +355,7 @@ async function installEvents(): Promise<void> {
     }>("comparison://key", (event) => {
       handleComparisonKey(event.payload);
     });
-    await listen<{
+    await listeners.listen<{
       slotIndex: number;
       mode: "exclusive" | "toggle" | "range";
       decide?: boolean;
@@ -366,13 +365,14 @@ async function installEvents(): Promise<void> {
       store.selectSlot(event.payload.slotIndex, event.payload.mode);
       if (event.payload.decide === true) void decideComparisonPage(false);
     });
-    await listen("comparison://ready", () => {
+    await listeners.listen("comparison://ready", () => {
       broadcastComparison();
     });
-    await listen<{ slice: number }>("comparison://display-failed", (event) => {
+    await listeners.listen<{ slice: number }>("comparison://display-failed", (event) => {
       void recoverComparisonDisplay(event.payload.slice);
     });
-  } catch (error) {
+  },
+  (error) => {
     log.warn("comparison display wiring failed", toErrorFields(error));
     recordInterfaceFailure(
       "Comparison-display controls are unavailable. Restart OneCopy to repair them.",
@@ -381,10 +381,9 @@ async function installEvents(): Promise<void> {
       message:
         "Comparison-display controls are unavailable. Restart OneCopy to repair them.",
     });
-  }
-}
+  },
+);
 
 export function installComparisonEventWiring(): Promise<void> {
-  eventInstallation ??= installEvents();
-  return eventInstallation;
+  return installEvents();
 }

@@ -1,7 +1,6 @@
 // Event adapter for the shared ephemeral item-mutation runtime. Installation
 // is idempotent; domain workflows still own refreshes, selection, and results.
 
-import { listen } from "@tauri-apps/api/event";
 import {
   mutationResultLine,
   type MutationResult,
@@ -14,24 +13,23 @@ import { useMutationStore } from "../state/mutation-store";
 import { useItemsStore } from "../state/items-store";
 import { recordRecentNotification } from "../state/notifications-store";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { createEventInstaller } from "../utils/eventInstallation";
 
-let installation: Promise<void> | null = null;
-
-async function install(): Promise<void> {
-  const recordFailedResult = (result: MutationResult) => {
-    if (result.summary.error === null && result.summary.filesFailed === 0) return;
-    void recordRecentNotification({
-      kind: `${result.kind}-failed`,
-      level: result.summary.error === null ? "warning" : "error",
-      presentation: "persistent",
-      message: mutationResultLine(result),
-    }).catch((error) => {
-      log.error("file-operation result recording failed", toErrorFields(error));
-      recordInterfaceFailure("OneCopy could not save the file-operation result.");
-    });
-  };
-  try {
-    await listen<MutationProgress>("mutation://progress", (event) => {
+const install = createEventInstaller(
+  async (listeners) => {
+    const recordFailedResult = (result: MutationResult) => {
+      if (result.summary.error === null && result.summary.filesFailed === 0) return;
+      void recordRecentNotification({
+        kind: `${result.kind}-failed`,
+        level: result.summary.error === null ? "warning" : "error",
+        presentation: "persistent",
+        message: mutationResultLine(result),
+      }).catch((error) => {
+        log.error("file-operation result recording failed", toErrorFields(error));
+        recordInterfaceFailure("OneCopy could not save the file-operation result.");
+      });
+    };
+    await listeners.listen<MutationProgress>("mutation://progress", (event) => {
       const current = useMutationStore.getState();
       const sameOperation = current.progress?.operationId === event.payload.operationId;
       useMutationStore.setState({
@@ -39,7 +37,7 @@ async function install(): Promise<void> {
         cancelling: sameOperation ? current.cancelling : false,
       });
     });
-    await listen<{
+    await listeners.listen<{
       progress: MutationProgress;
       cancelled: boolean;
       summary: MutationResultSummary | null;
@@ -69,7 +67,7 @@ async function install(): Promise<void> {
         }
       },
     );
-    await listen<{
+    await listeners.listen<{
       operationId: number;
       kind: MutationKind;
       error: string;
@@ -93,10 +91,11 @@ async function install(): Promise<void> {
         }
       },
     );
-    await listen("app://exit-quiescing", () => {
+    await listeners.listen("app://exit-quiescing", () => {
       useMutationStore.setState({ exiting: true, cancelling: true });
     });
-  } catch (error) {
+  },
+  (error) => {
     log.warn("file operation event wiring failed", toErrorFields(error));
     recordInterfaceFailure(
       "Live file-operation status is unavailable. Restart OneCopy before changing more files.",
@@ -105,10 +104,9 @@ async function install(): Promise<void> {
     useItemsStore.setState({
       message: "Live file-operation status is unavailable. Restart OneCopy before changing more files.",
     });
-  }
-}
+  },
+);
 
 export function installMutationEventWiring(): Promise<void> {
-  installation ??= install();
-  return installation;
+  return install();
 }

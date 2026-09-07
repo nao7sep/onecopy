@@ -1,11 +1,18 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { useTranscriptStore } from "../../src/state/transcript-store";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  installTranscriptEventWiring,
+  useTranscriptStore,
+} from "../../src/state/transcript-store";
 import {
   fireEvent,
   invokeCalls,
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
+
+beforeAll(async () => {
+  await installTranscriptEventWiring();
+});
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });

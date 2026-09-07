@@ -3,10 +3,10 @@
 // running percentage, and cancellation while forwarding the shared events.
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActionFailure } from "./notifications-store";
 
 export type TranscriptStatus =
@@ -179,9 +179,9 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
   },
 }));
 
-void (async () => {
-  try {
-    await listen<{ hash: string; percent: number }>(
+const installEvents = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<{ hash: string; percent: number }>(
       "transcribe://progress",
       (event) => {
         active = event.payload;
@@ -206,7 +206,7 @@ void (async () => {
         }
       },
     );
-    await listen<{ hash: string; text: string }>(
+    await listeners.listen<{ hash: string; text: string }>(
       "transcribe://done",
       (event) => {
         if (active?.hash === event.payload.hash) active = null;
@@ -219,7 +219,7 @@ void (async () => {
         });
       },
     );
-    await listen<{ hash: string; message: string }>(
+    await listeners.listen<{ hash: string; message: string }>(
       "transcribe://error",
       (event) => {
         log.error("transcription event reported failure", {
@@ -250,7 +250,7 @@ void (async () => {
         }
       },
     );
-    await listen<{ hash: string }>("transcribe://cancelled", (event) => {
+    await listeners.listen<{ hash: string }>("transcribe://cancelled", (event) => {
       if (active?.hash === event.payload.hash) active = null;
       const current = useTranscriptStore.getState().rows[event.payload.hash];
       if (current?.replacement !== null && current?.replacement !== undefined) {
@@ -263,7 +263,8 @@ void (async () => {
         });
       }
     });
-  } catch (error) {
+  },
+  (error) => {
     log.warn("transcript event wiring failed", toErrorFields(error));
     recordInterfaceFailure("Live transcription updates are unavailable. Restart OneCopy to repair them.");
     const interrupted = active as { hash: string; percent: number } | null;
@@ -276,5 +277,10 @@ void (async () => {
       });
       active = null;
     }
-  }
-})();
+  },
+);
+
+/** Ready bootstrap owns app-lifetime transcript event admission. */
+export function installTranscriptEventWiring(): Promise<void> {
+  return installEvents();
+}

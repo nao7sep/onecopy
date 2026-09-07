@@ -9,7 +9,6 @@
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import {
   managedInstallLine,
   type ManagedInstallActivity,
@@ -17,6 +16,7 @@ import {
 } from "../models/dependencyProgress";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActionFailure } from "./notifications-store";
 
 export type DependencyStatus =
@@ -521,9 +521,9 @@ export function ffmpegEntry(
   return entries?.find((entry) => entry.id === "ffmpeg") ?? null;
 }
 
-void (async () => {
-  try {
-    await listen<{ id: string; operationId: string } & ManagedInstallProgress>(
+const installEvents = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<{ id: string; operationId: string } & ManagedInstallProgress>(
       "binaries://progress",
       (event) => {
         const { id, operationId: eventOperationId, ...progress } = event.payload;
@@ -552,10 +552,11 @@ void (async () => {
     );
     // The launch-time update check (config-gated, core-side) finished after
     // this store's initial load — refresh so the chip reflects it.
-    await listen("binaries://changed", () => {
+    await listeners.listen("binaries://changed", () => {
       void useBinariesStore.getState().load();
     });
-  } catch (error) {
+  },
+  (error) => {
     log.warn("binaries event wiring failed", toErrorFields(error));
     recordInterfaceFailure(
       "Live managed-tool status is unavailable. Restart OneCopy to repair it.",
@@ -563,8 +564,13 @@ void (async () => {
     useBinariesStore.setState({
       loadError: "Live managed-tool status is unavailable. Restart OneCopy to repair it.",
     });
-  }
-})();
+  },
+);
+
+/** Ready bootstrap owns app-lifetime managed-tool event admission. */
+export function installBinariesEventWiring(): Promise<void> {
+  return installEvents();
+}
 
 /** What the footer's managed-tools chip says and how loudly, or null for
  * silence. One chip for the whole registry (developer, 2026-08-17 — the
