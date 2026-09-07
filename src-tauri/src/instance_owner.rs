@@ -161,6 +161,13 @@ fn listen(
                 Ok(Err(error)) => error,
                 Err(payload) => crate::failure_runtime::panic_message(payload),
             };
+            if crate::app_lifecycle::shutting_down() {
+                crate::logging::error(
+                    "instance listener failed during shutdown",
+                    serde_json::json!({ "error": { "message": failure } }),
+                );
+                return;
+            }
             let failure = format!(
                 "{failure} Restart OneCopy to restore second-launch activation."
             );
@@ -179,14 +186,17 @@ fn run_listener(
     app: &tauri::AppHandle,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.load(Ordering::SeqCst) && !crate::app_lifecycle::shutting_down() {
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if stop.load(Ordering::SeqCst) {
+                if stop.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() {
                     return Ok(());
                 }
                 let mut request = [0u8; 8];
                 if stream.read(&mut request).is_ok() && request.starts_with(b"activate") {
+                    if crate::app_lifecycle::shutting_down() {
+                        return Ok(());
+                    }
                     if let Some(window) = app.get_webview_window("main") {
                         let activation = window
                             .show()

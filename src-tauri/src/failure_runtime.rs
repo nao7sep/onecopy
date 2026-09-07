@@ -180,7 +180,9 @@ pub fn emit_checked<T: Clone + Serialize>(
     event: &str,
     payload: T,
 ) -> Result<(), String> {
-    app.emit(event, payload)
+    crate::app_lifecycle::publish_if_running(|| app.emit(event, payload))
+        .transpose()
+        .map(|_| ())
         .map_err(|error| format!("could not publish {event}: {error}"))
 }
 
@@ -232,14 +234,20 @@ pub fn spawn_reported(
                 Ok(Err(error)) => error,
                 Err(payload) => panic_message(payload),
             };
+            if crate::app_lifecycle::shutting_down() {
+                crate::logging::error(
+                    "launch worker failed during shutdown",
+                    json!({
+                        "worker": thread_name,
+                        "error": { "message": failure }
+                    }),
+                );
+                return;
+            }
             let _ = report(&handle, issue_kind, None, &failure);
         });
     match started {
         Ok(worker) => Ok(worker),
-        Err(error) => {
-            let message = format!("could not start {thread_name}: {error}");
-            let _ = report(&app, issue_kind, None, &message);
-            Err(message)
-        }
+        Err(error) => Err(format!("could not start {thread_name}: {error}")),
     }
 }

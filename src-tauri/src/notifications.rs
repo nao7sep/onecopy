@@ -205,7 +205,9 @@ pub fn publish(app: &AppHandle, request: NotificationRequest) -> Result<Notifica
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let record = record_recent(&conn, &request)?;
     remember_active(record.clone());
-    if let Err(error) = app.emit("notification://published", &record) {
+    if let Some(Err(error)) = crate::app_lifecycle::publish_if_running(|| {
+        app.emit("notification://published", &record)
+    }) {
         let message = format!("could not publish notification://published: {error}");
         record_delivery_failure(app, "notification://published", &message)?;
     }
@@ -244,15 +246,19 @@ pub fn dismiss(app: &AppHandle, id: i64) -> Result<bool, String> {
     if !exists {
         return Ok(false);
     }
-    app.emit("notification://dismissed", json!({ "id": id }))
-        .map_err(|error| format!("could not publish notification://dismissed: {error}"))?;
+    crate::app_lifecycle::publish_if_running(|| {
+        app.emit("notification://dismissed", json!({ "id": id }))
+    })
+    .transpose()
+    .map_err(|error| format!("could not publish notification://dismissed: {error}"))?;
     let mut active = ACTIVE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     active.retain(|record| record.id != id);
     Ok(true)
 }
 
 pub fn clear_active(app: &AppHandle) -> Result<(), String> {
-    app.emit("notification://cleared", ())
+    crate::app_lifecycle::publish_if_running(|| app.emit("notification://cleared", ()))
+        .transpose()
         .map_err(|error| format!("could not publish notification://cleared: {error}"))?;
     ACTIVE
         .lock()

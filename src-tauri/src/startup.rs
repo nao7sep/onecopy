@@ -3,7 +3,6 @@
 //! shell running in a blocked state and admits no app-lifetime worker.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -13,7 +12,6 @@ use serde_json::{json, Value};
 
 const BLOCKED_TITLE: &str = "OneCopy could not start safely";
 const BLOCKED_MESSAGE: &str = "OneCopy could not safely open its application data. Your photos were not changed. Review the newest session log in the OneCopy data folder, then quit and try again.";
-static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Serialize)]
@@ -59,49 +57,28 @@ struct PreparedData {
     setup_config: Option<Value>,
 }
 
-fn shutting_down() -> bool {
-    SHUTTING_DOWN.load(Ordering::SeqCst)
-}
-
 fn spawn_launch_worker(
     app: tauri::AppHandle,
     thread_name: &'static str,
     issue_kind: &'static str,
     work: impl FnOnce() -> Result<(), String> + Send + 'static,
-) {
-    let mut workers = match WORKERS.lock() {
-        Ok(workers) => workers,
-        Err(_) => {
-            let _ = crate::failure_runtime::report(
-                &app,
-                issue_kind,
-                None,
-                "launch worker state is unavailable",
-            );
-            return;
-        }
-    };
-    if shutting_down() {
-        return;
+) -> Result<(), String> {
+    let mut workers = WORKERS
+        .lock()
+        .map_err(|_| "launch worker state is unavailable".to_string())?;
+    if crate::app_lifecycle::shutting_down() {
+        return Ok(());
     }
     join_finished(&mut workers);
-    if let Ok(worker) =
-        crate::failure_runtime::spawn_reported(app, thread_name, issue_kind, work)
-    {
-        workers.push(worker);
-    }
+    let worker = crate::failure_runtime::spawn_reported(app, thread_name, issue_kind, work)?;
+    workers.push(worker);
+    Ok(())
 }
 
 pub fn shutdown() {
-    let _workers = match WORKERS.lock() {
-        Ok(workers) => workers,
-        Err(_) => {
-            SHUTTING_DOWN.store(true, Ordering::SeqCst);
-            crate::logging::error("launch worker state is unavailable", json!({}));
-            return;
-        }
-    };
-    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    if WORKERS.lock().is_err() {
+        crate::logging::error("launch worker state is unavailable", json!({}));
+    }
 }
 
 pub fn join() {
@@ -177,6 +154,35 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String
     })
 }
 
+struct RuntimeService<'a> {
+    name: &'static str,
+    issue_kind: &'static str,
+    start: Box<dyn FnOnce() -> Result<(), String> + 'a>,
+}
+
+fn run_runtime_services(
+    services: Vec<RuntimeService<'_>>,
+    mut report_failure: impl FnMut(&'static str, &'static str, String),
+) {
+    for service in services {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(service.start));
+        let failure = match outcome {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error),
+            Err(payload) => Some(crate::failure_runtime::panic_message(payload)),
+        };
+        if let Some(error) = failure {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                report_failure(service.name, service.issue_kind, error)
+            }))
+            .is_err()
+            {
+                eprintln!("[onecopy:startup] runtime service failure reporter panicked");
+            }
+        }
+    }
+}
+
 fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     let StartupState {
         data_root,
@@ -186,127 +192,179 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         started,
     } = state;
 
-    // Runtime services are admitted only after every required data check
-    // succeeded. Each long-lived worker owns its later failure boundary.
-    if let Err(error) = crate::derived_work::start(app.handle().clone()) {
-        let _ = crate::failure_runtime::report(
-            app.handle(),
-            crate::issue_recovery::DERIVED_WORKER_FAILED,
-            None,
-            &error,
-        );
-    }
-
-    {
+    let derived_handle = app.handle().clone();
+    let cache_service = {
         let db_path = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
         let cache = crate::preview::CachePaths::new(cache_root);
         let handle = app.handle().clone();
         let clear_handle = handle.clone();
-        spawn_launch_worker(
-            handle,
-            "onecopy-cache-sweep",
-            "cache-sweep-failed",
-            move || {
-                let started = Instant::now();
-                let conn = crate::index_store::open(&db_path)?;
-                let removed =
-                    crate::preview::startup_sweep(&conn, &cache, &shutting_down)?;
-                if shutting_down() {
-                    return Ok(());
-                }
-                if removed > 0 {
-                    crate::logging::info(
-                        "cache sweep",
-                        json!({ "removed": removed, "ms": started.elapsed().as_millis() as u64 }),
-                    );
-                }
-                crate::failure_runtime::clear(&clear_handle, "cache-sweep-failed", None)?;
-                Ok(())
-            },
-        );
-    }
-
-    let watch_settings = crate::scanner::settings_from_config(setup_config.as_ref(), &data_root, 0);
-    crate::watcher::start(app.handle().clone(), watch_settings.source_dirs);
-
-    let check_at_launch = setup_config
-        .as_ref()
-        .and_then(|config| config.get("checkUpdatesAtLaunch"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if check_at_launch {
-        let root = data_root.clone();
-        let handle = app.handle().clone();
-        let stale_ids: Vec<String> = crate::binaries_manager::states(&data_root)
-            .into_iter()
-            .filter(|entry| {
-                entry.checkable
-                    && entry.status != crate::binaries::BinaryStatus::NotInstalled
-                    && entry
-                        .facts
-                        .last_checked_at_utc
-                        .as_deref()
-                        .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
-                        .map(|checked| {
-                            chrono::Utc::now().signed_duration_since(checked)
-                                > chrono::Duration::hours(24)
-                        })
-                        .unwrap_or(true)
-            })
-            .map(|entry| entry.id)
-            .collect();
-        if !stale_ids.is_empty() {
-            let report_handle = handle.clone();
-            spawn_launch_worker(
-                handle,
-                "onecopy-update-check",
-                "update-check-worker-failed",
-                move || {
-                    for id in stale_ids {
-                        if shutting_down() {
+        RuntimeService {
+            name: "cache sweep",
+            issue_kind: "cache-sweep-failed",
+            start: Box::new(move || {
+                spawn_launch_worker(
+                    handle,
+                    "onecopy-cache-sweep",
+                    "cache-sweep-failed",
+                    move || {
+                        let started = Instant::now();
+                        let conn = crate::index_store::open(&db_path)?;
+                        let removed = crate::preview::startup_sweep(
+                            &conn,
+                            &cache,
+                            &crate::app_lifecycle::shutting_down,
+                        )?;
+                        if crate::app_lifecycle::shutting_down() {
                             return Ok(());
                         }
-                        match crate::binaries_manager::check_entry(&root, &id) {
-                            Ok(facts) => {
-                                crate::failure_runtime::clear(
-                                    &report_handle,
-                                    "update-check-failed",
-                                    Some(&id),
-                                )?;
-                                crate::logging::info(
-                                    "launch update check",
-                                    json!({ "id": id, "latestKnown": facts.latest_known_version }),
-                                );
+                        if removed > 0 {
+                            crate::logging::info(
+                                "cache sweep",
+                                json!({
+                                    "removed": removed,
+                                    "ms": started.elapsed().as_millis() as u64,
+                                }),
+                            );
+                        }
+                        crate::failure_runtime::clear(
+                            &clear_handle,
+                            "cache-sweep-failed",
+                            None,
+                        )?;
+                        Ok(())
+                    },
+                )
+            }),
+        }
+    };
+
+    let watcher_service = {
+        let handle = app.handle().clone();
+        let root = data_root.clone();
+        let config = setup_config.clone();
+        RuntimeService {
+            name: "source watcher",
+            issue_kind: "watcher-failed",
+            start: Box::new(move || {
+                let settings = crate::scanner::settings_from_config(config.as_ref(), &root, 0);
+                crate::watcher::start(handle, settings.source_dirs).map(|_| ())
+            }),
+        }
+    };
+
+    let update_service = {
+        let root = data_root.clone();
+        let handle = app.handle().clone();
+        let config = setup_config;
+        RuntimeService {
+            name: "managed-tool update check",
+            issue_kind: "update-check-worker-failed",
+            start: Box::new(move || {
+                let check_at_launch = config
+                    .as_ref()
+                    .and_then(|value| value.get("checkUpdatesAtLaunch"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !check_at_launch {
+                    return Ok(());
+                }
+                let stale_ids: Vec<String> = crate::binaries_manager::states(&root)
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.checkable
+                            && entry.status != crate::binaries::BinaryStatus::NotInstalled
+                            && entry
+                                .facts
+                                .last_checked_at_utc
+                                .as_deref()
+                                .and_then(|stamp| {
+                                    chrono::DateTime::parse_from_rfc3339(stamp).ok()
+                                })
+                                .map(|checked| {
+                                    chrono::Utc::now().signed_duration_since(checked)
+                                        > chrono::Duration::hours(24)
+                                })
+                                .unwrap_or(true)
+                    })
+                    .map(|entry| entry.id)
+                    .collect();
+                if stale_ids.is_empty() {
+                    return Ok(());
+                }
+                let report_handle = handle.clone();
+                spawn_launch_worker(
+                    handle,
+                    "onecopy-update-check",
+                    "update-check-worker-failed",
+                    move || {
+                        for id in stale_ids {
+                            if crate::app_lifecycle::shutting_down() {
+                                return Ok(());
                             }
-                            Err(_) if shutting_down() => return Ok(()),
-                            Err(error) => {
-                                crate::failure_runtime::report(
+                            match crate::binaries_manager::check_entry(&root, &id) {
+                                Ok(facts) => {
+                                    crate::failure_runtime::clear(
+                                        &report_handle,
+                                        "update-check-failed",
+                                        Some(&id),
+                                    )?;
+                                    crate::logging::info(
+                                        "launch update check",
+                                        json!({
+                                            "id": id,
+                                            "latestKnown": facts.latest_known_version,
+                                        }),
+                                    );
+                                }
+                                Err(_) if crate::app_lifecycle::shutting_down() => return Ok(()),
+                                Err(error) => crate::failure_runtime::report(
                                     &report_handle,
                                     "update-check-failed",
                                     Some(&id),
                                     &error,
-                                )?
+                                )?,
                             }
                         }
-                    }
-                    if shutting_down() {
-                        return Ok(());
-                    }
-                    crate::failure_runtime::emit_checked(
-                        &report_handle,
-                        "binaries://changed",
-                        json!({}),
-                    )?;
-                    crate::failure_runtime::clear(
-                        &report_handle,
-                        "update-check-worker-failed",
-                        None,
-                    )?;
-                    Ok(())
-                },
-            );
+                        if crate::app_lifecycle::shutting_down() {
+                            return Ok(());
+                        }
+                        crate::failure_runtime::emit_checked(
+                            &report_handle,
+                            "binaries://changed",
+                            json!({}),
+                        )?;
+                        crate::failure_runtime::clear(
+                            &report_handle,
+                            "update-check-worker-failed",
+                            None,
+                        )?;
+                        Ok(())
+                    },
+                )
+            }),
         }
-    }
+    };
+
+    // Required data is complete before these independent best-effort services
+    // are considered. Each admission is contained separately so one panic or
+    // start failure cannot skip the services that follow it.
+    run_runtime_services(
+        vec![
+            RuntimeService {
+                name: "derived work",
+                issue_kind: crate::issue_recovery::DERIVED_WORKER_FAILED,
+                start: Box::new(move || crate::derived_work::start(derived_handle).map(|_| ())),
+            },
+            cache_service,
+            watcher_service,
+            update_service,
+        ],
+        |name, issue_kind, error| {
+            let diagnostic = format!("{name}: {error}");
+            let _ =
+                crate::failure_runtime::report(app.handle(), issue_kind, None, &diagnostic);
+        },
+    );
 
     crate::logging::info(
         "app startup",
@@ -344,17 +402,23 @@ pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
         }
     };
 
-    // Required state is complete at this point. A defect while admitting a
-    // best-effort runtime service must not cross Tauri's native callback or
-    // retroactively turn valid application data into a fatal bootstrap.
+    // The service-level boundaries above keep independent admissions moving.
+    // This outer framework boundary has a different job: no unforeseen panic
+    // may unwind through Tauri's setup callback and abort inside native code.
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        start_runtime(app, state, debug_enabled);
+        start_runtime(app, state, debug_enabled)
     })) {
         let error = crate::failure_runtime::panic_message(payload);
-        crate::logging::error(
-            "runtime startup panicked",
-            json!({ "error": { "message": error } }),
-        );
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::logging::error(
+                "runtime startup failed outside a service boundary",
+                json!({ "error": { "message": error } }),
+            )
+        }))
+        .is_err()
+        {
+            eprintln!("[onecopy:startup] runtime startup and its logger both panicked");
+        }
     }
 
     StartupGate::ready()
@@ -387,6 +451,7 @@ pub(crate) fn halt_before_runtime(diagnostic: &str) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
 
     #[test]
     fn invalid_index_path_never_yields_worker_admission_state() {
@@ -409,5 +474,70 @@ mod tests {
         assert!(failure.message.contains("Your photos were not changed"));
         assert!(!failure.message.contains('/'));
         assert!(!failure.message.contains("sqlite"));
+    }
+
+    #[test]
+    fn runtime_service_failures_do_not_skip_later_admission() {
+        let later_started = Cell::new(false);
+        let failures = RefCell::new(Vec::new());
+        let services = vec![
+            RuntimeService {
+                name: "returned failure",
+                issue_kind: "returned-failure",
+                start: Box::new(|| Err("could not start".to_string())),
+            },
+            RuntimeService {
+                name: "panic failure",
+                issue_kind: "panic-failure",
+                start: Box::new(|| panic!("service panic")),
+            },
+            RuntimeService {
+                name: "later service",
+                issue_kind: "later-service-failed",
+                start: Box::new(|| {
+                    later_started.set(true);
+                    Ok(())
+                }),
+            },
+        ];
+
+        run_runtime_services(services, |name, kind, error| {
+            failures.borrow_mut().push((name, kind, error));
+        });
+
+        assert!(later_started.get());
+        let failures = failures.into_inner();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].0, "returned failure");
+        assert_eq!(failures[0].1, "returned-failure");
+        assert_eq!(failures[0].2, "could not start");
+        assert_eq!(failures[1].0, "panic failure");
+        assert_eq!(failures[1].1, "panic-failure");
+        assert_eq!(failures[1].2, "service panic");
+    }
+
+    #[test]
+    fn a_failure_reporter_panic_does_not_skip_later_admission() {
+        let later_started = Cell::new(false);
+        run_runtime_services(
+            vec![
+                RuntimeService {
+                    name: "failed service",
+                    issue_kind: "failed-service",
+                    start: Box::new(|| Err("could not start".to_string())),
+                },
+                RuntimeService {
+                    name: "later service",
+                    issue_kind: "later-service",
+                    start: Box::new(|| {
+                        later_started.set(true);
+                        Ok(())
+                    }),
+                },
+            ],
+            |_, _, _| panic!("reporter panic"),
+        );
+
+        assert!(later_started.get());
     }
 }

@@ -17,6 +17,12 @@ static PREEMPTED: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+enum WorkerAdmission {
+    Started,
+    AlreadyRunning,
+    ShuttingDown,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -49,6 +55,10 @@ pub fn running() -> bool {
 }
 
 pub fn wake(app: AppHandle) {
+    if crate::app_lifecycle::shutting_down() {
+        REQUESTED.store(false, Ordering::SeqCst);
+        return;
+    }
     REQUESTED.store(true, Ordering::SeqCst);
     if PAUSED.load(Ordering::SeqCst) {
         emit_state(&app);
@@ -62,23 +72,35 @@ pub fn wake(app: AppHandle) {
         emit_state(&app);
         return;
     }
-    if let Err(error) = start_worker(app.clone()) {
-        PAUSED.store(true, Ordering::SeqCst);
-        fail(&app, &error);
-        emit_state(&app);
-        emit_done(&app, json!({ "error": error }));
+    match start_worker(app.clone()) {
+        Ok(WorkerAdmission::Started | WorkerAdmission::AlreadyRunning) => {}
+        Ok(WorkerAdmission::ShuttingDown) => {
+            REQUESTED.store(false, Ordering::SeqCst);
+        }
+        Err(error) => {
+            PAUSED.store(true, Ordering::SeqCst);
+            fail(&app, &error);
+            emit_state(&app);
+            emit_done(&app, json!({ "error": error }));
+        }
     }
 }
 
-fn start_worker(app: AppHandle) -> Result<(), String> {
+fn start_worker(app: AppHandle) -> Result<WorkerAdmission, String> {
+    let mut workers = WORKERS
+        .lock()
+        .map_err(|_| "file-information worker state is unavailable".to_string())?;
+    if crate::app_lifecycle::shutting_down() {
+        return Ok(WorkerAdmission::ShuttingDown);
+    }
+    join_finished(&mut workers);
     if RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return Ok(());
+        return Ok(WorkerAdmission::AlreadyRunning);
     }
     PREEMPTED.store(false, Ordering::SeqCst);
-    join_finished();
     let handle = app.clone();
     let (release, wait_for_registration) = std::sync::mpsc::sync_channel(0);
     let worker = std::thread::Builder::new()
@@ -92,10 +114,6 @@ fn start_worker(app: AppHandle) -> Result<(), String> {
             RUNNING.store(false, Ordering::SeqCst);
             format!("could not start file-information completion: {error}")
         })?;
-    let mut workers = WORKERS.lock().map_err(|_| {
-        RUNNING.store(false, Ordering::SeqCst);
-        "file-information worker state is unavailable".to_string()
-    })?;
     workers.push(worker);
     drop(workers);
     emit_state(&app);
@@ -104,7 +122,7 @@ fn start_worker(app: AppHandle) -> Result<(), String> {
         emit_state(&app);
         return Err("file-information worker could not leave its start gate".to_string());
     }
-    Ok(())
+    Ok(WorkerAdmission::Started)
 }
 
 fn worker_entry(app: AppHandle) {
@@ -115,6 +133,14 @@ fn worker_entry(app: AppHandle) {
         REQUESTED.store(true, Ordering::SeqCst);
         PAUSED.store(true, Ordering::SeqCst);
         let error = crate::failure_runtime::panic_message(payload);
+        if crate::app_lifecycle::shutting_down() {
+            REQUESTED.store(false, Ordering::SeqCst);
+            crate::logging::error(
+                "file-information worker failed during shutdown",
+                json!({ "error": { "message": error } }),
+            );
+            return;
+        }
         fail(&app, &error);
         emit_state(&app);
         emit_done(&app, json!({ "error": error }));
@@ -123,6 +149,26 @@ fn worker_entry(app: AppHandle) {
 
 fn worker(app: AppHandle) {
     let outcome = catch_unwind(AssertUnwindSafe(|| run_requested(&app)));
+    if crate::app_lifecycle::shutting_down() {
+        match outcome {
+            Ok(Err(error)) if error != crate::scanner::CANCELLED => crate::logging::error(
+                "file-information worker failed during shutdown",
+                json!({ "error": { "message": error } }),
+            ),
+            Err(payload) => crate::logging::error(
+                "file-information worker failed during shutdown",
+                json!({
+                    "error": { "message": crate::failure_runtime::panic_message(payload) }
+                }),
+            ),
+            _ => {}
+        }
+        RUNNING.store(false, Ordering::SeqCst);
+        PREEMPTED.store(false, Ordering::SeqCst);
+        REQUESTED.store(false, Ordering::SeqCst);
+        PAUSED.store(true, Ordering::SeqCst);
+        return;
+    }
     let terminal = match outcome {
         Ok(Ok(summary)) => {
             if summary.is_some() {
@@ -161,18 +207,24 @@ fn worker(app: AppHandle) {
         && !crate::scan_runtime::foreground_pending()
         && !crate::source_check_runtime::running()
     {
-        if let Err(error) = start_worker(app.clone()) {
-            PAUSED.store(true, Ordering::SeqCst);
-            fail(&app, &error);
-            emit_state(&app);
-            emit_done(&app, json!({ "error": error }));
+        match start_worker(app.clone()) {
+            Ok(WorkerAdmission::Started | WorkerAdmission::AlreadyRunning) => {}
+            Ok(WorkerAdmission::ShuttingDown) => {
+                REQUESTED.store(false, Ordering::SeqCst);
+            }
+            Err(error) => {
+                PAUSED.store(true, Ordering::SeqCst);
+                fail(&app, &error);
+                emit_state(&app);
+                emit_done(&app, json!({ "error": error }));
+            }
         }
     }
     crate::derived_work::wake();
 }
 
 fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>, String> {
-    if PAUSED.load(Ordering::SeqCst) {
+    if PAUSED.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() {
         return Ok(None);
     }
     REQUESTED.store(false, Ordering::SeqCst);
@@ -191,7 +243,7 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
     );
     let summary = crate::scan_runtime::with_owner(
         crate::scan_runtime::Owner::FileInformation,
-        PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst),
+        || PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst),
         || -> Result<Option<crate::scanner::ScanSummary>, String> {
             let conn = crate::index_store::open(&db_file)?;
             if !crate::scanner::pending_index_work_exists(&conn)? {
@@ -202,11 +254,19 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
             Ok(Some(summary))
         },
     )?;
+    if crate::app_lifecycle::shutting_down() {
+        return Ok(None);
+    }
     crate::failure_runtime::clear(app, "file-information-failed", None)?;
     Ok(summary)
 }
 
 pub fn set_paused(app: AppHandle, paused: bool) {
+    if crate::app_lifecycle::shutting_down() {
+        PAUSED.store(true, Ordering::SeqCst);
+        REQUESTED.store(false, Ordering::SeqCst);
+        return;
+    }
     PAUSED.store(paused, Ordering::SeqCst);
     if paused {
         REQUESTED.store(true, Ordering::SeqCst);
@@ -225,11 +285,13 @@ pub(crate) fn preempt() {
     }
 }
 
-pub fn shutdown(app: &AppHandle) {
+pub fn shutdown() {
+    if WORKERS.lock().is_err() {
+        crate::logging::error("file-information worker state is unavailable", json!({}));
+    }
     PAUSED.store(true, Ordering::SeqCst);
-    REQUESTED.store(true, Ordering::SeqCst);
+    REQUESTED.store(false, Ordering::SeqCst);
     crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::FileInformation);
-    emit_state(app);
 }
 
 pub fn join() {
@@ -247,28 +309,16 @@ pub fn join() {
     }
 }
 
-fn join_finished() {
-    let finished = match WORKERS.lock() {
-        Ok(mut workers) => {
-            let mut finished = Vec::new();
-            let mut index = 0;
-            while index < workers.len() {
-                if workers[index].is_finished() {
-                    finished.push(workers.swap_remove(index));
-                } else {
-                    index += 1;
-                }
+fn join_finished(workers: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            if worker.join().is_err() {
+                crate::logging::error("file-information worker join failed", json!({}));
             }
-            finished
-        }
-        Err(_) => {
-            crate::logging::error("file-information worker state is unavailable", json!({}));
-            return;
-        }
-    };
-    for worker in finished {
-        if worker.join().is_err() {
-            crate::logging::error("file-information worker join failed", json!({}));
+        } else {
+            index += 1;
         }
     }
 }

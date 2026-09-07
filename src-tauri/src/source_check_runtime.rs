@@ -14,6 +14,7 @@ static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 static LAST_RESULT: AtomicU8 = AtomicU8::new(SourceCheckResult::Stopped as u8);
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const CLOSING: &str = "OneCopy is closing; source-folder checking cannot start.";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -64,6 +65,13 @@ pub fn running() -> bool {
 }
 
 pub fn start(app: AppHandle) -> Result<bool, String> {
+    let mut workers = WORKERS
+        .lock()
+        .map_err(|_| "source-folder worker state is unavailable".to_string())?;
+    if crate::app_lifecycle::shutting_down() {
+        return Err(CLOSING.to_string());
+    }
+    join_finished(&mut workers);
     if RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -75,7 +83,6 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
     // Completion yields at the scanner's existing safe checkpoints and keeps
     // its durable queue for the wake at this worker's terminal boundary.
     crate::file_information_runtime::preempt();
-    join_finished();
     let handle = app.clone();
     let (release, wait_for_registration) = std::sync::mpsc::sync_channel(0);
     let worker = std::thread::Builder::new()
@@ -91,12 +98,6 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
             crate::admit_background_completion(app.clone());
             format!("could not start source-folder check: {error}")
         })?;
-    let mut workers = WORKERS.lock().map_err(|_| {
-        RUNNING.store(false, Ordering::SeqCst);
-        LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
-        crate::admit_background_completion(app.clone());
-        "source-folder worker state is unavailable".to_string()
-    })?;
     workers.push(worker);
     drop(workers);
     emit_state(&app);
@@ -118,6 +119,13 @@ fn worker_entry(app: AppHandle) {
         RESTART_REQUESTED.store(false, Ordering::SeqCst);
         LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
         let error = crate::failure_runtime::panic_message(payload);
+        if crate::app_lifecycle::shutting_down() {
+            crate::logging::error(
+                "source-folder worker failed during shutdown",
+                json!({ "error": { "message": error } }),
+            );
+            return;
+        }
         fail(&app, &error);
         emit_state(&app);
         emit_done(&app, json!({ "error": error }));
@@ -127,6 +135,26 @@ fn worker_entry(app: AppHandle) {
 
 fn worker(app: AppHandle) {
     let outcome = catch_unwind(AssertUnwindSafe(|| run(&app)));
+    if crate::app_lifecycle::shutting_down() {
+        match outcome {
+            Ok(Err(error)) if error != crate::scanner::CANCELLED => crate::logging::error(
+                "source-folder worker failed during shutdown",
+                json!({ "error": { "message": error } }),
+            ),
+            Err(payload) => crate::logging::error(
+                "source-folder worker failed during shutdown",
+                json!({
+                    "error": { "message": crate::failure_runtime::panic_message(payload) }
+                }),
+            ),
+            _ => {}
+        }
+        RUNNING.store(false, Ordering::SeqCst);
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
+        RESTART_REQUESTED.store(false, Ordering::SeqCst);
+        LAST_RESULT.store(SourceCheckResult::Stopped as u8, Ordering::SeqCst);
+        return;
+    }
     let terminal = match outcome {
         Ok(Ok(summary)) => {
             RESTART_REQUESTED.store(false, Ordering::SeqCst);
@@ -194,12 +222,15 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     );
     let summary = crate::scan_runtime::with_owner(
         crate::scan_runtime::Owner::SourceCheck,
-        STOP_REQUESTED.load(Ordering::SeqCst),
+        || STOP_REQUESTED.load(Ordering::SeqCst),
         || {
             crate::index_store::open(&db_file)
                 .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &progress))
         },
     )?;
+    if crate::app_lifecycle::shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     crate::failure_runtime::clear(app, "source-check-failed", None)?;
     Ok(summary)
 }
@@ -224,6 +255,10 @@ pub(crate) fn preempt() {
 }
 
 pub(crate) fn resume_if_requested(app: AppHandle) {
+    if crate::app_lifecycle::shutting_down() {
+        RESTART_REQUESTED.store(false, Ordering::SeqCst);
+        return;
+    }
     if RESTART_REQUESTED.swap(false, Ordering::SeqCst) && !running() {
         if let Err(error) = start(app.clone()) {
             fail(&app, &error);
@@ -232,8 +267,15 @@ pub(crate) fn resume_if_requested(app: AppHandle) {
     }
 }
 
-pub fn shutdown(app: &AppHandle) {
-    let _ = stop(app);
+pub fn shutdown() {
+    RESTART_REQUESTED.store(false, Ordering::SeqCst);
+    if WORKERS.lock().is_err() {
+        crate::logging::error("source-folder worker state is unavailable", json!({}));
+    }
+    if running() {
+        STOP_REQUESTED.store(true, Ordering::SeqCst);
+        crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
+    }
 }
 
 pub fn join() {
@@ -251,28 +293,16 @@ pub fn join() {
     }
 }
 
-fn join_finished() {
-    let finished = match WORKERS.lock() {
-        Ok(mut workers) => {
-            let mut finished = Vec::new();
-            let mut index = 0;
-            while index < workers.len() {
-                if workers[index].is_finished() {
-                    finished.push(workers.swap_remove(index));
-                } else {
-                    index += 1;
-                }
+fn join_finished(workers: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            if worker.join().is_err() {
+                crate::logging::error("source-folder worker join failed", json!({}));
             }
-            finished
-        }
-        Err(_) => {
-            crate::logging::error("source-folder worker state is unavailable", json!({}));
-            return;
-        }
-    };
-    for worker in finished {
-        if worker.join().is_err() {
-            crate::logging::error("source-folder worker join failed", json!({}));
+        } else {
+            index += 1;
         }
     }
 }

@@ -70,8 +70,6 @@ pub struct RuntimeSnapshot {
 
 static RUNTIME: LazyLock<(Mutex<RuntimeState>, Condvar)> =
     LazyLock::new(|| (Mutex::new(RuntimeState::default()), Condvar::new()));
-static SHUTTING_DOWN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 static POISON_LOGGED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static POISON_ISSUE_REPORTED: std::sync::atomic::AtomicBool =
@@ -369,6 +367,9 @@ pub fn begin_exclusive(app: &AppHandle) -> Result<ExclusiveGuard, String> {
             report_poison_once(Some(app));
             "background-work state is unavailable".to_string()
         })?;
+    if shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     if runtime.exclusive {
         return Err("Another file operation is already running.".to_string());
     }
@@ -395,6 +396,12 @@ pub fn begin_exclusive(app: &AppHandle) -> Result<ExclusiveGuard, String> {
                 "background-work state is unavailable".to_string()
             })?;
         runtime = next;
+        if shutting_down() {
+            runtime.exclusive = false;
+            runtime.preempt_requested = false;
+            RUNTIME.1.notify_all();
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
         if waited.timed_out() && runtime.active.is_some() {
             runtime.exclusive = false;
             runtime.preempt_requested = false;
@@ -486,7 +493,6 @@ pub fn cancelled() -> bool {
 /// work receives its existing class-specific cancellation signal; queued
 /// manual requests wake and settle as cancellations.
 pub fn begin_shutdown(app: &AppHandle) {
-    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
     let active = match RUNTIME.0.lock() {
         Ok(mut runtime) => {
             runtime.preempt_requested = runtime.active.is_some();
@@ -501,14 +507,16 @@ pub fn begin_shutdown(app: &AppHandle) {
     if let Some(active) = active {
         request_active_cancel(active.class);
     }
-    emit_state_changed(app);
 }
 
 pub(crate) fn shutting_down() -> bool {
-    SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst)
+    crate::app_lifecycle::shutting_down()
 }
 
 pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<(), String> {
+    if shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     let active = {
         let mut runtime = RUNTIME
             .0
@@ -588,6 +596,9 @@ pub fn report_manual_progress(app: &AppHandle, class: &str, done: u64, total: u6
 }
 
 pub(crate) fn emit_state_changed(app: &AppHandle) {
+    if shutting_down() {
+        return;
+    }
     let payload = match RUNTIME.0.lock() {
         Ok(runtime) => {
             let paused_classes = WorkClass::ALL

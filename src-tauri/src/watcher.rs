@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -25,7 +25,6 @@ use crate::logging;
 use crate::scanner::{self, ScanLists};
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
-static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
 fn generation_is_live(current: u64, owned: u64, shutting_down: bool) -> bool {
@@ -36,15 +35,14 @@ fn owns_generation(generation: u64) -> bool {
     generation_is_live(
         GENERATION.load(Ordering::SeqCst),
         generation,
-        SHUTTING_DOWN.load(Ordering::SeqCst),
+        crate::app_lifecycle::shutting_down(),
     )
 }
 
 pub fn restart_from_config(app: tauri::AppHandle) -> Result<(), String> {
     let data_root = crate::paths::data_root(&app)?;
     let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
-    start(app, source_dirs);
-    Ok(())
+    start(app, source_dirs).map(|_| ())
 }
 
 /// Re-stats ONE directory (non-recursive): upserts its current files and marks
@@ -157,21 +155,18 @@ pub fn restat_dir(
 /// Starts the watcher thread over the configured source roots. Best-effort:
 /// a watcher that cannot start logs one warn and the app continues (rescan
 /// remains the manual path).
-pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) {
-    let mut workers = match WORKERS.lock() {
-        Ok(workers) => workers,
-        Err(_) => {
-            report_failure(&app, "watcher worker state is unavailable");
-            return;
-        }
-    };
-    if SHUTTING_DOWN.load(Ordering::SeqCst) {
-        return;
+pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) -> Result<bool, String> {
+    let mut workers = WORKERS
+        .lock()
+        .map_err(|_| "watcher worker state is unavailable".to_string())?;
+    if crate::app_lifecycle::shutting_down() {
+        return Ok(false);
     }
     join_finished(&mut workers);
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::Watcher);
     if source_dirs.is_empty() {
-        return;
+        return Ok(false);
     }
     let handle = app.clone();
     let started = std::thread::Builder::new()
@@ -192,14 +187,20 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) {
                         .map(|value| (*value).to_string())
                         .or_else(|| payload.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "watcher stopped unexpectedly".to_string());
-                    report_failure(&handle, &error);
+                    if owns_generation(generation) {
+                        report_failure(&handle, &error);
+                    } else {
+                        logging::error(
+                            "watcher failed after its generation retired",
+                            json!({ "error": { "message": error } }),
+                        );
+                    }
                 }
             }
         });
-    match started {
-        Ok(worker) => workers.push(worker),
-        Err(error) => report_failure(&app, &format!("could not start watcher thread: {error}")),
-    }
+    let worker = started.map_err(|error| format!("could not start watcher thread: {error}"))?;
+    workers.push(worker);
+    Ok(true)
 }
 
 fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Result<(), String> {
@@ -207,13 +208,22 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     let mut watcher = notify::recommended_watcher(tx).map_err(|error| error.to_string())?;
     let mut watched = 0usize;
     for root in &source_dirs {
+        if !owns_generation(generation) {
+            return Ok(());
+        }
         if let Err(err) = watcher.watch(Path::new(root), notify::RecursiveMode::Recursive) {
+            if !owns_generation(generation) {
+                return Ok(());
+            }
             logging::warn(
                 "watcher could not watch a root",
                 json!({ "root": root, "error": { "message": err.to_string() } }),
             );
             record_root_condition(&app, root, Some(&err.to_string()))?;
         } else {
+            if !owns_generation(generation) {
+                return Ok(());
+            }
             record_root_condition(&app, root, None)?;
             watched += 1;
         }
@@ -246,6 +256,10 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             collect(event, &mut dirty, &mut overflowed);
         }
 
+        if !owns_generation(generation) {
+            return Ok(());
+        }
+
         if overflowed {
             overflowed = false;
             dirty.clear();
@@ -261,7 +275,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             continue;
         }
         let dirs: Vec<PathBuf> = dirty.drain().collect();
-        let outcome = process_dirty(&app, &dirs);
+        let outcome = process_dirty(&app, &dirs, generation);
         if !owns_generation(generation) {
             return Ok(());
         }
@@ -293,13 +307,11 @@ pub fn shutdown() {
         Ok(workers) => workers,
         Err(_) => {
             logging::error("watcher worker state is unavailable", json!({}));
-            SHUTTING_DOWN.store(true, Ordering::SeqCst);
             GENERATION.fetch_add(1, Ordering::SeqCst);
             crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::Watcher);
             return;
         }
     };
-    SHUTTING_DOWN.store(true, Ordering::SeqCst);
     GENERATION.fetch_add(1, Ordering::SeqCst);
     crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::Watcher);
 }
@@ -403,11 +415,22 @@ pub fn collect(
 /// Re-stats the dirty directories and leaves durable index debt for the
 /// independent file-information owner. The shared index claim retains this
 /// event batch until any active projection reaches a safe boundary.
-fn process_dirty(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
-    crate::scan_runtime::with_watcher_claim(|| process_dirty_claimed(app, dirs))
+fn process_dirty(
+    app: &tauri::AppHandle,
+    dirs: &[PathBuf],
+    generation: u64,
+) -> Result<u64, String> {
+    crate::scan_runtime::with_watcher_claim(
+        || !owns_generation(generation),
+        || process_dirty_claimed(app, dirs, generation),
+    )
 }
 
-fn process_dirty_claimed(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64, String> {
+fn process_dirty_claimed(
+    app: &tauri::AppHandle,
+    dirs: &[PathBuf],
+    generation: u64,
+) -> Result<u64, String> {
     let data_root = crate::paths::data_root(app)?;
     let loaded = crate::storage::load_app_data(app)?;
     let settings = scanner::settings_from_config(
@@ -424,7 +447,13 @@ fn process_dirty_claimed(app: &tauri::AppHandle, dirs: &[PathBuf]) -> Result<u64
 
     let mut changed = 0u64;
     for dir in dirs {
+        if !owns_generation(generation) {
+            return Err(scanner::CANCELLED.to_string());
+        }
         changed += restat_dir(&conn, dir, &settings.lists)?;
+    }
+    if !owns_generation(generation) {
+        return Err(scanner::CANCELLED.to_string());
     }
     if changed > 0 {
         logging::info(

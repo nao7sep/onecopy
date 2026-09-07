@@ -358,6 +358,13 @@ fn derived_worker(app: AppHandle) {
         Ok(Err(error)) => error,
         Err(payload) => crate::failure_runtime::panic_message(payload),
     };
+    if crate::app_lifecycle::shutting_down() {
+        logging::error(
+            "derived-media worker failed during shutdown",
+            json!({ "error": { "message": failure } }),
+        );
+        return;
+    }
     let _ = crate::failure_runtime::report(
         &app,
         crate::issue_recovery::DERIVED_WORKER_FAILED,
@@ -1084,6 +1091,9 @@ pub fn notify_item_update(
     previous_hash: &str,
     hash: &str,
 ) {
+    if crate::app_lifecycle::shutting_down() {
+        return;
+    }
     match crate::queries::item_by_hash(conn, hash, projection) {
         Ok(Some(item)) => {
             crate::failure_runtime::emit_or_record(
@@ -1241,7 +1251,6 @@ fn finish_transcription_attempt(
     attempt: &TranscriptionAttempt<'_>,
     hash: String,
     result: Result<String, String>,
-    was_cancelled: bool,
 ) -> Result<TranscriptionAttemptOutcome, String> {
     let result = result.and_then(|text| {
         let _measurement =
@@ -1261,7 +1270,7 @@ fn finish_transcription_attempt(
             )?;
             Ok(TranscriptionAttemptOutcome::Completed { hash, text })
         }
-        Err(error) if error == crate::scanner::CANCELLED || was_cancelled => {
+        Err(error) if error == crate::scanner::CANCELLED => {
             Ok(TranscriptionAttemptOutcome::Cancelled { hash })
         }
         Err(error) if crate::resource_limits::is_safety_error(&error) => {
@@ -1367,10 +1376,13 @@ pub fn complete_transcription_attempt(
             .join()
             .map_err(crate::failure_runtime::panic_message)?;
     }
-    // The claim resets cancellation when dropped, so classify while this
-    // operation still has proof that it owns the process-wide Whisper slot.
-    let was_cancelled = crate::transcription::is_cancelled();
-    finish_transcription_attempt(&attempt, hash, result, was_cancelled)
+    let cancelled_hash = hash.clone();
+    let outcome = crate::transcription::publish_if_active(&claim, || {
+        finish_transcription_attempt(&attempt, hash, result)
+    })?;
+    Ok(outcome.unwrap_or(TranscriptionAttemptOutcome::Cancelled {
+        hash: cancelled_hash,
+    }))
 }
 
 /// Runs the same identity, cache, publication, receipt, replacement, and
@@ -1397,8 +1409,10 @@ pub fn complete_transcription_attempt_with_inference(
         let _measurement = crate::ai_measurement::Span::begin(attempt.observer, "inference");
         inference(&mut progress)
     };
-    let was_cancelled = attempt.cancel_when.as_ref().is_some_and(|stop| stop());
-    finish_transcription_attempt(&attempt, hash, result, was_cancelled)
+    if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
+        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
+    }
+    finish_transcription_attempt(&attempt, hash, result)
 }
 
 fn transcribe_next(

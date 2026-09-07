@@ -4,6 +4,7 @@ use tauri::{AppHandle, Emitter, Manager};
 pub mod ai_acceleration;
 pub mod ai_dependencies;
 pub mod ai_measurement;
+mod app_lifecycle;
 pub mod background_work;
 pub mod backup_store;
 pub mod binaries;
@@ -215,7 +216,9 @@ fn patch_config(
                 .as_ref()
                 .is_some_and(|previous| previous != &current_source_dirs)
             {
-                watcher::start(app.clone(), current_source_dirs);
+                if let Err(error) = watcher::start(app.clone(), current_source_dirs) {
+                    scan_runtime::record_runtime_failure(&app, "watcher-failed", &error);
+                }
             }
             Ok(outcome.merged)
         },
@@ -263,7 +266,9 @@ fn cache_root() -> Option<std::path::PathBuf> {
 #[tauri::command(async)]
 fn start_source_check(app: AppHandle) -> Result<bool, String> {
     source_check_runtime::start(app.clone()).map_err(|error| {
-        let _ = failure_runtime::report(&app, "source-check-failed", None, &error);
+        if !app_lifecycle::shutting_down() {
+            let _ = failure_runtime::report(&app, "source-check-failed", None, &error);
+        }
         error
     })
 }
@@ -1210,6 +1215,9 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                         },
                         |_| {},
                         move |progress_hash, percent| {
+                            if app_lifecycle::shutting_down() {
+                                return;
+                            }
                             let percent = percent.clamp(0, 100);
                             derived_runtime::report_manual_progress(
                                 &progress_handle,
@@ -1286,6 +1294,9 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                         }
                     }
                 })();
+                if app_lifecycle::shutting_down() {
+                    return Ok(());
+                }
                 match result {
                     Ok((event_hash, text)) => failure_runtime::emit_checked(
                         &handle,
@@ -1310,6 +1321,22 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                     }
                 }
             }));
+            if app_lifecycle::shutting_down() {
+                match outcome {
+                    Ok(Err(error)) => logging::error(
+                        "transcription worker failed during shutdown",
+                        json!({ "error": { "message": error } }),
+                    ),
+                    Err(payload) => logging::error(
+                        "transcription worker failed during shutdown",
+                        json!({
+                            "error": { "message": failure_runtime::panic_message(payload) }
+                        }),
+                    ),
+                    _ => {}
+                }
+                return;
+            }
             match outcome {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -1345,6 +1372,9 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
         },
     );
     if let Err(error) = started {
+        if error == scanner::CANCELLED {
+            return Err(error);
+        }
         let message = format!("could not start transcription worker: {error}");
         let _ = failure_runtime::report(
             &app,
@@ -1693,6 +1723,9 @@ async fn binaries_install(
         let last_emit =
             std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
         let emit = move |progress: binaries_manager::InstallProgress| {
+            if app_lifecycle::shutting_down() {
+                return;
+            }
             let now = std::time::Instant::now();
             let phase_changed = last_phase.get() != Some(progress.phase);
             let completed = progress.total.is_some_and(|total| progress.done >= total);
@@ -2175,6 +2208,7 @@ pub fn run() {
             if EXIT_QUIESCING.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
+            app_lifecycle::begin_shutdown();
             if let Err(error) = app_handle.emit("app://exit-quiescing", ()) {
                 logging::warn(
                     "exit wait state delivery failed",
@@ -2197,9 +2231,10 @@ pub fn run() {
                     }
                 }
             }
-            source_check_runtime::shutdown(app_handle);
-            file_information_runtime::shutdown(app_handle);
+            source_check_runtime::shutdown();
+            file_information_runtime::shutdown();
             watcher::shutdown();
+            scan_runtime::shutdown();
             startup::shutdown();
             instance_owner::shutdown(app_handle);
             binaries_manager::begin_shutdown();
@@ -2228,7 +2263,7 @@ pub fn run() {
                                 &error,
                             );
                         }
-                        let media = media_use::begin(&handle, &[]);
+                        let media = media_use::begin_shutdown(&handle);
                         if let Err(error) = &media {
                             let _ = failure_runtime::report(
                                 &handle,
@@ -2262,13 +2297,23 @@ pub fn run() {
             }
         }
         tauri::RunEvent::Exit => {
-            source_check_runtime::shutdown(app_handle);
-            file_information_runtime::shutdown(app_handle);
+            app_lifecycle::begin_shutdown();
+            source_check_runtime::shutdown();
+            file_information_runtime::shutdown();
             watcher::shutdown();
+            scan_runtime::shutdown();
             startup::shutdown();
             instance_owner::shutdown(app_handle);
             binaries_manager::begin_shutdown();
             derived_work::shutdown(app_handle);
+            if let Err(error) = mutation_runtime::request_shutdown() {
+                let _ = failure_runtime::report(
+                    app_handle,
+                    "shutdown-worker-failed",
+                    None,
+                    &error,
+                );
+            }
             source_check_runtime::join();
             file_information_runtime::join();
             watcher::join();
@@ -2276,6 +2321,14 @@ pub fn run() {
             startup::join();
             instance_owner::join(app_handle);
             derived_work::join();
+            if let Err(error) = mutation_runtime::wait_for_idle() {
+                let _ = failure_runtime::report(
+                    app_handle,
+                    "shutdown-worker-failed",
+                    None,
+                    &error,
+                );
+            }
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
         _ => {}

@@ -142,6 +142,46 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
 }
 
 #[test]
+fn cancellation_wins_over_a_late_success_before_transcript_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    let cache = preview::CachePaths::new(root.path().join("cache"));
+    insert(&conn, "late", "audio", "late.flac");
+    let mut attempt = transcript_attempt(
+        &conn,
+        &cache,
+        root.path(),
+        "late",
+        "late.flac",
+        false,
+    );
+    attempt.cancel_when = Some(Box::new(|| true));
+
+    let outcome = complete_transcription_attempt_with_inference(
+        attempt,
+        |_| {},
+        |_| {},
+        |_, _| {},
+        |_| Ok("late result".to_string()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        outcome,
+        TranscriptionAttemptOutcome::Cancelled {
+            hash: "late".to_string(),
+        }
+    );
+    assert!(!cache.transcript("late").exists());
+    assert_eq!(
+        derived_state::transcript_result(&conn, &cache, "late")
+            .unwrap()
+            .status,
+        "pending"
+    );
+}
+
+#[test]
 fn transcript_empty_failure_cancellation_retry_and_replacement_share_one_owner() {
     let root = tempfile::tempdir().unwrap();
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();

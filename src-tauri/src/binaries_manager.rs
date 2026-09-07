@@ -537,7 +537,6 @@ static IN_FLIGHT: std::sync::LazyLock<
         std::sync::Condvar::new(),
     )
 });
-static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 struct BusyGuard {
     id: String,
@@ -567,12 +566,12 @@ fn claim(
     if operation_id.trim().is_empty() {
         return Err("dependency operation id is empty".to_string());
     }
-    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+    if crate::app_lifecycle::shutting_down() {
         return Err("managed dependencies are shutting down".to_string());
     }
     let (operations, _) = &*IN_FLIGHT;
     let mut in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
-    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+    if crate::app_lifecycle::shutting_down() {
         return Err("managed dependencies are shutting down".to_string());
     }
     if in_flight.contains_key(id) {
@@ -614,7 +613,6 @@ pub fn cancel_entry(id: &str, operation_id: &str) -> bool {
 /// then joins this registry before allowing process shutdown. Each acquisition
 /// owns bounded external waits and observes the same cancellation flag.
 pub fn begin_shutdown() {
-    SHUTTING_DOWN.store(true, Ordering::SeqCst);
     let (operations, _) = &*IN_FLIGHT;
     let in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
     for active in in_flight.values() {

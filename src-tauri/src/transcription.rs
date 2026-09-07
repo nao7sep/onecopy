@@ -48,6 +48,9 @@ impl Drop for TranscriptionClaim {
 
 pub fn claim() -> Result<TranscriptionClaim, String> {
     let mut state = state();
+    if crate::app_lifecycle::shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     if state.running {
         return Err(TRANSCRIPTION_BUSY.to_string());
     }
@@ -67,6 +70,23 @@ pub fn request_cancel() -> bool {
 
 pub fn is_cancelled() -> bool {
     state().cancelled
+}
+
+/// Owns the commit point between a completed inference and publication of its
+/// cache entry plus durable receipt. Cancellation/shutdown and publication
+/// serialize on the transcription claim: whichever reaches this boundary
+/// first wins, so a late inference result can never become a false success.
+pub(crate) fn publish_if_active<T>(
+    _claim: &TranscriptionClaim,
+    publish: impl FnOnce() -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let operation = state();
+    if operation.cancelled || crate::app_lifecycle::shutting_down() {
+        return Ok(None);
+    }
+    let result = publish();
+    drop(operation);
+    result.map(Some)
 }
 
 /// 16 kHz mono f32 — the one input whisper accepts.
@@ -308,4 +328,27 @@ pub(crate) fn publish_transcript(target: &Path, text: &str) -> Result<(), String
         e.to_string()
     })?;
     Ok(())
+}
+
+// EXCEPTION to tests-folder conventions: this test pins the private lock that
+// linearizes one process-wide native-engine claim with its publication.
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_that_owns_the_claim_boundary_prevents_publication() {
+        let claim = claim().unwrap();
+        assert!(request_cancel());
+        let published = std::cell::Cell::new(false);
+
+        let result = publish_if_active(&claim, || {
+            published.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(result.is_none());
+        assert!(!published.get());
+    }
 }

@@ -25,13 +25,11 @@ struct Active {
 struct Runtime {
     active: Mutex<Option<Active>>,
     idle: Condvar,
-    shutting_down: AtomicBool,
 }
 
 static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime {
     active: Mutex::new(None),
     idle: Condvar::new(),
-    shutting_down: AtomicBool::new(false),
 });
 
 struct Claim {
@@ -66,14 +64,14 @@ impl Drop for Claim {
 }
 
 fn begin() -> Result<Claim, String> {
-    if RUNTIME.shutting_down.load(Ordering::SeqCst) {
+    if crate::app_lifecycle::shutting_down() {
         return Err("OneCopy is closing; no new file operation can start.".to_string());
     }
     let mut active = RUNTIME
         .active
         .lock()
         .map_err(|_| STATE_UNAVAILABLE.to_string())?;
-    if RUNTIME.shutting_down.load(Ordering::SeqCst) {
+    if crate::app_lifecycle::shutting_down() {
         return Err("OneCopy is closing; no new file operation can start.".to_string());
     }
     if active.is_some() {
@@ -145,7 +143,6 @@ pub(crate) fn request_active_cancel() -> Result<bool, String> {
 }
 
 pub(crate) fn request_shutdown() -> Result<(), String> {
-    RUNTIME.shutting_down.store(true, Ordering::SeqCst);
     let (active, recovered) = match RUNTIME.active.lock() {
         Ok(active) => (active, false),
         Err(poisoned) => (poisoned.into_inner(), true),
@@ -332,7 +329,7 @@ pub(crate) fn delete_items(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin_reported(app)?;
-    let _index = crate::scan_runtime::begin_foreground(app);
+    let _index = crate::scan_runtime::begin_admitted_mutation(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
     let mut last_progress = Progress {
@@ -514,7 +511,7 @@ pub(crate) fn move_items_out(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin_reported(app)?;
-    let _index = crate::scan_runtime::begin_foreground(app);
+    let _index = crate::scan_runtime::begin_admitted_mutation(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
     let mut last_progress = Progress {

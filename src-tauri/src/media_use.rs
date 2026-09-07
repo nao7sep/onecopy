@@ -32,6 +32,7 @@ pub struct Guard {
     token: u64,
     exclusive: Option<crate::derived_runtime::ExclusiveGuard>,
     restore_playback: bool,
+    resume_on_drop: bool,
 }
 
 impl Drop for Guard {
@@ -47,13 +48,17 @@ impl Drop for Guard {
                 "Media ownership state is unavailable. Restart OneCopy before changing files.",
             );
         }
-        crate::failure_runtime::emit_or_record(
-            &self.app,
-            "media-use://resume",
-            json!({ "token": self.token, "restorePlayback": self.restore_playback }),
-        );
+        if self.resume_on_drop {
+            crate::failure_runtime::emit_or_record(
+                &self.app,
+                "media-use://resume",
+                json!({ "token": self.token, "restorePlayback": self.restore_playback }),
+            );
+        }
         self.exclusive.take();
-        crate::derived_work::wake();
+        if self.resume_on_drop {
+            crate::derived_work::wake();
+        }
     }
 }
 
@@ -77,14 +82,32 @@ fn begin_with_resume_policy(
     restore_playback: bool,
 ) -> Result<Guard, String> {
     let exclusive = crate::derived_runtime::begin_exclusive(app)?;
+    begin_release(app, keys, restore_playback, Some(exclusive), false)
+}
+
+/// Releases every webview only after all derived-media workers have joined.
+/// This is one of the exit owner's two intentional final publications; it
+/// neither reopens derived admission nor emits a resume while windows close.
+pub fn begin_shutdown(app: &AppHandle) -> Result<Guard, String> {
+    begin_release(app, &[], false, None, true)
+}
+
+fn begin_release(
+    app: &AppHandle,
+    keys: &[String],
+    restore_playback: bool,
+    exclusive: Option<crate::derived_runtime::ExclusiveGuard>,
+    shutting_down: bool,
+) -> Result<Guard, String> {
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     let windows: HashSet<String> = app.webview_windows().into_keys().collect();
     if windows.is_empty() {
         return Ok(Guard {
             app: app.clone(),
             token,
-            exclusive: Some(exclusive),
+            exclusive,
             restore_playback,
+            resume_on_drop: !shutting_down,
         });
     }
 
@@ -100,10 +123,18 @@ fn begin_with_resume_policy(
                 restore_playback,
             },
         );
-    if let Err(error) = app.emit(
-        "media-use://release",
-        json!({ "token": token, "keys": keys }),
-    ) {
+    let emit = || app.emit("media-use://release", json!({ "token": token, "keys": keys }));
+    let publication = if shutting_down {
+        Some(emit())
+    } else {
+        crate::app_lifecycle::publish_if_running(emit)
+    };
+    let publication_error = match publication {
+        Some(Ok(())) => None,
+        Some(Err(error)) => Some(format!("could not request media release: {error}")),
+        None => Some(crate::scanner::CANCELLED.to_string()),
+    };
+    if let Some(error) = publication_error {
         match RELEASES.0.lock() {
             Ok(mut releases) => {
                 releases.remove(&token);
@@ -117,7 +148,7 @@ fn begin_with_resume_policy(
                 );
             }
         }
-        return Err(format!("could not request media release: {error}"));
+        return Err(error);
     }
 
     let deadline = Instant::now() + RELEASE_TIMEOUT;
@@ -135,8 +166,9 @@ fn begin_with_resume_policy(
             return Ok(Guard {
                 app: app.clone(),
                 token,
-                exclusive: Some(exclusive),
+                exclusive,
                 restore_playback,
+                resume_on_drop: !shutting_down,
             });
         }
         let now = Instant::now();
