@@ -30,6 +30,7 @@ static RELEASES: LazyLock<(Mutex<HashMap<u64, Release>>, Condvar)> =
 pub struct Guard {
     app: AppHandle,
     token: u64,
+    item_count: Option<u64>,
     exclusive: Option<crate::derived_runtime::ExclusiveGuard>,
     restore_playback: bool,
     resume_on_drop: bool,
@@ -37,17 +38,22 @@ pub struct Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        if let Ok(mut releases) = RELEASES.0.lock() {
-            releases.remove(&self.token);
-            RELEASES.1.notify_all();
-        } else {
-            let _ = crate::failure_runtime::report(
-                &self.app,
-                "media-use-state-failed",
-                None,
-                "Media ownership state is unavailable. Restart OneCopy before changing files.",
-            );
-        }
+        let state_available = match RELEASES.0.lock() {
+            Ok(mut releases) => {
+                releases.remove(&self.token);
+                RELEASES.1.notify_all();
+                true
+            }
+            Err(_) => {
+                let _ = crate::failure_runtime::report(
+                    &self.app,
+                    "media-use-state-failed",
+                    None,
+                    "Media ownership state is unavailable. Restart OneCopy before changing files.",
+                );
+                false
+            }
+        };
         if self.resume_on_drop {
             crate::failure_runtime::emit_or_record(
                 &self.app,
@@ -59,6 +65,26 @@ impl Drop for Guard {
         if self.resume_on_drop {
             crate::derived_work::wake();
         }
+        record_activity(
+            if state_available {
+                crate::activity::ActivityKind::Completed
+            } else {
+                crate::activity::ActivityKind::Failed
+            },
+            self.token,
+            Some(crate::activity::ActivityState::Running),
+            if state_available {
+                crate::activity::ActivityState::Succeeded
+            } else {
+                crate::activity::ActivityState::Failed
+            },
+            Some(if state_available {
+                crate::activity::ActivityReason::Completion
+            } else {
+                crate::activity::ActivityReason::Error
+            }),
+            self.item_count,
+        );
     }
 }
 
@@ -100,29 +126,56 @@ fn begin_release(
     shutting_down: bool,
 ) -> Result<Guard, String> {
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    // An empty key list means "all displayed media", not zero items.
+    let item_count = (!keys.is_empty()).then_some(keys.len() as u64);
     let windows: HashSet<String> = app.webview_windows().into_keys().collect();
     if windows.is_empty() {
+        record_activity(
+            crate::activity::ActivityKind::Started,
+            token,
+            None,
+            crate::activity::ActivityState::Running,
+            None,
+            item_count,
+        );
         return Ok(Guard {
             app: app.clone(),
             token,
+            item_count,
             exclusive,
             restore_playback,
             resume_on_drop: !shutting_down,
         });
     }
 
-    RELEASES
-        .0
-        .lock()
-        .map_err(|_| "media-use state is unavailable".to_string())?
-        .insert(
+    record_activity(
+        crate::activity::ActivityKind::Admitted,
+        token,
+        None,
+        crate::activity::ActivityState::Waiting,
+        None,
+        item_count,
+    );
+    let mut releases = RELEASES.0.lock().map_err(|_| {
+        record_activity(
+            crate::activity::ActivityKind::Failed,
             token,
-            Release {
-                pending: windows,
-                keys: keys.to_vec(),
-                restore_playback,
-            },
+            Some(crate::activity::ActivityState::Waiting),
+            crate::activity::ActivityState::Failed,
+            Some(crate::activity::ActivityReason::Error),
+            item_count,
         );
+        "media-use state is unavailable".to_string()
+    })?;
+    releases.insert(
+        token,
+        Release {
+            pending: windows,
+            keys: keys.to_vec(),
+            restore_playback,
+        },
+    );
+    drop(releases);
     let emit = || app.emit("media-use://release", json!({ "token": token, "keys": keys }));
     let publication = if shutting_down {
         Some(emit())
@@ -148,24 +201,56 @@ fn begin_release(
                 );
             }
         }
+        record_activity(
+            crate::activity::ActivityKind::Failed,
+            token,
+            Some(crate::activity::ActivityState::Waiting),
+            crate::activity::ActivityState::Failed,
+            Some(crate::activity::ActivityReason::Error),
+            item_count,
+        );
         return Err(error);
     }
 
     let deadline = Instant::now() + RELEASE_TIMEOUT;
-    let mut releases = RELEASES
-        .0
-        .lock()
-        .map_err(|_| "media-use state is unavailable".to_string())?;
+    let mut releases = RELEASES.0.lock().map_err(|_| {
+        record_activity(
+            crate::activity::ActivityKind::Failed,
+            token,
+            Some(crate::activity::ActivityState::Waiting),
+            crate::activity::ActivityState::Failed,
+            Some(crate::activity::ActivityReason::Error),
+            item_count,
+        );
+        "media-use state is unavailable".to_string()
+    })?;
     loop {
         let live: HashSet<String> = app.webview_windows().into_keys().collect();
         let Some(release) = releases.get_mut(&token) else {
+            record_activity(
+                crate::activity::ActivityKind::Failed,
+                token,
+                Some(crate::activity::ActivityState::Waiting),
+                crate::activity::ActivityState::Failed,
+                Some(crate::activity::ActivityReason::Error),
+                item_count,
+            );
             return Err("media release was interrupted".to_string());
         };
         release.pending.retain(|label| live.contains(label));
         if release.pending.is_empty() {
+            record_activity(
+                crate::activity::ActivityKind::Started,
+                token,
+                Some(crate::activity::ActivityState::Waiting),
+                crate::activity::ActivityState::Running,
+                None,
+                item_count,
+            );
             return Ok(Guard {
                 app: app.clone(),
                 token,
+                item_count,
                 exclusive,
                 restore_playback,
                 resume_on_drop: !shutting_down,
@@ -186,6 +271,14 @@ fn begin_release(
                 "media-use://resume",
                 json!({ "token": token }),
             );
+            record_activity(
+                crate::activity::ActivityKind::Failed,
+                token,
+                Some(crate::activity::ActivityState::Waiting),
+                crate::activity::ActivityState::Failed,
+                Some(crate::activity::ActivityReason::Error),
+                item_count,
+            );
             return Err(format!(
                 "Media is still in use in {pending}; no files were changed."
             ));
@@ -193,9 +286,44 @@ fn begin_release(
         let wait = RELEASES
             .1
             .wait_timeout(releases, WAIT_SLICE.min(deadline - now))
-            .map_err(|_| "media-use state is unavailable".to_string())?;
+            .map_err(|_| {
+                record_activity(
+                    crate::activity::ActivityKind::Failed,
+                    token,
+                    Some(crate::activity::ActivityState::Waiting),
+                    crate::activity::ActivityState::Failed,
+                    Some(crate::activity::ActivityReason::Error),
+                    item_count,
+                );
+                "media-use state is unavailable".to_string()
+            })?;
         releases = wait.0;
     }
+}
+
+fn record_activity(
+    kind: crate::activity::ActivityKind,
+    token: u64,
+    previous: Option<crate::activity::ActivityState>,
+    current: crate::activity::ActivityState,
+    reason: Option<crate::activity::ActivityReason>,
+    item_count: Option<u64>,
+) {
+    let _ = crate::activity::record(crate::activity::ActivityDraft {
+        kind,
+        owner: crate::activity::ActivityOwner::Media,
+        operation_id: Some(format!("media:{token}")),
+        cause_id: None,
+        generation: Some(token),
+        previous,
+        current: Some(current),
+        reason,
+        lane: None,
+        item_count,
+        queued: None,
+        done: None,
+        total: None,
+    });
 }
 
 /// Registers a bootstrapping webview in an already-active release before that

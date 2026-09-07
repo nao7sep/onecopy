@@ -17,6 +17,11 @@ import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActionFailure } from "./notifications-store";
+import {
+  finishActivityOperation,
+  newActivityOperationId,
+  recordActivity,
+} from "../repositories/activity";
 
 export type DependencyStatus =
   | "not-installed"
@@ -185,7 +190,15 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
 
   install: async (id) => {
     if (get().installing[id] !== undefined) return;
-    const currentOperationId = operationId();
+    const currentOperationId = newActivityOperationId("managedTools");
+    recordActivity({
+      kind: "started",
+      owner: "managedTools",
+      operationId: currentOperationId,
+      current: "running",
+      reason: "user",
+      itemCount: 1,
+    });
     registryRevision += 1;
     set((s) => {
       const errors = { ...s.errors };
@@ -207,10 +220,24 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         id,
         operationId: currentOperationId,
       });
-      if (result.operationId !== currentOperationId) return;
+      if (result.operationId !== currentOperationId) {
+        recordActivity({
+          kind: "stale",
+          owner: "managedTools",
+          operationId: currentOperationId,
+          previous: "running",
+          current: "stale",
+          reason: "staleResponse",
+          itemCount: 1,
+        });
+        finishActivityOperation("managedTools", currentOperationId);
+        return;
+      }
       let failedMessage: string | null = null;
+      let applied = false;
       set((s) => {
         if (s.installing[id]?.operationId !== currentOperationId) return s;
+        applied = true;
         const installing = { ...s.installing };
         const errors = { ...s.errors };
         delete installing[id];
@@ -226,6 +253,44 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           errors,
         };
       });
+      if (!applied) {
+        recordActivity({
+          kind: "stale",
+          owner: "managedTools",
+          operationId: currentOperationId,
+          previous: "running",
+          current: "stale",
+          reason: "superseded",
+          itemCount: 1,
+        });
+        finishActivityOperation("managedTools", currentOperationId);
+        return;
+      }
+      recordActivity({
+        kind:
+          result.outcome === "installed"
+            ? "completed"
+            : result.outcome === "cancelled"
+              ? "cancelled"
+              : "failed",
+        owner: "managedTools",
+        operationId: currentOperationId,
+        previous: "running",
+        current:
+          result.outcome === "installed"
+            ? "succeeded"
+            : result.outcome === "cancelled"
+              ? "cancelled"
+              : "failed",
+        reason:
+          result.outcome === "installed"
+            ? "completion"
+            : result.outcome === "cancelled"
+              ? "user"
+              : "error",
+        itemCount: 1,
+      });
+      finishActivityOperation("managedTools", currentOperationId);
       if (failedMessage !== null) {
         recordActionFailure(
           "managed-tool-install-failed",
@@ -234,8 +299,10 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         );
       }
     } catch (error) {
+      let applied = false;
       set((s) => {
         if (s.installing[id]?.operationId !== currentOperationId) return s;
+        applied = true;
         const installing = { ...s.installing };
         delete installing[id];
         return {
@@ -246,6 +313,29 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           },
         };
       });
+      if (!applied) {
+        recordActivity({
+          kind: "stale",
+          owner: "managedTools",
+          operationId: currentOperationId,
+          previous: "running",
+          current: "stale",
+          reason: "superseded",
+          itemCount: 1,
+        });
+        finishActivityOperation("managedTools", currentOperationId);
+        return;
+      }
+      recordActivity({
+        kind: "failed",
+        owner: "managedTools",
+        operationId: currentOperationId,
+        previous: "running",
+        current: "failed",
+        reason: "error",
+        itemCount: 1,
+      });
+      finishActivityOperation("managedTools", currentOperationId);
       log.error("binaries install start failed", { id, ...toErrorFields(error) });
       recordActionFailure(
         "managed-tool-install-failed",
@@ -264,12 +354,36 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         [id]: { ...previous, cancelling: true },
       },
     }));
+    recordActivity({
+      kind: "stopping",
+      owner: "managedTools",
+      operationId: previous.operationId,
+      previous: "running",
+      current: "stopping",
+      reason: "user",
+      itemCount: 1,
+    });
     try {
       await invoke<boolean>("binaries_cancel", {
         id,
         operationId: previous.operationId,
       });
     } catch (error) {
+      const current = get().installing[id];
+      if (
+        current?.operationId !== previous.operationId ||
+        current.cancelling !== true
+      ) {
+        recordActivity({
+          kind: "stale",
+          owner: "managedTools",
+          operationId: previous.operationId,
+          current: "stale",
+          reason: "superseded",
+          itemCount: 1,
+        });
+        return;
+      }
       log.error("binaries install cancellation failed", { id, ...toErrorFields(error) });
       set((state) => ({
         errors: {
@@ -308,6 +422,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     const { entries, installing, checking } = get();
     if (checking) return;
     const started = Date.now();
+    const activityOperationId = newActivityOperationId("managedTools");
     registryRevision += 1;
     set({
       checking: true,
@@ -323,6 +438,14 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         entry.status !== "not-installed" &&
         installing[entry.id] === undefined,
     );
+    recordActivity({
+      kind: "started",
+      owner: "managedTools",
+      operationId: activityOperationId,
+      current: "running",
+      reason: "user",
+      itemCount: installed.length,
+    });
     let failures = 0;
     let cancelled = false;
     for (const entry of installed) {
@@ -399,6 +522,16 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       lastCheckOutcome: outcome,
       lastCheckOutcomeLevel: failures > 0 ? "error" : "info",
     });
+    recordActivity({
+      kind: cancelled ? "cancelled" : failures > 0 ? "failed" : "completed",
+      owner: "managedTools",
+      operationId: activityOperationId,
+      previous: "running",
+      current: cancelled ? "cancelled" : failures > 0 ? "failed" : "succeeded",
+      reason: cancelled ? "user" : failures > 0 ? "error" : "completion",
+      itemCount: installed.length,
+    });
+    finishActivityOperation("managedTools", activityOperationId);
     if (failures > 0) {
       recordActionFailure(
         "managed-tool-check-failed",
@@ -482,9 +615,15 @@ const installEvents = createEventInstaller(
       "binaries://progress",
       (event) => {
         const { id, operationId: eventOperationId, ...progress } = event.payload;
+        let accepted = false;
+        let meaningfulProgress = false;
         useBinariesStore.setState((s) => {
           const active = s.installing[id];
           if (active?.operationId !== eventOperationId) return s;
+          accepted = true;
+          meaningfulProgress =
+            active.progress?.phase !== progress.phase ||
+            (progress.total !== null && progress.done === progress.total);
           return {
             installing: {
               ...s.installing,
@@ -495,6 +634,24 @@ const installEvents = createEventInstaller(
             },
           };
         });
+        if (!accepted) {
+          recordActivity({
+            kind: "stale",
+            owner: "managedTools",
+            operationId: eventOperationId,
+            current: "stale",
+            reason: "staleResponse",
+          });
+        } else if (meaningfulProgress) {
+          recordActivity({
+            kind: "progressed",
+            owner: "managedTools",
+            operationId: eventOperationId,
+            current: "running",
+            done: progress.done,
+            ...(progress.total === null ? {} : { total: progress.total }),
+          });
+        }
       },
     );
     // The launch-time update check (config-gated, core-side) finished after

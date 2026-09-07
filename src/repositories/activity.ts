@@ -24,6 +24,7 @@ export type ActivityOwner =
   | "app"
   | "section"
   | "selection"
+  | "anchor"
   | "viewport"
   | "priority"
   | "sourceCheck"
@@ -38,7 +39,10 @@ export type ActivityOwner =
   | "settings"
   | "transcript"
   | "managedTools"
-  | "media";
+  | "media"
+  | "watcher"
+  | "identity"
+  | "delivery";
 
 export type ActivityState =
   | "idle"

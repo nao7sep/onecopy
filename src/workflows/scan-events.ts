@@ -23,6 +23,20 @@ import {
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let derivedIssuesTimer: ReturnType<typeof setTimeout> | null = null;
 
+function recordStaleWork(
+  owner: "sourceCheck" | "fileInformation",
+  generation: number,
+): void {
+  recordActivity({
+    kind: "stale",
+    owner,
+    operationId: latestActivityOperationId(owner) ?? `${owner}:auto`,
+    generation,
+    current: "stale",
+    reason: "staleResponse",
+  });
+}
+
 interface SequencedProgress {
   eventSequence: number;
   progress: ScanProgress;
@@ -57,16 +71,18 @@ const install = createEventInstaller(
     await listeners.listen<Omit<SourceCheckState, "progress">>(
       "source-check://state",
       (event) => {
-        useSectionsStore.setState((state) =>
-          event.payload.eventSequence <= state.sourceCheck.eventSequence
-            ? state
-            : {
-                sourceCheck: {
-                  ...event.payload,
-                  progress: state.sourceCheck.progress,
-                },
-              },
-        );
+        let accepted = false;
+        useSectionsStore.setState((state) => {
+          if (event.payload.eventSequence <= state.sourceCheck.eventSequence) return state;
+          accepted = true;
+          return {
+            sourceCheck: {
+              ...event.payload,
+              progress: state.sourceCheck.progress,
+            },
+          };
+        });
+        if (!accepted) recordStaleWork("sourceCheck", event.payload.eventSequence);
       },
     );
     await listeners.listen<SequencedProgress>("source-check://progress", (event) => {
@@ -83,7 +99,9 @@ const install = createEventInstaller(
           },
         };
       });
-      if (accepted) {
+      if (!accepted) {
+        recordStaleWork("sourceCheck", event.payload.eventSequence);
+      } else {
         recordActivity({
           kind: "progressed",
           owner: "sourceCheck",
@@ -121,7 +139,10 @@ const install = createEventInstaller(
                 : state.rescanNeeded,
           };
         });
-        if (!accepted) return;
+        if (!accepted) {
+          recordStaleWork("sourceCheck", event.payload.eventSequence);
+          return;
+        }
         const operationId =
           latestActivityOperationId("sourceCheck") ?? "sourceCheck:auto";
         recordActivity({
@@ -161,16 +182,18 @@ const install = createEventInstaller(
     await listeners.listen<Omit<FileInformationState, "progress">>(
       "file-information://state",
       (event) => {
-        useSectionsStore.setState((state) =>
-          event.payload.eventSequence <= state.fileInformation.eventSequence
-            ? state
-            : {
-                fileInformation: {
-                  ...event.payload,
-                  progress: state.fileInformation.progress,
-                },
-              },
-        );
+        let accepted = false;
+        useSectionsStore.setState((state) => {
+          if (event.payload.eventSequence <= state.fileInformation.eventSequence) return state;
+          accepted = true;
+          return {
+            fileInformation: {
+              ...event.payload,
+              progress: state.fileInformation.progress,
+            },
+          };
+        });
+        if (!accepted) recordStaleWork("fileInformation", event.payload.eventSequence);
       },
     );
     await listeners.listen<SequencedProgress>("file-information://progress", (event) => {
@@ -187,7 +210,9 @@ const install = createEventInstaller(
           },
         };
       });
-      if (accepted) {
+      if (!accepted) {
+        recordStaleWork("fileInformation", event.payload.eventSequence);
+      } else {
         recordActivity({
           kind: "progressed",
           owner: "fileInformation",
@@ -215,7 +240,10 @@ const install = createEventInstaller(
           },
         };
       });
-      if (!accepted) return;
+      if (!accepted) {
+        recordStaleWork("fileInformation", event.payload.eventSequence);
+        return;
+      }
       const operationId =
         latestActivityOperationId("fileInformation") ?? "fileInformation:auto";
       recordActivity({

@@ -57,6 +57,7 @@ beforeEach(() => {
     entry("whisper-large-v3-turbo", "not-installed"),
   ]);
   mockCommands({
+    activity_record: () => null,
     publish_notification: () => ({}),
     binaries_cancel: () => true,
   });
@@ -260,6 +261,44 @@ describe("managed-tool terminal ownership", () => {
       "newer-attempt",
     );
     expect(useBinariesStore.getState().entries[0]?.status).toBe("not-installed");
+  });
+
+  it("does not surface an obsolete install failure after a newer attempt owns the row", async () => {
+    let reject!: (error: Error) => void;
+    mockCommands({
+      binaries_install: () =>
+        new Promise<BinaryInstallResult>((_resolve, rejectPromise) => {
+          reject = rejectPromise;
+        }),
+    });
+
+    const oldAttempt = useBinariesStore.getState().install("ffmpeg");
+    await Promise.resolve();
+    useBinariesStore.setState({
+      installing: {
+        ffmpeg: {
+          operationId: "newer-attempt",
+          progress: null,
+          cancelling: false,
+        },
+      },
+    });
+    reject(new Error("obsolete transport failure"));
+    await oldAttempt;
+
+    expect(useBinariesStore.getState().installing.ffmpeg?.operationId).toBe(
+      "newer-attempt",
+    );
+    expect(
+      invokeCalls.filter((call) => call.command === "publish_notification"),
+    ).toEqual([]);
+    expect(
+      invokeCalls.some(
+        (call) =>
+          call.command === "activity_record" &&
+          (call.args.draft as { kind?: string }).kind === "stale",
+      ),
+    ).toBe(true);
   });
 
   it("applies an authoritative check response without a second status request", async () => {

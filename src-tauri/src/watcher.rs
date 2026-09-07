@@ -263,6 +263,13 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         if overflowed {
             overflowed = false;
             dirty.clear();
+            record_activity(
+                crate::activity::ActivityKind::Failed,
+                generation,
+                crate::activity::ActivityState::Failed,
+                Some(crate::activity::ActivityReason::Error),
+                None,
+            );
             crate::failure_runtime::emit_or_record(
                 &app,
                 "watch://rescan-needed",
@@ -283,6 +290,13 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             Ok(0) => crate::failure_runtime::clear(&app, "watcher-failed", None)?,
             Ok(changed) => {
                 crate::failure_runtime::clear(&app, "watcher-failed", None)?;
+                record_activity(
+                    crate::activity::ActivityKind::Changed,
+                    generation,
+                    crate::activity::ActivityState::Succeeded,
+                    Some(crate::activity::ActivityReason::Completion),
+                    Some(changed),
+                );
                 crate::failure_runtime::emit_or_record(
                     &app,
                     "watch://updated",
@@ -346,11 +360,42 @@ fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
 }
 
 fn report_failure(app: &tauri::AppHandle, error: &str) {
+    record_activity(
+        crate::activity::ActivityKind::Failed,
+        GENERATION.load(Ordering::SeqCst),
+        crate::activity::ActivityState::Failed,
+        Some(crate::activity::ActivityReason::Error),
+        None,
+    );
     logging::error("watcher failed", json!({ "error": { "message": error } }));
     crate::scan_runtime::record_runtime_failure(app, "watcher-failed", error);
     for event in ["watch://failed", "watch://rescan-needed"] {
         crate::failure_runtime::emit_or_record(app, event, json!({ "reason": error }));
     }
+}
+
+fn record_activity(
+    kind: crate::activity::ActivityKind,
+    generation: u64,
+    current: crate::activity::ActivityState,
+    reason: Option<crate::activity::ActivityReason>,
+    changed: Option<u64>,
+) {
+    let _ = crate::activity::record(crate::activity::ActivityDraft {
+        kind,
+        owner: crate::activity::ActivityOwner::Watcher,
+        operation_id: Some(format!("watcher:{generation}")),
+        cause_id: None,
+        generation: Some(generation),
+        previous: None,
+        current: Some(current),
+        reason,
+        lane: None,
+        item_count: changed,
+        queued: None,
+        done: None,
+        total: None,
+    });
 }
 
 #[cfg(test)]

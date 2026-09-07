@@ -110,3 +110,28 @@ fn serialized_events_omit_absent_optional_fields() {
         assert!(value.get(absent).is_none(), "{absent} should be omitted");
     }
 }
+
+#[test]
+fn concrete_timing_owners_serialize_without_free_form_payloads() {
+    let recorder = ActivityRecorder::new("session-one".to_string(), 8);
+    for (owner, expected) in [
+        (ActivityOwner::Anchor, "anchor"),
+        (ActivityOwner::ManagedTools, "managedTools"),
+        (ActivityOwner::Media, "media"),
+        (ActivityOwner::Watcher, "watcher"),
+        (ActivityOwner::Identity, "identity"),
+        (ActivityOwner::Delivery, "delivery"),
+    ] {
+        let mut event = draft(None);
+        event.owner = owner;
+        let value = serde_json::to_value(
+            recorder
+                .record_at(event, "2026-09-07T00:00:00.000Z".to_string(), 10)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["owner"], expected);
+        assert!(value.get("path").is_none());
+        assert!(value.get("payload").is_none());
+    }
+}

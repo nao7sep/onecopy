@@ -1433,6 +1433,21 @@ pub fn promote_identity(
             .map_err(|e| e.to_string())?;
         crate::preview::rename_entries(cache, provisional, real_hash, strip_frames.unwrap_or(0));
     }
+    let _ = crate::activity::record(crate::activity::ActivityDraft {
+        kind: crate::activity::ActivityKind::Changed,
+        owner: crate::activity::ActivityOwner::Identity,
+        operation_id: None,
+        cause_id: None,
+        generation: None,
+        previous: None,
+        current: Some(crate::activity::ActivityState::Succeeded),
+        reason: Some(crate::activity::ActivityReason::Completion),
+        lane: None,
+        item_count: Some(1),
+        queued: None,
+        done: None,
+        total: None,
+    });
     Ok(())
 }
 

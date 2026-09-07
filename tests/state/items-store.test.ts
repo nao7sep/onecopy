@@ -73,6 +73,7 @@ beforeEach(() => {
   resetTauriMocks();
   resetStore();
   mockCommands({
+    activity_record: () => null,
     patch_state: () => ({}),
     get_item_detail: () => ({ fileName: "item", kind: "image" }),
     get_section_counts: () => [],
@@ -141,6 +142,29 @@ describe("bounded section state", () => {
 });
 
 describe("explicit selection", () => {
+  it("records an anchor-only change without exposing the item identity", async () => {
+    const rows = [item(1), item(2)];
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.setState({
+      selectedKeys: new Set(["h1", "h2"]),
+      selectedPositions: new Map([
+        ["h1", 0],
+        ["h2", 1],
+      ]),
+    });
+
+    useItemsStore.getState().setAnchor("h2", 1);
+
+    const event = invokeCalls
+      .filter((call) => call.command === "activity_record")
+      .map((call) => call.args.draft as Record<string, unknown>)
+      .find((draft) => draft.owner === "anchor");
+    expect(event).toMatchObject({ kind: "changed", itemCount: 2 });
+    expect(event).not.toHaveProperty("path");
+    expect(event).not.toHaveProperty("hash");
+  });
+
   it("builds and shrinks a Shift range from backend identities", async () => {
     const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
     mockSection(rows);

@@ -40,6 +40,7 @@ pub enum ActivityOwner {
     App,
     Section,
     Selection,
+    Anchor,
     Viewport,
     Priority,
     SourceCheck,
@@ -55,6 +56,9 @@ pub enum ActivityOwner {
     Transcript,
     ManagedTools,
     Media,
+    Watcher,
+    Identity,
+    Delivery,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

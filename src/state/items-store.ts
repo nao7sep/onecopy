@@ -367,6 +367,21 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   setAnchor: (key, position) => {
+    const previousAnchor = get().selectedItem;
+    const operationId = newActivityOperationId("anchor");
+    const recordAnchor = (itemCount: number) => {
+      recordActivity({
+        kind: "changed",
+        owner: "anchor",
+        operationId,
+        causeId: latestActivityOperationId("selection"),
+        previous: previousAnchor === null ? "idle" : "running",
+        current: "succeeded",
+        reason: "selectionChange",
+        itemCount,
+      });
+      finishActivityOperation("anchor", operationId);
+    };
     if (key === null) {
       set({
         selectedItem: null,
@@ -374,6 +389,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         detail: null,
         currentContext: null,
       });
+      recordAnchor(0);
       return;
     }
     const index = position ?? knownPosition(get(), key);
@@ -387,6 +403,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       scrollRequest: requestScroll(key, index, "nearest"),
       detail: null,
     });
+    recordAnchor(selectedPositions.size);
     loadAnchorDetail(key);
   },
 

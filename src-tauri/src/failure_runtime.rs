@@ -183,7 +183,24 @@ pub fn emit_checked<T: Clone + Serialize>(
     crate::app_lifecycle::publish_if_running(|| app.emit(event, payload))
         .transpose()
         .map(|_| ())
-        .map_err(|error| format!("could not publish {event}: {error}"))
+        .map_err(|error| {
+            let _ = crate::activity::record(crate::activity::ActivityDraft {
+                kind: crate::activity::ActivityKind::Failed,
+                owner: crate::activity::ActivityOwner::Delivery,
+                operation_id: None,
+                cause_id: None,
+                generation: None,
+                previous: None,
+                current: Some(crate::activity::ActivityState::Failed),
+                reason: Some(crate::activity::ActivityReason::Error),
+                lane: None,
+                item_count: None,
+                queued: None,
+                done: None,
+                total: None,
+            });
+            format!("could not publish {event}: {error}")
+        })
 }
 
 pub fn emit_or_record<T: Clone + Serialize>(app: &AppHandle, event: &str, payload: T) {

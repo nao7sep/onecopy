@@ -80,6 +80,7 @@ beforeEach(async () => {
     rescanNeeded: false,
   });
   mockCommands({
+    activity_record: () => null,
     get_section_counts: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
     index_work_snapshot: () => ({
@@ -180,6 +181,14 @@ describe("library work events", () => {
     expect(sections.getState().sourceCheck.running).toBe(false);
     expect(sections.getState().sourceCheck.stopping).toBe(false);
     expect(sections.getState().sourceCheck.lastResult).toBe("completed");
+    expect(
+      invokeCalls.some(
+        (call) =>
+          call.command === "activity_record" &&
+          (call.args.draft as { owner?: string; kind?: string }).owner === "sourceCheck" &&
+          (call.args.draft as { owner?: string; kind?: string }).kind === "stale",
+      ),
+    ).toBe(true);
   });
 });
 
