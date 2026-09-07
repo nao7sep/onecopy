@@ -44,6 +44,31 @@ describe("the trash modal", () => {
     expect(document.body.textContent).not.toContain("No trash locations");
   });
 
+  it("does not publish an older measurement into a reopened modal", async () => {
+    let finishOlder: ((rows: typeof ROWS) => void) | undefined;
+    let calls = 0;
+    mockCommands({
+      trash_overview: () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<typeof ROWS>((resolve) => {
+            finishOlder = resolve;
+          });
+        }
+        return [{ root: "/new", bytes: 0, files: 0 }];
+      },
+    });
+    const view = render(<TrashModal open onClose={() => {}} />);
+    view.rerender(<TrashModal open={false} onClose={() => {}} />);
+    view.rerender(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    finishOlder?.(ROWS);
+    await act(async () => {});
+
+    expect(document.body.textContent).toContain("/new");
+    expect(document.body.textContent).not.toContain(ROWS[0].root);
+  });
+
   it("disables Empty for a root that is already empty", async () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});

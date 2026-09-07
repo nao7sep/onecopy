@@ -36,6 +36,14 @@ interface MoveBatchOutcome {
 export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
 export type DestinationConflictPolicy = "rename" | "overwrite";
 
+let destinationRootTail: Promise<void> = Promise.resolve();
+
+function enqueueDestinationRootChange(task: () => Promise<void>): Promise<void> {
+  const operation = destinationRootTail.then(task, task);
+  destinationRootTail = operation.catch(() => undefined);
+  return operation;
+}
+
 function receiverOperationKey(destDir: string, mode: MoveMode): string {
   return JSON.stringify([destDir, mode]);
 }
@@ -123,13 +131,15 @@ export async function addDestinationRoot(): Promise<void> {
   try {
     const picked = await openDialog({ directory: true, multiple: false });
     if (typeof picked !== "string") return;
-    const roots = useDestinationsStore.getState().roots;
-    if (roots.includes(picked)) return;
-    const next = [...roots, picked];
-    await useAppStore
-      .getState()
-      .patchConfig({ destinationRoots: next }, { reportFailure: false });
-    useDestinationsStore.setState({ roots: next, message: "" });
+    await enqueueDestinationRootChange(async () => {
+      const roots = useDestinationsStore.getState().roots;
+      if (roots.includes(picked)) return;
+      const next = [...roots, picked];
+      await useAppStore
+        .getState()
+        .patchConfig({ destinationRoots: next }, { reportFailure: false });
+      useDestinationsStore.setState({ roots: next, message: "" });
+    });
   } catch (error) {
     log.error("destination root add failed", toErrorFields(error));
     useDestinationsStore.setState({ message: "Couldn’t add that destination." });
@@ -139,13 +149,15 @@ export async function addDestinationRoot(): Promise<void> {
 
 export async function removeDestinationRoot(root: string): Promise<void> {
   try {
-    const next = useDestinationsStore
-      .getState()
-      .roots.filter((candidate) => candidate !== root);
-    await useAppStore
-      .getState()
-      .patchConfig({ destinationRoots: next }, { reportFailure: false });
-    useDestinationsStore.setState({ roots: next, message: "" });
+    await enqueueDestinationRootChange(async () => {
+      const next = useDestinationsStore
+        .getState()
+        .roots.filter((candidate) => candidate !== root);
+      await useAppStore
+        .getState()
+        .patchConfig({ destinationRoots: next }, { reportFailure: false });
+      useDestinationsStore.setState({ roots: next, message: "" });
+    });
   } catch (error) {
     log.error("destination root remove failed", toErrorFields(error));
     useDestinationsStore.setState({ message: "Couldn’t remove that destination." });

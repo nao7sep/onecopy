@@ -27,6 +27,7 @@ import { log, toErrorFields, reportWindowCall } from "../repositories";
 import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
 import { recordActionFailure } from "./notifications-store";
+import { recordActivity } from "../repositories/activity";
 
 export interface PreviewPayload {
   hash: string | null;
@@ -87,12 +88,30 @@ interface PreviewState {
 
 // Cached existence flag: getByLabel per keystroke is an IPC round trip.
 let previewWindowOpen = false;
+let surfaceRequest = 0;
+let surfaceTail: Promise<void> = Promise.resolve();
 
-async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void> {
+function enqueueSurface(task: () => Promise<void>): Promise<void> {
+  const operation = surfaceTail.then(task, task);
+  surfaceTail = operation.catch(() => undefined);
+  return operation;
+}
+
+function recordStaleSurface(generation: number): void {
+  recordActivity({
+    kind: "stale",
+    owner: "preview",
+    generation,
+    current: "stale",
+    reason: "staleResponse",
+  });
+}
+
+async function ensurePreviewWindow(state: Record<string, unknown>): Promise<boolean> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing !== null) {
     previewWindowOpen = true;
-    return;
+    return false;
   }
   // A PLAIN window that remembers (Phase 33, superseding both earlier
   // z-order designs): its own position, size, and maximized flag persist in
@@ -155,10 +174,7 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
   } catch (error) {
     log.warn("preview window placement failed", toErrorFields(error));
   }
-  await window.show();
-  await raisePulse(window);
-  // Keep the keyboard where the culling happens.
-  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+  return true;
 }
 
 export async function restorePreviewAfterComparison(): Promise<void> {
@@ -262,6 +278,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   clearError: () => set({ error: null }),
 
   open: async (payload, detail, windowState = {}) => {
+    const request = ++surfaceRequest;
     try {
       const placement = resolvePlacement(get().placementPreference);
       // State FIRST: the side pane renders `current` the moment this lands,
@@ -269,20 +286,48 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       const message = { ...payload, detail };
       set({ follow: true, placement, current: message, error: null });
       if (placement === "window") {
-        await ensurePreviewWindow(windowState);
-        await frontPreviewWindow();
-        // A freshly created webview misses this emit (still booting) — its
-        // ready announcement fetches the current state instead; an already
-        // -open window hears it directly.
-        void emit("preview://show", message).catch((error) =>
-          publishPreviewFailure(
-            "preview-update-failed",
-            "Couldn’t update the Preview window.",
-            error,
-          ),
-        );
+        await enqueueSurface(async () => {
+          if (request !== surfaceRequest) {
+            recordStaleSurface(request);
+            return;
+          }
+          const created = await ensurePreviewWindow(windowState);
+          if (request !== surfaceRequest) {
+            recordStaleSurface(request);
+            return;
+          }
+          await frontPreviewWindow();
+          if (created) {
+            // Keep the keyboard where the culling happens.
+            await getCurrentWindow()
+              .setFocus()
+              .catch(reportWindowCall("main setFocus"));
+          }
+          if (request !== surfaceRequest) {
+            recordStaleSurface(request);
+            return;
+          }
+          // A freshly created webview misses this emit (still booting) — its
+          // ready announcement fetches the current state instead; an already
+          // -open window hears it directly.
+          void emit("preview://show", message).catch((error) => {
+            if (request !== surfaceRequest) {
+              recordStaleSurface(request);
+              return;
+            }
+            publishPreviewFailure(
+              "preview-update-failed",
+              "Couldn’t update the Preview window.",
+              error,
+            );
+          });
+        });
       }
     } catch (error) {
+      if (request !== surfaceRequest) {
+        recordStaleSurface(request);
+        return;
+      }
       set({ placement: null });
       publishPreviewFailure(
         "preview-open-failed",
@@ -293,47 +338,73 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   },
 
   close: () => {
+    surfaceRequest += 1;
     const { placement } = get();
     set({ follow: false, placement: null, current: null });
     if (placement === "window") {
-      void WebviewWindow.getByLabel("preview").then((w) => w?.close());
+      void enqueueSurface(async () => {
+        await WebviewWindow.getByLabel("preview").then((w) => w?.close());
+      });
     }
   },
 
   setPlacementPreference: async (preference, windowState = {}) => {
-    const { follow, placement, current, placementPreference } = get();
+    const request = ++surfaceRequest;
+    const { follow, placementPreference } = get();
     set({ placementPreference: preference });
     if (!follow) return;
     const next = resolvePlacement(preference);
-    if (next === placement) return;
-    // The new placement is published BEFORE the old window is torn down.
-    // The order is load-bearing: the preview window's tauri://destroyed
-    // handler treats "destroyed while placement is still 'window'" as the
-    // user closing the window and turns follow OFF — so closing first made
-    // every window→inline switch read as a manual close and disabled the
-    // preview the user was in the middle of moving. With placement already
-    // "split", that handler stands down and follow survives the switch.
-    set({ placement: next, error: null });
-    // Tearing the old surface down still happens: leaving the preview window
-    // open behind a split pane would show the same photo twice and keep a
-    // window the user just asked to be rid of.
-    try {
-      if (placement === "window") {
-        await WebviewWindow.getByLabel("preview").then((w) => w?.close());
+    await enqueueSurface(async () => {
+      if (request !== surfaceRequest) {
+        recordStaleSurface(request);
+        return;
       }
-      if (next === "window" && current !== null) {
-        await ensurePreviewWindow(windowState);
-        await frontPreviewWindow();
-        await emit("preview://show", current);
+      const { placement, current } = get();
+      if (next === placement) return;
+      // The new placement is published BEFORE the old window is torn down.
+      // The order is load-bearing: the preview window's destroyed handler
+      // treats destruction while placement is still `window` as a manual
+      // close and turns follow off.
+      set({ placement: next, error: null });
+      try {
+        if (placement === "window") {
+          await WebviewWindow.getByLabel("preview").then((w) => w?.close());
+        }
+        if (request !== surfaceRequest) {
+          recordStaleSurface(request);
+          return;
+        }
+        if (next === "window" && current !== null) {
+          const created = await ensurePreviewWindow(windowState);
+          if (request !== surfaceRequest) {
+            recordStaleSurface(request);
+            return;
+          }
+          await frontPreviewWindow();
+          if (created) {
+            await getCurrentWindow()
+              .setFocus()
+              .catch(reportWindowCall("main setFocus"));
+          }
+          if (request !== surfaceRequest) {
+            recordStaleSurface(request);
+            return;
+          }
+          await emit("preview://show", current);
+        }
+      } catch (error) {
+        if (request !== surfaceRequest) {
+          recordStaleSurface(request);
+          return;
+        }
+        set({ placement: placement ?? null, placementPreference });
+        publishPreviewFailure(
+          "preview-placement-failed",
+          "Couldn’t change the Preview placement.",
+          error,
+        );
       }
-    } catch (error) {
-      set({ placement: placement ?? null, placementPreference });
-      publishPreviewFailure(
-        "preview-placement-failed",
-        "Couldn’t change the Preview placement.",
-        error,
-      );
-    }
+    });
   },
 
   restoreFollow: (on, preference) => {

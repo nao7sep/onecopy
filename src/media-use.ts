@@ -5,8 +5,8 @@
 
 import { useCallback, useRef, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { log, toErrorFields } from "./repositories";
+import { createEventInstaller } from "./utils/eventInstallation";
 
 interface ReleaseMessage {
   token: number;
@@ -24,7 +24,6 @@ interface SavedMedia {
 const elements = new Set<HTMLMediaElement>();
 let activeToken: number | null = null;
 let released: SavedMedia[] = [];
-let installation: Promise<void> | null = null;
 let lifecycle: Promise<void> = Promise.resolve();
 const operations = new Map<number, Promise<void>>();
 const resumeWaiters = new Map<number, () => void>();
@@ -81,9 +80,18 @@ async function release(message: ReleaseMessage): Promise<void> {
   const resumed = new Promise<void>((resolve) => {
     resumeWaiters.set(message.token, resolve);
   });
-  const stillActive = await invoke<boolean>("media_use_released", {
-    token: message.token,
-  });
+  let stillActive: boolean;
+  try {
+    stillActive = await invoke<boolean>("media_use_released", {
+      token: message.token,
+    });
+  } catch (error) {
+    // The backend cannot begin its file operation without this
+    // acknowledgement. Restore the local readers instead of leaving the
+    // webview permanently blank while the backend release times out.
+    resume(message.token, message.restorePlayback !== false);
+    throw error;
+  }
   if (!stillActive) resume(message.token, message.restorePlayback !== false);
   await resumed;
 }
@@ -132,13 +140,14 @@ function enqueueRelease(message: ReleaseMessage): Promise<void> {
   return tracked;
 }
 
-export function installMediaUseBoundary(): Promise<void> {
-  if (installation !== null) return installation;
-  installation = (async () => {
-    await listen<ReleaseMessage>("media-use://release", ({ payload }) => {
-      void enqueueRelease(payload);
+const install = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<ReleaseMessage>("media-use://release", ({ payload }) => {
+      // The lifecycle tail records the failure. The event callback has no
+      // caller to receive it, so contain this delivery promise as well.
+      void enqueueRelease(payload).catch(() => undefined);
     });
-    await listen<{ token: number; restorePlayback?: boolean }>(
+    await listeners.listen<{ token: number; restorePlayback?: boolean }>(
       "media-use://resume",
       ({ payload }) => {
         resume(payload.token, payload.restorePlayback !== false);
@@ -146,8 +155,13 @@ export function installMediaUseBoundary(): Promise<void> {
     );
     const current = await invoke<ReleaseMessage | null>("media_use_current");
     if (current !== null) await enqueueRelease(current);
-  })();
-  return installation;
+  },
+  (error) => log.error("media-use wiring failed", toErrorFields(error)),
+  { propagateFailure: true },
+);
+
+export function installMediaUseBoundary(): Promise<void> {
+  return install();
 }
 
 export function useOwnedMedia<T extends HTMLMediaElement>(): readonly [

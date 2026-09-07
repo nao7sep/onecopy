@@ -1,8 +1,9 @@
 import { create } from "zustand";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import type { PlaybackMedium } from "../models/playback";
 import type { ContentSessionState, TranscriptViewState } from "../models/contentSession";
 import { log, toErrorFields } from "../repositories";
+import { createEventInstaller } from "../utils/eventInstallation";
 
 export const useContentSessionStore = create<ContentSessionState>(() => ({
   textWrap: true,
@@ -11,21 +12,22 @@ export const useContentSessionStore = create<ContentSessionState>(() => ({
   transcriptViews: {},
 }));
 
-let installation: Promise<void> | null = null;
+const install = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<ContentSessionState>(
+      "content-session://state",
+      ({ payload }) => {
+        useContentSessionStore.setState(payload);
+      },
+    );
+    await emit("content-session://client-ready", {});
+  },
+  (error) => log.error("content session listener failed", toErrorFields(error)),
+  { propagateFailure: true },
+);
 
 export function installContentSessionClient(): Promise<void> {
-  if (installation !== null) return installation;
-  installation = listen<ContentSessionState>("content-session://state", ({ payload }) => {
-    useContentSessionStore.setState(payload);
-  })
-    .then(() => emit("content-session://client-ready", {}))
-    .then(() => undefined)
-    .catch((error) => {
-      installation = null;
-      log.error("content session listener failed", toErrorFields(error));
-      throw error;
-    });
-  return installation;
+  return install();
 }
 
 async function send(event: string, payload: unknown): Promise<void> {

@@ -27,22 +27,11 @@ export async function saveSettings(): Promise<void> {
     current: "running",
     reason: "user",
   });
-  // Config publication is the Save transaction's commit point. Index
-  // projection is durable follow-up work: once publication succeeds, close
-  // the draft surface rather than leaving it looking unsaved for the duration
-  // of a million-row rebuild or after a cancellable repair.
+  // Config publication is the Save transaction's commit point. Sound and
+  // volume live in the separate interface-state document, so their failure is
+  // an honest partial result rather than proof that configuration rolled back.
   try {
     await useAppStore.getState().patchConfig(configDraft, { reportFailure: false });
-    await useAppStore.getState().patchState(
-      { soundEnabled, playbackVolume },
-      { immediate: true },
-    );
-    useSettingsStore.setState({
-      open: false,
-      draft: null,
-      opened: null,
-      saving: false,
-    });
   } catch (error) {
     useSettingsStore.setState({
       saving: false,
@@ -60,6 +49,37 @@ export async function saveSettings(): Promise<void> {
       reason: "error",
     });
     return;
+  }
+
+  let stateSaveFailed = false;
+  try {
+    await useAppStore.getState().patchState(
+      { soundEnabled, playbackVolume },
+      { immediate: true },
+    );
+    // Index projection is durable follow-up work: once both authored
+    // documents publish, close the draft rather than holding Settings open
+    // for a potentially large rebuild.
+    useSettingsStore.setState({
+      open: false,
+      draft: null,
+      opened: null,
+      saving: false,
+    });
+  } catch (error) {
+    stateSaveFailed = true;
+    useSettingsStore.setState({
+      saving: false,
+      message:
+        "Settings were saved, but Sound and volume could not be saved. Your changes are still here; try again.",
+      messageLevel: "error",
+    });
+    log.error("settings interface-state save failed", toErrorFields(error));
+    recordActionFailure(
+      "settings-interface-state-save-failed",
+      "Settings were saved, but OneCopy couldn’t save Sound and volume.",
+      error,
+    );
   }
 
   let resolved: number | null = null;
@@ -105,13 +125,15 @@ export async function saveSettings(): Promise<void> {
       );
     }
   }
-  log.info("settings saved", { resolved });
+  log.info(stateSaveFailed ? "settings partially saved" : "settings saved", {
+    resolved,
+  });
   recordActivity({
-    kind: "completed",
+    kind: stateSaveFailed ? "failed" : "completed",
     owner: "settings",
     operationId,
     previous: "running",
-    current: "succeeded",
-    reason: "completion",
+    current: stateSaveFailed ? "failed" : "succeeded",
+    reason: stateSaveFailed ? "error" : "completion",
   });
 }

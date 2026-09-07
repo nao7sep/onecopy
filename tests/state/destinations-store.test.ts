@@ -118,6 +118,47 @@ describe("loaded destination projection", () => {
   });
 });
 
+describe("destination listing freshness", () => {
+  it("does not let an older folder response overwrite a newer refresh", async () => {
+    let finishOlder: ((rows: never[]) => void) | undefined;
+    let calls = 0;
+    mockCommands({
+      list_subdirs: () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<never[]>((resolve) => {
+            finishOlder = resolve;
+          });
+        }
+        return [
+          {
+            name: "new",
+            path: "/dest/new",
+            hasChildren: false,
+            isEmpty: true,
+          },
+        ];
+      },
+    });
+
+    const older = useDestinationsStore.getState().refreshNode("/dest");
+    await useDestinationsStore.getState().refreshNode("/dest");
+    finishOlder?.([
+      {
+        name: "old",
+        path: "/dest/old",
+        hasChildren: false,
+        isEmpty: true,
+      } as never,
+    ]);
+    await older;
+
+    expect(useDestinationsStore.getState().children["/dest"]?.map((row) => row.name)).toEqual([
+      "new",
+    ]);
+  });
+});
+
 describe("staging a permanent move", () => {
   it("asks before moving anything", async () => {
     await moveSelectionTo("/dest", "move-delete-rest");

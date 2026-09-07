@@ -34,7 +34,9 @@ export type ActivityOwner =
   | "quickView"
   | "fullscreen"
   | "comparison"
+  | "destination"
   | "settings"
+  | "transcript"
   | "managedTools"
   | "media";
 

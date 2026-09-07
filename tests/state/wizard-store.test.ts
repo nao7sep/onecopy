@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // The wizard's Finish step.
 
 import { beforeEach, describe, expect, it } from "vitest";
@@ -28,6 +29,7 @@ beforeEach(() => {
     timezoneValid: true,
     timezonePending: false,
     error: null,
+    finishing: false,
   });
 });
 
@@ -57,6 +59,7 @@ describe("finish", () => {
       videoTranscriptionEnabled: false,
       audioTranscriptionEnabled: true,
     });
+    expect(useWizardStore.getState().open).toBe(false);
   });
 
   it("does not save while timezone validation is pending or invalid", async () => {
@@ -66,6 +69,33 @@ describe("finish", () => {
     await finishWizard();
 
     expect(patchConfigPayloads()).toEqual([]);
+  });
+
+  it("admits one Finish submission and keeps newer draft state open", async () => {
+    let finishSave: (() => void) | undefined;
+    mockCommands({
+      patch_config: () =>
+        new Promise<Record<string, never>>((resolve) => {
+          finishSave = () => resolve({});
+        }),
+    });
+
+    const first = finishWizard();
+    const duplicate = finishWizard();
+    expect(first).toBe(duplicate);
+    expect(patchConfigPayloads()).toHaveLength(1);
+    useWizardStore.setState({ timezone: "UTC" });
+    finishSave?.();
+    await first;
+
+    expect(useWizardStore.getState()).toMatchObject({
+      open: true,
+      finishing: false,
+      timezone: "UTC",
+      error:
+        "Setup was saved, but newer changes are still open. Review them, then finish again.",
+    });
+    expect(patchConfigPayloads()).toHaveLength(1);
   });
 });
 

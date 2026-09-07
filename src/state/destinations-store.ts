@@ -12,6 +12,7 @@ import type {
   PendingDestinationConflicts,
 } from "../models/destinationTransfer";
 import { recordActionFailure } from "./notifications-store";
+import { recordActivity } from "../repositories/activity";
 
 export interface DirEntry {
   name: string;
@@ -27,6 +28,9 @@ export interface DestinationResult {
    * A successful retry clears only a result with the same operation key. */
   operationKey: string;
 }
+
+let nextListingGeneration = 0;
+const listingGenerations = new Map<string, number>();
 
 interface DestinationsState {
   roots: string[];
@@ -119,9 +123,21 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   },
 
   refreshNode: async (path) => {
+    const generation = ++nextListingGeneration;
+    listingGenerations.set(path, generation);
     set({ listing: { ...get().listing, [path]: "loading" } });
     try {
       const entries = await invoke<DirEntry[]>("list_subdirs", { path });
+      if (listingGenerations.get(path) !== generation) {
+        recordActivity({
+          kind: "stale",
+          owner: "destination",
+          generation,
+          current: "stale",
+          reason: "staleResponse",
+        });
+        return;
+      }
       const emptiness = Object.fromEntries(entries.map((entry) => [entry.path, entry.isEmpty]));
       const listing = { ...get().listing };
       delete listing[path];
@@ -131,6 +147,16 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
         listing,
       });
     } catch (error) {
+      if (listingGenerations.get(path) !== generation) {
+        recordActivity({
+          kind: "stale",
+          owner: "destination",
+          generation,
+          current: "stale",
+          reason: "staleResponse",
+        });
+        return;
+      }
       log.error("destination listing failed", toErrorFields(error));
       set({ listing: { ...get().listing, [path]: "error" } });
       recordActionFailure(

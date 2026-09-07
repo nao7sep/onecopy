@@ -44,4 +44,40 @@ describe("destination root failures", () => {
       reportFailure: false,
     });
   });
+
+  it("serializes root edits so a delayed save cannot overwrite a later intent", async () => {
+    let finishFirst: (() => void) | undefined;
+    let saves = 0;
+    mockCommands({
+      patch_config: () => {
+        saves += 1;
+        if (saves === 1) {
+          return new Promise<Record<string, never>>((resolve) => {
+            finishFirst = () => resolve({});
+          });
+        }
+        return {};
+      },
+    });
+    openDialog.mockResolvedValueOnce("/added");
+
+    const add = addDestinationRoot();
+    await Promise.resolve();
+    const remove = removeDestinationRoot("/existing");
+    await Promise.resolve();
+    expect(saves).toBe(1);
+
+    finishFirst?.();
+    await Promise.all([add, remove]);
+
+    expect(useDestinationsStore.getState().roots).toEqual(["/added"]);
+    expect(
+      invokeCalls.filter((call) => call.command === "patch_config").map((call) =>
+        call.args.patch,
+      ),
+    ).toEqual([
+      { destinationRoots: ["/existing", "/added"] },
+      { destinationRoots: ["/added"] },
+    ]);
+  });
 });

@@ -57,15 +57,22 @@ export default function TrashModal({
 
   useEffect(() => {
     if (!open) return;
+    let current = true;
     setRows(null);
     setError(null);
     void invoke<TrashRootInfo[]>("trash_overview")
-      .then(setRows)
+      .then((result) => {
+        if (current) setRows(result);
+      })
       .catch((error) => {
+        if (!current) return;
         log.error("trash overview failed", toErrorFields(error));
         setError("Trash locations are unavailable.");
         recordActionFailure("trash-overview-failed", "Trash locations are unavailable.", error);
       });
+    return () => {
+      current = false;
+    };
   }, [open]);
 
   useEffect(() => {

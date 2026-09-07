@@ -1,4 +1,4 @@
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import {
   choosePlaybackSession,
   clampPlaybackVolume,
@@ -11,6 +11,7 @@ import { log, toErrorFields } from "../repositories";
 import { retainStatePatch, useAppStore } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useQuickViewStore } from "../state/quick-view-store";
+import { createEventInstaller } from "../utils/eventInstallation";
 
 interface PlaybackObservation {
   surface: PlaybackSurface;
@@ -29,7 +30,6 @@ interface PlaybackTarget {
 
 const registrations = new Map<PlaybackSurface, PlaybackRegistration>();
 let session: PlaybackSession | null = null;
-let installed = false;
 let pendingState: Record<string, unknown> | null = null;
 let stateTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSeek: PlaybackTarget | null = null;
@@ -192,47 +192,50 @@ function seek(target: PlaybackTarget): void {
   broadcast();
 }
 
-/** Main-webview coordinator for the one live playback session. */
-export async function installPlaybackWorkflow(): Promise<void> {
-  if (installed) return;
-  installed = true;
-  await Promise.all([
-    listen<PlaybackRegistration>("playback://register", (event) =>
+const install = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<PlaybackRegistration>("playback://register", (event) =>
       register(event.payload),
-    ),
-    listen<PlaybackRegistration>("playback://unregister", (event) =>
+    );
+    await listeners.listen<PlaybackRegistration>("playback://unregister", (event) =>
       unregister(event.payload),
-    ),
-    listen<PlaybackObservation>("playback://observe", (event) =>
+    );
+    await listeners.listen<PlaybackObservation>("playback://observe", (event) =>
       observe(event.payload),
-    ),
-    listen<PlaybackTarget>("playback://toggle", (event) =>
+    );
+    await listeners.listen<PlaybackTarget>("playback://toggle", (event) =>
       toggle(event.payload),
-    ),
-    listen<PlaybackTarget>("playback://pause", (event) => pause(event.payload)),
-    listen<PlaybackTarget>("playback://seek", (event) => seek(event.payload)),
-    listen("playback://client-ready", () => {
+    );
+    await listeners.listen<PlaybackTarget>("playback://pause", (event) => pause(event.payload));
+    await listeners.listen<PlaybackTarget>("playback://seek", (event) => seek(event.payload));
+    await listeners.listen("playback://client-ready", () => {
       void emit("playback://coordinator-ready", {}).catch((error) => {
         log.error("playback handshake failed", toErrorFields(error));
       });
-    }),
-  ]);
-  useAppStore.subscribe((state, previous) => {
-    if (
-      (state.appData?.config === previous.appData?.config &&
-        state.appData?.state === previous.appData?.state) ||
-      session === null
-    )
-      return;
-    const next = policy();
-    session = {
-      ...session,
-      soundEnabled: next.soundEnabled,
-      volume: next.volume,
-    };
-    broadcast();
-  });
-  await emit("playback://coordinator-ready", {});
+    });
+    listeners.retain(useAppStore.subscribe((state, previous) => {
+      if (
+        (state.appData?.config === previous.appData?.config &&
+          state.appData?.state === previous.appData?.state) ||
+        session === null
+      )
+        return;
+      const next = policy();
+      session = {
+        ...session,
+        soundEnabled: next.soundEnabled,
+        volume: next.volume,
+      };
+      broadcast();
+    }));
+    await emit("playback://coordinator-ready", {});
+  },
+  (error) => log.error("playback coordinator wiring failed", toErrorFields(error)),
+);
+
+/** Main-webview coordinator for the one live playback session. */
+export function installPlaybackWorkflow(): Promise<void> {
+  return install();
 }
 
 export function toggleMainPlayback(key: string): boolean {

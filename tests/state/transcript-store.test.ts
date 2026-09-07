@@ -24,6 +24,48 @@ beforeEach(() => {
 });
 
 describe("transcript projection", () => {
+  it("keeps a newer completion when an older receipt load fails", async () => {
+    let rejectLoad: ((error: Error) => void) | undefined;
+    mockCommands({
+      transcript_get: () =>
+        new Promise((_resolve, reject) => {
+          rejectLoad = reject;
+        }),
+    });
+
+    const loading = useTranscriptStore.getState().load("video");
+    fireEvent("transcribe://done", { hash: "video", text: "finished" });
+    rejectLoad?.(new Error("older receipt unavailable"));
+    await loading;
+
+    expect(useTranscriptStore.getState().rows.video).toMatchObject({
+      status: "ready",
+      text: "finished",
+      message: null,
+    });
+  });
+
+  it("keeps a newer completion when the older start receipt rejects", async () => {
+    let rejectStart: ((error: Error) => void) | undefined;
+    mockCommands({
+      transcribe: () =>
+        new Promise((_resolve, reject) => {
+          rejectStart = reject;
+        }),
+    });
+
+    const starting = useTranscriptStore.getState().start("video");
+    fireEvent("transcribe://done", { hash: "video", text: "finished" });
+    rejectStart?.(new Error("older start reply lost"));
+    await starting;
+
+    expect(useTranscriptStore.getState().rows.video).toMatchObject({
+      status: "ready",
+      text: "finished",
+      message: null,
+    });
+  });
+
   it("tracks unseen automatic work without caching every library item", async () => {
     fireEvent("transcribe://progress", {
       hash: "background-video",

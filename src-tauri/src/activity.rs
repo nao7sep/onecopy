@@ -50,7 +50,9 @@ pub enum ActivityOwner {
     QuickView,
     Fullscreen,
     Comparison,
+    Destination,
     Settings,
+    Transcript,
     ManagedTools,
     Media,
 }

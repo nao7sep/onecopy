@@ -162,6 +162,43 @@ describe("preview window failures", () => {
     ).toBe(true);
   });
 
+  it("serializes a window-to-split-to-window change so an older close cannot win", async () => {
+    const window = new WebviewWindow("preview");
+    let finishClose: (() => void) | undefined;
+    window.close.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishClose = resolve;
+        }),
+    );
+    usePreviewStore.setState({
+      follow: true,
+      placement: "window",
+      placementPreference: "window",
+      current: { ...ITEM_A, detail: detailFor("A.jpg") },
+    });
+
+    const split = usePreviewStore.getState().setPlacementPreference("split");
+    for (let index = 0; index < 10 && !finishClose; index += 1) {
+      await Promise.resolve();
+    }
+    expect(window.close).toHaveBeenCalledOnce();
+    const backToWindow = usePreviewStore
+      .getState()
+      .setPlacementPreference("window");
+    expect(window.show).not.toHaveBeenCalled();
+
+    finishClose?.();
+    await Promise.all([split, backToWindow]);
+
+    expect(usePreviewStore.getState()).toMatchObject({
+      follow: true,
+      placement: "window",
+      placementPreference: "window",
+    });
+    expect(window.show).toHaveBeenCalledOnce();
+  });
+
   it("keeps the failure on Preview while recording only Recent history", async () => {
     const window = new WebviewWindow("preview");
     window.show.mockRejectedValueOnce(new Error("window unavailable"));

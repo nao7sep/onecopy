@@ -44,6 +44,7 @@ export class EventInstallation {
 export function createEventInstaller(
   register: (listeners: EventInstallation) => Promise<void>,
   onFailure: (error: unknown) => void,
+  options: { propagateFailure?: boolean } = {},
 ): () => Promise<void> {
   let installation: Promise<void> | null = null;
 
@@ -61,8 +62,9 @@ export function createEventInstaller(
   return () => {
     installation ??= install();
     const attempt = installation;
-    return attempt.catch(() => {
+    return attempt.catch((error) => {
       if (installation === attempt) installation = null;
+      if (options.propagateFailure === true) throw error;
     });
   };
 }

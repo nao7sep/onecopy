@@ -62,4 +62,21 @@ describe("EventInstallation", () => {
     expect(attempts).toBe(2);
     expect(stop).toHaveBeenCalledOnce();
   });
+
+  it("can return the original failure to a control while remaining retryable", async () => {
+    const cause = new Error("listener transport failed");
+    let attempts = 0;
+    const install = createEventInstaller(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw cause;
+      },
+      vi.fn(),
+      { propagateFailure: true },
+    );
+
+    await expect(install()).rejects.toBe(cause);
+    await expect(install()).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+  });
 });

@@ -30,6 +30,7 @@ interface WizardState {
   timezoneValid: boolean;
   timezonePending: boolean;
   error: string | null;
+  finishing: boolean;
   /** True when the wizard was RE-RUN over an existing setup. A first run has
    * nothing to return to, so only a re-run offers Cancel. */
   reconfigure: boolean;
@@ -61,6 +62,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   timezoneValid: true,
   timezonePending: false,
   error: null,
+  finishing: false,
   reconfigure: false,
   optionalFeatures: optionalFeatureSetup(null, [], true).choices,
   optionalFeatureReasons: {},
@@ -86,6 +88,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         timezoneValid: true,
         timezonePending: false,
         error: null,
+        finishing: false,
         reconfigure: false,
         optionalFeatures: optional.choices,
         optionalFeatureReasons: optional.reasons,
@@ -97,6 +100,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         timezoneValid: true,
         timezonePending: false,
         error: null,
+        finishing: false,
         reconfigure: false,
       });
       await get().recheckPresence();
@@ -120,6 +124,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       timezoneValid: true,
       timezonePending: false,
       error: null,
+      finishing: false,
       reconfigure: true,
       dirs: sourceDirs.map((path) => ({ path })),
       optionalFeatures: optional.choices,

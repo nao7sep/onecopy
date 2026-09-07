@@ -31,6 +31,7 @@ export default function Wizard() {
   const timezoneValid = useWizardStore((s) => s.timezoneValid);
   const timezonePending = useWizardStore((s) => s.timezonePending);
   const error = useWizardStore((s) => s.error);
+  const finishing = useWizardStore((s) => s.finishing);
   const reconfigure = useWizardStore((s) => s.reconfigure);
   const optionalFeatures = useWizardStore((s) => s.optionalFeatures);
   const optionalFeatureReasons = useWizardStore((s) => s.optionalFeatureReasons);
@@ -50,12 +51,12 @@ export default function Wizard() {
   const leading = (
     <span className="flex items-center gap-2">
       {reconfigure ? (
-        <Button variant="ghost" onClick={cancel}>
+        <Button variant="ghost" disabled={finishing} onClick={cancel}>
           Cancel
         </Button>
       ) : null}
       {step > 1 ? (
-        <Button variant="ghost" onClick={() => setStep((step - 1) as 1 | 2 | 3)}>
+        <Button variant="ghost" disabled={finishing} onClick={() => setStep((step - 1) as 1 | 2 | 3)}>
           Back
         </Button>
       ) : null}
@@ -181,14 +182,19 @@ export default function Wizard() {
               <Row key={id} label={label} hint={optionalFeatureReasons[id]}>
                 <Toggle
                   checked={optionalFeatures[id]}
+                  disabled={finishing}
                   onChange={(enabled) => setOptionalFeature(id, enabled)}
                 />
               </Row>
             ))}
             <div className="mt-6 flex items-center justify-between">
               {leading}
-              <Button variant="primary" onClick={() => void finishWizard()}>
-                Finish and scan
+              <Button
+                variant="primary"
+                disabled={finishing}
+                onClick={() => void finishWizard()}
+              >
+                {finishing ? "Finishing…" : "Finish and scan"}
               </Button>
             </div>
           </section>

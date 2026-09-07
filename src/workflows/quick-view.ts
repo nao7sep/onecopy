@@ -3,7 +3,7 @@
 // coordinates those surfaces. The native disk-backed sequence owns frozen
 // membership and order; neither React surface owns library state.
 
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
@@ -30,6 +30,7 @@ import {
   exitViewerFullscreen,
   type ViewerMonitor,
 } from "./viewer-window";
+import { createEventInstaller } from "../utils/eventInstallation";
 export type { ViewerMonitor } from "./viewer-window";
 
 export interface ViewerBroadcast {
@@ -50,7 +51,6 @@ interface ViewerKeyMessage {
   altKey?: boolean;
 }
 
-let installed = false;
 let itemReconcileQueued = false;
 let fullscreenRequest = 0;
 let viewerOpenRequest = 0;
@@ -159,42 +159,45 @@ function recoverFullscreenFailure(
   }
 }
 
-/** Installs the cross-window handshake and disappearance reconciliation once. */
-export async function installViewerWorkflow(): Promise<void> {
-  if (installed) return;
-  installed = true;
-  await Promise.all([
-    listen("viewer://ready", broadcastViewer),
-    listen<ViewerKeyMessage>("viewer://key", (event) => {
+const install = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen("viewer://ready", broadcastViewer);
+    await listeners.listen<ViewerKeyMessage>("viewer://key", (event) => {
       void handleViewerKey(event.payload);
-    }),
-    listen("viewer://confirm-delete", () => {
-      void confirmViewerDelete();
-    }),
-    listen("viewer://cancel-delete", () => {
-      useQuickViewStore.getState().cancelDelete();
-    }),
-    listen("viewer://dismiss-failure", () => {
-      useQuickViewStore.getState().setFailure(null);
-    }),
-    listen<ViewerMonitor | null>("preview://fullscreen", (event) => {
-      openViewerFromMain("fullscreen", event.payload ?? undefined);
-    }),
-  ]);
-  useQuickViewStore.subscribe(broadcastViewer);
-  useItemsStore.subscribe((state, previous) => {
-    if (state.reconciliationId === previous.reconciliationId || itemReconcileQueued) return;
-    itemReconcileQueued = true;
-    queueMicrotask(() => {
-      itemReconcileQueued = false;
-      void reconcileViewerSequence();
     });
-  });
-  useItemsStore.subscribe((state, previous) => {
-    if (state.detail !== previous.detail || state.selectedItem !== previous.selectedItem) {
-      broadcastViewer();
-    }
-  });
+    await listeners.listen("viewer://confirm-delete", () => {
+      void confirmViewerDelete();
+    });
+    await listeners.listen("viewer://cancel-delete", () => {
+      useQuickViewStore.getState().cancelDelete();
+    });
+    await listeners.listen("viewer://dismiss-failure", () => {
+      useQuickViewStore.getState().setFailure(null);
+    });
+    await listeners.listen<ViewerMonitor | null>("preview://fullscreen", (event) => {
+      openViewerFromMain("fullscreen", event.payload ?? undefined);
+    });
+    listeners.retain(useQuickViewStore.subscribe(broadcastViewer));
+    listeners.retain(useItemsStore.subscribe((state, previous) => {
+      if (state.reconciliationId === previous.reconciliationId || itemReconcileQueued) return;
+      itemReconcileQueued = true;
+      queueMicrotask(() => {
+        itemReconcileQueued = false;
+        void reconcileViewerSequence();
+      });
+    }));
+    listeners.retain(useItemsStore.subscribe((state, previous) => {
+      if (state.detail !== previous.detail || state.selectedItem !== previous.selectedItem) {
+        broadcastViewer();
+      }
+    }));
+  },
+  (error) => log.error("viewer workflow wiring failed", toErrorFields(error)),
+);
+
+/** Installs the cross-window handshake and disappearance reconciliation once. */
+export function installViewerWorkflow(): Promise<void> {
+  return install();
 }
 
 async function reconcileViewerSequence(): Promise<void> {

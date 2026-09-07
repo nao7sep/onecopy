@@ -1,11 +1,12 @@
 import { create } from "zustand";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import type {
   PlaybackRegistration,
   PlaybackSession,
   PlaybackSurface,
 } from "../models/playback";
 import { log, toErrorFields } from "../repositories";
+import { createEventInstaller } from "../utils/eventInstallation";
 
 interface PlaybackClientState {
   session: PlaybackSession | null;
@@ -15,7 +16,6 @@ export const usePlaybackClientStore = create<PlaybackClientState>(() => ({
   session: null,
 }));
 
-let installation: Promise<void> | null = null;
 const registrations = new Map<PlaybackSurface, PlaybackRegistration>();
 
 function emitPlayback(event: string, payload: unknown): void {
@@ -44,26 +44,24 @@ function announceRegistrations(): void {
   }
 }
 
+const install = createEventInstaller(
+  async (listeners) => {
+    await listeners.listen<PlaybackSession | null>("playback://state", (event) => {
+      usePlaybackClientStore.setState({ session: event.payload });
+    });
+    await listeners.listen("playback://coordinator-ready", () => {
+      announceRegistrations();
+    });
+    await emit("playback://client-ready", {});
+  },
+  (error) => log.error("playback state listener failed", toErrorFields(error)),
+  { propagateFailure: true },
+);
+
 /** One listener per webview; individual media bodies only register their
  * availability and observe this local projection. */
 export function installPlaybackClient(): Promise<void> {
-  if (installation !== null) return installation;
-  installation = Promise.all([
-    listen<PlaybackSession | null>("playback://state", (event) => {
-      usePlaybackClientStore.setState({ session: event.payload });
-    }),
-    listen("playback://coordinator-ready", () => {
-      announceRegistrations();
-    }),
-  ])
-    .then(() => emit("playback://client-ready", {}))
-    .then(() => undefined)
-    .catch((error) => {
-      installation = null;
-      log.error("playback state listener failed", toErrorFields(error));
-      throw error;
-    });
-  return installation;
+  return install();
 }
 
 /** Registers one live media body without coupling coordinator recovery to a

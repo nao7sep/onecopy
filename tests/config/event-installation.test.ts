@@ -10,8 +10,14 @@ const multiListenerOwners = [
   "src/state/binaries-store.ts",
   "src/state/derived-work-store.ts",
   "src/state/transcript-store.ts",
+  "src/state/playback-client-store.ts",
+  "src/state/content-session-store.ts",
+  "src/media-use.ts",
   "src/workflows/comparison.ts",
+  "src/workflows/content-session.ts",
   "src/workflows/mutation-events.ts",
+  "src/workflows/playback.ts",
+  "src/workflows/quick-view.ts",
   "src/workflows/scan-events.ts",
 ] as const;
 

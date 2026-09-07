@@ -8,6 +8,7 @@ import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActionFailure } from "./notifications-store";
+import { recordActivity } from "../repositories/activity";
 
 export type TranscriptStatus =
   "loading" | "pending" | "queued" | "running" | "ready" | "failed";
@@ -99,7 +100,16 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
     const revision = revisions.get(hash) ?? 0;
     try {
       const result = await invoke<TranscriptResult>("transcript_get", { hash });
-      if ((revisions.get(hash) ?? 0) !== revision) return;
+      if ((revisions.get(hash) ?? 0) !== revision) {
+        recordActivity({
+          kind: "stale",
+          owner: "transcript",
+          generation: revision,
+          current: "stale",
+          reason: "staleResponse",
+        });
+        return;
+      }
       if (result.status === "pending" && active?.hash === hash) {
         patch(hash, {
           status: "running",
@@ -119,6 +129,16 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         });
       }
     } catch (error) {
+      if ((revisions.get(hash) ?? 0) !== revision) {
+        recordActivity({
+          kind: "stale",
+          owner: "transcript",
+          generation: revision,
+          current: "stale",
+          reason: "staleResponse",
+        });
+        return;
+      }
       patch(hash, { status: "failed", message: "The transcript could not be loaded. Try again." , percent: null });
       log.warn("transcript load failed", toErrorFields(error));
     } finally {
@@ -135,9 +155,20 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
     } else {
       publish(hash, { status: "queued", message: null, percent: null });
     }
+    const revision = revisions.get(hash) ?? 0;
     try {
       await invoke("transcribe", { hash, replace });
     } catch (error) {
+      if ((revisions.get(hash) ?? 0) !== revision) {
+        recordActivity({
+          kind: "stale",
+          owner: "transcript",
+          generation: revision,
+          current: "stale",
+          reason: "staleResponse",
+        });
+        return;
+      }
       if (replace) {
         publish(hash, {
           replacement: {
@@ -163,13 +194,14 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
   },
 
   cancel: async () => {
+    const target = active;
     try {
       await invoke("transcribe_cancel");
-      if (active !== null) patch(active.hash, { controlError: null });
+      if (target !== null) patch(target.hash, { controlError: null });
     } catch (error) {
       log.warn("transcription cancellation failed", toErrorFields(error));
       const message = "Couldn’t cancel transcription.";
-      if (active !== null) patch(active.hash, { controlError: message });
+      if (target !== null) patch(target.hash, { controlError: message });
       recordActionFailure(
         "transcription-cancel-failed",
         message,

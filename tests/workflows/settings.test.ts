@@ -117,6 +117,29 @@ describe("Settings save boundary", () => {
     });
   });
 
+  it("keeps the exact draft and completes config repair after interface-state persistence fails", async () => {
+    useSettingsStore.getState().update({
+      sourceDirs: ["/photos"],
+      soundEnabled: false,
+      playbackVolume: 0.35,
+    });
+    const draft = useSettingsStore.getState().draft;
+    mockCommands({ patch_state: () => Promise.reject(new Error("state disk full")) });
+
+    await saveSettings();
+
+    expect(useSettingsStore.getState()).toMatchObject({
+      open: true,
+      draft,
+      saving: false,
+      message:
+        "Settings were saved, but Sound and volume could not be saved. Your changes are still here; try again.",
+      messageLevel: "error",
+    });
+    expect(invokeCalls.some((call) => call.command === "re_resolve_all")).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
+  });
+
   it("publishes an explicit runtime acceleration selection as configuration", async () => {
     useSettingsStore.getState().openWith(
       { aiAcceleration: { transcription: "metal", "face-scoring": "none" } },

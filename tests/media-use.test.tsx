@@ -74,4 +74,20 @@ describe("media-use boundary", () => {
 
     expect(play).not.toHaveBeenCalled();
   });
+
+  it("restores local media when the backend cannot accept the release", async () => {
+    mockCommand("media_use_released", () =>
+      Promise.reject(new Error("release owner unavailable")),
+    );
+    const view = render(<Player />);
+    const video = view.container.querySelector("video")!;
+
+    await act(async () => {
+      fireEvent("media-use://release", { token: 9, keys: ["item"] });
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+    });
+    video.dispatchEvent(new Event("loadedmetadata"));
+
+    expect(video.getAttribute("src")).toBe("mediafile://localhost/item");
+  });
 });
