@@ -9,12 +9,18 @@ Set-Location $Repo
 
 $AppName = "OneCopy"
 $Version = (node -p "require('./src-tauri/tauri.conf.json').version")
+$TauriCli = Join-Path $Repo "node_modules/.bin/tauri.cmd"
+
+if (-not (Test-Path -PathType Leaf $TauriCli)) {
+    throw "Missing local Tauri CLI. Run npm install before packaging."
+}
 
 Remove-Item -Recurse -Force artifacts -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 
 # Builds the frontend, the Rust release binary, and the NSIS setup.exe.
-npx tauri build --bundles nsis
+& $TauriCli build --bundles nsis
+if ($LASTEXITCODE -ne 0) { throw "Tauri build failed with exit code $LASTEXITCODE" }
 
 $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
 if (-not $setup) { throw "tauri build did not produce an NSIS setup.exe" }

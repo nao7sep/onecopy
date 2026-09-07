@@ -15,13 +15,19 @@ cd "$REPO"
 
 APP_NAME="OneCopy"
 VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+TAURI_CLI="node_modules/.bin/tauri"
+
+if [[ ! -x "$TAURI_CLI" ]]; then
+  echo "Missing local Tauri CLI. Run npm install before packaging." >&2
+  exit 1
+fi
 
 rm -rf artifacts
 mkdir -p artifacts
 
 # Builds the frontend (beforeBuildCommand), the Rust release binary, the .app, and
 # the .dmg. --bundles overrides tauri.conf.json's targets so macOS emits app + dmg.
-npx tauri build --bundles app,dmg
+"$TAURI_CLI" build --bundles app,dmg
 
 DMG="$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)"
 APP="$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)"
