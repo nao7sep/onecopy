@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/nao7sep/onecopy"
 edition = "2021"
 default-run = "onecopy"
+autotests = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -42,14 +43,29 @@ path = "tests/ai/scenario.rs"
 required-features = ["ai-test-support"]
 
 [[test]]
-name = "ai_prepared_context_tests"
-path = "tests/ai_prepared_context_tests.rs"
+name = "ai_test_suite"
+path = "tests/suites/ai.rs"
 required-features = ["ai-test-support"]
 
 [[test]]
-name = "ai_operation_tests"
-path = "tests/ai_operation_tests.rs"
-required-features = ["ai-test-support"]
+name = "library_test_suite"
+path = "tests/suites/library.rs"
+
+[[test]]
+name = "media_test_suite"
+path = "tests/suites/media.rs"
+
+[[test]]
+name = "operations_test_suite"
+path = "tests/suites/operations.rs"
+
+[[test]]
+name = "platform_test_suite"
+path = "tests/suites/platform.rs"
+
+[[test]]
+name = "scale_bench"
+path = "tests/scale_bench.rs"
 
 [features]
 # Deterministic AI preparation and offline proof surface. Focused checks do
