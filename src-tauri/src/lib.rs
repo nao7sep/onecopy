@@ -45,6 +45,7 @@ pub mod similar_exclusions;
 pub mod similarity;
 pub mod source_check_runtime;
 pub mod storage;
+mod startup;
 pub mod subprocess;
 pub mod text_preview;
 pub mod timestamps;
@@ -110,21 +111,37 @@ fn install_panic_hook() {
 // which the stores absorb with request-sequence guards (`staleGuard` in
 // src/state/request-seq.ts): a 30k-item month query on the main thread was
 // exactly the block a slow machine felt as a frozen window.
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum BootstrapData {
+    Ready { data: storage::LoadedAppData },
+    Blocked { failure: startup::StartupFailure },
+}
+
 #[tauri::command(async)]
-fn load_app_data(app: AppHandle) -> Result<storage::LoadedAppData, String> {
+fn load_app_data(
+    app: AppHandle,
+    startup: tauri::State<'_, startup::StartupGate>,
+) -> Result<BootstrapData, String> {
+    if let Some(failure) = startup.failure() {
+        return Ok(BootstrapData::Blocked { failure });
+    }
     logging::boundary(
         "load_app_data",
         json!({}),
         || {
             let mut data = storage::load_app_data(&app)?;
             data.debug_enabled = logging::debug_enabled();
-            Ok(data)
+            Ok(BootstrapData::Ready { data })
         },
-        |d| {
+        |result| {
+            let BootstrapData::Ready { data } = result else {
+                unreachable!("the blocked bootstrap returns before the logging boundary")
+            };
             json!({
-                "hasConfig": d.config.is_some(),
-                "hasState": d.state.is_some(),
-                "quarantines": d.quarantines.len(),
+                "hasConfig": data.config.is_some(),
+                "hasState": data.state.is_some(),
+                "quarantines": data.quarantines.len(),
             })
         },
     )
@@ -2057,187 +2074,11 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            // Everything in this closure runs BEFORE the window appears, so it
-            // is the launch latency. Each phase logs its cost so a slow start
-            // is attributable from the session log alone.
-            let setup_started = std::time::Instant::now();
-            // Open the per-session log file under the app's own data dir. The Rust
-            // core has filesystem access even though the webview is sandboxed, and
-            // it routes through the single storage-root resolver (paths::data_root)
-            // so the log directory and the data directory share one source of
-            // truth and both honor ONECOPY_HOME.
-            let data_root = paths::data_root(app.handle())?;
-            let log_path = data_root
-                .join(paths::LOGS_DIR_NAME)
-                .join(logging::session_filename());
-            logging::init(&log_path, debug_enabled);
-            install_panic_hook();
-            // Open the write-through data-backup store once, best-effort, under the
-            // same ONECOPY_HOME-aware root. If it cannot open, one warn is logged
-            // and recording is disabled for the session — it never blocks startup.
-            backup_store::init(data_root.join(backup_store::BACKUPS_DB_FILE_NAME));
-
-            // Materialize config.json from the canonical defaults when absent —
-            // the populated-but-not-yet-used point, before any consumer reads it.
-            storage::materialize_config_if_missing(&data_root)?;
-
-            // Create/verify the index schema so a schema problem surfaces at
-            // startup, not mid-scan. Phase 2 owns a long-lived connection; this
-            // one closes on drop.
-            drop(index_store::open(
-                &data_root.join(storage::INDEX_DB_FILE_NAME),
-            )?);
-
-            // Download staging is crash debris by definition: wipe at launch.
-            binaries_manager::reset_temp_dir(&data_root);
-
-            // The cache always lives under the managed data root. Existing
-            // external cache trees from older builds are deliberately left
-            // untouched; they are reconstructible and no longer referenced.
-            let setup_config = storage::read_config_for_setup(&data_root)?;
-            let cache_root = data_root.join(storage::CACHE_DIR_NAME);
-            DATA_ROOT
-                .set(data_root.clone())
-                .map_err(|_| "data root was initialized more than once".to_string())?;
-            // One coordinator owns reconstructible media work; its optional
-            // heavy classes run only while the user is away.
-            if let Err(error) = derived_work::start(app.handle().clone()) {
-                let _ = failure_runtime::report(
-                    app.handle(),
-                    issue_recovery::DERIVED_WORKER_FAILED,
-                    None,
-                    &error,
-                );
-            }
-            // The sweep walks the ENTIRE cache tree, which grows with the
-            // library — it was the launch's biggest fixed cost, paid before
-            // the window could appear. It maintains a reconstructible cache
-            // and nothing needs its result before first paint, so it runs on
-            // a background thread (its own connection; WAL carries the
-            // concurrency).
-            {
-                let db_path = data_root.join(storage::INDEX_DB_FILE_NAME);
-                let cache = preview::CachePaths::new(cache_root);
-                let handle = app.handle().clone();
-                let clear_handle = handle.clone();
-                let _ = failure_runtime::spawn_reported(
-                    handle,
-                    "onecopy-cache-sweep",
-                    "cache-sweep-failed",
-                    move || {
-                        let started = std::time::Instant::now();
-                        let conn = index_store::open(&db_path)?;
-                        let removed = preview::startup_sweep(&conn, &cache)?;
-                        if removed > 0 {
-                            logging::info(
-                                "cache sweep",
-                                json!({ "removed": removed, "ms": started.elapsed().as_millis() as u64 }),
-                            );
-                        }
-                        failure_runtime::clear(&clear_handle, "cache-sweep-failed", None)?;
-                        Ok(())
-                    },
-                );
-            }
-
-            // The watcher: ON by default, best-effort, over the configured
-            // source roots (the Camera Roll inflow case). Restart picks up
-            // source-dir changes; correctness never depends on it.
-            let watch_settings = scanner::settings_from_config(setup_config.as_ref(), &data_root, 0);
-            watcher::start(app.handle().clone(), watch_settings.source_dirs);
-
-            // The one update switch (managed-runtime-dependencies): when ON,
-            // an INSTALLED tool is checked at launch, throttled to ~daily so
-            // launches never hammer the endpoints. Default off; a failed
-            // check writes nothing (`check_entry`'s own contract).
-            let check_at_launch = setup_config
-                .as_ref()
-                .and_then(|c| c.get("checkUpdatesAtLaunch"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if check_at_launch {
-                // The conventions' one toggle covers every installed entry
-                // that HAS an upstream to ask — binaries. A model's version
-                // is compiled into the app, so it is never checked (and
-                // never stamped): `state_of` derives its latest from the pin.
-                let root = data_root.clone();
-                let handle = app.handle().clone();
-                let stale_ids: Vec<String> = binaries_manager::states(&data_root)
-                    .into_iter()
-                    .filter(|entry| {
-                        entry.checkable
-                            && entry.status != binaries::BinaryStatus::NotInstalled
-                            && entry
-                                .facts
-                                .last_checked_at_utc
-                                .as_deref()
-                                .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
-                                .map(|t| {
-                                    chrono::Utc::now().signed_duration_since(t)
-                                        > chrono::Duration::hours(24)
-                                })
-                                .unwrap_or(true)
-                    })
-                    .map(|entry| entry.id)
-                    .collect();
-                if !stale_ids.is_empty() {
-                    let report_handle = handle.clone();
-                    let _ = failure_runtime::spawn_reported(
-                        handle,
-                        "onecopy-update-check",
-                        "update-check-worker-failed",
-                        move || {
-                            for id in stale_ids {
-                                match binaries_manager::check_entry(&root, &id) {
-                                    Ok(facts) => {
-                                        failure_runtime::clear(
-                                            &report_handle,
-                                            "update-check-failed",
-                                            Some(&id),
-                                        )?;
-                                        logging::info(
-                                            "launch update check",
-                                            json!({ "id": id, "latestKnown": facts.latest_known_version }),
-                                        );
-                                    }
-                                    Err(error) => failure_runtime::report(
-                                        &report_handle,
-                                        "update-check-failed",
-                                        Some(&id),
-                                        &error,
-                                    )?,
-                                }
-                            }
-                            failure_runtime::emit_checked(
-                                &report_handle,
-                                "binaries://changed",
-                                json!({}),
-                            )?;
-                            failure_runtime::clear(
-                                &report_handle,
-                                "update-check-worker-failed",
-                                None,
-                            )?;
-                            Ok(())
-                        },
-                    );
-                }
-            }
-
-            logging::info(
-                "app startup",
-                json!({
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "build": if cfg!(debug_assertions) { "debug" } else { "release" },
-                    "debugLogging": debug_enabled,
-                    "logPath": log_path.to_string_lossy(),
-                    "os": std::env::consts::OS,
-                    "arch": std::env::consts::ARCH,
-                    // The pre-window cost. Anything slow after this line is a
-                    // background thread, not launch latency.
-                    "setupMs": setup_started.elapsed().as_millis() as u64,
-                }),
-            );
+            // Tauri panics when this hook returns Err; on macOS that panic
+            // crosses a callback that cannot unwind and becomes SIGABRT. The
+            // application bootstrap therefore records Ready/Blocked state and
+            // the hook itself is deliberately infallible.
+            app.manage(startup::initialize(app, debug_enabled));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2316,28 +2157,9 @@ pub fn run() {
         ])
         .build(tauri::generate_context!());
 
-    // A setup failure lands here — most consequentially a store that is unreadable for a
-    // reason other than absence, or one that could not be set aside. OneCopy must not
-    // reset over bytes it failed to preserve, so it halts; a panic into stderr is not a
-    // halt for a double-clicked app, so the halt is reported natively before exiting
-    // (storage-path conventions: a halt names the store and reaches the user).
     let app = match app {
         Ok(app) => app,
-        Err(error) => {
-            let message = error.to_string();
-            logging::error("startup failed", json!({ "error": { "message": message } }));
-            rfd::MessageDialog::new()
-                .set_level(rfd::MessageLevel::Error)
-                .set_title("OneCopy could not start")
-                .set_description(format!(
-                    "A settings file could not be read, and OneCopy could not set it aside either — so it \
-                     has been left exactly where it is rather than risk overwriting it.\n\n{message}\n\n\
-                     Your photos are not affected. Repair or move the file under the OneCopy data folder, \
-                     then start OneCopy again."
-                ))
-                .show();
-            std::process::exit(1);
-        }
+        Err(error) => startup::halt_before_runtime(&error.to_string()),
     };
 
     app.run(|app_handle, event| match event {

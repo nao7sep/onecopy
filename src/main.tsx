@@ -9,8 +9,7 @@ import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
 import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, initLogging } from "./repositories";
-import { useAppStore } from "./state/app-store";
-import { applyTheme, applyUiFont, watchSystemTheme } from "./utils/theme";
+import { watchSystemTheme } from "./utils/theme";
 import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
@@ -34,22 +33,6 @@ void initLogging();
 // Theme before first meaningful paint, in EVERY window (one bundle serves
 // all); the OS-preference listener keeps "system" live.
 watchSystemTheme();
-void useAppStore
-  .getState()
-  .initialize()
-  .then((data) => {
-    if (data === null) {
-      applyTheme("system");
-      return;
-    }
-    const config = data.config as { theme?: unknown; uiFontFamily?: unknown } | null;
-    applyTheme(config?.theme);
-    applyUiFont(config?.uiFontFamily);
-  })
-  .catch((error) => {
-    log.warn("startup appearance load failed", toErrorFields(error));
-    applyTheme("system");
-  });
 
 // The webview's default context menu (Look Up, Translate, Search with
 // Google, Inspect Element…) belongs to a web page, not a desktop app —

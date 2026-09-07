@@ -13,10 +13,25 @@
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent } from "@testing-library/react";
-import App from "../../src/App";
+import { ReadyApp } from "../../src/App";
 import { useAppStore } from "../../src/state/app-store";
+import type { LoadedAppData } from "../../src/repositories";
 import { computeMinWindowHeight, HEADER_HEIGHT } from "../../src/utils/windowSizing";
 import { isMaximized, mockCommands, onMoved, resetTauriMocks, setMinSize } from "../mocks/tauri";
+
+const READY_APP_DATA: LoadedAppData = {
+  config: { sourceDirs: [], defaultTimezone: "UTC" },
+  state: {},
+  dataRoot: "/data",
+  debugEnabled: false,
+  quarantines: [],
+};
+
+function renderReadyApp() {
+  return render(
+    <ReadyApp appData={useAppStore.getState().appData ?? READY_APP_DATA} />,
+  );
+}
 
 beforeEach(() => {
   // Stores wire their event listeners once at module load, so those survive.
@@ -29,13 +44,18 @@ beforeEach(() => {
     log_event: () => null,
     logging_debug_enabled: () => false,
   });
+  useAppStore.setState({
+    appData: READY_APP_DATA,
+    startupFailure: null,
+    quarantines: [],
+  });
 });
 
 afterEach(() => cleanup());
 
 describe("the title band", () => {
   it("carries the app name and the menu trigger", () => {
-    const view = render(<App />);
+    const view = renderReadyApp();
     const header = view.container.querySelector("header");
     expect(header).not.toBeNull();
     expect(header?.textContent).toContain("OneCopy");
@@ -44,7 +64,7 @@ describe("the title band", () => {
   });
 
   it("draws the zoom marks without changing their accessible names", () => {
-    const view = render(<App />);
+    const view = renderReadyApp();
     fireEvent.click(view.getByRole("button", { name: "Open menu" }));
 
     for (const name of ["Zoom out", "Zoom in"]) {
@@ -55,7 +75,7 @@ describe("the title band", () => {
   });
 
   it("leaves the footer to standing state alone", () => {
-    const view = render(<App />);
+    const view = renderReadyApp();
     const footer = view.container.querySelector("footer");
     expect(footer).not.toBeNull();
     expect(footer?.querySelector('[aria-label="Open menu"]')).toBeNull();
@@ -63,7 +83,7 @@ describe("the title band", () => {
   });
 
   it("keeps the version out of the main window entirely", () => {
-    const view = render(<App />);
+    const view = renderReadyApp();
     // Guard against a vacuous pass: an empty container matches no regex.
     expect(view.container.textContent).toContain("OneCopy");
     // Any dotted version triple anywhere in the shell fails this — the About
@@ -72,7 +92,7 @@ describe("the title band", () => {
   });
 
   it("is reserved in the window minimum, not overlapped by the content", async () => {
-    render(<App />);
+    renderReadyApp();
     // The effect runs on mount but checks isMaximized first (a maximized
     // window defers the constraint), so the call is a tick away.
     await act(async () => {
@@ -97,7 +117,7 @@ describe("the maximized main window (the developer's normal state)", () => {
     // below any minimum, so the constraint must WAIT.
     isMaximized.mockResolvedValue(true);
     try {
-      render(<App />);
+      renderReadyApp();
       await drain();
       expect(setMinSize).not.toHaveBeenCalled();
     } finally {
@@ -106,7 +126,7 @@ describe("the maximized main window (the developer's normal state)", () => {
   });
 
   it("applies the min size normally when not maximized", async () => {
-    render(<App />);
+    renderReadyApp();
     await drain();
     expect(setMinSize).toHaveBeenCalled();
   });
@@ -131,7 +151,7 @@ describe("the maximized main window (the developer's normal state)", () => {
     });
     isMaximized.mockResolvedValue(true);
     try {
-      render(<App />);
+      renderReadyApp();
       await drain();
       expect(movedHandler).not.toBeNull();
       movedHandler!();

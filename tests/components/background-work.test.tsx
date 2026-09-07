@@ -7,6 +7,7 @@ import {
   backgroundWorkLine,
   mergeBackgroundRuntime,
   mergeActiveItemWork,
+  installDerivedWorkEventWiring,
   type BackgroundClassSnapshot,
   type BackgroundWorkSnapshot,
   useDerivedWorkStore,
@@ -45,8 +46,9 @@ function snapshot(
 }
 
 let current: BackgroundWorkSnapshot;
+let wiringInstalled = false;
 
-beforeEach(() => {
+beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
   current = snapshot({}, { previews: { state: "queued", queued: 12 } });
   mockCommands({
@@ -57,6 +59,10 @@ beforeEach(() => {
     },
     set_file_information_paused: () => null,
   });
+  if (!wiringInstalled) {
+    wiringInstalled = true;
+    await installDerivedWorkEventWiring();
+  }
   useDerivedWorkStore.setState({
     snapshot: current,
     open: true,

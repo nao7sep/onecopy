@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { useAppStore } from "./state/app-store";
@@ -43,7 +43,7 @@ import {
   useDerivedWorkStore,
 } from "./state/derived-work-store";
 import PreviewSurface from "./components/PreviewSurface";
-import { log, toErrorFields } from "./repositories";
+import { log, toErrorFields, type LoadedAppData } from "./repositories";
 import BackgroundWorkModal from "./components/BackgroundWorkModal";
 import { closePreview } from "./workflows/preview";
 import { useAppBootstrapAndRestore } from "./hooks/useAppBootstrapAndRestore";
@@ -55,7 +55,9 @@ import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
 import DestinationDragProvider from "./components/DestinationDragProvider";
 import { setMediumAutoplay, setSoundEnabled } from "./workflows/playback";
 import NotificationHost from "./components/NotificationHost";
+import StartupFailureScreen from "./components/StartupFailureScreen";
 import { recordActionFailure } from "./state/notifications-store";
+import { bootstrapApplication } from "./workflows/app-lifecycle";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -65,17 +67,44 @@ function ZoomInIcon() {
   return <Plus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
 }
 
-// The main-window shell: the sidebar listbox, the thumbnail grid for the
-// selected section, the tabbed right pane, and the scan lifecycle in the
-// status bar.
-
+// Loading, Blocked, and Ready are mutually exclusive roots. Feature hooks do
+// not exist until the backend has admitted the Ready state.
 export default function App() {
+  const appData = useAppStore((state) => state.appData);
+  const startupFailure = useAppStore((state) => state.startupFailure);
+  const bootstrapStarted = useRef(false);
+
+  useEffect(() => {
+    if (bootstrapStarted.current) return;
+    bootstrapStarted.current = true;
+    void bootstrapApplication();
+  }, []);
+
+  if (startupFailure !== null) {
+    return <StartupFailureScreen failure={startupFailure} />;
+  }
+  if (appData === null) {
+    return (
+      <div
+        role="status"
+        aria-label="Starting OneCopy"
+        className="flex h-screen items-center justify-center bg-background text-ink-muted"
+      >
+        Starting OneCopy…
+      </div>
+    );
+  }
+
+  return <ReadyApp appData={appData} />;
+}
+
+// The admitted main-window shell: the sidebar listbox, thumbnail grid, right
+// pane, and scan lifecycle in the status bar.
+export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   useDestinationDragBoundary();
-  const appData = useAppStore((s) => s.appData);
   const soundEnabled = appData?.state?.soundEnabled !== false;
   const videoAutoplay = appData?.config?.videoAutoplay !== false;
   const audioAutoplay = appData?.config?.audioAutoplay !== false;
-  const loadError = useAppStore((s) => s.loadError);
   const counts = useSectionsStore((s) => s.counts);
   const sourceCheck = useSectionsStore((s) => s.sourceCheck);
   const fileInformation = useSectionsStore((s) => s.fileInformation);
@@ -150,7 +179,6 @@ export default function App() {
   } = useGlobalCommands();
   const { zoomLevel, zoomIn, zoomOut } = useMainWindowLifecycle({
     appData,
-    loadError,
     splitOpen,
   });
 
@@ -337,9 +365,7 @@ export default function App() {
           style={{ minWidth: GRID_MIN_WIDTH }}
           className="flex min-w-0 flex-1 flex-col overflow-hidden"
         >
-          {loadError !== null ? (
-            <p className="m-auto text-danger">{loadError}</p>
-          ) : selected !== null ? (
+          {selected !== null ? (
             <Grid
               items={items}
               loading={itemsLoading}

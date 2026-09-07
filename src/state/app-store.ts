@@ -16,6 +16,7 @@ import {
   toErrorFields,
   type LoadedAppData,
   type QuarantineRecord,
+  type StartupFailure,
 } from "../repositories";
 import { applyTheme, applyUiFont } from "../utils/theme";
 import { listen } from "@tauri-apps/api/event";
@@ -24,7 +25,7 @@ import { reportActionFailure } from "./notifications-store";
 
 interface AppState {
   appData: LoadedAppData | null;
-  loadError: string | null;
+  startupFailure: StartupFailure | null;
   /** Quarantines waiting to be shown. Dismissing clears them; nothing else
    * does, so the notice cannot be missed by a re-render. */
   quarantines: QuarantineRecord[];
@@ -75,7 +76,7 @@ let initialization: Promise<LoadedAppData | null> | null = null;
 
 export const useAppStore = create<AppState>((set, get) => ({
   appData: null,
-  loadError: null,
+  startupFailure: null,
   quarantines: [],
 
   dismissQuarantines: () => set({ quarantines: [] }),
@@ -141,14 +142,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   initialize: () => {
     const loaded = get().appData;
     if (loaded !== null) return Promise.resolve(loaded);
+    if (get().startupFailure !== null) return Promise.resolve(null);
     if (initialization !== null) return initialization;
 
     initialization = (async () => {
       try {
-        const data = await loadAppData();
+        const result = await loadAppData();
+        if (result.status === "blocked") {
+          applyTheme("system");
+          applyUiFont(undefined);
+          set({ startupFailure: result.failure });
+          return null;
+        }
+        const data = result.data;
+        applyTheme(data.config?.theme);
+        applyUiFont(data.config?.uiFontFamily);
         set((s) => ({
           appData: data,
-          loadError: null,
+          startupFailure: null,
           // Appended, never replaced: a mid-session quarantine event may already
           // be sitting here, and initialization must not swallow it.
           quarantines: [...s.quarantines, ...(data.quarantines ?? [])],
@@ -160,7 +171,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
         return data;
       } catch (error) {
-        set({ loadError: "OneCopy could not load its saved application data. Your existing files were not changed." });
+        applyTheme("system");
+        applyUiFont(undefined);
+        set({
+          startupFailure: {
+            title: "OneCopy could not start safely",
+            message:
+              "OneCopy could not load its saved application data. Your existing files were not changed. Quit OneCopy, then try again.",
+          },
+        });
         log.error("app data load failed", toErrorFields(error));
         return null;
       } finally {

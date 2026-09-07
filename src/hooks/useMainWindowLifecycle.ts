@@ -31,14 +31,12 @@ import {
 } from "../utils/zoom";
 
 interface MainWindowLifecycleOptions {
-  appData: LoadedAppData | null;
-  loadError: string | null;
+  appData: LoadedAppData;
   splitOpen: boolean;
 }
 
 export function useMainWindowLifecycle({
   appData,
-  loadError,
   splitOpen,
 }: MainWindowLifecycleOptions) {
   // The derived-work coordinator's view of the user: throttled input pings.
@@ -89,7 +87,7 @@ export function useMainWindowLifecycle({
   // and show even if monitor discovery fails.
   const bootShown = useRef(false);
   useEffect(() => {
-    if (bootShown.current || (appData === null && loadError === null)) return;
+    if (bootShown.current) return;
     bootShown.current = true;
     const appWindow = getCurrentWindow();
     const showFallback = setTimeout(() => {
@@ -122,7 +120,7 @@ export function useMainWindowLifecycle({
         await appWindow.setFocus().catch(reportWindowCall("boot setFocus"));
       }
     })();
-  }, [appData, loadError]);
+  }, [appData]);
 
   // Persist only settled normal geometry. Maximized is a flag, never the
   // maximized rectangle, so un-maximizing retains a real landing place.
@@ -179,7 +177,6 @@ export function useMainWindowLifecycle({
   }, []);
 
   useEffect(() => {
-    if (appData === null) return;
     const stored = appData.state?.zoomLevel;
     const level = typeof stored === "number" ? stored : ZOOM_DEFAULT;
     zoomRef.current = level;

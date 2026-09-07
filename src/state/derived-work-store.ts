@@ -244,7 +244,9 @@ export function installActivityPings(target: Window): () => void {
   };
 }
 
-void (async () => {
+/** Installs the app-lifetime projection only after startup has admitted the
+ * feature application. Importing this module must never contact the backend. */
+export async function installDerivedWorkEventWiring(): Promise<void> {
   try {
     await listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
       useDerivedWorkStore.setState((state) => ({
@@ -265,4 +267,4 @@ void (async () => {
       error: "Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.",
     });
   }
-})();
+}

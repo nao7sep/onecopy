@@ -7,6 +7,7 @@
 // events, sidebar clicks, window and grid keystrokes), and every assertion is
 // about what the user would see or what the core was actually told.
 
+import { StrictMode } from "react";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import App from "../../src/App";
@@ -19,6 +20,7 @@ import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
+  close,
   fireEvent,
   invokeCalls,
   mockCommand,
@@ -94,10 +96,13 @@ beforeEach(() => {
   };
   mockCommands({
     load_app_data: () => ({
-      config: { sourceDirs: [], defaultTimezone: "UTC" },
-      state: {},
-      dataRoot: "/data",
-      debugEnabled: false,
+      status: "ready",
+      data: {
+        config: { sourceDirs: [], defaultTimezone: "UTC" },
+        state: {},
+        dataRoot: "/data",
+        debugEnabled: false,
+      },
     }),
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ issues: [], total: 0 }),
@@ -142,7 +147,7 @@ beforeEach(() => {
     timezoneValid: true,
     error: null,
   });
-  useAppStore.setState({ appData: null, loadError: null, quarantines: [] });
+  useAppStore.setState({ appData: null, startupFailure: null, quarantines: [] });
   useSectionsStore.setState({
     counts: null,
     sourceCheck: {
@@ -185,16 +190,66 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the culling workflow", () => {
+  it("admits main-window bootstrap only once across a development remount", async () => {
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await settle();
+    await settle();
+
+    const commands = invokeCalls.map((call) => call.command);
+    expect(commands.filter((command) => command === "load_app_data")).toHaveLength(1);
+    expect(commands.filter((command) => command === "get_section_counts")).toHaveLength(1);
+    expect(commands.filter((command) => command === "get_issues")).toHaveLength(1);
+    expect(commands.filter((command) => command === "background_work_snapshot")).toHaveLength(1);
+  });
+
+  it("shows the authored blocked-start shell without querying feature backends", async () => {
+    mockCommand("load_app_data", () => ({
+      status: "blocked",
+      failure: {
+        title: "OneCopy could not start safely",
+        message: "Your photos were not changed.",
+      },
+    }));
+
+    const view = render(<App />);
+    await settle();
+    await settle();
+
+    expect(view.getByRole("alertdialog").textContent).toContain(
+      "OneCopy could not start safely",
+    );
+    const quit = view.getByRole("button", { name: "Quit OneCopy" });
+    expect(quit).toBeTruthy();
+    expect(invokeCalls.map((call) => call.command)).not.toContain("get_section_counts");
+    expect(invokeCalls.map((call) => call.command)).not.toContain("get_issues");
+    expect(invokeCalls.map((call) => call.command)).not.toContain("binaries_state");
+    expect(invokeCalls.map((call) => call.command)).not.toContain(
+      "background_work_snapshot",
+    );
+    expect(invokeCalls.map((call) => call.command)).not.toContain("index_work_snapshot");
+
+    quit.click();
+    await settle();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("starts the configured source check only after usable bootstrap", async () => {
     mockCommand("load_app_data", () => ({
-      config: {
-        sourceDirs: ["/photos"],
-        defaultTimezone: "UTC",
-        checkSourceFoldersAtLaunch: true,
+      status: "ready",
+      data: {
+        config: {
+          sourceDirs: ["/photos"],
+          defaultTimezone: "UTC",
+          checkSourceFoldersAtLaunch: true,
+        },
+        state: {},
+        dataRoot: "/data",
+        debugEnabled: false,
       },
-      state: {},
-      dataRoot: "/data",
-      debugEnabled: false,
     }));
 
     render(<App />);
@@ -210,14 +265,17 @@ describe("the culling workflow", () => {
 
   it("admits pending file information directly when the launch source check is off", async () => {
     mockCommand("load_app_data", () => ({
-      config: {
-        sourceDirs: ["/photos"],
-        defaultTimezone: "UTC",
-        checkSourceFoldersAtLaunch: false,
+      status: "ready",
+      data: {
+        config: {
+          sourceDirs: ["/photos"],
+          defaultTimezone: "UTC",
+          checkSourceFoldersAtLaunch: false,
+        },
+        state: {},
+        dataRoot: "/data",
+        debugEnabled: false,
       },
-      state: {},
-      dataRoot: "/data",
-      debugEnabled: false,
     }));
 
     render(<App />);
@@ -385,10 +443,13 @@ describe("the failure workflow", () => {
     // A CONFIGURED boot — with source dirs the wizard stays closed, so the
     // window command layer (Delete) is live.
     mockCommand("load_app_data", () => ({
-      config: { sourceDirs: ["/photos"], defaultTimezone: "UTC" },
-      state: {},
-      dataRoot: "/data",
-      debugEnabled: false,
+      status: "ready",
+      data: {
+        config: { sourceDirs: ["/photos"], defaultTimezone: "UTC" },
+        state: {},
+        dataRoot: "/data",
+        debugEnabled: false,
+      },
     }));
     mockSectionItems(() => SCENE);
     const view = render(<App />);

@@ -19,6 +19,15 @@ export interface LoadedAppData {
   quarantines: QuarantineRecord[];
 }
 
+export interface StartupFailure {
+  title: string;
+  message: string;
+}
+
+export type BootstrapData =
+  | { status: "ready"; data: LoadedAppData }
+  | { status: "blocked"; failure: StartupFailure };
+
 export interface AiAccelerationCapability {
   feature: string;
   label: string;
@@ -36,8 +45,8 @@ export interface QuarantineRecord {
   quarantinedTo: string;
 }
 
-export function loadAppData(): Promise<LoadedAppData> {
-  return invoke<LoadedAppData>("load_app_data");
+export function loadAppData(): Promise<BootstrapData> {
+  return invoke<BootstrapData>("load_app_data");
 }
 
 // Saves are PATCHES merged core-side (the core holds the file and owns the

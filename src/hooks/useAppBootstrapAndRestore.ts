@@ -9,7 +9,6 @@ import { DEFAULT_DESC, type SortChoice, type SortOrder } from "../models/items";
 import { useItemsStore } from "../state/items-store";
 import { retainStatePatch } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
-import { bootstrapApplication } from "../workflows/app-lifecycle";
 import { parseAnchorContext } from "../models/mainSelection";
 
 interface AppBootstrapAndRestoreOptions {
@@ -27,10 +26,6 @@ export function useAppBootstrapAndRestore({
   const setRightTab = useCallback((tab: "details" | "destinations") => {
     setRightTabRaw(tab);
     retainStatePatch({ rightPaneTab: tab });
-  }, []);
-
-  useEffect(() => {
-    void bootstrapApplication();
   }, []);
 
   const restoredRef = useRef(false);

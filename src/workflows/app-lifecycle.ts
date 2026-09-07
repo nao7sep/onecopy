@@ -18,8 +18,31 @@ import { installViewerWorkflow } from "./quick-view";
 import { installPlaybackWorkflow } from "./playback";
 import { installContentSessionWorkflow } from "./content-session";
 import { installIssuesEventWiring } from "./issues";
+import { installDerivedWorkEventWiring } from "../state/derived-work-store";
+import type { LoadedAppData } from "../repositories";
 
-export async function bootstrapApplication(): Promise<void> {
+let completedData: LoadedAppData | null = null;
+let bootstrapInFlight: Promise<void> | null = null;
+
+/** One owner for the main-window bootstrap. React development remounts and
+ * renderer recovery must join the same admission, not duplicate listeners or
+ * initial queries against the same loaded application data. */
+export function bootstrapApplication(): Promise<void> {
+  const current = useAppStore.getState().appData;
+  if (current !== null && current === completedData) return Promise.resolve();
+  if (bootstrapInFlight !== null) return bootstrapInFlight;
+  bootstrapInFlight = bootstrapOnce().finally(() => {
+    bootstrapInFlight = null;
+  });
+  return bootstrapInFlight;
+}
+
+async function bootstrapOnce(): Promise<void> {
+  // The backend's immutable startup gate is the admission boundary for every
+  // feature listener, query, and worker-triggering command in the main window.
+  const data = await useAppStore.getState().initialize();
+  if (data === null) return;
+
   installItemWorkflow();
   installPreviewPersistence();
   await Promise.all([
@@ -31,14 +54,13 @@ export async function bootstrapApplication(): Promise<void> {
     installPlaybackWorkflow(),
     installContentSessionWorkflow(),
     installIssuesEventWiring(),
+    installDerivedWorkEventWiring(),
   ]);
-  const [data] = await Promise.all([
-    useAppStore.getState().initialize(),
+  await Promise.all([
     useSectionsStore.getState().loadCounts(),
     useIssuesStore.getState().load(),
     useBinariesStore.getState().load(),
   ]);
-  if (data === null) return;
   await useWizardStore.getState().init(data.config);
   useDestinationsStore.getState().init(data.config);
   const wizard = useWizardStore.getState();
@@ -63,4 +85,5 @@ export async function bootstrapApplication(): Promise<void> {
     // and the first usable projection are ready.
     await useSectionsStore.getState().admitBackgroundCompletion();
   }
+  completedData = data;
 }
