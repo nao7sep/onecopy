@@ -2201,6 +2201,7 @@ pub fn run() {
             file_information_runtime::shutdown(app_handle);
             watcher::shutdown();
             startup::shutdown();
+            instance_owner::shutdown(app_handle);
             binaries_manager::begin_shutdown();
             derived_work::shutdown(app_handle);
             if let Err(error) = mutation_runtime::request_shutdown() {
@@ -2217,6 +2218,7 @@ pub fn run() {
                         watcher::join();
                         binaries_manager::wait_for_idle();
                         startup::join();
+                        instance_owner::join(&handle);
                         derived_work::join();
                         if let Err(error) = mutation_runtime::wait_for_idle() {
                             let _ = failure_runtime::report(
@@ -2264,6 +2266,7 @@ pub fn run() {
             file_information_runtime::shutdown(app_handle);
             watcher::shutdown();
             startup::shutdown();
+            instance_owner::shutdown(app_handle);
             binaries_manager::begin_shutdown();
             derived_work::shutdown(app_handle);
             source_check_runtime::join();
@@ -2271,6 +2274,7 @@ pub fn run() {
             watcher::join();
             binaries_manager::wait_for_idle();
             startup::join();
+            instance_owner::join(app_handle);
             derived_work::join();
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }

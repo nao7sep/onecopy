@@ -14,6 +14,9 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
@@ -28,6 +31,40 @@ struct Owner {
     // not managed text. The file may remain after exit; only its live lock is
     // authoritative.
     _lock: File,
+    stop: Arc<AtomicBool>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Owner {
+    fn request_shutdown(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    fn join(&self) {
+        let worker = match self.worker.lock() {
+            Ok(mut worker) => worker.take(),
+            Err(_) => {
+                crate::logging::error(
+                    "instance-listener worker state is unavailable",
+                    serde_json::json!({}),
+                );
+                return;
+            }
+        };
+        if worker.is_some_and(|worker| worker.join().is_err()) {
+            crate::logging::error(
+                "instance-listener worker join failed",
+                serde_json::json!({}),
+            );
+        }
+    }
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        self.request_shutdown();
+        self.join();
+    }
 }
 
 enum Claim {
@@ -107,13 +144,17 @@ fn notify_primary(endpoint_path: &Path) -> Result<(), String> {
     }
 }
 
-fn listen(listener: TcpListener, app: tauri::AppHandle) -> Result<(), String> {
+fn listen(
+    listener: TcpListener,
+    app: tauri::AppHandle,
+    stop: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>, String> {
     let handle = app.clone();
     std::thread::Builder::new()
         .name("onecopy-instance-listener".to_string())
         .spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_listener(listener, &handle)
+                run_listener(listener, &handle, &stop)
             }));
             let failure = match outcome {
                 Ok(Ok(())) => return,
@@ -130,14 +171,20 @@ fn listen(listener: TcpListener, app: tauri::AppHandle) -> Result<(), String> {
                 &failure,
             );
         })
-        .map_err(|error| format!("could not start instance listener: {error}"))?;
-    Ok(())
+        .map_err(|error| format!("could not start instance listener: {error}"))
 }
 
-fn run_listener(listener: TcpListener, app: &tauri::AppHandle) -> Result<(), String> {
-    loop {
+fn run_listener(
+    listener: TcpListener,
+    app: &tauri::AppHandle,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                if stop.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
                 let mut request = [0u8; 8];
                 if stream.read(&mut request).is_ok() && request.starts_with(b"activate") {
                     if let Some(window) = app.get_webview_window("main") {
@@ -176,6 +223,19 @@ fn run_listener(listener: TcpListener, app: &tauri::AppHandle) -> Result<(), Str
             Err(error) => return Err(format!("instance listener stopped: {error}")),
         }
     }
+    Ok(())
+}
+
+pub fn shutdown(app: &tauri::AppHandle) {
+    if let Some(owner) = app.try_state::<Owner>() {
+        owner.request_shutdown();
+    }
+}
+
+pub fn join(app: &tauri::AppHandle) {
+    if let Some(owner) = app.try_state::<Owner>() {
+        owner.join();
+    }
 }
 
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -184,8 +244,14 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             let root = crate::paths::data_root(app.app_handle())?;
             match claim(&root)? {
                 Claim::Primary { lock, listener } => {
-                    listen(listener, app.app_handle().clone())?;
-                    app.manage(Owner { _lock: lock });
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let worker =
+                        listen(listener, app.app_handle().clone(), stop.clone())?;
+                    app.manage(Owner {
+                        _lock: lock,
+                        stop,
+                        worker: Mutex::new(Some(worker)),
+                    });
                     Ok(())
                 }
                 Claim::Secondary { endpoint_path } => {
@@ -203,6 +269,38 @@ mod tests {
     // private startup primitive; widening it only for an integration test would
     // make the ownership boundary less clear.
     use super::*;
+
+    #[test]
+    fn owner_shutdown_joins_its_listener_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(dir.path().join("owner"))
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread_observed = observed.clone();
+        let worker = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            thread_observed.store(true, Ordering::SeqCst);
+        });
+        let owner = Owner {
+            _lock: lock,
+            stop,
+            worker: Mutex::new(Some(worker)),
+        };
+
+        owner.request_shutdown();
+        owner.join();
+
+        assert!(observed.load(Ordering::SeqCst));
+        assert!(owner.worker.lock().unwrap().is_none());
+    }
 
     #[test]
     fn simultaneous_claims_have_exactly_one_owner() {
