@@ -7,6 +7,7 @@ import {
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { reportWindowCall } from "../repositories";
+import { waitForWindowCreated } from "../utils/windowCreation";
 
 const VIEWER_LABEL = "viewer";
 
@@ -66,10 +67,7 @@ async function createViewer(monitor: ViewerMonitor): Promise<WebviewWindow> {
     focus: false,
     visible: false,
   });
-  await new Promise<void>((resolve, reject) => {
-    void window.once("tauri://created", () => resolve()).catch(reject);
-    void window.once("tauri://error", (event) => reject(event.payload)).catch(reject);
-  });
+  await waitForWindowCreated(window, "Viewer");
   return window;
 }
 

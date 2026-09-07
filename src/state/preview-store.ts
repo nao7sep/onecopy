@@ -28,6 +28,7 @@ import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
+import { waitForWindowCreated } from "../utils/windowCreation";
 
 export interface PreviewPayload {
   hash: string | null;
@@ -127,10 +128,7 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<bool
     visible: false,
   });
   try {
-    await new Promise<void>((resolve, reject) => {
-      void window.once("tauri://created", () => resolve()).catch(reject);
-      void window.once("tauri://error", (e) => reject(e.payload)).catch(reject);
-    });
+    await waitForWindowCreated(window, "Preview");
     // The surface closing by any route (Escape in it, red button) clears the
     // follow flag — otherwise P looks broken afterwards.
     await window.once("tauri://destroyed", () => {
