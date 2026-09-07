@@ -74,7 +74,7 @@ try {
     Stop-Port 1721
 
     Write-Step "Installing dependencies required for launch"
-    Invoke-Native -FilePath "npm" -ArgumentList @("install")
+    Invoke-Native -FilePath "npm" -ArgumentList @("install", "--no-audit", "--no-fund")
 
     Write-Step "Starting OneCopy in development mode"
     Invoke-Native -FilePath "npm" -ArgumentList @("run", "tauri", "dev") -AllowedExitCodes @(0, 130, -1073741510)

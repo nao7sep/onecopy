@@ -60,7 +60,7 @@ log_step "Stopping stale development listeners"
 stop_port 1721
 
 log_step "Installing dependencies required for launch"
-npm install
+npm install --no-audit --no-fund
 
 log_step "Starting OneCopy in development mode"
 npm run tauri dev

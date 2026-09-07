@@ -62,7 +62,7 @@ try {
     Set-Location $repoDir
 
     Write-Step "Installing dependencies"
-    Invoke-Native -FilePath "npm" -ArgumentList @("install")
+    Invoke-Native -FilePath "npm" -ArgumentList @("install", "--no-audit", "--no-fund")
 
     # Remove stale frontend output so a build that fails to emit a file can't be
     # masked by a leftover artifact from a previous run. Only the frontend output

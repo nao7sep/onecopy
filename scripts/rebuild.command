@@ -44,7 +44,7 @@ require_command rustc
 cd "$REPO_DIR"
 
 log_step "Installing dependencies"
-npm install
+npm install --no-audit --no-fund
 
 # Remove stale frontend output so a build that fails to emit a file can't be
 # masked by a leftover artifact from a previous run. Only the frontend output is
