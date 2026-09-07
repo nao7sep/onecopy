@@ -178,6 +178,7 @@ pub struct Logger {
     inner: Mutex<Inner>,
     debug_enabled: bool,
     denied: HashSet<String>,
+    session_id: String,
 }
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
@@ -191,6 +192,9 @@ pub fn init(file_path: &Path, debug_enabled: bool) {
         inner: Mutex::new(Inner { writer }),
         debug_enabled,
         denied: default_denied(),
+        session_id: crate::nanoid::generate().unwrap_or_else(|_| {
+            format!("p{}-{}", std::process::id(), now_unix_millis())
+        }),
     };
     if LOGGER.set(logger).is_err() {
         eprintln!("[onecopy:logging] logger already initialized; ignoring re-init");
@@ -233,11 +237,20 @@ pub fn debug_enabled() -> bool {
     global().map(|l| l.debug_enabled).unwrap_or(false)
 }
 
+pub fn session_id() -> Option<&'static str> {
+    global().map(|logger| logger.session_id.as_str())
+}
+
 impl Logger {
     // Redacts, serializes, and writes one envelope as a single line. Both emit()
     // and emit_forwarded() funnel through here, so every line in the file passes
     // the identical redact + write contract.
     fn write_envelope(&self, obj: Map<String, Value>) {
+        let mut obj = obj;
+        obj.insert(
+            "sessionId".to_string(),
+            Value::String(self.session_id.clone()),
+        );
         let mut value = Value::Object(obj);
         redact_in_place(&mut value, &self.denied);
         let mut line = match serde_json::to_string(&value) {
@@ -563,6 +576,7 @@ mod tests {
             inner: Mutex::new(Inner { writer }),
             debug_enabled,
             denied: default_denied(),
+            session_id: "test-session".to_string(),
         };
         (logger, path)
     }
@@ -587,7 +601,25 @@ mod tests {
         assert_eq!(lines[0]["level"], json!("info"));
         assert_eq!(lines[0]["message"], json!("started"));
         assert_eq!(lines[0]["n"], json!(3));
+        assert_eq!(lines[0]["sessionId"], json!("test-session"));
         assert!(lines[0]["time"].as_str().unwrap().ends_with('Z'));
+    }
+
+    #[test]
+    fn session_identity_is_owned_by_the_writer() {
+        let (logger, path) = temp_logger(false);
+        logger.emit(
+            Level::Info,
+            "started",
+            json!({ "sessionId": "caller-supplied" }),
+        );
+        logger.emit_forwarded(json!({
+            "message": "frontend",
+            "sessionId": "frontend-supplied",
+        }));
+        let lines = read_lines(&path);
+        assert_eq!(lines[0]["sessionId"], json!("test-session"));
+        assert_eq!(lines[1]["sessionId"], json!("test-session"));
     }
 
     #[test]
@@ -720,6 +752,7 @@ mod tests {
             }),
             debug_enabled: false,
             denied: default_denied(),
+            session_id: "test-session".to_string(),
         };
 
         // The failing write must not panic, and must permanently drop the dead

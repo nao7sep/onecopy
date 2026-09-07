@@ -6,7 +6,7 @@
 // on-demand preparation are the only body-owned reads.
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { ensureRequestedPreview } from "../repositories/requested-previews";
 import { log, toErrorFields } from "../repositories";
 import {
   isAudioFile,
@@ -400,7 +400,7 @@ function ImageSurface({
             return;
           }
           setPhase({ kind: "converting" });
-          invoke<string>("ensure_preview", { hash })
+          ensureRequestedPreview(hash)
             .then((cacheHash) =>
               setPhase({ kind: "showing", attempt: 1, cacheHash }),
             )

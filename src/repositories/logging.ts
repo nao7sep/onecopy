@@ -34,6 +34,10 @@ function debugEnabled(): boolean {
   return import.meta.env.DEV || runtimeDebug;
 }
 
+export function isDebugLoggingEnabled(): boolean {
+  return debugEnabled();
+}
+
 // Denied field names (exact, case-insensitive) — the non-destructive redaction
 // backstop, mirroring the Rust writer's set. It replaces only matched values
 // and never inspects or edits prose.

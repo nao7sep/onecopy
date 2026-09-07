@@ -45,6 +45,7 @@ import {
 import PreviewSurface from "./components/PreviewSurface";
 import { log, toErrorFields, type LoadedAppData } from "./repositories";
 import BackgroundWorkModal from "./components/BackgroundWorkModal";
+import ActivityTraceModal from "./components/ActivityTraceModal";
 import { closePreview } from "./workflows/preview";
 import { useAppBootstrapAndRestore } from "./hooks/useAppBootstrapAndRestore";
 import { useGlobalCommands } from "./hooks/useGlobalCommands";
@@ -150,6 +151,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [activityTraceOpen, setActivityTraceOpen] = useState(false);
   /** Transient media inspection lives in the main webview. */
   const quickViewOpen = useQuickViewStore(
     (state) => state.session?.presentation === "quick",
@@ -219,6 +221,9 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       <NotificationHost />
       <BinariesModal />
       <BackgroundWorkModal />
+      {appData.debugEnabled ? (
+        <ActivityTraceModal open={activityTraceOpen} onClose={() => setActivityTraceOpen(false)} />
+      ) : null}
       <ShortcutsModal open={helpOpen} onClose={closeHelp} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       {quickViewOpen ? <QuickView /> : null}
@@ -297,6 +302,9 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
               <MenuItem onSelect={() => setTrashOpen(true)}>OneCopy Trash…</MenuItem>
               <MenuItem onSelect={() => setIssuesOpen(true)}>Issues…</MenuItem>
+              {appData.debugEnabled ? (
+                <MenuItem onSelect={() => setActivityTraceOpen(true)}>Activity trace…</MenuItem>
+              ) : null}
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}

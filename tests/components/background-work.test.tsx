@@ -4,6 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import BackgroundWorkModal from "../../src/components/BackgroundWorkModal";
 import {
+  BackgroundActivityProjection,
   backgroundWorkLine,
   mergeBackgroundRuntime,
   mergeActiveItemWork,
@@ -94,11 +95,56 @@ beforeEach(async () => {
 afterEach(cleanup);
 
 describe("Background work", () => {
+  it("projects coordinator pulses as one class lifecycle until authoritative quiet", () => {
+    const projection = new BackgroundActivityProjection();
+    const running = {
+      masterPaused: false,
+      pausedClasses: [],
+      active: {
+        id: "previews" as const,
+        hash: "private-hash",
+        done: null,
+        total: null,
+        stopping: false,
+      },
+    };
+
+    expect(projection.observe(running, "priority:7")).toMatchObject([
+      {
+        kind: "started",
+        operationId: "background:previews",
+        causeId: "priority:7",
+        current: "running",
+      },
+    ]);
+    expect(projection.observe({ ...running, active: null }, "priority:7")).toEqual([]);
+    expect(projection.observe(running, "priority:7")).toEqual([]);
+    expect(projection.quiet("priority:7")).toMatchObject([
+      {
+        kind: "completed",
+        operationId: "background:previews",
+        causeId: "priority:7",
+        current: "idle",
+      },
+    ]);
+    expect(projection.quiet("priority:7")).toEqual([]);
+  });
+
   it("keeps the status segment meaningful for running, queued, and settled work", () => {
     expect(backgroundWorkLine(current)).toBe("Background work");
     expect(
       backgroundWorkLine(
-        snapshot({}, { "video-transcripts": { state: "running", queued: 1, done: 42, total: 100 } }),
+        snapshot(
+          {},
+          {
+            "video-transcripts": {
+              state: "running",
+              queued: 1,
+              done: 42,
+              total: 100,
+            },
+          },
+        ),
       ),
     ).toBe("Video transcription 42/100");
     expect(backgroundWorkLine(snapshot())).toBe("Background work: up to date");
@@ -108,10 +154,20 @@ describe("Background work", () => {
     const merged = mergeBackgroundRuntime(current, {
       masterPaused: false,
       pausedClasses: [],
-      active: { id: "previews", hash: "photo-hash", done: 4, total: 12, stopping: false },
+      active: {
+        id: "previews",
+        hash: "photo-hash",
+        done: 4,
+        total: 12,
+        stopping: false,
+      },
     });
 
-    expect(merged?.classes[0]).toMatchObject({ state: "running", done: 4, total: 12 });
+    expect(merged?.classes[0]).toMatchObject({
+      state: "running",
+      done: 4,
+      total: 12,
+    });
     expect(merged?.classes[0].queued).toBe(12);
   });
 
@@ -146,7 +202,13 @@ describe("Background work", () => {
     fireEvent("derived://state-changed", {
       masterPaused: false,
       pausedClasses: [],
-      active: { id: "previews", hash: "photo-hash", done: 5, total: 12, stopping: false },
+      active: {
+        id: "previews",
+        hash: "photo-hash",
+        done: 5,
+        total: 12,
+        stopping: false,
+      },
     });
 
     expect(useDerivedWorkStore.getState().snapshot?.classes[0]).toMatchObject({
@@ -174,9 +236,7 @@ describe("Background work", () => {
     const previews = [...document.querySelectorAll("li")].find((row) =>
       row.textContent?.includes("Thumbnails, previews, and posters"),
     );
-    const pause = [...(previews?.querySelectorAll("button") ?? [])].find(
-      (button) => button.textContent === "Pause",
-    );
+    const pause = [...(previews?.querySelectorAll("button") ?? [])].find((button) => button.textContent === "Pause");
     await act(async () => pause!.click());
 
     expect(
@@ -200,9 +260,7 @@ describe("Background work", () => {
     expect(
       invokeCalls.some(
         (call) =>
-          call.command === "background_work_set_paused" &&
-          call.args.classId === null &&
-          call.args.paused === true,
+          call.command === "background_work_set_paused" && call.args.classId === null && call.args.paused === true,
       ),
     ).toBe(true);
   });
@@ -225,10 +283,7 @@ describe("Background work", () => {
 
   it("does not allow resume to race a class that is still stopping", () => {
     useDerivedWorkStore.setState({
-      snapshot: snapshot(
-        { masterPaused: true },
-        { "video-transcripts": { state: "stopping", queued: 3 } },
-      ),
+      snapshot: snapshot({ masterPaused: true }, { "video-transcripts": { state: "stopping", queued: 3 } }),
     });
     render(<BackgroundWorkModal />);
 

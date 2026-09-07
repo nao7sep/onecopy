@@ -8,6 +8,7 @@ import type { SectionCounts } from "../models/sections";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
+import { newActivityOperationId, recordActivity } from "../repositories/activity";
 
 export interface SourceCheckState {
   running: boolean;
@@ -130,18 +131,42 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
 
   startSourceCheck: async () => {
     set({ error: null });
+    const operationId = newActivityOperationId("sourceCheck");
+    recordActivity({
+      kind: "started",
+      owner: "sourceCheck",
+      operationId,
+      current: "running",
+      reason: "user",
+    });
     try {
       const started = await invoke<boolean>("start_source_check");
       if (started) {
         set({ rescanNeeded: false });
         await get().loadIndexWork();
         log.info("source-folder check started");
+      } else {
+        recordActivity({
+          kind: "coalesced",
+          owner: "sourceCheck",
+          operationId,
+          current: "coalesced",
+          reason: "superseded",
+        });
       }
       return started;
     } catch (error) {
       log.error("source-folder check start failed", toErrorFields(error));
       set({ error: "Couldn’t start checking source folders." });
       recordActionFailure("source-check-start-failed", "Couldn’t start checking source folders.", error);
+      recordActivity({
+        kind: "failed",
+        owner: "sourceCheck",
+        operationId,
+        previous: "running",
+        current: "failed",
+        reason: "error",
+      });
       return false;
     }
   },
@@ -151,6 +176,12 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     try {
       const accepted = await invoke<boolean>("stop_source_check");
       if (accepted) {
+        recordActivity({
+          kind: "stopping",
+          owner: "sourceCheck",
+          current: "stopping",
+          reason: "user",
+        });
         await get().loadIndexWork();
       }
     } catch (error) {
@@ -161,6 +192,13 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
   },
 
   admitBackgroundCompletion: async () => {
+    const operationId = newActivityOperationId("fileInformation");
+    recordActivity({
+      kind: "admitted",
+      owner: "fileInformation",
+      operationId,
+      current: "queued",
+    });
     try {
       await invoke("admit_background_completion");
     } catch (error) {
@@ -171,12 +209,26 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
         "Couldn’t start completing file information.",
         error,
       );
+      recordActivity({
+        kind: "failed",
+        owner: "fileInformation",
+        operationId,
+        previous: "queued",
+        current: "failed",
+        reason: "error",
+      });
     }
   },
 
   setFileInformationPaused: async (paused) => {
     set({ error: null });
     try {
+      recordActivity({
+        kind: paused ? "paused" : "resumed",
+        owner: "fileInformation",
+        current: paused ? "paused" : "running",
+        reason: paused ? "pause" : "user",
+      });
       await invoke("set_file_information_paused", { paused });
       await get().loadIndexWork();
     } catch (error) {

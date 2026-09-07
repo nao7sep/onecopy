@@ -21,6 +21,11 @@ import { formatLocalMinute } from "../utils/displayTime";
 import PreviewControl from "./PreviewControl";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { log, toErrorFields } from "../repositories";
+import {
+  latestActivityOperationId,
+  newActivityOperationId,
+  recordActivity,
+} from "../repositories/activity";
 import { rescanCurrentSection } from "../workflows/items";
 import {
   itemPresentation,
@@ -609,12 +614,35 @@ export default function Grid({
 
   useEffect(() => {
     const timer = setTimeout(() => {
+      const operationId = newActivityOperationId("priority");
+      recordActivity({
+        kind: "changed",
+        owner: "priority",
+        operationId,
+        causeId:
+          latestActivityOperationId("selection") ?? latestActivityOperationId("section"),
+        current: "running",
+        reason: "viewportChange",
+        lane: selectedSection?.kind,
+        itemCount: visibleHashes.length,
+      });
       void invoke("prioritize_derived_work", {
         selectedHash,
         visibleHashes,
         sectionKind: selectedSection?.kind ?? null,
         sectionMonth: selectedSection?.month ?? null,
-      }).catch((error) => log.warn("derived priority hint failed", toErrorFields(error)));
+      })
+        .then(() =>
+          recordActivity({
+            kind: "completed",
+            owner: "priority",
+            operationId,
+            previous: "running",
+            current: "succeeded",
+            reason: "completion",
+          }),
+        )
+        .catch((error) => log.warn("derived priority hint failed", toErrorFields(error)));
     }, 100);
     return () => clearTimeout(timer);
   }, [selectedHash, selectedSection?.kind, selectedSection?.month, visibleHashSignature]);

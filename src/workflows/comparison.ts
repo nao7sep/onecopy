@@ -24,6 +24,11 @@ import { useSectionsStore } from "../state/sections-store";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { hasOpenModal } from "../utils/modalStack";
+import {
+  latestActivityOperationId,
+  newActivityOperationId,
+  recordActivity,
+} from "../repositories/activity";
 
 let mainRecoveryAfterFamily: AnchorContext | null = null;
 
@@ -123,17 +128,44 @@ export async function requestComparisonFromMain(): Promise<void> {
     });
     return;
   }
+  const operationId = newActivityOperationId("comparison");
+  recordActivity({
+    kind: "started",
+    owner: "comparison",
+    operationId,
+    causeId: latestActivityOperationId("selection"),
+    current: "running",
+    reason: "user",
+    lane: "image",
+    itemCount: selectedKeys.size,
+  });
   try {
     const valid = await invoke<boolean>("comparison_selection_valid", { hashes });
     if (!valid) {
       useItemsStore.setState({
         message: "Comparison requires images from one similar group.",
       });
+      recordActivity({
+        kind: "completed",
+        owner: "comparison",
+        operationId,
+        previous: "running",
+        current: "idle",
+        reason: "dependency",
+      });
       return;
     }
   } catch (error) {
     log.error("comparison admission failed", toErrorFields(error));
     useItemsStore.setState({ message: "Couldn’t check the selected images." });
+    recordActivity({
+      kind: "failed",
+      owner: "comparison",
+      operationId,
+      previous: "running",
+      current: "failed",
+      reason: "error",
+    });
     return;
   }
   const result = await openComparison(hash, selectedKeys, selectedItem);
@@ -141,9 +173,34 @@ export async function requestComparisonFromMain(): Promise<void> {
     useItemsStore.setState({
       message: "There are no similar images left to compare.",
     });
+    recordActivity({
+      kind: "completed",
+      owner: "comparison",
+      operationId,
+      previous: "running",
+      current: "idle",
+      reason: "dependency",
+    });
   } else if (result === "failed") {
     useItemsStore.setState({
       message: "Couldn’t open Comparison. See Issues for details.",
+    });
+    recordActivity({
+      kind: "failed",
+      owner: "comparison",
+      operationId,
+      previous: "running",
+      current: "failed",
+      reason: "error",
+    });
+  } else {
+    recordActivity({
+      kind: "opened",
+      owner: "comparison",
+      operationId,
+      previous: "running",
+      current: "open",
+      reason: "completion",
     });
   }
 }
@@ -156,6 +213,13 @@ export async function closeComparison(): Promise<void> {
   await useComparisonStore.getState().close();
   await refreshLibrary();
   await restorePreviewAfterComparison();
+  recordActivity({
+    kind: "closed",
+    owner: "comparison",
+    previous: "open",
+    current: "closed",
+    reason: "user",
+  });
 }
 
 export async function decideComparisonPage(

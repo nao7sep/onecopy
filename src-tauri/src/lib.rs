@@ -3,6 +3,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub mod ai_acceleration;
 pub mod ai_dependencies;
+pub mod activity;
 mod app_lifecycle;
 pub mod background_work;
 pub mod backup_store;
@@ -1090,7 +1091,7 @@ fn dismiss_notification(app: AppHandle, id: i64) -> Result<bool, String> {
 // calls this when its cache entry 404s, then reloads the entry. Idempotent
 // and cheap when the entry already exists.
 #[tauri::command(async)]
-fn ensure_preview(app: AppHandle, hash: String) -> Result<String, String> {
+fn ensure_preview(app: AppHandle, hash: String) -> Result<derived_work::EnsurePreviewResult, String> {
     logging::boundary(
         "ensure_preview",
         json!({ "hash": hash }),
@@ -1099,7 +1100,10 @@ fn ensure_preview(app: AppHandle, hash: String) -> Result<String, String> {
             let config = storage::read_config_for_setup(&data_root)?;
             derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)
         },
-        |canonical| json!({ "canonicalHash": canonical }),
+        |result| json!({
+            "canonicalHash": result.canonical_hash,
+            "coalesced": result.coalesced,
+        }),
     )
 }
 
@@ -2063,6 +2067,18 @@ fn logging_debug_enabled() -> bool {
     logging::debug_enabled()
 }
 
+#[tauri::command(async)]
+fn activity_record(
+    draft: activity::ActivityDraft,
+) -> Result<Option<activity::ActivityEvent>, String> {
+    activity::record(draft)
+}
+
+#[tauri::command(async)]
+fn activity_snapshot() -> activity::ActivitySnapshot {
+    activity::snapshot()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Developer-only `debug` logging: on for a dev build, or when explicitly
@@ -2177,7 +2193,9 @@ pub fn run() {
             validate_timezone,
             check_source_dirs,
             log_event,
-            logging_debug_enabled
+            logging_debug_enabled,
+            activity_record,
+            activity_snapshot
         ])
         .build(tauri::generate_context!());
 
@@ -2288,6 +2306,7 @@ pub fn run() {
             }
         }
         tauri::RunEvent::Exit => {
+            activity::record_shutdown();
             app_lifecycle::begin_shutdown();
             source_check_runtime::shutdown();
             file_information_runtime::shutdown();

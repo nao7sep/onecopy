@@ -14,6 +14,11 @@ import {
   useSectionsStore,
 } from "../state/sections-store";
 import { reconcileComparisonMembership } from "./comparison";
+import {
+  finishActivityOperation,
+  latestActivityOperationId,
+  recordActivity,
+} from "../repositories/activity";
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let derivedIssuesTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,7 +83,17 @@ const install = createEventInstaller(
           },
         };
       });
-      if (accepted) refreshLibrarySoon();
+      if (accepted) {
+        recordActivity({
+          kind: "progressed",
+          owner: "sourceCheck",
+          operationId: latestActivityOperationId("sourceCheck") ?? "sourceCheck:auto",
+          current: "running",
+          done: event.payload.progress.done,
+          total: event.payload.progress.total,
+        });
+        refreshLibrarySoon();
+      }
     });
     await listeners.listen<{ eventSequence: number; stopped?: boolean; error?: string }>(
       "source-check://done",
@@ -107,6 +122,32 @@ const install = createEventInstaller(
           };
         });
         if (!accepted) return;
+        const operationId =
+          latestActivityOperationId("sourceCheck") ?? "sourceCheck:auto";
+        recordActivity({
+          kind:
+            event.payload.error !== undefined
+              ? "failed"
+              : event.payload.stopped === true
+                ? "cancelled"
+                : "completed",
+          owner: "sourceCheck",
+          operationId,
+          previous: "running",
+          current:
+            event.payload.error !== undefined
+              ? "failed"
+              : event.payload.stopped === true
+                ? "cancelled"
+                : "succeeded",
+          reason:
+            event.payload.error !== undefined
+              ? "error"
+              : event.payload.stopped === true
+                ? "user"
+                : "completion",
+        });
+        finishActivityOperation("sourceCheck", operationId);
         if (event.payload.error !== undefined) {
           log.error("source-folder check failed", {
             error: { message: event.payload.error },
@@ -146,7 +187,18 @@ const install = createEventInstaller(
           },
         };
       });
-      if (accepted) refreshLibrarySoon();
+      if (accepted) {
+        recordActivity({
+          kind: "progressed",
+          owner: "fileInformation",
+          operationId:
+            latestActivityOperationId("fileInformation") ?? "fileInformation:auto",
+          current: "running",
+          done: event.payload.progress.done,
+          total: event.payload.progress.total,
+        });
+        refreshLibrarySoon();
+      }
     });
     await listeners.listen<{ eventSequence: number; error?: string }>("file-information://done", (event) => {
       let accepted = false;
@@ -164,6 +216,17 @@ const install = createEventInstaller(
         };
       });
       if (!accepted) return;
+      const operationId =
+        latestActivityOperationId("fileInformation") ?? "fileInformation:auto";
+      recordActivity({
+        kind: event.payload.error === undefined ? "completed" : "failed",
+        owner: "fileInformation",
+        operationId,
+        previous: "running",
+        current: event.payload.error === undefined ? "succeeded" : "failed",
+        reason: event.payload.error === undefined ? "completion" : "error",
+      });
+      finishActivityOperation("fileInformation", operationId);
       if (event.payload.error !== undefined) {
         log.error("file-information completion failed", {
           error: { message: event.payload.error },

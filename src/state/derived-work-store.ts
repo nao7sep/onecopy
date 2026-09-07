@@ -10,28 +10,15 @@ import { recordActionFailure } from "./notifications-store";
 import type { ItemWorkStates } from "../models/items";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
+import { latestActivityOperationId, recordActivity, type ActivityDraft } from "../repositories/activity";
 
 const PING_EVERY_MS = 10_000;
 
 export type BackgroundClassState =
-  | "disabled"
-  | "unavailable"
-  | "queued"
-  | "waiting"
-  | "running"
-  | "stopping"
-  | "paused"
-  | "failed"
-  | "up-to-date";
+  "disabled" | "unavailable" | "queued" | "waiting" | "running" | "stopping" | "paused" | "failed" | "up-to-date";
 
 export interface BackgroundClassSnapshot {
-  id:
-    | "previews"
-    | "snapshots"
-    | "similarity"
-    | "faces"
-    | "video-transcripts"
-    | "audio-transcripts";
+  id: "previews" | "snapshots" | "similarity" | "faces" | "video-transcripts" | "audio-transcripts";
   state: BackgroundClassState;
   queued: number;
   failed: number;
@@ -95,7 +82,11 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
         set({ snapshot, activeItem, loading: false, error: null });
       }
     } catch (error) {
-      if (fresh()) set({ loading: false, error: "Background work could not be loaded. Try reopening this window." });
+      if (fresh())
+        set({
+          loading: false,
+          error: "Background work could not be loaded. Try reopening this window.",
+        });
       log.warn("background-work snapshot failed", toErrorFields(error));
     }
   },
@@ -109,18 +100,23 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
     const changing = classId ?? "all";
     set({ changing, error: null });
     try {
+      recordActivity({
+        kind: paused ? "paused" : "resumed",
+        owner: "backgroundWork",
+        operationId: `background:${classId ?? "all"}`,
+        current: paused ? "paused" : "running",
+        reason: paused ? "pause" : "user",
+      });
       await invoke("background_work_set_paused", { classId, paused });
       await get().load();
     } catch (error) {
       set({ error: "Background work could not be changed. Try again." });
       log.warn("background-work pause failed", toErrorFields(error));
-      recordActionFailure(
-        "background-work-control-failed",
-        "Couldn’t change background work.",
-        error,
-      );
+      recordActionFailure("background-work-control-failed", "Couldn’t change background work.", error);
     } finally {
-      set((state) => ({ changing: state.changing === changing ? null : state.changing }));
+      set((state) => ({
+        changing: state.changing === changing ? null : state.changing,
+      }));
     }
   },
 }));
@@ -144,10 +140,7 @@ export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): str
   if (stopping) return `Stopping ${backgroundClassLabel(stopping.id).toLowerCase()}…`;
   const running = snapshot.classes.find((row) => row.state === "running");
   if (running) {
-    const progress =
-      running.done !== null && running.total !== null
-        ? ` ${running.done}/${running.total}`
-        : "…";
+    const progress = running.done !== null && running.total !== null ? ` ${running.done}/${running.total}` : "…";
     return `${backgroundClassLabel(running.id)}${progress}`;
   }
   if (snapshot.masterPaused || snapshot.classes.some((row) => row.state === "paused")) {
@@ -157,10 +150,7 @@ export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): str
   return "Background work: up to date";
 }
 
-const ITEM_CLASS_FIELD: Record<
-  ActiveItemWork["id"],
-  keyof ItemWorkStates
-> = {
+const ITEM_CLASS_FIELD: Record<ActiveItemWork["id"], keyof ItemWorkStates> = {
   previews: "preview",
   snapshots: "snapshots",
   similarity: "similarity",
@@ -168,6 +158,83 @@ const ITEM_CLASS_FIELD: Record<
   "video-transcripts": "transcripts",
   "audio-transcripts": "transcripts",
 };
+
+type ProjectedActiveWork = Pick<ActiveItemWork, "id" | "done" | "total" | "stopping">;
+
+/**
+ * Turns the coordinator's high-frequency runtime projection into lifecycle
+ * evidence. A momentary `active: null` is an implementation pulse between
+ * items, not proof that the class is finished; `derived://quiet` is the
+ * authoritative settled boundary.
+ */
+export class BackgroundActivityProjection {
+  private active: ProjectedActiveWork | null = null;
+
+  observe(runtime: BackgroundRuntimeSnapshot, causeId?: string): ActivityDraft[] {
+    const next = runtime.active;
+    if (next === null) return [];
+
+    const events: ActivityDraft[] = [];
+    if (this.active !== null && this.active.id !== next.id) {
+      events.push(this.completed(this.active.id, causeId));
+      this.active = null;
+    }
+
+    if (this.active === null) {
+      events.push({
+        kind: next.stopping ? "stopping" : "started",
+        owner: "backgroundWork",
+        operationId: `background:${next.id}`,
+        causeId,
+        current: next.stopping ? "stopping" : "running",
+        reason: next.stopping ? "preemption" : undefined,
+        done: next.done ?? undefined,
+        total: next.total ?? undefined,
+      });
+    } else if (
+      this.active.stopping !== next.stopping ||
+      this.active.done !== next.done ||
+      this.active.total !== next.total
+    ) {
+      events.push({
+        kind: next.stopping ? "stopping" : "progressed",
+        owner: "backgroundWork",
+        operationId: `background:${next.id}`,
+        causeId,
+        current: next.stopping ? "stopping" : "running",
+        reason: next.stopping ? "preemption" : undefined,
+        done: next.done ?? undefined,
+        total: next.total ?? undefined,
+      });
+    }
+
+    this.active = {
+      id: next.id,
+      done: next.done,
+      total: next.total,
+      stopping: next.stopping,
+    };
+    return events;
+  }
+
+  quiet(causeId?: string): ActivityDraft[] {
+    if (this.active === null) return [];
+    const event = this.completed(this.active.id, causeId);
+    this.active = null;
+    return [event];
+  }
+
+  private completed(id: ActiveItemWork["id"], causeId?: string): ActivityDraft {
+    return {
+      kind: "completed",
+      owner: "backgroundWork",
+      operationId: `background:${id}`,
+      causeId,
+      current: "idle",
+      reason: "completion",
+    };
+  }
+}
 
 export function mergeActiveItemWork(
   states: ItemWorkStates,
@@ -227,9 +294,7 @@ function ping(): void {
   const now = Date.now();
   if (now - lastPing < PING_EVERY_MS) return;
   lastPing = now;
-  void invoke("note_user_activity").catch((error) =>
-    log.warn("activity ping failed", toErrorFields(error)),
-  );
+  void invoke("note_user_activity").catch((error) => log.warn("activity ping failed", toErrorFields(error)));
 }
 
 export function installActivityPings(target: Window): () => void {
@@ -244,6 +309,8 @@ export function installActivityPings(target: Window): () => void {
   };
 }
 
+const backgroundActivity = new BackgroundActivityProjection();
+
 const installEvents = createEventInstaller(
   async (listeners) => {
     await listeners.listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
@@ -251,8 +318,14 @@ const installEvents = createEventInstaller(
         snapshot: mergeBackgroundRuntime(state.snapshot, event.payload),
         activeItem: event.payload.active,
       }));
+      for (const draft of backgroundActivity.observe(event.payload, latestActivityOperationId("priority"))) {
+        recordActivity(draft);
+      }
     });
     await listeners.listen("derived://quiet", () => {
+      for (const draft of backgroundActivity.quiet(latestActivityOperationId("priority"))) {
+        recordActivity(draft);
+      }
       if (useDerivedWorkStore.getState().open) {
         void useDerivedWorkStore.getState().load();
       }

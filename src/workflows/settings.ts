@@ -10,6 +10,7 @@ import { useSectionsStore } from "../state/sections-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
 import { recordActionFailure } from "../state/notifications-store";
+import { newActivityOperationId, recordActivity } from "../repositories/activity";
 
 export async function saveSettings(): Promise<void> {
   const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
@@ -18,6 +19,14 @@ export async function saveSettings(): Promise<void> {
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
   const { soundEnabled, playbackVolume, ...configDraft } = draft;
   useSettingsStore.setState({ saving: true, message: "", messageLevel: null });
+  const operationId = newActivityOperationId("settings");
+  recordActivity({
+    kind: "started",
+    owner: "settings",
+    operationId,
+    current: "running",
+    reason: "user",
+  });
   // Config publication is the Save transaction's commit point. Index
   // projection is durable follow-up work: once publication succeeds, close
   // the draft surface rather than leaving it looking unsaved for the duration
@@ -42,6 +51,14 @@ export async function saveSettings(): Promise<void> {
     });
     log.error("settings save failed", toErrorFields(error));
     recordActionFailure("settings-save-failed", "Couldn’t save Settings.", error);
+    recordActivity({
+      kind: "failed",
+      owner: "settings",
+      operationId,
+      previous: "running",
+      current: "failed",
+      reason: "error",
+    });
     return;
   }
 
@@ -89,4 +106,12 @@ export async function saveSettings(): Promise<void> {
     }
   }
   log.info("settings saved", { resolved });
+  recordActivity({
+    kind: "completed",
+    owner: "settings",
+    operationId,
+    previous: "running",
+    current: "succeeded",
+    reason: "completion",
+  });
 }

@@ -28,9 +28,7 @@ const READY_APP_DATA: LoadedAppData = {
 };
 
 function renderReadyApp() {
-  return render(
-    <ReadyApp appData={useAppStore.getState().appData ?? READY_APP_DATA} />,
-  );
+  return render(<ReadyApp appData={useAppStore.getState().appData ?? READY_APP_DATA} />);
 }
 
 beforeEach(() => {
@@ -72,6 +70,20 @@ describe("the title band", () => {
       expect(button.querySelector("svg")).not.toBeNull();
       expect(button.textContent).toBe("");
     }
+  });
+
+  it("exposes Activity trace only through the developer gate", () => {
+    const releaseView = renderReadyApp();
+    fireEvent.click(releaseView.getByRole("button", { name: "Open menu" }));
+    expect(releaseView.queryByText("Activity trace…")).toBeNull();
+    releaseView.unmount();
+
+    useAppStore.setState({
+      appData: { ...READY_APP_DATA, debugEnabled: true },
+    });
+    const debugView = renderReadyApp();
+    fireEvent.click(debugView.getByRole("button", { name: "Open menu" }));
+    expect(debugView.getByText("Activity trace…")).toBeTruthy();
   });
 
   it("leaves the footer to standing state alone", () => {

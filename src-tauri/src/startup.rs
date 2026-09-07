@@ -132,6 +132,7 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String
         .join(crate::paths::LOGS_DIR_NAME)
         .join(crate::logging::session_filename());
     crate::logging::init(&log_path, debug_enabled);
+    crate::activity::init();
     crate::install_panic_hook();
 
     // The backup store is best-effort by contract and records its own failure.
@@ -378,6 +379,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
             "setupMs": started.elapsed().as_millis() as u64,
         }),
     );
+    crate::activity::record_app_admitted();
 }
 
 /// Own the entire fallible launch boundary while keeping Tauri's setup hook

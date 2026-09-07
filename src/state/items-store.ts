@@ -26,6 +26,12 @@ import {
   type AnchorContext,
   type SectionMemory,
 } from "../models/mainSelection";
+import {
+  finishActivityOperation,
+  latestActivityOperationId,
+  newActivityOperationId,
+  recordActivity,
+} from "../repositories/activity";
 
 export interface SelectedSection {
   kind: "image" | "video" | "other";
@@ -71,11 +77,7 @@ interface ItemsState {
   loadWindow: (start: number, force?: boolean) => Promise<void>;
   selectPosition: (index: number, extend: boolean) => Promise<void>;
   selectIdentity: (key: string) => Promise<void>;
-  selectItem: (
-    key: string | null,
-    align?: "nearest" | "center",
-    position?: number,
-  ) => void;
+  selectItem: (key: string | null, align?: "nearest" | "center", position?: number) => void;
   setAnchor: (key: string | null, position?: number) => void;
   toggleItem: (key: string, position?: number) => void;
   rangeSelect: (key: string, position?: number) => Promise<void>;
@@ -90,11 +92,7 @@ const rangeLoad = requestSeq();
 const detailLoad = requestSeq();
 let scrollRequestId = 0;
 
-function requestScroll(
-  key: string,
-  index: number,
-  align: "nearest" | "center",
-) {
+function requestScroll(key: string, index: number, align: "nearest" | "center") {
   scrollRequestId += 1;
   return { key, index, align, id: scrollRequestId };
 }
@@ -162,17 +160,36 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     const lane = state.selected?.kind === "other" ? "other" : "media";
     const current = state.sortOrders[lane];
     const next: SortChoice =
-      current.order === order
-        ? { order, desc: !current.desc }
-        : { order, desc: DEFAULT_DESC[order] };
+      current.order === order ? { order, desc: !current.desc } : { order, desc: DEFAULT_DESC[order] };
     set({ sortOrders: { ...state.sortOrders, [lane]: next } });
     void reconcileCurrent(set, get, false, "center");
   },
 
   select: async (section, restore) => {
     const before = get();
-    const sameSection =
-      before.selected?.kind === section.kind && before.selected.month === section.month;
+    const sameSection = before.selected?.kind === section.kind && before.selected.month === section.month;
+    if (!sameSection) {
+      const previousOperationId = latestActivityOperationId("section");
+      if (previousOperationId !== undefined) {
+        recordActivity({
+          kind: "replaced",
+          owner: "section",
+          operationId: previousOperationId,
+          previous: "running",
+          current: "idle",
+          reason: "superseded",
+        });
+      }
+      recordActivity({
+        kind: before.selected === null ? "started" : "replaced",
+        owner: "section",
+        operationId: newActivityOperationId("section"),
+        previous: before.selected === null ? "idle" : "running",
+        current: "running",
+        reason: "sectionChange",
+        lane: section.kind,
+      });
+    }
     const memory = { ...before.sectionMemory };
     if (!sameSection && before.selected !== null) {
       memory[sectionId(before.selected)] = {
@@ -253,11 +270,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       log.error("section window load failed", toErrorFields(error));
       if (fresh()) {
         set({ loadError: "Couldn’t load this part of the section." });
-        recordActionFailure(
-          "section-window-load-failed",
-          "Couldn’t load this part of the section.",
-          error,
-        );
+        recordActionFailure("section-window-load-failed", "Couldn’t load this part of the section.", error);
       }
     }
   },
@@ -283,18 +296,24 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   selectIdentity: async (key) => {
-    await reconcileCurrent(
-      set,
-      get,
-      false,
-      "center",
-      { anchor: key, context: null },
-      true,
-    );
+    await reconcileCurrent(set, get, false, "center", { anchor: key, context: null }, true);
   },
 
   selectItem: (key, align = "nearest", position) => {
     if (key === null) {
+      const operationId = latestActivityOperationId("selection");
+      if (get().selectedKeys.size > 0) {
+        recordActivity({
+          kind: "changed",
+          owner: "selection",
+          operationId,
+          previous: "running",
+          current: "idle",
+          reason: "selectionChange",
+          itemCount: 0,
+        });
+      }
+      if (operationId !== undefined) finishActivityOperation("selection", operationId);
       set({
         selectedItem: null,
         selectedKeys: new Set(),
@@ -311,6 +330,26 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     }
     const index = position ?? knownPosition(get(), key);
     if (index === undefined) return;
+    const previousOperationId = latestActivityOperationId("selection");
+    if (previousOperationId !== undefined) {
+      recordActivity({
+        kind: "replaced",
+        owner: "selection",
+        operationId: previousOperationId,
+        previous: "running",
+        current: "idle",
+        reason: "superseded",
+      });
+    }
+    const operationId = newActivityOperationId("selection");
+    recordActivity({
+      kind: "changed",
+      owner: "selection",
+      operationId,
+      current: "running",
+      reason: "selectionChange",
+      itemCount: 1,
+    });
     const positions = new Map([[key, index]]);
     set({
       selectedItem: key,
@@ -329,7 +368,12 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
 
   setAnchor: (key, position) => {
     if (key === null) {
-      set({ selectedItem: null, scrollRequest: null, detail: null, currentContext: null });
+      set({
+        selectedItem: null,
+        scrollRequest: null,
+        detail: null,
+        currentContext: null,
+      });
       return;
     }
     const index = position ?? knownPosition(get(), key);
@@ -376,8 +420,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       rangeBase: new Set(selectedPositions.keys()),
       rangeBasePositions: new Map(selectedPositions),
       currentContext: selectedItem === null ? null : contextFromWindow(get(), anchorIndex),
-      scrollRequest:
-        selectedItem === null ? null : requestScroll(selectedItem, anchorIndex, "nearest"),
+      scrollRequest: selectedItem === null ? null : requestScroll(selectedItem, anchorIndex, "nearest"),
       detail: null,
     });
     loadAnchorDetail(selectedItem);
@@ -453,9 +496,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       rangeBase: new Set(rangeBasePositions.keys()),
       rangeBasePositions,
       scrollRequest:
-        state.scrollRequest?.key === previousHash
-          ? { ...state.scrollRequest, key: current }
-          : state.scrollRequest,
+        state.scrollRequest?.key === previousHash ? { ...state.scrollRequest, key: current } : state.scrollRequest,
       ...(selectedItem !== state.selectedItem ? { detail: null } : {}),
     });
     void get().loadWindow(state.windowStart, true);
@@ -493,7 +534,7 @@ async function reconcileCurrent(
   const fresh = sectionLoad.begin();
   const selected = replaceSelection ? [] : [...before.selectedKeys].map(identityFromKey);
   const rangeBase = replaceSelection ? [] : [...before.rangeBase].map(identityFromKey);
-  const requestedAnchor = remembered === undefined ? before.selectedItem : remembered?.anchor ?? null;
+  const requestedAnchor = remembered === undefined ? before.selectedItem : (remembered?.anchor ?? null);
   const inferredContext =
     before.selectedItem === null
       ? null
@@ -502,9 +543,7 @@ async function reconcileCurrent(
           return position === undefined ? null : contextFromWindow(before, position);
         })();
   const recovery =
-    remembered === undefined
-      ? (before.currentContext ?? inferredContext)
-      : remembered?.context ?? null;
+    remembered === undefined ? (before.currentContext ?? inferredContext) : (remembered?.context ?? null);
   try {
     const result = await invoke<SectionReconciliation>("reconcile_section", {
       kind: section.kind,
@@ -512,10 +551,7 @@ async function reconcileCurrent(
       sort,
       selected,
       anchor: requestedAnchor === null ? null : identityFromKey(requestedAnchor),
-      rangeOrigin:
-        replaceSelection || before.rangeOrigin === null
-          ? null
-          : identityFromKey(before.rangeOrigin),
+      rangeOrigin: replaceSelection || before.rangeOrigin === null ? null : identityFromKey(before.rangeOrigin),
       rangeBase,
       recovery: anchorContextPayload(recovery),
       selectFirst,
@@ -527,7 +563,8 @@ async function reconcileCurrent(
       current.selected?.kind !== section.kind ||
       current.selected.month !== section.month ||
       !sameSort(current.currentSort(), sort)
-    ) return;
+    )
+      return;
     const selectedPositions = membersMap(result.selected);
     const anchor = result.anchor === null ? null : identityKey(result.anchor);
     if (anchor !== null && result.anchor !== null) selectedPositions.set(anchor, result.anchor.index);
@@ -554,9 +591,7 @@ async function reconcileCurrent(
       rangeBasePositions,
       currentContext: anchorContextFromPayload(result.context),
       scrollRequest:
-        anchor === null || result.anchor === null
-          ? null
-          : requestScroll(anchor, result.anchor.index, align),
+        anchor === null || result.anchor === null ? null : requestScroll(anchor, result.anchor.index, align),
       ...(anchor !== before.selectedItem ? { detail: null } : {}),
     });
     if (anchor !== before.selectedItem) loadAnchorDetail(anchor);
@@ -598,7 +633,9 @@ function loadAnchorDetail(key: string | null): void {
     .catch((error) => {
       log.error("item detail load failed", toErrorFields(error));
       if (fresh() && useItemsStore.getState().selectedItem === key) {
-        useItemsStore.setState({ message: "Couldn’t load details for this item." });
+        useItemsStore.setState({
+          message: "Couldn’t load details for this item.",
+        });
         recordActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
       }
     });

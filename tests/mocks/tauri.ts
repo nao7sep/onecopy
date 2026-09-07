@@ -444,6 +444,9 @@ export function resetTauriMocks(
   options: { keepListeners?: boolean } = {},
 ): void {
   handlers.clear();
+  // Developer activity is orthogonal to every product assertion. Keep its
+  // fire-and-forget command available unless a spec explicitly replaces it.
+  handlers.set("activity_record", () => null);
   if (!options.keepListeners) listeners.clear();
   invokeCalls.length = 0;
   emitCalls.length = 0;

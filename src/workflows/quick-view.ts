@@ -14,6 +14,11 @@ import type {
 import type { ItemDetail, SectionItem } from "../models/items";
 import { identityFromKey, identityKey, isAudioFile, itemKey } from "../models/items";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
+import {
+  latestActivityOperationId,
+  newActivityOperationId,
+  recordActivity,
+} from "../repositories/activity";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
@@ -244,6 +249,18 @@ export function openViewerFromMain(
     return false;
   }
   const request = ++viewerOpenRequest;
+  const owner = presentation === "fullscreen" ? "fullscreen" : "quickView";
+  const operationId = newActivityOperationId(owner);
+  recordActivity({
+    kind: "started",
+    owner,
+    operationId,
+    causeId: latestActivityOperationId("selection"),
+    current: "running",
+    reason: "user",
+    lane: section.kind,
+    itemCount: items.selectedKeys.size,
+  });
   const selected = [...items.selectedKeys].flatMap((key) => {
     const index = items.selectedPositions.get(key) ?? loadedPositions.get(key);
     return index === undefined ? [] : [{ ...identityFromKey(key), index }];
@@ -257,12 +274,28 @@ export function openViewerFromMain(
   })
     .then((snapshot) => {
       if (request !== viewerOpenRequest) {
+        recordActivity({
+          kind: "stale",
+          owner,
+          operationId,
+          previous: "running",
+          current: "stale",
+          reason: "superseded",
+        });
         void invoke("viewer_sequence_close", { token: snapshot.token }).catch((error) =>
           log.warn("stale viewer sequence cleanup failed", toErrorFields(error)),
         );
         return;
       }
       useQuickViewStore.getState().start(snapshot, presentation);
+      recordActivity({
+        kind: "opened",
+        owner,
+        operationId,
+        previous: "running",
+        current: "open",
+        reason: "completion",
+      });
       if (presentation === "fullscreen") beginFullscreen("main", preferredMonitor);
     })
     .catch((error) => {
@@ -270,6 +303,14 @@ export function openViewerFromMain(
       log.error("viewer sequence start failed", toErrorFields(error));
       useItemsStore.setState({ message: "Couldn’t open the viewer." });
       recordActionFailure("viewer-open-failed", "Couldn’t open the viewer.", error);
+      recordActivity({
+        kind: "failed",
+        owner,
+        operationId,
+        previous: "running",
+        current: "failed",
+        reason: "error",
+      });
     });
   return true;
 }
@@ -339,6 +380,15 @@ export async function closeViewer(): Promise<void> {
   viewerOpenRequest += 1;
   const session = useQuickViewStore.getState().session;
   const presentation = session?.presentation;
+  if (presentation !== undefined) {
+    recordActivity({
+      kind: "closed",
+      owner: presentation === "fullscreen" ? "fullscreen" : "quickView",
+      previous: "open",
+      current: "closed",
+      reason: "user",
+    });
+  }
   useQuickViewStore.getState().close();
   if (session !== null) {
     await invoke("viewer_sequence_close", { token: session.token }).catch((error) =>

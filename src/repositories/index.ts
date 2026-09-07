@@ -8,3 +8,15 @@ export type {
   QuarantineRecord,
   StartupFailure,
 } from "./app-data";
+export {
+  finishActivityOperation,
+  loadActivitySnapshot,
+  latestActivityOperationId,
+  newActivityOperationId,
+  recordActivity,
+} from "./activity";
+export type {
+  ActivityDraft,
+  ActivityEvent,
+  ActivitySnapshot,
+} from "./activity";

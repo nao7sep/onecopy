@@ -10,9 +10,10 @@
 //! pass, so installing a tool or changing a feature takes effect on the next
 //! wake without restarting either indexing or the app.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use rusqlite::Connection;
@@ -34,6 +35,13 @@ static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 static PRIORITY: LazyLock<Mutex<PriorityHints>> =
     LazyLock::new(|| Mutex::new(PriorityHints::default()));
+static REQUESTED_PREVIEWS: LazyLock<Mutex<HashMap<String, Arc<RequestedPreviewFlight>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct RequestedPreviewFlight {
+    result: Mutex<Option<Result<String, String>>>,
+    ready: Condvar,
+}
 
 const IDLE_AFTER_MS: i64 = 60_000;
 const POLL_SECONDS: u64 = 15;
@@ -501,6 +509,27 @@ pub fn ensure_preview(
     data_root: &Path,
     config: Option<&serde_json::Value>,
     hash: &str,
+) -> Result<EnsurePreviewResult, String> {
+    let (canonical_hash, coalesced) =
+        coalesce_requested_preview(hash, || ensure_preview_once(app, data_root, config, hash))?;
+    Ok(EnsurePreviewResult {
+        canonical_hash,
+        coalesced,
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsurePreviewResult {
+    pub canonical_hash: String,
+    pub coalesced: bool,
+}
+
+fn ensure_preview_once(
+    app: &AppHandle,
+    data_root: &Path,
+    config: Option<&serde_json::Value>,
+    hash: &str,
 ) -> Result<String, String> {
     let _active = crate::derived_runtime::begin_manual(app, WorkClass::Previews.id())?;
     crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
@@ -531,6 +560,118 @@ pub fn ensure_preview(
     );
     notify_issues(app);
     result
+}
+
+fn coalesce_requested_preview(
+    hash: &str,
+    work: impl FnOnce() -> Result<String, String>,
+) -> Result<(String, bool), String> {
+    let (flight, leader) = {
+        let mut active = REQUESTED_PREVIEWS
+            .lock()
+            .map_err(|_| "requested preview state is unavailable".to_string())?;
+        match active.get(hash) {
+            Some(flight) => (flight.clone(), false),
+            None => {
+                let flight = Arc::new(RequestedPreviewFlight {
+                    result: Mutex::new(None),
+                    ready: Condvar::new(),
+                });
+                active.insert(hash.to_string(), flight.clone());
+                (flight, true)
+            }
+        }
+    };
+
+    if !leader {
+        let result = flight
+            .ready
+            .wait_while(
+                flight
+                    .result
+                    .lock()
+                    .map_err(|_| "requested preview state is unavailable".to_string())?,
+                |result| result.is_none(),
+            )
+            .map_err(|_| "requested preview state is unavailable".to_string())?;
+        let canonical_hash = result
+            .clone()
+            .ok_or_else(|| "requested preview ended without a result".to_string())?;
+        return canonical_hash.map(|hash| (hash, true));
+    }
+
+    let result = work();
+    {
+        let mut published = flight
+            .result
+            .lock()
+            .map_err(|_| "requested preview state is unavailable".to_string())?;
+        *published = Some(result.clone());
+        flight.ready.notify_all();
+    }
+    let mut active = REQUESTED_PREVIEWS
+        .lock()
+        .map_err(|_| "requested preview state is unavailable".to_string())?;
+    if active
+        .get(hash)
+        .is_some_and(|current| Arc::ptr_eq(current, &flight))
+    {
+        active.remove(hash);
+    }
+    result.map(|hash| (hash, false))
+}
+
+#[cfg(test)]
+mod requested_preview_tests {
+    // Private single-flight bookkeeping is tested here because promoting it
+    // would expose a concurrency primitive that no production caller needs.
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn identical_requested_previews_share_one_result() {
+        let key = format!("test-preview-{}", crate::nanoid::generate().unwrap());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first_key = key.clone();
+        let leader = std::thread::spawn(move || {
+            coalesce_requested_preview(&first_key, || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok("canonical".to_string())
+            })
+        });
+        started_rx.recv().unwrap();
+
+        let observed = REQUESTED_PREVIEWS
+            .lock()
+            .unwrap()
+            .get(&key)
+            .unwrap()
+            .clone();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let follower_executions = executions.clone();
+        let follower_key = key.clone();
+        let follower = std::thread::spawn(move || {
+            coalesce_requested_preview(&follower_key, || {
+                follower_executions.fetch_add(1, Ordering::SeqCst);
+                Ok("wrong".to_string())
+            })
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Arc::strong_count(&observed) < 4 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let joined = Arc::strong_count(&observed) >= 4;
+        release_tx.send(()).unwrap();
+        assert!(joined, "follower did not join the active request");
+
+        assert_eq!(leader.join().unwrap().unwrap(), ("canonical".to_string(), false));
+        assert_eq!(follower.join().unwrap().unwrap(), ("canonical".to_string(), true));
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
 }
 
 /// One bounded pass. Settings and SQLite are opened once per batch, while
