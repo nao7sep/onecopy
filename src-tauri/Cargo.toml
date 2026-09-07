@@ -24,11 +24,12 @@ warnings = "deny"
 linker_messages = "allow"
 
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+# OneCopy ships as a macOS/Windows desktop application. The mobile-oriented
+# Tauri template also emitted staticlib and cdylib artifacts for every local
+# build even though no shipped target consumed them; the desktop binary and
+# Rust integration tests need only the rlib.
 name = "onecopy_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "onecopy-ai-preparer"
@@ -130,11 +131,58 @@ whisper-rs = { version = "0.16.0", features = ["metal"] }
 # renamex_np is also the atomic no-clobber publication primitive.
 libc = "0.2"
 
-# Dependencies must not run at opt-level 0 in dev builds: libwebp's C (built by
-# cc, which inherits OPT_LEVEL) and the image crate become ~18x slower there,
-# turning the derive stage into quarter-hour hangs on ordinary asset sets.
-# Optimizing only dependencies keeps the app crate itself fast to recompile.
+# Keep development symbols useful without Rust's macOS default of leaving one
+# unpacked codegen object per unit in target/debug/deps. That default grew this
+# repository's cache to hundreds of thousands of files and made Cargo spend
+# tens of seconds merely enumerating the directory.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "off"
+
 [profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+split-debuginfo = "off"
+
+[profile.test.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true
+
+# Media derivation was measured at roughly 18x slower with an entirely
+# unoptimized dependency graph. Optimize only the dependencies that execute
+# CPU-heavy media, hashing, inference, compression, or SQLite work; compiling
+# the Tauri/WebKit plumbing at opt-level 2 buys no application throughput and
+# makes clean development builds much more expensive.
+[profile.dev.package.image]
+opt-level = 2
+[profile.dev.package.webp]
+opt-level = 2
+[profile.dev.package.libwebp-sys]
+opt-level = 2
+[profile.dev.package.blake3]
+opt-level = 2
+[profile.dev.package.sha2]
+opt-level = 2
+[profile.dev.package.whisper-rs]
+opt-level = 2
+[profile.dev.package.whisper-rs-sys]
+opt-level = 2
+[profile.dev.package.ort]
+opt-level = 2
+[profile.dev.package.ort-sys]
+opt-level = 2
+[profile.dev.package.rusqlite]
+opt-level = 2
+[profile.dev.package.libsqlite3-sys]
+opt-level = 2
+[profile.dev.package.zstd]
+opt-level = 2
+[profile.dev.package.zstd-sys]
 opt-level = 2
 
 [dev-dependencies]
