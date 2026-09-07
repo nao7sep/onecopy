@@ -95,8 +95,12 @@ blake3 = "1.8.6"
 walkdir = "2.5.0"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
-image = "0.25.10"
-webp = "0.3.1"
+image = { version = "0.25.10", default-features = false, features = [
+    "bmp", "gif", "jpeg", "png", "tiff", "webp",
+] }
+# OneCopy uses libwebp's raw RGBA encoder rather than webp's DynamicImage
+# adapters, so its optional image-crate feature would only widen the graph.
+webp = { version = "0.3.1", default-features = false }
 keepawake = "0.6.0"
 # Streaming managed-artifact downloads need separate per-read idleness and a
 # size-scaled whole-operation deadline; the previous ureq path exposed only a

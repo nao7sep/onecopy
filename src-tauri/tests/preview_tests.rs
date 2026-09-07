@@ -40,6 +40,56 @@ fn generates_thumb_and_preview_within_limits_preserving_aspect() {
         .contains(&format!("thumbs{}ab{}", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)));
 }
 
+#[test]
+fn built_in_image_extensions_have_one_proven_decode_route() {
+    use std::collections::HashSet;
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-image-format-matrix-")
+        .tempdir()
+        .unwrap();
+    let pixels = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        3,
+        2,
+        image::Rgb([31, 127, 223]),
+    ));
+    let native = [
+        ("jpg", image::ImageFormat::Jpeg),
+        ("jpeg", image::ImageFormat::Jpeg),
+        ("png", image::ImageFormat::Png),
+        ("webp", image::ImageFormat::WebP),
+        ("gif", image::ImageFormat::Gif),
+        ("bmp", image::ImageFormat::Bmp),
+        ("tif", image::ImageFormat::Tiff),
+        ("tiff", image::ImageFormat::Tiff),
+    ];
+    for (extension, format) in native {
+        let path = dir.path().join(format!("sample.{extension}"));
+        pixels.save_with_format(&path, format).unwrap();
+        let (decoded, orientation) = decode_image(&path, None).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (3, 2), "{extension}");
+        assert_eq!(orientation, 1, "{extension}");
+    }
+
+    let ffmpeg: HashSet<&str> = ["heic", "heif", "hif", "avif"].into_iter().collect();
+    let routed: HashSet<&str> = native
+        .iter()
+        .map(|(extension, _)| *extension)
+        .chain(ffmpeg.iter().copied())
+        .collect();
+    assert_eq!(
+        routed,
+        onecopy_lib::extensions::IMAGE_EXTENSIONS
+            .iter()
+            .copied()
+            .collect(),
+        "every built-in image extension needs exactly one tested route"
+    );
+    for extension in ffmpeg {
+        assert!(needs_ffmpeg_decode(Path::new(&format!("sample.{extension}"))));
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn oversized_native_preview_retries_once_through_scaled_ffmpeg() {
