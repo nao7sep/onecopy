@@ -221,7 +221,7 @@ pub fn spawn_reported(
     thread_name: &'static str,
     issue_kind: &'static str,
     work: impl FnOnce() -> Result<(), String> + Send + 'static,
-) -> Result<(), String> {
+) -> Result<std::thread::JoinHandle<()>, String> {
     let handle = app.clone();
     let started = std::thread::Builder::new()
         .name(thread_name.to_string())
@@ -235,7 +235,7 @@ pub fn spawn_reported(
             let _ = report(&handle, issue_kind, None, &failure);
         });
     match started {
-        Ok(_) => Ok(()),
+        Ok(worker) => Ok(worker),
         Err(error) => {
             let message = format!("could not start {thread_name}: {error}");
             let _ = report(&app, issue_kind, None, &message);

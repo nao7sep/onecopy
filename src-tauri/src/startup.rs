@@ -3,6 +3,9 @@
 //! shell running in a blocked state and admits no app-lifetime worker.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -10,6 +13,8 @@ use serde_json::{json, Value};
 
 const BLOCKED_TITLE: &str = "OneCopy could not start safely";
 const BLOCKED_MESSAGE: &str = "OneCopy could not safely open its application data. Your photos were not changed. Review the newest session log in the OneCopy data folder, then quit and try again.";
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +57,80 @@ pub(crate) struct StartupState {
 struct PreparedData {
     cache_root: PathBuf,
     setup_config: Option<Value>,
+}
+
+fn shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::SeqCst)
+}
+
+fn spawn_launch_worker(
+    app: tauri::AppHandle,
+    thread_name: &'static str,
+    issue_kind: &'static str,
+    work: impl FnOnce() -> Result<(), String> + Send + 'static,
+) {
+    let mut workers = match WORKERS.lock() {
+        Ok(workers) => workers,
+        Err(_) => {
+            let _ = crate::failure_runtime::report(
+                &app,
+                issue_kind,
+                None,
+                "launch worker state is unavailable",
+            );
+            return;
+        }
+    };
+    if shutting_down() {
+        return;
+    }
+    join_finished(&mut workers);
+    if let Ok(worker) =
+        crate::failure_runtime::spawn_reported(app, thread_name, issue_kind, work)
+    {
+        workers.push(worker);
+    }
+}
+
+pub fn shutdown() {
+    let _workers = match WORKERS.lock() {
+        Ok(workers) => workers,
+        Err(_) => {
+            SHUTTING_DOWN.store(true, Ordering::SeqCst);
+            crate::logging::error("launch worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+}
+
+pub fn join() {
+    let workers = match WORKERS.lock() {
+        Ok(mut workers) => workers.drain(..).collect::<Vec<_>>(),
+        Err(_) => {
+            crate::logging::error("launch worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    for worker in workers {
+        if worker.join().is_err() {
+            crate::logging::error("launch worker join failed", json!({}));
+        }
+    }
+}
+
+fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            if worker.join().is_err() {
+                crate::logging::error("launch worker join failed", json!({}));
+            }
+        } else {
+            index += 1;
+        }
+    }
 }
 
 fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
@@ -123,14 +202,18 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         let cache = crate::preview::CachePaths::new(cache_root);
         let handle = app.handle().clone();
         let clear_handle = handle.clone();
-        let _ = crate::failure_runtime::spawn_reported(
+        spawn_launch_worker(
             handle,
             "onecopy-cache-sweep",
             "cache-sweep-failed",
             move || {
                 let started = Instant::now();
                 let conn = crate::index_store::open(&db_path)?;
-                let removed = crate::preview::startup_sweep(&conn, &cache)?;
+                let removed =
+                    crate::preview::startup_sweep(&conn, &cache, &shutting_down)?;
+                if shutting_down() {
+                    return Ok(());
+                }
                 if removed > 0 {
                     crate::logging::info(
                         "cache sweep",
@@ -174,12 +257,15 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
             .collect();
         if !stale_ids.is_empty() {
             let report_handle = handle.clone();
-            let _ = crate::failure_runtime::spawn_reported(
+            spawn_launch_worker(
                 handle,
                 "onecopy-update-check",
                 "update-check-worker-failed",
                 move || {
                     for id in stale_ids {
+                        if shutting_down() {
+                            return Ok(());
+                        }
                         match crate::binaries_manager::check_entry(&root, &id) {
                             Ok(facts) => {
                                 crate::failure_runtime::clear(
@@ -192,13 +278,19 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                                     json!({ "id": id, "latestKnown": facts.latest_known_version }),
                                 );
                             }
-                            Err(error) => crate::failure_runtime::report(
-                                &report_handle,
-                                "update-check-failed",
-                                Some(&id),
-                                &error,
-                            )?,
+                            Err(_) if shutting_down() => return Ok(()),
+                            Err(error) => {
+                                crate::failure_runtime::report(
+                                    &report_handle,
+                                    "update-check-failed",
+                                    Some(&id),
+                                    &error,
+                                )?
+                            }
                         }
+                    }
+                    if shutting_down() {
+                        return Ok(());
                     }
                     crate::failure_runtime::emit_checked(
                         &report_handle,

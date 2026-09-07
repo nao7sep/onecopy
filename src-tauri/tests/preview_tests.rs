@@ -279,7 +279,7 @@ fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
     let stray_tmp = cache.thumb("live01").with_file_name("live01-xyz.tmp");
     std::fs::write(&stray_tmp, b"partial").unwrap();
 
-    let removed = startup_sweep(&conn, &cache).unwrap();
+    let removed = startup_sweep(&conn, &cache, &|| false).unwrap();
     assert_eq!(removed, 3); // orphan thumb + orphan preview + stray tmp
     assert!(cache.thumb("live01").exists());
     assert!(cache.preview("live01").exists());
@@ -290,6 +290,24 @@ fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
     remove_entries(&cache, "live01");
     assert!(!cache.thumb("live01").exists());
     assert!(!cache.preview("live01").exists());
+}
+
+#[test]
+fn sweep_preserves_unvisited_cache_entries_after_shutdown_cancellation() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-sweep-cancel-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let orphan = cache.thumb("orphan");
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    std::fs::write(&orphan, b"webp-bytes").unwrap();
+
+    let removed = startup_sweep(&conn, &cache, &|| true).unwrap();
+
+    assert_eq!(removed, 0);
+    assert!(orphan.exists());
 }
 
 #[test]

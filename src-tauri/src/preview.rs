@@ -919,13 +919,20 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
 /// whose hash is no longer in `contents`, plus stranded `.tmp` staging files
 /// (safe: the single-instance app has no writer running at startup, and the
 /// whole tree is reconstructible). Touches only the cache tree and the DB.
-pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, String> {
+pub fn startup_sweep(
+    conn: &Connection,
+    cache: &CachePaths,
+    cancel_when: &impl Fn() -> bool,
+) -> Result<u64, String> {
     let mut removed = 0u64;
     let mut exists = conn
         .prepare("SELECT 1 FROM contents WHERE hash = ?1")
         .map_err(|e| e.to_string())?;
 
     for sub in ["thumbs", "previews", "fullres", "transcripts"] {
+        if cancel_when() {
+            return Ok(removed);
+        }
         let tree = cache.root.join(sub);
         let tree_exists = match tree.try_exists() {
             Ok(exists) => exists,
@@ -944,6 +951,9 @@ pub fn startup_sweep(conn: &Connection, cache: &CachePaths) -> Result<u64, Strin
             continue;
         }
         for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
+            if cancel_when() {
+                return Ok(removed);
+            }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
