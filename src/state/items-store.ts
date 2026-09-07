@@ -499,7 +499,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         state.scrollRequest?.key === previousHash ? { ...state.scrollRequest, key: current } : state.scrollRequest,
       ...(selectedItem !== state.selectedItem ? { detail: null } : {}),
     });
-    void get().loadWindow(state.windowStart, true);
+    // The backend projected this complete row specifically for this event.
+    // Re-reading the same section here once per derived result caused large
+    // completion batches to flood the UI/backend boundary with duplicate work.
     if (selectedItem === current) loadAnchorDetail(current);
   },
 

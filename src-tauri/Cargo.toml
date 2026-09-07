@@ -117,6 +117,8 @@ ort = "2.0.0-rc.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16.0", features = ["metal"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication"] }
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW binds destructive reads to regular-file descriptors; on macOS,

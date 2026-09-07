@@ -116,6 +116,23 @@ describe("opening Comparison across displays", () => {
     ).toHaveLength(1);
   });
 
+  it("gives one window ownership of process-global system chrome", async () => {
+    setMonitors(THREE_SCREENS);
+    mockCommands({ get_similar_group: () => members(10) });
+    // A real newly created webview announces tauri://created asynchronously;
+    // the lightweight window double deliberately does not synthesize that
+    // lifecycle event, so exercise the equivalent reused-window path here.
+    new WebviewWindow("comparison-1");
+
+    await useComparisonStore.getState().openGroup("m0");
+
+    expect(
+      invokeCalls
+        .filter((call) => call.command === "set_window_simple_fullscreen")
+        .map((call) => call.args),
+    ).toEqual([{ label: "comparison-1", enable: true }]);
+  });
+
   it("uses portrait capacity from the current page", async () => {
     setMonitors(THREE_SCREENS);
     mockCommands({ get_similar_group: () => members(8, true) });

@@ -37,6 +37,7 @@ pub mod operations;
 pub mod path_identity;
 pub mod paths;
 pub mod preview;
+mod presentation_runtime;
 pub mod queries;
 pub mod resolution;
 pub mod resource_limits;
@@ -1406,20 +1407,9 @@ fn transcript_get(app: AppHandle, hash: String) -> Result<derived_state::Transcr
 // bounds already cover the taskbar, so the command is deliberately a no-op.
 // simple fullscreen (the pre-Lion kind) hides the menu bar and dock WITHOUT
 // the Spaces animation that made real fullscreen unusable at keystroke pace.
-#[tauri::command(async)]
+#[tauri::command]
 fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<(), String> {
-    let window = app
-        .get_webview_window(&label)
-        .ok_or_else(|| format!("no window labeled {label}"))?;
-    #[cfg(target_os = "macos")]
-    {
-        window.set_simple_fullscreen(enable).map_err(|e| e.to_string())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (window, enable);
-        Ok(())
-    }
+    presentation_runtime::set_desired(&app, &label, enable)
 }
 
 // The frontend's throttled input ping — the coordinator's whole view
@@ -2205,6 +2195,18 @@ pub fn run() {
     };
 
     app.run(|app_handle, event| match event {
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::Focused(_),
+            ..
+        } => presentation_runtime::note_focus_transition(),
+        tauri::RunEvent::MainEventsCleared => {
+            if let Err(error) = presentation_runtime::reconcile_pending_activation(app_handle) {
+                logging::warn(
+                    "system chrome reconciliation failed",
+                    json!({ "error": { "message": error } }),
+                );
+            }
+        }
         // Cooperative scan interruption: flag as soon as exit is requested so
         // the worker starts winding down, then join it at Exit — bounded by
         // the per-item cancel checks — so no SQLite write is killed halfway.
@@ -2227,18 +2229,13 @@ pub fn run() {
             // A hidden or abruptly destroyed simple-fullscreen window can
             // leave macOS system chrome suppressed. Leave presentation mode
             // synchronously before the longer worker-quiescence shutdown.
-            #[cfg(target_os = "macos")]
-            for (label, window) in app_handle.webview_windows() {
-                if label == "viewer" || label.starts_with("comparison-") {
-                    if let Err(error) = window.set_simple_fullscreen(false) {
-                        let _ = failure_runtime::report(
-                            app_handle,
-                            "shutdown-window-recovery-failed",
-                            None,
-                            &error.to_string(),
-                        );
-                    }
-                }
+            if let Err(error) = presentation_runtime::shutdown(app_handle) {
+                let _ = failure_runtime::report(
+                    app_handle,
+                    "shutdown-window-recovery-failed",
+                    None,
+                    &error,
+                );
             }
             source_check_runtime::shutdown();
             file_information_runtime::shutdown();

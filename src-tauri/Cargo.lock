@@ -3229,6 +3229,8 @@ dependencies = [
  "ndarray",
  "nom-exif",
  "notify",
+ "objc2",
+ "objc2-app-kit",
  "ort",
  "reqwest",
  "rfd 0.17.2",

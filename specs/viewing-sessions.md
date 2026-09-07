@@ -44,7 +44,7 @@
 - Presentation switches retain the same session without reloading content, starting another player, reapplying autoplay, or resetting navigation, inspection, transcript, failure, or notification state.
 - Quick View is a temporary presentation over Main's usable content area. True fullscreen fills one physical display and hides OneCopy chrome plus the operating-system menu bar, Dock, or taskbar.
 - macOS true fullscreen does not use Spaces fullscreen. One reusable borderless viewer presentation covers the invoking display while Main remains in its workspace. Embedded or native media controls do not start a competing fullscreen mode.
-- Fullscreen enter, leave, close, error, and shutdown transitions are serialized so every exit restores system chrome and Main focus.
+- Fullscreen enter, leave, close, error, and shutdown transitions are serialized so every exit restores system chrome and Main focus. Hiding system chrome is application-owned presentation state: it applies only while OneCopy is the active application. Switching to another application restores the menu bar and Dock without discarding a still-open fullscreen session; returning to OneCopy reapplies fullscreen only if that session still wants it.
 - `F` is an app-level command. A visible Preview does not reinterpret it, although a focused separate Preview window may determine which display receives fullscreen.
 - Double-click never enters fullscreen. Fullscreen remains discoverable through `F` and a visible fullscreen control.
 

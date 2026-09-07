@@ -310,25 +310,21 @@ async function resolveMonitors(
   }
 }
 
-const fullscreenTransitions = new Map<string, Promise<void>>();
+const COMPARISON_PRESENTATION_OWNER = "comparison-1";
+let comparisonFullscreenTransition: Promise<void> = Promise.resolve();
 
 function setComparisonFullscreen(
-  label: string,
   enable: boolean,
 ): Promise<void> {
-  const previous = fullscreenTransitions.get(label) ?? Promise.resolve();
-  const next = previous
+  const next = comparisonFullscreenTransition
     .catch(() => undefined)
     .then(() =>
-      invoke<void>("set_window_simple_fullscreen", { label, enable }),
+      invoke<void>("set_window_simple_fullscreen", {
+        label: COMPARISON_PRESENTATION_OWNER,
+        enable,
+      }),
     );
-  fullscreenTransitions.set(label, next);
-  const clear = () => {
-    if (fullscreenTransitions.get(label) === next) {
-      fullscreenTransitions.delete(label);
-    }
-  };
-  void next.then(clear, clear);
+  comparisonFullscreenTransition = next;
   return next;
 }
 
@@ -346,7 +342,9 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           new PhysicalSize(monitor.size.width, monitor.size.height),
         );
         await existing.show();
-        await setComparisonFullscreen(label, true);
+        if (label === COMPARISON_PRESENTATION_OWNER) {
+          await setComparisonFullscreen(true);
+        }
         continue;
       }
       const scale = monitor.scaleFactor || 1;
@@ -375,7 +373,9 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           }
           try {
             await created.show();
-            await setComparisonFullscreen(label, true);
+            if (label === COMPARISON_PRESENTATION_OWNER) {
+              await setComparisonFullscreen(true);
+            }
           } catch (error) {
             log.warn("comparison display became unavailable", {
               label,
@@ -417,6 +417,11 @@ async function showSpread(monitors: MonitorList): Promise<void> {
 }
 
 async function hideSpread(first: number, last: number): Promise<void> {
+  if (first <= 1 && last >= 1) {
+    await setComparisonFullscreen(false).catch(
+      reportWindowCall("comparison leave fullscreen"),
+    );
+  }
   for (let index = first; index <= last; index += 1) {
     const label = `comparison-${index}`;
     const window = await WebviewWindow.getByLabel(label).catch((error) => {
@@ -424,14 +429,16 @@ async function hideSpread(first: number, last: number): Promise<void> {
       return null;
     });
     if (window === null) continue;
-    await setComparisonFullscreen(label, false).catch(
-      reportWindowCall("comparison leave fullscreen"),
-    );
     await window.hide().catch(reportWindowCall("comparison hide"));
   }
 }
 
 async function closeSpread(first: number, last: number): Promise<void> {
+  if (first <= 1 && last >= 1) {
+    await setComparisonFullscreen(false).catch(
+      reportWindowCall("comparison leave fullscreen"),
+    );
+  }
   for (let index = first; index <= last; index += 1) {
     const label = `comparison-${index}`;
     const window = await WebviewWindow.getByLabel(label).catch((error) => {
@@ -439,9 +446,6 @@ async function closeSpread(first: number, last: number): Promise<void> {
       return null;
     });
     if (window === null) continue;
-    await setComparisonFullscreen(label, false).catch(
-      reportWindowCall("comparison leave fullscreen"),
-    );
     await window.close().catch(reportWindowCall("comparison close"));
   }
 }
