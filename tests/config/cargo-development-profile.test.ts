@@ -12,14 +12,31 @@ function profileSection(name: string): string {
   return next < 0 ? body : body.slice(0, next);
 }
 
-describe("the development dependency profile", () => {
+describe("the Cargo development build policy", () => {
+  it("emits only the desktop library artifact", () => {
+    expect(profileSection("lib")).toMatch(/^crate-type\s*=\s*\["rlib"\]\s*$/m);
+  });
+
   it("keeps lightweight source-level application diagnostics", () => {
-    expect(profileSection("profile.dev")).toMatch(/debug\s*=\s*"line-tables-only"/);
-    expect(profileSection("profile.dev")).toMatch(/split-debuginfo\s*=\s*"off"/);
-    expect(profileSection("profile.test")).toMatch(/debug\s*=\s*"line-tables-only"/);
-    expect(profileSection("profile.test")).toMatch(/split-debuginfo\s*=\s*"off"/);
-    expect(profileSection('profile.dev.package."*"')).toMatch(/debug\s*=\s*false/);
-    expect(profileSection('profile.dev.package."*"')).not.toMatch(/opt-level/);
+    for (const profile of ["dev", "test"]) {
+      expect(profileSection(`profile.${profile}`)).toMatch(
+        /debug\s*=\s*"line-tables-only"/,
+      );
+      expect(profileSection(`profile.${profile}`)).toMatch(
+        /split-debuginfo\s*=\s*"off"/,
+      );
+      expect(profileSection(`profile.${profile}.package."*"`)).toMatch(
+        /debug\s*=\s*false/,
+      );
+      expect(profileSection(`profile.${profile}.package."*"`)).not.toMatch(
+        /opt-level/,
+      );
+    }
+  });
+
+  it("keeps full debugging explicit and opt-in", () => {
+    expect(profileSection("profile.debugging")).toMatch(/inherits\s*=\s*"dev"/);
+    expect(profileSection("profile.debugging")).toMatch(/debug\s*=\s*true/);
   });
 
   it("retains optimization only for measured CPU-heavy dependencies", () => {
