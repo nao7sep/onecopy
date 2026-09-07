@@ -44,6 +44,9 @@ jobs:
       - run: npm run check:release-version
       - run: npm run typecheck
       - run: npm test
+      - name: Test Windows package failure handling
+        if: runner.os == 'Windows'
+        run: pwsh tests/windows/package-fail-closed.ps1
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
