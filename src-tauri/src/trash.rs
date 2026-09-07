@@ -570,6 +570,13 @@ pub fn empty_root_with_progress(
 /// with no way to reach zero. The count answers "how much of my library is in
 /// here", so only entries a restore could hand back may contribute.
 fn tree_size(root: &Path) -> (u64, u64) {
+    // A trash root is created lazily by the first delete. Until then its
+    // absence is the ordinary empty state promised by `overview`, not a walk
+    // failure worth surfacing in the application log.
+    if !root.exists() {
+        return (0, 0);
+    }
+
     let mut bytes = 0u64;
     let mut files = 0u64;
     for entry in walkdir::WalkDir::new(root).follow_links(false) {
