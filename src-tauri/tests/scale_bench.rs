@@ -4,7 +4,8 @@
 //
 // Run:  ONECOPY_BENCH_CORPUS=/path/to/corpus cargo test --test scale_bench -- --ignored --nocapture
 
-use std::time::Instant;
+use std::io::Write;
+use std::time::{Duration, Instant};
 
 use onecopy_lib::background_work;
 use onecopy_lib::derived_runtime::{self, RuntimeConditions};
@@ -19,6 +20,120 @@ use onecopy_lib::similarity::{
 };
 use onecopy_lib::viewer_sequence;
 use rusqlite::params;
+
+const DEVELOPMENT_PHASE_LIMIT: Duration = Duration::from_secs(30);
+
+fn require_development_phase(label: &str, started: Instant) {
+    let elapsed = started.elapsed();
+    eprintln!("{label}: {elapsed:?}");
+    assert!(
+        elapsed < DEVELOPMENT_PHASE_LIMIT,
+        "{label} took {elapsed:?}; the development dependency profile may have regressed"
+    );
+}
+
+/// A deliberately broad performance tripwire for the dependency allowlist in
+/// Cargo.toml. It runs only through `npm run test:rust:dev-performance`, whose
+/// explicit `--profile dev` is load-bearing; ordinary correctness checks must
+/// not become machine-speed tests. Real face and transcription inference stay
+/// in the prepared offline AI benchmark, which also builds its scenario under
+/// the development profile.
+#[test]
+#[ignore]
+fn representative_development_workloads() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-dev-performance-")
+        .tempdir()
+        .unwrap();
+
+    let source = dir.path().join("large.jpg");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(4096, 3072, |x, y| {
+        image::Rgb([
+            ((x * 13 + y * 3) % 256) as u8,
+            ((x * 5 + y * 11) % 256) as u8,
+            ((x * 7 + y * 17) % 256) as u8,
+        ])
+    }))
+    .save(&source)
+    .unwrap();
+    let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+    let started = Instant::now();
+    let facts = onecopy_lib::preview::generate_for_image(
+        &source,
+        "representative-image",
+        &cache,
+        320,
+        1600,
+        None,
+    )
+    .unwrap();
+    require_development_phase(
+        "preview, thumbnail, sharpness, and perceptual hash",
+        started,
+    );
+    assert_eq!((facts.width, facts.height), (4096, 3072));
+    assert!(cache.thumb("representative-image").is_file());
+    assert!(cache.preview("representative-image").is_file());
+
+    let content = dir.path().join("content.bin");
+    let mut content_file = std::fs::File::create(&content).unwrap();
+    let block: Vec<u8> = (0..1024 * 1024)
+        .map(|index| ((index * 31 + 17) % 251) as u8)
+        .collect();
+    for _ in 0..64 {
+        content_file.write_all(&block).unwrap();
+    }
+    content_file.sync_all().unwrap();
+    let started = Instant::now();
+    let expected = onecopy_lib::hashing::full_hash(&content).unwrap();
+    for _ in 0..7 {
+        assert_eq!(onecopy_lib::hashing::full_hash(&content).unwrap(), expected);
+    }
+    require_development_phase("512 MiB of content hashing", started);
+
+    let database = dir.path().join("performance.sqlite3");
+    let connection = onecopy_lib::index_store::open(&database).unwrap();
+    let started = Instant::now();
+    connection
+        .execute_batch(
+            "BEGIN;
+             WITH RECURSIVE seq(n) AS (
+               VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n < 199999
+             )
+             INSERT INTO contents (hash, byte_size, kind)
+               SELECT printf('performance-%06d', n), n + 1, 'image' FROM seq;
+             COMMIT;",
+        )
+        .unwrap();
+    let sum: i64 = connection
+        .query_row("SELECT SUM(byte_size) FROM contents", [], |row| row.get(0))
+        .unwrap();
+    require_development_phase("SQLite insert and aggregate", started);
+    assert_eq!(sum, 20_000_100_000);
+
+    let archive_path = dir.path().join("runtime.zip");
+    let archive_file = std::fs::File::create(&archive_path).unwrap();
+    let mut archive = zip::ZipWriter::new(archive_file);
+    archive
+        .start_file(
+            "runtime.bin",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Zstd),
+        )
+        .unwrap();
+    for _ in 0..64 {
+        archive.write_all(&block).unwrap();
+    }
+    archive.finish().unwrap();
+
+    let started = Instant::now();
+    let archive_file = std::fs::File::open(&archive_path).unwrap();
+    let mut archive = zip::ZipArchive::new(archive_file).unwrap();
+    let mut entry = archive.by_name("runtime.bin").unwrap();
+    let extracted = std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+    require_development_phase("64 MiB Zstandard archive extraction", started);
+    assert_eq!(extracted, 64 * 1024 * 1024);
+}
 
 fn item_projection() -> queries::ItemProjectionContext {
     queries::ItemProjectionContext {

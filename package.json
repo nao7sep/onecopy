@@ -16,6 +16,7 @@
     "check:hidden": "node scripts/check-hidden-characters.mjs",
     "check:release-version": "node scripts/check-release-version.mjs",
     "test:rust:live": "cargo test --manifest-path src-tauri/Cargo.toml live_ -- --ignored --test-threads=1",
+    "test:rust:dev-performance": "cargo test --manifest-path src-tauri/Cargo.toml --profile dev --test scale_bench representative_development_workloads -- --ignored --nocapture --test-threads=1",
     "build:system:frontend": "vite build --mode system",
     "build:system": "tauri build --debug --no-bundle --features app-system --config src-tauri/tauri.system.conf.json",
     "test:system": "npm run build:system && node scripts/prepare-system.mjs && wdio run wdio.system.conf.mjs",
