@@ -14,9 +14,7 @@ import {
   optionalFeatureSetup,
   type OptionalFeatureChoices,
   type OptionalFeatureId,
-  type OptionalFeatureReasons,
 } from "../models/optionalFeatures";
-import { useBinariesStore } from "./binaries-store";
 
 export interface WizardDir {
   path: string;
@@ -35,7 +33,6 @@ interface WizardState {
    * nothing to return to, so only a re-run offers Cancel. */
   reconfigure: boolean;
   optionalFeatures: OptionalFeatureChoices;
-  optionalFeatureReasons: OptionalFeatureReasons;
   missingDirs: string[];
   substitutedDirs: string[];
   init: (config: Record<string, unknown> | null) => Promise<void>;
@@ -64,8 +61,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   error: null,
   finishing: false,
   reconfigure: false,
-  optionalFeatures: optionalFeatureSetup(null, [], true).choices,
-  optionalFeatureReasons: {},
+  optionalFeatures: optionalFeatureSetup(null),
   missingDirs: [],
   substitutedDirs: [],
 
@@ -75,11 +71,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
     if (sourceDirs.length === 0) {
-      const optional = optionalFeatureSetup(
-        config,
-        useBinariesStore.getState().entries,
-        true,
-      );
       set({
         open: true,
         step: 1,
@@ -90,8 +81,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         error: null,
         finishing: false,
         reconfigure: false,
-        optionalFeatures: optional.choices,
-        optionalFeatureReasons: optional.reasons,
+        optionalFeatures: optionalFeatureSetup(config),
       });
     } else {
       set({
@@ -112,11 +102,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
-    const optional = optionalFeatureSetup(
-      config,
-      useBinariesStore.getState().entries,
-      false,
-    );
     set({
       open: true,
       step: 1,
@@ -127,8 +112,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       finishing: false,
       reconfigure: true,
       dirs: sourceDirs.map((path) => ({ path })),
-      optionalFeatures: optional.choices,
-      optionalFeatureReasons: optional.reasons,
+      optionalFeatures: optionalFeatureSetup(config),
     });
   },
 

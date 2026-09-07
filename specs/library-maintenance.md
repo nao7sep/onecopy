@@ -63,7 +63,7 @@ Optional enrichment adds useful analysis or navigation while leaving OneCopy fun
 - Video transcription.
 - Audio transcription.
 
-Each optional feature has its own durable Settings choice and defaults on when runnable. Settings controls whether the feature is enabled; Background Work controls whether currently enabled work is temporarily paused.
+Each optional feature has its own durable Settings choice and defaults on at first launch. Managed-tool installation state does not participate in that default because a fresh OneCopy installation is expected not to have downloaded those artifacts yet. Settings controls whether the feature is enabled; Background Work controls whether currently enabled work is temporarily paused.
 
 Every supported desktop platform exposes the same optional feature set. Hardware acceleration is an implementation optimization, not a product capability boundary: an accelerator backend remains unsupported until its packaged correctness, cancellation, memory, responsiveness, fallback, and shutdown behavior pass physical acceptance, while the platform retains a reliable CPU path. In particular, Windows keeps face scoring and transcription available without claiming Vulkan, DirectML, CUDA, or another unaccepted accelerator.
 
@@ -73,11 +73,11 @@ The selected acceleration is durable and takes effect for new work after the cur
 
 The first-launch wizard separates `OneCopy always prepares` from `Additional features`. The required section explains the unswitched identity, metadata, companion, thumbnail, preview, video-playback, and live-watching work. The additional-features section provides switches only for optional enrichment.
 
-When a concrete prerequisite or enforced storage or memory safety check makes an optional feature unavailable, its wizard switch starts off and explains the condition. The user may still choose the feature, but unavailability is never represented as running or completed work, and the application retains its error-containment and resource-safety boundaries.
+An ordinary missing managed tool never makes a wizard switch appear unavailable or start off. A concrete platform limitation may be explained without pretending that unavailable work is running or complete, while live storage and memory safety checks retain authority to pause admitted work at execution time.
 
 An enabled optional feature whose required managed tool is unavailable remains enabled and visibly `Waiting for required tool`. It offers a direct Managed Tools action but never installs the tool implicitly. Windows face scoring requires both face models and OneCopy's pinned CPU runtime; it never loads an arbitrary system or search-path runtime. When the prerequisite becomes runnable, already-enabled work becomes eligible automatically; a feature that remained off stays off until the user enables it.
 
-Managed Tools gives warning emphasis to a missing tool needed for core presentation, while a missing model used only by optional enrichment retains ordinary status text. Tool names remain factual rather than carrying repeated required/optional labels; nearby explanation states which core formats or optional features each tool enables. Installation, update-check, and runtime failures remain visually distinct from ordinary absence.
+Managed Tools gives warning emphasis to a missing tool needed for core presentation, while a missing model used only by optional enrichment retains ordinary status text. Tool names remain factual rather than carrying repeated required/optional labels; nearby explanation states which core formats or optional features each tool enables. Each single-artifact row shows one current installation-progress line rather than accumulating completed phase lines. Installation, update-check, and runtime failures remain visually distinct from ordinary absence.
 
 ## Background Work controls
 

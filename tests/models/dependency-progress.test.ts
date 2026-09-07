@@ -24,7 +24,7 @@ describe("managed dependency progress", () => {
     ).toBe("Verifying — 4 MB / 4 MB (100%) · Next: Installing");
   });
 
-  it("keeps unknown server lengths honest and fixed phases stable", () => {
+  it("keeps unknown server lengths honest and hides meaningless fixed counts", () => {
     expect(
       managedInstallLine({
         phase: "download",
@@ -40,7 +40,7 @@ describe("managed dependency progress", () => {
         total: 1,
         nextPhase: "download",
       }),
-    ).toBe("Resolving — 1/1 · Next: Downloading");
+    ).toBe("Resolving · Next: Downloading");
   });
 
   it("presents starting and cancellation without manufacturing progress", () => {

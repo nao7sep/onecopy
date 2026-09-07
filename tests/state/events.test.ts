@@ -335,7 +335,7 @@ describe("binaries events", () => {
     });
   });
 
-  it("retains each delivered phase instead of flashing one line", async () => {
+  it("keeps only the current delivered install phase", async () => {
     binaries.setState({
       installing: {
         ffmpeg: {
@@ -344,7 +344,6 @@ describe("binaries events", () => {
           cancelling: false,
         },
       },
-      installHistory: {},
     });
     fireEvent("binaries://progress", {
       id: "ffmpeg",
@@ -370,10 +369,11 @@ describe("binaries events", () => {
       total: 84 * 1_048_576,
       nextPhase: "install",
     });
-    expect(binaries.getState().installHistory.ffmpeg).toEqual([
-      { phase: "resolve", text: "Resolving — 1/1 · Next: Downloading" },
-      { phase: "download", text: "Downloading — 84 MB / 84 MB (100%) · Next: Verifying" },
-      { phase: "verify", text: "Verifying — 84 MB / 84 MB (100%) · Next: Installing" },
-    ]);
+    expect(binaries.getState().installing.ffmpeg?.progress).toEqual({
+      phase: "verify",
+      done: 84 * 1_048_576,
+      total: 84 * 1_048_576,
+      nextPhase: "install",
+    });
   });
 });

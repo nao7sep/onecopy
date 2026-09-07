@@ -1,7 +1,6 @@
 import {
   useBinariesStore,
   type DependencyState,
-  type InstallStep,
 } from "../state/binaries-store";
 import { managedInstallActivityLine } from "../models/dependencyProgress";
 import { useAppStore } from "../state/app-store";
@@ -10,8 +9,6 @@ import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
 import OperationResult from "./ui/OperationResult";
-
-const NO_INSTALL_HISTORY: InstallStep[] = [];
 
 // "Managed tools" — grouped by the two genuinely different LIFECYCLES the
 // registry holds (developer, 2026-08-17; one flat list forced an update
@@ -68,9 +65,6 @@ function factLine(entry: DependencyState): string | null {
 
 function EntryRow({ entry }: { entry: DependencyState }) {
   const progress = useBinariesStore((s) => s.installing[entry.id]);
-  const history = useBinariesStore(
-    (s) => s.installHistory[entry.id] ?? NO_INSTALL_HISTORY,
-  );
   const error = useBinariesStore((s) => s.errors[entry.id]);
   const checking = useBinariesStore((s) => s.checking);
   const checkingId = useBinariesStore((s) => s.checkingId);
@@ -86,10 +80,6 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const cancelCheck = useBinariesStore((s) => s.cancelCheck);
   const installing = progress !== undefined;
   const progressLine = progress === undefined ? null : managedInstallActivityLine(progress);
-  const visibleHistory =
-    history.length > 0 || progress === undefined
-      ? history
-      : [{ phase: "active", text: progressLine ?? "Starting…" }];
 
   // Install when missing, Update when a newer version is known — and Update
   // again when a present entry's own version could not be read, which is the
@@ -131,26 +121,15 @@ function EntryRow({ entry }: { entry: DependencyState }) {
         </span>
       </div>
       {fact !== null ? <p className="mt-1 text-xs text-ink-muted">{fact}</p> : null}
-      {visibleHistory.length > 0 ? (
-        <ol
-          className="mt-2 space-y-0.5"
+      {progressLine !== null ? (
+        <p
+          className="mt-2 text-xs text-primary"
+          aria-live="polite"
+          aria-atomic="true"
           aria-label={`${entry.label} install progress`}
         >
-          {visibleHistory.map((step, index) => (
-            <li
-              key={step.phase}
-              className={`text-xs ${
-                installing && index === visibleHistory.length - 1
-                  ? "text-primary"
-                  : step.phase === "result"
-                    ? "font-medium text-ink"
-                    : "text-ink-muted"
-              }`}
-            >
-              {step.text}
-            </li>
-          ))}
-        </ol>
+          {progressLine}
+        </p>
       ) : null}
       {error !== undefined ? (
         <OperationResult level="error" className="mt-2">

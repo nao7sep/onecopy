@@ -29,15 +29,15 @@ export function managedInstallLine(progress: ManagedInstallProgress): string {
   const label = PHASE_LABELS[progress.phase];
   const units =
     progress.phase === "download" || progress.phase === "verify"
-      ? byteUnits(progress.done, progress.total)
-      : `${progress.done.toLocaleString()}/${progress.total?.toLocaleString() ?? "?"}`;
+      ? ` — ${byteUnits(progress.done, progress.total)}`
+      : "";
   const next =
     progress.total !== null &&
     progress.done >= progress.total &&
     progress.nextPhase !== null
       ? ` · Next: ${PHASE_LABELS[progress.nextPhase]}`
       : "";
-  return `${label} — ${units}${next}`;
+  return `${label}${units}${next}`;
 }
 
 export function managedInstallActivityLine(

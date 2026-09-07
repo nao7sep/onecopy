@@ -55,7 +55,6 @@ function seed(entries: DependencyState[]): void {
   useBinariesStore.setState({
     modalOpen: true,
     installing: {},
-    installHistory: {},
     errors: {},
     checking: false,
     checkingId: null,
@@ -118,25 +117,30 @@ describe("parallel installs", () => {
     expect(document.body.textContent).toContain("Downloading — 100 MB / 1.2 GB (8%)");
   });
 
-  it("keeps completed phases readable after a fast install finishes", () => {
-    seed([entry("ffmpeg", "up-to-date")]);
+  it("shows only the current phase for a running single-artifact row", () => {
+    seed([entry("ffmpeg", "not-installed")]);
     useBinariesStore.setState({
-      installHistory: {
-        ffmpeg: [
-          { phase: "resolve", text: "Resolving — finding the latest build" },
-          { phase: "download", text: "Downloading — 84 MB" },
-          { phase: "verify", text: "Verifying — checking integrity" },
-          { phase: "result", text: "Installed" },
-        ],
+      installing: {
+        ffmpeg: {
+          operationId: "ffmpeg-attempt",
+          progress: {
+            phase: "verify",
+            done: 84 * 1_048_576,
+            total: 84 * 1_048_576,
+            nextPhase: "install",
+          },
+          cancelling: false,
+        },
       },
     });
 
     render(<BinariesModal />);
 
-    expect(document.body.textContent).toContain("Resolving — finding the latest build");
-    expect(document.body.textContent).toContain("Downloading — 84 MB");
-    expect(document.body.textContent).toContain("Verifying — checking integrity");
-    expect(document.body.textContent).toContain("Installed");
+    expect(document.body.textContent).toContain(
+      "Verifying — 84 MB / 84 MB (100%) · Next: Installing",
+    );
+    expect(document.body.textContent).not.toContain("Resolving");
+    expect(document.body.textContent).not.toContain("Downloading");
   });
 
   it("offers cancellation on the running row and sends that entry id", async () => {
@@ -341,9 +345,6 @@ describe("check feedback", () => {
     vi.useFakeTimers();
     try {
       seed([entry("ffmpeg", "up-to-date")]);
-      useBinariesStore.setState({
-        installHistory: { ffmpeg: [{ phase: "result", text: "Installed" }] },
-      });
       render(<BinariesModal />);
 
       await act(async () => {

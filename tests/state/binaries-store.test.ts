@@ -38,7 +38,6 @@ function seed(entries: DependencyState[]): void {
     loading: false,
     loadError: null,
     installing: {},
-    installHistory: {},
     errors: {},
     checking: false,
     checkingId: null,
@@ -78,10 +77,7 @@ describe("managed-tool terminal ownership", () => {
 
     expect(useBinariesStore.getState().entries[0]).toEqual(installed);
     expect(useBinariesStore.getState().installing.ffmpeg).toBeUndefined();
-    expect(useBinariesStore.getState().installHistory.ffmpeg.at(-1)).toEqual({
-      phase: "result",
-      text: "Installed",
-    });
+    expect(useBinariesStore.getState().errors.ffmpeg).toBeUndefined();
     expect(invokeCalls.filter((call) => call.command === "binaries_state")).toEqual([]);
   });
 
@@ -202,9 +198,6 @@ describe("managed-tool terminal ownership", () => {
 
     expect(useBinariesStore.getState().installing.ffmpeg).toBeUndefined();
     expect(useBinariesStore.getState().errors.ffmpeg).toBeUndefined();
-    expect(useBinariesStore.getState().installHistory.ffmpeg.at(-1)?.text).toBe(
-      "Cancelled",
-    );
   });
 
   it("does not let a refresh begun before installation restore a stale action", async () => {

@@ -9,10 +9,9 @@
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  managedInstallLine,
-  type ManagedInstallActivity,
-  type ManagedInstallProgress,
+import type {
+  ManagedInstallActivity,
+  ManagedInstallProgress,
 } from "../models/dependencyProgress";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
@@ -58,11 +57,6 @@ type BinaryCheckOutcome =
   | { outcome: "completed"; states: DependencyState[] }
   | { outcome: "cancelled" };
 
-export interface InstallStep {
-  phase: string;
-  text: string;
-}
-
 export interface ManagedInstallOperation extends ManagedInstallActivity {
   operationId: string;
 }
@@ -76,26 +70,6 @@ export type BinaryInstallResult =
       state: DependencyState;
       error: string;
     };
-
-/** Preserve phase changes while replacing noisy progress updates within a phase. */
-function installStep(
-  steps: InstallStep[] | undefined,
-  phase: string,
-  text: string,
-): InstallStep[] {
-  const next = [...(steps ?? [])];
-  const index = next.findIndex((step) => step.phase === phase);
-  if (index < 0) next.push({ phase, text });
-  else next[index] = { phase, text };
-  return next;
-}
-
-function terminalStep(
-  steps: InstallStep[] | undefined,
-  text: string,
-): InstallStep[] {
-  return installStep(steps, "result", text);
-}
 
 function operationId(): string {
   return globalThis.crypto.randomUUID();
@@ -131,8 +105,6 @@ interface BinariesState {
   /** Typed activity per entry currently installing — several at once is
    * normal (the whole point of per-id claims). */
   installing: Record<string, ManagedInstallOperation>;
-  /** The current attempt's durable phase history, retained through its result. */
-  installHistory: Record<string, InstallStep[]>;
   /** The last failure per entry, shown in its row until the next attempt. */
   errors: Record<string, string>;
   /** True while the registry-wide check runs (the button narrates it). */
@@ -168,7 +140,6 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   loading: false,
   loadError: null,
   installing: {},
-  installHistory: {},
   errors: {},
   checking: false,
   checkingId: null,
@@ -228,7 +199,6 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
             cancelling: false,
           },
         },
-        installHistory: { ...s.installHistory, [id]: [] },
         errors,
       };
     });
@@ -253,17 +223,6 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         return {
           entries: replaceEntry(s.entries, result.state),
           installing,
-          installHistory: {
-            ...s.installHistory,
-            [id]: terminalStep(
-              s.installHistory[id],
-              result.outcome === "installed"
-                ? "Installed"
-                : result.outcome === "cancelled"
-                  ? "Cancelled"
-                  : "Install failed",
-            ),
-          },
           errors,
         };
       });
@@ -281,10 +240,6 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         delete installing[id];
         return {
           installing,
-          installHistory: {
-            ...s.installHistory,
-            [id]: terminalStep(s.installHistory[id], "Install failed"),
-          },
           errors: {
             ...s.errors,
             [id]: "The managed-tool installation could not start. Try again.",
@@ -537,14 +492,6 @@ const installEvents = createEventInstaller(
                 ...active,
                 progress,
               },
-            },
-            installHistory: {
-              ...s.installHistory,
-              [id]: installStep(
-                s.installHistory[id],
-                progress.phase,
-                managedInstallLine(progress),
-              ),
             },
           };
         });

@@ -34,7 +34,6 @@ export default function Wizard() {
   const finishing = useWizardStore((s) => s.finishing);
   const reconfigure = useWizardStore((s) => s.reconfigure);
   const optionalFeatures = useWizardStore((s) => s.optionalFeatures);
-  const optionalFeatureReasons = useWizardStore((s) => s.optionalFeatureReasons);
   const addDirs = useWizardStore((s) => s.addDirs);
   const removeDir = useWizardStore((s) => s.removeDir);
   const setStep = useWizardStore((s) => s.setStep);
@@ -179,7 +178,7 @@ export default function Wizard() {
                 ["audioTranscriptionEnabled", "Audio transcription"],
               ] as const satisfies readonly [OptionalFeatureId, string][]
             ).map(([id, label]) => (
-              <Row key={id} label={label} hint={optionalFeatureReasons[id]}>
+              <Row key={id} label={label}>
                 <Toggle
                   checked={optionalFeatures[id]}
                   disabled={finishing}
