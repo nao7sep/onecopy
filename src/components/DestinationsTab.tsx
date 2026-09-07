@@ -9,8 +9,8 @@ import ModalShell from "./ModalShell";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import {
   addDestinationRoot,
-  moveDestinationSelectionTo,
-  confirmDestinationDeleteRest,
+  acceptDestinationDropChoice,
+  confirmDestinationMove,
   moveSelectionTo,
   removeDestinationRoot,
 } from "../workflows/destinations";
@@ -18,6 +18,7 @@ import type { PendingDestinationDrop } from "../models/destinationTransfer";
 import { useDestinationReceiver } from "./DestinationDragProvider";
 import Button from "./ui/Button";
 import DestinationConflictModal from "./DestinationConflictModal";
+import { useItemsStore } from "../state/items-store";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -247,6 +248,13 @@ function ActionBar() {
   const emptiness = useDestinationsStore((s) => s.emptiness);
   const createFolder = useDestinationsStore((s) => s.createFolder);
   const deleteFolder = useDestinationsStore((s) => s.deleteFolder);
+  const selectedCount = useItemsStore((state) =>
+    state.selectedKeys.size > 0
+      ? state.selectedKeys.size
+      : state.selectedItem === null
+        ? 0
+        : 1,
+  );
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const { composingRef, handlers: composingHandlers } = useComposing();
@@ -268,6 +276,7 @@ function ActionBar() {
 
   const button =
     "inline-flex h-7 items-center rounded-md px-2 text-xs font-medium transition-colors";
+  const countLabel = selectedCount > 0 ? ` ${selectedCount}` : "";
 
   return (
     <div className="mt-2 shrink-0 border-t border-border pt-2">
@@ -277,24 +286,24 @@ function ActionBar() {
       <div className="flex flex-wrap items-center gap-1">
         <button
           className={`${button} text-primary hover:bg-primary-surface`}
-          title="Move the selection here; its other copies go to trash"
+          title="Review moving the selection here and sending its covered source copies to OneCopy Trash"
           onClick={() => void moveSelectionTo(activePath, "move-trash-rest")}
         >
-          Move here
+          Move{countLabel} here; Trash sources…
         </button>
         <button
           className={`${button} text-ink hover:bg-surface-muted`}
           title="Copy the selection here; nothing else is touched"
           onClick={() => void moveSelectionTo(activePath, "copy")}
         >
-          Copy here
+          Copy{countLabel} here
         </button>
         <button
           className={`${button} text-danger hover:bg-danger-surface`}
           title="Move the selection here and permanently delete its other copies"
           onClick={() => void moveSelectionTo(activePath, "move-delete-rest")}
         >
-          Move here, delete rest…
+          Move{countLabel} here; Delete sources…
         </button>
         {creating ? (
           <input
@@ -437,7 +446,7 @@ export default function DestinationsTab() {
     }
   };
 
-  const pendingDeleteRest = useDestinationsStore((s) => s.pendingDeleteRest);
+  const pendingMove = useDestinationsStore((s) => s.pendingMove);
   const pendingDrop = useDestinationsStore((s) => s.pendingDrop);
   const pendingConflicts = useDestinationsStore((s) => s.pendingConflicts);
 
@@ -452,15 +461,27 @@ export default function DestinationsTab() {
       {pendingConflicts !== null ? (
         <DestinationConflictModal pending={pendingConflicts} />
       ) : null}
-      {pendingDeleteRest !== null ? (
+      {pendingMove !== null ? (
         <ConfirmDialog
-          title="Move and delete the rest?"
-          message={`Move ${pendingDeleteRest.count} item${
-            pendingDeleteRest.count === 1 ? "" : "s"
-          } here and PERMANENTLY delete the remaining copies? The deleted copies bypass the trash and cannot be recovered.`}
-          confirmLabel="Move and delete permanently"
-          onConfirm={() => void confirmDestinationDeleteRest()}
-          onCancel={() => useDestinationsStore.getState().cancelPendingDeleteRest()}
+          title={
+            pendingMove.mode === "move-delete-rest"
+              ? "Move and delete sources permanently?"
+              : "Move and Trash source copies?"
+          }
+          message={`Move ${pendingMove.count} logical item${
+            pendingMove.count === 1 ? "" : "s"
+          } to ${pendingMove.destDir} and ${
+            pendingMove.mode === "move-delete-rest"
+              ? "PERMANENTLY delete every covered source copy? They cannot be recovered."
+              : "move every covered source copy to OneCopy Trash?"
+          }`}
+          confirmLabel={
+            pendingMove.mode === "move-delete-rest"
+              ? "Move and delete permanently"
+              : "Move and Trash sources"
+          }
+          onConfirm={() => void confirmDestinationMove()}
+          onCancel={() => useDestinationsStore.getState().cancelPendingMove()}
         />
       ) : null}
       <div className="mb-2 flex items-center justify-between">
@@ -554,6 +575,7 @@ function DropChoiceModal({
   onClose: () => void;
 }) {
   const { path, selection } = drop;
+  const count = selection.items.length;
   return (
     <ModalShell
       title={`Drop into ${leafName(path)}`}
@@ -565,21 +587,17 @@ function DropChoiceModal({
           <Button
             variant="primary"
             onClick={() => {
-              onClose();
-              useDestinationsStore.getState().setActive(path);
-              void moveDestinationSelectionTo(path, "move-trash-rest", selection);
+              void acceptDestinationDropChoice("move-trash-rest");
             }}
           >
-            Move here
+            Move {count}; Trash sources
           </Button>
           <Button
             onClick={() => {
-              onClose();
-              useDestinationsStore.getState().setActive(path);
-              void moveDestinationSelectionTo(path, "copy", selection);
+              void acceptDestinationDropChoice("copy");
             }}
           >
-            Copy here
+            Copy {count}
           </Button>
         </>
       }
@@ -588,8 +606,9 @@ function DropChoiceModal({
         {path}
       </p>
       <p className="mt-1 text-xs text-ink-muted">
-        Move delivers one copy here and trashes the rest; Copy leaves everything
-        in place.
+        Move delivers {count} logical item{count === 1 ? "" : "s"} here and
+        sends every covered source copy to OneCopy Trash; Copy leaves every
+        source in place.
       </p>
     </ModalShell>
   );

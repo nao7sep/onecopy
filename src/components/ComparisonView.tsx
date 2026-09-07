@@ -20,7 +20,7 @@ import ComparisonSlot from "./ComparisonSlot";
 import ConfirmDialog from "./ConfirmDialog";
 import RevealCopiesDialog from "./RevealCopiesDialog";
 import OperationResult from "./ui/OperationResult";
-import { X } from "lucide-react";
+import MutationResultActions from "./MutationResultActions";
 
 function interactiveTarget(target: EventTarget | null): boolean {
   return (
@@ -31,7 +31,11 @@ function interactiveTarget(target: EventTarget | null): boolean {
   );
 }
 
-export default function ComparisonView() {
+export default function ComparisonView({
+  onRevealTrash,
+}: {
+  onRevealTrash: () => void;
+}) {
   const [revealMember, setRevealMember] = useState<{
     hash: string;
     fileName: string;
@@ -84,20 +88,20 @@ export default function ComparisonView() {
     portraitDominant,
     window.innerWidth / Math.max(1, window.innerHeight),
   );
-  const selectedCount = chunks
+  const markedCount = chunks
     .flat()
-    .reduce((count, slot) => count + (slot.selected ? 1 : 0), 0);
+    .reduce((count, slot) => count + (slot.marked ? 1 : 0), 0);
 
   const confirmTitle = pendingAction?.permanent
     ? "Delete images permanently?"
     : pendingAction?.kind === "selection"
-      ? "Move selected images to Trash?"
+      ? "Move marked images to Trash?"
       : "Finish this comparison page?";
   const confirmMessage =
     pendingAction === null
       ? ""
       : pendingAction.kind === "selection"
-        ? `${pendingAction.targetHashes.length} selected image${pendingAction.targetHashes.length === 1 ? "" : "s"} will be ${pendingAction.permanent ? "deleted permanently" : "moved to Trash"}.`
+        ? `${pendingAction.targetHashes.length} marked image${pendingAction.targetHashes.length === 1 ? "" : "s"} will be ${pendingAction.permanent ? "deleted permanently" : "moved to Trash"}.`
         : `Keep ${pendingAction.keepHashes.length} and ${pendingAction.permanent ? "permanently delete" : "move to Trash"} ${pendingAction.targetHashes.length} image${pendingAction.targetHashes.length === 1 ? "" : "s"} on this page.`;
 
   return (
@@ -128,7 +132,7 @@ export default function ComparisonView() {
           </h1>
           <p className="text-xs text-ink-muted">
             Page {page + 1}/{Math.max(1, pages.length)} · {members.length}{" "}
-            undecided · {selectedCount} selected
+            undecided · {markedCount} marked to keep
             {spreadCount > 0 ? ` · ${spreadCount + 1} displays` : ""}
           </p>
         </div>
@@ -149,7 +153,7 @@ export default function ComparisonView() {
           </button>
           <button
             className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
-            disabled={busy || selectedCount === 0}
+            disabled={busy || markedCount === 0}
             onClick={() => void unlinkComparisonSelection()}
           >
             Not similar
@@ -186,12 +190,11 @@ export default function ComparisonView() {
             key={slot.member.hash}
             member={slot.member}
             slotKey={slot.slotKey}
-            selected={slot.selected}
+            marked={slot.marked}
             anchor={slot.anchor}
             onSelect={(mode) =>
               useComparisonStore.getState().selectSlot(index, mode)
             }
-            onDecide={() => void decideComparisonPage(false)}
             onReveal={() =>
               setRevealMember({
                 hash: slot.member.hash,
@@ -204,9 +207,8 @@ export default function ComparisonView() {
 
       <footer className="flex shrink-0 items-center justify-between gap-4 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span>
-          0–9, A–Z toggle · Arrows select · Page Up/Down browse · Enter retains
-          the selection and trashes the rest · Delete trashes the selection ·
-          Escape closes
+          0–9, A–Z, Space, or Keep toggle marks · Arrows inspect · Page Up/Down browse · Enter reviews marked keepers and the visible Trash set ·
+          Delete reviews marked images · Escape closes
         </span>
         {message !== null ? (
           <span className="text-warning">{message}</span>
@@ -233,14 +235,11 @@ export default function ComparisonView() {
               {mutationCancelling ? "Cancelling…" : "Cancel file operation"}
             </button>
           ) : mutationResult !== null && !exitQuiescing ? (
-            <button
-              className="inline-flex h-6 w-6 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
-              aria-label="Dismiss file-operation result"
-              title="Dismiss"
-              onClick={dismissMutationResult}
-            >
-              <X size={14} strokeWidth={2} aria-hidden="true" />
-            </button>
+            <MutationResultActions
+              result={mutationResult}
+              onRevealTrash={onRevealTrash}
+              onDismiss={dismissMutationResult}
+            />
           ) : null}
         </footer>
       ) : null}

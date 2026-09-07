@@ -88,6 +88,7 @@ describe("the preview window", () => {
       payload: {
         key: "ArrowRight",
         code: "",
+        repeat: false,
         shiftKey: false,
         metaKey: false,
         ctrlKey: false,
@@ -125,7 +126,7 @@ describe("a comparison window", () => {
             hasThumb: true,
           },
           slotKey: "0",
-          selected: false,
+          marked: false,
           anchor: false,
         },
       ],

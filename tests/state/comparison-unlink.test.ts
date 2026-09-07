@@ -83,7 +83,8 @@ describe("Not similar", () => {
     expect(
       useComparisonStore.getState().members.map((item) => item.hash),
     ).toEqual(["h0", "h3", "h4"]);
-    expect(useComparisonStore.getState().selected).toEqual(new Set(["h3"]));
+    expect(useComparisonStore.getState().selected).toEqual(new Set());
+    expect(useComparisonStore.getState().anchor).toBe("h3");
   });
 
   it("keeps failed selected images and explains the partial result", async () => {

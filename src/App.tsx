@@ -27,6 +27,7 @@ import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
 import QuickView from "./components/QuickView";
 import TrashModal from "./components/TrashModal";
+import MutationResultActions from "./components/MutationResultActions";
 import ConfirmDialog from "./components/ConfirmDialog";
 import { Menu as MenuIcon, Minus, Plus, X } from "lucide-react";
 import { useWizardStore } from "./state/wizard-store";
@@ -217,7 +218,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       ) : gateOpen ? (
         <PresenceGate missing={missingDirs} substituted={substitutedDirs} />
       ) : null}
-      <ComparisonView />
+      <ComparisonView onRevealTrash={() => setTrashOpen(true)} />
       <NotificationHost />
       <BinariesModal />
       <BackgroundWorkModal />
@@ -566,14 +567,11 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             Audio autoplay {audioAutoplay ? "on" : "off"}
           </button>
           {mutationProgress === null && mutationResult !== null && !exitQuiescing ? (
-            <button
-              className="inline-flex h-6 w-6 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
-              aria-label="Dismiss file-operation result"
-              title="Dismiss"
-              onClick={dismissMutationResult}
-            >
-              <X size={14} strokeWidth={2} aria-hidden="true" />
-            </button>
+            <MutationResultActions
+              result={mutationResult}
+              onRevealTrash={() => setTrashOpen(true)}
+              onDismiss={dismissMutationResult}
+            />
           ) : null}
           {mutationProgress !== null && !exitQuiescing ? (
             <button

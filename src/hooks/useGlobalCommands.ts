@@ -69,6 +69,7 @@ export function useGlobalCommands() {
           return;
         }
         event.preventDefault();
+        if (event.repeat) return;
         const { selectedKeys, selectedItem } = useItemsStore.getState();
         const count =
           selectedKeys.size > 0
@@ -80,6 +81,7 @@ export function useGlobalCommands() {
         if (event.shiftKey) {
           setConfirmPermanent(count);
         } else if (
+          count > 1 ||
           useAppStore.getState().appData?.config?.confirmTrashDelete === true
         ) {
           setConfirmTrash(count);
@@ -113,9 +115,10 @@ export function useGlobalCommands() {
         ) {
           return;
         }
+        event.preventDefault();
+        if (event.repeat) return;
         const items = useItemsStore.getState();
         if (items.selected?.kind === "image") {
-          event.preventDefault();
           void requestComparisonFromMain();
           return;
         }
@@ -127,7 +130,6 @@ export function useGlobalCommands() {
           items.selected?.kind === "video" ||
           (anchor !== undefined && isAudioFile(anchor.fileName))
         ) {
-          event.preventDefault();
           if (
             items.selectedItem !== null &&
             !toggleMainPlayback(items.selectedItem)

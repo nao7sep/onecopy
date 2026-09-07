@@ -35,6 +35,7 @@ export interface MutationResultSummary {
   filesCompleted: number;
   filesFailed: number;
   filesUnstarted: number;
+  trashAvailable: boolean;
   error: string | null;
 }
 

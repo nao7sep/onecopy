@@ -20,6 +20,7 @@ let commandInstallation: Promise<void> | null = null;
 interface PreviewKeyMessage {
   key: string;
   code?: string;
+  repeat?: boolean;
   shiftKey?: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
@@ -55,6 +56,7 @@ export function installPreviewCommandWiring(): Promise<void> {
     const needsConfirmation =
       (message.key === "Delete" || message.key === "Backspace") &&
       (message.shiftKey === true ||
+        useItemsStore.getState().selectedKeys.size > 1 ||
         useAppStore.getState().appData?.config?.confirmTrashDelete === true);
     if (needsConfirmation) {
       await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
@@ -63,6 +65,7 @@ export function installPreviewCommandWiring(): Promise<void> {
       new KeyboardEvent("keydown", {
         key: message.key,
         code: message.code,
+        repeat: message.repeat,
         shiftKey: message.shiftKey,
         metaKey: message.metaKey,
         ctrlKey: message.ctrlKey,

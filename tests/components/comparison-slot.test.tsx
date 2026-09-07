@@ -21,41 +21,44 @@ afterEach(cleanup);
 
 function renderSlot(member: GroupMember = MEMBER) {
   const select = vi.fn();
-  const decide = vi.fn();
   const reveal = vi.fn();
   const view = render(
     <ComparisonSlot
       member={member}
       slotKey="0"
-      selected={false}
+      marked={false}
       anchor={false}
       onSelect={select}
-      onDecide={decide}
       onReveal={reveal}
     />,
   );
-  return { ...view, select, decide, reveal };
+  return { ...view, select, reveal };
 }
 
-describe("comparison pointer selection", () => {
-  it("uses ordinary, additive, and range selection like Main", () => {
+describe("comparison pointer decisions", () => {
+  it("separates ordinary activation from explicit toggle and range gestures", () => {
     const { getByRole, select } = renderSlot();
     const card = getByRole("option");
     fireEvent.click(card);
     fireEvent.click(card, { metaKey: true });
     fireEvent.click(card, { shiftKey: true });
     expect(select.mock.calls.map(([mode]) => mode)).toEqual([
-      "exclusive",
+      "activate",
       "toggle",
       "range",
     ]);
   });
 
-  it("double-click exclusively selects then decides the visible page", () => {
-    const { getByRole, select, decide } = renderSlot();
+  it("double-click only activates the card", () => {
+    const { getByRole, select } = renderSlot();
     fireEvent.doubleClick(getByRole("option"));
-    expect(select).toHaveBeenLastCalledWith("exclusive");
-    expect(decide).toHaveBeenCalledOnce();
+    expect(select).toHaveBeenLastCalledWith("activate");
+  });
+
+  it("offers a visible keep-mark toggle", () => {
+    const { getByRole, select } = renderSlot();
+    fireEvent.click(getByRole("button", { name: "Keep photo.jpg" }));
+    expect(select).toHaveBeenLastCalledWith("toggle");
   });
 
   it("prints the assigned direct key and selection semantics", () => {
@@ -79,7 +82,7 @@ describe("comparison pointer selection", () => {
     fireEvent.click(
       getByRole("button", { name: "Choose a copy of photo.jpg to reveal" }),
     );
-    expect(select).toHaveBeenLastCalledWith("exclusive");
+    expect(select).toHaveBeenLastCalledWith("activate");
     expect(reveal).toHaveBeenCalledOnce();
   });
 

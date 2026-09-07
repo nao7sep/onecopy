@@ -131,6 +131,7 @@ describe("what the status bar shows", () => {
           filesCompleted: 5,
           filesFailed: 1,
           filesUnstarted: 6,
+          trashAvailable: true,
           error: null,
         },
       },

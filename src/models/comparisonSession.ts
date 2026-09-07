@@ -30,7 +30,7 @@ export interface ComparisonPage {
   perDisplay: number;
 }
 
-export interface ComparisonSelection {
+export interface ComparisonDecisionDraft {
   selected: Set<string>;
   anchors: Set<string>;
   anchor: string | null;
@@ -44,7 +44,7 @@ export interface ComparisonGrid {
   rows: number;
 }
 
-export type ComparisonSelectionMode = "exclusive" | "toggle" | "range";
+export type ComparisonCardInteraction = "activate" | "toggle" | "range";
 
 export function directKeyIndex(event: {
   key: string;
@@ -132,7 +132,7 @@ export function activePage(
   );
 }
 
-export function activeSelection(
+export function visibleKeepMarks(
   selected: Set<string>,
   members: ComparisonMember[],
 ): Set<string> {
@@ -140,35 +140,21 @@ export function activeSelection(
   return new Set([...selected].filter((hash) => visible.has(hash)));
 }
 
-export function activateSelection(
-  selection: ComparisonSelection,
+export function activatePage(
+  selection: ComparisonDecisionDraft,
   members: ComparisonMember[],
-  preferredSelected: Iterable<string> = [],
   preferredAnchor: string | null = null,
-): ComparisonSelection {
+): ComparisonDecisionDraft {
   const hashes = members.map((member) => member.hash);
   const visible = new Set(hashes);
   const selected = new Set(
     [...selection.selected].filter((hash) => visible.has(hash)),
   );
-  if (selected.size === 0) {
-    for (const hash of preferredSelected) {
-      if (visible.has(hash)) selected.add(hash);
-    }
-  }
-  if (selected.size === 0) {
-    if (preferredAnchor !== null && visible.has(preferredAnchor)) {
-      selected.add(preferredAnchor);
-    }
-  }
-
-  let anchor =
-    preferredAnchor !== null && selected.has(preferredAnchor)
+  const anchor =
+    preferredAnchor !== null && visible.has(preferredAnchor)
       ? preferredAnchor
-      : (hashes.find(
-          (hash) => selection.anchors.has(hash) && selected.has(hash),
-        ) ??
-        hashes.find((hash) => selected.has(hash)) ??
+      : (hashes.find((hash) => selection.anchors.has(hash)) ??
+        hashes[0] ??
         null);
   const allSelected = new Set(selection.selected);
   for (const hash of hashes) allSelected.delete(hash);
@@ -183,41 +169,39 @@ export function activateSelection(
     anchors,
     anchor,
     rangeOrigin: anchor,
-    rangeBase: selected,
+    rangeBase: new Set(selected),
   };
 }
 
-export function updateSelection(
-  selection: ComparisonSelection,
+export function updateComparisonDraft(
+  selection: ComparisonDecisionDraft,
   members: ComparisonMember[],
   target: string,
-  mode: ComparisonSelectionMode,
-): ComparisonSelection {
+  mode: ComparisonCardInteraction,
+): ComparisonDecisionDraft {
   const hashes = members.map((member) => member.hash);
   const targetIndex = hashes.indexOf(target);
   if (targetIndex < 0) return selection;
 
-  const current = activeSelection(selection.selected, members);
+  const current = visibleKeepMarks(selection.selected, members);
   let selected: Set<string>;
   let anchor = target;
   let rangeOrigin = target;
   let rangeBase: Set<string>;
 
-  if (mode === "toggle") {
+  if (mode === "activate") {
+    selected = new Set(current);
+    rangeBase = new Set(selected);
+  } else if (mode === "toggle") {
     selected = new Set(current);
     if (selected.has(target)) {
       selected.delete(target);
-      if (selection.anchor === target) {
-        anchor = [...selected].pop() ?? "";
-      } else {
-        anchor = selection.anchor ?? "";
-      }
     } else {
       selected.add(target);
     }
-    rangeOrigin = anchor || target;
+    rangeOrigin = target;
     rangeBase = new Set(selected);
-  } else if (mode === "range") {
+  } else {
     const origin = selection.rangeOrigin ?? selection.anchor;
     const originIndex = origin === null ? -1 : hashes.indexOf(origin);
     if (originIndex < 0) {
@@ -234,25 +218,21 @@ export function updateSelection(
       rangeOrigin = origin ?? target;
       rangeBase = new Set(selection.rangeBase);
     }
-  } else {
-    selected = new Set([target]);
-    rangeBase = new Set([target]);
   }
 
-  if (selected.size === 0) anchor = "";
   const allSelected = new Set(selection.selected);
   for (const hash of hashes) allSelected.delete(hash);
   for (const hash of selected) allSelected.add(hash);
   const anchors = new Set(selection.anchors);
   for (const hash of hashes) anchors.delete(hash);
-  if (anchor !== "") anchors.add(anchor);
+  anchors.add(anchor);
 
   return {
     selected: allSelected,
     anchors,
-    anchor: anchor || null,
-    rangeOrigin: selected.size === 0 ? null : rangeOrigin,
-    rangeBase: selected.size === 0 ? new Set() : rangeBase,
+    anchor,
+    rangeOrigin,
+    rangeBase,
   };
 }
 

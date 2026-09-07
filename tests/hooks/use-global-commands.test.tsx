@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useGlobalCommands } from "../../src/hooks/useGlobalCommands";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useComparisonStore } from "../../src/state/comparison-store";
+import { useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import {
   mockCommand,
+  invokeCalls,
   mockSectionItems,
   resetTauriMocks,
   setCurrentMonitor,
@@ -34,11 +36,14 @@ const ITEM: SectionItem = {
 };
 
 function Harness() {
-  useGlobalCommands();
+  const commands = useGlobalCommands();
   return (
     <>
       <div id="main-item-area" tabIndex={0} />
       <div aria-label="Preview pane" tabIndex={0} />
+      <output aria-label="Trash confirmation">
+        {commands.confirmTrash ?? "none"}
+      </output>
     </>
   );
 }
@@ -58,6 +63,15 @@ beforeEach(() => {
     name: "display",
   });
   useComparisonStore.setState({ open: false });
+  useAppStore.setState({
+    appData: {
+      config: { confirmTrashDelete: false },
+      state: {},
+      dataRoot: "/app",
+      debugEnabled: false,
+      quarantines: [],
+    },
+  });
   useQuickViewStore.setState({ session: null, pendingDelete: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
@@ -87,6 +101,42 @@ describe("global viewer commands", () => {
 
     expect(useQuickViewStore.getState().session?.presentation).toBe(
       "fullscreen",
+    );
+  });
+});
+
+describe("global destructive commands", () => {
+  it("always reviews a multi-item Trash even when the single-item preference is off", () => {
+    const second = { ...ITEM, hash: "image-hash-2", pathId: 2 };
+    useItemsStore.setState({
+      items: [ITEM, second],
+      selectedKeys: new Set(["image-hash", "image-hash-2"]),
+    });
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+
+    fireEvent.keyDown(area, { key: "Delete" });
+
+    expect(view.getByLabelText("Trash confirmation").textContent).toBe("2");
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
+  });
+
+  it("consumes repeated Enter and deletion without reopening or deleting", () => {
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+
+    fireEvent.keyDown(area, { key: "Enter", repeat: true });
+    fireEvent.keyDown(area, { key: "Backspace", repeat: true });
+
+    expect(
+      invokeCalls.some((call) =>
+        ["comparison_selection_valid", "delete_items"].includes(call.command),
+      ),
+    ).toBe(false);
+    expect(view.getByLabelText("Trash confirmation").textContent).toBe(
+      "none",
     );
   });
 });

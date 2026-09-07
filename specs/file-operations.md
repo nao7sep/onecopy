@@ -22,7 +22,7 @@ Move establishes each output group before applying that group's requested source
 
 Ordinary deletion sends every planned main copy and every locally paired companion in the submitted logical item to recoverable Trash. Permanent deletion deletes those planned files without Trash. Deletion may complete sequentially across physical files and can therefore produce an honest partial result.
 
-Ordinary Trash follows the configured Trash-confirmation policy. Every permanent-deletion path requires explicit confirmation. Cancelling confirmation performs no filesystem work and leaves the owning review state unchanged.
+New installations confirm direct single-item Trash by default; the user may disable that one confirmation. The preference applies only to a direct command targeting one explicitly selected item. Multi-item Trash, Comparison complement decisions, Trash-every-visible, destination Move cleanup, overwrite displacement, and every permanent-deletion path always require an exact-scope review. Cancelling review performs no filesystem work and leaves the owning review state unchanged.
 
 ## Main and companion outputs
 
@@ -62,7 +62,7 @@ A failure tied to one planned file is recorded and skipped when later files have
 
 Completed outputs, Trash moves, permanent deletions, and source cleanups remain completed when later work fails or is cancelled. OneCopy does not copy completed outputs back, search Trash for rollback material, or represent the batch as atomic. Unattempted sources and sources whose required output failed remain in place.
 
-One persistent nonmodal operation surface shows progress, Cancel, `Cancelling after current file…`, and the final completed, failed, and unstarted result. The result identifies completed work, preserved sources, failed files, and the unstarted remainder truthfully. A retry is a newly confirmed operation over current library and filesystem state, not a replay of stale destructive intent.
+One persistent nonmodal operation surface shows progress, Cancel, `Cancelling after current file…`, and the final completed, failed, and unstarted result. The result identifies completed work, preserved sources, failed files, and the unstarted remainder truthfully. A completed recoverable operation keeps its exact-count receipt visible and offers a direct Reveal Trash action. A retry is a newly confirmed operation over current library and filesystem state, not a replay of stale destructive intent.
 
 ## Cancellation
 

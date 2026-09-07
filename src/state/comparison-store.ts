@@ -11,18 +11,18 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 import {
   COMPARISON_DIRECT_KEYS,
-  activateSelection,
+  activatePage,
   activePage,
-  activeSelection,
+  visibleKeepMarks,
   chunkMembers,
   comparisonPages,
   directKeyIndex,
   displayCapacities,
   spatialTarget,
-  updateSelection,
+  updateComparisonDraft,
   type ComparisonMember,
-  type ComparisonSelection,
-  type ComparisonSelectionMode,
+  type ComparisonDecisionDraft,
+  type ComparisonCardInteraction,
 } from "../models/comparisonSession";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
@@ -41,7 +41,7 @@ export function slotIndexForKey(
 export interface ComparisonSlotState {
   member: GroupMember;
   slotKey: string | null;
-  selected: boolean;
+  marked: boolean;
   anchor: boolean;
 }
 
@@ -66,7 +66,7 @@ interface ComparisonFailure extends ComparisonAction {
   message: string;
 }
 
-interface ComparisonState extends ComparisonSelection {
+interface ComparisonState extends ComparisonDecisionDraft {
   sessionId: number;
   open: boolean;
   members: GroupMember[];
@@ -84,24 +84,23 @@ interface ComparisonState extends ComparisonSelection {
   failure: ComparisonFailure | null;
   openGroup: (
     hash: string,
-    initialSelection?: Iterable<string>,
     entryAnchor?: string | null,
     maximumImages?: number,
     screenState?: Record<string, unknown>,
   ) => Promise<ComparisonOpenResult>;
-  selectSlot: (slotIndex: number, mode: ComparisonSelectionMode) => void;
-  moveSelection: (
+  selectSlot: (slotIndex: number, mode: ComparisonCardInteraction) => void;
+  toggleActive: () => void;
+  moveActive: (
     direction: "left" | "right" | "up" | "down",
     extend: boolean,
   ) => void;
-  selectBound: (bound: "first" | "last", extend: boolean) => void;
-  selectAll: () => void;
+  activateBound: (bound: "first" | "last", extend: boolean) => void;
+  markAll: () => void;
   nextPage: () => void;
   prevPage: () => void;
   unlinkSelected: () => Promise<"open" | "closed" | null>;
   requestPageDecision: (
     permanent: boolean,
-    configConfirms?: boolean,
     trashAll?: boolean,
   ) => Promise<ComparisonCommitResult | null>;
   requestSelectionDelete: (
@@ -126,7 +125,7 @@ type MonitorList = Awaited<ReturnType<typeof availableMonitors>>;
 
 let sessionOtherMonitors: MonitorList = [];
 
-function selectionFrom(state: ComparisonState): ComparisonSelection {
+function decisionDraftFrom(state: ComparisonState): ComparisonDecisionDraft {
   return {
     selected: state.selected,
     anchors: state.anchors,
@@ -154,11 +153,10 @@ function viewPatch(
   state: ComparisonState,
   members = state.members,
   requestedPage = state.page,
-  preferredSelected: Iterable<string> = [],
   preferredAnchor: string | null = null,
 ): Partial<ComparisonState> {
   const live = new Set(members.map((member) => member.hash));
-  const liveSelection: ComparisonSelection = {
+  const liveDraft: ComparisonDecisionDraft = {
     selected: new Set([...state.selected].filter((hash) => live.has(hash))),
     anchors: new Set([...state.anchors].filter((hash) => live.has(hash))),
     anchor:
@@ -200,19 +198,18 @@ function viewPatch(
       .map((member) => member.hash);
     recoveredAnchor =
       next.find(
-        (hash) => visible.has(hash) && liveSelection.selected.has(hash),
+        (hash) => visible.has(hash) && liveDraft.selected.has(hash),
       ) ??
       previous.find(
-        (hash) => visible.has(hash) && liveSelection.selected.has(hash),
+        (hash) => visible.has(hash) && liveDraft.selected.has(hash),
       ) ??
       next.find((hash) => visible.has(hash)) ??
       previous.find((hash) => visible.has(hash)) ??
       null;
   }
-  const selection = activateSelection(
-    liveSelection,
+  const selection = activatePage(
+    liveDraft,
     active.members,
-    preferredSelected,
     recoveredAnchor,
   );
   const capacities = displayCapacities(
@@ -234,7 +231,7 @@ function slotsFor(state: ComparisonState): ComparisonSlotState[] {
   return visibleMembers(state).map((member, index) => ({
     member,
     slotKey: COMPARISON_DIRECT_KEYS[index] ?? null,
-    selected: state.selected.has(member.hash),
+    marked: state.selected.has(member.hash),
     anchor: state.anchor === member.hash,
   }));
 }
@@ -562,7 +559,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
 
   openGroup: async (
     hash,
-    initialSelection = [hash],
     entryAnchor = hash,
     maximumImages = 16,
     screenState = {},
@@ -612,7 +608,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         base,
         members,
         initialPage,
-        initialSelection,
         entryAnchor,
       );
       await queueComparisonLifecycle(async () => {
@@ -652,13 +647,23 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     const member = visible[slotIndex];
     if (member === undefined) return;
     set({
-      ...updateSelection(selectionFrom(state), visible, member.hash, mode),
+      ...updateComparisonDraft(decisionDraftFrom(state), visible, member.hash, mode),
       message: null,
     });
     broadcastComparison();
   },
 
-  moveSelection: (direction, extend) => {
+  toggleActive: () => {
+    const state = get();
+    if (state.anchor === null) return;
+    const visible = visibleMembers(state);
+    const slotIndex = visible.findIndex(
+      (member) => member.hash === state.anchor,
+    );
+    if (slotIndex >= 0) get().selectSlot(slotIndex, "toggle");
+  },
+
+  moveActive: (direction, extend) => {
     const state = get();
     if (state.busy || state.pendingAction !== null) return;
     const visible = visibleMembers(state);
@@ -676,36 +681,36 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     );
     if (target === current) return;
     set({
-      ...updateSelection(
-        selectionFrom(state),
+      ...updateComparisonDraft(
+        decisionDraftFrom(state),
         visible,
         visible[target].hash,
-        extend ? "range" : "exclusive",
+        extend ? "range" : "activate",
       ),
       message: null,
     });
     broadcastComparison();
   },
 
-  selectBound: (bound, extend) => {
+  activateBound: (bound, extend) => {
     const state = get();
     if (state.busy || state.pendingAction !== null) return;
     const visible = visibleMembers(state);
     const member = bound === "first" ? visible[0] : visible[visible.length - 1];
     if (member === undefined) return;
     set({
-      ...updateSelection(
-        selectionFrom(state),
+      ...updateComparisonDraft(
+        decisionDraftFrom(state),
         visible,
         member.hash,
-        extend ? "range" : "exclusive",
+        extend ? "range" : "activate",
       ),
       message: null,
     });
     broadcastComparison();
   },
 
-  selectAll: () => {
+  markAll: () => {
     const state = get();
     if (state.busy || state.pendingAction !== null) return;
     const visible = visibleMembers(state);
@@ -720,7 +725,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       anchors,
       anchor,
       rangeOrigin: anchor,
-      rangeBase: activeSelection(selected, visible),
+      rangeBase: visibleKeepMarks(selected, visible),
       message: null,
     });
     broadcastComparison();
@@ -732,7 +737,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
   unlinkSelected: async () => {
     const state = get();
     if (state.busy || state.pendingAction !== null) return null;
-    const selected = activeSelection(state.selected, visibleMembers(state));
+    const selected = visibleKeepMarks(state.selected, visibleMembers(state));
     if (selected.size === 0) {
       set({ message: "Select at least one image to mark as not similar." });
       return null;
@@ -777,7 +782,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
 
   requestPageDecision: async (
     permanent,
-    configConfirms = false,
     trashAll = false,
   ) => {
     const state = get();
@@ -785,7 +789,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     const visible = visibleMembers(state);
     const selected = trashAll
       ? new Set<string>()
-      : activeSelection(state.selected, visible);
+      : visibleKeepMarks(state.selected, visible);
     if (!trashAll && selected.size === 0) {
       set({ message: "Select at least one image to keep." });
       return null;
@@ -800,13 +804,13 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         .filter((member) => !selected.has(member.hash))
         .map((member) => member.hash),
     };
-    return await requestAction(set, get, action, configConfirms);
+    return await requestAction(set, get, action, false);
   },
 
   requestSelectionDelete: async (permanent, configConfirms = false) => {
     const state = get();
     if (state.busy || state.pendingAction !== null) return null;
-    const selected = activeSelection(state.selected, visibleMembers(state));
+    const selected = visibleKeepMarks(state.selected, visibleMembers(state));
     if (selected.size === 0) return null;
     const action: ComparisonAction = {
       kind: "selection",
@@ -890,7 +894,12 @@ async function requestAction(
   action: ComparisonAction,
   configConfirms: boolean,
 ): Promise<ComparisonCommitResult | null> {
-  if (action.permanent || (configConfirms && action.targetHashes.length > 0)) {
+  const requiresReview =
+    action.permanent ||
+    (action.kind === "page" && action.targetHashes.length > 0) ||
+    action.targetHashes.length > 1 ||
+    (configConfirms && action.targetHashes.length > 0);
+  if (requiresReview) {
     set({ pendingAction: action, message: null });
     return null;
   }
@@ -945,7 +954,7 @@ async function executeAction(
     set({
       busy: false,
       failure,
-      ...viewPatch(get(), members, get().page, targets, targets[0] ?? null),
+      ...viewPatch(get(), members, get().page, targets[0] ?? null),
     });
     return { kind: "failed" };
   }
@@ -975,7 +984,7 @@ async function executeAction(
     set({
       busy: false,
       failure,
-      ...viewPatch(get(), members, get().page, remaining, remaining[0] ?? null),
+      ...viewPatch(get(), members, get().page, remaining[0] ?? null),
     });
     synchronizeSpread(before.spreadCount);
     return { kind: "failed" };

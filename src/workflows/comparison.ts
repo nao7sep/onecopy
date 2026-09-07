@@ -5,6 +5,7 @@ import {
   type AnchorContext,
 } from "../models/mainSelection";
 import type { SectionRecoveryContextPayload } from "../models/items";
+import { visibleKeepMarks } from "../models/comparisonSession";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
@@ -75,14 +76,12 @@ async function applyResult(
 
 export async function openComparison(
   hash: string,
-  initialSelection: Iterable<string> = [hash],
   entryAnchor: string | null = hash,
 ): Promise<ComparisonOpenResult> {
   const result = await useComparisonStore
     .getState()
     .openGroup(
       hash,
-      initialSelection,
       entryAnchor,
       maximumImages(),
       appState(),
@@ -168,7 +167,7 @@ export async function requestComparisonFromMain(): Promise<void> {
     });
     return;
   }
-  const result = await openComparison(hash, selectedKeys, selectedItem);
+  const result = await openComparison(hash, selectedItem);
   if (result === "unavailable") {
     useItemsStore.setState({
       message: "There are no similar images left to compare.",
@@ -226,10 +225,18 @@ export async function decideComparisonPage(
   permanent: boolean,
   trashAll = false,
 ): Promise<void> {
+  const state = useComparisonStore.getState();
+  if (
+    !trashAll &&
+    visibleKeepMarks(state.selected, visibleMembers(state)).size === 0
+  ) {
+    await closeComparison();
+    return;
+  }
   await applyResult(
     await useComparisonStore
       .getState()
-      .requestPageDecision(permanent, configConfirmsTrash(), trashAll),
+      .requestPageDecision(permanent, trashAll),
   );
 }
 
@@ -249,7 +256,9 @@ export async function confirmComparisonAction(): Promise<void> {
 
 export async function retryComparisonFailure(): Promise<void> {
   await applyResult(
-    await useComparisonStore.getState().retryFailure(configConfirmsTrash()),
+    await useComparisonStore
+      .getState()
+      .retryFailure(configConfirmsTrash()),
   );
 }
 
@@ -354,13 +363,22 @@ export function handleComparisonKey(event: {
   if (!comparisonKeyIsRoutable(event, visibleMembers(store).length)) {
     return false;
   }
+  if (
+    event.repeat === true &&
+    (event.key === "Enter" ||
+      event.key === "Delete" ||
+      event.key === "Backspace" ||
+      event.key === " ")
+  ) {
+    return true;
+  }
   const slotIndex = slotIndexForKey(event);
   if (slotIndex >= 0) {
     store.selectSlot(slotIndex, "toggle");
     return true;
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
-    store.selectAll();
+    store.markAll();
     return true;
   }
   if (event.key === "Enter") {
@@ -384,7 +402,7 @@ export function handleComparisonKey(event: {
     return true;
   }
   if (event.key === "Home" || event.key === "End") {
-    store.selectBound(
+    store.activateBound(
       event.key === "Home" ? "first" : "last",
       event.shiftKey === true,
     );
@@ -398,11 +416,14 @@ export function handleComparisonKey(event: {
       direction === "up" ||
       direction === "down"
     ) {
-      store.moveSelection(direction, event.shiftKey === true);
+      store.moveActive(direction, event.shiftKey === true);
       return true;
     }
   }
-  if (event.key === " ") return true;
+  if (event.key === " ") {
+    store.toggleActive();
+    return true;
+  }
   return false;
 }
 
@@ -421,13 +442,11 @@ const installEvents = createEventInstaller(
     });
     await listeners.listen<{
       slotIndex: number;
-      mode: "exclusive" | "toggle" | "range";
-      decide?: boolean;
+      mode: "activate" | "toggle" | "range";
     }>("comparison://select", (event) => {
       const store = useComparisonStore.getState();
       if (!store.open || store.busy || hasOpenModal()) return;
       store.selectSlot(event.payload.slotIndex, event.payload.mode);
-      if (event.payload.decide === true) void decideComparisonPage(false);
     });
     await listeners.listen("comparison://ready", () => {
       broadcastComparison();

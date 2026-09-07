@@ -140,6 +140,7 @@ export default function PreviewWindow() {
         void emit("preview://key", {
           key: event.key,
           code: event.code,
+          repeat: event.repeat,
           shiftKey: event.shiftKey,
           metaKey: event.metaKey,
           ctrlKey: event.ctrlKey,

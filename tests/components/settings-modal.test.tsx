@@ -152,7 +152,7 @@ describe("Settings categories", () => {
       labelIndex("Maximum images in Comparison"),
     );
     expect(labelIndex("Maximum images in Comparison")).toBeLessThan(
-      labelIndex("Confirm before moving items to trash"),
+      labelIndex("Confirm direct single-item Trash"),
     );
     expect(
       (screen.getByLabelText("Show face-score stars on photos") as HTMLInputElement).checked,

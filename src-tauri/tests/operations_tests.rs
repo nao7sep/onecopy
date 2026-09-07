@@ -868,6 +868,7 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
     )
     .unwrap();
     assert_eq!(outcome.exported, 2);
+    assert_eq!(outcome.trashed_destination_files, 2);
     assert_eq!(outcome.post_action.deleted_files, 2);
     assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"new-primary");
     assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"new-sidecar");

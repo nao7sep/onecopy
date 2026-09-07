@@ -33,7 +33,7 @@ function openSession(count: number): void {
     capacities: [4],
     portraitDominant: false,
     spreadCount: 0,
-    selected: new Set(["h0"]),
+    selected: new Set(),
     anchors: new Set(["h0"]),
     anchor: "h0",
     rangeOrigin: "h0",
@@ -72,16 +72,15 @@ describe("draft page selection", () => {
   it("retains each undecided page draft while browsing", () => {
     useComparisonStore.getState().selectSlot(1, "toggle");
     useComparisonStore.getState().nextPage();
-    useComparisonStore.getState().selectSlot(2, "exclusive");
+    useComparisonStore.getState().selectSlot(2, "toggle");
     useComparisonStore.getState().prevPage();
 
     const state = useComparisonStore.getState();
-    expect(state.selected).toEqual(new Set(["h0", "h1", "h6"]));
+    expect(state.selected).toEqual(new Set(["h1", "h6"]));
     expect(state.anchor).toBe("h1");
   });
 
   it("preserves a deliberately empty page draft", () => {
-    useComparisonStore.getState().selectSlot(0, "toggle");
     expect(useComparisonStore.getState().selected).toEqual(new Set());
 
     useComparisonStore.getState().nextPage();
@@ -89,7 +88,7 @@ describe("draft page selection", () => {
 
     const state = useComparisonStore.getState();
     expect(state.selected).toEqual(new Set());
-    expect(state.anchor).toBeNull();
+    expect(state.anchor).toBe("h0");
   });
 
   it("does not wrap at either page bound", () => {
@@ -102,27 +101,37 @@ describe("draft page selection", () => {
 });
 
 describe("page-local decisions", () => {
-  it("retains the selection, trashes only the visible complement, and fills the page", async () => {
+  it("reviews the marked keepers and visible complement before acting", async () => {
     useComparisonStore.getState().selectSlot(1, "toggle");
 
     const result = await useComparisonStore
       .getState()
-      .requestPageDecision(false, false);
+      .requestPageDecision(false);
 
-    expect(result).toEqual({ kind: "continued" });
+    expect(result).toBeNull();
+    expect(useComparisonStore.getState().pendingAction).toMatchObject({
+      keepHashes: ["h1"],
+      targetHashes: ["h0", "h2", "h3"],
+    });
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
+    expect(
+      await useComparisonStore.getState().confirmPendingAction(),
+    ).toEqual({ kind: "continued" });
     const deleted = invokeCalls.find((call) => call.command === "delete_items")
       ?.args.items as Array<{ hash: string }>;
-    expect(deleted.map((item) => item.hash)).toEqual(["h2", "h3"]);
+    expect(deleted.map((item) => item.hash)).toEqual(["h0", "h2", "h3"]);
     expect(
       useComparisonStore.getState().members.map((item) => item.hash),
     ).toEqual(["h4", "h5", "h6", "h7"]);
   });
 
   it("completes an all-selected page without a filesystem operation", async () => {
-    useComparisonStore.getState().selectAll();
+    useComparisonStore.getState().markAll();
     const result = await useComparisonStore
       .getState()
-      .requestPageDecision(false, false);
+      .requestPageDecision(false);
 
     expect(result).toEqual({ kind: "continued" });
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
@@ -140,7 +149,7 @@ describe("page-local decisions", () => {
       anchors: new Set(),
     });
     expect(
-      await useComparisonStore.getState().requestPageDecision(false, false),
+      await useComparisonStore.getState().requestPageDecision(false),
     ).toBeNull();
     expect(useComparisonStore.getState().message).toBe(
       "Select at least one image to keep.",
@@ -151,15 +160,26 @@ describe("page-local decisions", () => {
   });
 
   it("offers a separate explicit Trash-all action", async () => {
-    await useComparisonStore.getState().requestPageDecision(false, false, true);
+    await useComparisonStore.getState().requestPageDecision(false, true);
+    expect(useComparisonStore.getState().pendingAction?.targetHashes).toEqual([
+      "h0",
+      "h1",
+      "h2",
+      "h3",
+    ]);
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
+    await useComparisonStore.getState().confirmPendingAction();
     const deleted = invokeCalls.find((call) => call.command === "delete_items")
       ?.args.items as Array<{ hash: string }>;
     expect(deleted.map((item) => item.hash)).toEqual(["h0", "h1", "h2", "h3"]);
   });
 
   it("always confirms a permanent page decision", async () => {
+    useComparisonStore.getState().selectSlot(0, "toggle");
     expect(
-      await useComparisonStore.getState().requestPageDecision(true, false),
+      await useComparisonStore.getState().requestPageDecision(true),
     ).toBeNull();
     expect(useComparisonStore.getState().pendingAction?.permanent).toBe(true);
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
@@ -169,10 +189,10 @@ describe("page-local decisions", () => {
 
   it("preserves the draft when confirmation is cancelled", async () => {
     useComparisonStore.getState().selectSlot(1, "toggle");
-    await useComparisonStore.getState().requestPageDecision(false, true);
+    await useComparisonStore.getState().requestPageDecision(false);
     useComparisonStore.getState().cancelPendingAction();
     expect(useComparisonStore.getState().selected).toEqual(
-      new Set(["h0", "h1"]),
+      new Set(["h1"]),
     );
     expect(useComparisonStore.getState().members).toHaveLength(8);
   });
@@ -199,13 +219,16 @@ describe("partial deletion", () => {
       },
     });
 
+    useComparisonStore.getState().selectSlot(0, "toggle");
+    await useComparisonStore.getState().requestPageDecision(false);
+
     expect(
-      await useComparisonStore.getState().requestPageDecision(false, false),
+      await useComparisonStore.getState().confirmPendingAction(),
     ).toEqual({ kind: "failed" });
     const state = useComparisonStore.getState();
     expect(state.members.map((item) => item.hash)).toEqual(["h2", "h3"]);
     expect(state.failure?.targetHashes).toEqual(["h2", "h3"]);
-    expect(state.selected).toEqual(new Set(["h2", "h3"]));
+    expect(state.selected).toEqual(new Set());
   });
 
   it("reconfirms a retry when current policy requires it", async () => {

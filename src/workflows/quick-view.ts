@@ -45,6 +45,7 @@ export interface ViewerBroadcast {
 
 interface ViewerKeyMessage {
   key: string;
+  repeat?: boolean;
   shiftKey?: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
@@ -464,6 +465,7 @@ export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> 
       toggleMainPlayback(itemKey(item));
     }
   } else if (message.key === "Delete" || message.key === "Backspace") {
+    if (message.repeat === true) return;
     await requestViewerDelete(message.shiftKey === true);
   }
 }

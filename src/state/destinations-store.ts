@@ -46,15 +46,16 @@ interface DestinationsState {
    * an older unresolved result, which an unrelated success must not erase. */
   confirmation: string | null;
   dismissConfirmation: () => void;
-  /** A move-delete-rest awaiting its permanent-deletion confirmation. The
+  /** A Move awaiting its source-cleanup confirmation. The
    * backend identities freeze exactly what the dialog counted, independent of
    * later selection or watcher projection changes. */
-  pendingDeleteRest: {
+  pendingMove: {
     destDir: string;
     count: number;
+    mode: "move-trash-rest" | "move-delete-rest";
     selection: DestinationSelection;
   } | null;
-  cancelPendingDeleteRest: () => void;
+  cancelPendingMove: () => void;
   /** The tree's keyboard cursor (the composite-control active item). */
   activePath: string | null;
   setActive: (path: string | null) => void;
@@ -100,9 +101,9 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   pendingConflicts: null,
   setPendingConflicts: (conflicts) => set({ pendingConflicts: conflicts }),
 
-  pendingDeleteRest: null,
+  pendingMove: null,
 
-  cancelPendingDeleteRest: () => set({ pendingDeleteRest: null }),
+  cancelPendingMove: () => set({ pendingMove: null }),
 
   init: (config) => {
     const roots = stringArrayField(config, "destinationRoots");

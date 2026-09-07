@@ -224,6 +224,7 @@ struct ResultSummary {
     files_completed: u64,
     files_failed: u64,
     files_unstarted: u64,
+    trash_available: bool,
     error: Option<String>,
 }
 
@@ -283,6 +284,7 @@ impl Publisher {
             progress.files_total,
             progress.files_done,
             progress.failures,
+            false,
             Some(error.to_string()),
         );
         crate::failure_runtime::emit_or_record(
@@ -305,6 +307,7 @@ fn result_summary(
     files_total: u64,
     files_done: u64,
     files_failed: u64,
+    trash_available: bool,
     error: Option<String>,
 ) -> ResultSummary {
     ResultSummary {
@@ -314,6 +317,7 @@ fn result_summary(
         files_completed: files_done.saturating_sub(files_failed),
         files_failed,
         files_unstarted: files_total.saturating_sub(files_done),
+        trash_available,
         error,
     }
 }
@@ -472,6 +476,7 @@ pub(crate) fn delete_items(
                     terminal.files_total,
                     terminal.files_done,
                     terminal.failures,
+                    !permanent && outcome.deleted_files > 0,
                     outcome.error.clone(),
                 )),
             );
@@ -700,6 +705,9 @@ pub(crate) fn move_items_out(
                         terminal.files_total,
                         terminal.files_done,
                         terminal.failures,
+                        (mode == crate::operations::MoveOutMode::MoveTrashRest
+                            && outcome.post_action.deleted_files > 0)
+                            || outcome.trashed_destination_files > 0,
                         outcome.error.clone(),
                     )
                 }),
@@ -821,6 +829,7 @@ pub(crate) fn empty_trash(
                     terminal.files_total,
                     terminal.files_done,
                     terminal.failures,
+                    false,
                     None,
                 )),
             );
@@ -857,7 +866,7 @@ mod tests {
     #[test]
     fn result_accounting_separates_complete_partial_and_unstarted_work() {
         assert_eq!(
-            result_summary(8, 4, 3, 12, 7, 2, None),
+            result_summary(8, 4, 3, 12, 7, 2, true, None),
             ResultSummary {
                 items_completed: 3,
                 items_partial: 1,
@@ -865,6 +874,7 @@ mod tests {
                 files_completed: 5,
                 files_failed: 2,
                 files_unstarted: 5,
+                trash_available: true,
                 error: None,
             }
         );

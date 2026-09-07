@@ -543,6 +543,8 @@ pub struct DestinationConflict {
 pub struct MoveOutOutcome {
     pub exported: u64,
     pub skipped_identical: u64,
+    /// Reviewed destination files preserved in OneCopy Trash before overwrite.
+    pub trashed_destination_files: u64,
     /// Conflicts that appeared after the reviewed plan was accepted. Expected
     /// conflicts are resolved before execution and never enter this result.
     pub conflicts: Vec<String>,
@@ -593,6 +595,7 @@ pub struct MoveBatchOutcome {
     pub items: Vec<MoveBatchItemResult>,
     pub exported: u64,
     pub skipped_identical: u64,
+    pub trashed_destination_files: u64,
     pub conflicts: Vec<String>,
     pub undelivered: Vec<String>,
     pub post_action: DeleteOutcome,
@@ -976,6 +979,9 @@ pub fn move_batch_reviewed(
         batch.skipped_identical = batch
             .skipped_identical
             .saturating_add(outcome.skipped_identical);
+        batch.trashed_destination_files = batch
+            .trashed_destination_files
+            .saturating_add(outcome.trashed_destination_files);
         batch.conflicts.extend(outcome.conflicts.iter().cloned());
         batch
             .undelivered
@@ -1613,6 +1619,9 @@ fn execute_move_unit(
                                     &delivery.replacement_family,
                                     app_root,
                                 )?;
+                                outcome.trashed_destination_files = outcome
+                                    .trashed_destination_files
+                                    .saturating_add(delivery.replacement_family.len() as u64);
                                 if !publish_claimed(
                                     conn,
                                     &claimed,

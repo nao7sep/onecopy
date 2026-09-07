@@ -114,11 +114,10 @@ pub struct DefaultConfig {
     /// How long a safely missable notification remains visible. Persistent
     /// notifications ignore this setting.
     pub notification_display_seconds: u32,
-    /// Confirm ordinary Delete/Backspace trash-deletes in the grid. OFF by
-    /// default (developer, 2026-08-17): the trash is the net, and a dialog on
-    /// every Delete would break the keystroke-paced cull — but a deliberate
-    /// user can opt into the extra stop. Permanent deletion always confirms
-    /// regardless; that rule is not configurable.
+    /// Confirm a direct single-item Delete/Backspace Trash command. New users
+    /// start with this safeguard on and may opt out for keystroke-paced culling.
+    /// Indirect, bulk, and permanent consequences always review regardless;
+    /// those rules are not configurable.
     pub confirm_trash_delete: bool,
     /// Source directories to scan (wizard-configured; absolute paths).
     pub source_dirs: Vec<String>,
@@ -168,7 +167,7 @@ impl Default for DefaultConfig {
             show_face_stars: true,
             maximum_images_in_comparison: 16,
             notification_display_seconds: 6,
-            confirm_trash_delete: false,
+            confirm_trash_delete: true,
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),
             destination_conflict_rename_style: if cfg!(target_os = "windows") {
@@ -622,5 +621,10 @@ mod tests {
             atomic_temp_name("config.json").unwrap(),
             atomic_temp_name("config.json").unwrap()
         );
+    }
+
+    #[test]
+    fn new_config_confirms_direct_trash_by_default() {
+        assert!(DefaultConfig::default().confirm_trash_delete);
     }
 }

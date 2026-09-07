@@ -1,8 +1,8 @@
 // The destination panel's move actions.
 //
-// move-delete-rest is the app's only permanent, unrecoverable export, so the
-// staging and the confirmation are destructive-safety machinery, not UI
-// polish: what the dialog counts must be exactly what the confirm destroys.
+// Both Move modes clean up source copies, so staging and confirmation are
+// destructive-safety machinery, not UI polish: what the dialog counts must
+// be exactly what the confirm changes.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { useDestinationsStore } from "../../src/state/destinations-store";
@@ -16,7 +16,7 @@ import {
 } from "../mocks/tauri";
 import {
   captureDestinationSelection,
-  confirmDestinationDeleteRest,
+  confirmDestinationMove,
   moveDestinationSelectionTo,
   moveSelectionTo,
   resolveDestinationConflicts,
@@ -96,7 +96,7 @@ beforeEach(() => {
   });
   mockSectionItems(() => []);
   useDestinationsStore.setState({
-    pendingDeleteRest: null,
+    pendingMove: null,
     pendingDrop: null,
     pendingConflicts: null,
     dragSelection: null,
@@ -159,14 +159,15 @@ describe("destination listing freshness", () => {
   });
 });
 
-describe("staging a permanent move", () => {
+describe("staging a destructive move", () => {
   it("asks before moving anything", async () => {
     await moveSelectionTo("/dest", "move-delete-rest");
 
     expect(movedHashes()).toHaveLength(0);
-    const pending = useDestinationsStore.getState().pendingDeleteRest;
+    const pending = useDestinationsStore.getState().pendingMove;
     expect(pending?.destDir).toBe("/dest");
     expect(pending?.count).toBe(3);
+    expect(pending?.mode).toBe("move-delete-rest");
     expect(pending?.selection.items.map((entry) => entry.hash)).toEqual([
       "h1",
       "h2",
@@ -176,13 +177,13 @@ describe("staging a permanent move", () => {
 
   it("acts on the selection it QUOTED, not the one selected later", async () => {
     await moveSelectionTo("/dest", "move-delete-rest");
-    expect(useDestinationsStore.getState().pendingDeleteRest?.count).toBe(3);
+    expect(useDestinationsStore.getState().pendingMove?.count).toBe(3);
 
     // The grid selection changes while the dialog is open — a click behind it,
     // or a watcher refresh landing on a different anchor.
     selectAll(["h4"]);
     useItemsStore.setState({ items: [item(4)] });
-    await confirmDestinationDeleteRest();
+    await confirmDestinationMove();
 
     // The dialog counted three specific items. Permanently destroying a
     // different one is the failure this freeze exists to prevent.
@@ -199,8 +200,8 @@ describe("staging a permanent move", () => {
     });
     await moveSelectionTo("/dest", "move-delete-rest");
 
-    const first = confirmDestinationDeleteRest();
-    const second = confirmDestinationDeleteRest();
+    const first = confirmDestinationMove();
+    const second = confirmDestinationMove();
 
     expect(
       invokeCalls.filter((call) => call.command === "move_items_out"),
@@ -211,28 +212,36 @@ describe("staging a permanent move", () => {
 
   it("cancelling moves nothing and clears the staging", () => {
     useDestinationsStore.setState({
-      pendingDeleteRest: {
+      pendingMove: {
         destDir: "/dest",
         count: 3,
+        mode: "move-delete-rest",
         selection: {
           items: [{ hash: "h1", pathId: null }],
           anchorKey: "h1",
         },
       },
     });
-    useDestinationsStore.getState().cancelPendingDeleteRest();
+    useDestinationsStore.getState().cancelPendingMove();
 
-    expect(useDestinationsStore.getState().pendingDeleteRest).toBeNull();
+    expect(useDestinationsStore.getState().pendingMove).toBeNull();
     expect(movedHashes()).toHaveLength(0);
   });
 });
 
 describe("the non-permanent modes", () => {
-  it("move-trash-rest runs immediately over the whole selection", async () => {
+  it("move-trash-rest reviews the whole frozen selection before acting", async () => {
     await moveSelectionTo("/dest", "move-trash-rest");
 
+    expect(movedHashes()).toHaveLength(0);
+    expect(useDestinationsStore.getState().pendingMove).toMatchObject({
+      destDir: "/dest",
+      count: 3,
+      mode: "move-trash-rest",
+    });
+    await confirmDestinationMove();
     expect(movedHashes().sort()).toEqual(["h1", "h2", "h3"]);
-    expect(useDestinationsStore.getState().pendingDeleteRest).toBeNull();
+    expect(useDestinationsStore.getState().pendingMove).toBeNull();
   });
 
   it("copy leaves the originals alone", async () => {
@@ -393,6 +402,7 @@ describe("outcome reporting", () => {
     selectAll(["h1"]);
 
     await moveSelectionTo("/dest", "move-trash-rest");
+    await confirmDestinationMove();
 
     expect(useDestinationsStore.getState().result?.severity).toBe("error");
     expect(useDestinationsStore.getState().result?.message).toContain(
@@ -480,6 +490,7 @@ describe("outcome reporting", () => {
     selectAll(["h1", "h2", "h3"]);
 
     await moveSelectionTo("/dest", "move-trash-rest");
+    await confirmDestinationMove();
 
     const result = useDestinationsStore.getState().result;
     expect(result?.severity).toBe("warning");
@@ -494,6 +505,7 @@ describe("outcome reporting", () => {
     mockSectionItems(() => [item(2), item(3), item(4)]);
 
     await moveSelectionTo("/dest", "move-trash-rest");
+    await confirmDestinationMove();
 
     expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
@@ -510,6 +522,7 @@ describe("outcome reporting", () => {
     mockSectionItems(() => [item(1), item(3), item(4)]);
 
     await moveSelectionTo("/dest", "move-trash-rest");
+    await confirmDestinationMove();
 
     const state = useItemsStore.getState();
     expect(state.selectedItem).toBe("h3");

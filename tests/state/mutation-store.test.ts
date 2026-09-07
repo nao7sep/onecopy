@@ -58,6 +58,7 @@ describe("the shared mutation activity projection", () => {
         filesCompleted: 2,
         filesFailed: 0,
         filesUnstarted: 6,
+        trashAvailable: true,
         error: null,
       },
     });
@@ -104,6 +105,7 @@ describe("the shared mutation activity projection", () => {
         filesCompleted: 2,
         filesFailed: 1,
         filesUnstarted: 5,
+        trashAvailable: true,
         error: null,
       },
     });

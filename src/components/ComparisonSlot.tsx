@@ -15,18 +15,16 @@ import OperationResult from "./ui/OperationResult";
 export default function ComparisonSlot({
   member,
   slotKey,
-  selected,
+  marked,
   anchor,
   onSelect,
-  onDecide,
   onReveal,
 }: {
   member: GroupMember;
   slotKey: string | null;
-  selected: boolean;
+  marked: boolean;
   anchor: boolean;
-  onSelect: (mode: "exclusive" | "toggle" | "range") => void;
-  onDecide: () => void;
+  onSelect: (mode: "activate" | "toggle" | "range") => void;
   onReveal: () => void;
 }) {
   const [externalError, setExternalError] = useState(false);
@@ -39,10 +37,10 @@ export default function ComparisonSlot({
   return (
     <figure
       role="option"
-      aria-selected={selected}
+      aria-selected={marked}
       aria-label={`${slotKey === null ? "Image" : `Key ${slotKey.toUpperCase()}`}: ${member.fileName}`}
       className={`group/slot relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
-        selected
+        marked
           ? "border-primary bg-primary-surface"
           : "border-border bg-surface"
       } ${
@@ -57,14 +55,11 @@ export default function ComparisonSlot({
             ? "range"
             : event.metaKey || event.ctrlKey
               ? "toggle"
-              : "exclusive",
+              : "activate",
         );
       }}
-      onDoubleClick={() => {
-        onSelect("exclusive");
-        onDecide();
-      }}
-      title="Click to select. Double-click to keep only this image on the page."
+      onDoubleClick={() => onSelect("activate")}
+      title="Click to inspect. Use Keep, Space, or the visible key to mark this image."
     >
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         <InspectableImage
@@ -93,7 +88,7 @@ export default function ComparisonSlot({
       {slotKey !== null ? (
         <span
           className={`absolute left-2 top-2 flex h-8 w-8 items-center justify-center rounded text-lg font-bold ${
-            selected
+            marked
               ? "bg-primary text-ink-inverted"
               : "bg-surface-muted text-ink-strong"
           }`}
@@ -107,12 +102,29 @@ export default function ComparisonSlot({
         </span>
       ) : null}
       <button
+        className={`absolute right-2 top-10 rounded border px-2 py-1 text-xs font-medium ${
+          marked
+            ? "border-primary bg-primary text-ink-inverted"
+            : "border-border bg-surface-muted text-ink"
+        }`}
+        aria-label={`${marked ? "Remove keep mark from" : "Keep"} ${member.fileName}`}
+        aria-pressed={marked}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (event.detail > 1) return;
+          onSelect("toggle");
+        }}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        {marked ? "Keeping" : "Keep"}
+      </button>
+      <button
         className="absolute bottom-8 left-2 rounded-md bg-surface-muted p-1 text-ink-muted hover:text-ink"
         aria-label={`Open ${member.fileName} in default app`}
         title="Open in default app"
         onClick={(event) => {
           event.stopPropagation();
-          onSelect("exclusive");
+          onSelect("activate");
           setExternalError(false);
           void openInDefaultApp(member.hash, null).catch((error) => {
             log.warn("comparison external open failed", toErrorFields(error));
@@ -129,7 +141,7 @@ export default function ComparisonSlot({
         title="Reveal a physical copy"
         onClick={(event) => {
           event.stopPropagation();
-          onSelect("exclusive");
+          onSelect("activate");
           onReveal();
         }}
         onDoubleClick={(event) => event.stopPropagation()}

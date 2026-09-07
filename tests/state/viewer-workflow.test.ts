@@ -180,4 +180,17 @@ describe("viewer workflow", () => {
       invokeCalls.some((call) => call.command === "publish_notification"),
     ).toBe(false);
   });
+
+  it("does not repeat deletion into the recovered next item", async () => {
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await handleViewerKey({ key: "Delete", repeat: true });
+
+    expect(useQuickViewStore.getState().pendingDelete).toBeNull();
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
+    expect(useQuickViewStore.getState().session?.item?.hash).toBe("b");
+  });
 });

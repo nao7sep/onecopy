@@ -165,14 +165,14 @@ export async function removeDestinationRoot(root: string): Promise<void> {
   }
 }
 
-export async function confirmDestinationDeleteRest(): Promise<void> {
-  const pending = useDestinationsStore.getState().pendingDeleteRest;
+export async function confirmDestinationMove(): Promise<void> {
+  const pending = useDestinationsStore.getState().pendingMove;
   if (pending === null) return;
   // The modal relinquishes its frozen intent before admission. A second click
-  // therefore cannot submit the same permanent batch twice; once admitted,
+  // therefore cannot submit the same batch twice; once admitted,
   // cancellation belongs to the shared mutation activity in the footer.
-  useDestinationsStore.setState({ pendingDeleteRest: null });
-  await executeMoveBatch(pending.destDir, "move-delete-rest", pending.selection);
+  useDestinationsStore.setState({ pendingMove: null });
+  await executeMoveBatch(pending.destDir, pending.mode, pending.selection);
 }
 
 export async function moveSelectionTo(
@@ -201,17 +201,45 @@ export async function moveDestinationSelectionTo(
     });
     return;
   }
-  if (mode === "move-delete-rest") {
+  if (mode !== "copy") {
     useDestinationsStore.setState({
-      pendingDeleteRest: {
+      pendingMove: {
         destDir,
         count: selection.items.length,
+        mode,
         selection,
       },
     });
     return;
   }
   await executeMoveBatch(destDir, mode, selection);
+}
+
+/** Consumes the one frozen drop whose visible choice modal already reviewed
+ * its Move/Trash consequence. Clearing the pending drop before admission both
+ * prevents a double submission and keeps this from becoming a general bypass. */
+export async function acceptDestinationDropChoice(
+  mode: "move-trash-rest" | "copy",
+): Promise<void> {
+  const pending = useDestinationsStore.getState().pendingDrop;
+  if (pending === null) return;
+  const { path, selection } = pending;
+  useDestinationsStore.setState({
+    pendingDrop: null,
+    activePath: path,
+    confirmation: null,
+  });
+  if (selection.items.length === 0) {
+    useDestinationsStore.setState({
+      result: {
+        severity: "warning",
+        message: "Select an item in the grid first.",
+        operationKey: receiverOperationKey(path, mode),
+      },
+    });
+    return;
+  }
+  await executeMoveBatch(path, mode, selection);
 }
 
 async function executeMoveBatch(

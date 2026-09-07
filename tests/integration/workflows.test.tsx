@@ -401,7 +401,8 @@ describe("the culling workflow", () => {
     expect(comparison.open).toBe(true);
     expect(comparison.members.map((m) => m!.hash)).toEqual(["h2", "h1", "h3"]);
 
-    // ---- Entry selection + Enter decides the visible page ----
+    // ---- Entry is active but unmarked; an explicit key mark plus reviewed
+    //      Enter decision changes the visible page ----
     const deleted: string[] = [];
     mockCommand("delete_items", (args) => {
       const items = args.items as Array<{
@@ -420,13 +421,20 @@ describe("the culling workflow", () => {
       item(2, { similarGroupId: null }),
       item(4),
     ]);
-    expect(useComparisonStore.getState().selected.has("h2")).toBe(true);
+    expect(useComparisonStore.getState().anchor).toBe("h2");
+    expect(useComparisonStore.getState().selected.size).toBe(0);
     await act(async () => {
+      pressWindow("0");
       pressWindow("Enter");
+    });
+    expect(useComparisonStore.getState().selected.has("h2")).toBe(true);
+    expect(deleted).toEqual([]);
+    await act(async () => {
+      view.getByRole("button", { name: "Move to Trash" }).click();
     });
     await settle();
 
-    // The core was told to trash exactly the non-selected slots, the comparison
+    // The core was told to trash exactly the non-marked slots, the comparison
     // closed (nothing left to decide), and the month view refreshed to what
     // survived.
     expect(deleted.sort()).toEqual(["h1", "h3"]);

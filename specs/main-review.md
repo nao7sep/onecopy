@@ -42,7 +42,7 @@ Space requests Quick View for the current anchor and selection. `F` requests the
 
 Double-click exclusively selects the clicked item and then requests Quick View. The resulting sequence follows the ordinary one-selection entry rule in `viewing-sessions.md`; double-click does not open Comparison, fullscreen, or an external application.
 
-Delete and Backspace request recoverable deletion of the complete Main selection. Shift+Delete requests permanent deletion of the complete Main selection through its confirmation path.
+Delete and Backspace request recoverable deletion of the complete Main selection. More than one selected item always receives exact-count review; the configured direct-Trash preference applies only to one selected item. Shift+Delete requests permanent deletion of the complete Main selection through its confirmation path. Holding Enter, Delete, or Backspace never repeats an entry or file action against a newly opened or recovered context.
 
 The resting pointer over an item is the normal clickable pointer. A drag pointer appears only after dragging begins. Click-and-hold inspection is not available on Main thumbnails or rows because the gesture belongs to dragging there.
 
@@ -86,6 +86,6 @@ Destination entries are flat, full-width list rows. Selected destinations use a 
 
 Ordinary click selects one destination. Up and Down navigate visible folders; Left and Right collapse or expand the tree conventionally. A disclosure control, Enter, and double-click expand or collapse only and never begin a file operation.
 
-Explicit `Copy here`, `Move here`, and confirmed permanent-Move controls begin their named operations. Dropping a Main item freezes the complete current Main selection and asks whether to Copy or Move before any filesystem work. The active destination and expanded folders are remembered only for the current app run.
+Explicit destination controls state the frozen logical-item count and whether covered source copies will be sent to OneCopy Trash. Copy begins its named operation directly; Move and permanent-Move always open an exact-scope review before any filesystem work. Dropping a Main item freezes the complete current Main selection and asks whether to Copy or Move before any filesystem work. The active destination and expanded folders are remembered only for the current app run.
 
 A selected descendant reached beneath a configured destination root is an eligible receiver without being configured separately. Destination admission and file-operation effects are governed by `file-operations.md`.

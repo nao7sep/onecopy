@@ -62,6 +62,7 @@ export default function ViewerWindow() {
       event.stopPropagation();
       void emit("viewer://key", {
         key: event.key,
+        repeat: event.repeat,
         shiftKey: event.shiftKey,
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,

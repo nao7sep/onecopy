@@ -22,7 +22,7 @@
 - When the separate Preview window is focused and no native or body-specific interactive control owns input, it forwards Arrow, Page, Home, End, Shift-range, content-specific Enter, Delete/Backspace, and confirmed permanent-deletion commands to Main. Read-only text selection and document scrolling remain local to the body; Main resumes command ownership when that body does not consume the key.
 - Space has no separate Preview-window action. Escape closes the ordinary Preview window. `F` invokes the app-level transient viewer in true fullscreen using Main's selection and anchor.
 - Ordinary and double-click have no Preview-level image action. Video picture click and media controls retain the content actions defined by `content-presentation.md`.
-- Delete/Backspace in persistent Preview Trashes Main's complete selection for every read-only image, video, audio, text, or attributes body. Confirmed permanent deletion has the same scope. Only a genuinely editable control consumes deletion keys for editing.
+- Delete/Backspace in persistent Preview Trashes Main's complete selection for every read-only image, video, audio, text, or attributes body. A multi-item selection always receives exact-count review; confirmed permanent deletion has the same scope. Only a genuinely editable control consumes deletion keys for editing. Holding Enter, Delete, or Backspace never repeats a forwarded entry or file action against a newly opened or recovered context.
 
 ## Transient viewer entry and sequence
 
@@ -60,7 +60,7 @@
 
 ## Transient deletion and disappearance
 
-- Delete/Backspace in Quick View or fullscreen Trashes only the displayed logical item, never a hidden Main multi-selection. Confirmed permanent deletion has the same current-item scope.
+- Delete/Backspace in Quick View or fullscreen Trashes only the displayed logical item, never a hidden Main multi-selection. Confirmed permanent deletion has the same current-item scope. Holding either deletion key never repeats into the next recovered item.
 - Success removes the item from the frozen sequence and Main selection, then chooses the next item, the previous item, or closes when none remain.
 - Cancellation or failure preserves the surviving item and sequence when possible. External disappearance uses the same next, previous, then close recovery.
 - Playback and other app-owned readers are released before the operation. If the operation fails and the same media survives, `content-presentation.md` governs restoration of its live playback state.

@@ -75,58 +75,41 @@ export function shortcutGroups(): ShortcutGroup[] {
       rows: [
         {
           chord: "0–9 / A–Z",
-          action: "Toggle the image with that visible key",
+          action: "Toggle that image's keep mark",
         },
-        { chord: "Arrows", action: "Move the page selection spatially" },
-        { chord: "Shift+Arrows", action: "Extend the page selection" },
+        { chord: "Space", action: "Toggle the active image's keep mark" },
+        { chord: "Arrows", action: "Move the active image spatially" },
+        { chord: "Shift+Arrows", action: "Extend the marked range" },
         {
           chord: "Home / End",
-          action: "Select the first or last visible image",
+          action: "Activate the first or last visible image",
         },
         { chord: "Page Up / Page Down", action: "Browse undecided pages" },
-        { chord: `${mod}+A`, action: "Select the current page" },
+        { chord: `${mod}+A`, action: "Mark the current page to keep" },
         {
           chord: "Enter",
-          action: "Keep the selection and Trash its visible complement",
+          action: "Close with no marks; otherwise review the visible decision",
         },
         {
           chord: "Shift+Enter",
           action:
-            "Keep the selection and permanently delete its visible complement",
+            "Review permanently deleting the marked images' visible complement",
         },
         {
           chord: "Delete / Backspace",
-          action: "Move the selected images to Trash",
+          action: "Move the marked images to Trash",
         },
         {
           chord: "Shift+Delete",
-          action: "Permanently delete the selected images after confirming",
+          action: "Permanently delete the marked images after confirming",
         },
         {
           chord: "Double-click",
-          action: "Keep only that image on the visible page",
+          action: "Activate that image for inspection",
         },
         {
           chord: "Escape",
-          action: "Leave without applying the draft selection",
-        },
-      ],
-    },
-    {
-      title: "Destinations tree",
-      context: "when the destinations tree has focus",
-      rows: [
-        {
-          chord: "Enter",
-          action: "Move the selection here, trash the other copies",
-        },
-        {
-          chord: "Shift+Enter",
-          action: "Move here, permanently delete the rest",
-        },
-        {
-          chord: `${mod}+Enter`,
-          action: "Copy here, leave everything in place",
+          action: "Leave without applying the keep marks",
         },
       ],
     },

@@ -36,7 +36,7 @@ function openSession(count = 4): void {
     capacities: [4],
     portraitDominant: false,
     spreadCount: 0,
-    selected: new Set(["h0"]),
+    selected: new Set(),
     anchors: new Set(["h0"]),
     anchor: "h0",
     rangeOrigin: "h0",
@@ -53,17 +53,18 @@ beforeEach(() => {
 });
 
 describe("comparison keyboard selection", () => {
-  it("uses a direct key as a neutral toggle", () => {
+  it("uses a direct key as an explicit keep-mark toggle", () => {
     expect(handleComparisonKey({ key: "1" })).toBe(true);
     expect(useComparisonStore.getState().selected).toEqual(
-      new Set(["h0", "h1"]),
+      new Set(["h1"]),
     );
     expect(useComparisonStore.getState().anchor).toBe("h1");
   });
 
   it("moves spatially and Shift extends from the range origin", () => {
     handleComparisonKey({ key: "ArrowRight" });
-    expect(useComparisonStore.getState().selected).toEqual(new Set(["h2"]));
+    expect(useComparisonStore.getState().selected).toEqual(new Set());
+    expect(useComparisonStore.getState().anchor).toBe("h2");
     handleComparisonKey({ key: "ArrowDown", shiftKey: true });
     expect(useComparisonStore.getState().selected).toEqual(
       new Set(["h2", "h3"]),
@@ -74,11 +75,11 @@ describe("comparison keyboard selection", () => {
     handleComparisonKey({ key: "3" });
     handleComparisonKey({ key: "ArrowUp", shiftKey: true });
     expect(useComparisonStore.getState().selected).toEqual(
-      new Set(["h0", "h2", "h3"]),
+      new Set(["h2", "h3"]),
     );
     handleComparisonKey({ key: "ArrowDown", shiftKey: true });
     expect(useComparisonStore.getState().selected).toEqual(
-      new Set(["h0", "h3"]),
+      new Set(["h3"]),
     );
   });
 
@@ -89,15 +90,15 @@ describe("comparison keyboard selection", () => {
     );
   });
 
-  it("keeps Space as an intentional no-op", () => {
-    const before = useComparisonStore.getState().selected;
+  it("uses Space to toggle the active keep mark", () => {
     expect(handleComparisonKey({ key: " " })).toBe(true);
-    expect(useComparisonStore.getState().selected).toBe(before);
+    expect(useComparisonStore.getState().selected).toEqual(new Set(["h0"]));
   });
 
   it("does not repeat direct toggles", () => {
     expect(handleComparisonKey({ key: "1", repeat: true })).toBe(false);
-    expect(useComparisonStore.getState().selected).toEqual(new Set(["h0"]));
+    expect(handleComparisonKey({ key: " ", repeat: true })).toBe(true);
+    expect(useComparisonStore.getState().selected).toEqual(new Set());
   });
 
   it("leaves modified and unassigned keys to the app or operating system", () => {
@@ -106,11 +107,27 @@ describe("comparison keyboard selection", () => {
     );
     expect(handleComparisonKey({ key: "f" })).toBe(false);
     expect(comparisonKeyIsRoutable({ key: "a" }, 1)).toBe(false);
-    expect(useComparisonStore.getState().selected).toEqual(new Set(["h0"]));
+    expect(useComparisonStore.getState().selected).toEqual(new Set());
+  });
+
+  it("consumes repeated destructive keys without changing the page", () => {
+    expect(handleComparisonKey({ key: "Enter", repeat: true })).toBe(true);
+    expect(handleComparisonKey({ key: "Delete", repeat: true })).toBe(true);
+    expect(useComparisonStore.getState()).toMatchObject({
+      open: true,
+      pendingAction: null,
+    });
   });
 });
 
 describe("comparison page keys", () => {
+  it("uses unmodified Enter with no keep marks to close", async () => {
+    const close = vi.spyOn(useComparisonStore.getState(), "close");
+    expect(handleComparisonKey({ key: "Enter" })).toBe(true);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    close.mockRestore();
+  });
+
   it("uses Page Up and Page Down for paging, not arrow keys", () => {
     openSession(9);
     useComparisonStore.setState({ maximumImages: 4 });

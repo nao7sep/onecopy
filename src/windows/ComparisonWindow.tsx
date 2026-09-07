@@ -102,19 +102,12 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
               key={slot.member.hash}
               member={slot.member}
               slotKey={slot.slotKey}
-              selected={slot.selected}
+              marked={slot.marked}
               anchor={slot.anchor}
               onSelect={(mode) =>
                 void emit("comparison://select", {
                   slotIndex: offset + index,
                   mode,
-                })
-              }
-              onDecide={() =>
-                void emit("comparison://select", {
-                  slotIndex: offset + index,
-                  mode: "exclusive",
-                  decide: true,
                 })
               }
               onReveal={() =>
@@ -128,8 +121,8 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         )}
       </div>
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        0–9 and A–Z toggle · Enter retains the selection and trashes the rest ·
-        Escape closes
+        0–9, A–Z, Space, or Keep toggle marks · Arrows inspect · Enter reviews
+        marked keepers and the visible Trash set · Escape closes
       </footer>
     </div>
   );

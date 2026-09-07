@@ -907,7 +907,7 @@ export default function SettingsModal() {
             </Select>
           </Row>
           <CheckField
-            label="Confirm before moving items to trash"
+            label="Confirm direct single-item Trash"
             checked={draft.confirmTrashDelete}
             onChange={(v) => update({ confirmTrashDelete: v })}
           />

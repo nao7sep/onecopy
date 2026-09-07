@@ -35,13 +35,12 @@ describe("command modifier", () => {
     expect(hasMod(key({ key: "/", altKey: true }))).toBe(false);
   });
 
-  it("rejects AltGr+Enter, which the destinations tree reads as Copy here", () => {
-    // The advertised Cmd/Ctrl+Enter chord copies files. Its site once tested
-    // the raw flags, so on Windows an AltGr+Enter — delivered as Ctrl+Alt —
-    // fired a copy while the user was only typing.
+  it("rejects AltGr+Enter as a command modifier", () => {
+    // A raw Ctrl check turns Windows AltGr (Ctrl+Alt) into an application
+    // command while the user is only typing.
     expect(hasMod(key({ key: "Enter", ctrlKey: true, altKey: true }))).toBe(false);
     expect(hasMod(key({ key: "Enter", metaKey: true, altKey: true }))).toBe(false);
-    // The chord itself still fires under either modifier alone.
+    // Either primary modifier alone remains a command chord.
     expect(hasMod(key({ key: "Enter", metaKey: true }))).toBe(true);
     expect(hasMod(key({ key: "Enter", ctrlKey: true }))).toBe(true);
   });

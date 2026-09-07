@@ -147,7 +147,7 @@ describe("opening Comparison across displays", () => {
     setMonitors(THREE_SCREENS);
     mockCommands({ get_similar_group: () => members(12) });
 
-    await useComparisonStore.getState().openGroup("m0", ["m0"], "m0", 5);
+    await useComparisonStore.getState().openGroup("m0", "m0", 5);
 
     expect(useComparisonStore.getState().capacities).toEqual([4, 4]);
     expect(
