@@ -47,7 +47,4 @@ Results contain the complete relevant model/tool identities, fixture identities,
 
 ## Contact
 
-- **Name:** Yoshinao Inoguchi
-- **GitHub:** [@nao7sep](https://github.com/nao7sep)
-- **Email:** [yoshinao@inoguchi.com](mailto:yoshinao@inoguchi.com)
-- **Website:** [inoguchi.com](https://inoguchi.com)
+Yoshinao Inoguchi — yoshinao@inoguchi.com — <https://inoguchi.com>
