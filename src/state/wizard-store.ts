@@ -1,7 +1,6 @@
-// First-run wizard state + the volume-presence gate. The wizard opens when no
-// source directories are configured (the inbox-zero handler has nothing to
-// handle without them); the gate blocks work mode when configured directories
-// are absent (an unmounted volume manifests as a missing directory).
+// First-run wizard state + configured-source availability. The wizard opens
+// when no source directories are configured. Missing roots remain visible but
+// do not block Main; only a substituted physical volume is an unsafe gate.
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
@@ -50,6 +49,7 @@ interface WizardState {
 }
 
 const timezoneValidation = requestSeq();
+const presenceCheck = requestSeq();
 
 export const useWizardStore = create<WizardState>((set, get) => ({
   open: false,
@@ -71,6 +71,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
     if (sourceDirs.length === 0) {
+      presenceCheck.begin();
       set({
         open: true,
         step: 1,
@@ -82,6 +83,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         finishing: false,
         reconfigure: false,
         optionalFeatures: optionalFeatureSetup(config),
+        missingDirs: [],
+        substitutedDirs: [],
       });
     } else {
       set({
@@ -92,6 +95,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         error: null,
         finishing: false,
         reconfigure: false,
+        missingDirs: [],
+        substitutedDirs: [],
       });
       await get().recheckPresence();
     }
@@ -175,14 +180,17 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   },
 
   recheckPresence: async () => {
+    const fresh = presenceCheck.begin();
     try {
       const status = await invoke<{ missing: string[]; substituted: string[] }>(
         "check_source_dirs",
       );
-      set({ missingDirs: status.missing, substitutedDirs: status.substituted, error: null });
+      if (fresh()) {
+        set({ missingDirs: status.missing, substitutedDirs: status.substituted, error: null });
+      }
     } catch (error) {
       log.error("presence check failed", toErrorFields(error));
-      set({ error: "Couldn’t check the configured source folders." });
+      if (fresh()) set({ error: "Couldn’t check the configured source folders." });
       recordActionFailure(
         "configured-source-check-failed",
         "Couldn’t check the configured source folders.",

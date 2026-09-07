@@ -1,19 +1,22 @@
 // @vitest-environment happy-dom
 //
-// The setup wizard and the volume-presence gate cover the whole window but
-// are not ModalShells, so nothing registered them on the modal stack. That
+// The setup wizard and substituted-volume gate cover the whole window but are
+// not ModalShells, so nothing registered them on the modal stack. That
 // left the main window's command layer live behind them, which broke two
 // things at once: Backspace trashed the selected photo invisibly, and the
 // command layer's own preventDefault on the bubbled keydown cancelled Enter
-// activation on the overlays' buttons — Next, Finish and scan, and Check
-// again were all dead to Enter.
+// activation on the overlays' buttons — Next, Finish and scan, and Check again
+// were all dead to Enter. A merely missing source is a nonblocking notice.
 //
 // `hasOpenModal()` is the single predicate the command layer consults, so
 // asserting it is asserting the fix.
 
-import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, cleanup, act } from "@testing-library/react";
-import PresenceGate from "../../src/components/PresenceGate";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { render, cleanup, act, fireEvent } from "@testing-library/react";
+import {
+  MissingSourcesNotice,
+  SubstitutedSourceGate,
+} from "../../src/components/SourceAvailability";
 import Wizard from "../../src/components/Wizard";
 import { hasOpenModal } from "../../src/utils/modalStack";
 import { useWizardStore } from "../../src/state/wizard-store";
@@ -32,18 +35,47 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the presence gate", () => {
-  it("silences the command layer while it blocks work", () => {
+  it("silences the command layer for an unsafe substituted volume", () => {
     expect(hasOpenModal()).toBe(false);
-    render(<PresenceGate missing={["/Volumes/Photos"]} substituted={[]} />);
+    render(
+      <SubstitutedSourceGate
+        substituted={["/Volumes/Photos"]}
+        onRecheck={() => {}}
+        onReconfigure={() => {}}
+      />,
+    );
     expect(hasOpenModal()).toBe(true);
   });
 
   it("releases the command layer once it closes", () => {
     const view = render(
-      <PresenceGate missing={["/Volumes/Photos"]} substituted={[]} />,
+      <SubstitutedSourceGate
+        substituted={["/Volumes/Photos"]}
+        onRecheck={() => {}}
+        onReconfigure={() => {}}
+      />,
     );
     view.unmount();
     expect(hasOpenModal()).toBe(false);
+  });
+
+  it("keeps missing sources nonblocking and exposes both recovery actions", () => {
+    const recheck = vi.fn();
+    const reconfigure = vi.fn();
+    const view = render(
+      <MissingSourcesNotice
+        missing={["/Volumes/Photos"]}
+        onRecheck={recheck}
+        onReconfigure={reconfigure}
+      />,
+    );
+
+    expect(hasOpenModal()).toBe(false);
+    expect(view.container.textContent).toContain("keep working with available files");
+    fireEvent.click(view.getByRole("button", { name: "Check again" }));
+    fireEvent.click(view.getByRole("button", { name: "Re-run setup…" }));
+    expect(recheck).toHaveBeenCalledOnce();
+    expect(reconfigure).toHaveBeenCalledOnce();
   });
 });
 

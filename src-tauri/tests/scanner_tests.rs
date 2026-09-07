@@ -708,6 +708,42 @@ fn source_check_leaves_relationship_work_for_the_independent_tail() {
 }
 
 #[test]
+fn source_check_continues_after_an_unavailable_root() {
+    let f = fixture("missing-root-continues");
+    let missing = f.root.join("Missing");
+    let available = f.root.join("Available");
+    std::fs::create_dir_all(&available).unwrap();
+    std::fs::write(available.join("IMG.JPG"), b"jpeg").unwrap();
+    let settings = ScanSettings {
+        source_dirs: vec![
+            missing.to_string_lossy().to_string(),
+            available.to_string_lossy().to_string(),
+        ],
+        lists: lists(),
+        resolution: resolution_config(),
+        pairing_enabled: true,
+        keep_awake: false,
+        cache_root: f._dir.path().join("cache"),
+    };
+
+    let summary = run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+
+    assert_eq!(summary.roots, 1, "the available root completes independently");
+    assert_eq!(summary.failures, 1, "the unavailable root remains explicit");
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
+    assert_eq!(
+        f.conn
+            .query_row(
+                "SELECT path FROM issues WHERE kind = 'walk-error'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        missing.to_string_lossy()
+    );
+}
+
+#[test]
 fn duplicate_live_photo_identifiers_never_cross_directory_cohorts() {
     let f = fixture("live-photo-duplicate-trees");
     for dir in ["backup-a", "backup-b"] {

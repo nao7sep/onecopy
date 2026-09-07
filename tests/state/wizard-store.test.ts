@@ -133,4 +133,27 @@ describe("loaded directory projection", () => {
     expect(useWizardStore.getState().open).toBe(true);
     expect(useWizardStore.getState().dirs).toEqual([]);
   });
+
+  it("keeps only the newest configured-source availability reply", async () => {
+    let settleOld: ((status: { missing: string[]; substituted: string[] }) => void) | undefined;
+    let settleCurrent: ((status: { missing: string[]; substituted: string[] }) => void) | undefined;
+    let request = 0;
+    mockCommands({
+      check_source_dirs: () =>
+        new Promise<{ missing: string[]; substituted: string[] }>((resolve) => {
+          request += 1;
+          if (request === 1) settleOld = resolve;
+          else settleCurrent = resolve;
+        }),
+    });
+
+    const old = useWizardStore.getState().recheckPresence();
+    const current = useWizardStore.getState().recheckPresence();
+    settleCurrent?.({ missing: ["/current"], substituted: [] });
+    await current;
+    settleOld?.({ missing: ["/obsolete"], substituted: [] });
+    await old;
+
+    expect(useWizardStore.getState().missingDirs).toEqual(["/current"]);
+  });
 });

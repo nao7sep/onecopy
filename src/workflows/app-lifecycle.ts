@@ -77,7 +77,6 @@ async function bootstrapOnce(): Promise<void> {
     checkAfterLaunch &&
     sources.length > 0 &&
     !wizard.open &&
-    wizard.missingDirs.length === 0 &&
     wizard.substitutedDirs.length === 0
   ) {
     // Event wiring, initial data, the first section projection, and source

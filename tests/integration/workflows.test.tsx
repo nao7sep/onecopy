@@ -263,6 +263,34 @@ describe("the culling workflow", () => {
     );
   });
 
+  it("keeps Main usable and starts independent checking when every source is missing", async () => {
+    mockCommand("load_app_data", () => ({
+      status: "ready",
+      data: {
+        config: {
+          sourceDirs: ["/missing/photos"],
+          defaultTimezone: "UTC",
+          checkSourceFoldersAtLaunch: true,
+        },
+        state: {},
+        dataRoot: "/data",
+        debugEnabled: false,
+      },
+    }));
+    mockCommand("check_source_dirs", () => ({
+      missing: ["/missing/photos"],
+      substituted: [],
+    }));
+
+    const view = render(<App />);
+    await settle();
+    await settle();
+
+    expect(view.getByRole("heading", { name: "OneCopy" })).toBeTruthy();
+    expect(view.getByRole("region", { name: "Unavailable source folders" })).toBeTruthy();
+    expect(invokeCalls.map((call) => call.command)).toContain("start_source_check");
+  });
+
   it("admits pending file information directly when the launch source check is off", async () => {
     mockCommand("load_app_data", () => ({
       status: "ready",

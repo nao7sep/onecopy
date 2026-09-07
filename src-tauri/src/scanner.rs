@@ -681,8 +681,28 @@ pub fn run_source_check(
     progress(ScanProgress::phase(ScanPhase::Walk, root_total, None));
     for (root_index, root) in settings.source_dirs.iter().enumerate() {
         // One settled spelling per root, so a re-typed capitalisation cannot
-        // index the same files a second time.
-        let root = settled_root(conn, Path::new(root))?;
+        // index the same files a second time. Failure belongs to this root,
+        // not the whole source pass: record it durably and continue with every
+        // independent configured root. Do not walk the unresolved spelling,
+        // because an absent symlink or differently-cased alias could create a
+        // second scan_dirs identity beside the previously settled root.
+        let root = match settled_root(conn, Path::new(root)) {
+            Ok(root) => root,
+            Err(error) => {
+                check_cancel()?;
+                record_issue(conn, Some(root.clone()), WALK_ERROR, &error)?;
+                walk_failures += 1;
+                summary.failures += 1;
+                progress(ScanProgress::walk(
+                    root_index as u64 + 1,
+                    root_total,
+                    root,
+                    0,
+                    walk_failures,
+                ));
+                continue;
+            }
+        };
         let root = root.to_string_lossy().to_string();
         let root = root.as_str();
         let stats = walk_root_with_progress(

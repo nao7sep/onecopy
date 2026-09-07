@@ -16,7 +16,10 @@ import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
 import DestinationsTab from "./components/DestinationsTab";
 import Wizard from "./components/Wizard";
-import PresenceGate from "./components/PresenceGate";
+import {
+  MissingSourcesNotice,
+  SubstitutedSourceGate,
+} from "./components/SourceAvailability";
 import ComparisonView from "./components/ComparisonView";
 import IssuesModal from "./components/IssuesModal";
 import QuarantineNotice from "./components/QuarantineNotice";
@@ -206,17 +209,26 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
     counts.videos.length === 0 &&
     counts.others.length === 0;
 
-  // The boot gates: opaque full-screen overlays that are NOT part of the modal
-  // stack, so anything behind them has to be told about them explicitly.
-  const gateOpen = missingDirs.length > 0 || substitutedDirs.length > 0;
+  // A substituted physical volume is unsafe to act on and remains a blocking
+  // gate. Missing roots are ordinary availability failures: Main and every
+  // independent available copy remain usable.
+  const substitutedSourceGateOpen = substitutedDirs.length > 0;
+  const reopenSetup = () =>
+    useWizardStore
+      .getState()
+      .reopen(useAppStore.getState().appData?.config ?? null);
 
   return (
     <DestinationDragProvider>
     <div className="flex h-screen flex-col bg-background text-ink">
       {wizardOpen && appData !== null ? (
         <Wizard />
-      ) : gateOpen ? (
-        <PresenceGate missing={missingDirs} substituted={substitutedDirs} />
+      ) : substitutedSourceGateOpen ? (
+        <SubstitutedSourceGate
+          substituted={substitutedDirs}
+          onRecheck={() => void useWizardStore.getState().recheckPresence()}
+          onReconfigure={reopenSetup}
+        />
       ) : null}
       <ComparisonView onRevealTrash={() => setTrashOpen(true)} />
       <NotificationHost />
@@ -255,6 +267,13 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       {/* Renders itself only when the core set a store aside this launch. */}
       <QuarantineNotice />
       <TrashModal open={trashOpen} onClose={() => setTrashOpen(false)} />
+      {!wizardOpen && !substitutedSourceGateOpen && missingDirs.length > 0 ? (
+        <MissingSourcesNotice
+          missing={missingDirs}
+          onRecheck={() => void useWizardStore.getState().recheckPresence()}
+          onReconfigure={reopenSetup}
+        />
+      ) : null}
       <div ref={contentRowRef} className="flex min-h-0 flex-1">
         <aside
           style={{ width: paneWidths.left }}
@@ -293,7 +312,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               </MenuItem>
               <MenuItem
                 onSelect={() =>
-                  useWizardStore.getState().reopen(useAppStore.getState().appData?.config ?? null)
+                  reopenSetup()
                 }
               >
                 Re-run setup wizard…
