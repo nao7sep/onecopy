@@ -37,6 +37,22 @@ impl RuntimeState {
     }
 }
 
+fn manual_waits(runtime: &RuntimeState, ticket: u64, shutting_down: bool) -> bool {
+    !shutting_down
+        && (runtime.exclusive
+            || runtime.active.is_some()
+            || runtime.serving_manual_ticket != ticket)
+}
+
+fn runtime_cancelled(runtime: &RuntimeState, shutting_down: bool) -> bool {
+    shutting_down
+        || runtime.preempt_requested
+        || runtime
+            .active
+            .map(|active| runtime.paused(active.class))
+            .unwrap_or(false)
+}
+
 #[derive(Clone, Copy)]
 pub struct RuntimeConditions {
     pub busy: bool,
@@ -54,6 +70,8 @@ pub struct RuntimeSnapshot {
 
 static RUNTIME: LazyLock<(Mutex<RuntimeState>, Condvar)> =
     LazyLock::new(|| (Mutex::new(RuntimeState::default()), Condvar::new()));
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 static POISON_LOGGED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static POISON_ISSUE_REPORTED: std::sync::atomic::AtomicBool =
@@ -120,7 +138,11 @@ impl ActiveGuard {
             report_poison_once(Some(app));
             "background-work state is unavailable".to_string()
         })?;
-        if runtime.exclusive || runtime.paused(class) || runtime.active.is_some() {
+        if shutting_down()
+            || runtime.exclusive
+            || runtime.paused(class)
+            || runtime.active.is_some()
+        {
             return Ok(None);
         }
         runtime.active = Some(ActiveWorkSnapshot {
@@ -184,6 +206,9 @@ pub fn begin_manual(app: &AppHandle, class: &str) -> Result<ManualWorkGuard, Str
             report_poison_once(Some(app));
             "background-work state is unavailable".to_string()
         })?;
+    if shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     if runtime.exclusive {
         return Err("A file operation is using the media boundary.".to_string());
     }
@@ -257,6 +282,9 @@ pub fn begin_manual_queued(app: &AppHandle, class: &str) -> Result<ManualWorkGua
             report_poison_once(Some(app));
             "background-work state is unavailable".to_string()
         })?;
+    if shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     let ticket = runtime.next_manual_ticket;
     runtime.next_manual_ticket = runtime.next_manual_ticket.wrapping_add(1);
 
@@ -279,14 +307,15 @@ pub fn begin_manual_queued(app: &AppHandle, class: &str) -> Result<ManualWorkGua
 
     runtime = RUNTIME
         .1
-        .wait_while(runtime, |state| {
-            state.exclusive || state.active.is_some() || state.serving_manual_ticket != ticket
-        })
+        .wait_while(runtime, |state| manual_waits(state, ticket, shutting_down()))
         .map_err(|_| {
             report_poison_once(Some(app));
             "background-work state is unavailable".to_string()
         })?;
 
+    if shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     if runtime.paused(class) {
         runtime.serving_manual_ticket = runtime.serving_manual_ticket.wrapping_add(1);
         RUNTIME.1.notify_all();
@@ -446,17 +475,37 @@ pub fn cancelled() -> bool {
     RUNTIME
         .0
         .lock()
-        .map(|runtime| {
-            runtime.preempt_requested
-                || runtime
-                    .active
-                    .map(|active| runtime.paused(active.class))
-                    .unwrap_or(false)
-        })
+        .map(|runtime| runtime_cancelled(&runtime, shutting_down()))
         .unwrap_or_else(|_| {
             report_poison_once(None);
             true
         })
+}
+
+/// Closes derived-media admission before waking queued owners. Active native
+/// work receives its existing class-specific cancellation signal; queued
+/// manual requests wake and settle as cancellations.
+pub fn begin_shutdown(app: &AppHandle) {
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+    let active = match RUNTIME.0.lock() {
+        Ok(mut runtime) => {
+            runtime.preempt_requested = runtime.active.is_some();
+            RUNTIME.1.notify_all();
+            runtime.active
+        }
+        Err(_) => {
+            report_poison_once(Some(app));
+            None
+        }
+    };
+    if let Some(active) = active {
+        request_active_cancel(active.class);
+    }
+    emit_state_changed(app);
+}
+
+pub(crate) fn shutting_down() -> bool {
+    SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<(), String> {
@@ -591,4 +640,33 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
         preempt_requested,
         busy: conditions.busy,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_releases_every_manual_ticket_from_its_queue_wait() {
+        let runtime = RuntimeState {
+            exclusive: true,
+            active: Some(ActiveWorkSnapshot {
+                class: WorkClass::Previews,
+                manual: true,
+                done: None,
+                total: None,
+            }),
+            serving_manual_ticket: 2,
+            ..RuntimeState::default()
+        };
+        assert!(manual_waits(&runtime, 7, false));
+        assert!(!manual_waits(&runtime, 7, true));
+    }
+
+    #[test]
+    fn shutdown_is_a_cancellation_condition_for_active_derived_work() {
+        let runtime = RuntimeState::default();
+        assert!(!runtime_cancelled(&runtime, false));
+        assert!(runtime_cancelled(&runtime, true));
+    }
 }

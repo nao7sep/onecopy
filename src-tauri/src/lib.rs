@@ -1157,9 +1157,8 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
     };
     let handle = app.clone();
     let start_hash = hash.clone();
-    let started = std::thread::Builder::new()
-        .name("onecopy-manual-transcription".to_string())
-        .spawn(move || {
+    let started = derived_work::spawn_manual_transcription(
+        move || {
             let panic_handle = handle.clone();
             let panic_hash = hash.clone();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1343,7 +1342,8 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                     }
                 }
             }
-        });
+        },
+    );
     if let Err(error) = started {
         let message = format!("could not start transcription worker: {error}");
         let _ = failure_runtime::report(
@@ -2200,6 +2200,7 @@ pub fn run() {
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
             binaries_manager::begin_shutdown();
+            derived_work::shutdown(app_handle);
             if let Err(error) = mutation_runtime::request_shutdown() {
                 let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
@@ -2212,6 +2213,7 @@ pub fn run() {
                         source_check_runtime::join();
                         file_information_runtime::join();
                         binaries_manager::wait_for_idle();
+                        derived_work::join();
                         if let Err(error) = mutation_runtime::wait_for_idle() {
                             let _ = failure_runtime::report(
                                 &handle,
@@ -2257,9 +2259,11 @@ pub fn run() {
             source_check_runtime::shutdown(app_handle);
             file_information_runtime::shutdown(app_handle);
             binaries_manager::begin_shutdown();
+            derived_work::shutdown(app_handle);
             source_check_runtime::join();
             file_information_runtime::join();
             binaries_manager::wait_for_idle();
+            derived_work::join();
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
         _ => {}

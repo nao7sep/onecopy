@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
+use std::thread::JoinHandle;
 
 use rusqlite::Connection;
 use serde_json::json;
@@ -29,6 +30,7 @@ use crate::preview::CachePaths;
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static AUTOMATIC_ADMITTED: AtomicBool = AtomicBool::new(false);
+static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 static PRIORITY: LazyLock<Mutex<PriorityHints>> =
     LazyLock::new(|| Mutex::new(PriorityHints::default()));
@@ -215,7 +217,8 @@ pub fn is_idle() -> bool {
 }
 
 pub(crate) fn available() -> bool {
-    AUTOMATIC_ADMITTED.load(Ordering::SeqCst)
+    !crate::derived_runtime::shutting_down()
+        && AUTOMATIC_ADMITTED.load(Ordering::SeqCst)
         && !crate::derived_runtime::exclusive()
         && !crate::scan_runtime::running()
 }
@@ -225,7 +228,14 @@ pub(crate) fn available() -> bool {
 /// startup cheap, but it must not enrich stale rows before source
 /// reconciliation has had the first chance to retire them.
 pub(crate) fn admit_automatic() {
+    if crate::derived_runtime::shutting_down() {
+        return;
+    }
     AUTOMATIC_ADMITTED.store(true, Ordering::SeqCst);
+    if crate::derived_runtime::shutting_down() {
+        AUTOMATIC_ADMITTED.store(false, Ordering::SeqCst);
+        return;
+    }
     wake();
 }
 
@@ -291,19 +301,49 @@ fn required_priority_pending(selected: Option<&str>, visible: &[String]) -> bool
 }
 
 pub fn start(app: AppHandle) -> Result<bool, String> {
+    let mut workers = WORKERS
+        .lock()
+        .map_err(|_| "previews-and-analysis worker state is unavailable".to_string())?;
+    if crate::derived_runtime::shutting_down() {
+        return Err("previews and analysis are shutting down".to_string());
+    }
+    join_finished(&mut workers);
     if STARTED.swap(true, Ordering::SeqCst) {
         return Ok(false);
     }
     let handle = app.clone();
-    std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .name("onecopy-derived-work".to_string())
         .spawn(move || derived_worker(handle))
         .map_err(|error| {
             STARTED.store(false, Ordering::SeqCst);
             format!("could not start previews-and-analysis worker: {error}")
         })?;
+    workers.push(worker);
+    drop(workers);
     wake();
     Ok(true)
+}
+
+/// Owns each requested transcription thread beside the automatic coordinator
+/// so final shutdown closes their shared admission and joins both populations
+/// through one derived-media lifecycle.
+pub fn spawn_manual_transcription(
+    work: impl FnOnce() + Send + 'static,
+) -> Result<(), String> {
+    let mut workers = WORKERS
+        .lock()
+        .map_err(|_| "derived-media worker state is unavailable".to_string())?;
+    if crate::derived_runtime::shutting_down() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
+    join_finished(&mut workers);
+    let worker = std::thread::Builder::new()
+        .name("onecopy-manual-transcription".to_string())
+        .spawn(work)
+        .map_err(|error| error.to_string())?;
+    workers.push(worker);
+    Ok(())
 }
 
 pub fn started() -> bool {
@@ -338,6 +378,9 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
     let mut cursors = CandidateCursors::default();
     let mut cleared_previous_failure = false;
     loop {
+        if crate::derived_runtime::shutting_down() {
+            return Ok(());
+        }
         if !run_again {
             let value = generation
                 .lock()
@@ -346,7 +389,9 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
                 .wait_timeout_while(
                     value,
                     std::time::Duration::from_secs(POLL_SECONDS),
-                    |current| *current == observed,
+                    |current| {
+                        *current == observed && !crate::derived_runtime::shutting_down()
+                    },
                 )
                 .map_err(|_| "derived-work wake state is unavailable".to_string())?;
             if *current != observed {
@@ -361,6 +406,9 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
                 cursors = CandidateCursors::default();
                 observed = current;
             }
+        }
+        if crate::derived_runtime::shutting_down() {
+            return Ok(());
         }
         run_again = false;
         if !available() {
@@ -387,6 +435,53 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
                 logging::debug("derived work stopped", json!({ "reason": "cancelled" }))
             }
             Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Stops new automatic turns, cancels active/queued derived-media work, and
+/// wakes the coordinator so the app's shutdown owner can join it promptly.
+pub fn shutdown(app: &AppHandle) {
+    let _workers = match WORKERS.lock() {
+        Ok(workers) => workers,
+        Err(_) => {
+            logging::error("derived-media worker state is unavailable", json!({}));
+            AUTOMATIC_ADMITTED.store(false, Ordering::SeqCst);
+            crate::derived_runtime::begin_shutdown(app);
+            wake();
+            return;
+        }
+    };
+    AUTOMATIC_ADMITTED.store(false, Ordering::SeqCst);
+    crate::derived_runtime::begin_shutdown(app);
+    wake();
+}
+
+pub fn join() {
+    let workers = match WORKERS.lock() {
+        Ok(mut workers) => workers.drain(..).collect::<Vec<_>>(),
+        Err(_) => {
+            logging::error("derived-media worker state is unavailable", json!({}));
+            return;
+        }
+    };
+    for worker in workers {
+        if worker.join().is_err() {
+            logging::error("derived-media worker join failed", json!({}));
+        }
+    }
+}
+
+fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            if worker.join().is_err() {
+                logging::error("derived-media worker join failed", json!({}));
+            }
+        } else {
+            index += 1;
         }
     }
 }
