@@ -24,6 +24,12 @@ afterEach(() => {
 });
 
 describe("About link results", () => {
+  it("identifies the application licence", () => {
+    render(<AboutModal open onClose={() => undefined} />);
+
+    expect(screen.getByText(/GNU GPL v3 or later/)).toBeTruthy();
+  });
+
   it("retains authored modal-local copy and diagnostics separately", async () => {
     const hostile = new TypeError("EACCES /private/tmp/HOSTILE-SENTINEL IPC wrapper");
     mocks.openUrl.mockRejectedValueOnce(hostile);

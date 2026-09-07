@@ -29,6 +29,6 @@ Copy-Item $setup.FullName "artifacts/$AppName-$Version-setup.exe"
 # Portable: the self-contained release exe. Tauri embeds the frontend into the
 # binary; WebView2 is a system runtime present on Windows 10/11. The exe is named
 # after the Cargo crate (onecopy), not the productName.
-Compress-Archive -Path "src-tauri/target/release/onecopy.exe" -DestinationPath "artifacts/$AppName-$Version-win.zip" -Force
+Compress-Archive -Path "src-tauri/target/release/onecopy.exe", "LICENSE", "THIRD_PARTY_NOTICES" -DestinationPath "artifacts/$AppName-$Version-win.zip" -Force
 
 Get-ChildItem artifacts

@@ -84,7 +84,7 @@ export default function AboutModal({
             {linkFailures.issues}
           </OperationResult>
         ) : null}
-        <p className="mt-5 text-xs text-ink-muted">© 2026 Yoshinao Inoguchi · MIT License</p>
+        <p className="mt-5 text-xs text-ink-muted">© 2026 Yoshinao Inoguchi · GNU GPL v3 or later</p>
       </div>
     </ModalShell>
   );
