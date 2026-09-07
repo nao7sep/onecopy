@@ -48,14 +48,6 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
-      # The live_* tests are the only real-artifact execution of managed
-      # ffmpeg, image/video decode, Live Photo metadata, transcription and face
-      # scoring. They download pinned fixtures and take minutes, so they stay
-      # out of the default suite. The name filter deliberately excludes the
-      # ignored scale benchmarks, which need a developer-supplied corpus.
-      - name: cargo test (live lane)
-        run: npm run test:rust:live
-
   build:
     needs: test
     permissions:

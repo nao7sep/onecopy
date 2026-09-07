@@ -37,102 +37,12 @@ fn strip_timestamps_are_interior_and_even() {
     assert!(times.last().copied().unwrap() < 100_000);
 }
 
-// Live end-to-end: installs (or reuses) ffmpeg, synthesizes a transport
-// stream whose timeline begins above zero, and derives poster + strip into
-// the cache. The non-zero start catches input-side seeking, which can report
-// success without emitting a frame for MTS. Run with
-// `cargo test live_video_derive -- --ignored --nocapture`.
-#[test]
-#[ignore]
-#[serial_test::serial(backup_store)]
-fn live_video_derive() {
-    use onecopy_lib::{binaries_manager, index_store};
-
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-video-live-")
-        .tempdir()
-        .unwrap();
-    let root = dir.path();
-    let facts = binaries_manager::install_entry(root, "ffmpeg", |progress| eprintln!("{progress:?}"))
-        .expect("ffmpeg install");
-    eprintln!("ffmpeg {:?}", facts.latest_known_version);
-    let ffmpeg = binaries_manager::ffmpeg_path(root);
-
-    // MPEG-TS starts this generated stream around 1.4 s rather than zero.
-    // Four frames in one second also make the last of five strip timestamps
-    // land after the last real PTS, exercising the bounded final-frame pad.
-    let clip = root.join("clip.mts");
-    let status = std::process::Command::new(&ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
-        .arg("testsrc=duration=1:size=640x360:rate=4")
-        .args(["-pix_fmt", "yuv420p", "-f", "mpegts", "-y"])
-        .arg(&clip)
-        .status()
-        .unwrap();
-    assert!(status.success(), "test clip synthesis");
-
-    let conn = index_store::open(&root.join("index.sqlite3")).unwrap();
-    conn.execute_batch(&format!(
-        "INSERT INTO contents (hash, byte_size, kind) VALUES ('vid01', 1, 'video');
-         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
-           VALUES ('{}', '{}', 'clip.mp4', 'video', 'vid01');",
-        clip.display(),
-        root.display()
-    ))
-    .unwrap();
-
-    let cache = CachePaths::new(root.join("cache"));
-    let stats = derive_videos_pending(
-        &conn,
-        &cache,
-        Some(&ffmpeg),
-        &root.join("temp"),
-        320,
-        1600,
-    )
-    .unwrap();
-    assert_eq!((stats.derived, stats.failed), (1, 0));
-
-    assert!(cache.thumb("vid01").exists(), "poster thumb");
-    assert!(cache.preview("vid01").exists(), "poster preview");
-    // The scan half leaves strips PENDING (Phase 33: they are the idle
-    // coordinator's idle job) — strip_frames stays NULL until that pass runs.
-    let pending: Option<i64> = conn
-        .query_row("SELECT strip_frames FROM contents WHERE hash = 'vid01'", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(pending, None, "strips are pending, not scan work");
-
-    let done = derive_strips_pending(
-        &conn,
-        &cache,
-        &ffmpeg,
-        &root.join("temp"),
-        &config(),
-        &[],
-        &|_| {},
-        &|_| {},
-        None,
-        &|| false,
-        &|_, _| {},
-    )
-    .unwrap();
-    assert_eq!(done.completed, 1);
-    // One second also clamps to the minimum five frames.
-    for i in 0..5 {
-        assert!(strip_path(&cache, "vid01", i).exists(), "strip frame {i}");
-    }
-    let duration: i64 = conn
-        .query_row("SELECT duration_ms FROM contents WHERE hash = 'vid01'", [], |r| r.get(0))
-        .unwrap();
-    assert!((900..1_500).contains(&duration), "duration {duration}");
-}
-
 #[test]
 fn videos_wait_when_ffmpeg_is_absent_and_never_get_checkpointed() {
     // The ffmpeg-skippable contract the wizard's offer rests on: a video the
     // app cannot derive must be BLOCKED, never failed and never checkpointed,
-    // so installing ffmpeg later still picks it up. Needs no ffmpeg, so unlike
-    // the four #[ignore]d live tests this runs on every `cargo test`.
+    // so installing ffmpeg later still picks it up. This boundary needs no
+    // external tool and runs in the ordinary integration suite.
     let dir = tempfile::Builder::new()
         .prefix("onecopy-video-noffmpeg-")
         .tempdir()

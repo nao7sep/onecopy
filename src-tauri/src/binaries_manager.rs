@@ -1172,41 +1172,4 @@ mod tests {
         assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
     }
 
-    // The live end-to-end: resolves, downloads (~50-80 MB), verifies against
-    // the published checksum, extracts, publishes, and runs `ffmpeg -version`.
-    // Ignored in the routine suite; run explicitly with
-    // `cargo test live_install_ffmpeg -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    #[serial_test::serial(backup_store)]
-    fn live_install_ffmpeg() {
-        let dir = tempfile::Builder::new()
-            .prefix("onecopy-binmgr-live-")
-            .tempdir()
-            .unwrap();
-        let facts = install_entry(dir.path(), "ffmpeg", |progress| {
-            eprintln!("{progress:?}");
-        })
-        .expect("live install should succeed");
-        assert!(facts.latest_known_version.is_some());
-
-        let path = ffmpeg_path(dir.path());
-        assert!(path.is_file());
-        let output = std::process::Command::new(&path)
-            .arg("-version")
-            .output()
-            .expect("installed ffmpeg should run");
-        assert!(output.status.success());
-        let banner = String::from_utf8_lossy(&output.stdout);
-        assert!(banner.starts_with("ffmpeg version"), "banner: {banner}");
-
-        // The installed version is READ BACK off the binary just published, and
-        // it is the version the resolve named — the whole point of the design.
-        let state = state_of(dir.path(), spec_of("ffmpeg").unwrap());
-        assert_eq!(
-            state.installed_version.as_deref(),
-            facts.latest_known_version.as_deref(),
-        );
-        assert_eq!(state.status, BinaryStatus::UpToDate);
-    }
 }

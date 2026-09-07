@@ -203,7 +203,6 @@ pub fn run_whisper(
     model: &Path,
     pcm: &[f32],
     acceleration: crate::ai_acceleration::Mode,
-    observer: &dyn crate::ai_measurement::Observer,
     mut on_progress: impl FnMut(i32) + 'static,
 ) -> Result<Vec<Segment>, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -223,15 +222,11 @@ pub fn run_whisper(
     whisper_rs::install_logging_hooks();
     let mut context_params = WhisperContextParameters::default();
     context_params.use_gpu(matches!(acceleration, crate::ai_acceleration::Mode::Metal));
-    let mut state = {
-        let _measurement =
-            crate::ai_measurement::Span::begin(observer, "model-initialization");
-        let context = WhisperContext::new_with_params(model, context_params)
-            .map_err(|e| format!("model load failed: {e}"))?;
-        context
-            .create_state()
-            .map_err(|e| format!("whisper state failed: {e}"))?
-    };
+    let context = WhisperContext::new_with_params(model, context_params)
+        .map_err(|e| format!("model load failed: {e}"))?;
+    let mut state = context
+        .create_state()
+        .map_err(|e| format!("whisper state failed: {e}"))?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_language(Some("auto"));
@@ -242,12 +237,9 @@ pub fn run_whisper(
     params.set_progress_callback_safe(move |progress: i32| on_progress(progress));
     params.set_abort_callback_safe(is_cancelled);
 
-    {
-        let _measurement = crate::ai_measurement::Span::begin(observer, "inference");
-        state
-            .full(params, pcm)
-            .map_err(|e| format!("transcription failed: {e}"))?;
-    }
+    state
+        .full(params, pcm)
+        .map_err(|e| format!("transcription failed: {e}"))?;
 
     let count = state.full_n_segments();
     let mut segments = Vec::with_capacity(count.max(0) as usize);
@@ -291,13 +283,9 @@ pub(crate) fn generate_transcript_claimed(
     ffmpeg: &Path,
     media: &Path,
     acceleration: crate::ai_acceleration::Mode,
-    observer: &dyn crate::ai_measurement::Observer,
     on_progress: impl FnMut(i32) + 'static,
 ) -> Result<String, String> {
-    let pcm = {
-        let _measurement = crate::ai_measurement::Span::begin(observer, "media-extraction");
-        extract_pcm(ffmpeg, media, temp_dir)?
-    };
+    let pcm = extract_pcm(ffmpeg, media, temp_dir)?;
     let text = if !has_audible_signal(&pcm) {
         String::new()
     } else {
@@ -305,7 +293,6 @@ pub(crate) fn generate_transcript_claimed(
             model,
             &pcm,
             acceleration,
-            observer,
             on_progress,
         )?)
     };

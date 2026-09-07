@@ -31,15 +31,9 @@ For a production-faithful compiled build, double-click `scripts/rebuild.command`
 
 By hand, install the locked packages with `npm ci`, run checks with `npm run check`, and build the packaged app with `npm run tauri build`.
 
-## AI tests and benchmark
+## Tests
 
-`npm run check` includes the AI contract tests and deterministic Rust integration tests. They exercise the production transcript/cache and face-receipt operations for success, empty results, failure, cancellation, replacement, restart readback, and explicit acceleration without models, downloads, private files, or a GPU. Run them after every change; the focused command is `npm run test:ai:integration`.
-
-Real-model work is explicit and manual. From the repository root, run `npm run test:ai:prepare` once to verify or acquire the pinned production dependencies and build the test-only preparer and scenario executables. Preparation is untimed and may download about 1.6 GiB on a computer without the Whisper model. Then run `npm run test:ai:live` for correctness or `npm run test:ai:benchmark` to add observations. Both commands run the same named face, audio-transcription, and video-transcription integration scenarios through the production operations; neither downloads or compiles. The separate running-app system suite is `npm run test:system`.
-
-Both commands accept `-- --parameters FILE --fixtures DIR --prepared DIR --report FILE`. The standard parameter file is `tests/ai/profiles/standard.json`; fixture references inside it use only basename, byte size, and SHA-256, while the fixture root is supplied separately. Omitted benchmark acceleration means CPU-only. To compare CPU-only and Metal on an Apple-silicon Mac, run the same copied parameter file twice, changing only the transcription acceleration to `metal` for the second run, then use `npm run test:ai:compare -- FIRST.json SECOND.json`.
-
-Results contain the complete relevant model/tool identities, fixture identities, build and source state, the actual scenario executable and digest, correctness, and—only for benchmark runs—monotonic phase and process wall times. Peak process-tree memory and independently observed acceleration are recorded when available and otherwise remain `null`; configured acceleration is recorded separately. Comparisons require identical scenarios, dependencies, fixtures, source state, executable, and build manifest. Identical public machine facts enable numeric comparisons, while cross-machine results remain descriptive. Reports intentionally omit hostname, username, local paths, environment values, command lines, raw transcripts, and source media. Generated homes, binaries, and reports live under ignored build/artifact directories unless another destination is requested.
+`npm run check` runs OneCopy's unit and integration tests, type-checks the application and test code, builds the production frontend, and checks the specs and source text. App-level acceptance is performed by using the real built application with a disposable app home and a disposable copy of the shared test fixtures; destructive testing never targets the shared fixture directory itself.
 
 ## License
 

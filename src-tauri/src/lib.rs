@@ -3,7 +3,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub mod ai_acceleration;
 pub mod ai_dependencies;
-pub mod ai_measurement;
 mod app_lifecycle;
 pub mod background_work;
 pub mod backup_store;
@@ -1198,7 +1197,6 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                             source_path: &source_path,
                             replace_existing: replace.unwrap_or(false),
                             acceleration: transcription_acceleration,
-                            observer: &ai_measurement::NOOP,
                             cancel_when: Some(Box::new(derived_runtime::cancelled)),
                         },
                         |exact_hash| {
@@ -2079,13 +2077,6 @@ pub fn run() {
         // atomic authority; a secondary routes activation to the owner and exits
         // before logs, stores, the index, watchers, or destructive commands start.
         .plugin(instance_owner::init());
-    // The embedded WebDriver is a compile-time system-test flavor. A
-    // production build has neither the dependency feature nor this server.
-    #[cfg(feature = "app-system")]
-    let builder = builder
-        .plugin(tauri_plugin_wdio::init())
-        .plugin(tauri_plugin_wdio_webdriver::init());
-
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

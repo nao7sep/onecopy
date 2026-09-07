@@ -1,6 +1,6 @@
 // Face scoring's model-free contracts: ordering, model-less fallback, and the
-// pure geometry used by detector post-processing. Real models belong to the
-// separately prepared live-integration and benchmark surfaces.
+// pure geometry used by detector post-processing. The real app owns acceptance
+// of the installed production models.
 
 use onecopy_lib::face::{self, Face};
 use onecopy_lib::{index_store, queries};

@@ -1188,7 +1188,6 @@ pub struct TranscriptionAttempt<'a> {
     pub source_path: &'a str,
     pub replace_existing: bool,
     pub acceleration: crate::ai_acceleration::Mode,
-    pub observer: &'a dyn crate::ai_measurement::Observer,
     pub cancel_when: Option<Box<dyn Fn() -> bool + Send + 'static>>,
 }
 
@@ -1253,15 +1252,11 @@ fn finish_transcription_attempt(
     result: Result<String, String>,
 ) -> Result<TranscriptionAttemptOutcome, String> {
     let result = result.and_then(|text| {
-        let _measurement =
-            crate::ai_measurement::Span::begin(attempt.observer, "cache-publication");
         crate::transcription::publish_transcript(&attempt.cache.transcript(&hash), &text)?;
         Ok(text)
     });
     match result {
         Ok(text) => {
-            let _measurement =
-                crate::ai_measurement::Span::begin(attempt.observer, "receipt-publication");
             crate::derived_state::record_transcript_success(
                 attempt.conn,
                 &hash,
@@ -1367,7 +1362,6 @@ pub fn complete_transcription_attempt(
         &ffmpeg,
         Path::new(attempt.source_path),
         attempt.acceleration,
-        attempt.observer,
         move |percent| on_progress(&progress_hash, percent),
     );
     drop(finish_signal);
@@ -1390,7 +1384,6 @@ pub fn complete_transcription_attempt(
 /// Production callers use [`complete_transcription_attempt`]; this narrow seam
 /// lets integration tests replace native model execution without adding a
 /// second persistence workflow or a runtime-selectable test provider.
-#[cfg(feature = "ai-test-support")]
 pub fn complete_transcription_attempt_with_inference(
     attempt: TranscriptionAttempt<'_>,
     mut on_identity: impl FnMut(&str),
@@ -1405,10 +1398,7 @@ pub fn complete_transcription_attempt_with_inference(
     on_started(&hash);
     let progress_hash = hash.clone();
     let mut progress = |percent| on_progress(&progress_hash, percent);
-    let result = {
-        let _measurement = crate::ai_measurement::Span::begin(attempt.observer, "inference");
-        inference(&mut progress)
-    };
+    let result = inference(&mut progress);
     if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
         return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
     }
@@ -1462,7 +1452,6 @@ fn transcribe_next(
             source_path: &path,
             replace_existing: false,
             acceleration: context.transcription_acceleration,
-            observer: &crate::ai_measurement::NOOP,
             cancel_when: Some(Box::new(move || {
                 (!foreground && !is_idle()) || cancelled()
             })),

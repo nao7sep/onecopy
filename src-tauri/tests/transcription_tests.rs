@@ -1,6 +1,5 @@
-// Transcription's model-free contracts. Real models belong to the separately
-// prepared live-integration and benchmark surfaces, so the production model
-// never enters an ordinary test run.
+// Transcription's deterministic contracts. The real app owns acceptance of the
+// installed production model, so ordinary tests never load it.
 
 use std::path::Path;
 
