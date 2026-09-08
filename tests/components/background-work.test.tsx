@@ -6,6 +6,7 @@ import BackgroundWorkModal from "../../src/components/BackgroundWorkModal";
 import {
   BackgroundActivityProjection,
   backgroundWorkLine,
+  backgroundRows,
   mergeBackgroundRuntime,
   mergeActiveItemWork,
   installDerivedWorkEventWiring,
@@ -16,6 +17,7 @@ import {
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
+import { useAppShellStore } from "../../src/state/app-shell-store";
 
 const ids: BackgroundClassSnapshot["id"][] = [
   "previews",
@@ -31,7 +33,8 @@ function snapshot(
   rows: Partial<Record<BackgroundClassSnapshot["id"], Partial<BackgroundClassSnapshot>>> = {},
 ): BackgroundWorkSnapshot {
   return {
-    masterPaused: false,
+    pausedClasses: [],
+    activeItem: null,
     classes: ids.map((id) => ({
       id,
       state: "up-to-date" as const,
@@ -55,10 +58,17 @@ beforeEach(async () => {
   mockCommands({
     background_work_snapshot: () => ({ ...current, activeItem: null }),
     background_work_set_paused: ({ classId, paused }) => {
-      if (classId === null) current = snapshot({ masterPaused: Boolean(paused) });
+      const targets = classId === null ? ids : [classId as typeof ids[number]];
+      const pausedSet = new Set(current.pausedClasses);
+      for (const id of targets) { if (paused) pausedSet.add(id); else pausedSet.delete(id); }
+      current = { ...current, pausedClasses: [...pausedSet] };
+      if (classId === null) useSectionsStore.setState((state) => ({
+        fileInformation: { ...state.fileInformation, paused: Boolean(paused) },
+      }));
       return null;
     },
     set_file_information_paused: () => null,
+    index_work_snapshot: () => useSectionsStore.getState(),
   });
   if (!wiringInstalled) {
     wiringInstalled = true;
@@ -76,6 +86,7 @@ beforeEach(async () => {
     sourceCheck: {
       running: false,
       stopping: false,
+      waiting: false,
       lastResult: "stopped",
       eventSequence: 0,
       progress: null,
@@ -97,7 +108,6 @@ describe("Background work", () => {
   it("projects coordinator pulses as one class lifecycle until authoritative quiet", () => {
     const projection = new BackgroundActivityProjection();
     const running = {
-      masterPaused: false,
       pausedClasses: [],
       active: {
         id: "previews" as const,
@@ -155,7 +165,6 @@ describe("Background work", () => {
 
   it("patches runtime progress without re-reading output debt", () => {
     const merged = mergeBackgroundRuntime(current, {
-      masterPaused: false,
       pausedClasses: [],
       active: {
         id: "previews",
@@ -166,7 +175,7 @@ describe("Background work", () => {
       },
     });
 
-    expect(merged?.classes[0]).toMatchObject({
+    expect(backgroundRows(merged!)[0]).toMatchObject({
       state: "running",
       done: 4,
       total: 12,
@@ -203,7 +212,6 @@ describe("Background work", () => {
 
   it("handles live runtime events without another database snapshot command", () => {
     fireEvent("derived://state-changed", {
-      masterPaused: false,
       pausedClasses: [],
       active: {
         id: "previews",
@@ -214,7 +222,7 @@ describe("Background work", () => {
       },
     });
 
-    expect(useDerivedWorkStore.getState().snapshot?.classes[0]).toMatchObject({
+    expect(backgroundRows(useDerivedWorkStore.getState().snapshot!)[0]).toMatchObject({
       state: "running",
       done: 5,
       total: 12,
@@ -252,11 +260,11 @@ describe("Background work", () => {
     ).toBe(true);
   });
 
-  it("keeps the master control scoped to preparation and enrichment", async () => {
+  it("pauses every pausable row without installing a master lock", async () => {
     render(<BackgroundWorkModal open onClose={() => {}} />);
 
     const pauseAll = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Pause preparation and enrichment",
+      (button) => button.textContent === "Pause all",
     );
     await act(async () => pauseAll!.click());
 
@@ -266,6 +274,38 @@ describe("Background work", () => {
           call.command === "background_work_set_paused" && call.args.classId === null && call.args.paused === true,
       ),
     ).toBe(true);
+    expect(useSectionsStore.getState().fileInformation.paused).toBe(true);
+    const previews = [...document.querySelectorAll("li")].find((row) => row.textContent?.includes("Thumbnails, previews, and posters"))!;
+    const resume = [...previews.querySelectorAll("button")].find((button) => button.textContent === "Resume")!;
+    expect(resume.disabled).toBe(false);
+    await act(async () => resume.click());
+    expect(current.pausedClasses).not.toContain("previews");
+    expect(current.pausedClasses).toContain("video-transcripts");
+    expect(useSectionsStore.getState().fileInformation.paused).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "stop_source_check")).toBe(false);
+  });
+
+  it("retains failed and unavailable debt across running, stopping, pause, and resume overlays", () => {
+    for (const state of ["failed", "unavailable", "disabled"] as const) {
+      const base = snapshot({}, { previews: { state, failed: 2, reason: "Inspect Issues" } });
+      const running = mergeBackgroundRuntime(base, { pausedClasses: [], active: { id: "previews", hash: "x", done: 1, total: 2, stopping: false } })!;
+      expect(backgroundRows(running)[0].state).toBe("running");
+      const paused = mergeBackgroundRuntime(running, { pausedClasses: ["previews"], active: null })!;
+      const resumed = mergeBackgroundRuntime(paused, { pausedClasses: [], active: null })!;
+      expect(backgroundRows(resumed)[0]).toEqual(base.classes[0]);
+    }
+  });
+
+  it("explains the status failure and opens its recovery surface", async () => {
+    current = snapshot({}, { previews: { state: "failed", failed: 2 } });
+    useDerivedWorkStore.setState({ snapshot: current });
+    render(<BackgroundWorkModal open onClose={() => {}} />);
+    expect(backgroundWorkLine(current)).toBe("Background work: 2 failed — open Issues");
+    expect(document.body.textContent).toContain("Thumbnails, previews, and posters: 2 failed");
+    expect(document.body.textContent).toContain("Completed work is preserved");
+    const issues = [...document.querySelectorAll("button")].find((button) => button.textContent === "Open Issues")!;
+    await act(async () => issues.click());
+    expect(useAppShellStore.getState().utilitySurface).toBe("issues");
   });
 
   it("distinguishes a completed source pass from a stopped or failed pass", () => {
@@ -281,12 +321,17 @@ describe("Background work", () => {
       }));
     });
     expect(document.body.textContent).toContain("Failed — open Issues to retry");
+    act(() => {
+      useSectionsStore.setState((state) => ({ sourceCheck: { ...state.sourceCheck, lastResult: "completed-with-issues" } }));
+    });
+    expect(document.body.textContent).toContain("some folders or files could not be checked");
+    expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Open Issues")).toBe(true);
     view.unmount();
   });
 
   it("does not allow resume to race a class that is still stopping", () => {
     useDerivedWorkStore.setState({
-      snapshot: snapshot({ masterPaused: true }, { "video-transcripts": { state: "stopping", queued: 3 } }),
+      snapshot: snapshot({ pausedClasses: ids, activeItem: { id: "video-transcripts", hash: "video", done: null, total: null, stopping: true } }, { "video-transcripts": { state: "queued", queued: 3 } }),
     });
     render(<BackgroundWorkModal open onClose={() => {}} />);
 

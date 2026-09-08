@@ -12,8 +12,9 @@ import { newActivityOperationId, recordActivity } from "../repositories/activity
 
 export interface SourceCheckState {
   running: boolean;
+  waiting: boolean;
   stopping: boolean;
-  lastResult: "stopped" | "completed" | "failed";
+  lastResult: "stopped" | "completed" | "completed-with-issues" | "failed";
   eventSequence: number;
   progress: ScanProgress | null;
 }
@@ -51,6 +52,7 @@ const countsLoad = requestSeq();
 const workLoad = requestSeq();
 
 const initialSourceCheck: SourceCheckState = {
+  waiting: false,
   running: false,
   stopping: false,
   lastResult: "stopped",

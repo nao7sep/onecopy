@@ -91,6 +91,7 @@ beforeEach(() => {
   let sourceCheckSnapshot = {
     running: false,
     stopping: false,
+    waiting: false,
     lastResult: "stopped",
     eventSequence: 0,
   };
@@ -113,7 +114,7 @@ beforeEach(() => {
     log_event: () => null,
     logging_debug_enabled: () => false,
     background_work_snapshot: () => ({
-      masterPaused: false,
+      pausedClasses: [],
       classes: [],
       activeItem: null,
     }),
@@ -132,6 +133,7 @@ beforeEach(() => {
       sourceCheckSnapshot = {
         running: true,
         stopping: false,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: sourceCheckSnapshot.eventSequence + 1,
       };
@@ -153,6 +155,7 @@ beforeEach(() => {
     sourceCheck: {
       running: false,
       stopping: false,
+      waiting: false,
       lastResult: "stopped",
       eventSequence: 0,
       progress: null,
@@ -362,7 +365,7 @@ describe("the culling workflow", () => {
     }));
     mockSectionItems(() => SCENE);
     await act(async () => {
-      fireEvent("source-check://done", { eventSequence: 3 });
+      fireEvent("source-check://done", { eventSequence: 3, sourceCheck: { running: false, stopping: false, waiting: false, lastResult: "completed", eventSequence: 3 } });
     });
     await settle();
     expect(useSectionsStore.getState().sourceCheck.running).toBe(false);

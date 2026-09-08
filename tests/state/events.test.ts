@@ -65,6 +65,7 @@ beforeEach(async () => {
     sourceCheck: {
       running: false,
       stopping: false,
+      waiting: false,
       lastResult: "stopped",
       eventSequence: 0,
       progress: null,
@@ -87,6 +88,7 @@ beforeEach(async () => {
       sourceCheck: {
         running: false,
         stopping: false,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: 0,
       },
@@ -130,6 +132,7 @@ describe("library work events", () => {
       sourceCheck: {
         running: true,
         stopping: true,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: 4,
         progress: scanProgress(),
@@ -137,7 +140,7 @@ describe("library work events", () => {
       rescanNeeded: false,
     });
 
-    fireEvent("source-check://done", { eventSequence: 5, stopped: true });
+    fireEvent("source-check://done", { eventSequence: 5, stopped: true, sourceCheck: { running: false, stopping: false, waiting: false, lastResult: "stopped", eventSequence: 5 } });
     expect(sections.getState().sourceCheck.running).toBe(false);
     expect(sections.getState().sourceCheck.stopping).toBe(false);
     expect(sections.getState().sourceCheck.lastResult).toBe("stopped");
@@ -149,31 +152,41 @@ describe("library work events", () => {
       sourceCheck: {
         running: true,
         stopping: false,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: 7,
         progress: scanProgress(),
       },
     });
 
-    fireEvent("source-check://done", { eventSequence: 8, error: "index open failed" });
+    fireEvent("source-check://done", { eventSequence: 8, error: "index open failed", sourceCheck: { running: false, stopping: false, waiting: false, lastResult: "failed", eventSequence: 8 } });
     expect(sections.getState().sourceCheck.running).toBe(false);
     expect(sections.getState().sourceCheck.progress).toBeNull();
     expect(sections.getState().sourceCheck.lastResult).toBe("failed");
   });
 
   it("retains a clean source check as completed", () => {
-    fireEvent("source-check://done", { eventSequence: 1 });
+    fireEvent("source-check://done", { eventSequence: 1, sourceCheck: { running: false, stopping: false, waiting: false, lastResult: "completed", eventSequence: 1 } });
     expect(sections.getState().sourceCheck.lastResult).toBe("completed");
+  });
+
+  it("retains the source owner's queued restart rather than guessing that a stopped worker is a stopped request", () => {
+    fireEvent("source-check://done", {
+      eventSequence: 2, stopped: true,
+      sourceCheck: { running: true, waiting: true, stopping: false, lastResult: "stopped", eventSequence: 2 },
+    });
+    expect(sections.getState().sourceCheck).toMatchObject({ running: true, waiting: true, stopping: false });
   });
 
   it("does not let delayed progress or state resurrect settled work", () => {
     const progress = scanProgress();
     fireEvent("source-check://progress", { eventSequence: 2, progress });
-    fireEvent("source-check://done", { eventSequence: 4 });
+    fireEvent("source-check://done", { eventSequence: 4, sourceCheck: { running: false, stopping: false, waiting: false, lastResult: "completed", eventSequence: 4 } });
     fireEvent("source-check://progress", { eventSequence: 3, progress });
     fireEvent("source-check://state", {
       running: true,
       stopping: true,
+      waiting: false,
       lastResult: "stopped",
       eventSequence: 1,
     });

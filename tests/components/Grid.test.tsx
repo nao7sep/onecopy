@@ -107,6 +107,7 @@ beforeEach(() => {
     sourceCheck: {
       running: false,
       stopping: false,
+      waiting: false,
       lastResult: "stopped",
       eventSequence: 0,
       progress: null,
@@ -150,6 +151,7 @@ describe("section repair admission", () => {
       sourceCheck: {
         running: true,
         stopping: false,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: 1,
         progress: null,

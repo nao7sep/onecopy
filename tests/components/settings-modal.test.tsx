@@ -45,6 +45,7 @@ beforeEach(() => {
       sourceCheck: {
         running: true,
         stopping: false,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: 1,
       },

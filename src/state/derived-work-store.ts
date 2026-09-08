@@ -10,6 +10,7 @@ import { recordActionFailure } from "./notifications-store";
 import type { ItemWorkStates } from "../models/items";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
+import { useSectionsStore } from "./sections-store";
 import {
   finishActivityOperation,
   latestActivityOperationId,
@@ -34,12 +35,9 @@ export interface BackgroundClassSnapshot {
 }
 
 export interface BackgroundWorkSnapshot {
-  masterPaused: boolean;
-  classes: BackgroundClassSnapshot[];
-}
-
-interface BackgroundWorkResponse extends BackgroundWorkSnapshot {
+  pausedClasses: BackgroundClassSnapshot["id"][];
   activeItem: ActiveItemWork | null;
+  classes: BackgroundClassSnapshot[];
 }
 
 export interface ActiveItemWork {
@@ -51,7 +49,6 @@ export interface ActiveItemWork {
 }
 
 interface BackgroundRuntimeSnapshot {
-  masterPaused: boolean;
   pausedClasses: BackgroundClassSnapshot["id"][];
   active: ActiveItemWork | null;
 }
@@ -93,13 +90,12 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
     const version = runtimeVersion;
     set({ loading: true });
     try {
-      const response = await invoke<BackgroundWorkResponse>("background_work_snapshot");
+      const response = await invoke<BackgroundWorkSnapshot>("background_work_snapshot");
       if (fresh()) {
-        const { activeItem, ...snapshot } = response;
         const runtime = version !== runtimeVersion ? latestRuntime : null;
         set({
-          snapshot: runtime === null ? snapshot : mergeBackgroundRuntime(snapshot, runtime),
-          activeItem: runtime === null ? activeItem : runtime.active,
+          snapshot: runtime === null ? response : mergeBackgroundRuntime(response, runtime),
+          activeItem: runtime === null ? response.activeItem : runtime.active,
           loading: false, error: null,
         });
       }
@@ -131,6 +127,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
       });
       finishActivityOperation("backgroundWork", operationId);
       await invoke("background_work_set_paused", { classId, paused });
+      if (classId === null) await useSectionsStore.getState().loadIndexWork();
       await get().load();
     } catch (error) {
       set({ error: "Background work could not be changed. Try again." });
@@ -171,22 +168,24 @@ export function backgroundClassLabel(id: BackgroundClassSnapshot["id"]): string 
 
 export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): string {
   if (snapshot === null) return "Background work";
-  const stopping = snapshot.classes.find((row) => row.state === "stopping");
+  const rows = backgroundRows(snapshot);
+  const stopping = rows.find((row) => row.state === "stopping");
   if (stopping) return `Stopping ${backgroundClassLabel(stopping.id).toLowerCase()}…`;
-  const running = snapshot.classes.find((row) => row.state === "running");
+  const running = rows.find((row) => row.state === "running");
   if (running) {
     const progress = running.done !== null && running.total !== null ? ` ${running.done}/${running.total}` : "…";
     return `${backgroundClassLabel(running.id)}${progress}`;
   }
-  if (snapshot.masterPaused) {
+  if (rows.some((row) => row.state === "paused") && rows.every((row) => row.state === "paused" || row.state === "disabled")) {
     return "Background work paused";
   }
-  const queued = snapshot.classes.find((row) => row.state === "queued" && row.queued > 0);
+  const queued = rows.find((row) => row.state === "queued" && row.queued > 0);
   if (queued) return `${backgroundClassLabel(queued.id)}: ${queued.queued} queued`;
-  if (snapshot.classes.some((row) => row.state === "paused")) return "Some background work paused";
-  const waiting = snapshot.classes.find((row) => row.state === "waiting" || row.state === "unavailable");
+  if (rows.some((row) => row.state === "paused")) return "Some background work paused";
+  const waiting = rows.find((row) => row.state === "waiting" || row.state === "unavailable");
   if (waiting) return waiting.reason ?? "Background work waiting";
-  if (snapshot.classes.some((row) => row.failed > 0 || row.state === "failed")) return "Background work needs attention";
+  const failures = snapshot.classes.reduce((total, row) => total + row.failed, 0);
+  if (failures > 0) return `Background work: ${failures.toLocaleString()} failed — open Issues`;
   return "Background work: up to date";
 }
 
@@ -324,31 +323,29 @@ export function mergeBackgroundRuntime(
   runtime: BackgroundRuntimeSnapshot,
 ): BackgroundWorkSnapshot | null {
   if (snapshot === null) return null;
-  const paused = new Set(runtime.pausedClasses);
   return {
-    masterPaused: runtime.masterPaused,
-    classes: snapshot.classes.map((row) => {
-      const isPaused = runtime.masterPaused || paused.has(row.id);
-      if (runtime.active?.id === row.id) {
-        return {
-          ...row,
-          state: isPaused || runtime.active.stopping ? "stopping" : "running",
-          done: runtime.active.done,
-          total: runtime.active.total,
-        };
-      }
-      if (isPaused) return { ...row, state: "paused", done: null, total: null };
-      if (row.state === "running" || row.state === "stopping") {
-        return {
-          ...row,
-          state: row.queued > 0 ? "queued" : "up-to-date",
-          done: null,
-          total: null,
-        };
-      }
-      return row;
-    }),
+    ...snapshot,
+    pausedClasses: runtime.pausedClasses,
+    activeItem: runtime.active,
   };
+}
+
+/** Runtime is a reversible overlay; database-authored availability never gets overwritten. */
+export function backgroundRows(snapshot: BackgroundWorkSnapshot): BackgroundClassSnapshot[] {
+  return snapshot.classes.map((row) => {
+    const isPaused = snapshot.pausedClasses.includes(row.id);
+    const active = snapshot.activeItem;
+    if (active?.id === row.id) {
+      return {
+        ...row,
+        state: isPaused || active.stopping ? "stopping" : "running",
+        done: active.done,
+        total: active.total,
+      };
+    }
+    if (isPaused && row.state !== "disabled") return { ...row, state: "paused", done: null, total: null };
+    return row;
+  });
 }
 
 let lastPing = 0;

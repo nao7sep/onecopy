@@ -21,7 +21,6 @@ pub struct ActiveWorkSnapshot {
 
 #[derive(Default)]
 struct RuntimeState {
-    master_paused: bool,
     paused_classes: u8,
     active: Option<ActiveWorkSnapshot>,
     active_hash: Option<String>,
@@ -33,7 +32,7 @@ struct RuntimeState {
 
 impl RuntimeState {
     fn paused(&self, class: WorkClass) -> bool {
-        self.master_paused || self.paused_classes & class.bit() != 0
+        self.paused_classes & class.bit() != 0
     }
 }
 
@@ -60,7 +59,6 @@ pub struct RuntimeConditions {
 
 #[derive(Clone)]
 pub struct RuntimeSnapshot {
-    pub(crate) master_paused: bool,
     pub(crate) paused_classes: u8,
     pub(crate) active: Option<ActiveWorkSnapshot>,
     pub(crate) active_hash: Option<String>,
@@ -525,18 +523,7 @@ pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<
                 report_poison_once(Some(app));
                 "background-work state is unavailable".to_string()
             })?;
-        match class {
-            None => runtime.master_paused = paused,
-            Some(id) => {
-                let class = WorkClass::parse(id)
-                    .ok_or_else(|| format!("unknown background-work class: {id}"))?;
-                if paused {
-                    runtime.paused_classes |= class.bit();
-                } else {
-                    runtime.paused_classes &= !class.bit();
-                }
-            }
-        }
+        runtime.paused_classes = changed_pause_classes(runtime.paused_classes, class, paused)?;
         RUNTIME.1.notify_all();
         runtime.active
     };
@@ -607,7 +594,6 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
                 .map(WorkClass::id)
                 .collect::<Vec<_>>();
             json!({
-                "masterPaused": runtime.master_paused,
                 "pausedClasses": paused_classes,
                 "active": runtime.active.map(|active| json!({
                     "id": active.class.id(),
@@ -627,7 +613,7 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
 }
 
 pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String> {
-    let (master_paused, paused_classes, active, active_hash, preempt_requested) = {
+    let (paused_classes, active, active_hash, preempt_requested) = {
         let runtime = RUNTIME
             .0
             .lock()
@@ -636,7 +622,6 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
                 "background-work state is unavailable".to_string()
             })?;
         (
-            runtime.master_paused,
             runtime.paused_classes,
             runtime.active,
             runtime.active_hash.clone(),
@@ -644,13 +629,20 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
         )
     };
     Ok(RuntimeSnapshot {
-        master_paused,
         paused_classes,
         active,
         active_hash,
         preempt_requested,
         busy: conditions.busy,
     })
+}
+
+/// Bulk controls change the same per-class bits as individual controls.
+pub fn changed_pause_classes(current: u8, class: Option<&str>, paused: bool) -> Result<u8, String> {
+    let class = class.map(|id| WorkClass::parse(id)
+        .ok_or_else(|| format!("unknown background-work class: {id}"))).transpose()?;
+    let mask = class.map_or_else(|| WorkClass::ALL.into_iter().fold(0, |bits, class| bits | class.bit()), WorkClass::bit);
+    Ok(if paused { current | mask } else { current & !mask })
 }
 
 #[cfg(test)]

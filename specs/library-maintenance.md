@@ -96,6 +96,10 @@ Background Work exposes distinct rows for work with distinct completion and poli
 
 Video and audio transcription retain separate enabled settings, queue states, and controls. They may share transcription mechanics and cache storage without sharing user policy or becoming one combined queue surface.
 
+`Pause all` is a bulk action on file-information completion, preparation, and enrichment, not an overriding master state. Each row remains independently resumable afterward; resuming one leaves the others paused and never enables a feature disabled in Settings. Source checking retains its separate Start/Stop control, and watchers remain active. Pauses are temporary for the current app run.
+
+Background Work identifies failed output counts and offers a direct Issues action for details and recovery. Runtime progress, preemption, and pause transitions never erase durable failure or prerequisite state or turn it into an unsupported claim of completion.
+
 ## Priority and resource use
 
 Maintenance continuously consumes runnable work after startup admission. User inactivity is never a prerequisite for background preparation or enrichment. Explicit pause, unavailable prerequisites, foreground exclusivity, and resource safety may prevent admission. Main, persistent Preview, Quick View/fullscreen, and Comparison contribute to one current attention snapshot; hidden surfaces cannot replace the active workspace's priorities. Priority is:

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Pause, Play, Square } from "lucide-react";
 import {
   backgroundClassLabel,
+  backgroundRows,
   type BackgroundClassSnapshot,
   useDerivedWorkStore,
 } from "../state/derived-work-store";
@@ -9,6 +10,8 @@ import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { useSectionsStore } from "../state/sections-store";
 import OperationResult from "./ui/OperationResult";
+import { useAppShellStore } from "../state/app-shell-store";
+import { progressLine } from "../models/scan";
 
 function stateText(row: BackgroundClassSnapshot): string {
   switch (row.state) {
@@ -70,6 +73,10 @@ export default function BackgroundWorkModal({
   }, [open]);
 
   if (!open) return null;
+  const rows = snapshot === null ? [] : backgroundRows(snapshot);
+  const failures = rows.filter((row) => row.failed > 0);
+  const allPaused = fileInformation.paused && rows.every((row) =>
+    row.state === "disabled" || snapshot?.pausedClasses.includes(row.id));
 
   return (
     <ModalShell
@@ -85,14 +92,12 @@ export default function BackgroundWorkModal({
         snapshot !== null ? (
           <Button
             disabled={
-              changing !== null || snapshot.classes.some((row) => row.state === "stopping")
+              changing !== null || allPaused
             }
-            onClick={() => void setPaused(null, !snapshot.masterPaused)}
+            onClick={() => void setPaused(null, true)}
           >
-            {snapshot.masterPaused ? <Play size={14} /> : <Pause size={14} />}
-            {snapshot.masterPaused
-              ? "Resume preparation and enrichment"
-              : "Pause preparation and enrichment"}
+            <Pause size={14} />
+            Pause all
           </Button>
         ) : undefined
       }
@@ -100,7 +105,20 @@ export default function BackgroundWorkModal({
       <p className="mb-4 text-sm text-ink-muted">
         These jobs may run while you use OneCopy. Stopping or pausing keeps every fact already
         saved and never changes your files.
+        {" "}Pause all pauses file information, preparation, and enrichment. Source checking has
+        its own Stop control; folder watching stays active.
       </p>
+      {failures.length > 0 && (
+        <div className="mb-4 rounded-xl border border-warning/40 p-3">
+          <OperationResult level="warning">
+            Some outputs could not be prepared. Completed work is preserved.
+            {" "}{failures.map((row) => `${backgroundClassLabel(row.id)}: ${row.failed.toLocaleString()} failed`).join("; ")}.
+          </OperationResult>
+          <Button size="sm" onClick={() => useAppShellStore.getState().openUtility("issues")}>
+            Open Issues
+          </Button>
+        </div>
+      )}
       <ul className="mb-4 space-y-2">
         <li className="flex items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3">
           <span className="min-w-0 flex-1">
@@ -108,20 +126,29 @@ export default function BackgroundWorkModal({
               Check source folders
             </span>
             <span className="mt-0.5 block text-xs text-ink-muted">
-              Finds files added, removed, or changed since OneCopy last saw each folder.
+              One pass to find added, removed, or changed files. Folder watching continues afterward.
             </span>
             <span className="mt-1 block text-xs text-ink">
               {sourceCheck.stopping
                 ? "Stopping after the current safe step…"
+                : sourceCheck.waiting
+                  ? "Waiting for the current file operation…"
                 : sourceCheck.running
-                  ? "Running…"
+                  ? sourceCheck.progress === null ? "Running…" : progressLine(sourceCheck.progress)
                   : sourceCheck.lastResult === "completed"
-                    ? "Completed"
+                    ? "Completed — Start checks again"
+                    : sourceCheck.lastResult === "completed-with-issues"
+                      ? "Completed with issues — some folders or files could not be checked"
                     : sourceCheck.lastResult === "failed"
                       ? "Failed — open Issues to retry"
                       : "Stopped"}
             </span>
           </span>
+          {(sourceCheck.lastResult === "failed" || sourceCheck.lastResult === "completed-with-issues") && !sourceCheck.running && (
+            <Button size="sm" onClick={() => useAppShellStore.getState().openUtility("issues")}>
+              Open Issues
+            </Button>
+          )}
           <Button
             size="sm"
             disabled={sourceCheck.stopping}
@@ -149,7 +176,7 @@ export default function BackgroundWorkModal({
                     ? "Work queued — paused"
                     : "Paused"
                   : fileInformation.running
-                    ? "Running…"
+                  ? fileInformation.progress === null ? "Running…" : progressLine(fileInformation.progress)
                     : fileInformation.queued
                       ? "Queued"
                       : "Up to date"}
@@ -174,7 +201,7 @@ export default function BackgroundWorkModal({
         </p>
       ) : (
         <ul className="space-y-2">
-          {snapshot.classes.map((row) => {
+          {rows.map((row) => {
             const paused = row.state === "paused" || row.state === "stopping";
             const rowChanging = changing === row.id;
             return (
@@ -203,7 +230,6 @@ export default function BackgroundWorkModal({
                 <Button
                   size="sm"
                   disabled={
-                    snapshot.masterPaused ||
                     changing !== null ||
                     row.state === "disabled" ||
                     row.state === "stopping"

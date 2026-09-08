@@ -102,12 +102,11 @@ export default function TranscriptBlock({
   const start = useTranscriptStore((state) => state.start);
   const cancel = useTranscriptStore((state) => state.cancel);
   const tools = useBinariesStore((state) => state.entries);
-  const transcriptWork = useDerivedWorkStore((state) =>
-    state.snapshot?.classes.find((row) => row.id === `${medium}-transcripts`),
-  );
-  const masterPaused = useDerivedWorkStore(
-    (state) => state.snapshot?.masterPaused === true,
-  );
+  const paused = useDerivedWorkStore((state) => {
+    const active = state.activeItem;
+    return state.snapshot?.pausedClasses.includes(`${medium}-transcripts`) === true ||
+      (active?.id === `${medium}-transcripts` && active.stopping);
+  });
   const automaticEnabled = useAppStore((state) => {
     const config = state.appData?.config;
     return medium === "video"
@@ -155,10 +154,6 @@ export default function TranscriptBlock({
       entry.id === "whisper-large-v3-turbo" && entry.status !== "not-installed",
   );
   const toolsAvailable = ffmpegInstalled && modelInstalled;
-  const paused =
-    masterPaused ||
-    transcriptWork?.state === "paused" ||
-    transcriptWork?.state === "stopping";
   const compact = variant === "compact";
   const unavailable =
     work !== null ? work.state === "unavailable" : !toolsAvailable;

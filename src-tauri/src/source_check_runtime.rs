@@ -1,35 +1,32 @@
 //! Lifecycle owner for the finite `Check source folders` job.
 
+use crate::source_check_state::{ResultState, SourceCheckState};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use serde::Serialize;
 use serde_json::json;
 use tauri::AppHandle;
 
-static RUNNING: AtomicBool = AtomicBool::new(false);
-static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
-static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
+static STATE: LazyLock<Mutex<SourceCheckState>> =
+    LazyLock::new(|| Mutex::new(SourceCheckState::default()));
 static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
-static LAST_RESULT: AtomicU8 = AtomicU8::new(SourceCheckResult::Stopped as u8);
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CLOSING: &str = "OneCopy is closing; source-folder checking cannot start.";
 
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum SourceCheckResult {
-    Stopped = 0,
-    Completed = 1,
-    Failed = 2,
-}
-
-impl SourceCheckResult {
-    fn current() -> Self {
-        match LAST_RESULT.load(Ordering::SeqCst) {
-            1 => Self::Completed,
-            2 => Self::Failed,
-            _ => Self::Stopped,
+fn state() -> MutexGuard<'static, SourceCheckState> {
+    match STATE.lock() {
+        Ok(state) => state,
+        Err(poisoned) => {
+            // Only infallible lifecycle transitions hold this lock, never I/O.
+            // Retain the running claim but cancel it if an unexpected unwind occurs.
+            let mut state = poisoned.into_inner();
+            state.stop();
+            STATE.clear_poison();
+            crate::logging::error("source-check lifecycle interrupted", json!({}));
+            crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
+            state
         }
     }
 }
@@ -39,7 +36,8 @@ impl SourceCheckResult {
 pub struct Snapshot {
     running: bool,
     stopping: bool,
-    last_result: SourceCheckResult,
+    last_result: ResultState,
+    waiting: bool,
     event_sequence: u64,
 }
 
@@ -48,10 +46,12 @@ pub fn snapshot() -> Snapshot {
 }
 
 fn snapshot_at(event_sequence: u64) -> Snapshot {
+    let state = state();
     Snapshot {
-        running: running(),
-        stopping: running() && STOP_REQUESTED.load(Ordering::SeqCst),
-        last_result: SourceCheckResult::current(),
+        running: state.running(),
+        stopping: state.stopping(),
+        waiting: state.waiting(),
+        last_result: state.last_result,
         event_sequence,
     }
 }
@@ -61,10 +61,14 @@ pub(crate) fn next_event_sequence() -> u64 {
 }
 
 pub fn running() -> bool {
-    RUNNING.load(Ordering::SeqCst)
+    state().running()
 }
 
 pub fn start(app: AppHandle) -> Result<bool, String> {
+    start_requested(app, true)
+}
+
+fn start_requested(app: AppHandle, explicit: bool) -> Result<bool, String> {
     let mut workers = WORKERS
         .lock()
         .map_err(|_| "source-folder worker state is unavailable".to_string())?;
@@ -72,13 +76,9 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
         return Err(CLOSING.to_string());
     }
     join_finished(&mut workers);
-    if RUNNING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    if !state().begin(explicit, crate::scan_runtime::foreground_pending()) {
         return Ok(false);
     }
-    STOP_REQUESTED.store(false, Ordering::SeqCst);
     // Discovery must not sit invisibly behind an hours-long metadata tail.
     // Completion yields at the scanner's existing safe checkpoints and keeps
     // its durable queue for the wake at this worker's terminal boundary.
@@ -93,8 +93,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
             }
         })
         .map_err(|error| {
-            RUNNING.store(false, Ordering::SeqCst);
-            LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
+            finish(ResultState::Failed);
             crate::admit_background_completion(app.clone());
             format!("could not start source-folder check: {error}")
         })?;
@@ -102,8 +101,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
     drop(workers);
     emit_state(&app);
     if release.send(()).is_err() {
-        RUNNING.store(false, Ordering::SeqCst);
-        LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
+        finish(ResultState::Failed);
         emit_state(&app);
         crate::admit_background_completion(app);
         return Err("source-folder worker could not leave its start gate".to_string());
@@ -114,10 +112,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
 fn worker_entry(app: AppHandle) {
     let handle = app.clone();
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| worker(handle))) {
-        RUNNING.store(false, Ordering::SeqCst);
-        STOP_REQUESTED.store(false, Ordering::SeqCst);
-        RESTART_REQUESTED.store(false, Ordering::SeqCst);
-        LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
+        finish(ResultState::Failed);
         let error = crate::failure_runtime::panic_message(payload);
         if crate::app_lifecycle::shutting_down() {
             crate::logging::error(
@@ -149,16 +144,11 @@ fn worker(app: AppHandle) {
             ),
             _ => {}
         }
-        RUNNING.store(false, Ordering::SeqCst);
-        STOP_REQUESTED.store(false, Ordering::SeqCst);
-        RESTART_REQUESTED.store(false, Ordering::SeqCst);
-        LAST_RESULT.store(SourceCheckResult::Stopped as u8, Ordering::SeqCst);
+        finish(ResultState::Stopped);
         return;
     }
     let terminal = match outcome {
         Ok(Ok(summary)) => {
-            RESTART_REQUESTED.store(false, Ordering::SeqCst);
-            LAST_RESULT.store(SourceCheckResult::Completed as u8, Ordering::SeqCst);
             crate::logging::info(
                 "source-folder check complete",
                 json!({ "summary": summary }),
@@ -166,38 +156,36 @@ fn worker(app: AppHandle) {
             if let Err(error) = crate::watcher::restart_from_config(app.clone()) {
                 crate::scan_runtime::record_runtime_failure(&app, "watcher-failed", &error);
             }
-            json!({ "summary": summary })
+            (
+                if summary.failures > 0 {
+                    ResultState::CompletedWithIssues
+                } else {
+                    ResultState::Completed
+                },
+                json!({ "summary": summary }),
+            )
         }
         Ok(Err(error)) if error == crate::scanner::CANCELLED => {
-            LAST_RESULT.store(SourceCheckResult::Stopped as u8, Ordering::SeqCst);
             crate::logging::info("source-folder check stopped", json!({}));
-            json!({
-                "stopped": !RESTART_REQUESTED.load(Ordering::SeqCst),
-                "preempted": RESTART_REQUESTED.load(Ordering::SeqCst),
-            })
+            (ResultState::Stopped, json!({ "stopped": true }))
         }
         Ok(Err(error)) => {
-            RESTART_REQUESTED.store(false, Ordering::SeqCst);
-            LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
             fail(&app, &error);
-            json!({ "error": error })
+            (ResultState::Failed, json!({ "error": error }))
         }
         Err(payload) => {
-            RESTART_REQUESTED.store(false, Ordering::SeqCst);
-            LAST_RESULT.store(SourceCheckResult::Failed as u8, Ordering::SeqCst);
             let error = crate::failure_runtime::panic_message(payload);
             fail(&app, &error);
-            json!({ "error": error })
+            (ResultState::Failed, json!({ "error": error }))
         }
     };
-    RUNNING.store(false, Ordering::SeqCst);
-    STOP_REQUESTED.store(false, Ordering::SeqCst);
+    finish(terminal.0);
     emit_state(&app);
-    emit_done(&app, terminal);
+    emit_done(&app, terminal.1);
     // A foreground action may have preempted this worker before it acquired
     // the index claim. In that order the foreground guard finishes first, so
     // its resume attempt sees this worker as still running. Retry here after
-    // publishing the terminal state; user-requested Stop clears the flag.
+    // publishing the terminal state; user-requested Stop retires the request.
     resume_if_requested(app.clone());
     // A stopped or failed walk may still have committed discoveries before
     // its last safe boundary. Completion owns those durable rows regardless
@@ -222,7 +210,7 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     );
     let summary = crate::scan_runtime::with_owner(
         crate::scan_runtime::Owner::SourceCheck,
-        || STOP_REQUESTED.load(Ordering::SeqCst),
+        || state().cancelled(),
         || {
             crate::index_store::open(&db_file)
                 .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &progress))
@@ -235,47 +223,52 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     Ok(summary)
 }
 
+fn finish(result: ResultState) {
+    state().finish(result);
+}
+
 pub fn stop(app: &AppHandle) -> bool {
-    if !running() {
-        return false;
+    let stopped = {
+        let mut state = state();
+        let stopped = state.stop();
+        if stopped {
+            crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
+        }
+        stopped
+    };
+    if stopped {
+        emit_state(app);
+        crate::admit_background_completion(app.clone());
     }
-    STOP_REQUESTED.store(true, Ordering::SeqCst);
-    RESTART_REQUESTED.store(false, Ordering::SeqCst);
-    crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
-    emit_state(app);
-    true
+    stopped
 }
 
 pub(crate) fn preempt() {
-    if running() {
-        RESTART_REQUESTED.store(true, Ordering::SeqCst);
-        STOP_REQUESTED.store(true, Ordering::SeqCst);
+    // Couple cancellation to its lifecycle transition so a later Start cannot
+    // be accidentally cancelled by this older foreground interruption.
+    let mut state = state();
+    state.preempt();
+    if state.running() && state.cancelled() {
         crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
     }
 }
 
 pub(crate) fn resume_if_requested(app: AppHandle) {
     if crate::app_lifecycle::shutting_down() {
-        RESTART_REQUESTED.store(false, Ordering::SeqCst);
         return;
     }
-    if RESTART_REQUESTED.swap(false, Ordering::SeqCst) && !running() {
-        if let Err(error) = start(app.clone()) {
-            fail(&app, &error);
-            emit_done(&app, json!({ "error": error }));
-        }
+    if let Err(error) = start_requested(app.clone(), false) {
+        fail(&app, &error);
+        emit_done(&app, json!({ "error": error }));
     }
 }
 
 pub fn shutdown() {
-    RESTART_REQUESTED.store(false, Ordering::SeqCst);
     if WORKERS.lock().is_err() {
         crate::logging::error("source-folder worker state is unavailable", json!({}));
     }
-    if running() {
-        STOP_REQUESTED.store(true, Ordering::SeqCst);
-        crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
-    }
+    state().stop();
+    crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
 }
 
 pub fn join() {
@@ -321,7 +314,9 @@ fn emit_state(app: &AppHandle) {
 }
 
 fn emit_done(app: &AppHandle, mut payload: serde_json::Value) {
-    payload["eventSequence"] = json!(next_event_sequence());
+    let sequence = next_event_sequence();
+    payload["eventSequence"] = json!(sequence);
+    payload["sourceCheck"] = json!(snapshot_at(sequence));
     emit(app, "source-check://done", payload);
 }
 

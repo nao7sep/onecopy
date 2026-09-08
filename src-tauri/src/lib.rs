@@ -47,6 +47,7 @@ pub mod scanner;
 pub mod similar_exclusions;
 pub mod similarity;
 pub mod source_check_runtime;
+pub mod source_check_state;
 mod startup;
 pub mod storage;
 pub mod subprocess;
@@ -1464,6 +1465,9 @@ fn background_work_set_paused(
     paused: bool,
 ) -> Result<(), String> {
     derived_runtime::set_paused(&app, class_id.as_deref(), paused)?;
+    if class_id.is_none() {
+        file_information_runtime::set_paused(app.clone(), paused);
+    }
     if !paused {
         derived_work::start(app.clone())?;
     }

@@ -113,7 +113,7 @@ const install = createEventInstaller(
         refreshLibrarySoon();
       }
     });
-    await listeners.listen<{ eventSequence: number; stopped?: boolean; error?: string }>(
+    await listeners.listen<{ eventSequence: number; sourceCheck: Omit<SourceCheckState, "progress">; stopped?: boolean; error?: string }>(
       "source-check://done",
       (event) => {
         let accepted = false;
@@ -122,14 +122,7 @@ const install = createEventInstaller(
           accepted = true;
           return {
             sourceCheck: {
-              running: false,
-              stopping: false,
-              lastResult:
-                event.payload.error !== undefined
-                  ? "failed"
-                  : event.payload.stopped === true
-                    ? "stopped"
-                    : "completed",
+              ...event.payload.sourceCheck,
               eventSequence: event.payload.eventSequence,
               progress: null,
             },

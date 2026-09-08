@@ -12,7 +12,7 @@ use crate::derived_state::{WorkCapabilities, WorkClass};
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundWorkSnapshot {
-    master_paused: bool,
+    paused_classes: Vec<&'static str>,
     classes: Vec<BackgroundClassSnapshot>,
     active_item: Option<BackgroundActiveItemSnapshot>,
 }
@@ -49,17 +49,9 @@ pub fn snapshot(
     let mut classes = Vec::with_capacity(WorkClass::ALL.len());
     for class in WorkClass::ALL {
         let debt = debts.get(class);
-        let paused = runtime.master_paused || runtime.paused_classes & class.bit() != 0;
-        let is_active = runtime.active.map(|value| value.class) == Some(class);
-        let active_progress = runtime.active.filter(|value| value.class == class);
         let queued = debt.runnable + debt.blocked;
-        let (state, reason) = if is_active && (paused || runtime.preempt_requested) {
-            ("stopping", None)
-        } else if is_active {
-            ("running", None)
-        } else if paused {
-            ("paused", None)
-        } else if debt.disabled {
+        // Keep availability intact; runtime overlays it without destroying it.
+        let (state, reason) = if debt.disabled {
             ("disabled", debt.reason)
         } else if debt.unavailable || (debt.runnable == 0 && debt.blocked > 0) {
             ("unavailable", debt.reason)
@@ -77,13 +69,13 @@ pub fn snapshot(
             state,
             queued,
             failed: debt.failed,
-            done: active_progress.and_then(|value| value.done),
-            total: active_progress.and_then(|value| value.total),
+            done: None,
+            total: None,
             reason,
         });
     }
     Ok(BackgroundWorkSnapshot {
-        master_paused: runtime.master_paused,
+        paused_classes: WorkClass::ALL.into_iter().filter(|class| runtime.paused_classes & class.bit() != 0).map(WorkClass::id).collect(),
         classes,
         active_item: runtime.active.map(|active| BackgroundActiveItemSnapshot {
             id: active.class.id(),
@@ -91,7 +83,6 @@ pub fn snapshot(
             done: active.done,
             total: active.total,
             stopping: runtime.preempt_requested
-                || runtime.master_paused
                 || runtime.paused_classes & active.class.bit() != 0,
         }),
     })

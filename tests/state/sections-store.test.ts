@@ -40,6 +40,7 @@ beforeEach(() => {
       sourceCheck: {
         running: false,
         stopping: false,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: 0,
       },
@@ -58,6 +59,7 @@ beforeEach(() => {
     sourceCheck: {
       running: false,
       stopping: false,
+      waiting: false,
       lastResult: "stopped",
       eventSequence: 0,
       progress: null,
@@ -101,6 +103,7 @@ describe("independent index work", () => {
       sourceCheck: {
         running: false,
         stopping: false,
+        waiting: false,
         lastResult: "completed",
         eventSequence: 5,
         progress: null,
@@ -111,6 +114,7 @@ describe("independent index work", () => {
         sourceCheck: {
           running: true,
           stopping: true,
+          waiting: false,
           lastResult: "stopped",
           eventSequence: 4,
         },
@@ -129,6 +133,7 @@ describe("independent index work", () => {
     expect(useSectionsStore.getState().sourceCheck).toMatchObject({
       running: false,
       stopping: false,
+      waiting: false,
       lastResult: "completed",
       eventSequence: 5,
     });
@@ -168,6 +173,7 @@ describe("independent index work", () => {
         sourceCheck: {
           running: true,
           stopping: true,
+          waiting: false,
           lastResult: "stopped",
           eventSequence: 2,
         },
@@ -184,6 +190,7 @@ describe("independent index work", () => {
       sourceCheck: {
         running: true,
         stopping: false,
+        waiting: false,
         lastResult: "stopped",
         eventSequence: 1,
         progress: null,
