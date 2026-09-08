@@ -20,6 +20,7 @@ import { computeMinWindowHeight, HEADER_HEIGHT } from "../../src/utils/windowSiz
 import {
   isMaximized,
   invokeCalls,
+  maximize,
   mockCommands,
   onCloseRequested,
   onMoved,
@@ -147,6 +148,7 @@ describe("the maximized main window (the developer's normal state)", () => {
     try {
       renderReadyApp();
       await drain();
+      expect(maximize).toHaveBeenCalled();
       expect(setMinSize).not.toHaveBeenCalled();
     } finally {
       isMaximized.mockResolvedValue(false);
@@ -172,7 +174,7 @@ describe("the maximized main window (the developer's normal state)", () => {
     useAppStore.setState({
       appData: {
         config: { sourceDirs: [], defaultTimezone: "UTC" },
-        state: { windowBounds: normal },
+        state: { windowBounds: normal, windowMaximized: false },
         dataRoot: "/data",
         debugEnabled: false,
       } as never,

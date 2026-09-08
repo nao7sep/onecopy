@@ -104,7 +104,7 @@ export function useMainWindowLifecycle({
           saved: placementFromLegacyState(
             state?.windowBounds,
             state?.windowMaximized,
-            "normal",
+            "maximized",
           ),
           minimum: {
             width: computeMinWindowWidth(splitOpen),

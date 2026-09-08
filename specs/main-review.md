@@ -18,6 +18,8 @@ The anchor is always a selected item when a selection exists. Details and persis
 
 ## Section entry and restoration
 
+On first launch, Main establishes useful designed normal bounds and then opens maximized. Later launches restore the remembered stable normal or maximized mode; minimized and native fullscreen remain transient.
+
 The first visit to a nonempty section selects its first displayed item. Returning to a section during the same app run restores that section's remembered anchor as an exclusive selection; an earlier multi-selection does not remain active while the user works elsewhere.
 
 Across app restarts, OneCopy restores the last-open section and its anchor. It does not restore an independently active selection for every section.
