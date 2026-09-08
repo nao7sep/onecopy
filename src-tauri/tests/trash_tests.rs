@@ -4,13 +4,11 @@
 use onecopy_lib::trash::*;
 use std::path::{Path, PathBuf};
 
-// These tests run entirely under the temp dir, which lives on the home
-// volume — so trash_root_for routes into the app-root trash and the
-// whole flow stays same-volume, exactly the production shape.
+// These tests run entirely under a configured temp root, so recoverable
+// deletions stay inside the same permission and filesystem boundary.
 
 struct Fixture {
     _dir: tempfile::TempDir,
-    app_root: PathBuf,
     source: PathBuf,
 }
 
@@ -19,15 +17,9 @@ fn fixture(label: &str) -> Fixture {
         .prefix(&format!("onecopy-trash-{label}-"))
         .tempdir()
         .unwrap();
-    let app_root = dir.path().join("apphome");
     let source = dir.path().join("photos");
-    std::fs::create_dir_all(&app_root).unwrap();
     std::fs::create_dir_all(&source).unwrap();
-    Fixture {
-        _dir: dir,
-        app_root,
-        source,
-    }
+    Fixture { _dir: dir, source }
 }
 
 fn read_manifest(day_dir: &Path) -> Vec<serde_json::Value> {
@@ -44,19 +36,18 @@ fn trashing_moves_the_file_and_writes_a_manifest_line() {
     let file = f.source.join("img.jpg");
     std::fs::write(&file, b"bytes").unwrap();
 
-    let record = trash_file(&file, &f.app_root, Some("hash123")).unwrap();
+    let record = trash_file(&file, &f.source, Some("hash123")).unwrap();
     assert!(!file.exists(), "the original must be gone");
     let stored = PathBuf::from(&record.stored_path);
     assert!(stored.exists(), "the stored file must exist");
     assert_eq!(std::fs::read(&stored).unwrap(), b"bytes");
 
-    // Same-volume trash for home-volume files lives under the app root.
-    assert!(stored.starts_with(f.app_root.join("trash")));
+    assert!(stored.starts_with(f.source.join(TRASH_DIR_NAME)));
 
     // The day folder is self-contained: manifest sits inside it.
     let day_dir = stored
         .ancestors()
-        .find(|a| a.parent().is_some_and(|p| p.ends_with("trash")))
+        .find(|a| a.parent().is_some_and(|p| p.ends_with(TRASH_DIR_NAME)))
         .unwrap();
     let manifest = read_manifest(day_dir);
     assert_eq!(manifest.len(), 1);
@@ -80,7 +71,7 @@ fn files_are_stored_flat_with_provenance_in_the_manifest() {
     let file = nested.join("beach.jpg");
     std::fs::write(&file, b"x").unwrap();
 
-    let record = trash_file(&file, &f.app_root, None).unwrap();
+    let record = trash_file(&file, &f.source, None).unwrap();
     let stored = PathBuf::from(&record.stored_path);
 
     assert_eq!(
@@ -123,7 +114,7 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
     let mut last_record = None;
     for content in [b"first" as &[u8], b"second", b"third"] {
         std::fs::write(&file, content).unwrap();
-        let record = trash_file(&file, &f.app_root, None).unwrap();
+        let record = trash_file(&file, &f.source, None).unwrap();
         stored_names.push(
             PathBuf::from(&record.stored_path)
                 .file_name()
@@ -144,10 +135,7 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
     // the manifest at all — every assertion above reads the RETURN value. The
     // manifest is the only record mapping a stored name back to its original,
     // so a suffix loop that drifted from what it writes would be undetectable.
-    // The day folder is <app_root>/trash/<yyyymmdd-utc>/; the stored path's own
-    // parent is the deepest PRESERVED source directory, not the day folder,
-    // because the original relative path is kept underneath it.
-    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+    let day_dir = std::fs::read_dir(f.source.join(TRASH_DIR_NAME))
         .expect("the trash root exists")
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
@@ -187,7 +175,7 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
 #[test]
 fn relative_paths_are_rejected() {
     let f = fixture("relative");
-    assert!(trash_file(Path::new("relative.jpg"), &f.app_root, None).is_err());
+    assert!(trash_file(Path::new("relative.jpg"), &f.source, None).is_err());
 }
 
 #[test]
@@ -196,10 +184,14 @@ fn manifest_failure_leaves_the_indexed_source_authoritative() {
     let file = f.source.join("kept.jpg");
     std::fs::write(&file, b"source-bytes").unwrap();
     let day = chrono::Utc::now().format("%Y%m%d-utc").to_string();
-    let manifest_path = f.app_root.join("trash").join(day).join("manifest.jsonl");
+    let manifest_path = f
+        .source
+        .join(TRASH_DIR_NAME)
+        .join(day)
+        .join("manifest.jsonl");
     std::fs::create_dir_all(&manifest_path).unwrap();
 
-    assert!(trash_file(&file, &f.app_root, None).is_err());
+    assert!(trash_file(&file, &f.source, None).is_err());
     assert_eq!(std::fs::read(&file).unwrap(), b"source-bytes");
 }
 
@@ -245,50 +237,56 @@ fn verbatim_paths_resolve_to_their_ordinary_volume_roots() {
 }
 
 #[test]
-fn external_volume_files_trash_into_a_dot_onecopy_trash_at_their_volume_root() {
-    // The whole point of the per-volume trash: the move must stay a rename on
-    // the SAME volume. Routing an external drive's files to the app root would
-    // make every delete a cross-device copy — slow, space-consuming, and
-    // EXDEV-failing on some filesystems. Every other test in this file runs on
-    // the home volume, so this branch never executed.
+fn each_configured_root_owns_its_deleted_files() {
     let dir = tempfile::tempdir().unwrap();
-    let app_root = dir.path().join("apphome");
-    let external = dir.path().join("Volumes").join("SD_CARD");
-    std::fs::create_dir_all(&app_root).unwrap();
-    std::fs::create_dir_all(&external).unwrap();
+    let bob = dir.path().join("bob/photos");
+    let ann = dir.path().join("ann/photos");
+    std::fs::create_dir_all(&bob).unwrap();
+    std::fs::create_dir_all(&ann).unwrap();
+    let bob_file = bob.join("bob.jpg");
+    let ann_file = ann.join("ann.jpg");
+    std::fs::write(&bob_file, b"bob").unwrap();
+    std::fs::write(&ann_file, b"ann").unwrap();
 
-    let root = trash_root_for(&external, &app_root).unwrap();
+    let bob_record = trash_file(&bob_file, &bob, None).unwrap();
+    let ann_record = trash_file(&ann_file, &ann, None).unwrap();
+
+    assert!(Path::new(&bob_record.stored_path).starts_with(bob.join(TRASH_DIR_NAME)));
+    assert!(Path::new(&ann_record.stored_path).starts_with(ann.join(TRASH_DIR_NAME)));
+    assert!(!Path::new(&bob_record.stored_path).starts_with(&ann));
+    assert!(!Path::new(&ann_record.stored_path).starts_with(&bob));
+}
+
+#[test]
+fn most_specific_configured_root_owns_nested_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let outer = dir.path().join("photos");
+    let inner = outer.join("private");
+    std::fs::create_dir_all(&inner).unwrap();
+    let file = inner.join("photo.jpg");
+    std::fs::write(&file, b"photo").unwrap();
 
     assert_eq!(
-        root,
-        external.join(onecopy_lib::trash::TRASH_DIR_NAME),
-        "an external volume trashes at its OWN root"
-    );
-    assert!(
-        root.starts_with(&external),
-        "the trash must stay on the same volume as the file"
-    );
-    assert!(
-        !root.starts_with(&app_root),
-        "an external volume must never route through the app root"
+        root_for_file(&file, &[outer, inner.clone()]).unwrap(),
+        inner
     );
 }
 
 #[test]
-fn home_volume_files_trash_into_the_app_root() {
-    // The complement, and the reason the branch exists: macOS forbids creating
-    // /.onecopy-trash, so the home volume's files go under the app root.
+fn a_missing_file_keeps_its_configured_owner_but_an_outside_path_has_none() {
     let dir = tempfile::tempdir().unwrap();
-    let app_root = dir.path().join("apphome");
-    std::fs::create_dir_all(&app_root).unwrap();
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .expect("the platform home variable is set");
-    let home_volume = volume_root_of(&std::path::PathBuf::from(home)).unwrap();
+    let configured = dir.path().join("photos");
+    std::fs::create_dir_all(&configured).unwrap();
 
-    let root = trash_root_for(&home_volume, &app_root).unwrap();
-
-    assert_eq!(root, app_root.join("trash"));
+    assert_eq!(
+        root_for_file(
+            &configured.join("missing.jpg"),
+            std::slice::from_ref(&configured),
+        )
+        .unwrap(),
+        configured
+    );
+    assert!(root_for_file(&dir.path().join("outside.jpg"), &[configured]).is_err());
 }
 
 #[test]
@@ -301,9 +299,6 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
         .prefix("onecopy-trash-surface-")
         .tempdir()
         .unwrap();
-    let app_root = dir.path().join("apphome");
-    std::fs::create_dir_all(&app_root).unwrap();
-
     // Two files trashed through the real path so the day-folder layout is
     // the one the surface will meet.
     let source = dir.path().join("src");
@@ -312,12 +307,10 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
     let b = source.join("two.jpg");
     std::fs::write(&a, vec![1u8; 1000]).unwrap();
     std::fs::write(&b, vec![2u8; 500]).unwrap();
-    trash_file(&a, &app_root, Some("h1")).unwrap();
-    trash_file(&b, &app_root, Some("h2")).unwrap();
+    trash_file(&a, &source, Some("h1")).unwrap();
+    trash_file(&b, &source, Some("h2")).unwrap();
 
-    let rows = overview(&[source.to_string_lossy().to_string()], &app_root);
-    // The temp dir lives on the home volume, so the source's volume trash IS
-    // the app-home trash — one deduplicated row.
+    let rows = overview(std::slice::from_ref(&source));
     let row = rows
         .iter()
         .find(|r| r.files > 0)
@@ -346,7 +339,7 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
     assert_eq!(snapshots.first().unwrap().bytes_total, 1500);
     assert_eq!(snapshots.last().unwrap().done, 2);
     assert_eq!(snapshots.last().unwrap().bytes_done, 1500);
-    let after = overview(&[source.to_string_lossy().to_string()], &app_root);
+    let after = overview(std::slice::from_ref(&source));
     let same = after.iter().find(|r| r.root == row.root).unwrap();
     assert_eq!(same.files, 0, "emptied means empty");
     assert_eq!(same.bytes, 0);
@@ -433,33 +426,35 @@ fn empty_never_follows_a_replaced_root_symlink() {
 }
 
 #[test]
-fn mounted_volume_discovery_finds_only_real_trash_dirs() {
-    // The pure seam behind "every attached drive appears in the overview":
-    // a volume WITH a trash is found, one without is not, and a symlinked
-    // volume entry (macOS keeps one for the boot volume) is skipped so the
-    // home volume can never appear twice.
-    let f = fixture("discover");
-    let volumes = f.app_root.join("volumes");
-    std::fs::create_dir_all(volumes.join("DriveA/.onecopy-trash/20260101-utc")).unwrap();
-    std::fs::write(
-        volumes.join("DriveA/.onecopy-trash/20260101-utc/img.jpg"),
-        b"bytes",
-    )
-    .unwrap();
-    std::fs::create_dir_all(volumes.join("DriveB")).unwrap();
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(volumes.join("DriveA"), volumes.join("BootAlias")).unwrap();
+fn overview_never_discovers_unconfigured_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let configured = dir.path().join("configured");
+    let unrelated = dir.path().join("mounted-drive");
+    std::fs::create_dir_all(configured.join(TRASH_DIR_NAME)).unwrap();
+    std::fs::create_dir_all(unrelated.join(TRASH_DIR_NAME)).unwrap();
 
-    let found = discover_in_volumes_dir(&volumes);
-    assert_eq!(found, vec![volumes.join("DriveA/.onecopy-trash")]);
-
-    // A discovered root is emptiable exactly like a configured one: day
-    // folders go, the root itself survives for the next trash move.
-    empty_root(&found[0]).unwrap();
-    assert!(found[0].exists(), "the root survives emptying");
+    let rows = overview(std::slice::from_ref(&configured));
+    assert_eq!(rows.len(), 1);
     assert_eq!(
-        std::fs::read_dir(&found[0]).unwrap().count(),
-        0,
-        "its day folders are gone"
+        rows[0].root,
+        configured.join(TRASH_DIR_NAME).to_string_lossy()
     );
+}
+
+#[test]
+fn revealing_an_empty_location_creates_only_the_selected_configured_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let configured = dir.path().join("photos");
+    let other = dir.path().join("other");
+    std::fs::create_dir_all(&configured).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let requested = configured.join(TRASH_DIR_NAME);
+
+    assert_eq!(
+        ensure_root_for_reveal(std::slice::from_ref(&configured), &requested).unwrap(),
+        requested
+    );
+    assert!(requested.is_dir());
+    assert!(ensure_root_for_reveal(&[configured], &other.join(TRASH_DIR_NAME)).is_err());
+    assert!(!other.join(TRASH_DIR_NAME).exists());
 }

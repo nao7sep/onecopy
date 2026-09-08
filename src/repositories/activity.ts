@@ -44,6 +44,14 @@ export type ActivityOwner =
   | "identity"
   | "delivery";
 
+export type ActivitySubject =
+  | "previews"
+  | "snapshots"
+  | "similarity"
+  | "faces"
+  | "videoTranscription"
+  | "audioTranscription";
+
 export type ActivityState =
   | "idle"
   | "queued"
@@ -79,6 +87,7 @@ export type ActivityReason =
 export interface ActivityDraft {
   kind: ActivityKind;
   owner: ActivityOwner;
+  subject?: ActivitySubject;
   operationId?: string;
   causeId?: string;
   generation?: number;
@@ -93,17 +102,19 @@ export interface ActivityDraft {
 }
 
 export interface ActivityEvent extends ActivityDraft {
+  eventId: number;
   sessionId: string;
   sequence: number;
   eventTimeUtc: string;
   monotonicMs: number;
 }
 
-export interface ActivitySnapshot {
+export interface ActivityPage {
   debugEnabled: boolean;
   sessionId: string | null;
   monotonicNowMs: number;
   events: ActivityEvent[];
+  nextCursor: number | null;
 }
 
 const latestOperations = new Map<ActivityOwner, string>();
@@ -133,6 +144,9 @@ export function recordActivity(draft: ActivityDraft): void {
   );
 }
 
-export function loadActivitySnapshot(): Promise<ActivitySnapshot> {
-  return invoke<ActivitySnapshot>("activity_snapshot");
+export function loadActivityPage(
+  before: number | null = null,
+  limit = 100,
+): Promise<ActivityPage> {
+  return invoke<ActivityPage>("activity_page", { before, limit });
 }

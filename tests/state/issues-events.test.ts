@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useIssuesStore } from "../../src/state/issues-store";
 import { installIssuesEventWiring } from "../../src/workflows/issues";
+import { useAppShellStore } from "../../src/state/app-shell-store";
 import {
   fireEvent,
   listenerCount,
@@ -11,7 +12,8 @@ import {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  useIssuesStore.setState({ open: false, loadRecent: vi.fn(async () => undefined) });
+  useIssuesStore.setState({ loadRecent: vi.fn(async () => undefined) });
+  useAppShellStore.setState({ utilitySurface: null });
 });
 
 describe("issue history event ownership", () => {
@@ -22,7 +24,7 @@ describe("issue history event ownership", () => {
     fireEvent("notification://published");
     expect(loadRecent).not.toHaveBeenCalled();
 
-    useIssuesStore.setState({ open: true });
+    useAppShellStore.getState().openUtility("issues");
     fireEvent("notification://published");
     fireEvent("notification://recorded");
 

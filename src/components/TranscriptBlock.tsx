@@ -12,12 +12,12 @@ import {
   useContentSessionStore,
 } from "../state/content-session-store";
 import { usePlaybackClientStore } from "../state/playback-client-store";
-import { useIssuesStore } from "../state/issues-store";
 import { requestPlaybackSeek } from "../workflows/playback";
 import OperationResult from "./ui/OperationResult";
 import type { TranscriptViewState } from "../models/contentSession";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
+import { useAppShellStore } from "../state/app-shell-store";
 
 interface TranscriptSegment {
   seconds: number;
@@ -356,9 +356,11 @@ export default function TranscriptBlock({
 
   const actions: React.ReactNode[] = [];
   if (!compact) {
-    const openBackgroundWork = () =>
-      useDerivedWorkStore.getState().setOpen(true);
-    const openIssues = () => useIssuesStore.getState().setOpen(true);
+    const openBackgroundWork = () => {
+      useAppShellStore.getState().openUtility("backgroundWork");
+      void useDerivedWorkStore.getState().load();
+    };
+    const openIssues = () => useAppShellStore.getState().openUtility("issues");
     const failed = state.status === "failed" || work?.state === "failed";
     if (state.replacement !== null && state.replacement.status !== "failed") {
       actions.push(
@@ -409,7 +411,7 @@ export default function TranscriptBlock({
       actions.push(
         <Button
           key="tools"
-          onClick={() => useBinariesStore.getState().setModalOpen(true)}
+          onClick={() => useAppShellStore.getState().openUtility("managedTools")}
         >
           Managed tools
         </Button>,

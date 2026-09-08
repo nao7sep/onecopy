@@ -37,7 +37,7 @@ export default function DestinationConflictModal({
             disabled={!pending.overwriteAllowed}
             title={
               pending.overwriteAllowed
-                ? "Preserve existing destination files in OneCopy Trash, then replace them"
+                ? "Preserve existing destination files in Deleted files, then replace them"
                 : "Overwrite cannot preserve two selected files that need the same destination name"
             }
             onClick={() => void resolveDestinationConflicts("overwrite")}
@@ -71,7 +71,7 @@ export default function DestinationConflictModal({
             </p>
             {conflict.preservedPaths.length > 1 ? (
               <div className="mt-2 text-xs text-ink-muted">
-                <p>Overwrite would preserve this companion family in Trash:</p>
+                <p>Overwrite would preserve this companion family in Deleted files:</p>
                 <ul className="mt-1 list-inside list-disc">
                   {conflict.preservedPaths.map((path) => (
                     <li key={path} className="break-all">
@@ -92,7 +92,7 @@ export default function DestinationConflictModal({
       ) : (
         <p className="mt-3 text-xs text-ink-muted">
           Overwrite first preserves the existing destination files and their
-          companion family in OneCopy Trash.
+          companion family in Deleted files.
         </p>
       )}
     </ModalShell>

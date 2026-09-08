@@ -11,8 +11,8 @@ import TrashModal from "../../src/components/TrashModal";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const ROWS = [
-  { root: "/Users/nao7sep/.onecopy/trash", bytes: 5_242_880, files: 42 },
-  { root: "/Volumes/HDD-1/.onecopy-trash", bytes: 0, files: 0 },
+  { root: "/Users/nao7sep/Photos/.onecopy-trash", bytes: 5_242_880, files: 42 },
+  { root: "/Volumes/HDD-1/Photos/.onecopy-trash", bytes: 0, files: 0 },
 ];
 
 beforeEach(() => {
@@ -26,7 +26,7 @@ describe("the trash modal", () => {
   it("measures on open and shows every root with its size", async () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
-    expect(document.body.textContent).toContain("/Volumes/HDD-1/.onecopy-trash");
+    expect(document.body.textContent).toContain("/Volumes/HDD-1/Photos/.onecopy-trash");
     expect(document.body.textContent).toContain("42 files");
     expect(document.body.textContent).toContain("5 MB");
   });
@@ -40,8 +40,8 @@ describe("the trash modal", () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
 
-    expect(document.body.textContent).toContain("Trash locations are unavailable.");
-    expect(document.body.textContent).not.toContain("No trash locations");
+    expect(document.body.textContent).toContain("Deleted-file locations are unavailable.");
+    expect(document.body.textContent).not.toContain("No deleted-file locations");
   });
 
   it("does not publish an older measurement into a reopened modal", async () => {
@@ -105,7 +105,7 @@ describe("the trash modal", () => {
     expect(invokeCalls.some((c) => c.command === "trash_empty")).toBe(false);
 
     const go = [...document.querySelectorAll("button")].find(
-      (b) => b.textContent === "Empty trash",
+      (b) => b.textContent === "Empty deleted files",
     );
     await act(async () => go!.click());
 
@@ -129,7 +129,7 @@ describe("the trash modal", () => {
     )!;
     await act(async () => empty.click());
     const confirm = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Empty trash",
+      (button) => button.textContent === "Empty deleted files",
     )!;
     await act(async () => confirm.click());
 
@@ -174,28 +174,31 @@ describe("the trash modal", () => {
     )!;
     await act(async () => empty.click());
     const confirm = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Empty trash",
+      (button) => button.textContent === "Empty deleted files",
     )!;
     await act(async () => confirm.click());
 
     expect(document.body.textContent).toContain(
-      "Trash was processed, but its totals couldn’t be refreshed.",
+      "Deleted files were processed, but their totals couldn’t be refreshed.",
     );
-    expect(document.body.textContent).not.toContain("Couldn’t empty this trash.");
+    expect(document.body.textContent).not.toContain("Couldn’t empty these deleted files.");
   });
 });
 
 describe("reveal", () => {
   it("opens the root in the file manager without touching anything", async () => {
-    const { revealItemInDir } = await import("../mocks/tauri");
+    mockCommands({ trash_reveal: () => undefined });
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
     const reveal = [...document.querySelectorAll("button")].find(
       (b) => b.textContent === "Reveal",
     )!;
     await act(async () => reveal.click());
-    expect(revealItemInDir).toHaveBeenCalledWith(ROWS[0].root);
-    // Reveal is a LOOK, never an operation: no command fired.
+    expect(invokeCalls).toContainEqual({
+      command: "trash_reveal",
+      args: { root: ROWS[0].root },
+    });
+    // Reveal never starts a destructive operation.
     expect(invokeCalls.filter((c) => c.command === "trash_empty")).toHaveLength(0);
   });
 });

@@ -24,6 +24,7 @@ import { Plus } from "lucide-react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
+import TimezoneHelpLink from "./TimezoneHelpLink";
 
 /** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
  * comparison). Persisted as app STATE, not part of the config draft — screen
@@ -376,10 +377,15 @@ function SettingsTabList({
   );
 }
 
-export default function SettingsModal() {
+export default function SettingsModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const timezoneErrorId = useId();
   const [activeTab, setActiveTab] = useState<SettingsTab>("library");
-  const open = useSettingsStore((s) => s.open);
   const draft = useSettingsStore((s) => s.draft);
   const opened = useSettingsStore((s) => s.opened);
   const timezoneValid = useSettingsStore((s) => s.timezoneValid);
@@ -387,7 +393,7 @@ export default function SettingsModal() {
   const saving = useSettingsStore((s) => s.saving);
   const message = useSettingsStore((s) => s.message);
   const messageLevel = useSettingsStore((s) => s.messageLevel);
-  const close = useSettingsStore((s) => s.close);
+  const discardDraft = useSettingsStore((s) => s.discardDraft);
   const update = useSettingsStore((s) => s.update);
   const resetSimilarPhotoSettings = useSettingsStore(
     (s) => s.resetSimilarPhotoSettings,
@@ -426,7 +432,10 @@ export default function SettingsModal() {
   const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
   const requestClose = () => {
     if (dirty) setConfirmDiscard(true);
-    else close();
+    else {
+      discardDraft();
+      onClose();
+    }
   };
 
   return (
@@ -459,7 +468,8 @@ export default function SettingsModal() {
           cancelLabel="Keep editing"
           onConfirm={() => {
             setConfirmDiscard(false);
-            close();
+            discardDraft();
+            onClose();
           }}
           onCancel={() => setConfirmDiscard(false)}
         />
@@ -543,7 +553,7 @@ export default function SettingsModal() {
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Timestamps
           </h2>
-          <Row label="Default timezone" hint="IANA name, e.g. Asia/Tokyo">
+          <Row label="Default timezone" hint="Used when metadata has no timezone">
             <span>
               <TextInput
                 className="w-48"
@@ -565,6 +575,7 @@ export default function SettingsModal() {
                     ? ""
                     : "Not a recognized timezone name"}
               </span>
+              <TimezoneHelpLink />
             </span>
           </Row>
           <NumberField
@@ -907,7 +918,7 @@ export default function SettingsModal() {
             </Select>
           </Row>
           <CheckField
-            label="Confirm direct single-item Trash"
+            label="Confirm direct single-item deletion"
             checked={draft.confirmTrashDelete}
             onChange={(v) => update({ confirmTrashDelete: v })}
           />

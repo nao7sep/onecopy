@@ -57,12 +57,11 @@ beforeEach(() => {
       },
     }),
   });
-  useSettingsStore.getState().openWith(config, null, accelerationCapabilities);
+  useSettingsStore.getState().beginEditing(config, null, accelerationCapabilities);
 });
 
 afterEach(() => {
   useSettingsStore.setState({
-    open: false,
     draft: null,
     opened: null,
     saving: false,
@@ -72,15 +71,15 @@ afterEach(() => {
 
 describe("Settings categories", () => {
   it("explains how to populate an empty source-directory list", () => {
-    useSettingsStore.getState().openWith({ ...config, sourceDirs: [] });
-    render(<SettingsModal />);
+    useSettingsStore.getState().beginEditing({ ...config, sourceDirs: [] });
+    render(<SettingsModal open onClose={() => {}} />);
 
     expect(screen.getByText(/No source directories/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add directory" })).toBeTruthy();
   });
 
   it("uses keyboard-operable tabs instead of one long mixed scroller", () => {
-    render(<SettingsModal />);
+    render(<SettingsModal open onClose={() => {}} />);
     expect(screen.getByRole("tabpanel").getAttribute("id")).toBe("settings-panel-library");
     expect(screen.getByText("Directories")).toBeTruthy();
     expect(screen.queryByText("Previews")).toBeNull();
@@ -95,7 +94,7 @@ describe("Settings categories", () => {
   });
 
   it("resets only the four optimized similar-photo settings", () => {
-    useSettingsStore.getState().openWith({
+    useSettingsStore.getState().beginEditing({
       ...config,
       goodRangeStartYear: 2007,
       similarityMaxGapSeconds: 12,
@@ -106,7 +105,7 @@ describe("Settings categories", () => {
       confirmTrashDelete: true,
     });
     const before = useSettingsStore.getState().draft;
-    render(<SettingsModal />);
+    render(<SettingsModal open onClose={() => {}} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Reset similar photo settings" }));
 
@@ -120,7 +119,7 @@ describe("Settings categories", () => {
   });
 
   it("confirms library reconstruction from Settings", async () => {
-    render(<SettingsModal />);
+    render(<SettingsModal open onClose={() => {}} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
     expect(screen.getByText(/Your files, settings, managed tools, and choices/)).toBeTruthy();
@@ -132,7 +131,7 @@ describe("Settings categories", () => {
   });
 
   it("keeps video and audio policy separate and face scoring before trash behavior", () => {
-    render(<SettingsModal />);
+    render(<SettingsModal open onClose={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Media" }));
     expect(screen.getByLabelText("Play videos automatically when shown")).toBeTruthy();
     expect(screen.getByLabelText("Play audio automatically when shown")).toBeTruthy();
@@ -152,7 +151,7 @@ describe("Settings categories", () => {
       labelIndex("Maximum images in Comparison"),
     );
     expect(labelIndex("Maximum images in Comparison")).toBeLessThan(
-      labelIndex("Confirm direct single-item Trash"),
+      labelIndex("Confirm direct single-item deletion"),
     );
     expect(
       (screen.getByLabelText("Show face-score stars on photos") as HTMLInputElement).checked,
@@ -163,7 +162,7 @@ describe("Settings categories", () => {
   });
 
   it("renders backend-owned acceleration choices and switches Metal at runtime", () => {
-    render(<SettingsModal />);
+    render(<SettingsModal open onClose={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
 
     const transcription = screen.getByLabelText("Transcription acceleration") as HTMLSelectElement;
@@ -178,9 +177,9 @@ describe("Settings categories", () => {
 });
 
 describe("settings save state", () => {
-  it("refuses programmatic close while a save is still committing", () => {
+  it("refuses to discard the draft while a save is still committing", () => {
     useSettingsStore.setState({ saving: true });
-    useSettingsStore.getState().close();
-    expect(useSettingsStore.getState().open).toBe(true);
+    useSettingsStore.getState().discardDraft();
+    expect(useSettingsStore.getState().draft).not.toBeNull();
   });
 });

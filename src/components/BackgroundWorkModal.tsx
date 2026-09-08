@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Pause, Play, Square } from "lucide-react";
 import {
   backgroundClassLabel,
@@ -43,14 +44,18 @@ const DESCRIPTIONS: Record<BackgroundClassSnapshot["id"], string> = {
   "audio-transcripts": "Optional speech-to-text for audio files.",
 };
 
-export default function BackgroundWorkModal() {
-  const open = useDerivedWorkStore((state) => state.open);
+export default function BackgroundWorkModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const snapshot = useDerivedWorkStore((state) => state.snapshot);
   const loading = useDerivedWorkStore((state) => state.loading);
   const changing = useDerivedWorkStore((state) => state.changing);
   const error = useDerivedWorkStore((state) => state.error);
   const indexError = useSectionsStore((state) => state.error);
-  const setOpen = useDerivedWorkStore((state) => state.setOpen);
   const setPaused = useDerivedWorkStore((state) => state.setPaused);
   const sourceCheck = useSectionsStore((state) => state.sourceCheck);
   const fileInformation = useSectionsStore((state) => state.fileInformation);
@@ -60,12 +65,16 @@ export default function BackgroundWorkModal() {
     (state) => state.setFileInformationPaused,
   );
 
+  useEffect(() => {
+    if (open) void useDerivedWorkStore.getState().load();
+  }, [open]);
+
   if (!open) return null;
 
   return (
     <ModalShell
       title="Background work"
-      onClose={() => setOpen(false)}
+      onClose={onClose}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
       footerStart={
         indexError !== null || error !== null ? (

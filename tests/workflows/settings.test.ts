@@ -5,6 +5,7 @@ import { saveSettings } from "../../src/workflows/settings";
 import { useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { useSettingsStore } from "../../src/state/settings-store";
+import { useAppShellStore } from "../../src/state/app-shell-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 async function settleUntil(predicate: () => boolean): Promise<void> {
@@ -24,7 +25,8 @@ beforeEach(() => {
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     check_source_dirs: () => ({ missing: [], substituted: [] }),
   });
-  useSettingsStore.getState().openWith({});
+  useSettingsStore.getState().beginEditing({});
+  useAppShellStore.getState().openUtility("settings");
   useAppStore.setState({
     appData: {
       config: {},
@@ -43,7 +45,7 @@ describe("Settings save boundary", () => {
 
     await saveSettings();
 
-    expect(useSettingsStore.getState().open).toBe(true);
+    expect(useAppShellStore.getState().utilitySurface).toBe("settings");
     expect(useSettingsStore.getState().message).toBe(
       "Settings could not be saved. Your changes are still here; try again.",
     );
@@ -68,7 +70,6 @@ describe("Settings save boundary", () => {
     await settleUntil(() => resolutionStarted);
 
     expect(useSettingsStore.getState()).toMatchObject({
-      open: false,
       draft: null,
       saving: false,
     });
@@ -81,7 +82,7 @@ describe("Settings save boundary", () => {
 
     await saveSettings();
 
-    expect(useSettingsStore.getState().open).toBe(false);
+    expect(useAppShellStore.getState().utilitySurface).toBeNull();
     expect(useItemsStore.getState().message).toContain(
       "Settings were saved, but the library could not be updated",
     );
@@ -129,19 +130,19 @@ describe("Settings save boundary", () => {
     await saveSettings();
 
     expect(useSettingsStore.getState()).toMatchObject({
-      open: true,
       draft,
       saving: false,
       message:
         "Settings were saved, but Sound and volume could not be saved. Your changes are still here; try again.",
       messageLevel: "error",
     });
+    expect(useAppShellStore.getState().utilitySurface).toBe("settings");
     expect(invokeCalls.some((call) => call.command === "re_resolve_all")).toBe(true);
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
   });
 
   it("publishes an explicit runtime acceleration selection as configuration", async () => {
-    useSettingsStore.getState().openWith(
+    useSettingsStore.getState().beginEditing(
       { aiAcceleration: { transcription: "metal", "face-scoring": "none" } },
       null,
       [

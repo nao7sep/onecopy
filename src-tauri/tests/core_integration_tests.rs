@@ -89,6 +89,15 @@ fn world(label: &str) -> World {
     let corpus = dir.path().join("corpus");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(corpus.join("sub")).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "sourceDirs": [corpus.to_string_lossy()],
+            "destinationRoots": [dir.path().to_string_lossy()],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
 
     shoot(&corpus, "IMG_20260110_120000.jpg", 0, false);
     shoot(&corpus, "IMG_20260110_120010.jpg", 4, false);
@@ -143,6 +152,13 @@ fn derive_all(conn: &Connection, world: &World) {
 fn live_files(corpus: &Path) -> Vec<String> {
     let mut names: Vec<String> = walkdir(corpus)
         .into_iter()
+        .filter(|path| {
+            !path
+                .strip_prefix(corpus)
+                .unwrap()
+                .components()
+                .any(|part| part.as_os_str() == trash::TRASH_DIR_NAME)
+        })
         .map(|p| {
             p.strip_prefix(corpus)
                 .unwrap()
@@ -212,7 +228,9 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 
     // Four logical contents (the duplicate shares its hash), all derived.
     let hashes: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT hash FROM contents ORDER BY hash").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT hash FROM contents ORDER BY hash")
+            .unwrap();
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .unwrap()
@@ -246,9 +264,12 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 
     // ---- Cull: best-first, losers to trash, winner moved out verified ----
     let a_member = items.iter().find(|i| i.similar_group_id.is_some()).unwrap();
-    let members =
-        queries::similar_group_of(&conn, a_member.hash.as_ref().unwrap(), true).unwrap();
-    assert_eq!(members.len(), 3, "the comparison surface sees the whole scene");
+    let members = queries::similar_group_of(&conn, a_member.hash.as_ref().unwrap(), true).unwrap();
+    assert_eq!(
+        members.len(),
+        3,
+        "the comparison surface sees the whole scene"
+    );
     let winner = members[0].hash.clone();
     let winner_bytes_expected = members[0].byte_size.unwrap() as u64;
 
@@ -302,19 +323,16 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     // Trash: EVERY corpus byte the cull removed is recoverable — the
     // verified move-out delivers a COPY and routes its sources through trash
     // like any delete, so even the exported original stays restorable. The
-    // corpus lives on the home volume, so everything routed into the
-    // app-root trash; the overview's own total additionally counts the
-    // manifest, honestly reporting what the trash holds on disk.
+    // Every recoverable file remains beneath the configured corpus root.
     let survivor_bytes = std::fs::metadata(w.corpus.join("IMG_20260110_130000.jpg"))
         .unwrap()
         .len();
-    let overview =
-        trash::overview(&[w.corpus.to_string_lossy().to_string()], &w.home);
+    let overview = trash::overview(std::slice::from_ref(&w.corpus));
     // Scope byte/provenance equality to THIS fixture's trash. The overview
     // deliberately discovers trash on every mounted volume, so summing all of
     // it makes this test depend on unrelated trash left by an earlier run or a
     // real user session on the same machine.
-    let trash_files = walkdir(&w.home.join("trash"));
+    let trash_files = walkdir(&w.corpus.join(trash::TRASH_DIR_NAME));
     let media_bytes: u64 = trash_files
         .iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "manifest.jsonl"))
@@ -326,7 +344,10 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
         "every removed corpus byte is in trash"
     );
     let overview_bytes: u64 = overview.iter().map(|r| r.bytes).sum();
-    assert!(overview_bytes >= media_bytes, "the surface never under-reports");
+    assert!(
+        overview_bytes >= media_bytes,
+        "the surface never under-reports"
+    );
     let manifest_lines: usize = trash_files
         .iter()
         .filter(|p| p.file_name().is_some_and(|n| n == "manifest.jsonl"))
@@ -360,8 +381,16 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
             )
             .unwrap()
             == 1;
-        assert_eq!(cache.thumb(hash).is_file(), expect, "thumb presence follows the DB");
-        assert_eq!(cache.preview(hash).is_file(), expect, "preview presence follows the DB");
+        assert_eq!(
+            cache.thumb(hash).is_file(),
+            expect,
+            "thumb presence follows the DB"
+        );
+        assert_eq!(
+            cache.preview(hash).is_file(),
+            expect,
+            "preview presence follows the DB"
+        );
     }
 
     // The month view and the issues surface agree nothing is wrong.
@@ -378,7 +407,10 @@ fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
     let control = World {
         home: interrupted._dir.path().join("control-home"),
         corpus: interrupted.corpus.clone(),
-        _dir: tempfile::Builder::new().prefix("onecopy-integration-unused-").tempdir().unwrap(),
+        _dir: tempfile::Builder::new()
+            .prefix("onecopy-integration-unused-")
+            .tempdir()
+            .unwrap(),
     };
     std::fs::create_dir_all(&control.home).unwrap();
 
@@ -399,8 +431,7 @@ fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
 
     // ---- Resume finishes; the control never stopped ----
     scanner::SCAN_CANCEL.store(false, Ordering::Relaxed);
-    scanner::run_full_scan(&conn, &interrupted_settings, &|_| {})
-        .expect("the resume completes");
+    scanner::run_full_scan(&conn, &interrupted_settings, &|_| {}).expect("the resume completes");
     let control_conn = index_store::open(&control.home.join("index.sqlite3")).unwrap();
     scan(&control_conn, &control).expect("the control scan completes");
 
@@ -444,7 +475,10 @@ fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
     };
     let (resumed_contents, resumed_paths) = dump(&conn);
     let (control_contents, control_paths) = dump(&control_conn);
-    assert_eq!(resumed_contents, control_contents, "contents identical after resume");
+    assert_eq!(
+        resumed_contents, control_contents,
+        "contents identical after resume"
+    );
     assert_eq!(resumed_paths, control_paths, "paths identical after resume");
 
     let derived = |conn: &Connection| -> i64 {

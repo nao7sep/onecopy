@@ -6,6 +6,7 @@ import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useSettingsStore } from "../state/settings-store";
+import { useAppShellStore } from "../state/app-shell-store";
 import { useSectionsStore } from "../state/sections-store";
 import { hasOpenModal } from "../utils/modalStack";
 import {
@@ -22,17 +23,17 @@ import { isAudioFile, itemKey } from "../models/items";
 import { toggleMainPlayback } from "../workflows/playback";
 
 export function useGlobalCommands() {
-  const [helpOpen, setHelpOpen] = useState(false);
   const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
   const [confirmTrash, setConfirmTrash] = useState<number | null>(null);
 
   const openSettings = useCallback(() => {
     const appData = useAppStore.getState().appData;
-    useSettingsStore.getState().openWith(
+    useSettingsStore.getState().beginEditing(
       appData?.config ?? null,
       appData?.state ?? null,
       appData?.aiAccelerationCapabilities ?? [],
     );
+    useAppShellStore.getState().openUtility("settings");
   }, []);
 
   useEffect(() => {
@@ -42,7 +43,7 @@ export function useGlobalCommands() {
         return;
       if (isHelpShortcut(event)) {
         event.preventDefault();
-        setHelpOpen((open) => (open ? false : hasOpenModal() ? open : true));
+        if (!hasOpenModal()) useAppShellStore.getState().openUtility("shortcuts");
       } else if (isSettingsShortcut(event)) {
         event.preventDefault();
         if (!hasOpenModal()) openSettings();
@@ -146,9 +147,7 @@ export function useGlobalCommands() {
   }, []);
 
   return {
-    helpOpen,
-    openHelp: () => setHelpOpen(true),
-    closeHelp: () => setHelpOpen(false),
+    openHelp: () => useAppShellStore.getState().openUtility("shortcuts"),
     openSettings,
     confirmPermanent,
     confirmTrash,

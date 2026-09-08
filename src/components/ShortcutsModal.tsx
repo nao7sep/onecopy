@@ -21,9 +21,14 @@ export default function ShortcutsModal({
   if (!open) return null;
 
   return (
-    <ModalShell title="Keyboard shortcuts" onClose={onClose} widthClass="w-[520px]">
-      {shortcutGroups().map((group) => (
-        <section key={group.title} className="mb-5 last:mb-0">
+    <ModalShell
+      title="Keyboard shortcuts"
+      onClose={onClose}
+      widthClass="w-[min(920px,calc(100vw-3rem))]"
+    >
+      <div className="grid grid-cols-1 gap-x-8 gap-y-7 md:grid-cols-2 xl:grid-cols-3">
+        {shortcutGroups().map((group) => (
+          <section key={group.title}>
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {group.title}
             {/* The scope, stated: a chord pressed with the wrong surface
@@ -32,20 +37,21 @@ export default function ShortcutsModal({
               {group.context}
             </span>
           </h2>
-          <dl className="space-y-1">
+          <dl className="space-y-2.5">
             {group.rows.map((row) => (
               <div key={`${row.chord}-${row.action}`} className="flex items-baseline gap-4">
                 <dd className="min-w-0 flex-1 text-sm text-ink">{row.action}</dd>
                 <dt className="shrink-0">
-                  <kbd className="rounded-md border border-border bg-surface-muted px-2 py-0.5 font-mono text-xs text-ink-strong">
+                  <kbd className="inline-block min-w-10 rounded-md border border-border bg-surface-muted px-2.5 py-1 text-center font-mono text-xs text-ink-strong">
                     {row.chord}
                   </kbd>
                 </dt>
               </div>
             ))}
           </dl>
-        </section>
-      ))}
+          </section>
+        ))}
+      </div>
     </ModalShell>
   );
 }

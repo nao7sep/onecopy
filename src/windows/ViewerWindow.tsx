@@ -153,13 +153,13 @@ export default function ViewerWindow() {
       ) : null}
       {state.pendingDelete !== null ? (
         <ConfirmDialog
-          title={state.pendingDelete === "permanent" ? "Delete permanently?" : "Move to trash?"}
-          message={`${state.pendingDelete === "permanent" ? "Permanently delete" : "Move"} ${item.fileName}${
+          title={state.pendingDelete === "permanent" ? "Delete permanently?" : "Delete this item?"}
+          message={`${state.pendingDelete === "permanent" ? "Permanently delete" : "Delete"} ${item.fileName}${
             state.pendingDelete === "permanent"
               ? " and every copy? This cannot be undone."
-              : " and every copy to the trash?"
+              : " and every copy? They remain recoverable from Deleted files."
           }`}
-          confirmLabel={state.pendingDelete === "permanent" ? "Delete permanently" : "Move to trash"}
+          confirmLabel={state.pendingDelete === "permanent" ? "Delete permanently" : "Delete"}
           onConfirm={() => {
             void emit("viewer://confirm-delete", {}).catch(
               reportWindowCall("viewer delete confirmation"),

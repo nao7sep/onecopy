@@ -53,16 +53,14 @@ function entry(
 
 function seed(entries: DependencyState[]): void {
   useBinariesStore.setState({
-    modalOpen: true,
     installing: {},
     errors: {},
     checking: false,
     checkingId: null,
     checkingOperationId: null,
     checkCancelling: false,
-    cooldownUntil: 0,
-    lastCheckOutcome: null,
-    lastCheckOutcomeLevel: null,
+    checkFeedback: null,
+    checkError: null,
     entries,
     loading: false,
     loadError: null,
@@ -110,7 +108,7 @@ describe("parallel installs", () => {
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
     });
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     const install = buttons("Install");
     expect(install).toHaveLength(1); // ffmpeg's — the model row shows progress
     expect(install[0]!.disabled).toBe(false);
@@ -134,10 +132,10 @@ describe("parallel installs", () => {
       },
     });
 
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
 
     expect(document.body.textContent).toContain(
-      "Verifying — 84 MB / 84 MB (100%) · Next: Installing",
+      "Verifying — 84 MB / 84 MB (100%)",
     );
     expect(document.body.textContent).not.toContain("Resolving");
     expect(document.body.textContent).not.toContain("Downloading");
@@ -147,7 +145,7 @@ describe("parallel installs", () => {
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
     });
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
 
     await act(async () => buttons("Cancel")[0]!.click());
 
@@ -168,7 +166,7 @@ describe("parallel installs", () => {
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
     });
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
 
     await act(async () => buttons("Cancel")[0]!.click());
 
@@ -183,25 +181,25 @@ describe("registry state", () => {
   it("distinguishes loading, failure, and an ordinary empty registry", () => {
     seed([]);
     useBinariesStore.setState({ loading: true });
-    const loading = render(<BinariesModal />);
+    const loading = render(<BinariesModal open onClose={() => {}} />);
     expect(document.body.textContent).toContain("Loading managed tools…");
     loading.unmount();
 
     useBinariesStore.setState({ loading: false, loadError: "Managed tools are unavailable." });
-    const failed = render(<BinariesModal />);
+    const failed = render(<BinariesModal open onClose={() => {}} />);
     expect(document.body.textContent).toContain("Managed tools are unavailable.");
     expect(document.body.textContent).not.toContain("No managed tools are configured.");
     failed.unmount();
 
     useBinariesStore.setState({ loadError: null });
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     expect(document.body.textContent).toContain("No managed tools are configured.");
   });
 
   it("keeps long managed-model identities readable instead of ellipsizing them", () => {
     const label = "Transcription model (Whisper large-v3-turbo)";
     seed([entry("ultraface-rfb640", "not-installed", { label })]);
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
 
     const renderedLabel = [...document.querySelectorAll("span")].find(
       (element) => element.textContent === label,
@@ -218,7 +216,7 @@ describe("registry state", () => {
         requiredForCore: false,
       }),
     ]);
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
 
     const rows = [...document.querySelectorAll("div.rounded-xl")];
     const ffmpegStatus = rows
@@ -235,7 +233,7 @@ describe("registry state", () => {
 
 describe("installing everything", () => {
   it("puts Install all above the list", () => {
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     const installAll = buttons("Install all")[0]!;
     const firstRow = [...document.querySelectorAll("span")].find(
       (el) => el.textContent === "ffmpeg",
@@ -246,7 +244,7 @@ describe("installing everything", () => {
   });
 
   it("targets exactly the missing and updatable entries", async () => {
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     await act(async () => buttons("Install all")[0]!.click());
     const installed = invokeCalls
       .filter((c) => c.command === "binaries_install")
@@ -262,12 +260,12 @@ describe("installing everything", () => {
 describe("an entry whose version could not be read", () => {
   it("offers Update, which a merely-unchecked entry does not", () => {
     seed([entry("ffmpeg", "installed-unchecked", { installedVersion: null })]);
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     expect(buttons("Update")).toHaveLength(1);
     expect(document.body.textContent).not.toContain("Up to date");
 
     seed([entry("ffmpeg", "installed-unchecked")]);
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     expect(buttons("Update")).toHaveLength(0);
   });
 });
@@ -278,7 +276,7 @@ describe("the two lifecycles", () => {
     // claim about a check nobody ran. It is simply installed — with the
     // artifact's real publication date answering "how old is this?".
     seed([entry("whisper-large-v3-turbo", "up-to-date")]);
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     expect(document.body.textContent).toContain("Installed");
     expect(document.body.textContent).not.toContain("Up to date");
     expect(document.body.textContent).not.toContain("1fc70f774d38");
@@ -301,7 +299,7 @@ describe("the two lifecycles", () => {
         },
       }),
     ]);
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
 
     expect(document.body.textContent).toContain("Build 2026-08-23 13:03");
     expect(document.body.textContent).toContain("2026-08-24 14:04 available");
@@ -310,7 +308,7 @@ describe("the two lifecycles", () => {
 
   it("offers the check only on the entry that has an upstream", () => {
     seed([entry("ffmpeg", "up-to-date"), entry("whisper-large-v3-turbo", "up-to-date")]);
-    render(<BinariesModal />);
+    render(<BinariesModal open onClose={() => {}} />);
     const check = buttons("Check for updates");
     expect(check).toHaveLength(1);
     // It sits INSIDE the ffmpeg row, not floating above a list it cannot
@@ -325,7 +323,7 @@ describe("the two lifecycles", () => {
     vi.useFakeTimers();
     try {
       seed([entry("ffmpeg", "up-to-date"), entry("whisper-large-v3-turbo", "up-to-date")]);
-      render(<BinariesModal />);
+      render(<BinariesModal open onClose={() => {}} />);
       await act(async () => {
         buttons("Check for updates")[0]!.click();
         await vi.advanceTimersByTimeAsync(700);
@@ -345,7 +343,7 @@ describe("check feedback", () => {
     vi.useFakeTimers();
     try {
       seed([entry("ffmpeg", "up-to-date")]);
-      render(<BinariesModal />);
+      render(<BinariesModal open onClose={() => {}} />);
 
       await act(async () => {
         buttons("Check for updates")[0]!.click();
@@ -353,34 +351,32 @@ describe("check feedback", () => {
       });
 
       expect(useBinariesStore.getState().checking).toBe(false);
-      expect(document.body.textContent).toContain("You're up to date");
+      expect(buttons("Checked")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("acknowledges the click visibly and ends in a plain-words outcome", async () => {
-    // A real check can finish in tens of milliseconds, which reads as a dead
-    // button. The store holds the checking state to a visible floor, then
-    // says what it found in words that persist.
+  it("keeps operation state and brief completion feedback on the button", async () => {
     vi.useFakeTimers();
     try {
+      let finishCheck!: () => void;
+      mockCommands({
+        binaries_check: () => new Promise((resolve) => {
+          finishCheck = () => resolve({ outcome: "completed", states: useBinariesStore.getState().entries });
+        }),
+      });
       seed([entry("ffmpeg", "up-to-date")]);
-      render(<BinariesModal />);
+      render(<BinariesModal open onClose={() => {}} />);
+      await act(async () => buttons("Check for updates")[0]!.click());
+      expect(buttons("Checking…")).toHaveLength(1);
       await act(async () => {
-        buttons("Check for updates")[0]!.click();
-        await vi.advanceTimersByTimeAsync(0);
+        finishCheck();
+        await Promise.resolve();
       });
-      expect(document.body.textContent).toContain("Checking…");
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(400);
-      });
-      expect(document.body.textContent).toContain("Checking…");
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(300);
-      });
-      expect(document.body.textContent).toContain("You're up to date");
-      expect(buttons("Check for updates")[0]!.disabled).toBe(true);
+      expect(buttons("Checked")).toHaveLength(1);
+      await act(async () => vi.advanceTimersByTimeAsync(2_000));
+      expect(buttons("Check for updates")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
@@ -401,7 +397,7 @@ describe("check feedback", () => {
         },
       });
       seed([entry("ffmpeg", "up-to-date")]);
-      render(<BinariesModal />);
+      render(<BinariesModal open onClose={() => {}} />);
 
       await act(async () => buttons("Check for updates")[0]!.click());
       await act(async () => buttons("Cancel check")[0]!.click());
@@ -413,9 +409,8 @@ describe("check feedback", () => {
           operationId: expect.any(String),
         },
       });
-      expect(document.body.textContent).toContain("Cancelling…");
-      await act(async () => vi.advanceTimersByTimeAsync(700));
-      expect(document.body.textContent).toContain("Check cancelled");
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+      expect(buttons("Check for updates")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

@@ -26,7 +26,7 @@ function result(trashAvailable: boolean): MutationResult {
 afterEach(cleanup);
 
 describe("persistent mutation result remedies", () => {
-  it("offers OneCopy Trash only when the backend reports recovery material", () => {
+  it("offers Deleted files only when the backend reports recovery material", () => {
     const reveal = vi.fn();
     const dismiss = vi.fn();
     const view = render(
@@ -38,7 +38,7 @@ describe("persistent mutation result remedies", () => {
     );
 
     fireEvent.click(
-      view.getByRole("button", { name: "Reveal OneCopy Trash…" }),
+      view.getByRole("button", { name: "Reveal deleted files…" }),
     );
     expect(reveal).toHaveBeenCalledOnce();
     expect(
@@ -53,7 +53,7 @@ describe("persistent mutation result remedies", () => {
       />,
     );
     expect(
-      view.queryByRole("button", { name: "Reveal OneCopy Trash…" }),
+      view.queryByRole("button", { name: "Reveal deleted files…" }),
     ).toBeNull();
   });
 });

@@ -43,10 +43,8 @@ function seed(entries: DependencyState[]): void {
     checkingId: null,
     checkingOperationId: null,
     checkCancelling: false,
-    cooldownUntil: 0,
-    lastCheckOutcome: null,
-    lastCheckOutcomeLevel: null,
-    modalOpen: true,
+    checkFeedback: null,
+    checkError: null,
   });
 }
 
@@ -96,14 +94,12 @@ describe("managed-tool terminal ownership", () => {
 
     const installing = useBinariesStore.getState().install("ffmpeg");
     await Promise.resolve();
-    useBinariesStore.getState().setModalOpen(false);
     finish({
       outcome: "installed",
       operationId,
       state: entry("ffmpeg", "up-to-date", "9.2"),
     });
     await installing;
-    useBinariesStore.getState().setModalOpen(true);
 
     expect(useBinariesStore.getState().entries[0]?.status).toBe("up-to-date");
     expect(useBinariesStore.getState().installing.ffmpeg).toBeUndefined();

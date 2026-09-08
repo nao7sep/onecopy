@@ -24,7 +24,7 @@ The pass does not block the usable main window. It compares inexpensive recorded
 
 Background Work provides Start and Stop for checking source folders and shows its progress plus running, stopped, completed, or failed state. Stop takes effect at a safe checkpoint and preserves discoveries already recorded. The finite pass has no separate Pause state whose meaning duplicates Stop.
 
-A missing configured source or unavailable drive does not block the entire application. OneCopy continues with available copies, reports unavailable paths, and allows files to reappear when their source returns.
+A missing configured source or unavailable drive does not block the entire application. OneCopy continues with available copies, reports unavailable paths, and allows files to reappear when their source returns. It retains a reachable in-app path to recheck presence or repair the configured root without restarting.
 
 ## Watchers and section recheck
 
@@ -77,7 +77,7 @@ An ordinary missing managed tool never makes a wizard switch appear unavailable 
 
 An enabled optional feature whose required managed tool is unavailable remains enabled and visibly `Waiting for required tool`. It offers a direct Managed Tools action but never installs the tool implicitly. Windows face scoring requires both face models and OneCopy's pinned CPU runtime; it never loads an arbitrary system or search-path runtime. When the prerequisite becomes runnable, already-enabled work becomes eligible automatically; a feature that remained off stays off until the user enables it.
 
-Managed Tools gives warning emphasis to a missing tool needed for core presentation, while a missing model used only by optional enrichment retains ordinary status text. Tool names remain factual rather than carrying repeated required/optional labels; nearby explanation states which core formats or optional features each tool enables. Each single-artifact row shows one current installation-progress line rather than accumulating completed phase lines. Installation, update-check, and runtime failures remain visually distinct from ordinary absence.
+Managed-tool installation and update checking are bounded and cancellable, do not block normal browsing, and publish terminal state only for the operation that still owns the artifact.
 
 ## Background Work controls
 

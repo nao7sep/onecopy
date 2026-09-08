@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
+pub mod activity;
 pub mod ai_acceleration;
 pub mod ai_dependencies;
-pub mod activity;
 mod app_lifecycle;
 pub mod background_work;
 pub mod backup_store;
@@ -36,8 +36,8 @@ pub mod notifications;
 pub mod operations;
 pub mod path_identity;
 pub mod paths;
-pub mod preview;
 mod presentation_runtime;
+pub mod preview;
 pub mod queries;
 pub mod resolution;
 pub mod resource_limits;
@@ -46,8 +46,8 @@ pub mod scanner;
 pub mod similar_exclusions;
 pub mod similarity;
 pub mod source_check_runtime;
-pub mod storage;
 mod startup;
+pub mod storage;
 pub mod subprocess;
 pub mod text_preview;
 pub mod timestamps;
@@ -253,10 +253,8 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
 
 // The storage root, for the mediafile protocol's hash→path lookups.
 pub(crate) static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-static EXIT_QUIESCING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-static EXIT_REQUESTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static EXIT_QUIESCING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EXIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn cache_root() -> Option<std::path::PathBuf> {
     DATA_ROOT
@@ -513,15 +511,7 @@ fn get_section_range(
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            queries::section_range(
-                &conn,
-                &kind,
-                &month,
-                display_timezone(),
-                sort,
-                start,
-                end,
-            )
+            queries::section_range(&conn, &kind, &month, display_timezone(), sort, start, end)
         },
         |items| json!({ "items": items.len() }),
     )
@@ -650,14 +640,7 @@ fn move_items_out(
     conflict_policy: Option<String>,
     plan_token: Option<String>,
 ) -> Result<operations::MoveBatchOutcome, String> {
-    mutation_runtime::move_items_out(
-        &app,
-        items,
-        dest_dir,
-        mode,
-        conflict_policy,
-        plan_token,
-    )
+    mutation_runtime::move_items_out(&app, items, dest_dir, mode, conflict_policy, plan_token)
 }
 
 // Destination-tree support: immediate subdirectories of one directory (the
@@ -812,18 +795,47 @@ fn delete_empty_dir(path: String) -> Result<(), String> {
 fn reveal_data_subdir(app: AppHandle, name: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let root = paths::data_root(&app)?;
-    // A vetted set, not a join of caller input: this command must never become
-    // "open any path the webview asks for".
-    let target = match name.as_str() {
-        "logs" => root.join(paths::LOGS_DIR_NAME),
-        other => return Err(format!("not a revealable folder: {other}")),
-    };
-    if !target.is_dir() {
-        return Err(format!("{} does not exist yet", target.display()));
-    }
+    let target = ensure_revealable_data_subdir(&root, &name)?;
     app.opener()
         .open_path(target.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+fn ensure_revealable_data_subdir(
+    root: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, String> {
+    // A vetted set, not a join of caller input: this command must never become
+    // "open any path the webview asks for".
+    let target = match name {
+        "logs" => root.join(paths::LOGS_DIR_NAME),
+        other => return Err(format!("not a revealable folder: {other}")),
+    };
+    std::fs::create_dir_all(&target)
+        .map_err(|error| format!("could not create {}: {error}", target.display()))?;
+    Ok(target)
+}
+
+// EXCEPTION (tests-folder convention): this private Tauri-command path guard
+// is pinned beside the helper that the command calls.
+#[cfg(test)]
+mod reveal_data_subdir_tests {
+    use super::ensure_revealable_data_subdir;
+
+    #[test]
+    fn revealable_folder_is_created_lazily() {
+        let root = tempfile::tempdir().unwrap();
+        let target = ensure_revealable_data_subdir(root.path(), "logs").unwrap();
+        assert!(target.is_dir());
+        assert_eq!(target, root.path().join("logs"));
+    }
+
+    #[test]
+    fn arbitrary_subdirectories_remain_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(ensure_revealable_data_subdir(root.path(), "../private").is_err());
+        assert!(!root.path().join("private").exists());
+    }
 }
 
 // Opens an indexed item in its OS default app (the preview's "Open in player"
@@ -1018,7 +1030,9 @@ fn rescan_section(
             }
         },
         |outcome| match outcome {
-            RescanSectionOutcome::Completed { changed } => json!({ "status": "completed", "changed": changed }),
+            RescanSectionOutcome::Completed { changed } => {
+                json!({ "status": "completed", "changed": changed })
+            }
             RescanSectionOutcome::Cancelled => json!({ "status": "cancelled" }),
         },
     )
@@ -1092,7 +1106,10 @@ fn dismiss_notification(app: AppHandle, id: i64) -> Result<bool, String> {
 // calls this when its cache entry 404s, then reloads the entry. Idempotent
 // and cheap when the entry already exists.
 #[tauri::command(async)]
-fn ensure_preview(app: AppHandle, hash: String) -> Result<derived_work::EnsurePreviewResult, String> {
+fn ensure_preview(
+    app: AppHandle,
+    hash: String,
+) -> Result<derived_work::EnsurePreviewResult, String> {
     logging::boundary(
         "ensure_preview",
         json!({ "hash": hash }),
@@ -1101,10 +1118,12 @@ fn ensure_preview(app: AppHandle, hash: String) -> Result<derived_work::EnsurePr
             let config = storage::read_config_for_setup(&data_root)?;
             derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)
         },
-        |result| json!({
-            "canonicalHash": result.canonical_hash,
-            "coalesced": result.coalesced,
-        }),
+        |result| {
+            json!({
+                "canonicalHash": result.canonical_hash,
+                "coalesced": result.coalesced,
+            })
+        },
     )
 }
 
@@ -1166,19 +1185,18 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
     };
     let handle = app.clone();
     let start_hash = hash.clone();
-    let started = derived_work::spawn_manual_transcription(
-        move || {
-            let panic_handle = handle.clone();
-            let panic_hash = hash.clone();
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let result = (|| -> Result<(String, String), String> {
-                    let _work = derived_runtime::begin_manual_queued(&handle, class.id())?;
-                    derived_runtime::active_item(&handle, class, &hash);
-                    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                    let projection = queries::ItemProjectionContext {
-                        capabilities: derived_work::work_capabilities(&data_root)?,
-                    };
-                    let source_path: String = conn
+    let started = derived_work::spawn_manual_transcription(move || {
+        let panic_handle = handle.clone();
+        let panic_hash = hash.clone();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = (|| -> Result<(String, String), String> {
+                let _work = derived_runtime::begin_manual_queued(&handle, class.id())?;
+                derived_runtime::active_item(&handle, class, &hash);
+                let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+                let projection = queries::ItemProjectionContext {
+                    capabilities: derived_work::work_capabilities(&data_root)?,
+                };
+                let source_path: String = conn
                         .query_row(
                             "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
                             [&hash],
@@ -1190,190 +1208,183 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                             }
                             other => format!("could not read the file path: {other}"),
                         })?;
-                    let cache = preview::CachePaths::new(cache_root);
-                    let progress_handle = handle.clone();
-                    let outcome = derived_work::complete_transcription_attempt(
-                        derived_work::TranscriptionAttempt {
-                            conn: &conn,
-                            cache: &cache,
-                            data_root: &data_root,
-                            temp_dir: data_root.join(binaries_manager::TEMP_DIR_NAME),
-                            source_hash: &hash,
-                            source_path: &source_path,
-                            replace_existing: replace.unwrap_or(false),
-                            acceleration: transcription_acceleration,
-                            cancel_when: Some(Box::new(derived_runtime::cancelled)),
-                        },
-                        |exact_hash| {
-                            if exact_hash != hash {
-                                derived_work::notify_item_update(
-                                    &handle,
-                                    &conn,
-                                    projection,
-                                    class.id(),
-                                    &hash,
-                                    exact_hash,
-                                );
-                            }
-                        },
-                        |_| {},
-                        move |progress_hash, percent| {
-                            if app_lifecycle::shutting_down() {
-                                return;
-                            }
-                            let percent = percent.clamp(0, 100);
-                            derived_runtime::report_manual_progress(
-                                &progress_handle,
+                let cache = preview::CachePaths::new(cache_root);
+                let progress_handle = handle.clone();
+                let outcome = derived_work::complete_transcription_attempt(
+                    derived_work::TranscriptionAttempt {
+                        conn: &conn,
+                        cache: &cache,
+                        data_root: &data_root,
+                        temp_dir: data_root.join(binaries_manager::TEMP_DIR_NAME),
+                        source_hash: &hash,
+                        source_path: &source_path,
+                        replace_existing: replace.unwrap_or(false),
+                        acceleration: transcription_acceleration,
+                        cancel_when: Some(Box::new(derived_runtime::cancelled)),
+                    },
+                    |exact_hash| {
+                        if exact_hash != hash {
+                            derived_work::notify_item_update(
+                                &handle,
+                                &conn,
+                                projection,
                                 class.id(),
-                                percent as u64,
-                                100,
-                            );
-                            failure_runtime::emit_or_record(
-                                &progress_handle,
-                                "transcribe://progress",
-                                json!({ "hash": progress_hash, "percent": percent }),
-                            );
-                        },
-                    )?;
-                    match outcome {
-                        derived_work::TranscriptionAttemptOutcome::Completed {
-                            hash: exact_hash,
-                            text,
-                        } => {
-                            derived_work::notify_item_update(
-                                &handle,
-                                &conn,
-                                projection,
-                                "transcripts",
                                 &hash,
-                                &exact_hash,
+                                exact_hash,
                             );
-                            Ok((exact_hash, text))
                         }
-                        derived_work::TranscriptionAttemptOutcome::Cancelled { .. } => {
-                            // Preserve a typed cancellation after the claim resets its
-                            // process-wide flag at the end of this worker.
-                            Err(scanner::CANCELLED.to_string())
+                    },
+                    |_| {},
+                    move |progress_hash, percent| {
+                        if app_lifecycle::shutting_down() {
+                            return;
                         }
-                        derived_work::TranscriptionAttemptOutcome::Unavailable {
-                            hash: exact_hash,
-                            message,
-                        } => {
-                            derived_work::notify_item_update(
-                                &handle,
-                                &conn,
-                                projection,
-                                "transcripts",
-                                &hash,
-                                &exact_hash,
-                            );
-                            Err(message)
-                        }
-                        derived_work::TranscriptionAttemptOutcome::ResourceSafety {
-                            message,
-                            ..
-                        } => {
-                            derived_work::pause_for_resource_safety(
-                                &handle,
-                                &conn,
-                                class,
-                                &message,
-                            )?;
-                            Err(message)
-                        }
-                        derived_work::TranscriptionAttemptOutcome::Failed {
-                            hash: exact_hash,
-                            message,
-                        } => {
-                            derived_work::notify_item_update(
-                                &handle,
-                                &conn,
-                                projection,
-                                "transcripts",
-                                &hash,
-                                &exact_hash,
-                            );
-                            Err(message)
-                        }
-                    }
-                })();
-                if app_lifecycle::shutting_down() {
-                    return Ok(());
-                }
-                match result {
-                    Ok((event_hash, text)) => failure_runtime::emit_checked(
-                        &handle,
-                        "transcribe://done",
-                        json!({ "hash": event_hash, "text": text }),
-                    ),
-                    Err(err) if err == scanner::CANCELLED => failure_runtime::emit_checked(
-                        &handle,
-                        "transcribe://cancelled",
-                        json!({ "hash": hash }),
-                    ),
-                    Err(err) => {
-                        logging::warn(
-                            "transcription failed",
-                            json!({ "hash": hash, "error": { "message": err.clone() } }),
+                        let percent = percent.clamp(0, 100);
+                        derived_runtime::report_manual_progress(
+                            &progress_handle,
+                            class.id(),
+                            percent as u64,
+                            100,
                         );
-                        failure_runtime::emit_checked(
+                        failure_runtime::emit_or_record(
+                            &progress_handle,
+                            "transcribe://progress",
+                            json!({ "hash": progress_hash, "percent": percent }),
+                        );
+                    },
+                )?;
+                match outcome {
+                    derived_work::TranscriptionAttemptOutcome::Completed {
+                        hash: exact_hash,
+                        text,
+                    } => {
+                        derived_work::notify_item_update(
                             &handle,
-                            "transcribe://error",
-                            json!({ "hash": hash, "message": err }),
-                        )
+                            &conn,
+                            projection,
+                            "transcripts",
+                            &hash,
+                            &exact_hash,
+                        );
+                        Ok((exact_hash, text))
+                    }
+                    derived_work::TranscriptionAttemptOutcome::Cancelled { .. } => {
+                        // Preserve a typed cancellation after the claim resets its
+                        // process-wide flag at the end of this worker.
+                        Err(scanner::CANCELLED.to_string())
+                    }
+                    derived_work::TranscriptionAttemptOutcome::Unavailable {
+                        hash: exact_hash,
+                        message,
+                    } => {
+                        derived_work::notify_item_update(
+                            &handle,
+                            &conn,
+                            projection,
+                            "transcripts",
+                            &hash,
+                            &exact_hash,
+                        );
+                        Err(message)
+                    }
+                    derived_work::TranscriptionAttemptOutcome::ResourceSafety {
+                        message, ..
+                    } => {
+                        derived_work::pause_for_resource_safety(&handle, &conn, class, &message)?;
+                        Err(message)
+                    }
+                    derived_work::TranscriptionAttemptOutcome::Failed {
+                        hash: exact_hash,
+                        message,
+                    } => {
+                        derived_work::notify_item_update(
+                            &handle,
+                            &conn,
+                            projection,
+                            "transcripts",
+                            &hash,
+                            &exact_hash,
+                        );
+                        Err(message)
                     }
                 }
-            }));
+            })();
             if app_lifecycle::shutting_down() {
-                match outcome {
-                    Ok(Err(error)) => logging::error(
-                        "transcription worker failed during shutdown",
-                        json!({ "error": { "message": error } }),
-                    ),
-                    Err(payload) => logging::error(
-                        "transcription worker failed during shutdown",
-                        json!({
-                            "error": { "message": failure_runtime::panic_message(payload) }
-                        }),
-                    ),
-                    _ => {}
-                }
-                return;
+                return Ok(());
             }
+            match result {
+                Ok((event_hash, text)) => failure_runtime::emit_checked(
+                    &handle,
+                    "transcribe://done",
+                    json!({ "hash": event_hash, "text": text }),
+                ),
+                Err(err) if err == scanner::CANCELLED => failure_runtime::emit_checked(
+                    &handle,
+                    "transcribe://cancelled",
+                    json!({ "hash": hash }),
+                ),
+                Err(err) => {
+                    logging::warn(
+                        "transcription failed",
+                        json!({ "hash": hash, "error": { "message": err.clone() } }),
+                    );
+                    failure_runtime::emit_checked(
+                        &handle,
+                        "transcribe://error",
+                        json!({ "hash": hash, "message": err }),
+                    )
+                }
+            }
+        }));
+        if app_lifecycle::shutting_down() {
             match outcome {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
+                Ok(Err(error)) => logging::error(
+                    "transcription worker failed during shutdown",
+                    json!({ "error": { "message": error } }),
+                ),
+                Err(payload) => logging::error(
+                    "transcription worker failed during shutdown",
+                    json!({
+                        "error": { "message": failure_runtime::panic_message(payload) }
+                    }),
+                ),
+                _ => {}
+            }
+            return;
+        }
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = failure_runtime::report(
+                    &panic_handle,
+                    "event-delivery-failed",
+                    Some(&panic_hash),
+                    &error,
+                );
+            }
+            Err(payload) => {
+                let error = failure_runtime::panic_message(payload);
+                let _ = failure_runtime::report(
+                    &panic_handle,
+                    "transcription-worker-failed",
+                    Some(&panic_hash),
+                    &error,
+                );
+                if let Err(emit_error) = failure_runtime::emit_checked(
+                    &panic_handle,
+                    "transcribe://error",
+                    json!({ "hash": panic_hash, "message": error }),
+                ) {
                     let _ = failure_runtime::report(
                         &panic_handle,
                         "event-delivery-failed",
-                        Some(&panic_hash),
-                        &error,
+                        Some("transcribe://error"),
+                        &emit_error,
                     );
-                }
-                Err(payload) => {
-                    let error = failure_runtime::panic_message(payload);
-                    let _ = failure_runtime::report(
-                        &panic_handle,
-                        "transcription-worker-failed",
-                        Some(&panic_hash),
-                        &error,
-                    );
-                    if let Err(emit_error) = failure_runtime::emit_checked(
-                        &panic_handle,
-                        "transcribe://error",
-                        json!({ "hash": panic_hash, "message": error }),
-                    ) {
-                        let _ = failure_runtime::report(
-                            &panic_handle,
-                            "event-delivery-failed",
-                            Some("transcribe://error"),
-                            &emit_error,
-                        );
-                    }
                 }
             }
-        },
-    );
+        }
+    });
     if let Err(error) = started {
         if error == scanner::CANCELLED {
             return Err(error);
@@ -1498,11 +1509,23 @@ fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
         json!({}),
         || {
             let data_root = paths::data_root(&app)?;
-            let dirs = storage::load_config_source_dirs(&data_root)?;
-            Ok(trash::overview(&dirs, &data_root))
+            let roots = storage::load_config_file_roots(&data_root)?;
+            Ok(trash::overview(&roots))
         },
         |roots| json!({ "roots": roots.len() }),
     )
+}
+
+#[tauri::command(async)]
+fn trash_reveal(app: AppHandle, root: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let data_root = paths::data_root(&app)?;
+    let roots = storage::load_config_file_roots(&data_root)?;
+    let path = std::path::PathBuf::from(&root);
+    let path = trash::ensure_root_for_reveal(&roots, &path)?;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|error| error.to_string())
 }
 
 // Emptying is PERMANENT (the trash is the safety net; emptying it removes
@@ -1762,8 +1785,8 @@ async fn binaries_install(
             Ok(Err(error)) => InstallWorkerOutcome::Failed(error),
             Err(payload) => InstallWorkerOutcome::Failed(failure_runtime::panic_message(payload)),
         };
-        let spec = binaries_manager::spec_of(&worker_id)
-            .expect("a claimed dependency remains registered");
+        let spec =
+            binaries_manager::spec_of(&worker_id).expect("a claimed dependency remains registered");
         let state = binaries_manager::state_of(&worker_root, spec);
         (outcome, state)
     })
@@ -1784,15 +1807,9 @@ async fn binaries_install(
 
     match outcome {
         InstallWorkerOutcome::Installed => {
-            if let Err(error) =
-                failure_runtime::clear(&app, "dependency-install-failed", Some(&id))
+            if let Err(error) = failure_runtime::clear(&app, "dependency-install-failed", Some(&id))
             {
-                let _ = failure_runtime::report(
-                    &app,
-                    "issue-recovery-failed",
-                    Some(&id),
-                    &error,
-                );
+                let _ = failure_runtime::report(&app, "issue-recovery-failed", Some(&id), &error);
             }
             derived_work::wake();
             Ok(BinaryInstallResult::Installed {
@@ -1819,12 +1836,7 @@ async fn binaries_install(
                     "error": { "message": error.clone() }
                 }),
             );
-            let _ = failure_runtime::report(
-                &app,
-                "dependency-install-failed",
-                Some(&id),
-                &error,
-            );
+            let _ = failure_runtime::report(&app, "dependency-install-failed", Some(&id), &error);
             if state.status != binaries::BinaryStatus::NotInstalled {
                 derived_work::wake();
             }
@@ -1853,26 +1865,36 @@ enum BinaryCheckOutcome {
 }
 
 #[tauri::command(async)]
-fn binaries_check(
+async fn binaries_check(
     app: AppHandle,
     id: String,
     operation_id: String,
 ) -> Result<BinaryCheckOutcome, String> {
+    let data_root = paths::data_root(&app)?;
+    let worker_root = data_root.clone();
+    let worker_id = id.clone();
+    let worker_operation_id = operation_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        match binaries_manager::check_entry_with_operation(
+            &worker_root,
+            &worker_id,
+            &worker_operation_id,
+        ) {
+            Ok(_) => Ok(BinaryCheckOutcome::Completed {
+                states: binaries_manager::states(&worker_root),
+            }),
+            Err(error) if error == binaries_acquisition::CANCELLED_ERROR => {
+                Ok(BinaryCheckOutcome::Cancelled)
+            }
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(|error| format!("managed-tool check worker failed: {error}"))?;
     logging::boundary(
         "binaries_check",
         json!({ "id": id }),
-        || {
-            let data_root = paths::data_root(&app)?;
-            match binaries_manager::check_entry_with_operation(&data_root, &id, &operation_id) {
-                Ok(_) => Ok(BinaryCheckOutcome::Completed {
-                    states: binaries_manager::states(&data_root),
-                }),
-                Err(error) if error == binaries_acquisition::CANCELLED_ERROR => {
-                    Ok(BinaryCheckOutcome::Cancelled)
-                }
-                Err(error) => Err(error),
-            }
-        },
+        || result,
         |outcome| match outcome {
             BinaryCheckOutcome::Completed { states } => {
                 json!({ "outcome": "completed", "entries": states.len() })
@@ -1891,11 +1913,15 @@ fn validate_timezone(name: String) -> bool {
 // The session gate's check: configured source directories that are not
 // currently present (an unmounted volume manifests as a missing directory).
 #[tauri::command(async)]
-fn check_source_dirs(app: AppHandle) -> Result<SourceDirsStatus, String> {
+async fn check_source_dirs(app: AppHandle) -> Result<SourceDirsStatus, String> {
+    let worker_app = app.clone();
+    let result = tokio::task::spawn_blocking(move || verify_source_dirs(&worker_app))
+        .await
+        .map_err(|error| format!("source-directory check worker failed: {error}"))?;
     logging::boundary(
         "check_source_dirs",
         json!({}),
-        || verify_source_dirs(&app),
+        || result,
         |status| json!({ "missing": status.missing.len(), "substituted": status.substituted.len() }),
     )
 }
@@ -2058,15 +2084,22 @@ fn logging_debug_enabled() -> bool {
 }
 
 #[tauri::command(async)]
-fn activity_record(
+async fn activity_record(
     draft: activity::ActivityDraft,
 ) -> Result<Option<activity::ActivityEvent>, String> {
-    activity::record(draft)
+    tokio::task::spawn_blocking(move || activity::record(draft))
+        .await
+        .map_err(|error| format!("activity-record worker failed: {error}"))?
 }
 
 #[tauri::command(async)]
-fn activity_snapshot() -> activity::ActivitySnapshot {
-    activity::snapshot()
+async fn activity_page(
+    before: Option<i64>,
+    limit: Option<usize>,
+) -> Result<activity::ActivityPage, String> {
+    tokio::task::spawn_blocking(move || activity::page(before, limit))
+        .await
+        .map_err(|error| format!("activity page worker failed: {error}"))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2169,6 +2202,7 @@ pub fn run() {
             transcript_get,
             transcribe_cancel,
             trash_overview,
+            trash_reveal,
             trash_empty,
             trash_empty_cancel,
             dismiss_issue,
@@ -2185,7 +2219,7 @@ pub fn run() {
             log_event,
             logging_debug_enabled,
             activity_record,
-            activity_snapshot
+            activity_page
         ])
         .build(tauri::generate_context!());
 
@@ -2293,12 +2327,8 @@ pub fn run() {
                 });
             if let Err(error) = started {
                 let message = format!("could not start shutdown worker: {error}");
-                let _ = failure_runtime::report(
-                    &exit_handle,
-                    "shutdown-worker-failed",
-                    None,
-                    &message,
-                );
+                let _ =
+                    failure_runtime::report(&exit_handle, "shutdown-worker-failed", None, &message);
                 exit_handle.exit(1);
             }
         }
@@ -2314,12 +2344,7 @@ pub fn run() {
             binaries_manager::begin_shutdown();
             derived_work::shutdown(app_handle);
             if let Err(error) = mutation_runtime::request_shutdown() {
-                let _ = failure_runtime::report(
-                    app_handle,
-                    "shutdown-worker-failed",
-                    None,
-                    &error,
-                );
+                let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
             source_check_runtime::join();
             file_information_runtime::join();
@@ -2329,12 +2354,7 @@ pub fn run() {
             instance_owner::join(app_handle);
             derived_work::join();
             if let Err(error) = mutation_runtime::wait_for_idle() {
-                let _ = failure_runtime::report(
-                    app_handle,
-                    "shutdown-worker-failed",
-                    None,
-                    &error,
-                );
+                let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }

@@ -1436,6 +1436,7 @@ pub fn promote_identity(
     let _ = crate::activity::record(crate::activity::ActivityDraft {
         kind: crate::activity::ActivityKind::Changed,
         owner: crate::activity::ActivityOwner::Identity,
+        subject: None,
         operation_id: None,
         cause_id: None,
         generation: None,

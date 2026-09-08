@@ -11,8 +11,10 @@ const css = readFileSync(join(__dirname, "../../src/App.css"), "utf8");
 
 describe("scrollbar styling", () => {
   it("sets scrollbar-color alongside scrollbar-width", () => {
-    expect(css).toMatch(/scrollbar-width:\s*thin/);
+    expect(css).toMatch(/scrollbar-width:\s*auto/);
     expect(css).toMatch(/scrollbar-color:\s*var\(--scrollbar-thumb\)\s+transparent/);
+    expect(css).toMatch(/::-webkit-scrollbar\s*{[^}]*width:\s*16px/);
+    expect(css).toMatch(/::-webkit-scrollbar-thumb\s*{[^}]*border:\s*3px solid transparent/);
   });
 
   it("insets the thumb as a pill and brightens it on hover", () => {

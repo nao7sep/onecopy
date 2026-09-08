@@ -1,20 +1,19 @@
-//! The app-managed trash: per-volume, day-foldered, manifest-carrying, and
+//! Recoverable deleted-file storage: root-local, day-foldered, and
 //! write-only from the app's perspective (the app never purges; deleting any
 //! day folder by hand is safe because nothing outside it references its
 //! contents — the invariant the design states).
 //!
-//! Layout on each volume:
+//! Layout beneath each configured source or destination root:
 //!
 //! ```text
-//! <trash root>/20260808-utc/manifest.jsonl
-//! <trash root>/20260808-utc/<original path relative to the volume root>
+//! <configured root>/.onecopy-trash/20260808-utc/manifest.jsonl
+//! <configured root>/.onecopy-trash/20260808-utc/<stored file>
 //! ```
 //!
-//! The trash root is `<volume root>/.onecopy-trash` — a trash move is a
-//! same-volume rename: instant, zero net space. Exception (a boot-volume fix
-//! the design left open): files living on the same volume as the user's home
-//! use `~/.onecopy/trash/` instead, because macOS forbids creating entries at
-//! `/` — still a same-volume rename, just rooted where the app may write.
+//! The owning configured root is frozen before execution. The storage boundary
+//! proves physical containment and same-filesystem placement before creating
+//! the hidden directory or moving the file. Different roots therefore never
+//! share a permission boundary.
 //!
 //! A stored-name collision (same file re-created and re-trashed the same day)
 //! is resolved by a suffix loop plus an atomic exclusive rename
@@ -36,10 +35,6 @@ pub const TRASH_DIR_NAME: &str = ".onecopy-trash";
 /// exclude its own bookkeeping (see `tree_size`).
 pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";
 
-/// The home-volume trash lives under the app root (macOS forbids creating
-/// `/.onecopy-trash`). Named once in paths.rs, like every other subpath.
-use crate::paths::TRASH_DIR_NAME as HOME_TRASH_SUBDIR;
-
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TrashedRecord {
@@ -49,20 +44,18 @@ pub struct TrashedRecord {
     pub deleted_at_utc: String,
 }
 
-/// Moves one file into its volume's trash. `app_root` is the resolved storage
-/// root (`~/.onecopy`), used for the home-volume exception; `content_hash` is
-/// what the index knows (recorded into the manifest for later audit).
+/// Moves one file beneath the frozen configured root that owns it.
 pub fn trash_file(
     file: &Path,
-    app_root: &Path,
+    owning_root: &Path,
     content_hash: Option<&str>,
 ) -> Result<TrashedRecord, String> {
-    trash_file_with_before_move(file, app_root, content_hash, |_| {})
+    trash_file_with_before_move(file, owning_root, content_hash, |_| {})
 }
 
 fn trash_file_with_before_move(
     file: &Path,
-    app_root: &Path,
+    owning_root: &Path,
     content_hash: Option<&str>,
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, String> {
@@ -80,7 +73,7 @@ fn trash_file_with_before_move(
             file.display()
         ));
     }
-    let plan = prepare_trash(file, app_root, content_hash)?;
+    let plan = prepare_trash(file, owning_root, content_hash)?;
     commit_trash(file, plan, before_move)
 }
 
@@ -94,11 +87,31 @@ struct TrashPlan {
 
 fn prepare_trash(
     original: &Path,
-    app_root: &Path,
+    owning_root: &Path,
     content_hash: Option<&str>,
 ) -> Result<TrashPlan, String> {
-    let volume_root = volume_root_of(original)?;
-    let trash_root = trash_root_for(&volume_root, app_root)?;
+    if !owning_root.is_absolute() || !owning_root.is_dir() {
+        return Err(format!(
+            "deleted-file root is unavailable: {}",
+            owning_root.display()
+        ));
+    }
+    if !crate::path_identity::directory_is_within(original, owning_root)? {
+        return Err(format!(
+            "{} is outside its frozen configured root {}",
+            original.display(),
+            owning_root.display()
+        ));
+    }
+    if volume_root_of(original)? != volume_root_of(owning_root)? {
+        return Err("recoverable deletion must stay on the same filesystem".to_string());
+    }
+    let trash_root = owning_root.join(TRASH_DIR_NAME);
+    if crate::path_identity::directory_is_within(original, &trash_root).unwrap_or(false) {
+        return Err(
+            "a file already in deleted-file storage cannot be deleted into itself".to_string(),
+        );
+    }
     // Day folders use the FILENAME timestamp form (`yyyymmdd-utc`), never a
     // slice of the serialized ISO form — the timestamp conventions' date-only
     // grammar, with `-utc` carried because the files inside are the user's
@@ -112,15 +125,6 @@ fn prepare_trash(
     // trashed path never grows longer than <trash>/<day>/<name>, which is what
     // stopped the trash amplifying the platform's path-length limit.
     //
-    // Still verified as being under its own volume root: the whole point of a
-    // per-volume trash is that the move stays a same-volume rename.
-    if !path_is_under_volume(original, &volume_root) {
-        return Err(format!(
-            "{} is not under its own volume root {}",
-            original.display(),
-            volume_root.display()
-        ));
-    }
     let name = original
         .file_name()
         .ok_or_else(|| format!("{} has no file name", original.display()))?;
@@ -240,20 +244,18 @@ mod boundary_tests {
     #[test]
     fn exact_boundary_winner_survives_and_source_remains_authoritative() {
         let dir = tempfile::tempdir().unwrap();
-        let app_root = dir.path().join("app");
         let source_dir = dir.path().join("source");
-        std::fs::create_dir_all(&app_root).unwrap();
         std::fs::create_dir_all(&source_dir).unwrap();
         let source = source_dir.join("photo.jpg");
         std::fs::write(&source, b"source").unwrap();
 
-        let result = trash_file_with_before_move(&source, &app_root, None, |target| {
+        let result = trash_file_with_before_move(&source, &source_dir, None, |target| {
             std::fs::write(target, b"winner").unwrap()
         });
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"source");
-        let day = std::fs::read_dir(app_root.join("trash"))
+        let day = std::fs::read_dir(source_dir.join(TRASH_DIR_NAME))
             .unwrap()
             .next()
             .unwrap()
@@ -265,15 +267,13 @@ mod boundary_tests {
     #[test]
     fn replacement_before_the_move_is_the_file_that_gets_trashed() {
         let dir = tempfile::tempdir().unwrap();
-        let app_root = dir.path().join("app");
         let source_dir = dir.path().join("source");
-        std::fs::create_dir_all(&app_root).unwrap();
         std::fs::create_dir_all(&source_dir).unwrap();
         let source = source_dir.join("photo.jpg");
         let held = source_dir.join("held.jpg");
         std::fs::write(&source, b"original").unwrap();
 
-        let result = trash_file_with_before_move(&source, &app_root, None, |_| {
+        let result = trash_file_with_before_move(&source, &source_dir, None, |_| {
             std::fs::rename(&source, &held).unwrap();
             std::fs::write(&source, b"replacement").unwrap();
         })
@@ -285,23 +285,31 @@ mod boundary_tests {
     }
 }
 
-/// The trash root for a volume: `<volume root>/.onecopy-trash`, except the
-/// home volume, which uses `<app root>/trash` (macOS forbids writing at `/`).
-///
-/// `pub` for the tests: the volume root is already a parameter, so passing an
-/// arbitrary one is the whole seam — every test runs on the home volume, so
-/// the external-volume branch would otherwise never execute, though culling on
-/// an SD card or a backup drive takes it on every single delete.
-pub fn trash_root_for(volume_root: &Path, app_root: &Path) -> Result<PathBuf, String> {
-    let home_volume = dirs_home()
-        .and_then(|home| volume_root_of(&home).ok())
-        .map(|root| root == volume_root)
-        .unwrap_or(false);
-    if home_volume {
-        Ok(app_root.join(HOME_TRASH_SUBDIR))
-    } else {
-        Ok(volume_root.join(TRASH_DIR_NAME))
+/// Selects the most-specific configured root containing a planned file. A
+/// nested root owns its own deleted files instead of leaking them into an
+/// ancestor root with potentially broader permissions.
+pub fn root_for_file(file: &Path, configured_roots: &[PathBuf]) -> Result<PathBuf, String> {
+    if !file.is_absolute() {
+        return Err(format!("{} is not an absolute path", file.display()));
     }
+    configured_roots
+        .iter()
+        .filter(|root| {
+            if !root.is_absolute() {
+                return false;
+            }
+            match crate::path_identity::directory_is_within(file, root) {
+                Ok(within) => within,
+                // A source may disappear after it was indexed. Planning still
+                // freezes its configured lexical owner so execution can report
+                // that file as one ordinary unavailable target. No move can
+                // occur until trash_file revalidates the live physical path.
+                Err(_) => file.starts_with(root),
+            }
+        })
+        .max_by_key(|root| root.components().count())
+        .cloned()
+        .ok_or_else(|| format!("{} is outside every configured root", file.display()))
 }
 
 /// One trash root's standing facts for the Trash surface: where it is, how
@@ -315,30 +323,13 @@ pub struct TrashRootInfo {
     pub files: u64,
 }
 
-/// Every trash root the configured source directories imply (their volumes,
-/// deduplicated) plus the app-home trash, each with its current size. A root
-/// that does not exist yet reports zero rather than being omitted — the row
-/// tells the user where trash WOULD go, which is standing state too.
-pub fn overview(source_dirs: &[String], app_root: &Path) -> Vec<TrashRootInfo> {
+/// Every configured source and destination root has one local deleted-files
+/// directory. Missing directories report zero and are created only when the
+/// user deletes a file or explicitly reveals that location.
+pub fn overview(configured_roots: &[PathBuf]) -> Vec<TrashRootInfo> {
     let mut roots: Vec<PathBuf> = Vec::new();
-    for dir in source_dirs {
-        match volume_root_of(Path::new(dir)).and_then(|volume| trash_root_for(&volume, app_root)) {
-            Ok(root) if !roots.contains(&root) => roots.push(root),
-            Ok(_) => {}
-            Err(error) => crate::logging::warn(
-                "trash root resolution failed",
-                json!({ "path": dir, "error": { "message": error } }),
-            ),
-        }
-    }
-    let home = app_root.join(HOME_TRASH_SUBDIR);
-    if !roots.contains(&home) {
-        roots.push(home);
-    }
-    // Every MOUNTED volume is also probed, so a trash left behind on a drive
-    // no longer configured as a source still appears here (and only here —
-    // the overview is the single authority Empty verifies against).
-    for root in mounted_trash_roots() {
+    for configured in configured_roots {
+        let root = configured.join(TRASH_DIR_NAME);
         if !roots.contains(&root) {
             roots.push(root);
         }
@@ -356,69 +347,28 @@ pub fn overview(source_dirs: &[String], app_root: &Path) -> Vec<TrashRootInfo> {
         .collect()
 }
 
-/// Trash roots on the volumes mounted under `volumes` — the pure, testable
-/// half of mounted-volume discovery. Presence-only and read-cheap: one
-/// existence probe per volume, no sizing. Symlinked entries are skipped
-/// (macOS keeps a boot-volume symlink in /Volumes, and the boot volume's
-/// trash lives in the app root, not at `/`). Sorted for a stable overview.
-pub fn discover_in_volumes_dir(volumes: &Path) -> Vec<PathBuf> {
-    let entries = match std::fs::read_dir(volumes) {
-        Ok(entries) => entries,
-        Err(error) => {
-            crate::logging::warn(
-                "mounted-volume discovery failed",
-                json!({ "path": volumes, "error": { "message": error.to_string() } }),
-            );
-            return Vec::new();
-        }
-    };
-    let mut roots = Vec::new();
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                crate::logging::warn(
-                    "mounted-volume entry read failed",
-                    json!({ "path": volumes, "error": { "message": error.to_string() } }),
-                );
-                continue;
-            }
-        };
-        let path = entry.path();
-        let is_directory = match path.symlink_metadata() {
-            Ok(metadata) => metadata.file_type().is_dir(),
-            Err(error) => {
-                crate::logging::warn(
-                    "mounted-volume metadata read failed",
-                    json!({ "path": path, "error": { "message": error.to_string() } }),
-                );
-                continue;
-            }
-        };
-        if is_directory {
-            let candidate = path.join(TRASH_DIR_NAME);
-            if candidate.is_dir() {
-                roots.push(candidate);
-            }
-        }
+/// Validates one UI-selected deleted-files location against the current
+/// configuration, creates it when still empty/missing, and re-checks physical
+/// containment so a substituted symlink cannot escape the configured root.
+pub fn ensure_root_for_reveal(
+    configured_roots: &[PathBuf],
+    requested: &Path,
+) -> Result<PathBuf, String> {
+    let owning_root = configured_roots
+        .iter()
+        .find(|root| root.join(TRASH_DIR_NAME) == requested)
+        .ok_or_else(|| "not a known deleted-files location".to_string())?;
+    std::fs::create_dir_all(requested)
+        .map_err(|error| format!("could not create deleted-files location: {error}"))?;
+    let metadata = std::fs::symlink_metadata(requested)
+        .map_err(|error| format!("deleted-files location is unavailable: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("deleted-files location is not a real directory".to_string());
     }
-    roots.sort();
-    roots
-}
-
-/// The platform's mounted volumes: /Volumes on macOS, present drive letters
-/// on Windows (an absent letter fails its probe instantly).
-#[cfg(unix)]
-fn mounted_trash_roots() -> Vec<PathBuf> {
-    discover_in_volumes_dir(Path::new("/Volumes"))
-}
-
-#[cfg(windows)]
-fn mounted_trash_roots() -> Vec<PathBuf> {
-    ('A'..='Z')
-        .map(|letter| PathBuf::from(format!("{letter}:\\{TRASH_DIR_NAME}")))
-        .filter(|candidate| candidate.is_dir())
-        .collect()
+    if !crate::path_identity::directory_is_within(requested, owning_root)? {
+        return Err("deleted-files location escaped its configured root".to_string());
+    }
+    Ok(requested.to_path_buf())
 }
 
 /// Empties one trash root by deleting its day folders. PERMANENT by nature —
@@ -604,12 +554,6 @@ fn tree_size(root: &Path) -> (u64, u64) {
     (bytes, files)
 }
 
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-}
-
 /// The volume (mount point / drive) root containing `path`.
 #[cfg(unix)]
 pub fn volume_root_of(path: &Path) -> Result<PathBuf, String> {
@@ -647,18 +591,6 @@ pub fn volume_root_of(path: &Path) -> Result<PathBuf, String> {
         }
         _ => Err(format!("no volume prefix in {}", path.display())),
     }
-}
-
-#[cfg(windows)]
-fn path_is_under_volume(file: &Path, volume_root: &Path) -> bool {
-    let raw = file.to_string_lossy();
-    let conventional = crate::winpath::for_display(&raw);
-    Path::new(conventional.as_ref()).starts_with(volume_root)
-}
-
-#[cfg(not(windows))]
-fn path_is_under_volume(file: &Path, volume_root: &Path) -> bool {
-    file.starts_with(volume_root)
 }
 
 // Walks up to the nearest existing ancestor, so a just-deleted sibling or a

@@ -132,7 +132,7 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String
         .join(crate::paths::LOGS_DIR_NAME)
         .join(crate::logging::session_filename());
     crate::logging::init(&log_path, debug_enabled);
-    crate::activity::init();
+    crate::activity::init(data_root.join(crate::activity::ACTIVITY_DB_FILE_NAME));
     crate::install_panic_hook();
 
     // The backup store is best-effort by contract and records its own failure.
@@ -227,11 +227,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                                 }),
                             );
                         }
-                        crate::failure_runtime::clear(
-                            &clear_handle,
-                            "cache-sweep-failed",
-                            None,
-                        )?;
+                        crate::failure_runtime::clear(&clear_handle, "cache-sweep-failed", None)?;
                         Ok(())
                     },
                 )
@@ -278,9 +274,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                                 .facts
                                 .last_checked_at_utc
                                 .as_deref()
-                                .and_then(|stamp| {
-                                    chrono::DateTime::parse_from_rfc3339(stamp).ok()
-                                })
+                                .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
                                 .map(|checked| {
                                     chrono::Utc::now().signed_duration_since(checked)
                                         > chrono::Duration::hours(24)
@@ -362,8 +356,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         ],
         |name, issue_kind, error| {
             let diagnostic = format!("{name}: {error}");
-            let _ =
-                crate::failure_runtime::report(app.handle(), issue_kind, None, &diagnostic);
+            let _ = crate::failure_runtime::report(app.handle(), issue_kind, None, &diagnostic);
         },
     );
 

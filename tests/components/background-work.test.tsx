@@ -66,7 +66,6 @@ beforeEach(async () => {
   }
   useDerivedWorkStore.setState({
     snapshot: current,
-    open: true,
     loading: false,
     changing: null,
     error: null,
@@ -109,20 +108,24 @@ describe("Background work", () => {
       },
     };
 
-    expect(projection.observe(running, "priority:7")).toMatchObject([
+    const started = projection.observe(running, "priority:7");
+    expect(started).toMatchObject([
       {
         kind: "started",
-        operationId: "background:previews",
+        subject: "previews",
         causeId: "priority:7",
         current: "running",
       },
     ]);
+    const operationId = started[0]!.operationId;
+    expect(operationId).toMatch(/^backgroundWork:/);
     expect(projection.observe({ ...running, active: null }, "priority:7")).toEqual([]);
     expect(projection.observe(running, "priority:7")).toEqual([]);
     expect(projection.quiet("priority:7")).toMatchObject([
       {
         kind: "completed",
-        operationId: "background:previews",
+        subject: "previews",
+        operationId,
         causeId: "priority:7",
         current: "idle",
       },
@@ -220,7 +223,7 @@ describe("Background work", () => {
   });
 
   it("shows every fixed class and sends a class-specific pause", async () => {
-    render(<BackgroundWorkModal />);
+    render(<BackgroundWorkModal open onClose={() => {}} />);
 
     for (const label of [
       "Thumbnails, previews, and posters",
@@ -250,7 +253,7 @@ describe("Background work", () => {
   });
 
   it("keeps the master control scoped to preparation and enrichment", async () => {
-    render(<BackgroundWorkModal />);
+    render(<BackgroundWorkModal open onClose={() => {}} />);
 
     const pauseAll = [...document.querySelectorAll("button")].find(
       (button) => button.textContent === "Pause preparation and enrichment",
@@ -269,7 +272,7 @@ describe("Background work", () => {
     useSectionsStore.setState((state) => ({
       sourceCheck: { ...state.sourceCheck, lastResult: "completed" },
     }));
-    const view = render(<BackgroundWorkModal />);
+    const view = render(<BackgroundWorkModal open onClose={() => {}} />);
     expect(document.body.textContent).toContain("Completed");
 
     act(() => {
@@ -285,7 +288,7 @@ describe("Background work", () => {
     useDerivedWorkStore.setState({
       snapshot: snapshot({ masterPaused: true }, { "video-transcripts": { state: "stopping", queued: 3 } }),
     });
-    render(<BackgroundWorkModal />);
+    render(<BackgroundWorkModal open onClose={() => {}} />);
 
     const transcript = [...document.querySelectorAll("li")].find((row) =>
       row.textContent?.includes("Video transcription"),

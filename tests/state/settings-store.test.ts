@@ -9,7 +9,7 @@ const config = {
 
 beforeEach(() => {
   resetTauriMocks();
-  useSettingsStore.getState().openWith(config);
+  useSettingsStore.getState().beginEditing(config);
 });
 
 describe("settings timezone validation", () => {
@@ -33,7 +33,7 @@ describe("settings timezone validation", () => {
     });
 
     const validation = useSettingsStore.getState().validateTimezone("Tokyo");
-    useSettingsStore.getState().openWith(config);
+    useSettingsStore.getState().beginEditing(config);
     settle?.(false);
     await validation;
 
@@ -57,7 +57,7 @@ describe("settings timezone validation", () => {
     });
 
     const validation = useSettingsStore.getState().validateTimezone("Tokyo");
-    useSettingsStore.getState().openWith(config);
+    useSettingsStore.getState().beginEditing(config);
     reject?.(new Error("obsolete validation failure"));
     await validation;
 
@@ -87,7 +87,7 @@ describe("playback preferences", () => {
   });
 
   it("preserves explicit off choices", () => {
-    useSettingsStore.getState().openWith(
+    useSettingsStore.getState().beginEditing(
       {
         ...config,
         videoAutoplay: false,
@@ -107,7 +107,7 @@ describe("playback preferences", () => {
   });
 
   it("does not read playback state from the configuration document", () => {
-    useSettingsStore.getState().openWith({
+    useSettingsStore.getState().beginEditing({
       ...config,
       soundEnabled: false,
       playbackVolume: 0.2,
@@ -122,7 +122,7 @@ describe("playback preferences", () => {
 
 describe("UI font preference", () => {
   it("presents the historical seeded CSS stack as the blank system default", () => {
-    useSettingsStore.getState().openWith({
+    useSettingsStore.getState().beginEditing({
       ...config,
       uiFontFamily:
         'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
@@ -131,7 +131,7 @@ describe("UI font preference", () => {
   });
 
   it("preserves a custom family list", () => {
-    useSettingsStore.getState().openWith({
+    useSettingsStore.getState().beginEditing({
       ...config,
       uiFontFamily: "  Iosevka, monospace  ",
     });

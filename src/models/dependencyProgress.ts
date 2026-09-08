@@ -31,13 +31,7 @@ export function managedInstallLine(progress: ManagedInstallProgress): string {
     progress.phase === "download" || progress.phase === "verify"
       ? ` — ${byteUnits(progress.done, progress.total)}`
       : "";
-  const next =
-    progress.total !== null &&
-    progress.done >= progress.total &&
-    progress.nextPhase !== null
-      ? ` · Next: ${PHASE_LABELS[progress.nextPhase]}`
-      : "";
-  return `${label}${units}${next}`;
+  return `${label}${units}`;
 }
 
 export function managedInstallActivityLine(

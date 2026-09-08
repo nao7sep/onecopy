@@ -25,6 +25,15 @@ fn fixture(label: &str) -> Fixture {
     let app_root = dir.path().join("apphome");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&app_root).unwrap();
+    std::fs::write(
+        app_root.join("config.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "sourceDirs": [root.to_string_lossy()],
+            "destinationRoots": [dir.path().to_string_lossy()],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
     let cache = CachePaths::new(dir.path().join("cache"));
     Fixture {
@@ -123,7 +132,7 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
     assert!(!f.root.join("b").join("x.jpg").exists());
     assert!(!f.root.join("a").join("x.arw").exists());
 
-    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+    let day_dir = std::fs::read_dir(f.root.join(onecopy_lib::trash::TRASH_DIR_NAME))
         .expect("the trash root exists")
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
@@ -216,14 +225,20 @@ fn delete_batch_plans_once_and_cancels_between_physical_files() {
     .unwrap();
 
     assert!(outcome.cancelled);
-    assert!(outcome.items.is_empty(), "the interrupted logical item is partial");
+    assert!(
+        outcome.items.is_empty(),
+        "the interrupted logical item is partial"
+    );
     assert_eq!(
         outcome.files_total, 3,
         "primary, companion, and second item"
     );
     assert_eq!(outcome.bytes_total, 60);
     assert_eq!(outcome.deleted_files, 1);
-    assert!(f.root.join("a.jpg").exists(), "the next physical step is not started");
+    assert!(
+        f.root.join("a.jpg").exists(),
+        "the next physical step is not started"
+    );
     assert!(!f.root.join("a.xmp").exists());
     assert!(
         f.root.join("b.jpg").exists(),
@@ -335,8 +350,7 @@ fn permanent_delete_removes_without_trashing() {
     )
     .unwrap();
     assert!(!f.root.join("gone.jpg").exists());
-    // Nothing landed in any trash under the app root.
-    assert!(!f.app_root.join("trash").exists());
+    assert!(!f.root.join(onecopy_lib::trash::TRASH_DIR_NAME).exists());
 }
 
 #[test]
@@ -371,7 +385,7 @@ fn unhashed_other_files_delete_by_path_id() {
         .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 0, "the path row is removed, not left behind");
-    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+    let day_dir = std::fs::read_dir(f.root.join(onecopy_lib::trash::TRASH_DIR_NAME))
         .expect("the trash root exists")
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
@@ -428,7 +442,7 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
     ] {
         assert!(!original.exists(), "{} must be gone", original.display());
     }
-    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+    let day_dir = std::fs::read_dir(f.root.join(onecopy_lib::trash::TRASH_DIR_NAME))
         .expect("the trash root exists")
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
@@ -511,12 +525,18 @@ fn companion_name_collisions_follow_the_destination_filesystem_and_representativ
     .unwrap();
 
     assert_eq!(outcome.post_action.deleted_files, 4);
-    assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"representative-sidecar");
+    assert_eq!(
+        std::fs::read(dest.join("x.xmp")).unwrap(),
+        b"representative-sidecar"
+    );
     if case_sensitive {
         assert_eq!(std::fs::read(dest.join("x.XMP")).unwrap(), b"later-sidecar");
         assert_eq!(outcome.exported, 3);
     } else {
-        assert_eq!(outcome.exported, 2, "the natural collision publishes one sidecar");
+        assert_eq!(
+            outcome.exported, 2,
+            "the natural collision publishes one sidecar"
+        );
     }
 }
 
@@ -689,7 +709,11 @@ fn cancellation_after_publication_stops_before_the_next_physical_source_action()
     .unwrap();
 
     assert!(outcome.cancelled);
-    assert_eq!(outcome.items.len(), 1, "the published partial result is reported");
+    assert_eq!(
+        outcome.items.len(),
+        1,
+        "the published partial result is reported"
+    );
     assert!(dest.join("a.jpg").exists());
     assert!(
         f.root.join("a.jpg").exists(),
@@ -873,7 +897,7 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
     assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"new-primary");
     assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"new-sidecar");
 
-    let day_dir = std::fs::read_dir(f.app_root.join("trash"))
+    let day_dir = std::fs::read_dir(f._dir.path().join(onecopy_lib::trash::TRASH_DIR_NAME))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .find(|path| path.is_dir())
@@ -905,7 +929,9 @@ fn changed_destination_review_refuses_overwrite_without_filesystem_effects() {
     std::fs::write(dest.join("x.jpg"), b"old-version1").unwrap();
     let hash: String = f
         .conn
-        .query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| row.get(0))
+        .query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     let item = ItemIdentity {
         hash: Some(hash),
@@ -942,7 +968,12 @@ fn changed_destination_review_refuses_overwrite_without_filesystem_effects() {
     assert!(outcome.items.is_empty());
     assert!(f.root.join("x.jpg").exists());
     assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"old-version2");
-    assert!(!f.app_root.join("trash").exists());
+    assert!(!f.root.join(onecopy_lib::trash::TRASH_DIR_NAME).exists());
+    assert!(!f
+        ._dir
+        .path()
+        .join(onecopy_lib::trash::TRASH_DIR_NAME)
+        .exists());
 }
 
 #[test]
@@ -982,7 +1013,10 @@ fn a_changed_copy_is_delivered_as_it_exists_when_the_operation_runs() {
         .conn
         .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(issues, 0, "the operation does not enforce the older indexed bytes");
+    assert_eq!(
+        issues, 0,
+        "the operation does not enforce the older indexed bytes"
+    );
 }
 
 #[test]
@@ -1085,9 +1119,15 @@ fn companion_conflict_renames_the_complete_output_family_consistently() {
     .unwrap();
     assert_eq!(outcome.exported, 2);
     assert_eq!(outcome.post_action.deleted_files, 2);
-    assert_eq!(std::fs::read(dest.join("x 2.jpg")).unwrap(), b"primary-bytes");
+    assert_eq!(
+        std::fs::read(dest.join("x 2.jpg")).unwrap(),
+        b"primary-bytes"
+    );
     assert_eq!(std::fs::read(dest.join("x 2.arw")).unwrap(), b"raw-bytes");
-    assert_eq!(std::fs::read(dest.join("x.arw")).unwrap(), b"a-different-raw");
+    assert_eq!(
+        std::fs::read(dest.join("x.arw")).unwrap(),
+        b"a-different-raw"
+    );
 }
 
 // Unix-only, gated at the ITEM so Windows is honestly MISSING this coverage
@@ -1140,7 +1180,10 @@ fn companion_copy_failure_preserves_that_companion_without_rolling_back_the_prim
         dest.join("x.jpg").exists(),
         "the verified primary remains published"
     );
-    assert!(!f.root.join("x.jpg").exists(), "the delivered primary is cleaned");
+    assert!(
+        !f.root.join("x.jpg").exists(),
+        "the delivered primary is cleaned"
+    );
     assert!(f.root.join("x.arw").exists(), "the RAW must survive");
 }
 
@@ -1255,7 +1298,7 @@ fn shift_move_out_permanently_deletes_the_remaining_copies() {
     // ...and NOTHING was trashed. That is the whole difference between this
     // mode and MoveTrashRest, and the reason it needs a confirmation.
     assert!(
-        !f.app_root.join("trash").exists(),
+        !f.root.join(onecopy_lib::trash::TRASH_DIR_NAME).exists(),
         "MoveDeleteRest must not write a trash — it is the no-recovery mode"
     );
 }

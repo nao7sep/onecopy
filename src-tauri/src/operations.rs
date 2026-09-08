@@ -123,6 +123,7 @@ struct DeleteTarget {
     abs_path: String,
     content_hash: Option<String>,
     bytes: u64,
+    owning_root: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -147,20 +148,13 @@ pub fn delete_item(
     item: ItemRef,
     mode: DeleteMode,
 ) -> Result<DeleteOutcome, String> {
-    let targets = collect_delete_targets(conn, item)?;
-    delete_targets(
-        conn,
-        app_root,
-        cache,
-        &targets,
-        mode,
-        &mut |_, _| {},
-    )
+    let roots = crate::storage::load_config_file_roots(app_root)?;
+    let targets = collect_delete_targets(conn, item, &roots)?;
+    delete_targets(conn, cache, &targets, mode, &mut |_, _| {})
 }
 
 fn delete_targets(
     conn: &Connection,
-    app_root: &Path,
     cache: &CachePaths,
     targets: &[DeleteTarget],
     mode: DeleteMode,
@@ -172,8 +166,10 @@ fn delete_targets(
     for target in targets {
         let file = Path::new(&target.abs_path);
         let result = match mode {
-            DeleteMode::Trash => trash::trash_file(file, app_root, target.content_hash.as_deref())
-                .map(|_| ()),
+            DeleteMode::Trash => {
+                trash::trash_file(file, &target.owning_root, target.content_hash.as_deref())
+                    .map(|_| ())
+            }
             DeleteMode::Permanent => permanently_delete_file(file),
         };
 
@@ -273,6 +269,7 @@ fn delete_targets(
 fn collect_delete_targets(
     conn: &Connection,
     item: ItemRef<'_>,
+    roots: &[std::path::PathBuf],
 ) -> Result<Vec<DeleteTarget>, String> {
     // Target rows: the item's own copies… plus companions attached to any of
     // them. The companion query stays parameterized and constant-size even if
@@ -320,20 +317,22 @@ fn collect_delete_targets(
     Ok(companions
         .into_iter()
         .map(|(path_id, abs_path, content_hash, indexed_bytes)| {
+            let owning_root = trash::root_for_file(Path::new(&abs_path), roots)?;
             let bytes =
                 std::fs::symlink_metadata(crate::winpath::for_fs(Path::new(&abs_path)).as_ref())
                     .ok()
                     .filter(|metadata| metadata.file_type().is_file())
                     .map(|metadata| metadata.len())
                     .unwrap_or_else(|| indexed_bytes.unwrap_or(0).max(0) as u64);
-            DeleteTarget {
+            Ok(DeleteTarget {
                 path_id,
                 abs_path,
                 content_hash,
                 bytes,
-            }
+                owning_root,
+            })
         })
-        .collect())
+        .collect::<Result<Vec<_>, String>>()?)
 }
 
 /// Deletes an ordered logical-item set under one already-acquired mutation and
@@ -349,6 +348,7 @@ pub fn delete_batch(
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(DeleteBatchProgress),
 ) -> Result<DeleteBatchOutcome, String> {
+    let roots = crate::storage::load_config_file_roots(app_root)?;
     let mut unique = HashSet::new();
     let mut ordered = Vec::new();
     for item in items {
@@ -376,7 +376,7 @@ pub fn delete_batch(
                 ..DeleteBatchOutcome::default()
             });
         }
-        let mut targets = collect_delete_targets(conn, item.item_ref()?)?;
+        let mut targets = collect_delete_targets(conn, item.item_ref()?, &roots)?;
         // A malformed caller can name overlapping identities. Physical rows
         // still belong to exactly one unit in this immutable plan.
         targets.retain(|target| claimed_paths.insert(target.path_id));
@@ -427,7 +427,6 @@ pub fn delete_batch(
             }
             let step = delete_targets(
                 conn,
-                app_root,
                 cache,
                 std::slice::from_ref(target),
                 mode,
@@ -441,9 +440,7 @@ pub fn delete_batch(
                         files_total: plan.files_total,
                         bytes_done,
                         bytes_total: plan.bytes_total,
-                        failures: batch.failed_files
-                            + outcome.failed_files
-                            + u64::from(failed),
+                        failures: batch.failed_files + outcome.failed_files + u64::from(failed),
                     });
                 },
             );
@@ -543,7 +540,7 @@ pub struct DestinationConflict {
 pub struct MoveOutOutcome {
     pub exported: u64,
     pub skipped_identical: u64,
-    /// Reviewed destination files preserved in OneCopy Trash before overwrite.
+    /// Reviewed destination files preserved in Deleted files before overwrite.
     pub trashed_destination_files: u64,
     /// Conflicts that appeared after the reviewed plan was accepted. Expected
     /// conflicts are resolved before execution and never enter this result.
@@ -615,6 +612,7 @@ struct DeliverySource {
     abs_path: String,
     content_hash: Option<String>,
     bytes: u64,
+    owning_root: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -775,6 +773,8 @@ pub fn move_batch_reviewed(
         ));
     }
 
+    let roots = crate::storage::load_config_file_roots(app_root)?;
+    let destination_root = trash::root_for_file(dest_dir, &roots)?;
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
     for item in items {
@@ -803,7 +803,7 @@ pub fn move_batch_reviewed(
                 ..MoveBatchOutcome::default()
             });
         }
-        let unit = collect_move_unit(conn, item, dest_dir)?;
+        let unit = collect_move_unit(conn, item, dest_dir, &roots)?;
         plan.files_total = plan
             .files_total
             .saturating_add(unit.deliveries.len() as u64);
@@ -814,14 +814,12 @@ pub fn move_batch_reviewed(
                 .sum::<u64>(),
         );
         if mode != MoveOutMode::CopyKeepAll {
-            plan.files_total = plan
-                .files_total
-                .saturating_add(
-                    unit.deliveries
-                        .iter()
-                        .map(|delivery| delivery.sources.len() as u64)
-                        .sum::<u64>(),
-                );
+            plan.files_total = plan.files_total.saturating_add(
+                unit.deliveries
+                    .iter()
+                    .map(|delivery| delivery.sources.len() as u64)
+                    .sum::<u64>(),
+            );
             plan.bytes_total = plan.bytes_total.saturating_add(
                 unit.deliveries
                     .iter()
@@ -876,15 +874,10 @@ pub fn move_batch_reviewed(
             ..MoveBatchOutcome::default()
         });
     }
-    if !review.conflicts.is_empty()
-        && conflict_policy.is_some()
-        && expected_plan_token.is_none()
-    {
+    if !review.conflicts.is_empty() && conflict_policy.is_some() && expected_plan_token.is_none() {
         return Err("destination conflict policy requires the reviewed plan token".to_string());
     }
-    if conflict_policy == Some(DestinationConflictPolicy::Overwrite)
-        && !review.overwrite_allowed
-    {
+    if conflict_policy == Some(DestinationConflictPolicy::Overwrite) && !review.overwrite_allowed {
         return Err(
             "overwrite cannot preserve every selected file in this conflict set; use Rename"
                 .to_string(),
@@ -925,9 +918,9 @@ pub fn move_batch_reviewed(
         batch.items_started = batch.items_started.saturating_add(1);
         let execution = execute_move_unit(
             conn,
-            app_root,
             cache,
             &unit,
+            &destination_root,
             mode,
             conflict_policy,
             cancelled,
@@ -1049,11 +1042,7 @@ pub fn move_batch_reviewed(
     Ok(batch)
 }
 
-fn move_plan_token(
-    plan: &MovePlan,
-    mode: MoveOutMode,
-    review: &DestinationReview,
-) -> String {
+fn move_plan_token(plan: &MovePlan, mode: MoveOutMode, review: &DestinationReview) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(match mode {
         MoveOutMode::MoveTrashRest => b"move-trash-rest",
@@ -1109,11 +1098,7 @@ fn review_destination_conflicts(
 ) -> Result<DestinationReview, String> {
     let mut review = DestinationReview::default();
     let mut claimed = HashSet::new();
-    for delivery in plan
-        .units
-        .iter_mut()
-        .flat_map(|unit| &mut unit.deliveries)
-    {
+    for delivery in plan.units.iter_mut().flat_map(|unit| &mut unit.deliveries) {
         if cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
@@ -1195,20 +1180,12 @@ fn observe_destination(
             bytes: metadata.len(),
         });
     }
-    let (mut file, _) = crate::file_identity::open_regular_nofollow(path).map_err(|error| {
-        format!(
-            "could not inspect destination {}: {error}",
-            path.display()
-        )
-    })?;
+    let (mut file, _) = crate::file_identity::open_regular_nofollow(path)
+        .map_err(|error| format!("could not inspect destination {}: {error}", path.display()))?;
     let bytes = file.metadata().map_err(|error| error.to_string())?.len();
-    let hash = crate::hashing::full_hash_file_cancellable(
-        &mut file,
-        bytes,
-        cancelled,
-        &mut |_, _| {},
-    )
-    .map_err(|error| error.to_string())?;
+    let hash =
+        crate::hashing::full_hash_file_cancellable(&mut file, bytes, cancelled, &mut |_, _| {})
+            .map_err(|error| error.to_string())?;
     Ok(DestinationObservation::Regular { bytes, hash })
 }
 
@@ -1219,13 +1196,15 @@ fn delivery_matches_hash(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<bool, String> {
     for source in &delivery.sources {
-        let (mut source_file, _) = match crate::file_identity::open_regular_nofollow(Path::new(
-            &source.abs_path,
-        )) {
-            Ok(file) => file,
-            Err(_) => continue,
-        };
-        let source_bytes = source_file.metadata().map_err(|error| error.to_string())?.len();
+        let (mut source_file, _) =
+            match crate::file_identity::open_regular_nofollow(Path::new(&source.abs_path)) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+        let source_bytes = source_file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .len();
         if source_bytes != destination_bytes {
             return Ok(false);
         }
@@ -1318,7 +1297,11 @@ fn apply_conflict_renames(
     let mut reserved = HashSet::new();
     for (unit, rename) in plan.units.iter().zip(&needs_rename) {
         if !rename {
-            reserved.extend(unit.deliveries.iter().map(|delivery| delivery.target.clone()));
+            reserved.extend(
+                unit.deliveries
+                    .iter()
+                    .map(|delivery| delivery.target.clone()),
+            );
         }
     }
     for (unit, rename) in plan.units.iter_mut().zip(needs_rename) {
@@ -1373,6 +1356,7 @@ fn collect_move_unit(
     conn: &Connection,
     item: ItemIdentity,
     dest_dir: &Path,
+    roots: &[std::path::PathBuf],
 ) -> Result<MoveUnit, String> {
     let (primary_rows, companion_rows): (Vec<_>, Vec<_>) = match item.item_ref()? {
         ItemRef::Hash(hash) => (
@@ -1411,7 +1395,7 @@ fn collect_move_unit(
             )?,
         ),
     };
-    let primary_sources = delivery_sources(primary_rows);
+    let primary_sources = delivery_sources(primary_rows, roots)?;
     let provisional_hash = item
         .hash
         .as_ref()
@@ -1431,9 +1415,12 @@ fn collect_move_unit(
     }
 
     let mut companions = Vec::<(String, Vec<DeliverySource>)>::new();
-    for source in delivery_sources(companion_rows) {
+    for source in delivery_sources(companion_rows, roots)? {
         let name = file_name(&source.abs_path)?;
-        if let Some((_, sources)) = companions.iter_mut().find(|(existing, _)| *existing == name) {
+        if let Some((_, sources)) = companions
+            .iter_mut()
+            .find(|(existing, _)| *existing == name)
+        {
             sources.push(source);
         } else {
             companions.push((name, vec![source]));
@@ -1457,21 +1444,26 @@ fn collect_move_unit(
     })
 }
 
-fn delivery_sources(rows: Vec<(i64, String, Option<String>, Option<i64>)>) -> Vec<DeliverySource> {
+fn delivery_sources(
+    rows: Vec<(i64, String, Option<String>, Option<i64>)>,
+    roots: &[std::path::PathBuf],
+) -> Result<Vec<DeliverySource>, String> {
     rows.into_iter()
         .map(|(path_id, abs_path, content_hash, indexed_bytes)| {
+            let owning_root = trash::root_for_file(Path::new(&abs_path), roots)?;
             let bytes =
                 std::fs::symlink_metadata(crate::winpath::for_fs(Path::new(&abs_path)).as_ref())
                     .ok()
                     .filter(|metadata| metadata.file_type().is_file())
                     .map(|metadata| metadata.len())
                     .unwrap_or_else(|| indexed_bytes.unwrap_or(0).max(0) as u64);
-            DeliverySource {
+            Ok(DeliverySource {
                 path_id,
                 abs_path,
                 content_hash,
                 bytes,
-            }
+                owning_root,
+            })
         })
         .collect()
 }
@@ -1516,9 +1508,9 @@ struct NaturalTarget {
 
 fn execute_move_unit(
     conn: &Connection,
-    app_root: &Path,
     cache: &CachePaths,
     unit: &MoveUnit,
+    destination_root: &Path,
     mode: MoveOutMode,
     conflict_policy: Option<DestinationConflictPolicy>,
     cancelled: &dyn Fn() -> bool,
@@ -1561,7 +1553,9 @@ fn execute_move_unit(
             Ok(claimed) => claimed,
             Err(error) => {
                 crate::file_identity::remove_private_if_owned(&output.staged, output.identity);
-                return Err(format!("private output changed before publication: {error}"));
+                return Err(format!(
+                    "private output changed before publication: {error}"
+                ));
             }
         };
         let delivered = match publish_claimed(conn, &claimed, &output.target, output.identity) {
@@ -1610,14 +1604,13 @@ fn execute_move_unit(
                                 outcome.skipped_identical =
                                     outcome.skipped_identical.saturating_add(1);
                                 true
-                            } else if conflict_policy
-                                == Some(DestinationConflictPolicy::Overwrite)
+                            } else if conflict_policy == Some(DestinationConflictPolicy::Overwrite)
                             {
                                 drop(file);
                                 preserve_reviewed_destination_family(
                                     conn,
                                     &delivery.replacement_family,
-                                    app_root,
+                                    destination_root,
                                 )?;
                                 outcome.trashed_destination_files = outcome
                                     .trashed_destination_files
@@ -1627,8 +1620,7 @@ fn execute_move_unit(
                                     &claimed,
                                     &output.target,
                                     output.identity,
-                                )?
-                                {
+                                )? {
                                     return Err(format!(
                                         "a new destination conflict appeared at {}",
                                         output.target.display()
@@ -1689,6 +1681,7 @@ fn execute_move_unit(
                     abs_path: source.abs_path.clone(),
                     content_hash: source.content_hash.clone(),
                     bytes: source.bytes,
+                    owning_root: source.owning_root.clone(),
                 })
                 .collect::<Vec<_>>();
             let delete_mode = if mode == MoveOutMode::MoveTrashRest {
@@ -1702,13 +1695,10 @@ fn execute_move_unit(
                 }
                 let cleanup = delete_targets(
                     conn,
-                    app_root,
                     cache,
                     std::slice::from_ref(target),
                     delete_mode,
-                    &mut |bytes, failed| {
-                        on_progress(MoveUnitProgress::Attempt { bytes, failed })
-                    },
+                    &mut |bytes, failed| on_progress(MoveUnitProgress::Attempt { bytes, failed }),
                 )?;
                 outcome.post_action.deleted_files = outcome
                     .post_action
@@ -1772,7 +1762,7 @@ fn publish_claimed(
 fn preserve_reviewed_destination_family(
     conn: &Connection,
     family: &[ReviewedDestinationFile],
-    app_root: &Path,
+    destination_root: &Path,
 ) -> Result<(), String> {
     if family.is_empty() {
         return Err("a new unreviewed destination conflict appeared".to_string());
@@ -1790,9 +1780,9 @@ fn preserve_reviewed_destination_family(
         }
     }
     for member in family {
-        crate::trash::trash_file(&member.path, app_root, None).map_err(|error| {
+        crate::trash::trash_file(&member.path, destination_root, None).map_err(|error| {
             let message = format!(
-                "could not preserve the existing destination {} in OneCopy Trash: {error}",
+                "could not preserve the existing destination {} in Deleted files: {error}",
                 member.path.display()
             );
             let _ = crate::index_store::upsert_issue(
@@ -1872,12 +1862,8 @@ fn output_stage_path(target: &Path) -> Result<std::path::PathBuf, String> {
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("output");
-    Ok(target.with_file_name(format!(
-        "{stem}-{}.tmp",
-        crate::nanoid::generate()?
-    )))
+    Ok(target.with_file_name(format!("{stem}-{}.tmp", crate::nanoid::generate()?)))
 }
-
 
 fn collect4(
     conn: &Connection,

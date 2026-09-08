@@ -10,7 +10,14 @@ import { recordActionFailure } from "./notifications-store";
 import type { ItemWorkStates } from "../models/items";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
-import { latestActivityOperationId, recordActivity, type ActivityDraft } from "../repositories/activity";
+import {
+  finishActivityOperation,
+  latestActivityOperationId,
+  newActivityOperationId,
+  recordActivity,
+  type ActivityDraft,
+} from "../repositories/activity";
+import { useAppShellStore } from "./app-shell-store";
 
 const PING_EVERY_MS = 10_000;
 
@@ -52,13 +59,11 @@ interface BackgroundRuntimeSnapshot {
 
 interface DerivedWorkState {
   snapshot: BackgroundWorkSnapshot | null;
-  open: boolean;
   loading: boolean;
   changing: string | null;
   error: string | null;
   activeItem: ActiveItemWork | null;
   load: () => Promise<void>;
-  setOpen: (open: boolean) => void;
   setPaused: (classId: string | null, paused: boolean) => Promise<void>;
 }
 
@@ -66,7 +71,6 @@ const loadSequence = requestSeq();
 
 export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   snapshot: null,
-  open: false,
   loading: false,
   changing: null,
   error: null,
@@ -91,22 +95,23 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
     }
   },
 
-  setOpen: (open) => {
-    set({ open });
-    if (open) void get().load();
-  },
-
   setPaused: async (classId, paused) => {
     const changing = classId ?? "all";
     set({ changing, error: null });
     try {
+      const operationId = newActivityOperationId("backgroundWork");
       recordActivity({
         kind: paused ? "paused" : "resumed",
         owner: "backgroundWork",
-        operationId: `background:${classId ?? "all"}`,
+        subject:
+          classId !== null && classId in ACTIVITY_SUBJECTS
+            ? ACTIVITY_SUBJECTS[classId as BackgroundClassSnapshot["id"]]
+            : undefined,
+        operationId,
         current: paused ? "paused" : "running",
         reason: paused ? "pause" : "user",
       });
+      finishActivityOperation("backgroundWork", operationId);
       await invoke("background_work_set_paused", { classId, paused });
       await get().load();
     } catch (error) {
@@ -128,6 +133,18 @@ const CLASS_LABELS: Record<BackgroundClassSnapshot["id"], string> = {
   faces: "Face scoring",
   "video-transcripts": "Video transcription",
   "audio-transcripts": "Audio transcription",
+};
+
+const ACTIVITY_SUBJECTS: Record<
+  BackgroundClassSnapshot["id"],
+  NonNullable<ActivityDraft["subject"]>
+> = {
+  previews: "previews",
+  snapshots: "snapshots",
+  similarity: "similarity",
+  faces: "faces",
+  "video-transcripts": "videoTranscription",
+  "audio-transcripts": "audioTranscription",
 };
 
 export function backgroundClassLabel(id: BackgroundClassSnapshot["id"]): string {
@@ -159,7 +176,9 @@ const ITEM_CLASS_FIELD: Record<ActiveItemWork["id"], keyof ItemWorkStates> = {
   "audio-transcripts": "transcripts",
 };
 
-type ProjectedActiveWork = Pick<ActiveItemWork, "id" | "done" | "total" | "stopping">;
+type ProjectedActiveWork = Pick<ActiveItemWork, "id" | "done" | "total" | "stopping"> & {
+  operationId: string;
+};
 
 /**
  * Turns the coordinator's high-frequency runtime projection into lifecycle
@@ -176,21 +195,31 @@ export class BackgroundActivityProjection {
 
     const events: ActivityDraft[] = [];
     if (this.active !== null && this.active.id !== next.id) {
-      events.push(this.completed(this.active.id, causeId));
+      events.push(this.completed(this.active.id, this.active.operationId, causeId));
+      finishActivityOperation("backgroundWork", this.active.operationId);
       this.active = null;
     }
 
     if (this.active === null) {
+      const operationId = newActivityOperationId("backgroundWork");
       events.push({
         kind: next.stopping ? "stopping" : "started",
         owner: "backgroundWork",
-        operationId: `background:${next.id}`,
+        subject: ACTIVITY_SUBJECTS[next.id],
+        operationId,
         causeId,
         current: next.stopping ? "stopping" : "running",
         reason: next.stopping ? "preemption" : undefined,
         done: next.done ?? undefined,
         total: next.total ?? undefined,
       });
+      this.active = {
+        id: next.id,
+        done: next.done,
+        total: next.total,
+        stopping: next.stopping,
+        operationId,
+      };
     } else if (
       this.active.stopping !== next.stopping ||
       this.active.done !== next.done ||
@@ -199,7 +228,8 @@ export class BackgroundActivityProjection {
       events.push({
         kind: next.stopping ? "stopping" : "progressed",
         owner: "backgroundWork",
-        operationId: `background:${next.id}`,
+        subject: ACTIVITY_SUBJECTS[next.id],
+        operationId: this.active.operationId,
         causeId,
         current: next.stopping ? "stopping" : "running",
         reason: next.stopping ? "preemption" : undefined,
@@ -208,27 +238,36 @@ export class BackgroundActivityProjection {
       });
     }
 
-    this.active = {
-      id: next.id,
-      done: next.done,
-      total: next.total,
-      stopping: next.stopping,
-    };
+    if (this.active !== null) {
+      this.active = {
+        ...this.active,
+        id: next.id,
+        done: next.done,
+        total: next.total,
+        stopping: next.stopping,
+      };
+    }
     return events;
   }
 
   quiet(causeId?: string): ActivityDraft[] {
     if (this.active === null) return [];
-    const event = this.completed(this.active.id, causeId);
+    const event = this.completed(this.active.id, this.active.operationId, causeId);
+    finishActivityOperation("backgroundWork", this.active.operationId);
     this.active = null;
     return [event];
   }
 
-  private completed(id: ActiveItemWork["id"], causeId?: string): ActivityDraft {
+  private completed(
+    id: ActiveItemWork["id"],
+    operationId: string,
+    causeId?: string,
+  ): ActivityDraft {
     return {
       kind: "completed",
       owner: "backgroundWork",
-      operationId: `background:${id}`,
+      subject: ACTIVITY_SUBJECTS[id],
+      operationId,
       causeId,
       current: "idle",
       reason: "completion",
@@ -326,7 +365,7 @@ const installEvents = createEventInstaller(
       for (const draft of backgroundActivity.quiet(latestActivityOperationId("priority"))) {
         recordActivity(draft);
       }
-      if (useDerivedWorkStore.getState().open) {
+      if (useAppShellStore.getState().utilitySurface === "backgroundWork") {
         void useDerivedWorkStore.getState().load();
       }
     });

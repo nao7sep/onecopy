@@ -12,8 +12,13 @@ import OperationResult from "./ui/OperationResult";
 // backend-authored safe recovery is offered. Destructive intent is never
 // replayed.
 
-export default function IssuesModal() {
-  const open = useIssuesStore((s) => s.open);
+export default function IssuesModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const rows = useIssuesStore((s) => s.rows);
   const total = useIssuesStore((s) => s.total);
   const loading = useIssuesStore((s) => s.loading);
@@ -28,7 +33,6 @@ export default function IssuesModal() {
   const dismissAll = useIssuesStore((s) => s.dismissAll);
   const recover = useIssuesStore((s) => s.recover);
   const retryAll = useIssuesStore((s) => s.retryAll);
-  const setOpen = useIssuesStore((s) => s.setOpen);
   const setView = useIssuesStore((s) => s.setView);
 
   useEffect(() => {
@@ -57,7 +61,7 @@ export default function IssuesModal() {
   return (
     <ModalShell
       title="Issues"
-      onClose={() => setOpen(false)}
+      onClose={onClose}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
       footerStart={
         footerError === undefined ? undefined : (
@@ -135,28 +139,16 @@ export default function IssuesModal() {
                   key={row.id}
                   className="group rounded-lg border border-border bg-surface p-3 text-xs"
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="font-semibold text-danger">Action needed</span>
-                    <span className="flex shrink-0 items-center gap-2">
-                      {row.recovery ? (
-                        <Button
-                          size="sm"
-                          disabled={row.recovery.status !== "available"}
-                          onClick={() => void recover(row.id)}
-                        >
-                          {row.recovery.status === "queued"
-                            ? "Queued"
-                            : row.recovery.status === "running"
-                              ? "Running"
-                              : row.recovery.label}
-                        </Button>
-                      ) : null}
-                      {row.occurrenceCount > 1 ? (
-                        <span className="text-ink-muted">×{row.occurrenceCount}</span>
-                      ) : null}
-                      <span className="text-ink-muted" title={`Last seen ${formatLocalMinute(row.lastSeenUtc)}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="flex min-w-0 items-center gap-2 text-ink-muted">
+                      <span title={`Last seen ${formatLocalMinute(row.lastSeenUtc)}`}>
                         {formatLocalMinute(row.firstSeenUtc)}
                       </span>
+                      {row.occurrenceCount > 1 ? (
+                        <span>×{row.occurrenceCount}</span>
+                      ) : null}
+                    </span>
+                    <span className="shrink-0">
                       <button
                         aria-label="Dismiss"
                         title="Dismiss"
@@ -168,12 +160,27 @@ export default function IssuesModal() {
                     </span>
                   </div>
                   {row.path ? (
-                    <div className="mt-0.5 select-text break-all text-ink" title={row.path}>
+                    <div className="mt-2 select-text break-all text-ink" title={row.path}>
                       {row.path}
                     </div>
                   ) : null}
                   {row.message ? (
-                    <div className="mt-0.5 select-text break-words text-ink-muted">{row.message}</div>
+                    <div className="mt-1.5 select-text break-words leading-relaxed text-ink-muted">{row.message}</div>
+                  ) : null}
+                  {row.recovery ? (
+                    <div className="mt-3 flex justify-end border-t border-border pt-3">
+                      <Button
+                        size="sm"
+                        disabled={row.recovery.status !== "available"}
+                        onClick={() => void recover(row.id)}
+                      >
+                        {row.recovery.status === "queued"
+                          ? "Queued"
+                          : row.recovery.status === "running"
+                            ? "Running"
+                            : row.recovery.label}
+                      </Button>
+                    </div>
                   ) : null}
                 </li>
               ))}
@@ -205,16 +212,14 @@ export default function IssuesModal() {
                         : "border-border"
                   }`}
                 >
-                  <div className="flex items-start justify-end gap-2">
-                    <span className="flex shrink-0 items-center gap-2 text-ink-muted">
+                  <div className="flex items-start gap-2 text-ink-muted">
                       {row.occurrenceCount > 1 ? <span>×{row.occurrenceCount}</span> : null}
                       <span title={`First seen ${formatLocalMinute(row.firstSeenUtc)}`}>
                         {formatLocalMinute(row.lastSeenUtc)}
                       </span>
-                    </span>
                   </div>
-                  {row.path ? <div className="mt-0.5 select-text break-all text-ink">{row.path}</div> : null}
-                  <div className="mt-0.5 select-text break-words text-ink-muted">{row.message}</div>
+                  {row.path ? <div className="mt-2 select-text break-all text-ink">{row.path}</div> : null}
+                  <div className="mt-1.5 select-text break-words leading-relaxed text-ink-muted">{row.message}</div>
                 </li>
               ))}
             </ul>

@@ -57,6 +57,8 @@ A drawing or rendering failure produces a visible reload or restart path instead
 
 Recovery failures are themselves contained and reported. Recovery does not retry recursively or without limit. When a fallback cannot restore a safe usable state, OneCopy stops the affected surface or operation and leaves the user a direct reload, restart, retry, or repair action.
 
+Every retryable failure retains a reachable recovery action at the surviving owner; reopening the surface or restarting the application is not the only way to rediscover it. A fatal startup halt names a safe next step, provides access to application logs when they can help, and retains a labelled exit. It offers in-process retry only when startup can be attempted again without bypassing or duplicating an already-admitted service.
+
 ## Restart behavior
 
 Active Issues survive ordinary application restart until their normal resolution or dismissal boundary. Recent notification history also survives ordinary restart, subject to its retention policy. Restart does not replay a failed or partial destructive operation. Feature owners re-evaluate current state before offering a retry, and completed durable steps remain completed.

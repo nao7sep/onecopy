@@ -95,14 +95,14 @@ export default function ComparisonView({
   const confirmTitle = pendingAction?.permanent
     ? "Delete images permanently?"
     : pendingAction?.kind === "selection"
-      ? "Move marked images to Trash?"
+      ? "Delete marked images?"
       : "Finish this comparison page?";
   const confirmMessage =
     pendingAction === null
       ? ""
       : pendingAction.kind === "selection"
-        ? `${pendingAction.targetHashes.length} marked image${pendingAction.targetHashes.length === 1 ? "" : "s"} will be ${pendingAction.permanent ? "deleted permanently" : "moved to Trash"}.`
-        : `Keep ${pendingAction.keepHashes.length} and ${pendingAction.permanent ? "permanently delete" : "move to Trash"} ${pendingAction.targetHashes.length} image${pendingAction.targetHashes.length === 1 ? "" : "s"} on this page.`;
+        ? `${pendingAction.targetHashes.length} marked image${pendingAction.targetHashes.length === 1 ? "" : "s"} will be ${pendingAction.permanent ? "deleted permanently" : "deleted recoverably"}.`
+        : `Keep ${pendingAction.keepHashes.length} and ${pendingAction.permanent ? "permanently delete" : "recoverably delete"} ${pendingAction.targetHashes.length} image${pendingAction.targetHashes.length === 1 ? "" : "s"} on this page.`;
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-background">
@@ -111,7 +111,7 @@ export default function ComparisonView({
           title={confirmTitle}
           message={confirmMessage}
           confirmLabel={
-            pendingAction.permanent ? "Delete permanently" : "Move to Trash"
+            pendingAction.permanent ? "Delete permanently" : "Delete"
           }
           onConfirm={() => void confirmComparisonAction()}
           onCancel={() => useComparisonStore.getState().cancelPendingAction()}
@@ -163,7 +163,7 @@ export default function ComparisonView({
             disabled={busy || localChunk.length === 0}
             onClick={() => void decideComparisonPage(false, true)}
           >
-            Trash every visible image
+            Delete every visible image
           </button>
           <button
             className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
@@ -207,7 +207,7 @@ export default function ComparisonView({
 
       <footer className="flex shrink-0 items-center justify-between gap-4 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span>
-          0–9, A–Z, Space, or Keep toggle marks · Arrows inspect · Page Up/Down browse · Enter reviews marked keepers and the visible Trash set ·
+          0–9, A–Z, Space, or Keep toggle marks · Arrows inspect · Page Up/Down browse · Enter reviews marked keepers and visible deletions ·
           Delete reviews marked images · Escape closes
         </span>
         {message !== null ? (

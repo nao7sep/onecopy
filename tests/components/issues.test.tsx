@@ -36,7 +36,6 @@ beforeEach(() => {
     recentLoading: false,
     recentError: null,
     view: "active",
-    open: false,
   });
 });
 
@@ -44,7 +43,7 @@ afterEach(() => cleanup());
 
 describe("the issues modal", () => {
   it("stays entirely absent while closed", () => {
-    const view = render(<IssuesModal />);
+    const view = render(<IssuesModal open={false} onClose={() => {}} />);
     expect(view.container.innerHTML).toBe("");
   });
 
@@ -52,14 +51,14 @@ describe("the issues modal", () => {
     mockCommands({
       get_issues: () => ({ total: 2, rows: [row(1), row(2)] }),
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
 
     const items = document.querySelectorAll("li");
     expect(items).toHaveLength(2);
     // The backend orders oldest first; the list must not re-sort it.
     expect(items[0].textContent).toContain("IMG_1");
-    expect(items[0].textContent).toContain("Action needed");
+    expect(items[0].textContent).not.toContain("Action needed");
     expect(items[0].textContent).not.toContain("decode-error");
   });
 
@@ -69,8 +68,8 @@ describe("the issues modal", () => {
         throw new Error("offline");
       },
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
 
     expect(document.body.textContent).toContain("Issues are unavailable.");
     expect(document.body.textContent).not.toContain("No issues");
@@ -85,8 +84,8 @@ describe("the issues modal", () => {
         return null;
       },
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
 
     await act(async () => {
       (document.querySelector('[aria-label="Dismiss"]') as HTMLElement).click();
@@ -105,8 +104,8 @@ describe("the issues modal", () => {
         return null;
       },
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
 
     const all = [...document.querySelectorAll("button")].find(
       (b) => b.textContent === "Dismiss all",
@@ -139,8 +138,8 @@ describe("the issues modal", () => {
         return true;
       },
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
 
     const retry = [...document.querySelectorAll("button")].find(
       (button) => button.textContent === "Retry",
@@ -171,8 +170,8 @@ describe("the issues modal", () => {
         return 1;
       },
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
 
     const retryAll = [...document.querySelectorAll("button")].find(
       (button) => button.textContent === "Retry all",
@@ -201,8 +200,8 @@ describe("the issues modal", () => {
           };
         }),
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
 
     const recheck = [...document.querySelectorAll("button")].find(
       (button) => button.textContent === "Recheck",
@@ -236,8 +235,8 @@ describe("the issues modal", () => {
         ],
       }),
     });
-    render(<IssuesModal />);
-    await act(async () => useIssuesStore.getState().setOpen(true));
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
     await act(async () => useIssuesStore.getState().setView("recent"));
 
     expect(document.body.textContent).toContain("Recent (1)");

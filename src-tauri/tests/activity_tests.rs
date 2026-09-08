@@ -1,11 +1,13 @@
 use onecopy_lib::activity::{
     ActivityDraft, ActivityKind, ActivityOwner, ActivityReason, ActivityRecorder, ActivityState,
+    ActivitySubject,
 };
 
 fn draft(operation_id: Option<&str>) -> ActivityDraft {
     ActivityDraft {
         kind: ActivityKind::Started,
         owner: ActivityOwner::Section,
+        subject: None,
         operation_id: operation_id.map(str::to_string),
         cause_id: None,
         generation: Some(2),
@@ -20,9 +22,16 @@ fn draft(operation_id: Option<&str>) -> ActivityDraft {
     }
 }
 
+fn recorder(session: &str) -> (tempfile::TempDir, ActivityRecorder) {
+    let temp = tempfile::tempdir().unwrap();
+    let recorder =
+        ActivityRecorder::new(session.to_string(), temp.path().join("activity.sqlite3")).unwrap();
+    (temp, recorder)
+}
+
 #[test]
 fn recorder_assigns_one_session_and_monotonic_sequence() {
-    let recorder = ActivityRecorder::new("session-one".to_string(), 3);
+    let (_temp, recorder) = recorder("session-one");
     let first = recorder
         .record_at(
             draft(Some("section:1")),
@@ -41,12 +50,14 @@ fn recorder_assigns_one_session_and_monotonic_sequence() {
     assert_eq!(first.session_id, "session-one");
     assert_eq!(first.sequence, 1);
     assert_eq!(second.sequence, 2);
-    assert_eq!(recorder.snapshot(), vec![first, second]);
+    let (events, cursor) = recorder.page(None, 10).unwrap();
+    assert_eq!(events, vec![second, first]);
+    assert_eq!(cursor, None);
 }
 
 #[test]
-fn recorder_retains_only_its_bounded_tail() {
-    let recorder = ActivityRecorder::new("session-one".to_string(), 2);
+fn recorder_persists_every_event_and_pages_with_a_stable_cursor() {
+    let (_temp, recorder) = recorder("session-one");
     for sequence in 1..=3 {
         recorder
             .record_at(
@@ -56,15 +67,25 @@ fn recorder_retains_only_its_bounded_tail() {
             )
             .unwrap();
     }
-    let events = recorder.snapshot();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].sequence, 2);
-    assert_eq!(events[1].sequence, 3);
+    let (newest, cursor) = recorder.page(None, 2).unwrap();
+    assert_eq!(
+        newest
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        vec![3, 2]
+    );
+    let (older, end) = recorder.page(cursor, 2).unwrap();
+    assert_eq!(
+        older.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(end, None);
 }
 
 #[test]
 fn recorder_rejects_free_form_identifiers_and_invalid_progress() {
-    let recorder = ActivityRecorder::new("session-one".to_string(), 2);
+    let (_temp, recorder) = recorder("session-one");
     assert!(recorder
         .record_at(
             draft(Some("/Users/person/private.jpg")),
@@ -83,7 +104,7 @@ fn recorder_rejects_free_form_identifiers_and_invalid_progress() {
 
 #[test]
 fn serialized_events_omit_absent_optional_fields() {
-    let recorder = ActivityRecorder::new("session-one".to_string(), 1);
+    let (_temp, recorder) = recorder("session-one");
     let mut minimal = draft(None);
     minimal.generation = None;
     minimal.previous = None;
@@ -97,6 +118,7 @@ fn serialized_events_omit_absent_optional_fields() {
     assert_eq!(value["current"], "running");
     for absent in [
         "operationId",
+        "subject",
         "causeId",
         "generation",
         "previous",
@@ -112,8 +134,23 @@ fn serialized_events_omit_absent_optional_fields() {
 }
 
 #[test]
+fn background_subjects_are_closed_and_human_readable() {
+    let (_temp, recorder) = recorder("session-one");
+    let mut event = draft(Some("backgroundWork:one"));
+    event.owner = ActivityOwner::BackgroundWork;
+    event.subject = Some(ActivitySubject::VideoTranscription);
+    let value = serde_json::to_value(
+        recorder
+            .record_at(event, "2026-09-07T00:00:00.000Z".to_string(), 10)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["subject"], "videoTranscription");
+}
+
+#[test]
 fn concrete_timing_owners_serialize_without_free_form_payloads() {
-    let recorder = ActivityRecorder::new("session-one".to_string(), 8);
+    let (_temp, recorder) = recorder("session-one");
     for (owner, expected) in [
         (ActivityOwner::Anchor, "anchor"),
         (ActivityOwner::ManagedTools, "managedTools"),

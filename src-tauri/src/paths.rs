@@ -27,7 +27,6 @@ pub const LOGS_DIR_NAME: &str = "logs";
 pub const BIN_DIR_NAME: &str = "bin";
 pub const MODELS_DIR_NAME: &str = "models";
 pub const TEMP_DIR_NAME: &str = "temp";
-pub const TRASH_DIR_NAME: &str = "trash";
 pub const DEPENDENCIES_FILE_NAME: &str = "dependencies.json";
 pub const SOURCE_VOLUMES_FILE_NAME: &str = "source-volumes.json";
 
@@ -75,7 +74,10 @@ fn expand_tilde(home: &Path, value: &str) -> PathBuf {
     if value == "~" {
         return home.to_path_buf();
     }
-    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
         return home.join(rest);
     }
     PathBuf::from(value)
@@ -114,7 +116,8 @@ fn expand_env_references(value: &str) -> String {
         if let Some(after) = rest.strip_prefix('%') {
             if let Some(end) = after.find('%') {
                 let name = &after[..end];
-                if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                {
                     out.push_str(&std::env::var(name).unwrap_or_default());
                     rest = &after[end + 1..];
                     continue;
@@ -150,7 +153,10 @@ mod tests {
         let home = PathBuf::from("/home/tester");
         // Unset / empty / whitespace all fall back to the default root.
         assert_eq!(resolve_root(&home, None).unwrap(), home.join(".onecopy"));
-        assert_eq!(resolve_root(&home, Some(String::new())).unwrap(), home.join(".onecopy"));
+        assert_eq!(
+            resolve_root(&home, Some(String::new())).unwrap(),
+            home.join(".onecopy")
+        );
         assert_eq!(
             resolve_root(&home, Some("   ".to_string())).unwrap(),
             home.join(".onecopy")

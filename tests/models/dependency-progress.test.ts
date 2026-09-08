@@ -21,7 +21,7 @@ describe("managed dependency progress", () => {
         total: 4_194_304,
         nextPhase: "install",
       }),
-    ).toBe("Verifying — 4 MB / 4 MB (100%) · Next: Installing");
+    ).toBe("Verifying — 4 MB / 4 MB (100%)");
   });
 
   it("keeps unknown server lengths honest and hides meaningless fixed counts", () => {
@@ -40,7 +40,7 @@ describe("managed dependency progress", () => {
         total: 1,
         nextPhase: "download",
       }),
-    ).toBe("Resolving · Next: Downloading");
+    ).toBe("Resolving");
   });
 
   it("presents starting and cancellation without manufacturing progress", () => {

@@ -10,7 +10,7 @@ export type {
 } from "./app-data";
 export {
   finishActivityOperation,
-  loadActivitySnapshot,
+  loadActivityPage,
   latestActivityOperationId,
   newActivityOperationId,
   recordActivity,
@@ -18,5 +18,5 @@ export {
 export type {
   ActivityDraft,
   ActivityEvent,
-  ActivitySnapshot,
+  ActivityPage,
 } from "./activity";

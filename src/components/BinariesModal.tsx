@@ -69,11 +69,8 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const checking = useBinariesStore((s) => s.checking);
   const checkingId = useBinariesStore((s) => s.checkingId);
   const checkCancelling = useBinariesStore((s) => s.checkCancelling);
-  const cooldownUntil = useBinariesStore((s) => s.cooldownUntil);
-  const lastCheckOutcome = useBinariesStore((s) => s.lastCheckOutcome);
-  const lastCheckOutcomeLevel = useBinariesStore(
-    (s) => s.lastCheckOutcomeLevel,
-  );
+  const checkFeedback = useBinariesStore((s) => s.checkFeedback);
+  const checkError = useBinariesStore((s) => s.checkError);
   const install = useBinariesStore((s) => s.install);
   const cancel = useBinariesStore((s) => s.cancel);
   const checkAll = useBinariesStore((s) => s.checkAll);
@@ -98,7 +95,6 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   // checkable entry, so this IS the single check button, standing where its
   // scope is obvious rather than floating above a list it cannot cover.
   const offersCheck = entry.checkable && entry.status !== "not-installed";
-  const coolingDown = !checking && Date.now() < cooldownUntil;
   const checked =
     entry.facts.lastCheckedAtUtc !== null
       ? `Checked ${formatLocalMinute(entry.facts.lastCheckedAtUtc)}`
@@ -154,27 +150,22 @@ function EntryRow({ entry }: { entry: DependencyState }) {
           ) : null}
           {offersCheck ? (
             <>
+              <Button disabled={checking} onClick={() => void checkAll()}>
+                {checking
+                  ? checkCancelling
+                    ? "Cancelling…"
+                    : "Checking…"
+                  : checkFeedback === "checked"
+                    ? "Checked"
+                    : "Check for updates"}
+              </Button>
               {checkingId === entry.id ? (
-                <>
-                  <span className="text-xs text-primary">
-                    {checkCancelling ? "Cancelling…" : "Checking…"}
-                  </span>
                   <Button
                     disabled={checkCancelling}
                     onClick={() => void cancelCheck(entry.id)}
                   >
                     Cancel check
                   </Button>
-                </>
-              ) : (
-                <Button disabled={checking || coolingDown} onClick={() => void checkAll()}>
-                  Check for updates
-                </Button>
-              )}
-              {lastCheckOutcome !== null ? (
-                <OperationResult level={lastCheckOutcomeLevel ?? "info"}>
-                  {lastCheckOutcome}
-                </OperationResult>
               ) : checked !== null ? (
                 <span className="text-xs text-ink-muted">{checked}</span>
               ) : null}
@@ -182,17 +173,26 @@ function EntryRow({ entry }: { entry: DependencyState }) {
           ) : null}
         </div>
       ) : null}
+      {offersCheck && checkError !== null ? (
+        <OperationResult level="error" className="mt-2">
+          {checkError}
+        </OperationResult>
+      ) : null}
     </div>
   );
 }
 
-export default function BinariesModal() {
-  const open = useBinariesStore((s) => s.modalOpen);
+export default function BinariesModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const entries = useBinariesStore((s) => s.entries);
   const loading = useBinariesStore((s) => s.loading);
   const loadError = useBinariesStore((s) => s.loadError);
   const installing = useBinariesStore((s) => s.installing);
-  const setModalOpen = useBinariesStore((s) => s.setModalOpen);
   const installAll = useBinariesStore((s) => s.installAll);
   const checkAtLaunch =
     useAppStore((s) => s.appData?.config?.checkUpdatesAtLaunch) === true;
@@ -210,7 +210,7 @@ export default function BinariesModal() {
   return (
     <ModalShell
       title="Managed tools"
-      onClose={() => setModalOpen(false)}
+      onClose={onClose}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
       footerStart={
         entries.length > 0 && loadError !== null ? (

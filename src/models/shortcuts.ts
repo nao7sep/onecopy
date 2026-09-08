@@ -61,7 +61,7 @@ export function shortcutGroups(): ShortcutGroup[] {
       rows: [
         {
           chord: "Delete / Backspace",
-          action: "Trash the item and every copy",
+          action: "Delete the item and every copy (recoverable)",
         },
         {
           chord: "Shift+Delete",
@@ -97,7 +97,7 @@ export function shortcutGroups(): ShortcutGroup[] {
         },
         {
           chord: "Delete / Backspace",
-          action: "Move the marked images to Trash",
+          action: "Delete the marked images (recoverable)",
         },
         {
           chord: "Shift+Delete",

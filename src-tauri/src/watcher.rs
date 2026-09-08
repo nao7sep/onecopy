@@ -384,6 +384,7 @@ fn record_activity(
     let _ = crate::activity::record(crate::activity::ActivityDraft {
         kind,
         owner: crate::activity::ActivityOwner::Watcher,
+        subject: None,
         operation_id: Some(format!("watcher:{generation}")),
         cause_id: None,
         generation: Some(generation),

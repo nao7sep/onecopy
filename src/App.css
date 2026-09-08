@@ -74,9 +74,9 @@ body.row-resizing * {
   --border-strong: var(--color-slate-300);
 
   /* Neutral chrome — text ("ink") scale, strongest → faintest */
-  --ink-strong: var(--color-slate-800);
-  --ink: var(--color-slate-700);
-  --ink-muted: var(--color-slate-500);
+  --ink-strong: var(--color-slate-900);
+  --ink: var(--color-slate-800);
+  --ink-muted: var(--color-slate-600);
   --ink-inverted: var(--color-white);
 
   /* Primary — actions, focus, selection */
@@ -109,15 +109,15 @@ body.row-resizing * {
   --border: var(--color-slate-700);
   --border-strong: var(--color-slate-600);
 
-  --ink-strong: var(--color-slate-100);
-  --ink: var(--color-slate-200);
-  --ink-muted: var(--color-slate-400);
+  --ink-strong: var(--color-white);
+  --ink: var(--color-slate-100);
+  --ink-muted: var(--color-slate-300);
   --ink-inverted: var(--color-slate-950);
 
-  --primary: var(--color-sky-400);
+  --primary: var(--color-sky-300);
   --primary-hover: var(--color-sky-300);
   --primary-ring: var(--color-sky-500);
-  --primary-surface: var(--color-sky-900);
+  --primary-surface: var(--color-sky-950);
 
   --danger: var(--color-red-300);
   --danger-solid: var(--color-red-600);
@@ -127,8 +127,8 @@ body.row-resizing * {
   --warning: var(--color-amber-400);
   --warning-surface: var(--color-amber-900);
 
-  --scrollbar-thumb: var(--color-slate-600);
-  --scrollbar-thumb-hover: var(--color-slate-500);
+  --scrollbar-thumb: var(--color-slate-500);
+  --scrollbar-thumb-hover: var(--color-slate-400);
 }
 
 @theme inline {
@@ -153,17 +153,17 @@ body.row-resizing * {
   --color-warning-surface: var(--warning-surface);
 }
 
-/* App-chrome conventions: thin gutter, inset pill thumb that brightens on
+/* App-chrome conventions: graspable gutter, inset pill thumb that brightens on
    hover, transparent track and corner. `scrollbar-color` must accompany
    `scrollbar-width` — a Chromium webview with only the width set IGNORES the
    ::-webkit-scrollbar rules and falls back to the UA default bar. */
 * {
-  scrollbar-width: thin;
+  scrollbar-width: auto;
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 ::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);

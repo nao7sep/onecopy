@@ -141,13 +141,13 @@ export default function QuickView() {
       </footer>
       {pendingDelete !== null ? (
         <ConfirmDialog
-          title={pendingDelete === "permanent" ? "Delete permanently?" : "Move to trash?"}
-          message={`${pendingDelete === "permanent" ? "Permanently delete" : "Move"} ${item.fileName}${
+          title={pendingDelete === "permanent" ? "Delete permanently?" : "Delete this item?"}
+          message={`${pendingDelete === "permanent" ? "Permanently delete" : "Delete"} ${item.fileName}${
             pendingDelete === "permanent"
               ? " and every copy? This cannot be undone."
-              : " and every copy to the trash?"
+              : " and every copy? They remain recoverable from Deleted files."
           }`}
-          confirmLabel={pendingDelete === "permanent" ? "Delete permanently" : "Move to trash"}
+          confirmLabel={pendingDelete === "permanent" ? "Delete permanently" : "Delete"}
           onConfirm={() => void confirmViewerDelete()}
           onCancel={() => useQuickViewStore.getState().cancelDelete()}
         />

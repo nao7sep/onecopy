@@ -754,8 +754,8 @@ pub(crate) fn empty_trash(
         json!({ "root": root, "operationId": operation_id }),
         || {
             let data_root = crate::paths::data_root(app)?;
-            let dirs = crate::storage::load_config_source_dirs(&data_root)?;
-            let known = crate::trash::overview(&dirs, &data_root);
+            let roots = crate::storage::load_config_file_roots(&data_root)?;
+            let known = crate::trash::overview(&roots);
             if !known.iter().any(|candidate| candidate.root == root) {
                 return Err("not a known trash root".to_string());
             }
@@ -792,7 +792,7 @@ pub(crate) fn empty_trash(
                         "trash-empty-entry-failed",
                         Some(&path.to_string_lossy()),
                         &format!(
-                            "OneCopy couldn’t permanently remove this item from OneCopy Trash: {error}"
+                            "OneCopy couldn’t permanently remove this item from Deleted files: {error}"
                         ),
                     )
                 },

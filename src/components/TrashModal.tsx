@@ -7,18 +7,14 @@ import ModalShell from "./ModalShell";
 import ConfirmDialog from "./ConfirmDialog";
 import Button from "./ui/Button";
 import { recordActionFailure } from "../state/notifications-store";
-import { revealInFileManager } from "../workflows/external-open";
 import OperationResult from "./ui/OperationResult";
 
-// The Trash surface: every trash on the system — the configured volumes,
-// the app home, AND any mounted drive carrying one from an earlier
-// configuration — with per-root sizes, Reveal, and the one deliberately
+// Deleted files: one permission-preserving location below each configured
+// source or destination root, with per-root sizes, Reveal, and the deliberately
 // destructive convenience: Empty. Sizes are computed when the modal opens
 // (it opens rarely; a cached number would only be a chance to lie).
-// Emptying is PERMANENT — the trash is the safety net, and emptying removes
-// the net for everything inside — so it confirms with the exact totals it
-// is about to destroy. The trash stays write-only otherwise: the app NEVER
-// purges on its own (by design — see the README's trash section).
+// Emptying is PERMANENT, so it confirms with the exact totals it is about to
+// destroy. The storage stays write-only otherwise: the app never purges it.
 
 interface TrashRootInfo {
   root: string;
@@ -67,8 +63,8 @@ export default function TrashModal({
       .catch((error) => {
         if (!current) return;
         log.error("trash overview failed", toErrorFields(error));
-        setError("Trash locations are unavailable.");
-        recordActionFailure("trash-overview-failed", "Trash locations are unavailable.", error);
+        setError("Deleted-file locations are unavailable.");
+        recordActionFailure("trash-overview-failed", "Deleted-file locations are unavailable.", error);
       });
     return () => {
       current = false;
@@ -90,8 +86,8 @@ export default function TrashModal({
       else stop();
     }).catch((error) => {
       log.warn("trash progress wiring failed", toErrorFields(error));
-      if (alive) setError("Live trash progress is unavailable.");
-      recordActionFailure("trash-progress-unavailable", "Live Trash progress is unavailable.", error);
+      if (alive) setError("Live deletion progress is unavailable.");
+      recordActionFailure("trash-progress-unavailable", "Live deletion progress is unavailable.", error);
     });
     return () => {
       alive = false;
@@ -119,7 +115,7 @@ export default function TrashModal({
         log.error("trash remeasurement failed", toErrorFields(error));
         setRows(null);
         outcomeError = outcomeError === null
-          ? "Trash was processed, but its totals couldn’t be refreshed."
+          ? "Deleted files were processed, but their totals couldn’t be refreshed."
           : `${outcomeError} Totals couldn’t be refreshed.`;
       }
       setError(outcomeError);
@@ -128,8 +124,8 @@ export default function TrashModal({
       }
     } catch (error) {
       log.error("trash empty failed", toErrorFields(error));
-      setError("Couldn’t empty this trash.");
-      recordActionFailure("trash-empty-failed", "Couldn’t empty this Trash.", error);
+      setError("Couldn’t empty these deleted files.");
+      recordActionFailure("trash-empty-failed", "Couldn’t empty these deleted files.", error);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -148,14 +144,14 @@ export default function TrashModal({
     } catch (error) {
       setCancelling(false);
       log.error("trash empty cancellation failed", toErrorFields(error));
-      setError("Couldn’t cancel emptying this trash.");
-      recordActionFailure("trash-empty-cancel-failed", "Couldn’t cancel emptying this Trash.", error);
+      setError("Couldn’t cancel emptying deleted files.");
+      recordActionFailure("trash-empty-cancel-failed", "Couldn’t cancel emptying deleted files.", error);
     }
   };
 
   return (
     <ModalShell
-      title="OneCopy Trash"
+      title="Deleted files"
       onClose={onClose}
       closeDisabled={busy}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
@@ -167,11 +163,11 @@ export default function TrashModal({
     >
       {confirm !== null ? (
         <ConfirmDialog
-          title="Empty this trash?"
+          title="Empty deleted files?"
           message={`Permanently delete ${confirm.files.toLocaleString()} file${
             confirm.files === 1 ? "" : "s"
-          } (${formatBytes(confirm.bytes)}) from ${confirm.root}? The trash is the safety net — emptied files cannot be recovered.`}
-          confirmLabel="Empty trash"
+          } (${formatBytes(confirm.bytes)}) from ${confirm.root}? Emptied files cannot be recovered.`}
+          confirmLabel="Empty deleted files"
           widthClass="w-[min(820px,calc(100vw-3rem))]"
           onConfirm={() => {
             const row = confirm;
@@ -182,10 +178,9 @@ export default function TrashModal({
         />
       ) : null}
       <p className="mb-3 text-sm text-ink-muted">
-        Deleted files wait here — one trash per drive, so a delete is instant,
-        and every attached drive is checked. The app never empties a trash on
-        its own; emptying is permanent. Deleting these folders in the file
-        manager is also always safe.
+        Each configured root keeps its deleted files beneath its own permission
+        boundary. OneCopy never empties these folders automatically. Emptying
+        is permanent; removing their contents in the file manager is also safe.
       </p>
       {rows === null ? (
         error !== null ? (
@@ -196,7 +191,7 @@ export default function TrashModal({
           <p className="py-4 text-center text-sm text-ink-muted">Measuring…</p>
         )
       ) : rows.length === 0 ? (
-        <p className="py-4 text-center text-sm text-ink-muted">No trash locations</p>
+        <p className="py-4 text-center text-sm text-ink-muted">No deleted-file locations</p>
       ) : (
         <ul className="space-y-1.5">
           {rows.map((row) => (
@@ -222,9 +217,9 @@ export default function TrashModal({
               </div>
               <Button
                 onClick={() => {
-                  void revealInFileManager(row.root).catch((error) => {
+                  void invoke("trash_reveal", { root: row.root }).catch((error) => {
                     log.warn("trash reveal failed", { root: row.root, ...toErrorFields(error) });
-                    setError("Couldn’t reveal this trash location.");
+                    setError("Couldn’t reveal this deleted-files location.");
                   });
                 }}
               >

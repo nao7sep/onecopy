@@ -20,7 +20,7 @@ export default function MutationResultActions({
           className="text-ink-muted hover:text-ink hover:underline"
           onClick={onRevealTrash}
         >
-          Reveal OneCopy Trash…
+          Reveal deleted files…
         </button>
       ) : null}
       <button

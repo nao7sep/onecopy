@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { useAppStore } from "./state/app-store";
@@ -63,6 +63,7 @@ import NotificationHost from "./components/NotificationHost";
 import StartupFailureScreen from "./components/StartupFailureScreen";
 import { recordActionFailure } from "./state/notifications-store";
 import { bootstrapApplication } from "./workflows/app-lifecycle";
+import { useAppShellStore } from "./state/app-shell-store";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -145,17 +146,14 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
   const issuesTotal = useIssuesStore((s) => s.total);
   const derivedWorkSnapshot = useDerivedWorkStore((s) => s.snapshot);
-  const setBackgroundWorkOpen = useDerivedWorkStore((s) => s.setOpen);
   const derivedWorkLine = backgroundWorkLine(derivedWorkSnapshot);
-  const setIssuesOpen = useIssuesStore((s) => s.setOpen);
   const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
   // is the modal's story.
   const ffmpegProgress = useBinariesStore((s) => s.installing["ffmpeg"]);
-  const setBinariesModalOpen = useBinariesStore((s) => s.setModalOpen);
-  const [aboutOpen, setAboutOpen] = useState(false);
-  const [trashOpen, setTrashOpen] = useState(false);
-  const [activityTraceOpen, setActivityTraceOpen] = useState(false);
+  const utilitySurface = useAppShellStore((s) => s.utilitySurface);
+  const openUtility = useAppShellStore((s) => s.openUtility);
+  const closeUtility = useAppShellStore((s) => s.closeUtility);
   /** Transient media inspection lives in the main webview. */
   const quickViewOpen = useQuickViewStore(
     (state) => state.session?.presentation === "quick",
@@ -172,9 +170,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
     restorePaneIntents,
   });
   const {
-    helpOpen,
     openHelp,
-    closeHelp,
     openSettings,
     confirmPermanent,
     confirmTrash,
@@ -230,22 +226,34 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           onReconfigure={reopenSetup}
         />
       ) : null}
-      <ComparisonView onRevealTrash={() => setTrashOpen(true)} />
+      <ComparisonView onRevealTrash={() => openUtility("deletedFiles")} />
       <NotificationHost />
-      <BinariesModal />
-      <BackgroundWorkModal />
+      <BinariesModal
+        open={utilitySurface === "managedTools"}
+        onClose={closeUtility}
+      />
+      <BackgroundWorkModal
+        open={utilitySurface === "backgroundWork"}
+        onClose={closeUtility}
+      />
       {appData.debugEnabled ? (
-        <ActivityTraceModal open={activityTraceOpen} onClose={() => setActivityTraceOpen(false)} />
+        <ActivityTraceModal
+          open={utilitySurface === "activityTrace"}
+          onClose={closeUtility}
+        />
       ) : null}
-      <ShortcutsModal open={helpOpen} onClose={closeHelp} />
-      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <ShortcutsModal
+        open={utilitySurface === "shortcuts"}
+        onClose={closeUtility}
+      />
+      <AboutModal open={utilitySurface === "about"} onClose={closeUtility} />
       {quickViewOpen ? <QuickView /> : null}
       {confirmPermanent !== null ? (
         <ConfirmDialog
           title="Delete permanently?"
           message={`Permanently delete ${confirmPermanent} item${
             confirmPermanent === 1 ? "" : "s"
-          } and every copy? This bypasses the trash and cannot be undone.`}
+          } and every copy? This bypasses recoverable deletion and cannot be undone.`}
           confirmLabel="Delete permanently"
           onConfirm={confirmPermanentDelete}
           onCancel={cancelPermanentDelete}
@@ -253,20 +261,20 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       ) : null}
       {confirmTrash !== null ? (
         <ConfirmDialog
-          title="Move to trash?"
-          message={`Move ${confirmTrash} item${
+          title="Delete these items?"
+          message={`Delete ${confirmTrash} item${
             confirmTrash === 1 ? "" : "s"
-          } and every copy to the trash? Recoverable from Menu → Trash.`}
-          confirmLabel="Move to trash"
+          } and every copy? They remain recoverable from Menu → Deleted files.`}
+          confirmLabel="Delete"
           onConfirm={confirmTrashDelete}
           onCancel={cancelTrashDelete}
         />
       ) : null}
-      <SettingsModal />
-      <IssuesModal />
+      <SettingsModal open={utilitySurface === "settings"} onClose={closeUtility} />
+      <IssuesModal open={utilitySurface === "issues"} onClose={closeUtility} />
       {/* Renders itself only when the core set a store aside this launch. */}
       <QuarantineNotice />
-      <TrashModal open={trashOpen} onClose={() => setTrashOpen(false)} />
+      <TrashModal open={utilitySurface === "deletedFiles"} onClose={closeUtility} />
       {!wizardOpen && !substitutedSourceGateOpen && missingDirs.length > 0 ? (
         <MissingSourcesNotice
           missing={missingDirs}
@@ -319,11 +327,12 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               </MenuItem>
               <MenuSeparator />
               <MenuItem onSelect={openSettings}>Settings…</MenuItem>
-              <MenuItem onSelect={() => setBinariesModalOpen(true)}>Managed tools…</MenuItem>
-              <MenuItem onSelect={() => setTrashOpen(true)}>OneCopy Trash…</MenuItem>
-              <MenuItem onSelect={() => setIssuesOpen(true)}>Issues…</MenuItem>
+              <MenuItem onSelect={() => openUtility("managedTools")}>Managed tools…</MenuItem>
+              <MenuItem onSelect={() => openUtility("backgroundWork")}>Background work…</MenuItem>
+              <MenuItem onSelect={() => openUtility("deletedFiles")}>Deleted files…</MenuItem>
+              <MenuItem onSelect={() => openUtility("issues")}>Issues…</MenuItem>
               {appData.debugEnabled ? (
-                <MenuItem onSelect={() => setActivityTraceOpen(true)}>Activity trace…</MenuItem>
+                <MenuItem onSelect={() => openUtility("activityTrace")}>Activity trace…</MenuItem>
               ) : null}
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
@@ -369,7 +378,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               </MenuItem>
               <MenuSeparator />
               <MenuItem onSelect={openHelp}>Keyboard shortcuts…</MenuItem>
-              <MenuItem onSelect={() => setAboutOpen(true)}>About OneCopy…</MenuItem>
+              <MenuItem onSelect={() => openUtility("about")}>About OneCopy…</MenuItem>
             </Menu>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -588,7 +597,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           {mutationProgress === null && mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
               result={mutationResult}
-              onRevealTrash={() => setTrashOpen(true)}
+              onRevealTrash={() => openUtility("deletedFiles")}
               onDismiss={dismissMutationResult}
             />
           ) : null}
@@ -616,7 +625,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           <button
             className="text-ink-muted hover:text-ink hover:underline"
             title="Open Background work"
-            onClick={() => setBackgroundWorkOpen(true)}
+            onClick={() => {
+              openUtility("backgroundWork");
+              void useDerivedWorkStore.getState().load();
+            }}
           >
             {derivedWorkLine}
           </button>
@@ -626,7 +638,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             <button
               className="text-danger hover:underline"
               title="Open the issues list"
-              onClick={() => setIssuesOpen(true)}
+              onClick={() => openUtility("issues")}
             >
               {issuesTotal} issue{issuesTotal === 1 ? "" : "s"}
             </button>
@@ -649,7 +661,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                     : "text-ink-muted hover:text-ink"
                 }
                 title="Managed tools"
-                onClick={() => setBinariesModalOpen(true)}
+                onClick={() => openUtility("managedTools")}
               >
                 {chip.text}
               </button>

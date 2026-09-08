@@ -11,6 +11,7 @@ import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
 import { recordActionFailure } from "../state/notifications-store";
 import { newActivityOperationId, recordActivity } from "../repositories/activity";
+import { useAppShellStore } from "../state/app-shell-store";
 
 export async function saveSettings(): Promise<void> {
   const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
@@ -61,11 +62,11 @@ export async function saveSettings(): Promise<void> {
     // documents publish, close the draft rather than holding Settings open
     // for a potentially large rebuild.
     useSettingsStore.setState({
-      open: false,
       draft: null,
       opened: null,
       saving: false,
     });
+    useAppShellStore.getState().closeUtility();
   } catch (error) {
     stateSaveFailed = true;
     useSettingsStore.setState({

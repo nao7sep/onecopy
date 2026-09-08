@@ -86,6 +86,6 @@ Destination entries are flat, full-width list rows. Selected destinations use a 
 
 Ordinary click selects one destination. Up and Down navigate visible folders; Left and Right collapse or expand the tree conventionally. A disclosure control, Enter, and double-click expand or collapse only and never begin a file operation.
 
-Explicit destination controls state the frozen logical-item count and whether covered source copies will be sent to OneCopy Trash. Copy begins its named operation directly; Move and permanent-Move always open an exact-scope review before any filesystem work. Dropping a Main item freezes the complete current Main selection and asks whether to Copy or Move before any filesystem work. The active destination and expanded folders are remembered only for the current app run.
+Explicit destination controls state the frozen logical-item count and whether covered source copies will receive recoverable deletion. Copy begins its named operation directly; Move and permanent-Move always open an exact-scope review before any filesystem work. Dropping a Main item freezes the complete current Main selection and asks whether to Copy or Move before any filesystem work. The active destination and expanded folders are remembered only for the current app run.
 
 A selected descendant reached beneath a configured destination root is an eligible receiver without being configured separately. Destination admission and file-operation effects are governed by `file-operations.md`.

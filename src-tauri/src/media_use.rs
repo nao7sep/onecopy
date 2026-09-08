@@ -312,6 +312,7 @@ fn record_activity(
     let _ = crate::activity::record(crate::activity::ActivityDraft {
         kind,
         owner: crate::activity::ActivityOwner::Media,
+        subject: None,
         operation_id: Some(format!("media:{token}")),
         cause_id: None,
         generation: Some(token),

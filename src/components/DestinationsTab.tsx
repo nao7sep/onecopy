@@ -286,10 +286,10 @@ function ActionBar() {
       <div className="flex flex-wrap items-center gap-1">
         <button
           className={`${button} text-primary hover:bg-primary-surface`}
-          title="Review moving the selection here and sending its covered source copies to OneCopy Trash"
+          title="Review moving the selection here and recoverably deleting its covered source copies"
           onClick={() => void moveSelectionTo(activePath, "move-trash-rest")}
         >
-          Move{countLabel} here; Trash sources…
+          Move{countLabel} here; delete sources…
         </button>
         <button
           className={`${button} text-ink hover:bg-surface-muted`}
@@ -466,19 +466,19 @@ export default function DestinationsTab() {
           title={
             pendingMove.mode === "move-delete-rest"
               ? "Move and delete sources permanently?"
-              : "Move and Trash source copies?"
+              : "Move and delete source copies?"
           }
           message={`Move ${pendingMove.count} logical item${
             pendingMove.count === 1 ? "" : "s"
           } to ${pendingMove.destDir} and ${
             pendingMove.mode === "move-delete-rest"
               ? "PERMANENTLY delete every covered source copy? They cannot be recovered."
-              : "move every covered source copy to OneCopy Trash?"
+              : "recoverably delete every covered source copy?"
           }`}
           confirmLabel={
             pendingMove.mode === "move-delete-rest"
               ? "Move and delete permanently"
-              : "Move and Trash sources"
+              : "Move and delete sources"
           }
           onConfirm={() => void confirmDestinationMove()}
           onCancel={() => useDestinationsStore.getState().cancelPendingMove()}
@@ -590,7 +590,7 @@ function DropChoiceModal({
               void acceptDestinationDropChoice("move-trash-rest");
             }}
           >
-            Move {count}; Trash sources
+            Move {count}; delete sources
           </Button>
           <Button
             onClick={() => {
@@ -607,7 +607,7 @@ function DropChoiceModal({
       </p>
       <p className="mt-1 text-xs text-ink-muted">
         Move delivers {count} logical item{count === 1 ? "" : "s"} here and
-        sends every covered source copy to OneCopy Trash; Copy leaves every
+        recoverably deletes every covered source copy; Copy leaves every
         source in place.
       </p>
     </ModalShell>

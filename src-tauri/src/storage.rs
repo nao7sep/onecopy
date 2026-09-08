@@ -14,7 +14,8 @@
 //! - `dependencies.json` — managed-binaries facts.              not recorded (re-derivable dependency/update facts)
 //! - `similar-exclusions.json` — durable user verdicts.         RECORDED (managed authored text)
 //! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
-//! - `trash/`            — the home-volume trash tree.          not recorded (the user's own moved files, never app text)
+//! Recoverable deleted files live below their configured roots, outside this
+//! application-data directory.
 //!
 //! Invalid-config policy (storage-path conventions): malformed JSON or a
 //! non-object config envelope is quarantined aside to
@@ -218,7 +219,9 @@ static PENDING_QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
     std::sync::Mutex::new(Vec::new());
 
 fn take_pending_quarantines() -> Vec<QuarantineRecord> {
-    let mut pending = PENDING_QUARANTINES.lock().unwrap_or_else(|p| p.into_inner());
+    let mut pending = PENDING_QUARANTINES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     std::mem::take(&mut *pending)
 }
 
@@ -284,6 +287,29 @@ pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> 
         .unwrap_or_default())
 }
 
+/// All roots whose own permission boundary must contain recoverable deleted
+/// files. The returned set is an operation-planning snapshot.
+pub fn load_config_file_roots(data_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let config = read_config_for_setup(data_root)?;
+    let mut roots = Vec::new();
+    for key in ["sourceDirs", "destinationRoots"] {
+        for value in config
+            .as_ref()
+            .and_then(|document| document.get(key))
+            .and_then(JsonValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(JsonValue::as_str)
+        {
+            let root = PathBuf::from(value);
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    Ok(roots)
+}
+
 /// Patch-merges into `config.json` and returns the merged document. The core
 /// holds the file, so it is the one owner of the read-modify-write — the
 /// frontend sends only the keys it changes, and a stale cached copy in one
@@ -328,14 +354,21 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let read = if target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
+    let read = if target
+        .file_name()
+        .is_some_and(|name| name == CONFIG_FILE_NAME)
+    {
         read_config_optional(target)?
     } else {
         read_json_optional(target)?
     };
     let quarantined = read.quarantined;
     let mut current = read.value;
-    if quarantined.is_some() && target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
+    if quarantined.is_some()
+        && target
+            .file_name()
+            .is_some_and(|name| name == CONFIG_FILE_NAME)
+    {
         if let Some(root) = target.parent() {
             materialize_config_if_missing(root)?;
         }
@@ -368,8 +401,7 @@ pub fn materialize_config_if_missing(root: &Path) -> Result<(), String> {
     if target.exists() {
         return Ok(());
     }
-    let defaults =
-        serde_json::to_value(DefaultConfig::default()).map_err(|e| e.to_string())?;
+    let defaults = serde_json::to_value(DefaultConfig::default()).map_err(|e| e.to_string())?;
     atomic_write_json(&target, &defaults)
 }
 
@@ -458,10 +490,7 @@ fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, Strin
 /// `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`, sibling to the target — the
 /// derived-filename grammar with a moment discriminator.
 fn quarantine_name(path: &Path) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("store");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("store");
     path.with_file_name(format!("{stem}-{}.invalid", logging::filename_stamp_now()))
 }
 
@@ -570,7 +599,10 @@ mod tests {
         let name = q.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("config-"), "{name}");
         assert!(name.ends_with("-utc.invalid"), "{name}");
-        assert!(!name.contains(".json"), "role extension replaces the original: {name}");
+        assert!(
+            !name.contains(".json"),
+            "role extension replaces the original: {name}"
+        );
     }
 
     #[test]
@@ -596,7 +628,10 @@ mod tests {
         let corrupt = read_json_optional(&path).unwrap();
         assert!(corrupt.value.is_none());
         assert!(corrupt.quarantined.is_some());
-        assert!(!path.exists(), "corrupt file must be renamed aside, not left in place");
+        assert!(
+            !path.exists(),
+            "corrupt file must be renamed aside, not left in place"
+        );
         let quarantined: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()

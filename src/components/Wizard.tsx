@@ -3,6 +3,7 @@ import { finishWizard } from "../workflows/wizard";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
+import TimezoneHelpLink from "./TimezoneHelpLink";
 import { Plus } from "lucide-react";
 import { Row, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
@@ -114,10 +115,11 @@ export default function Wizard() {
         {step === 2 ? (
           <section>
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">Default timezone</h2>
-            <p className="mb-3 text-sm text-ink-muted">
+            <p className="mb-2 text-sm text-ink-muted">
               Applied when a photo&apos;s metadata has no timezone of its own
-              (most cameras). IANA name, e.g. Asia/Tokyo.
+              (most cameras).
             </p>
+            <div className="mb-3"><TimezoneHelpLink /></div>
             <input
               className="mb-1 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-ink outline-none transition-colors focus:border-border-strong focus-visible:ring-2 focus-visible:ring-primary-ring"
               aria-invalid={

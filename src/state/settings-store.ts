@@ -167,7 +167,6 @@ function draftFrom(
 }
 
 interface SettingsState {
-  open: boolean;
   draft: SettingsDraft | null;
   accelerationCapabilities: AiAccelerationCapability[];
   /** The draft as it was when the modal opened — the dirty-check baseline. */
@@ -177,12 +176,12 @@ interface SettingsState {
   saving: boolean;
   message: string;
   messageLevel: "error" | "info" | null;
-  openWith: (
+  beginEditing: (
     config: Record<string, unknown> | null,
     state?: Record<string, unknown> | null,
     accelerationCapabilities?: AiAccelerationCapability[],
   ) => void;
-  close: () => void;
+  discardDraft: () => void;
   update: (patch: Partial<SettingsDraft>) => void;
   resetSimilarPhotoSettings: () => void;
   validateTimezone: (name: string) => Promise<void>;
@@ -193,7 +192,6 @@ interface SettingsState {
 const timezoneValidation = requestSeq();
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
-  open: false,
   draft: null,
   accelerationCapabilities: [],
   opened: null,
@@ -203,10 +201,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   message: "",
   messageLevel: null,
 
-  openWith: (config, state = null, accelerationCapabilities = []) => {
+  beginEditing: (config, state = null, accelerationCapabilities = []) => {
     timezoneValidation.begin();
     set({
-      open: true,
       accelerationCapabilities,
       draft: draftFrom(config, state, accelerationCapabilities),
       opened: draftFrom(config, state, accelerationCapabilities),
@@ -217,9 +214,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     });
   },
 
-  close: () => {
+  discardDraft: () => {
     if (get().saving) return;
-    set({ open: false, draft: null, opened: null, accelerationCapabilities: [] });
+    set({ draft: null, opened: null, accelerationCapabilities: [] });
   },
 
   update: (patch) => {

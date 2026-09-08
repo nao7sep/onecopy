@@ -18,11 +18,11 @@ Unavailable source directories or drives do not disable the application or inval
 
 Copy establishes the planned main and companion outputs and leaves every source in place.
 
-Move establishes each output group before applying that group's requested source action. Ordinary Move cleanup sends its covered sources to recoverable Trash. An explicitly confirmed permanent variant deletes its covered sources without Trash.
+Move establishes each output group before applying that group's requested source action. Ordinary Move cleanup sends its covered sources to recoverable deleted-file storage. An explicitly confirmed permanent variant deletes its covered sources without recoverable storage.
 
-Ordinary deletion sends every planned main copy and every locally paired companion in the submitted logical item to recoverable Trash. Permanent deletion deletes those planned files without Trash. Deletion may complete sequentially across physical files and can therefore produce an honest partial result.
+Ordinary deletion sends every planned main copy and every locally paired companion in the submitted logical item to recoverable deleted-file storage. Permanent deletion deletes those planned files without recoverable storage. Deletion may complete sequentially across physical files and can therefore produce an honest partial result.
 
-New installations confirm direct single-item Trash by default; the user may disable that one confirmation. The preference applies only to a direct command targeting one explicitly selected item. Multi-item Trash, Comparison complement decisions, Trash-every-visible, destination Move cleanup, overwrite displacement, and every permanent-deletion path always require an exact-scope review. Cancelling review performs no filesystem work and leaves the owning review state unchanged.
+New installations confirm direct single-item recoverable deletion by default; the user may disable that one confirmation. The preference applies only to a direct command targeting one explicitly selected item. Multi-item deletion, Comparison complement decisions, delete-every-visible, destination Move cleanup, overwrite displacement, and every permanent-deletion path always require an exact-scope review. Cancelling review performs no filesystem work and leaves the owning review state unchanged.
 
 ## Main and companion outputs
 
@@ -30,7 +30,7 @@ The logical item's current representative supplies the main output filename. Dif
 
 Companion outputs are the union of the known companions paired locally with the planned main copies. Different companion output names may all be delivered. When several companions would use the same output name, the companion beside the highest-ranked main copy wins; if that copy lacks the name, preference continues through the established representative ordering. Companion contents are not compared merely to choose the output.
 
-Copy leaves every companion source in place. A successfully established winning companion output covers every planned source companion represented by that output name; a failed output covers none of them. Move handles only those covered companion sources. Direct Trash or permanent deletion handles every planned locally paired companion without comparing companion contents.
+Copy leaves every companion source in place. A successfully established winning companion output covers every planned source companion represented by that output name; a failed output covers none of them. Move handles only those covered companion sources. Direct recoverable or permanent deletion handles every planned locally paired companion without comparing companion contents.
 
 ## Destination admission
 
@@ -44,7 +44,7 @@ Before filesystem work begins, OneCopy checks the complete selected set and pres
 
 Rename treats the main output and its companion outputs as one family and applies one available suffix consistently. The default is `name 2.ext` on macOS and `name (2).ext` on Windows. One simple setting may choose between those styles; OneCopy does not expose an unrestricted filename format string.
 
-Overwrite first prepares and read-back-verifies the complete replacement privately. It then sends the existing destination file and its companion family to recoverable Trash before publishing the verified replacement. It never silently destroys the replaced destination group.
+Overwrite first prepares and read-back-verifies the complete replacement privately. It then sends the existing destination file and its companion family to recoverable deleted-file storage before publishing the verified replacement. It never silently destroys the replaced destination group.
 
 A freshly byte-verified existing output may count as already delivered. A newly confirmed Move retry may therefore finish only source cleanup after proving that the required destination bytes already exist; it does not duplicate the output, assume equality from names or metadata, or replay stale intent.
 
@@ -60,21 +60,27 @@ Before changing a file, OneCopy pauses and releases any app-owned media reader f
 
 A failure tied to one planned file is recorded and skipped when later files have an independent chance to succeed. A failure that invalidates a shared requirement for the remaining batch, including an unusable destination, unavailable database, inability to save the promised failure record, or a new unreviewed destination conflict, stops the unstarted remainder. A destination write failure that indicates full, disconnected, or broken storage stops later writes to that destination.
 
-Completed outputs, Trash moves, permanent deletions, and source cleanups remain completed when later work fails or is cancelled. OneCopy does not copy completed outputs back, search Trash for rollback material, or represent the batch as atomic. Unattempted sources and sources whose required output failed remain in place.
+Completed outputs, recoverable moves, permanent deletions, and source cleanups remain completed when later work fails or is cancelled. OneCopy does not copy completed outputs back, search deleted-file storage for rollback material, or represent the batch as atomic. Unattempted sources and sources whose required output failed remain in place.
 
-One persistent nonmodal operation surface shows progress, Cancel, `Cancelling after current file…`, and the final completed, failed, and unstarted result. The result identifies completed work, preserved sources, failed files, and the unstarted remainder truthfully. A completed recoverable operation keeps its exact-count receipt visible and offers a direct Reveal Trash action. A retry is a newly confirmed operation over current library and filesystem state, not a replay of stale destructive intent.
+One persistent nonmodal operation surface shows progress, Cancel, `Cancelling after current file…`, and the final completed, failed, and unstarted result. The result identifies completed work, preserved sources, failed files, and the unstarted remainder truthfully. A completed recoverable operation keeps its exact-count receipt visible and offers direct access to the stored files. A retry is a newly confirmed operation over current library and filesystem state, not a replay of stale destructive intent.
 
 ## Cancellation
 
-Cancellation takes effect between physical files or other bounded filesystem steps. It does not terminate a write, publication, Trash move, or deletion halfway through its owned step. OneCopy removes or abandons its unpublished private output as appropriate, but never rolls back work that has already reached its completed boundary.
+Cancellation takes effect between physical files or other bounded filesystem steps. It does not terminate a write, publication, recoverable move, or deletion halfway through its owned step. OneCopy removes or abandons its unpublished private output as appropriate, but never rolls back work that has already reached its completed boundary.
 
 Because cancellation is bounded, a batch and even one logical item's physical copies may complete partially. The partial result follows the same accounting and recovery rules as any other failure.
 
-## Trash and manual recovery
+## Recoverable storage and manual recovery
 
-Ordinary Trash uses OneCopy-managed storage on the same volume as each source and remains recoverable until the relevant stored file or its recovery evidence is removed. OneCopy records enough provenance to associate stored files with their original locations and can reveal the relevant per-volume Trash location. Recovery is performed manually with the operating system's file manager; OneCopy does not provide Restore or Undo.
+Recoverable deletion keeps each file under the configured root whose existing permissions protected it. Source deletion and Move cleanup use the most-specific configured source root containing that file. Overwrite displacement uses the selected configured destination root. The accepted operation plan freezes that root before filesystem work begins; the storage layer receives the frozen root and never guesses from the drive or application home.
 
-OneCopy never automatically prunes or empties Trash it manages. `Empty OneCopy Trash…` is an explicit confirmed permanent action in Settings or maintenance, and cancellation takes effect between individual deletions. Users may also remove Trash material outside OneCopy; doing so never triggers source deletion, operation replay, or automatic reconstruction.
+Each configured root stores its deleted files beneath its own hidden `.onecopy-trash` directory. Before moving a file, OneCopy proves that the file is contained by the frozen root and that the move remains on the same filesystem; failed validation leaves the source untouched. The directory is created lazily beneath that root so its access remains constrained by the root's traversal and permission boundary. Source discovery, watchers, and destination browsing exclude these directories everywhere they occur.
+
+The application home does not own deleted-file storage. Two application homes configured for the same root intentionally see the same root-local location, while files protected by different configured roots never move into one shared drive-level or application-level directory.
+
+OneCopy records enough provenance to associate stored files with their original locations and can reveal each known root-local location. Revealing creates an absent empty location before opening it, subject to the same configured-root validation. Recovery is performed manually with the operating system's file manager; OneCopy does not provide Restore or Undo.
+
+OneCopy never automatically prunes or empties deleted-file storage. Emptying it is an explicit confirmed permanent action, and cancellation takes effect between individual deletions. Users may also remove stored material outside OneCopy; doing so never triggers source deletion, operation replay, or automatic reconstruction.
 
 ## Normal exit and abnormal termination
 

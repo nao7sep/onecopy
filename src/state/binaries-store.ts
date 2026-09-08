@@ -117,15 +117,10 @@ interface BinariesState {
   checkingId: string | null;
   checkingOperationId: string | null;
   checkCancelling: boolean;
-  /** Epoch ms until which re-checking is pointless (fresh-check cooldown —
-   * kind to upstream APIs, and honest: nothing can have changed in a
-   * minute). */
-  cooldownUntil: number;
-  /** The last run's plain-words outcome, shown beside the button for the
-   * cooldown minute — "You're up to date" beats a hover tooltip. */
-  lastCheckOutcome: string | null;
-  lastCheckOutcomeLevel: "error" | "info" | null;
-  modalOpen: boolean;
+  /** Brief acknowledgement owned by the button after a successful check. */
+  checkFeedback: "checked" | null;
+  /** Registry-check failures that are not owned by a particular entry. */
+  checkError: string | null;
   load: () => Promise<void>;
   install: (id: string) => Promise<void>;
   cancel: (id: string) => Promise<void>;
@@ -137,7 +132,6 @@ interface BinariesState {
    * upstream to ask — applying each authoritative checked row directly. */
   checkAll: () => Promise<void>;
   cancelCheck: (id: string) => Promise<void>;
-  setModalOpen: (open: boolean) => void;
 }
 
 export const useBinariesStore = create<BinariesState>((set, get) => ({
@@ -150,10 +144,8 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   checkingId: null,
   checkingOperationId: null,
   checkCancelling: false,
-  cooldownUntil: 0,
-  lastCheckOutcome: null,
-  lastCheckOutcomeLevel: null,
-  modalOpen: false,
+  checkFeedback: null,
+  checkError: null,
 
   load: async () => {
     const sequence = ++loadSequence;
@@ -429,8 +421,8 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       checkingId: null,
       checkingOperationId: null,
       checkCancelling: false,
-      lastCheckOutcome: null,
-      lastCheckOutcomeLevel: null,
+      checkFeedback: null,
+      checkError: null,
     });
     const installed = entries.filter(
       (entry) =>
@@ -485,16 +477,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         log.error("binaries check failed", { id: entry.id, ...toErrorFields(error) });
       }
     }
-    // Model checks are LOCAL pin comparisons: a real run can finish in tens
-    // of milliseconds, which reads as a dead button. Hold the "Checking…"
-    // state long enough to be a visible acknowledgement of the click.
     const elapsed = Date.now() - started;
-    if (elapsed < MIN_CHECKING_MS) {
-      await new Promise((resolve) => setTimeout(resolve, MIN_CHECKING_MS - elapsed));
-    }
-    // What the check actually cost, so a "the button feels slow" report can
-    // be answered from the log instead of guessed at: workMs is the real
-    // round trip, and the floor is the rest of what the user sees.
     const updates = get().entries.filter(
       (e) => e.checkable && e.status === "update-available",
     ).length;
@@ -505,22 +488,16 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       updates,
       cancelled,
     });
-    const outcome =
-      cancelled
-        ? "Check cancelled"
-        : failures > 0
-        ? `${failures} check${failures === 1 ? "" : "s"} failed — see below`
-        : updates > 0
-          ? `${updates} update${updates === 1 ? "" : "s"} available`
-          : "You're up to date";
     set({
       checking: false,
       checkingId: null,
       checkingOperationId: null,
       checkCancelling: false,
-      cooldownUntil: cancelled ? 0 : Date.now() + COOLDOWN_MS,
-      lastCheckOutcome: outcome,
-      lastCheckOutcomeLevel: failures > 0 ? "error" : "info",
+      checkFeedback: !cancelled && failures === 0 ? "checked" : null,
+      checkError:
+        failures > 0
+          ? `${failures} managed-tool check${failures === 1 ? "" : "s"} failed.`
+          : null,
     });
     recordActivity({
       kind: cancelled ? "cancelled" : failures > 0 ? "failed" : "completed",
@@ -538,17 +515,13 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         `${failures} managed-tool check${failures === 1 ? "" : "s"} failed.`,
       );
     }
-    setTimeout(() => {
+    if (!cancelled && failures === 0) setTimeout(() => {
       useBinariesStore.setState((state) =>
-        state.lastCheckOutcome === outcome && !state.checking
-          ? {
-              cooldownUntil: 0,
-              lastCheckOutcome: null,
-              lastCheckOutcomeLevel: null,
-            }
+        state.checkFeedback === "checked" && !state.checking
+          ? { checkFeedback: null }
           : state,
       );
-    }, cancelled ? MIN_CHECKING_MS : COOLDOWN_MS);
+    }, CHECKED_FEEDBACK_MS);
   },
 
   cancelCheck: async (id) => {
@@ -568,8 +541,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     } catch (error) {
       set({
         checkCancelling: false,
-        lastCheckOutcome: "Couldn’t cancel the managed-tool check.",
-        lastCheckOutcomeLevel: "error",
+        checkError: "Couldn’t cancel the managed-tool check.",
       });
       log.error("binaries check cancellation failed", { id, ...toErrorFields(error) });
       recordActionFailure(
@@ -580,27 +552,9 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     }
   },
 
-  setModalOpen: (open) => set({ modalOpen: open }),
 }));
 
-/** How other apps do it: the button disables during the check and briefly
- * after, with a visible "Checked <time>" as the real feedback — a minute's
- * cooldown also keeps repeated clicks from leaning on upstream rate limits
- * (GitHub allows unauthenticated callers very few requests per hour). */
-export const COOLDOWN_MS = 60_000;
-
-/** The visible floor for the checking state, measured from the CLICK — the
- * work happens inside it and the sleep tops up the remainder. A FLOOR, never
- * a fixed wait: a slow ffmpeg check that really takes 900 ms shows 900 ms.
- *
- * 600 ms, chosen once the main-thread freeze and the missing press feedback
- * were fixed (2026-08-17). Below ~400 ms a state that appears and vanishes
- * reads as a flicker rather than an event; past ~1 s the app starts feeling
- * padded, and Nielsen's 1 s bound is where an interaction stops feeling
- * immediate. The floor no longer has to carry the whole message either: the
- * press darkens the button in the same frame, and the outcome line ("You're
- * up to date") persists for the cooldown minute as the durable proof. */
-export const MIN_CHECKING_MS = 600;
+export const CHECKED_FEEDBACK_MS = 2_000;
 
 /** The ffmpeg entry — the chip and the scan honesty both read this one row. */
 export function ffmpegEntry(

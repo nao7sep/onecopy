@@ -458,7 +458,7 @@ describe("the culling workflow", () => {
     expect(useComparisonStore.getState().selected.has("h2")).toBe(true);
     expect(deleted).toEqual([]);
     await act(async () => {
-      view.getByRole("button", { name: "Move to Trash" }).click();
+      view.getByRole("button", { name: "Delete" }).click();
     });
     await settle();
 

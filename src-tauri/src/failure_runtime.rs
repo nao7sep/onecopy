@@ -187,6 +187,7 @@ pub fn emit_checked<T: Clone + Serialize>(
             let _ = crate::activity::record(crate::activity::ActivityDraft {
                 kind: crate::activity::ActivityKind::Failed,
                 owner: crate::activity::ActivityOwner::Delivery,
+                subject: None,
                 operation_id: None,
                 cause_id: None,
                 generation: None,

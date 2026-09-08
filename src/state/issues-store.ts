@@ -50,13 +50,9 @@ interface IssuesState {
   recentLoading: boolean;
   recentError: string | null;
   view: "active" | "recent";
-  /** The Issues modal (a plain modal, not persisted — a diagnostics window
-   * is something you open, read, and close). */
-  open: boolean;
   load: () => Promise<void>;
   loadActive: () => Promise<void>;
   loadRecent: () => Promise<void>;
-  setOpen: (open: boolean) => void;
   setView: (view: "active" | "recent") => void;
   dismiss: (id: number) => Promise<void>;
   dismissAll: () => Promise<void>;
@@ -77,7 +73,6 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   recentLoading: false,
   recentError: null,
   view: "active",
-  open: false,
 
   load: async () => {
     await Promise.all([get().loadActive(), get().loadRecent()]);
@@ -122,7 +117,6 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     }
   },
 
-  setOpen: (open) => set({ open }),
   setView: (view) => set({ view }),
 
   dismiss: async (id) => {
