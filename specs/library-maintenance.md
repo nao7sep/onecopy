@@ -98,14 +98,14 @@ Video and audio transcription retain separate enabled settings, queue states, an
 
 ## Priority and resource use
 
-Maintenance follows the user's current location instead of draining a fixed media-type backlog. Priority is:
+Maintenance continuously consumes runnable work after startup admission. User inactivity is never a prerequisite for background preparation or enrichment. Explicit pause, unavailable prerequisites, foreground exclusivity, and resource safety may prevent admission. Main, persistent Preview, Quick View/fullscreen, and Comparison contribute to one current attention snapshot; hidden surfaces cannot replace the active workspace's priorities. Priority is:
 
 1. Required work for the selected item, visible items, and a bounded region around the viewport.
-2. Enabled optional enrichment for that same visible region.
-3. Required and enabled optional work moving outward through the active section.
-4. The remaining library in bounded fair turns so no section or work class starves.
+2. Enabled optional enrichment supporting the active workspace's visible region.
+3. Required work, then enabled optional work, moving outward through the active section in its displayed order.
+4. The remaining library in bounded fair turns so no section or work class starves. Once urgent selected, visible, and nearby preparation is satisfied, a bounded share of turns reaches the library even while section work remains.
 
-Changing the active section, displayed order, or viewport replaces stale pending priority hints. Work already at a bounded non-resumable step may reach its safe boundary before direction changes.
+Changing the active workspace, section, displayed order, or viewport replaces stale pending priority hints. Comparison prioritizes its active card and current page across all displays without preparing original pixels or unseen comparison pages ahead. Required visible work takes precedence over unrelated transcription or analysis; otherwise a changed hint does not discard useful running work merely because its target moved offscreen. Work already at a bounded non-resumable step may reach its safe boundary before direction changes.
 
 Required visible ordering is:
 
@@ -126,7 +126,9 @@ Optional visible ordering is:
 
 Required visible preparation runs while the user is active and does not wait for a general idle timer. It may preempt automatic optional work at that work's next safe cancellation point. Preemption preserves completed results rather than presenting incomplete work as complete. A preempted transcript publishes no partial text and returns to its enabled queue. Moving among already prepared items does not by itself discard useful running work.
 
-One coordinator owns derived-work admission, priority, cancellation, and publication. Independently checkpointed image thumbnail and screen-preview jobs may run concurrently when automatic CPU, decoded-memory, and subprocess budgets admit them. Concurrency leaves interactive headroom while the user is active, may use more capacity while idle, and falls back as far as one job for large or uncertain decodes. Exact worker, neighborhood, and batch sizes are implementation tuning rather than user settings.
+One coordinator owns derived-work admission, priority, cancellation, and publication. Independently checkpointed image thumbnail and screen-preview jobs may run concurrently when automatic CPU, decoded-memory, and subprocess budgets admit them. Concurrency leaves interactive headroom while the user is active, may use more capacity while quiet, and falls back as far as one job for large or uncertain decodes. Transcription has an explicit CPU budget and retains memory headroom during execution. Browsing and Comparison with prepared content remain usable while transcription runs. Exact worker, neighborhood, and batch sizes are implementation tuning rather than user settings.
+
+Background Work refreshes durable debt when discovery, information completion, derived results, settings, or tools change it. Pending work remains visible before an executor starts, and queued, paused, waiting, failed, and complete remain distinct.
 
 Database publication and user-visible state remain single-owned even when image conversion runs concurrently. Transcription, model-heavy analysis, ffmpeg work, and whole-library computation do not overlap another heavy class unless measured platform evidence establishes safe memory use, cancellation, and responsiveness. No user setting can disable resource-safety limits or choose a raw thread count.
 

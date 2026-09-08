@@ -32,6 +32,7 @@ pub const MAX_PCM_OUTPUT: usize = 512 * 1024 * 1024;
 pub const PCM_REQUIRED_AVAILABLE: u64 = 768 * 1024 * 1024;
 pub const FACE_REQUIRED_AVAILABLE: u64 = 512 * 1024 * 1024;
 pub const WHISPER_REQUIRED_AVAILABLE: u64 = 3 * 1024 * 1024 * 1024;
+pub const MODEL_RUNNING_HEADROOM: u64 = 512 * 1024 * 1024;
 pub const SIMILARITY_REQUIRED_AVAILABLE: u64 = 512 * 1024 * 1024;
 pub const SAFETY_ERROR_PREFIX: &str = "resource safety: ";
 pub const DECODE_LIMIT_PREFIX: &str = "decode safety: ";
@@ -109,6 +110,19 @@ pub(crate) fn image_worker_capacity(idle: bool) -> usize {
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1);
     image_worker_capacity_for(logical_cpus, available_memory_bytes(), idle)
+}
+
+/// Inference always reserves interactive CPU capacity, including during quiet periods.
+pub fn transcription_threads(logical_cpus: usize) -> i32 {
+    (logical_cpus / 2).clamp(1, 4) as i32
+}
+
+pub(crate) fn available_transcription_threads() -> i32 {
+    transcription_threads(
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1),
+    )
 }
 
 fn image_worker_capacity_for(

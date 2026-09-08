@@ -134,7 +134,7 @@ describe("Background work", () => {
   });
 
   it("keeps the status segment meaningful for running, queued, and settled work", () => {
-    expect(backgroundWorkLine(current)).toBe("Background work");
+    expect(backgroundWorkLine(current)).toBe("Thumbnails, previews, and posters: 12 queued");
     expect(
       backgroundWorkLine(
         snapshot(

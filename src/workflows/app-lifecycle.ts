@@ -14,6 +14,7 @@ import { useWizardStore } from "../state/wizard-store";
 import { stringArrayField } from "../utils/configProjection";
 import { installScanEventWiring } from "./scan-events";
 import { installItemWorkflow } from "./items";
+import { installWorkAttention } from "./work-attention";
 import { installPreviewCommandWiring, installPreviewPersistence } from "./preview";
 import { installComparisonEventWiring } from "./comparison";
 import { installMutationEventWiring } from "./mutation-events";
@@ -48,6 +49,7 @@ async function bootstrapOnce(): Promise<void> {
   if (data === null) return;
 
   installItemWorkflow();
+  installWorkAttention();
   installPreviewPersistence();
   await Promise.all([
     installScanEventWiring(),

@@ -6,6 +6,8 @@ mod activity_tests;
 mod derived_state_tests;
 #[path = "../derived_work_tests.rs"]
 mod derived_work_tests;
+#[path = "../work_priority_tests.rs"]
+mod work_priority_tests;
 #[path = "../extensions_tests.rs"]
 mod extensions_tests;
 #[path = "../hashing_tests.rs"]

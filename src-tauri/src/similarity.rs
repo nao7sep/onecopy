@@ -494,6 +494,13 @@ fn dirty_bucket_expression(alias: &str) -> String {
     format!("COALESCE(strftime('%Y-%m', {alias}.resolved_utc_ms / 1000.0, 'unixepoch'), 'undated')")
 }
 
+pub(crate) fn pending_bucket_predicate(alias: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM similarity_dirty_buckets d WHERE d.bucket = {})",
+        dirty_bucket_expression(alias)
+    )
+}
+
 fn mark_all_buckets_dirty_in(conn: &Connection) -> Result<(), String> {
     let bucket = dirty_bucket_expression("l");
     conn.execute_batch(&format!(
@@ -934,6 +941,42 @@ pub fn rebuild_next_dirty_bucket_for_root_cancellable(
     rebuild_next_dirty_bucket_with_exclusions(conn, config, &exclusions, stop)
 }
 
+/// Priority similarity rebuilds only a cohort containing a requested target.
+pub fn rebuild_priority_bucket_for_root_cancellable(
+    conn: &Connection,
+    config: &SimilarityConfig,
+    root: &std::path::Path,
+    hashes: &[String],
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<GroupStats>, String> {
+    let exclusions = crate::similar_exclusions::pairs(root)?;
+    ensure_exclusions_current(conn, &exclusions)?;
+    let expression = dirty_bucket_expression("l");
+    let mut statement = conn
+        .prepare(&format!(
+            "SELECT d.bucket, d.revision FROM logical_contents l \
+         JOIN similarity_dirty_buckets d ON d.bucket = {expression} \
+         WHERE l.content_hash = ?1 AND l.kind = 'image'"
+        ))
+        .map_err(|error| error.to_string())?;
+    for hash in hashes {
+        let bucket: Option<(String, i64)> = statement
+            .query_row([hash], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some((bucket, revision)) = bucket {
+            crate::resource_limits::require_available(
+                crate::resource_limits::SIMILARITY_REQUIRED_AVAILABLE,
+                "Similarity analysis",
+            )?;
+            let candidates = candidates_for_bucket(conn, &bucket)?;
+            let groups = groups_for_bucket(&candidates, config, &exclusions, stop)?;
+            return publish_bucket(conn, &bucket, revision, &groups, stop);
+        }
+    }
+    Ok(None)
+}
+
 /// One group's members, best-first: sharpness descending (the advisory
 /// machine guess), then time — never an auto-deletion criterion.
 pub fn group_members(conn: &Connection, group_id: i64) -> Result<Vec<String>, String> {
@@ -1013,5 +1056,4 @@ mod candidate_query_tests {
         assert_eq!(error, crate::scanner::CANCELLED);
         assert!(polls.get() >= 3);
     }
-
 }

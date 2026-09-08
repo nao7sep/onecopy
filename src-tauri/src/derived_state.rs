@@ -535,13 +535,18 @@ fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> Strin
         {
             "c.kind = 'audio' AND r.transcript_state IS NULL".to_string()
         }
-        WorkClass::Similarity if capabilities.similarity_enabled => "l.kind = 'image'".to_string(),
+        WorkClass::Similarity if capabilities.similarity_enabled => format!("l.kind = 'image' AND {}", crate::similarity::pending_bucket_predicate("l")),
         WorkClass::Similarity
         | WorkClass::Snapshots
         | WorkClass::Faces
         | WorkClass::VideoTranscripts
         | WorkClass::AudioTranscripts => "0".to_string(),
     }
+}
+
+pub(crate) fn pending_work_predicate(capabilities: WorkCapabilities, classes: impl Iterator<Item = WorkClass>) -> String {
+    let predicates = classes.map(|class| format!("({})", priority_predicate(class, capabilities))).collect::<Vec<_>>();
+    if predicates.is_empty() { "0".to_string() } else { predicates.join(" OR ") }
 }
 
 /// Bounded selected/viewport/section candidates for one fixed class. This is

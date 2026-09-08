@@ -12,6 +12,7 @@ import { useWizardStore } from "../state/wizard-store";
 import { recordActionFailure } from "../state/notifications-store";
 import { newActivityOperationId, recordActivity } from "../repositories/activity";
 import { useAppShellStore } from "../state/app-shell-store";
+import { refreshBackgroundWorkSoon } from "../state/derived-work-store";
 
 export async function saveSettings(): Promise<void> {
   const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
@@ -129,6 +130,7 @@ export async function saveSettings(): Promise<void> {
   log.info(stateSaveFailed ? "settings partially saved" : "settings saved", {
     resolved,
   });
+  refreshBackgroundWorkSoon();
   recordActivity({
     kind: stateSaveFailed ? "failed" : "completed",
     owner: "settings",

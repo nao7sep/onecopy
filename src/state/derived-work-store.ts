@@ -17,7 +17,6 @@ import {
   recordActivity,
   type ActivityDraft,
 } from "../repositories/activity";
-import { useAppShellStore } from "./app-shell-store";
 
 const PING_EVERY_MS = 10_000;
 
@@ -68,6 +67,19 @@ interface DerivedWorkState {
 }
 
 const loadSequence = requestSeq();
+let runtimeVersion = 0;
+let latestRuntime: BackgroundRuntimeSnapshot | null = null;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Coalesce output invalidations; a large library must never accumulate snapshot reads. */
+export function refreshBackgroundWorkSoon(): void {
+  if (refreshTimer !== null) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    if (useDerivedWorkStore.getState().loading) { refreshBackgroundWorkSoon(); return; }
+    void useDerivedWorkStore.getState().load();
+  }, 1000);
+}
 
 export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   snapshot: null,
@@ -78,12 +90,18 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
 
   load: async () => {
     const fresh = loadSequence.begin();
+    const version = runtimeVersion;
     set({ loading: true });
     try {
       const response = await invoke<BackgroundWorkResponse>("background_work_snapshot");
       if (fresh()) {
         const { activeItem, ...snapshot } = response;
-        set({ snapshot, activeItem, loading: false, error: null });
+        const runtime = version !== runtimeVersion ? latestRuntime : null;
+        set({
+          snapshot: runtime === null ? snapshot : mergeBackgroundRuntime(snapshot, runtime),
+          activeItem: runtime === null ? activeItem : runtime.active,
+          loading: false, error: null,
+        });
       }
     } catch (error) {
       if (!fresh()) return;
@@ -160,10 +178,15 @@ export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): str
     const progress = running.done !== null && running.total !== null ? ` ${running.done}/${running.total}` : "…";
     return `${backgroundClassLabel(running.id)}${progress}`;
   }
-  if (snapshot.masterPaused || snapshot.classes.some((row) => row.state === "paused")) {
+  if (snapshot.masterPaused) {
     return "Background work paused";
   }
-  if (snapshot.classes.some((row) => row.queued > 0)) return "Background work";
+  const queued = snapshot.classes.find((row) => row.state === "queued" && row.queued > 0);
+  if (queued) return `${backgroundClassLabel(queued.id)}: ${queued.queued} queued`;
+  if (snapshot.classes.some((row) => row.state === "paused")) return "Some background work paused";
+  const waiting = snapshot.classes.find((row) => row.state === "waiting" || row.state === "unavailable");
+  if (waiting) return waiting.reason ?? "Background work waiting";
+  if (snapshot.classes.some((row) => row.failed > 0 || row.state === "failed")) return "Background work needs attention";
   return "Background work: up to date";
 }
 
@@ -353,6 +376,8 @@ const backgroundActivity = new BackgroundActivityProjection();
 const installEvents = createEventInstaller(
   async (listeners) => {
     await listeners.listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
+      runtimeVersion += 1;
+      latestRuntime = event.payload;
       useDerivedWorkStore.setState((state) => ({
         snapshot: mergeBackgroundRuntime(state.snapshot, event.payload),
         activeItem: event.payload.active,
@@ -365,10 +390,13 @@ const installEvents = createEventInstaller(
       for (const draft of backgroundActivity.quiet(latestActivityOperationId("priority"))) {
         recordActivity(draft);
       }
-      if (useAppShellStore.getState().utilitySurface === "backgroundWork") {
-        void useDerivedWorkStore.getState().load();
-      }
+      refreshBackgroundWorkSoon();
     });
+    for (const event of [
+      "source-check://progress", "source-check://done", "file-information://progress",
+      "file-information://done", "watch://updated", "derived://issues",
+      "derived://similarity-updated", "binaries://changed",
+    ]) await listeners.listen(event, refreshBackgroundWorkSoon);
     await useDerivedWorkStore.getState().load();
   },
   (error) => {

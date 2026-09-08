@@ -519,9 +519,11 @@ pub fn reconcile_section(
         .chain(anchor)
         .chain(range_origin)
         .chain(range_base)
-        .chain(recovery.into_iter().flat_map(|context| {
-            context.before.iter().chain(context.after.iter())
-        }))
+        .chain(
+            recovery
+                .into_iter()
+                .flat_map(|context| context.before.iter().chain(context.after.iter())),
+        )
         .map(SectionIdentity::key)
         .collect();
     let mut matches = HashMap::<String, PositionedSectionIdentity>::with_capacity(wanted.len());
@@ -564,14 +566,10 @@ pub fn reconcile_section(
     );
     let anchor = match chosen {
         Some(AnchorChoice::Known(member)) => Some(member),
-        Some(AnchorChoice::Index(index)) => section_identity_at(
-            &transaction,
-            kind,
-            bounds,
-            sort,
-            index,
-        )?
-        .map(|identity| PositionedSectionIdentity::from_identity(identity, index)),
+        Some(AnchorChoice::Index(index)) => {
+            section_identity_at(&transaction, kind, bounds, sort, index)?
+                .map(|identity| PositionedSectionIdentity::from_identity(identity, index))
+        }
         None => None,
     };
 
@@ -907,29 +905,176 @@ fn section_candidates_sql(include_unhashed_other: bool, has_bounds: bool) -> Str
     sql
 }
 
+fn section_order_terms(sort: SectionSort) -> Vec<(&'static str, bool)> {
+    let time = [
+        ("resolved_utc_ms IS NULL", false),
+        ("COALESCE(resolved_utc_ms, 0)", false),
+    ];
+    let name = ("file_name COLLATE onecopy_nocase", false);
+    let mut terms = match sort.order {
+        SectionSortOrder::Time => vec![(time[0].0, sort.desc), (time[1].0, sort.desc), name],
+        SectionSortOrder::Name => vec![(name.0, sort.desc), time[0], time[1]],
+        SectionSortOrder::Size => vec![
+            ("COALESCE(byte_size, -1)", sort.desc),
+            time[0],
+            time[1],
+            name,
+        ],
+        SectionSortOrder::Resolution => vec![
+            ("(COALESCE(width, 0) * COALESCE(height, 0))", sort.desc),
+            time[0],
+            time[1],
+            name,
+        ],
+        SectionSortOrder::Ext => vec![("COALESCE(extension, '')", sort.desc), name],
+    };
+    terms.push(("path_id", false));
+    terms
+}
+
 fn section_order_sql(sort: SectionSort) -> String {
-    let direction = if sort.desc { "DESC" } else { "ASC" };
-    let null_direction = if sort.desc { "DESC" } else { "ASC" };
-    let time = "resolved_utc_ms IS NULL ASC, resolved_utc_ms ASC";
-    let name = "file_name COLLATE onecopy_nocase ASC";
-    let primary = match sort.order {
-        SectionSortOrder::Time => {
-            format!("resolved_utc_ms IS NULL {null_direction}, resolved_utc_ms {direction}")
+    section_order_terms(sort)
+        .iter()
+        .map(|(term, desc)| format!("{term} {}", if *desc { "DESC" } else { "ASC" }))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Captured sort values remain usable if a completed item disappears between turns.
+#[derive(Clone)]
+pub struct SectionWorkPosition {
+    pub hash: Option<String>,
+    values: Vec<rusqlite::types::Value>,
+}
+
+pub fn section_work_anchor(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+    index: u64,
+) -> Result<Option<SectionWorkPosition>, String> {
+    section_work_rows(conn, kind, bounds, sort, None, false, 1, index, None)
+        .map(|mut rows| rows.pop())
+}
+
+pub fn section_work_page(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+    position: &SectionWorkPosition,
+    before: bool,
+) -> Result<Vec<SectionWorkPosition>, String> {
+    section_work_rows(
+        conn,
+        kind,
+        bounds,
+        sort,
+        Some(position),
+        before,
+        64,
+        0,
+        None,
+    )
+}
+
+pub(crate) fn section_pending_work_page(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+    position: &SectionWorkPosition,
+    before: bool,
+    pending: &str,
+) -> Result<Vec<SectionWorkPosition>, String> {
+    section_work_rows(
+        conn,
+        kind,
+        bounds,
+        sort,
+        Some(position),
+        before,
+        64,
+        0,
+        Some(pending),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn section_work_rows(
+    conn: &Connection,
+    kind: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+    position: Option<&SectionWorkPosition>,
+    before: bool,
+    limit: u64,
+    offset: u64,
+    pending: Option<&str>,
+) -> Result<Vec<SectionWorkPosition>, String> {
+    let terms = section_order_terms(sort);
+    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
+    let mut params = section_candidate_params(kind, bounds);
+    let mut branches = Vec::new();
+    if let Some(position) = position {
+        let base = params.len() + 1;
+        params.extend(position.values.iter().cloned());
+        for (index, (term, desc)) in terms.iter().enumerate() {
+            let mut predicates = terms[..index]
+                .iter()
+                .enumerate()
+                .map(|(prior, (term, _))| format!("({term}) IS ?{}", base + prior))
+                .collect::<Vec<_>>();
+            let comparator = if *desc ^ before { "<" } else { ">" };
+            predicates.push(format!("({term}) {comparator} ?{}", base + index));
+            branches.push(format!("({})", predicates.join(" AND ")));
         }
-        SectionSortOrder::Name => format!("file_name COLLATE onecopy_nocase {direction}"),
-        SectionSortOrder::Size => format!("COALESCE(byte_size, -1) {direction}"),
-        SectionSortOrder::Resolution => {
-            format!("(COALESCE(width, 0) * COALESCE(height, 0)) {direction}")
-        }
-        SectionSortOrder::Ext => format!("COALESCE(extension, '') {direction}"),
+    }
+    let mut filters = Vec::new();
+    if !branches.is_empty() {
+        filters.push(format!("({})", branches.join(" OR ")));
+    }
+    if let Some(pending) = pending {
+        filters.push(format!(
+            "EXISTS (SELECT 1 FROM logical_contents l \
+            JOIN contents c ON c.hash = l.content_hash \
+            LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
+            WHERE l.content_hash = candidates.hash AND ({pending}))"
+        ));
+    }
+    let filter = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", filters.join(" AND "))
     };
-    let chain = match sort.order {
-        SectionSortOrder::Time => name.to_string(),
-        SectionSortOrder::Name => time.to_string(),
-        SectionSortOrder::Size | SectionSortOrder::Resolution => format!("{time}, {name}"),
-        SectionSortOrder::Ext => name.to_string(),
-    };
-    format!("{primary}, {chain}, path_id ASC")
+    let columns = terms
+        .iter()
+        .map(|(term, _)| *term)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order = terms
+        .iter()
+        .map(|(term, desc)| format!("{term} {}", if *desc ^ before { "DESC" } else { "ASC" }))
+        .collect::<Vec<_>>()
+        .join(", ");
+    params.push((limit as i64).into());
+    params.push((offset.min(i64::MAX as u64) as i64).into());
+    let sql = format!("WITH candidates AS ({candidates}) SELECT hash, {columns} FROM candidates {filter} ORDER BY {order} LIMIT ?{} OFFSET ?{}", params.len() - 1, params.len());
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(params), |row| {
+            Ok(SectionWorkPosition {
+                hash: row.get(0)?,
+                values: (1..=terms.len())
+                    .map(|index| row.get(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string());
+    rows
 }
 
 fn identity_key(hash: Option<&str>, path_id: i64) -> String {

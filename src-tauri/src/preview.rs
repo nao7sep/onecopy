@@ -502,16 +502,9 @@ pub fn derive_one(
         );
     }
     if crate::scanner::is_provisional(hash) {
-        let (real, facts) = generate_for_image_teeing(
-            src,
-            cache,
-            thumb_edge,
-            preview_long_edge,
-            ffmpeg,
-        )
-        .map_err(|err| {
-            record_preview_failure_or_combine(conn, hash, &path, err)
-        })?;
+        let (real, facts) =
+            generate_for_image_teeing(src, cache, thumb_edge, preview_long_edge, ffmpeg)
+                .map_err(|err| record_preview_failure_or_combine(conn, hash, &path, err))?;
         crate::scanner::promote_identity(conn, cache, hash, &real)?;
         crate::derived_state::record_preview_success(
             conn,
@@ -616,6 +609,7 @@ pub(crate) fn derive_image_hashes(
     ffmpeg: Option<&Path>,
     hashes: &[String],
     idle: bool,
+    priority_changed: &dyn Fn() -> bool,
 ) -> Result<DeriveStats, String> {
     let mut rows = Vec::with_capacity(hashes.len());
     let mut seen = std::collections::HashSet::with_capacity(hashes.len());
@@ -640,6 +634,7 @@ pub(crate) fn derive_image_hashes(
         None,
         rows,
         idle,
+        priority_changed,
     )
 }
 
@@ -666,6 +661,7 @@ fn derive_images_pending_limit(
         progress,
         rows,
         idle,
+        &|| false,
     )
 }
 
@@ -763,6 +759,7 @@ fn derive_candidate_rows(
     progress: Option<&dyn Fn(u64, u64)>,
     rows: Vec<(String, String)>,
     idle: bool,
+    priority_changed: &dyn Fn() -> bool,
 ) -> Result<DeriveStats, String> {
     let mut stats = DeriveStats::default();
 
@@ -771,6 +768,9 @@ fn derive_candidate_rows(
     let capacity = crate::resource_limits::image_worker_capacity(idle).min(rows.len().max(1));
 
     for chunk in rows.chunks(capacity) {
+        if priority_changed() {
+            break;
+        }
         if crate::derived_runtime::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
@@ -1140,5 +1140,4 @@ mod tests {
             (self.width(), self.height())
         }
     }
-
 }

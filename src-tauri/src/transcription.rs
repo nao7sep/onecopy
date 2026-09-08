@@ -220,6 +220,9 @@ pub fn run_whisper(
     // stderr. The app owns useful progress and errors; the repeated token
     // dumps are neither and made run-dev unreadable.
     whisper_rs::install_logging_hooks();
+    if is_cancelled() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
     let mut context_params = WhisperContextParameters::default();
     context_params.use_gpu(matches!(acceleration, crate::ai_acceleration::Mode::Metal));
     let context = WhisperContext::new_with_params(model, context_params)
@@ -227,8 +230,12 @@ pub fn run_whisper(
     let mut state = context
         .create_state()
         .map_err(|e| format!("whisper state failed: {e}"))?;
+    if is_cancelled() {
+        return Err(crate::scanner::CANCELLED.to_string());
+    }
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_n_threads(crate::resource_limits::available_transcription_threads());
     params.set_language(Some("auto"));
     params.set_print_special(false);
     params.set_print_progress(false);

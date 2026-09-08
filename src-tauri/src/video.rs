@@ -156,12 +156,8 @@ pub struct StripDeriveStats {
     pub last_attempted_hash: Option<String>,
 }
 
-/// The video half of the SCAN derive pass: duration + poster only (through
-/// the image pipeline, so thumb/preview land in the shared cache). Scene
-/// strips deliberately do NOT happen here (Phase 33): a grid without posters
-/// reads as broken, so posters block the scan, but strips are many frames per
-/// video and belong to idle derived work — `derive_strips_pending` finds them
-/// through the NULL `strip_frames` this pass leaves behind.
+/// Required video preparation publishes duration and poster through the shared
+/// cache. Optional scene strips are scheduled independently after preparation.
 pub fn derive_videos_pending(
     conn: &Connection,
     cache: &CachePaths,
@@ -305,10 +301,10 @@ fn derive_videos_pending_limit(
     Ok(stats)
 }
 
-/// The idle derived-work half: scene strips for videos the poster pass already
-/// postered, found through their NULL `strip_frames`. Runs only while the app
-/// is idle — `stop` is consulted between videos, so the user's return waits
-/// at most one video's strip extraction. Returns one page's work statistics.
+/// The optional derived-work half: scene strips for videos the poster pass already
+/// postered, found through their NULL `strip_frames`. The coordinator supplies
+/// cancellation for pause and required-work preemption. Returns one bounded
+/// page's work statistics.
 pub fn derive_strips_pending(
     conn: &Connection,
     cache: &CachePaths,
@@ -386,7 +382,7 @@ pub fn derive_strips_pending(
             Err(err) => {
                 // -1 = strips failed: keeps the row out of every later pass
                 // (the churn the image pass's 'failed' marker exists to stop —
-                // retrying a broken video's N frame extractions every idle
+                // retrying a broken video's N frame extractions every worker
                 // tick could eat whole minutes per pass). A rescan after a
                 // DERIVE_VERSION bump re-derives; the issue row carries the
                 // reason meanwhile.

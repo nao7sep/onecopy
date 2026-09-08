@@ -13,6 +13,7 @@ pub mod binaries_manager;
 pub mod derived_runtime;
 pub mod derived_state;
 pub mod derived_work;
+pub mod work_priority;
 pub mod extensions;
 pub mod face;
 pub mod failure_runtime;
@@ -1138,11 +1139,12 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
         "ensure_fullres",
         json!({ "hash": hash }),
         || {
-            let _work = derived_runtime::begin_manual(&app, "previews")?;
             let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             let cache_root = cache_root().ok_or("data root unset")?;
             let cache = preview::CachePaths::new(cache_root);
+            if cache.fullres(&hash).is_file() { return Ok(()); }
+            let _work = derived_runtime::begin_manual(&app, "previews")?;
+            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             // Presence decides availability, same rule as the scan settings.
             let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
             let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
@@ -1472,15 +1474,20 @@ fn background_work_set_paused(
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output
 /// facts remain the only queue; closing the app loses nothing that must be
 /// recovered.
-#[tauri::command]
+#[tauri::command(async)]
 fn prioritize_derived_work(
     selected_hash: Option<String>,
     visible_hashes: Vec<String>,
+    nearby_hashes: Vec<String>,
     section_kind: Option<String>,
     section_month: Option<String>,
+    section_sort: queries::SectionSort,
+    section_anchor: u64,
+    section_total: u64,
+    generation: u64,
 ) -> Result<(), String> {
     let section = match (section_kind, section_month) {
-        (Some(kind), Some(month)) if matches!(kind.as_str(), "image" | "video") => {
+        (Some(kind), Some(month)) if matches!(kind.as_str(), "image" | "video" | "other") => {
             let bounds = queries::month_bounds(&month, display_timezone())?;
             Some(derived_work::SectionPriority {
                 kind,
@@ -1490,7 +1497,10 @@ fn prioritize_derived_work(
         }
         _ => None,
     };
-    derived_work::set_priority(selected_hash, visible_hashes, section);
+    let traversal = section.as_ref().map(|_| derived_work::SectionTraversal {
+        sort: section_sort, anchor: section_anchor, total: section_total,
+    });
+    derived_work::set_priority(selected_hash, visible_hashes, nearby_hashes, section, traversal, generation);
     Ok(())
 }
 

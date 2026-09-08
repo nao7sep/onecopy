@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   SORT_ORDERS,
   extLabel,
@@ -17,15 +16,11 @@ import { useSectionsStore } from "../state/sections-store";
 import { retainStatePatch, useAppStore } from "../state/app-store";
 import { handleSpaceQuickView, openViewerFromMain } from "../workflows/quick-view";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
+import { viewportAttention } from "../models/workAttention";
+import { setWorkViewport } from "../workflows/work-attention";
 import { formatLocalMinute } from "../utils/displayTime";
 import PreviewControl from "./PreviewControl";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
-import { log, toErrorFields } from "../repositories";
-import {
-  latestActivityOperationId,
-  newActivityOperationId,
-  recordActivity,
-} from "../repositories/activity";
 import { rescanCurrentSection } from "../workflows/items";
 import {
   itemPresentation,
@@ -605,47 +600,15 @@ export default function Grid({
     loadWindow,
     windowStart,
   ]);
-  const visibleHashes = visible.flatMap((item) => (item.hash === null ? [] : [item.hash]));
-  const visibleHashSignature = visibleHashes.join("\n");
-  const selectedHash =
-    selectedItem === null
-      ? null
-      : (items.find((item) => itemKey(item) === selectedItem)?.hash ?? null);
-
+  const actualWindow = visibleWindow(scrollTop, viewportHeight, rowHeight, totalRows, 0);
+  const attention = viewportAttention(
+    sorted.map((item) => item.hash), windowStart,
+    actualWindow.startRow * columns, Math.min(effectiveTotalItems, actualWindow.endRow * columns),
+  );
+  const attentionSignature = JSON.stringify(attention);
   useEffect(() => {
-    const timer = setTimeout(() => {
-      const operationId = newActivityOperationId("priority");
-      recordActivity({
-        kind: "changed",
-        owner: "priority",
-        operationId,
-        causeId:
-          latestActivityOperationId("selection") ?? latestActivityOperationId("section"),
-        current: "running",
-        reason: "viewportChange",
-        lane: selectedSection?.kind,
-        itemCount: visibleHashes.length,
-      });
-      void invoke("prioritize_derived_work", {
-        selectedHash,
-        visibleHashes,
-        sectionKind: selectedSection?.kind ?? null,
-        sectionMonth: selectedSection?.month ?? null,
-      })
-        .then(() =>
-          recordActivity({
-            kind: "completed",
-            owner: "priority",
-            operationId,
-            previous: "running",
-            current: "succeeded",
-            reason: "completion",
-          }),
-        )
-        .catch((error) => log.warn("derived priority hint failed", toErrorFields(error)));
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [selectedHash, selectedSection?.kind, selectedSection?.month, visibleHashSignature]);
+    setWorkViewport({ ...attention, sectionKey: `${selectedSection?.kind}:${selectedSection?.month}` });
+  }, [selectedSection?.kind, selectedSection?.month, attentionSignature]);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
     // Space opens the transient Quick View. Persistent Preview visibility is

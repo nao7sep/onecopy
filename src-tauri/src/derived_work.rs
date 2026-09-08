@@ -5,14 +5,14 @@
 //! Preview/poster work runs in bounded fair turns. Independent native image
 //! conversions may share a turn under live CPU and memory budgets; database
 //! publication, ffmpeg routes, and every other heavy class remain serialized.
-//! Work near selected and visible items may run while the user is active;
-//! global backlogs wait for idle time. All classes re-read settings for each
+//! All runnable backlogs progress continuously; attention orders bounded turns.
+//! Activity adjusts conversion capacity, never eligibility. All classes re-read settings for each
 //! pass, so installing a tool or changing a feature takes effect on the next
 //! wake without restarting either indexing or the app.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
@@ -31,6 +31,8 @@ use crate::preview::CachePaths;
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static AUTOMATIC_ADMITTED: AtomicBool = AtomicBool::new(false);
+static DEBT_REVISION: AtomicU64 = AtomicU64::new(0);
+static ATTENTION_GENERATION: AtomicU64 = AtomicU64::new(0);
 static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 static PRIORITY: LazyLock<Mutex<PriorityHints>> =
@@ -58,9 +60,19 @@ const OPTIONAL_CLASSES: [WorkClass; 5] = [
 
 #[derive(Clone, Default)]
 struct PriorityHints {
+    generation: u64,
     selected: Option<String>,
     visible: Vec<String>,
+    nearby: Vec<String>,
     section: Option<SectionPriority>,
+    traversal: Option<SectionTraversal>,
+}
+
+#[derive(Clone)]
+pub struct SectionTraversal {
+    pub sort: crate::queries::SectionSort,
+    pub anchor: u64,
+    pub total: u64,
 }
 
 #[derive(Default)]
@@ -76,6 +88,35 @@ struct CandidateCursors {
     video_transcripts: CandidateCursor,
     audio_transcripts: CandidateCursor,
     next_optional: usize,
+    turns: crate::work_priority::Turns,
+    attention_generation: u64,
+    section: SectionCursor,
+    library_optional: bool,
+}
+
+#[derive(Default)]
+struct SectionCursor {
+    initialized: bool,
+    left: Option<crate::queries::SectionWorkPosition>,
+    right: Option<crate::queries::SectionWorkPosition>,
+    before: bool,
+    current: Option<Vec<String>>,
+}
+
+impl SectionCursor {
+    fn pending(&self) -> bool {
+        !self.initialized || self.current.is_some() || self.left.is_some() || self.right.is_some()
+    }
+}
+
+impl CandidateCursors {
+    fn invalidate(&mut self) {
+        self.snapshots = CandidateCursor::default();
+        self.faces = CandidateCursor::default();
+        self.video_transcripts = CandidateCursor::default();
+        self.audio_transcripts = CandidateCursor::default();
+        self.attention_generation = u64::MAX;
+    }
 }
 
 #[derive(Clone)]
@@ -250,6 +291,11 @@ pub(crate) fn admit_automatic() {
 /// Wake after index, settings, tool, priority, or lifecycle changes. Durable
 /// source triggers own derived invalidation; this signal only schedules work.
 pub fn wake() {
+    DEBT_REVISION.fetch_add(1, Ordering::SeqCst);
+    wake_priority();
+}
+
+fn wake_priority() {
     let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
     match generation.lock() {
         Ok(mut value) => {
@@ -265,47 +311,104 @@ pub fn wake() {
 pub fn set_priority(
     selected: Option<String>,
     visible: Vec<String>,
+    nearby: Vec<String>,
     section: Option<SectionPriority>,
+    traversal: Option<SectionTraversal>,
+    generation: u64,
 ) {
-    let required_changed = crate::derived_runtime::automatic_optional_active()
-        && required_priority_pending(selected.as_deref(), &visible);
     match PRIORITY.lock() {
         Ok(mut hints) => {
+            if generation <= hints.generation {
+                return;
+            }
+            hints.generation = generation;
             hints.selected = selected;
             hints.visible = visible.into_iter().take(SECTION_HINT_LIMIT).collect();
+            hints.nearby = nearby.into_iter().take(SECTION_HINT_LIMIT).collect();
             hints.section = section;
+            hints.traversal = traversal;
+            ATTENTION_GENERATION.store(generation, Ordering::SeqCst);
+            note_activity();
         }
         Err(_) => logging::error("derived-work priority state is unavailable", json!({})),
     }
-    if required_changed {
-        crate::derived_runtime::preempt_automatic_optional_for_required();
+    if crate::derived_runtime::automatic_optional_active() {
+        let hints = PRIORITY.lock().map(|hints| hints.clone());
+        if let Ok(hints) = hints {
+            let required = hints
+                .visible
+                .iter()
+                .chain(&hints.nearby)
+                .cloned()
+                .collect::<Vec<_>>();
+            if required_priority_pending(hints.selected.as_deref(), &required) {
+                crate::derived_runtime::preempt_automatic_optional_for_required();
+            }
+        }
     }
-    wake();
+    wake_priority();
 }
 
 fn required_priority_pending(selected: Option<&str>, visible: &[String]) -> bool {
+    if class_paused(WorkClass::Previews) {
+        return false;
+    }
     let Some(data_root) = crate::DATA_ROOT.get() else {
         return false;
     };
-    let Ok(config) = crate::storage::read_config_for_setup(data_root) else {
-        return false;
-    };
-    let Ok(settings) = settings_from_config(config.as_ref(), data_root) else {
-        return false;
-    };
-    let Ok(conn) = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))
-    else {
-        return false;
-    };
-    priority_candidates_for_class(
-        &conn,
-        &settings,
-        WorkClass::Previews.id(),
-        selected,
-        visible,
-        None,
-    )
-    .is_ok_and(|candidates| !candidates.is_empty())
+    let pending = (|| -> Result<bool, String> {
+        let config = crate::storage::read_config_for_setup(data_root)?;
+        let settings = settings_from_config(config.as_ref(), data_root)?;
+        let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+        priority_candidates_for_class(
+            &conn,
+            &settings,
+            WorkClass::Previews.id(),
+            selected,
+            visible,
+            None,
+        )
+        .map(|candidates| !candidates.is_empty())
+    })();
+    pending.unwrap_or_else(|error| {
+        logging::error(
+            "urgent preview priority could not be evaluated",
+            json!({ "error": { "message": error } }),
+        );
+        // Yield optional work; the coordinator owns the terminal failure if
+        // its next ordinary settings/database read also fails.
+        true
+    })
+}
+
+/// Recheck only on a new attention generation, including the race between a
+/// hint arriving and an optional executor acquiring its runtime claim.
+fn optional_stop() -> impl Fn() -> bool + Send + 'static {
+    let observed = std::cell::Cell::new(u64::MAX);
+    move || {
+        if cancelled() {
+            return true;
+        }
+        let generation = ATTENTION_GENERATION.load(Ordering::SeqCst);
+        if generation == observed.get() {
+            return false;
+        }
+        observed.set(generation);
+        let hints = PRIORITY.lock().map(|hints| hints.clone());
+        if let Ok(hints) = hints {
+            let hashes = hints
+                .visible
+                .iter()
+                .chain(&hints.nearby)
+                .cloned()
+                .collect::<Vec<_>>();
+            if required_priority_pending(hints.selected.as_deref(), &hashes) {
+                crate::derived_runtime::preempt_automatic_optional_for_required();
+                return true;
+            }
+        }
+        false
+    }
 }
 
 pub fn start(app: AppHandle) -> Result<bool, String> {
@@ -336,9 +439,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
 /// Owns each requested transcription thread beside the automatic coordinator
 /// so final shutdown closes their shared admission and joins both populations
 /// through one derived-media lifecycle.
-pub fn spawn_manual_transcription(
-    work: impl FnOnce() + Send + 'static,
-) -> Result<(), String> {
+pub fn spawn_manual_transcription(work: impl FnOnce() + Send + 'static) -> Result<(), String> {
     let mut workers = WORKERS
         .lock()
         .map_err(|_| "derived-media worker state is unavailable".to_string())?;
@@ -391,6 +492,7 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
     let mut observed = 0u64;
     let mut run_again = true;
     let mut cursors = CandidateCursors::default();
+    let mut debt_revision = DEBT_REVISION.load(Ordering::SeqCst);
     let mut cleared_previous_failure = false;
     loop {
         if crate::derived_runtime::shutting_down() {
@@ -404,21 +506,15 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
                 .wait_timeout_while(
                     value,
                     std::time::Duration::from_secs(POLL_SECONDS),
-                    |current| {
-                        *current == observed && !crate::derived_runtime::shutting_down()
-                    },
+                    |current| *current == observed && !crate::derived_runtime::shutting_down(),
                 )
                 .map_err(|_| "derived-work wake state is unavailable".to_string())?;
-            if *current != observed {
-                cursors = CandidateCursors::default();
-            }
             observed = *current;
         } else {
             let current = *generation
                 .lock()
                 .map_err(|_| "derived-work wake state is unavailable".to_string())?;
             if current != observed {
-                cursors = CandidateCursors::default();
                 observed = current;
             }
         }
@@ -426,12 +522,17 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         }
         run_again = false;
+        let revision = DEBT_REVISION.load(Ordering::SeqCst);
+        if revision != debt_revision {
+            cursors.invalidate();
+            debt_revision = revision;
+        }
         if !available() {
             continue;
         }
-        let Some(pass) = crate::scan_runtime::try_with_derived_claim(|| {
-            run_one_pass(app, &mut cursors)
-        }) else {
+        let Some(pass) =
+            crate::scan_runtime::try_with_derived_claim(|| run_one_pass(app, &mut cursors))
+        else {
             continue;
         };
         match pass {
@@ -447,7 +548,8 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
                 run_again = did_work;
             }
             Err(error) if error.starts_with(crate::scanner::CANCELLED) => {
-                logging::debug("derived work stopped", json!({ "reason": "cancelled" }))
+                logging::debug("derived work stopped", json!({ "reason": "cancelled" }));
+                run_again = true;
             }
             Err(error) => return Err(error),
         }
@@ -693,87 +795,176 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
         .lock()
         .map_err(|_| "derived-work priority state is unavailable".to_string())?
         .clone();
-    let visible_previews = priority_candidates_for_class(
-        &conn,
-        &settings,
-        WorkClass::Previews.id(),
-        hints.selected.as_deref(),
-        &hints.visible,
-        None,
-    )?;
-    if derive_priority_previews(
-        app,
-        &conn,
-        &cache,
-        &settings,
-        projection,
-        &visible_previews,
-        VISIBLE_PREVIEW_TURN,
-    )? {
-        return Ok(true);
-    }
-
-    if run_priority_optional_turn(
-        app,
-        &conn,
-        &cache,
-        &settings,
-        projection,
-        cursors,
-        hints.selected.as_deref(),
-        &hints.visible,
-        None,
-    )? {
-        return Ok(true);
-    }
-
-    let section_previews = priority_candidates_for_class(
-        &conn,
-        &settings,
-        WorkClass::Previews.id(),
-        None,
-        &[],
-        hints.section.as_ref(),
-    )?;
-    if derive_priority_previews(
-        app,
-        &conn,
-        &cache,
-        &settings,
-        projection,
-        &section_previews,
-        SECTION_PREVIEW_TURN,
-    )? {
-        return Ok(true);
-    }
-
-    if run_priority_optional_turn(
-        app,
-        &conn,
-        &cache,
-        &settings,
-        projection,
-        cursors,
-        None,
-        &[],
-        hints.section.as_ref(),
-    )? {
-        return Ok(true);
-    }
-
-    if !is_idle() {
+    if WorkClass::ALL.into_iter().all(class_paused) {
         crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
         return Ok(false);
     }
-
-    let required = derive_global_required(app, &conn, &cache, &settings, projection)?;
-    let optional = run_global_optional_turn(app, &conn, &cache, &settings, projection, cursors)?;
-    let did_work = required || optional;
-    if !did_work {
-        crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
-        emit_state_changed(app);
+    if cursors.attention_generation != hints.generation {
+        cursors.section = SectionCursor::default();
+        cursors.attention_generation = hints.generation;
     }
-    Ok(did_work)
+    let mut section_hashes = None;
+    for tier in cursors.turns.order() {
+        use crate::work_priority::Tier;
+        if ATTENTION_GENERATION.load(Ordering::SeqCst) != hints.generation {
+            return Ok(true);
+        }
+        if matches!(tier, Tier::SectionRequired | Tier::SectionOptional) && section_hashes.is_none()
+        {
+            section_hashes = Some(section_window_hashes(
+                &conn,
+                &settings,
+                &hints,
+                &mut cursors.section,
+            )?);
+        }
+        let did_work = match tier {
+            Tier::VisibleRequired | Tier::NearbyRequired | Tier::SectionRequired => {
+                let (selected, hashes, limit) = match tier {
+                    Tier::VisibleRequired => (
+                        hints.selected.as_deref(),
+                        &hints.visible,
+                        VISIBLE_PREVIEW_TURN,
+                    ),
+                    Tier::NearbyRequired => (None, &hints.nearby, VISIBLE_PREVIEW_TURN),
+                    _ => (None, section_hashes.as_ref().unwrap(), SECTION_PREVIEW_TURN),
+                };
+                let candidates = priority_candidates_for_class(
+                    &conn,
+                    &settings,
+                    WorkClass::Previews.id(),
+                    selected,
+                    hashes,
+                    None,
+                )?;
+                derive_priority_previews(
+                    app,
+                    &conn,
+                    &cache,
+                    &settings,
+                    projection,
+                    &candidates,
+                    limit,
+                )?
+            }
+            Tier::VisibleOptional | Tier::SectionOptional => {
+                let (selected, hashes) = if tier == Tier::VisibleOptional {
+                    (hints.selected.as_deref(), &hints.visible)
+                } else {
+                    (None, section_hashes.as_ref().unwrap())
+                };
+                run_priority_optional_turn(
+                    app, &conn, &cache, &settings, projection, cursors, selected, hashes, None,
+                )?
+            }
+            Tier::Library => {
+                let optional_first = cursors.library_optional;
+                let mut worked = false;
+                for optional in [optional_first, !optional_first] {
+                    worked = if optional {
+                        run_global_optional_turn(
+                            app, &conn, &cache, &settings, projection, cursors,
+                        )?
+                    } else {
+                        derive_global_required(app, &conn, &cache, &settings, projection)?
+                    };
+                    if worked {
+                        cursors.library_optional = !optional;
+                        break;
+                    }
+                }
+                worked
+            }
+        };
+        if did_work {
+            cursors.turns.completed(tier);
+            return Ok(true);
+        }
+        if tier == Tier::SectionOptional {
+            cursors.section.current = None;
+        }
+    }
+    // Empty prepared windows still advance; there is no wait for input or idle.
+    if cursors.section.pending() {
+        return Ok(true);
+    }
+    crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
+    emit_state_changed(app);
+    Ok(false)
+}
+
+fn section_window_hashes(
+    conn: &Connection,
+    settings: &Settings,
+    hints: &PriorityHints,
+    sweep: &mut SectionCursor,
+) -> Result<Vec<String>, String> {
+    if let Some(hashes) = &sweep.current {
+        return Ok(hashes.clone());
+    }
+    let (Some(section), Some(view)) = (hints.section.as_ref(), hints.traversal.as_ref()) else {
+        sweep.initialized = true;
+        return Ok(Vec::new());
+    };
+    let bounds = section.start_ms.zip(section.end_ms);
+    if !sweep.initialized {
+        sweep.initialized = true;
+        if view.total == 0 {
+            return Ok(Vec::new());
+        }
+        let position = crate::queries::section_work_anchor(
+            conn,
+            &section.kind,
+            bounds,
+            view.sort,
+            view.anchor.min(view.total - 1),
+        )?;
+        let hashes = position
+            .as_ref()
+            .and_then(|position| position.hash.clone())
+            .into_iter()
+            .collect::<Vec<_>>();
+        sweep.left = position.clone();
+        sweep.right = position;
+        sweep.current = Some(hashes.clone());
+        return Ok(hashes);
+    }
+    let before = sweep.left.is_some() && (sweep.before || sweep.right.is_none());
+    let edge = if before {
+        &mut sweep.left
+    } else {
+        &mut sweep.right
+    };
+    let Some(position) = edge.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let rows = section_pending_candidates(conn, settings, section, view.sort, position, before)?;
+    let hashes = rows
+        .iter()
+        .filter_map(|row| row.hash.clone())
+        .collect::<Vec<_>>();
+    *edge = rows.into_iter().last();
+    sweep.before = !before;
+    sweep.current = Some(hashes.clone());
+    Ok(hashes)
+}
+
+/// Seek only runnable output debt; completed, disabled, blocked, and paused
+/// classes must not force a walk through a prepared section on every scroll.
+pub fn section_pending_candidates(
+    conn: &Connection,
+    settings: &Settings,
+    section: &SectionPriority,
+    sort: crate::queries::SectionSort,
+    position: &crate::queries::SectionWorkPosition,
+    before: bool,
+) -> Result<Vec<crate::queries::SectionWorkPosition>, String> {
+    let pending = crate::derived_state::pending_work_predicate(
+        settings.capabilities(), WorkClass::ALL.into_iter().filter(|class| !class_paused(*class)),
+    );
+    crate::queries::section_pending_work_page(
+        conn, &section.kind, section.start_ms.zip(section.end_ms), sort, position, before, &pending,
+    )
 }
 
 fn derive_priority_previews(
@@ -790,6 +981,7 @@ fn derive_priority_previews(
         return Ok(false);
     }
     let mut did_work = false;
+    let generation = ATTENTION_GENERATION.load(Ordering::SeqCst);
     let image = with_active(app, WorkClass::Previews, || {
         crate::derived_runtime::active_item(app, WorkClass::Previews, &turn[0]);
         crate::preview::derive_image_hashes(
@@ -800,6 +992,7 @@ fn derive_priority_previews(
             settings.ffmpeg.as_deref(),
             &turn,
             is_idle(),
+            &|| ATTENTION_GENERATION.load(Ordering::SeqCst) != generation,
         )
     })?
     .unwrap_or_default();
@@ -811,7 +1004,7 @@ fn derive_priority_previews(
     }
 
     for hash in &turn {
-        if !available() {
+        if !available() || ATTENTION_GENERATION.load(Ordering::SeqCst) != generation {
             break;
         }
         let video = with_active(app, WorkClass::Previews, || {
@@ -847,6 +1040,7 @@ fn derive_global_required(
     if !available() {
         return Ok(false);
     }
+    let generation = ATTENTION_GENERATION.load(Ordering::SeqCst);
     let image = with_active(app, WorkClass::Previews, || {
         crate::preview::derive_next_images(
             conn,
@@ -854,7 +1048,7 @@ fn derive_global_required(
             settings.thumb_edge,
             settings.preview_long_edge,
             settings.ffmpeg.as_deref(),
-            true,
+            is_idle(),
             &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
         )
     })?
@@ -865,7 +1059,7 @@ fn derive_global_required(
         notify_image_changes(app, conn, projection, &image.changes);
         notify_issues(app);
     }
-    if !available() {
+    if !available() || ATTENTION_GENERATION.load(Ordering::SeqCst) != generation {
         return Ok(did_work);
     }
     let video = with_active(app, WorkClass::Previews, || {
@@ -968,16 +1162,26 @@ fn run_optional_class(
     if class_paused(class) || !optional_enabled(settings, class) {
         return Ok(false);
     }
-    let stop = || cancelled() || (!foreground && !is_idle());
+    let stop = optional_stop();
     match class {
         WorkClass::Similarity => {
             let result = with_active(app, class, || {
-                crate::similarity::rebuild_next_dirty_bucket_for_root_cancellable(
-                    conn,
-                    &settings.similarity,
-                    &settings.data_root,
-                    &stop,
-                )
+                if foreground {
+                    crate::similarity::rebuild_priority_bucket_for_root_cancellable(
+                        conn,
+                        &settings.similarity,
+                        &settings.data_root,
+                        priority,
+                        &stop,
+                    )
+                } else {
+                    crate::similarity::rebuild_next_dirty_bucket_for_root_cancellable(
+                        conn,
+                        &settings.similarity,
+                        &settings.data_root,
+                        &stop,
+                    )
+                }
             });
             match result {
                 Ok(Some(Some(stats))) => {
@@ -1473,6 +1677,8 @@ pub fn complete_transcription_attempt(
     }
     let claim = crate::transcription::claim()?;
     let finished = std::sync::Arc::new(AtomicBool::new(false));
+    let memory_pressure = Arc::new(AtomicBool::new(false));
+    let pressure_signal = memory_pressure.clone();
     let finish_signal = FinishSignal(std::sync::Arc::clone(&finished));
     let watch = attempt
         .cancel_when
@@ -1485,6 +1691,18 @@ pub fn complete_transcription_attempt(
                         return;
                     }
                     if cancel_when() {
+                        crate::transcription::request_cancel();
+                        return;
+                    }
+                    if let Err(error) = crate::resource_limits::require_available(
+                        crate::resource_limits::MODEL_RUNNING_HEADROOM,
+                        "Transcription",
+                    ) {
+                        logging::warn(
+                            "transcription yielded memory headroom",
+                            json!({ "error": { "message": error } }),
+                        );
+                        pressure_signal.store(true, Ordering::SeqCst);
                         crate::transcription::request_cancel();
                         return;
                     }
@@ -1510,6 +1728,12 @@ pub fn complete_transcription_attempt(
         watch
             .join()
             .map_err(crate::failure_runtime::panic_message)?;
+    }
+    if memory_pressure.load(Ordering::SeqCst) {
+        return Ok(TranscriptionAttemptOutcome::ResourceSafety {
+            hash,
+            message: "Transcription paused to leave memory available for other work. Resume it from Background Work when memory is available.".to_string(),
+        });
     }
     let cancelled_hash = hash.clone();
     let outcome = crate::transcription::publish_if_active(&claim, || {
@@ -1551,7 +1775,7 @@ fn transcribe_next(
     context: &TranscriptContext<'_>,
     priority_hashes: &[String],
     after_hash: Option<&str>,
-    foreground: bool,
+    _foreground: bool,
 ) -> Result<TranscriptStep, String> {
     let kind = class
         .content_kind()
@@ -1578,9 +1802,6 @@ fn transcribe_next(
         });
     };
 
-    if !foreground && !is_idle() {
-        return Ok(TranscriptStep::default());
-    }
     let result = complete_transcription_attempt(
         TranscriptionAttempt {
             conn: context.conn,
@@ -1593,9 +1814,7 @@ fn transcribe_next(
             source_path: &path,
             replace_existing: false,
             acceleration: context.transcription_acceleration,
-            cancel_when: Some(Box::new(move || {
-                (!foreground && !is_idle()) || cancelled()
-            })),
+            cancel_when: Some(Box::new(optional_stop())),
         },
         |hash| {
             if candidate_hash != hash {
