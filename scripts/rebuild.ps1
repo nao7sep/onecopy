@@ -49,6 +49,8 @@ function Invoke-Native {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = Split-Path -Parent $scriptDir
+$runtimeHelper = Join-Path $scriptDir "launcher-runtime.mjs"
+$runtimeToken = [guid]::NewGuid().ToString("N")
 $crate = "onecopy"
 $exePath = Join-Path $repoDir "src-tauri/target/release/$crate.exe"
 
@@ -63,6 +65,12 @@ try {
 
     Write-Step "Installing dependencies"
     Invoke-Native -FilePath "npm" -ArgumentList @("install", "--no-audit", "--no-fund")
+
+    # Windows locks the release executable while it runs, so replacement must
+    # happen before the Tauri build updates it.
+    Write-Step "Replacing any existing OneCopy runtime"
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "claim", $runtimeToken)
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "stop", "tauri", "OneCopy", "onecopy")
 
     # Remove stale frontend output so a build that fails to emit a file can't be
     # masked by a leftover artifact from a previous run. Only the frontend output
@@ -83,7 +91,8 @@ try {
 
     # GUI app: launch non-blocking via Start-Process.
     Write-Step "Launching the built app"
-    Start-Process -FilePath $exePath
+    Start-Process -FilePath $exePath | Out-Null
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "wait-process", $exePath, "30000")
 }
 catch {
     Write-Host ""

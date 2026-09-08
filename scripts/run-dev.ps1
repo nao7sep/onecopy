@@ -45,19 +45,12 @@ function Invoke-Native {
     }
 }
 
-function Stop-Port {
-    param([int]$Port)
-    $pids = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($portPid in $pids) {
-        if ($portPid -and $portPid -ne $PID) {
-            Stop-Process -Id $portPid -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = Split-Path -Parent $scriptDir
+$runtimeHelper = Join-Path $scriptDir "launcher-runtime.mjs"
+$runtimeToken = [guid]::NewGuid().ToString("N")
+$devHost = if ($env:TAURI_DEV_HOST) { $env:TAURI_DEV_HOST } else { "127.0.0.1" }
+$devUrl = "http://${devHost}:28867"
 
 try {
     Set-Utf8Console
@@ -68,16 +61,26 @@ try {
 
     Set-Location $repoDir
 
-    Write-Step "Stopping stale development listeners"
-    # 1721 is this app's Vite dev port (fleet-unique so this port-kill never
-    # cross-fires into dropkick's 1521 or quickdeck's 1621).
-    Stop-Port 1721
+    Write-Step "Replacing any existing OneCopy runtime"
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "claim", $runtimeToken)
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "stop", "tauri", "OneCopy", "onecopy")
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "check-endpoint", $devHost, "28867")
+    if ($env:TAURI_DEV_HOST) {
+        Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "check-endpoint", $devHost, "29587")
+    }
 
     Write-Step "Installing dependencies required for launch"
     Invoke-Native -FilePath "npm" -ArgumentList @("install", "--no-audit", "--no-fund")
 
     Write-Step "Starting OneCopy in development mode"
-    Invoke-Native -FilePath "npm" -ArgumentList @("run", "tauri", "dev") -AllowedExitCodes @(0, 130, -1073741510)
+    $devProcess = Start-Process -FilePath (Get-Command "npm.cmd").Source -ArgumentList @("run", "tauri", "dev") -NoNewWindow -PassThru
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "wait-http", $devUrl, "60000")
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "wait-process", (Join-Path $repoDir "src-tauri/target/debug/onecopy.exe"), "180000")
+    Write-Step "OneCopy is ready at $devUrl"
+    $devProcess.WaitForExit()
+    if ($devProcess.ExitCode -notin @(0, 130, -1073741510)) {
+        throw "OneCopy development runtime failed with exit code $($devProcess.ExitCode)."
+    }
 }
 catch {
     Write-Host ""
@@ -85,7 +88,11 @@ catch {
     $scriptExitCode = 1
 }
 finally {
-    Read-Host "Press Enter to close" | Out-Null
+    & node $runtimeHelper is-owner $runtimeToken *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & node $runtimeHelper stop-if-owner $runtimeToken tauri "OneCopy" "onecopy" *> $null
+        Read-Host "Press Enter to close" | Out-Null
+    }
 }
 
 exit $scriptExitCode

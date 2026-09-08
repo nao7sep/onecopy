@@ -26,11 +26,16 @@ function Write-Step {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = Split-Path -Parent $scriptDir
+$runtimeHelper = Join-Path $scriptDir "launcher-runtime.mjs"
+$runtimeToken = [guid]::NewGuid().ToString("N")
 $crate = "onecopy"
 $exePath = Join-Path $repoDir "src-tauri/target/release/$crate.exe"
 
 try {
     Set-Utf8Console
+    if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
+        throw "Missing required command: node"
+    }
 
     Set-Location $repoDir
 
@@ -42,11 +47,16 @@ try {
     }
 
     $builtAt = (Get-Item $exePath).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+    & node $runtimeHelper claim $runtimeToken
+    & node $runtimeHelper stop tauri "OneCopy" "onecopy"
+    if ($LASTEXITCODE -ne 0) { throw "Could not replace the existing OneCopy runtime." }
     Write-Step "Launching the existing built app (built: $builtAt)"
     Write-Host "If you changed source since then, run rebuild instead."
 
     # GUI app: launch non-blocking via Start-Process.
-    Start-Process -FilePath $exePath
+    Start-Process -FilePath $exePath | Out-Null
+    & node $runtimeHelper wait-process $exePath 30000
+    if ($LASTEXITCODE -ne 0) { throw "OneCopy did not start." }
 }
 catch {
     Write-Host ""

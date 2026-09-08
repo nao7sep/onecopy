@@ -3,7 +3,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const host = process.env.TAURI_DEV_HOST;
+const remoteHost = process.env.TAURI_DEV_HOST;
+const host = remoteHost ?? "127.0.0.1";
 
 // Version single source of truth is src-tauri/tauri.conf.json; injected here as
 // __APP_VERSION__ (declared in src/vite-env.d.ts). vitest.config.ts duplicates
@@ -27,17 +28,17 @@ export default defineConfig(() => ({
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available.
-  //    Fleet-unique port so it never collides with a sibling Tauri app's
-  //    launcher port-kill (dropkick uses 1521, quickdeck 1621).
+  //    Fleet-unique port so it never collides with a sibling app's fixed
+  //    development endpoint.
   server: {
-    port: 1721,
+    port: 28867,
     strictPort: true,
-    host: host || false,
-    hmr: host
+    host,
+    hmr: remoteHost
       ? {
           protocol: "ws",
-          host,
-          port: 1722,
+          host: remoteHost,
+          port: 29587,
         }
       : undefined,
     watch: {

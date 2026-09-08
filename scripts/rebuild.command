@@ -12,6 +12,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_NAME="OneCopy"
+APP_EXECUTABLE="onecopy"
+RUNTIME_HELPER="$SCRIPT_DIR/launcher-runtime.mjs"
+RUNTIME_TOKEN="rebuild-$$-$(date +%s)-$RANDOM"
 APP_BUNDLE="src-tauri/target/release/bundle/macos/$APP_NAME.app"
 
 log_step() {
@@ -27,7 +30,7 @@ require_command() {
 
 pause_on_failure() {
   local status="$1"
-  if [[ "$status" -ne 0 && "$status" -ne 130 ]]; then
+  if [[ "$status" -ne 0 && ( "$status" -lt 128 || "$status" -gt 143 ) ]]; then
     echo
     echo "onecopy rebuild failed with exit code $status."
     read -r -p "Press Enter to close..."
@@ -66,4 +69,7 @@ if [[ ! -d "$APP_BUNDLE/Contents/MacOS" ]]; then
 fi
 
 log_step "Launching the packaged app"
-open "$APP_BUNDLE"
+node "$RUNTIME_HELPER" claim "$RUNTIME_TOKEN"
+node "$RUNTIME_HELPER" stop tauri "OneCopy" "onecopy"
+open -n "$APP_BUNDLE"
+node "$RUNTIME_HELPER" wait-process "$APP_BUNDLE/Contents/MacOS/$APP_EXECUTABLE" 30000

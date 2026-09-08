@@ -72,6 +72,6 @@ describe("Tauri production CSP (src-tauri/tauri.conf.json)", () => {
     expect(csp as string).not.toContain("'unsafe-eval'");
     expect(csp).not.toBe(devCsp);
     // A production build must not be reachable from the dev origin either.
-    expect(csp as string).not.toContain("localhost:1721");
+    expect(csp as string).not.toContain("127.0.0.1:28867");
   });
 });
