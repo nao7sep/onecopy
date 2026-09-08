@@ -165,7 +165,7 @@ describe("preview window failures", () => {
   it("serializes a window-to-split-to-window change so an older close cannot win", async () => {
     const window = new WebviewWindow("preview");
     let finishClose: (() => void) | undefined;
-    window.close.mockImplementation(
+    window.destroy.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
           finishClose = resolve;
@@ -182,7 +182,7 @@ describe("preview window failures", () => {
     for (let index = 0; index < 10 && !finishClose; index += 1) {
       await Promise.resolve();
     }
-    expect(window.close).toHaveBeenCalledOnce();
+    expect(window.destroy).toHaveBeenCalledOnce();
     const backToWindow = usePreviewStore
       .getState()
       .setPlacementPreference("window");

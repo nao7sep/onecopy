@@ -2,24 +2,26 @@
 // the physical window/webview lifetime and the persisted geometry/zoom state.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   availableMonitors,
-  currentMonitor,
   getCurrentWindow,
   LogicalSize,
-  PhysicalPosition,
-  PhysicalSize,
 } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { LoadedAppData } from "../repositories";
 import { reportWindowCall } from "../repositories";
 import { reportStatePatchFailure, retainStatePatch, useAppStore } from "../state/app-store";
 import { installActivityPings } from "../state/derived-work-store";
-import { usePreviewStore } from "../state/preview-store";
+import { flushPreviewWindowPlacement, usePreviewStore } from "../state/preview-store";
 import { hasOpenModal } from "../utils/modalStack";
 import { isComposingEvent } from "./useComposing";
-import { parseSavedBounds, restorableBounds, shrinkToFit } from "../utils/windowBounds";
+import {
+  placementFromLegacyState,
+  prepareWindowPlacement,
+  type WindowPlacementController,
+} from "../utils/windowBounds";
 import { computeMinWindowHeight, computeMinWindowWidth } from "../utils/windowSizing";
 import {
   ZOOM_DEFAULT,
@@ -83,12 +85,13 @@ export function useMainWindowLifecycle({
   }, [splitOpen]);
 
   // The Tauri main window starts hidden so WebView2 cannot flash a white
-  // frame. Restore reachable normal geometry, restore maximized separately,
-  // and show even if monitor discovery fails.
-  const bootShown = useRef(false);
+  // frame. Prepare complete usable normal geometry and the stable mode before
+  // showing; capture begins only after the resulting native events settle.
+  const placementStarting = useRef(false);
+  const placementController = useRef<WindowPlacementController | null>(null);
   useEffect(() => {
-    if (bootShown.current) return;
-    bootShown.current = true;
+    if (placementStarting.current) return;
+    placementStarting.current = true;
     const appWindow = getCurrentWindow();
     const showFallback = setTimeout(() => {
       void appWindow.show().catch(reportWindowCall("show"));
@@ -96,75 +99,71 @@ export function useMainWindowLifecycle({
     void (async () => {
       try {
         const state = useAppStore.getState().appData?.state;
-        const saved = restorableBounds(
-          parseSavedBounds(state?.windowBounds),
-          await availableMonitors(),
-        );
-        if (saved !== null) {
-          await appWindow.setPosition(new PhysicalPosition(saved.x, saved.y));
-          await appWindow.setSize(new PhysicalSize(saved.width, saved.height));
-        } else {
-          const monitor = await currentMonitor();
-          const inner = await appWindow.innerSize();
-          const fitted = monitor !== null ? shrinkToFit(inner, monitor.workArea.size) : null;
-          if (fitted !== null) {
-            await appWindow.setSize(new PhysicalSize(fitted.width, fitted.height));
-          }
-        }
-        if (state?.windowMaximized === true) await appWindow.maximize();
+        placementController.current = await prepareWindowPlacement({
+          window: appWindow,
+          saved: placementFromLegacyState(
+            state?.windowBounds,
+            state?.windowMaximized,
+            "normal",
+          ),
+          minimum: {
+            width: computeMinWindowWidth(splitOpen),
+            height: computeMinWindowHeight(),
+          },
+          monitors: await availableMonitors(),
+          persist: async (record) => {
+            await useAppStore.getState().patchState({
+              windowBounds: record.normalBounds,
+              windowMaximized: record.mode === "maximized",
+            }, { immediate: true });
+          },
+          beforeNormalCapture: async () => {
+            if (pendingMinSize.current === null) return;
+            const size = pendingMinSize.current;
+            pendingMinSize.current = null;
+            await appWindow.setMinSize(size);
+          },
+          report: (operation, error) => reportWindowCall(operation)(error),
+        });
       } catch (error) {
-        reportWindowCall("restore bounds")(error);
+        reportWindowCall("prepare window placement")(error);
       } finally {
         clearTimeout(showFallback);
         await appWindow.show().catch(reportWindowCall("show"));
         await appWindow.setFocus().catch(reportWindowCall("boot setFocus"));
+        await placementController.current?.activate();
       }
     })();
-  }, [appData]);
+  }, [appData, splitOpen]);
 
-  // Persist only settled normal geometry. Maximized is a flag, never the
-  // maximized rectangle, so un-maximizing retains a real landing place.
+  // Main-window close is also the application quit edge. The Rust menu routes
+  // Cmd/Ctrl+Q here, so both durable windows flush before ordinary shutdown
+  // quiescence begins.
+  const closeHandlerStarted = useRef(false);
   useEffect(() => {
+    if (closeHandlerStarted.current) return;
+    closeHandlerStarted.current = true;
     const appWindow = getCurrentWindow();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const save = () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => {
-        void (async () => {
-          try {
-            if (await appWindow.isMaximized()) {
-              await useAppStore.getState().patchState({ windowMaximized: true }).catch(reportStatePatchFailure);
-              return;
-            }
-            if (pendingMinSize.current !== null) {
-              const size = pendingMinSize.current;
-              pendingMinSize.current = null;
-              await appWindow.setMinSize(size).catch(reportWindowCall("setMinSize"));
-            }
-            const position = await appWindow.outerPosition();
-            const size = await appWindow.innerSize();
-            await useAppStore.getState().patchState({
-              windowMaximized: false,
-              windowBounds: {
-                x: position.x,
-                y: position.y,
-                width: size.width,
-                height: size.height,
-              },
-            }).catch(reportStatePatchFailure);
-          } catch (error) {
-            reportWindowCall("save bounds")(error);
-          }
-        })();
-      }, 500);
-    };
-    const unlistens: Array<() => void> = [];
-    void appWindow.onMoved(save).then((fn) => unlistens.push(fn));
-    void appWindow.onResized(save).then((fn) => unlistens.push(fn));
-    return () => {
-      if (timer !== null) clearTimeout(timer);
-      for (const fn of unlistens) fn();
-    };
+    let closing = false;
+    void appWindow.onCloseRequested(async (event) => {
+      event.preventDefault();
+      if (closing) return;
+      closing = true;
+      try {
+        await Promise.all([
+          placementController.current?.flush(),
+          flushPreviewWindowPlacement(),
+        ]);
+      } catch (error) {
+        reportStatePatchFailure(error);
+      }
+      try {
+        await invoke("request_app_exit");
+      } catch (error) {
+        closing = false;
+        reportWindowCall("request application exit")(error);
+      }
+    }).catch(reportWindowCall("listen for main window close"));
   }, []);
 
   const zoomRef = useRef(ZOOM_DEFAULT);

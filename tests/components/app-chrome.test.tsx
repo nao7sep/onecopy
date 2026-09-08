@@ -11,13 +11,22 @@
 // state. The third pins that the derived window minimum actually reserves the
 // band, which is what stops the footer being overlapped at the smallest size.
 
-import { beforeEach, afterEach, describe, expect, it } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import { ReadyApp } from "../../src/App";
 import { useAppStore } from "../../src/state/app-store";
 import type { LoadedAppData } from "../../src/repositories";
 import { computeMinWindowHeight, HEADER_HEIGHT } from "../../src/utils/windowSizing";
-import { isMaximized, mockCommands, onMoved, resetTauriMocks, setMinSize } from "../mocks/tauri";
+import {
+  isMaximized,
+  invokeCalls,
+  mockCommands,
+  onCloseRequested,
+  onMoved,
+  resetTauriMocks,
+  setMinSize,
+  setMonitors,
+} from "../mocks/tauri";
 
 const READY_APP_DATA: LoadedAppData = {
   config: { sourceDirs: [], defaultTimezone: "UTC" },
@@ -39,6 +48,7 @@ beforeEach(() => {
     get_issues: () => ({ issues: [], total: 0 }),
     binaries_state: () => null,
     patch_state: () => ({}),
+    request_app_exit: () => null,
     log_event: () => null,
     logging_debug_enabled: () => false,
   });
@@ -128,6 +138,12 @@ describe("the maximized main window (the developer's normal state)", () => {
     // un-maximized the developer's window. A maximized window cannot go
     // below any minimum, so the constraint must WAIT.
     isMaximized.mockResolvedValue(true);
+    setMonitors([{
+      position: { x: 0, y: 0 },
+      size: { width: 2560, height: 1440 },
+      workArea: { position: { x: 0, y: 0 }, size: { width: 2560, height: 1400 } },
+      scaleFactor: 1,
+    }]);
     try {
       renderReadyApp();
       await drain();
@@ -152,7 +168,7 @@ describe("the maximized main window (the developer's normal state)", () => {
       return () => {};
     });
     // patchState needs a live appData; the NORMAL bounds were saved earlier.
-    const normal = { x: 10, y: 20, width: 1400, height: 900 };
+    const normal = { x: 0, y: 0, width: 1400, height: 900 };
     useAppStore.setState({
       appData: {
         config: { sourceDirs: [], defaultTimezone: "UTC" },
@@ -164,7 +180,9 @@ describe("the maximized main window (the developer's normal state)", () => {
     isMaximized.mockResolvedValue(true);
     try {
       renderReadyApp();
-      await drain();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      });
       expect(movedHandler).not.toBeNull();
       movedHandler!();
       // Past the 500ms save debounce (patchState publishes optimistically,
@@ -181,5 +199,33 @@ describe("the maximized main window (the developer's normal state)", () => {
       onMoved.mockImplementation(async (_handler: unknown) => () => {});
       useAppStore.setState({ appData: null });
     }
+  });
+});
+
+describe("application close", () => {
+  it("flushes placement before requesting the Rust shutdown path", async () => {
+    let closeHandler: ((event: { preventDefault: () => void }) => Promise<void>) | null = null;
+    onCloseRequested.mockImplementation(async (handler: unknown) => {
+      closeHandler = handler as typeof closeHandler;
+      return () => {};
+    });
+    const preventDefault = vi.fn();
+    renderReadyApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    });
+
+    expect(closeHandler).not.toBeNull();
+    await act(async () => {
+      await closeHandler?.({ preventDefault });
+    });
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    const commands = invokeCalls.map((call) => call.command);
+    const patchIndex = commands.indexOf("patch_state");
+    const exitIndex = commands.indexOf("request_app_exit");
+    expect(patchIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThanOrEqual(0);
+    expect(patchIndex).toBeLessThan(exitIndex);
   });
 });

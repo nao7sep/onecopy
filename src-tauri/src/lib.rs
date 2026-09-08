@@ -1,5 +1,51 @@
 use serde_json::{json, Value};
+use tauri::menu::Menu;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager};
+
+const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
+
+fn menu_with_safe_quit(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::default(app)?;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let target_title = if cfg!(target_os = "macos") {
+            app.package_info().name.as_str()
+        } else {
+            "File"
+        };
+        let submenu = menu
+            .items()?
+            .into_iter()
+            .filter_map(|item| item.as_submenu().cloned())
+            .find(|item| item.text().is_ok_and(|text| text == target_title))
+            .expect("Tauri default app/file menu must exist");
+        let items = submenu.items()?;
+        let quit_index = items
+            .len()
+            .checked_sub(1)
+            .expect("Tauri default app/file menu must not be empty");
+        assert!(
+            items[quit_index].as_predefined_menuitem().is_some(),
+            "Tauri default app/file menu must end with Quit"
+        );
+        submenu.remove_at(quit_index)?;
+        let quit_text = if cfg!(target_os = "macos") {
+            format!("Quit {}", app.package_info().name)
+        } else {
+            "Exit".to_string()
+        };
+        submenu.append(&MenuItem::with_id(
+            app,
+            SAFE_QUIT_MENU_ID,
+            quit_text,
+            true,
+            Some("CmdOrCtrl+Q"),
+        )?)?;
+    }
+    Ok(menu)
+}
 
 pub mod activity;
 pub mod ai_acceleration;
@@ -2116,6 +2162,11 @@ async fn activity_page(
         .map_err(|error| format!("activity page worker failed: {error}"))?
 }
 
+#[tauri::command]
+fn request_app_exit(app: AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Developer-only `debug` logging: on for a dev build, or when explicitly
@@ -2133,22 +2184,26 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .menu(menu_with_safe_quit)
+        .on_menu_event(|app, event| {
+            if event.id() == SAFE_QUIT_MENU_ID {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(error) = window.close() {
+                        logging::warn(
+                            "route quit through main window failed",
+                            json!({ "error": { "message": error.to_string() } }),
+                        );
+                    }
+                } else {
+                    app.exit(0);
+                }
+            }
+        })
         .register_uri_scheme_protocol("mediacache", |_ctx, request| {
             media_protocol::serve_cache(&request)
         })
         .register_uri_scheme_protocol("mediafile", |_ctx, request| {
             media_protocol::serve_original(&request)
-        })
-        .on_window_event(|window, event| {
-            if window.label() != "main" {
-                return;
-            }
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                if !EXIT_REQUESTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    window.app_handle().exit(0);
-                }
-            }
         })
         .setup(move |app| {
             // Tauri panics when this hook returns Err; on macOS that panic
@@ -2233,7 +2288,8 @@ pub fn run() {
             log_event,
             logging_debug_enabled,
             activity_record,
-            activity_page
+            activity_page,
+            request_app_exit
         ])
         .build(tauri::generate_context!());
 

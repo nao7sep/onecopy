@@ -1,16 +1,12 @@
-// Main-window bounds persistence: the pure half.
+// Durable-window placement decisions and the Tauri event edge.
 //
-// The window used to open at the config's fixed size wherever the OS dropped
-// it, every launch. Bounds are app-level STATE like zoom (state.json,
-// never config), saved debounced on move/resize and restored at boot BEFORE
-// the window is first shown — together with the hidden-at-creation window this
-// removes both the white startup flash and the restore jump.
-//
-// Everything here is physical pixels: monitors report physical, and a
-// logical round-trip through two monitors of different scale factors is
-// exactly the bug class this avoids.
+// Bounds are physical outer-window coordinates throughout: Tauri reports
+// monitor work areas, outer positions, and outer sizes in that coordinate
+// space. Normal geometry and the stable normal/maximized mode are independent;
+// minimized and fullscreen remain transient.
 
-/** Physical outer position + physical inner size, as saved in state.json. */
+import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
+
 export interface SavedBounds {
   x: number;
   y: number;
@@ -18,88 +14,279 @@ export interface SavedBounds {
   height: number;
 }
 
-interface MonitorRect {
+export type WindowPlacementMode = "normal" | "maximized";
+
+export interface WindowPlacementRecord {
+  normalBounds: SavedBounds | null;
+  mode: WindowPlacementMode;
+}
+
+export interface MonitorRect {
   position: { x: number; y: number };
   size: { width: number; height: number };
+  scaleFactor?: number;
   workArea?: {
     position: { x: number; y: number };
     size: { width: number; height: number };
   };
 }
 
-function usableArea(monitor: MonitorRect) {
-  return monitor.workArea ?? { position: monitor.position, size: monitor.size };
+export interface PlacementWindow {
+  outerPosition: () => Promise<{ x: number; y: number }>;
+  outerSize: () => Promise<{ width: number; height: number }>;
+  setPosition: (position: PhysicalPosition) => Promise<void>;
+  setSize: (size: PhysicalSize) => Promise<void>;
+  isMinimized: () => Promise<boolean>;
+  isFullscreen: () => Promise<boolean>;
+  isMaximized: () => Promise<boolean>;
+  maximize: () => Promise<void>;
+  onMoved: (handler: () => void) => Promise<() => void>;
+  onResized: (handler: () => void) => Promise<() => void>;
 }
 
-/** Parses the untyped state.json value. Anything malformed — missing field,
- * non-finite number, non-positive size — is a clean "nothing saved", never a
- * throw: state.json is machine-written but survives hand edits and version
- * skew, and a corrupt entry must cost the default placement, not the boot. */
+export interface WindowPlacementController {
+  activate: () => Promise<void>;
+  flush: () => Promise<void>;
+  dispose: () => void;
+}
+
+const CAPTURE_DEBOUNCE_MS = 400;
+const RESTORATION_SETTLE_MS = 500;
+
 export function parseSavedBounds(value: unknown): SavedBounds | null {
-  if (typeof value !== "object" || value === null) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const numbers = [record.x, record.y, record.width, record.height];
-  if (!numbers.every((n) => typeof n === "number" && Number.isFinite(n))) {
+  const values = [record.x, record.y, record.width, record.height];
+  if (!values.every((value) => typeof value === "number" && Number.isFinite(value))) {
     return null;
   }
-  const [x, y, width, height] = numbers as number[];
-  if (width < 1 || height < 1) return null;
+  const [x, y, width, height] = values as number[];
+  if (!values.every(Number.isInteger) || width < 1 || height < 1) return null;
   return { x, y, width, height };
 }
 
-/** Whether saved bounds are still usable on the CURRENT monitor set.
- *
- * The failure this exists for: the window was last used on a monitor that is
- * no longer attached (the developer's machines swap between one and three
- * screens), and restoring it verbatim puts the title bar somewhere no mouse
- * can reach. Usable means some monitor shows a grabbable piece of the
- * window's TOP strip — at least 100×50 of it, including part of the first
- * 50 rows, which is where every OS puts the drag handle. Anything less
- * returns null and the boot keeps the OS default placement. A reachable saved
- * window is fitted back inside that monitor's work area, so scale changes and
- * taskbars cannot restore an oversized or partly stranded normal window. */
-export function restorableBounds(
-  saved: SavedBounds | null,
-  monitors: MonitorRect[],
-): SavedBounds | null {
-  if (saved === null) return null;
-  for (const monitor of monitors) {
-    const area = usableArea(monitor);
-    const left = Math.max(saved.x, area.position.x);
-    const top = Math.max(saved.y, area.position.y);
-    const right = Math.min(saved.x + saved.width, area.position.x + area.size.width);
-    const bottom = Math.min(saved.y + saved.height, area.position.y + area.size.height);
-    const overlapsTopStrip = top < saved.y + 50;
-    if (right - left >= 100 && bottom - top >= 50 && overlapsTopStrip) {
-      const fitted = shrinkToFit(saved, area.size) ?? saved;
-      return {
-        x: Math.min(
-          Math.max(saved.x, area.position.x),
-          area.position.x + area.size.width - fitted.width,
-        ),
-        y: Math.min(
-          Math.max(saved.y, area.position.y),
-          area.position.y + area.size.height - fitted.height,
-        ),
-        width: fitted.width,
-        height: fitted.height,
-      };
-    }
-  }
-  return null;
+export function placementFromLegacyState(
+  bounds: unknown,
+  maximized: unknown,
+  defaultMode: WindowPlacementMode,
+): WindowPlacementRecord {
+  return {
+    normalBounds: parseSavedBounds(bounds),
+    mode: maximized === true ? "maximized" : maximized === false ? "normal" : defaultMode,
+  };
 }
 
-/** First-launch or restore fit: the requested inner size may overflow a small
- * laptop's work area. Returns the size to shrink to, or null when the window
- * already fits. 90% of the monitor rather than 100%: an exactly-screen-sized
- * floating window reads as a broken maximize. */
-export function shrinkToFit(
-  inner: { width: number; height: number },
-  monitor: { width: number; height: number },
-): { width: number; height: number } | null {
-  if (inner.width <= monitor.width && inner.height <= monitor.height) return null;
+export function restorableBounds(
+  saved: SavedBounds | null,
+  monitors: readonly MonitorRect[],
+  minimum: { width: number; height: number } = { width: 1, height: 1 },
+): SavedBounds | null {
+  if (saved === null) return null;
+  const values = [saved.x, saved.y, saved.width, saved.height];
+  if (!values.every(Number.isFinite) || !values.every(Number.isInteger)) return null;
+  const fits = monitors.some((monitor) => {
+    const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
+    const scale = monitor.scaleFactor ?? 1;
+    return saved.width >= Math.ceil(minimum.width * scale)
+      && saved.height >= Math.ceil(minimum.height * scale)
+      && saved.x >= area.position.x
+      && saved.y >= area.position.y
+      && saved.x + saved.width <= area.position.x + area.size.width
+      && saved.y + saved.height <= area.position.y + area.size.height;
+  });
+  return fits ? { ...saved } : null;
+}
+
+export function settledWindowPlacement(
+  previous: WindowPlacementRecord,
+  snapshot: {
+    bounds: SavedBounds;
+    minimized: boolean;
+    fullscreen: boolean;
+    maximized: boolean;
+  },
+): WindowPlacementRecord {
+  if (snapshot.minimized || snapshot.fullscreen) {
+    return {
+      normalBounds: previous.normalBounds ? { ...previous.normalBounds } : null,
+      mode: previous.mode,
+    };
+  }
+  if (snapshot.maximized) {
+    return {
+      normalBounds: previous.normalBounds ? { ...previous.normalBounds } : null,
+      mode: "maximized",
+    };
+  }
+  return { normalBounds: { ...snapshot.bounds }, mode: "normal" };
+}
+
+async function currentSnapshot(window: PlacementWindow) {
+  const [position, size, minimized, fullscreen, maximized] = await Promise.all([
+    window.outerPosition(),
+    window.outerSize(),
+    window.isMinimized(),
+    window.isFullscreen(),
+    window.isMaximized(),
+  ]);
   return {
-    width: Math.min(inner.width, Math.round(monitor.width * 0.9)),
-    height: Math.min(inner.height, Math.round(monitor.height * 0.9)),
+    bounds: { x: position.x, y: position.y, width: size.width, height: size.height },
+    minimized,
+    fullscreen,
+    maximized,
+  };
+}
+
+export async function prepareWindowPlacement(options: {
+  window: PlacementWindow;
+  saved: WindowPlacementRecord;
+  minimum: { width: number; height: number };
+  monitors: readonly MonitorRect[];
+  persist: (record: WindowPlacementRecord) => Promise<void>;
+  beforeNormalCapture?: () => Promise<void>;
+  report: (operation: string, error: unknown) => void;
+}): Promise<WindowPlacementController> {
+  const { window, saved, minimum, monitors, persist, beforeNormalCapture, report } = options;
+  const openingPosition = await window.outerPosition();
+  const openingSize = await window.outerSize();
+  const usable = restorableBounds(saved.normalBounds, monitors, minimum);
+  let normalBounds: SavedBounds = usable ?? {
+    x: openingPosition.x,
+    y: openingPosition.y,
+    width: openingSize.width,
+    height: openingSize.height,
+  };
+  let mode = saved.mode;
+
+  if (usable !== null) {
+    try {
+      await window.setSize(new PhysicalSize(usable.width, usable.height));
+      await window.setPosition(new PhysicalPosition(usable.x, usable.y));
+      const restoredPosition = await window.outerPosition();
+      const restoredSize = await window.outerSize();
+      if (
+        restoredPosition.x !== usable.x
+        || restoredPosition.y !== usable.y
+        || restoredSize.width !== usable.width
+        || restoredSize.height !== usable.height
+      ) {
+        throw new Error("Tauri adjusted the restored window bounds");
+      }
+    } catch (error) {
+      report("restore window bounds", error);
+      normalBounds = {
+        x: openingPosition.x,
+        y: openingPosition.y,
+        width: openingSize.width,
+        height: openingSize.height,
+      };
+      try {
+        await window.setSize(new PhysicalSize(openingSize.width, openingSize.height));
+        await window.setPosition(new PhysicalPosition(openingPosition.x, openingPosition.y));
+      } catch (fallbackError) {
+        report("restore default window bounds", fallbackError);
+      }
+    }
+  }
+
+  if (mode === "maximized") {
+    try {
+      await window.maximize();
+    } catch (error) {
+      mode = "normal";
+      report("restore maximized window", error);
+    }
+  }
+
+  let enabled = false;
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let eventTail = Promise.resolve();
+  const unlistens: Array<() => void> = [];
+
+  const cancel = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+  const currentRecord = (): WindowPlacementRecord => ({
+    normalBounds: { ...normalBounds },
+    mode,
+  });
+  const capture = async () => {
+    if (!enabled || disposed) return;
+    const snapshot = await currentSnapshot(window);
+    if (snapshot.minimized || snapshot.fullscreen || snapshot.maximized) {
+      cancel();
+      const next = settledWindowPlacement(currentRecord(), snapshot);
+      if (next.mode !== mode) {
+        mode = next.mode;
+        await persist(currentRecord());
+      }
+      return;
+    }
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      eventTail = eventTail
+        .then(async () => {
+          if (!enabled || disposed) return;
+          let settled = await currentSnapshot(window);
+          if (!settled.minimized && !settled.fullscreen && !settled.maximized) {
+            await beforeNormalCapture?.();
+            settled = await currentSnapshot(window);
+          }
+          const next = settledWindowPlacement(currentRecord(), settled);
+          normalBounds = next.normalBounds ?? normalBounds;
+          mode = next.mode;
+          await persist(currentRecord());
+        })
+        .catch((error) => report("save window placement", error));
+    }, CAPTURE_DEBOUNCE_MS);
+  };
+  const enqueueCapture = () => {
+    eventTail = eventTail
+      .then(capture)
+      .catch((error) => report("inspect window placement", error));
+  };
+
+  for (const [operation, registration] of [
+    ["listen for window moves", window.onMoved(enqueueCapture)],
+    ["listen for window resizes", window.onResized(enqueueCapture)],
+  ] as const) {
+    try {
+      unlistens.push(await registration);
+    } catch (error) {
+      report(operation, error);
+    }
+  }
+
+  return {
+    activate: async () => {
+      if (enabled || disposed) return;
+      await new Promise((resolve) => setTimeout(resolve, RESTORATION_SETTLE_MS));
+      if (disposed) return;
+      enabled = true;
+      if (mode === "maximized" && !await window.isMaximized()) mode = "normal";
+    },
+    flush: async () => {
+      cancel();
+      await eventTail;
+      if (!enabled || disposed) return;
+      let snapshot = await currentSnapshot(window);
+      if (!snapshot.minimized && !snapshot.fullscreen && !snapshot.maximized) {
+        await beforeNormalCapture?.();
+        snapshot = await currentSnapshot(window);
+      }
+      const next = settledWindowPlacement(currentRecord(), snapshot);
+      normalBounds = next.normalBounds ?? normalBounds;
+      mode = next.mode;
+      await persist(currentRecord());
+    },
+    dispose: () => {
+      disposed = true;
+      enabled = false;
+      cancel();
+      for (const unlisten of unlistens) unlisten();
+    },
   };
 }
