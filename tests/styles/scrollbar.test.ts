@@ -17,9 +17,11 @@ describe("scrollbar styling", () => {
     expect(css).toMatch(/::-webkit-scrollbar-thumb\s*{[^}]*border:\s*3px solid transparent/);
   });
 
-  it("insets the thumb as a pill and brightens it on hover", () => {
+  it("insets the thumb as a pill and brightens it for pointer or focus ownership", () => {
     expect(css).toMatch(/::-webkit-scrollbar-thumb\s*{[^}]*background-clip:\s*padding-box/);
     expect(css).toMatch(/::-webkit-scrollbar-thumb:hover/);
+    expect(css).toMatch(/\*:hover::-webkit-scrollbar-thumb/);
+    expect(css).toMatch(/\*:focus-within::-webkit-scrollbar-thumb/);
   });
 
   it("keeps the track and corner transparent", () => {
@@ -59,5 +61,12 @@ describe("scrollbar styling", () => {
       return match![1]!.trim();
     };
     expect(valueIn(blockAfter(":root"))).not.toBe(valueIn(blockAfter(".dark")));
+  });
+
+  it("gives the passive owner one app-controlled proximity indicator", () => {
+    expect(css).toMatch(/\.passive-scroll-viewport\s*{[^}]*scrollbar-width:\s*none/);
+    expect(css).toMatch(/\.passive-scroll-track\s*{[^}]*width:\s*16px/);
+    expect(css).toMatch(/\.passive-scroll-thumb\s*{[^}]*width:\s*10px/);
+    expect(css).toMatch(/data-scrollbar-visible="true"/);
   });
 });

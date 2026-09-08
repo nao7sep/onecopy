@@ -96,8 +96,8 @@ body.row-resizing * {
   --warning-surface: var(--color-amber-50);
 
   /* Scrollbar thumb, themed per mode and brightened on hover */
-  --scrollbar-thumb: var(--color-slate-300);
-  --scrollbar-thumb-hover: var(--color-slate-400);
+  --scrollbar-thumb: var(--color-slate-500);
+  --scrollbar-thumb-hover: var(--color-slate-600);
 }
 
 .dark {
@@ -127,8 +127,8 @@ body.row-resizing * {
   --warning: var(--color-amber-400);
   --warning-surface: var(--color-amber-900);
 
-  --scrollbar-thumb: var(--color-slate-500);
-  --scrollbar-thumb-hover: var(--color-slate-400);
+  --scrollbar-thumb: var(--color-slate-400);
+  --scrollbar-thumb-hover: var(--color-slate-300);
 }
 
 @theme inline {
@@ -173,16 +173,79 @@ body.row-resizing * {
   border: 3px solid transparent;
   background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover,
+*:hover::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb-hover);
   border: 3px solid transparent;
   background-clip: padding-box;
+}
+*:hover,
+*:focus-within {
+  scrollbar-color: var(--scrollbar-thumb-hover) transparent;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* Activity Trace uses one app-owned indicator because macOS overlay scrollbars
+   can disappear while a pointer is still trying to acquire them. The viewport
+   remains the only scroll owner; this track is pointer presentation for that
+   same owner, not another history or navigation surface. */
+.passive-scroll-shell {
+  position: relative;
+  min-height: 0;
+}
+.passive-scroll-viewport {
+  max-height: inherit;
+  overflow: auto;
+  padding-inline-end: 20px;
+  scrollbar-width: none;
+}
+.passive-scroll-viewport::-webkit-scrollbar {
+  display: none;
+}
+.passive-scroll-content {
+  min-height: 100%;
+}
+.passive-scroll-track {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 16px;
+  border-radius: 999px;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+.passive-scroll-shell[data-scrollbar-visible="true"] .passive-scroll-track {
+  opacity: 1;
+  pointer-events: auto;
+}
+.passive-scroll-thumb {
+  width: 10px;
+  margin-inline: 3px;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  cursor: grab;
+  touch-action: none;
+}
+.passive-scroll-thumb:hover,
+.passive-scroll-thumb:active,
+.passive-scroll-shell:focus-within .passive-scroll-thumb {
+  background: var(--scrollbar-thumb-hover);
+}
+.passive-scroll-thumb:active {
+  cursor: grabbing;
+}
+@media (prefers-reduced-motion: reduce) {
+  .passive-scroll-track {
+    transition: none;
+  }
 }
 /* Active-descendant composites keep DOM focus on the item area. Paint the
    anchor's keyboard focus inside its own bounds so virtualization, adjacent

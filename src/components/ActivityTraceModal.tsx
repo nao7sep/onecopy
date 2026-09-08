@@ -186,7 +186,7 @@ export default function ActivityTraceModal({
       ) : (
         <PassiveScrollRegion
           label="Activity history"
-          className="max-h-[58vh] pr-1"
+          className="max-h-[58vh]"
           onScroll={(event) => {
             const target = event.currentTarget;
             if (target.scrollHeight - target.scrollTop - target.clientHeight < 120) {
