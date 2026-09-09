@@ -9,6 +9,7 @@ import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
 import OperationResult from "./ui/OperationResult";
+import { formatBytes } from "../models/items";
 
 // "Managed tools" — grouped by the two genuinely different LIFECYCLES the
 // registry holds (developer, 2026-08-17; one flat list forced an update
@@ -116,7 +117,12 @@ function EntryRow({ entry }: { entry: DependencyState }) {
           {statusLabel(entry)}
         </span>
       </div>
-      {fact !== null ? <p className="mt-1 text-xs text-ink-muted">{fact}</p> : null}
+      {fact !== null || entry.downloadBytes !== null ? (
+        <p className="mt-1 break-words text-xs text-ink-muted">
+          {[fact, entry.downloadBytes !== null ? `Download ${formatBytes(entry.downloadBytes)}` : null]
+            .filter((part) => part !== null).join(" · ")}
+        </p>
+      ) : null}
       {progressLine !== null ? (
         <p
           className="mt-2 text-xs text-primary"
@@ -246,9 +252,9 @@ export default function BinariesModal({
 
       {appSelected.length > 0 ? (
         <section className="mt-5">
-          <h3 className="text-sm font-semibold text-ink-strong">Models selected by OneCopy</h3>
+          <h3 className="text-sm font-semibold text-ink-strong">Selected by OneCopy</h3>
           <p className="mb-2 text-xs text-ink-muted">
-            These models are downloaded only when you install them here.
+            These files are downloaded only when you install them here.
             OneCopy selects the versions, so they change only when the app
             updates — there is nothing to check for.
           </p>

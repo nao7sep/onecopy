@@ -204,7 +204,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
     },
     DependencySpec {
         id: "ultraface-rfb640",
-        label: "Face detector",
+        label: "Face detector (UltraFace RFB-640)",
         kind: DependencyKind::Model,
         required_for_core: false,
         file_name: "ultraface-rfb640.onnx",
@@ -225,7 +225,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
     },
     DependencySpec {
         id: "hsemotion-enet-b2",
-        label: "Expression model",
+        label: "Expression model (HSEmotion EfficientNet-B2)",
         kind: DependencyKind::Model,
         required_for_core: false,
         file_name: "hsemotion-enet-b2-8.onnx",
@@ -987,6 +987,9 @@ pub struct DependencyState {
     /// A pinned artifact's upstream publication date — how old this model
     /// actually is. None for binaries, whose live version is the answer.
     pub released: Option<String>,
+    /// Pinned transfer size, not the extracted runtime's installed size.
+    /// Live-resolved binaries remain unknown until acquisition resolves them.
+    pub download_bytes: Option<u64>,
 }
 
 /// One entry's live state; presence re-scanned from disk, never persisted.
@@ -1037,6 +1040,7 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
         required_for_core: spec.required_for_core,
         checkable: matches!(spec.kind, DependencyKind::Binary),
         released: spec.pinned.as_ref().map(|p| p.released.to_string()),
+        download_bytes: spec.pinned.as_ref().map(|p| p.bytes),
     }
 }
 

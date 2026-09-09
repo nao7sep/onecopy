@@ -26,6 +26,7 @@ function entry(id: string, status: DependencyState["status"]): DependencyState {
     requiredForCore: id === "ffmpeg",
     checkable: id === "ffmpeg",
     released: id === "ffmpeg" ? null : "2024-10-01",
+    downloadBytes: null,
   };
 }
 

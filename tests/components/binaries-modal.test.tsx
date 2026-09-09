@@ -13,6 +13,8 @@ import { render, cleanup, act } from "@testing-library/react";
 import BinariesModal from "../../src/components/BinariesModal";
 import { useBinariesStore, type DependencyState } from "../../src/state/binaries-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { managedToolsFixture } from "../fixtures/managed-tools";
+import { formatBytes } from "../../src/models/items";
 
 const downloading = {
   operationId: "download-operation",
@@ -47,6 +49,7 @@ function entry(
     requiredForCore: isBinary,
     checkable: isBinary,
     released: isBinary ? null : "2024-10-01",
+    downloadBytes: isBinary ? null : 1_624_555_275,
     ...over,
   };
 }
@@ -271,6 +274,53 @@ describe("an entry whose version could not be read", () => {
 });
 
 describe("the two lifecycles", () => {
+  it("discloses every selected model and the runtime's actual download size before installation", () => {
+    const entries = managedToolsFixture("windows");
+    seed(entries);
+    render(<BinariesModal open onClose={() => {}} />);
+    for (const entry of entries.filter((entry) => entry.kind !== "binary")) {
+      const row = [...document.querySelectorAll("div.rounded-xl")]
+        .find((row) => row.textContent?.includes(entry.label));
+      expect(row?.textContent).toContain(`Download ${formatBytes(entry.downloadBytes!)}`);
+      expect(row?.textContent).toContain(`Released ${entry.released}`);
+      expect(row?.textContent).toContain("Install");
+    }
+    expect(document.body.textContent).not.toContain("Models selected by OneCopy");
+    expect(invokeCalls).toEqual([]);
+  });
+
+  it.each(["macos", "windows"] as const)("shows installed and available ffmpeg identities together on %s", (platform) => {
+    seed(managedToolsFixture(platform));
+    render(<BinariesModal open onClose={() => {}} />);
+    const row = [...document.querySelectorAll("div.rounded-xl")]
+      .find((row) => row.textContent?.includes("ffmpeg"))!;
+    expect(row.textContent).toContain("Update available");
+    expect(row.textContent).toContain(platform === "macos"
+      ? "Build 9.0 · 9.1 available"
+      : "Build 2026-09-01 12:00 · 2026-09-08 12:00 available");
+    expect([...row.querySelectorAll("button")].map((button) => button.textContent))
+      .toEqual(["Update", "Check for updates"]);
+    expect(row.textContent).not.toContain("Download");
+  });
+
+  it.each(["unreadable", "long"] as const)("retains truthful, wrapping build facts for the %s fixture", (identity) => {
+    const entries = managedToolsFixture("windows", identity);
+    seed(entries);
+    render(<BinariesModal open onClose={() => {}} />);
+    const row = [...document.querySelectorAll("div.rounded-xl")]
+      .find((row) => row.textContent?.includes("ffmpeg"))!;
+    const facts = row.querySelector("p")!;
+    expect(facts.className).toContain("break-words");
+    if (identity === "unreadable") {
+      expect(facts.textContent).toBe("Version unreadable");
+      expect(row.textContent).not.toContain("Up to date");
+    } else {
+      expect(facts.textContent).toContain(entries[0]!.facts.latestKnownVersion);
+      expect(facts.textContent).toContain("available");
+    }
+    expect([...row.querySelectorAll("button")].some((button) => button.textContent === "Update")).toBe(true);
+  });
+
   it("never claims a model is UP TO DATE, and shows how old it is", () => {
     // A model has no upstream to compare against, so "Up to date" would be a
     // claim about a check nobody ran. It is simply installed — with the
@@ -283,9 +333,9 @@ describe("the two lifecycles", () => {
     expect(document.body.textContent).toContain("Released 2024-10-01");
     // No check is offered for it — there is nothing to ask.
     expect(buttons("Check for updates")).toHaveLength(0);
-    expect(document.body.textContent).toContain("Models selected by OneCopy");
+    expect(document.body.textContent).toContain("Selected by OneCopy");
     expect(document.body.textContent).toContain(
-      "These models are downloaded only when you install them here.",
+      "These files are downloaded only when you install them here.",
     );
   });
 

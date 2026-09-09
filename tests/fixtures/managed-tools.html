@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OneCopy — synthetic Managed tools preview</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      window.addEventListener("error", (event) => {
+        document.getElementById("root").textContent = `Visual fixture failed: ${event.message}`;
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        document.getElementById("root").textContent = `Visual fixture failed: ${String(event.reason)}`;
+      });
+    </script>
+    <script type="module" src="./managed-tools-preview.tsx"></script>
+  </body>
+</html>

@@ -16,6 +16,31 @@ fn home(label: &str) -> tempfile::TempDir {
 }
 
 #[test]
+fn model_details_and_transfer_sizes_come_from_the_selected_artifacts() {
+    let dir = home("display-facts");
+    for (id, identity) in [
+        ("whisper-large-v3-turbo", "Whisper large-v3-turbo"),
+        ("ultraface-rfb640", "UltraFace RFB-640"),
+        ("hsemotion-enet-b2", "HSEmotion EfficientNet-B2"),
+    ] {
+        let spec = spec_of(id).unwrap();
+        let state = state_of(dir.path(), spec);
+        assert!(state.label.contains(identity));
+        assert_eq!(state.kind, DependencyKind::Model);
+        assert_eq!(state.download_bytes, Some(spec.pinned.as_ref().unwrap().bytes));
+    }
+    // Inspect the registry directly so the Windows runtime projection is
+    // covered on every host without loading or acquiring a foreign runtime.
+    let runtime = DEPENDENCIES.iter().find(|spec| spec.kind == DependencyKind::Runtime).unwrap();
+    let state = state_of(dir.path(), runtime);
+    let pin = runtime.pinned.as_ref().unwrap();
+    assert_eq!(state.kind, DependencyKind::Runtime);
+    assert_eq!(state.download_bytes, Some(pin.bytes));
+    assert_ne!(state.download_bytes, Some(pin.extracted.as_ref().unwrap().bytes));
+    assert_eq!(state_of(dir.path(), spec_of("ffmpeg").unwrap()).download_bytes, None);
+}
+
+#[test]
 fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     // Display order is registry order; adding an entry is the whole
     // registration, so this doubles as the "declare it deliberately" pin the

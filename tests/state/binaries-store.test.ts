@@ -29,6 +29,7 @@ function entry(
     requiredForCore: id === "ffmpeg",
     checkable: id === "ffmpeg",
     released: null,
+    downloadBytes: null,
   };
 }
 

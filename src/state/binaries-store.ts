@@ -56,6 +56,8 @@ export interface DependencyState {
   /** A pinned artifact's upstream publication date; null for binaries, whose
    * live version answers that. */
   released: string | null;
+  /** Known transfer size; an archived runtime uses its download, not DLL size. */
+  downloadBytes: number | null;
 }
 
 type BinaryCheckOutcome =
