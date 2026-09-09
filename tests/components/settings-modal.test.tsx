@@ -185,6 +185,7 @@ describe("Settings categories", () => {
     });
     const before = useSettingsStore.getState().draft;
     render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Media" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Reset similar photo settings" }));
 
@@ -209,14 +210,18 @@ describe("Settings categories", () => {
     );
   });
 
-  it("keeps video and audio policy separate and face scoring before trash behavior", () => {
+  it("groups related controls without changing any draft value on tab changes", () => {
+    const before = useSettingsStore.getState().draft;
     render(<SettingsModal open onClose={() => {}} />);
+    expect(screen.getByLabelText(/Pair companion files/)).toBeTruthy();
+    expect(screen.getByLabelText("Keep the system awake during background work")).toBeTruthy();
+    expect(screen.getByLabelText("Check source folders after OneCopy opens")).toBeTruthy();
+    expect(screen.queryByLabelText("Sound")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Media" }));
     expect(screen.getByLabelText("Play videos automatically when shown")).toBeTruthy();
     expect(screen.getByLabelText("Play audio automatically when shown")).toBeTruthy();
     expect(screen.queryByLabelText("Play after choosing a snapshot")).toBeNull();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
     expect(screen.getByLabelText("Sound")).toBeTruthy();
     const labels = Array.from(screen.getByRole("tabpanel").querySelectorAll("label")).map(
       (label) => label.textContent,
@@ -229,8 +234,8 @@ describe("Settings categories", () => {
     expect(labelIndex("Show face-score stars on photos")).toBeLessThan(
       labelIndex("Maximum images in Comparison"),
     );
-    expect(labelIndex("Maximum images in Comparison")).toBeLessThan(
-      labelIndex("Confirm direct single-item deletion"),
+    expect(labelIndex("Snapshot frames (max)")).toBeLessThan(
+      labelIndex("Transcribe videos automatically"),
     );
     expect(
       (screen.getByLabelText("Show face-score stars on photos") as HTMLInputElement).checked,
@@ -238,11 +243,17 @@ describe("Settings categories", () => {
     expect(
       (screen.getByLabelText(/Maximum images in Comparison/) as HTMLInputElement).value,
     ).toBe("16");
+    expect(screen.queryByLabelText("Confirm direct single-item deletion")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
+    expect(screen.getByLabelText("Confirm direct single-item deletion")).toBeTruthy();
+    expect(screen.queryByLabelText("Sound")).toBeNull();
+    expect(screen.queryByLabelText(/Score faces/)).toBeNull();
+    expect(useSettingsStore.getState().draft).toEqual(before);
   });
 
   it("renders backend-owned acceleration choices and switches Metal at runtime", () => {
     render(<SettingsModal open onClose={() => {}} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Behavior" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Media" }));
 
     const transcription = screen.getByLabelText("Transcription acceleration") as HTMLSelectElement;
     expect(transcription.value).toBe("metal");

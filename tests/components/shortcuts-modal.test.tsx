@@ -16,6 +16,8 @@ it("renders semantic columns in reading order with independently wrappable chord
     for (const key of column.querySelectorAll("kbd")) {
       expect(key.className).toContain("[overflow-wrap:anywhere]");
       expect(key.parentElement?.className).toContain("max-w-[48%]");
+      expect(Array.from(key.querySelectorAll("span")).every((part) => part.className.includes("whitespace-nowrap"))).toBe(true);
+      expect(key.querySelectorAll("wbr").length).toBe(key.textContent!.split("/").length - 1);
     }
   }
   expect(view.getAllByRole("button", { name: "Close" }).some((button) => button.textContent === "Close")).toBe(true);

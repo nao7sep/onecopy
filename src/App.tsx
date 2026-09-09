@@ -315,6 +315,12 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               >
                 {sourceCheck.running ? "Checking source folders…" : "Check source folders"}
               </MenuItem>
+              <MenuItem onSelect={() => openUtility("backgroundWork")}>Background work…</MenuItem>
+              <MenuSeparator />
+              <MenuItem onSelect={() => openUtility("deletedFiles")}>Deleted files…</MenuItem>
+              <MenuSeparator />
+              <MenuItem onSelect={openSettings}>Settings…</MenuItem>
+              <MenuItem onSelect={() => openUtility("managedTools")}>Managed tools…</MenuItem>
               <MenuItem
                 onSelect={() =>
                   reopenSetup()
@@ -323,10 +329,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 Re-run setup wizard…
               </MenuItem>
               <MenuSeparator />
-              <MenuItem onSelect={openSettings}>Settings…</MenuItem>
-              <MenuItem onSelect={() => openUtility("managedTools")}>Managed tools…</MenuItem>
-              <MenuItem onSelect={() => openUtility("backgroundWork")}>Background work…</MenuItem>
-              <MenuItem onSelect={() => openUtility("deletedFiles")}>Deleted files…</MenuItem>
               <MenuItem onSelect={() => openUtility("issues")}>Issues…</MenuItem>
               <MenuItem onSelect={() => openUtility("activityTrace")}>Activity trace…</MenuItem>
               <MenuSeparator />

@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { shortcutColumns } from "../models/shortcuts";
 import ModalShell from "./ModalShell";
 
@@ -44,7 +45,12 @@ export default function ShortcutsModal({
                 <dd className="min-w-0 flex-1 text-sm text-ink">{row.action}</dd>
                 <dt className="min-w-0 max-w-[48%] shrink-0">
                   <kbd className="inline-block max-w-full rounded-md border border-border bg-surface-muted px-2 py-1 text-center font-mono text-xs text-ink-strong [overflow-wrap:anywhere]">
-                    {row.chord}
+                    {row.chord.split("/").map((part, index) => (
+                      <Fragment key={index}>
+                        {index > 0 ? <>/<wbr /></> : null}
+                        <span className="whitespace-nowrap">{part}</span>
+                      </Fragment>
+                    ))}
                   </kbd>
                 </dt>
               </div>

@@ -473,6 +473,15 @@ export default function SettingsModal({
           </Button>
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Companion files
+          </h2>
+          <CheckField
+            label="Pair companion files (Live Photos, RAW, sidecars)"
+            checked={draft.pairingEnabled}
+            onChange={(v) => update({ pairingEnabled: v })}
+          />
+
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Visibility
           </h2>
           <p className="mb-3 text-xs text-ink-muted">
@@ -538,50 +547,20 @@ export default function SettingsModal({
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Similar photos
-          </h2>
-          <CheckField
-            label="Find similar photos automatically"
-            checked={draft.similarPhotoAnalysisEnabled}
-            onChange={(v) => update({ similarPhotoAnalysisEnabled: v })}
-          />
-          <NumberField
-            label="Max gap between spares (seconds)"
-            value={draft.similarityMaxGapSeconds}
-            min={1}
-            onChange={(v) => update({ similarityMaxGapSeconds: v })}
-          />
-          <NumberField
-            label="Visual distance limit (0–64)"
-            hint="How different two photos may look and still pair. Lower is stricter; flat graphics crowd together, so a corpus of icons wants a lower number than photos do."
-            value={draft.similarityPhashMaxDistance}
-            min={0}
-            onChange={(v) => update({ similarityPhashMaxDistance: v })}
-          />
-          <NumberField
-            label="Burst visual distance (0–64)"
-            hint="The relaxed limit for photos taken within the burst gap of each other. Real bursts differ more than the strict limit tolerates — a hand shifts, a child turns — and close capture times vouch for them."
-            value={draft.similarityPhashMaxDistanceBurst}
-            min={0}
-            onChange={(v) => update({ similarityPhashMaxDistanceBurst: v })}
-          />
-          <NumberField
-            label="Family width (× the limits above)"
-            hint="How far one family may spread. 1 means every photo must resemble the family's first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family."
-            value={draft.similarityDiameterMultiplier}
-            min={1}
-            onChange={(v) =>
-              update({ similarityDiameterMultiplier: Math.min(4, v) })
-            }
-          />
-          <div className="mt-3 flex justify-end">
-            <Button onClick={resetSimilarPhotoSettings}>
-              Reset similar photo settings
-            </Button>
-          </div>
-          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Library maintenance
           </h2>
+          <CheckField
+            label="Check source folders after OneCopy opens"
+            checked={draft.checkSourceFoldersAtLaunch}
+            onChange={(v) => update({ checkSourceFoldersAtLaunch: v })}
+          />
+
+          <CheckField
+            label="Keep the system awake during background work"
+            checked={draft.keepAwakeDuringIndexing}
+            onChange={(v) => update({ keepAwakeDuringIndexing: v })}
+          />
+
           <Row
             label="Rebuild library index"
             hint="Clears rebuildable library information and retained Issue and notification history, then checks every source folder again. Your files and choices are preserved."
@@ -652,6 +631,84 @@ export default function SettingsModal({
             </Select>
           </Row>
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Photos and Comparison
+          </h2>
+          <CheckField
+            label="Find similar photos automatically"
+            checked={draft.similarPhotoAnalysisEnabled}
+            onChange={(v) => update({ similarPhotoAnalysisEnabled: v })}
+          />
+          <NumberField
+            label="Max gap between spares (seconds)"
+            value={draft.similarityMaxGapSeconds}
+            min={1}
+            onChange={(v) => update({ similarityMaxGapSeconds: v })}
+          />
+          <NumberField
+            label="Visual distance limit (0–64)"
+            hint="How different two photos may look and still pair. Lower is stricter; flat graphics crowd together, so a corpus of icons wants a lower number than photos do."
+            value={draft.similarityPhashMaxDistance}
+            min={0}
+            onChange={(v) => update({ similarityPhashMaxDistance: v })}
+          />
+          <NumberField
+            label="Burst visual distance (0–64)"
+            hint="The relaxed limit for photos taken within the burst gap of each other. Real bursts differ more than the strict limit tolerates — a hand shifts, a child turns — and close capture times vouch for them."
+            value={draft.similarityPhashMaxDistanceBurst}
+            min={0}
+            onChange={(v) => update({ similarityPhashMaxDistanceBurst: v })}
+          />
+          <NumberField
+            label="Family width (× the limits above)"
+            hint="How far one family may spread. 1 means every photo must resemble the family's first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family."
+            value={draft.similarityDiameterMultiplier}
+            min={1}
+            onChange={(v) =>
+              update({ similarityDiameterMultiplier: Math.min(4, v) })
+            }
+          />
+          <div className="mt-3 flex justify-end">
+            <Button onClick={resetSimilarPhotoSettings}>
+              Reset similar photo settings
+            </Button>
+          </div>
+          <CheckField
+            label="Score faces for photo ordering (background, needs the face models)"
+            checked={draft.scoreFaces}
+            onChange={(v) => update({ scoreFaces: v })}
+          />
+
+          <CheckField
+            label="Show face-score stars on photos"
+            checked={draft.showFaceStars}
+            onChange={(v) => update({ showFaceStars: v })}
+          />
+
+          <NumberField
+            label="Maximum images in Comparison"
+            hint="Connected displays and image shape may reduce the number shown at once"
+            value={draft.maximumImagesInComparison}
+            min={2}
+            onChange={(v) => update({ maximumImagesInComparison: v })}
+          />
+
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Playback
+          </h2>
+          <CheckField
+            label="Sound"
+            checked={draft.soundEnabled}
+            onChange={(v) => update({ soundEnabled: v })}
+          />
+
+          <NumberField
+            label="Playback volume (%)"
+            value={Math.round(draft.playbackVolume * 100)}
+            min={1}
+            onChange={(v) => update({ playbackVolume: Math.min(100, v) / 100 })}
+          />
+
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Videos
           </h2>
           <CheckField
@@ -663,11 +720,6 @@ export default function SettingsModal({
             label="Generate scene snapshots"
             checked={draft.videoSnapshotsEnabled}
             onChange={(v) => update({ videoSnapshotsEnabled: v })}
-          />
-          <CheckField
-            label="Transcribe videos automatically"
-            checked={draft.videoTranscriptionEnabled}
-            onChange={(v) => update({ videoTranscriptionEnabled: v })}
           />
           <NumberField
             label="Seconds per snapshot frame"
@@ -687,6 +739,12 @@ export default function SettingsModal({
             min={1}
             onChange={(v) => update({ videoStripMaxFrames: v })}
           />
+          <CheckField
+            label="Transcribe videos automatically"
+            checked={draft.videoTranscriptionEnabled}
+            onChange={(v) => update({ videoTranscriptionEnabled: v })}
+          />
+
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Audio
           </h2>
@@ -699,86 +757,6 @@ export default function SettingsModal({
             label="Transcribe audio automatically"
             checked={draft.audioTranscriptionEnabled}
             onChange={(v) => update({ audioTranscriptionEnabled: v })}
-          />
-        </div>
-      ) : null}
-
-      {activeTab === "appearance" ? (
-        <div
-          id="settings-panel-appearance"
-          role="tabpanel"
-          aria-labelledby="settings-tab-appearance"
-        >
-          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Appearance
-          </h2>
-          <Row
-            label="UI font"
-            hint="Blank uses the system font; custom values accept a CSS font-family list"
-          >
-            <TextInput
-              className="w-64"
-              value={draft.uiFontFamily}
-              placeholder="System font"
-              onChange={(e) => update({ uiFontFamily: e.target.value })}
-            />
-          </Row>
-          <Row label="Theme">
-            <Select
-              value={draft.theme}
-              onChange={(e) =>
-                update({ theme: e.target.value as "system" | "light" | "dark" })
-              }
-            >
-              <option value="system">Follow the system</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </Select>
-          </Row>
-
-          <ScreensSection />
-        </div>
-      ) : null}
-
-      {activeTab === "behavior" ? (
-        <div
-          id="settings-panel-behavior"
-          role="tabpanel"
-          aria-labelledby="settings-tab-behavior"
-        >
-          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Behavior
-          </h2>
-          <CheckField
-            label="Sound"
-            checked={draft.soundEnabled}
-            onChange={(v) => update({ soundEnabled: v })}
-          />
-          <NumberField
-            label="Playback volume (%)"
-            value={Math.round(draft.playbackVolume * 100)}
-            min={1}
-            onChange={(v) => update({ playbackVolume: Math.min(100, v) / 100 })}
-          />
-          <CheckField
-            label="Pair companion files (Live Photos, RAW, sidecars)"
-            checked={draft.pairingEnabled}
-            onChange={(v) => update({ pairingEnabled: v })}
-          />
-          <CheckField
-            label="Keep the system awake during background work"
-            checked={draft.keepAwakeDuringIndexing}
-            onChange={(v) => update({ keepAwakeDuringIndexing: v })}
-          />
-          <CheckField
-            label="Check source folders after OneCopy opens"
-            checked={draft.checkSourceFoldersAtLaunch}
-            onChange={(v) => update({ checkSourceFoldersAtLaunch: v })}
-          />
-          <CheckField
-            label="Score faces for photo ordering (background, needs the face models)"
-            checked={draft.scoreFaces}
-            onChange={(v) => update({ scoreFaces: v })}
           />
           {accelerationCapabilities.length > 0 ? (
             <>
@@ -831,18 +809,55 @@ export default function SettingsModal({
               })}
             </>
           ) : null}
-          <CheckField
-            label="Show face-score stars on photos"
-            checked={draft.showFaceStars}
-            onChange={(v) => update({ showFaceStars: v })}
-          />
-          <NumberField
-            label="Maximum images in Comparison"
-            hint="Connected displays and image shape may reduce the number shown at once"
-            value={draft.maximumImagesInComparison}
-            min={2}
-            onChange={(v) => update({ maximumImagesInComparison: v })}
-          />
+        </div>
+      ) : null}
+
+      {activeTab === "appearance" ? (
+        <div
+          id="settings-panel-appearance"
+          role="tabpanel"
+          aria-labelledby="settings-tab-appearance"
+        >
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Appearance
+          </h2>
+          <Row
+            label="UI font"
+            hint="Blank uses the system font; custom values accept a CSS font-family list"
+          >
+            <TextInput
+              className="w-64"
+              value={draft.uiFontFamily}
+              placeholder="System font"
+              onChange={(e) => update({ uiFontFamily: e.target.value })}
+            />
+          </Row>
+          <Row label="Theme">
+            <Select
+              value={draft.theme}
+              onChange={(e) =>
+                update({ theme: e.target.value as "system" | "light" | "dark" })
+              }
+            >
+              <option value="system">Follow the system</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </Select>
+          </Row>
+
+          <ScreensSection />
+        </div>
+      ) : null}
+
+      {activeTab === "behavior" ? (
+        <div
+          id="settings-panel-behavior"
+          role="tabpanel"
+          aria-labelledby="settings-tab-behavior"
+        >
+          <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Notifications
+          </h2>
           <NumberField
             label="Minor notification display time (seconds)"
             value={draft.notificationDisplaySeconds}
@@ -850,6 +865,9 @@ export default function SettingsModal({
             max={60}
             onChange={(v) => update({ notificationDisplaySeconds: v })}
           />
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            File operations
+          </h2>
           <Row
             label="Destination conflict names"
             hint="Used when Rename and Copy/Move resolves an existing filename"
