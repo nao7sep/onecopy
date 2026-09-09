@@ -40,3 +40,5 @@ mod viewer_sequence_tests;
 mod watcher_tests;
 #[path = "../visibility_tests.rs"]
 mod visibility_tests;
+#[path = "../native_media_fixture.rs"]
+mod native_media_fixture;

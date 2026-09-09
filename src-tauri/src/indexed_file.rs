@@ -2,7 +2,7 @@
 //!
 //! Webviews identify indexed content by hash or path id; filesystem paths
 //! never cross into commands as authority. Hash resolution follows the same
-//! date-then-path ordering as item presentation, so filename, attributes,
+//! canonical projection as item presentation, so filename, attributes,
 //! text, and external delegation all describe one representative copy.
 
 use std::path::PathBuf;
@@ -17,11 +17,9 @@ pub fn live_path(
     let path: String = match (hash.filter(|value| !value.is_empty()), path_id) {
         (Some(hash), None) => conn
             .query_row(
-                "SELECT abs_path FROM paths \
-                 WHERE content_hash = ?1 AND missing = 0 \
-                 ORDER BY resolved_utc_ms IS NULL, resolved_utc_ms, \
-                          abs_path COLLATE onecopy_nocase, abs_path \
-                 LIMIT 1",
+                "SELECT p.abs_path FROM logical_contents l \
+                 JOIN paths p ON p.id = l.representative_path_id \
+                 WHERE l.content_hash = ?1 AND p.missing = 0",
                 [hash],
                 |row| row.get(0),
             )

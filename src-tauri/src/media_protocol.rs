@@ -4,7 +4,6 @@
 
 use std::io::{Read, Seek, SeekFrom};
 
-use rusqlite::OptionalExtension;
 use serde_json::json;
 
 use crate::extensions;
@@ -42,34 +41,20 @@ pub(crate) fn serve_original(
         Ok(conn) => conn,
         Err(error) => return warn_404("index open failed", error),
     };
-    let path: rusqlite::Result<Option<String>> = match key.strip_prefix("path-") {
+    let path = match key.strip_prefix("path-") {
         Some(id) => match id.parse::<i64>() {
-            Ok(id) => conn
-                .query_row(
-                "SELECT abs_path FROM paths WHERE id = ?1 AND missing = 0",
-                [id],
-                |row| row.get::<_, String>(0),
-            )
-                .optional(),
+            Ok(id) => crate::indexed_file::live_path(&conn, None, Some(id)),
             Err(_) => return not_found(),
         },
-        None => conn
-            .query_row(
-                "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-                [key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional(),
+        None => crate::indexed_file::live_path(&conn, Some(key), None),
     };
     let path = match path {
         Ok(path) => path,
         Err(error) => return warn_404("path lookup failed", error.to_string()),
     };
-    let Some(path) = path else {
-        return warn_404("no live path for key", key.to_string());
-    };
+    let path = path.to_string_lossy();
 
-    let mut file = match std::fs::File::open(&path) {
+    let mut file = match std::fs::File::open(path.as_ref()) {
         Ok(file) => file,
         Err(error) => return warn_404("original unreadable", format!("{path}: {error}")),
     };

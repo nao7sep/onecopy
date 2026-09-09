@@ -43,3 +43,48 @@ fn provisional_resolution_accepts_only_one_live_indexed_identity() {
         .unwrap();
     assert!(indexed_file::live_path(&conn, None, Some(7)).is_err());
 }
+
+#[test]
+fn original_resolution_follows_the_published_representative_after_visibility_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('same', 5, 'other');
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+         VALUES
+           (1, '/a/.same.txt', '/a', '.same.txt', 'other', 'same', 100, 'filesystem'),
+           (2, '/b/same.txt', '/b', 'same.txt', 'other', 'same', 200, 'filesystem');
+         UPDATE paths SET review_visible = 0 WHERE id = 1;",
+    ).unwrap();
+    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+        std::path::PathBuf::from("/b/same.txt"));
+    // Visibility chooses the file, not the logical date contributed by every copy.
+    assert_eq!(conn.query_row("SELECT resolved_utc_ms FROM logical_contents WHERE content_hash = 'same'",
+        [], |row| row.get::<_, i64>(0)).unwrap(), 100);
+
+    conn.execute("UPDATE paths SET review_visible = 1 WHERE id = 1", []).unwrap();
+    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+        std::path::PathBuf::from("/a/.same.txt"));
+    conn.execute("UPDATE paths SET missing = 1 WHERE id = 1", []).unwrap();
+    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+        std::path::PathBuf::from("/b/same.txt"));
+    conn.execute("UPDATE paths SET missing = 1 WHERE id = 2", []).unwrap();
+    assert!(indexed_file::live_path(&conn, Some("same"), None).is_err());
+}
+
+#[test]
+fn an_older_companion_never_supplies_the_logical_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('same', 5, 'other');
+         INSERT INTO paths
+           (id, abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, companion_of)
+         VALUES
+           (1, '/main.txt', '/', 'main.txt', 'other', 'same', 200, NULL),
+           (2, '/companion.txt', '/', 'companion.txt', 'other', 'same', 100, 1);",
+    ).unwrap();
+    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+        std::path::PathBuf::from("/main.txt"));
+}
