@@ -47,7 +47,7 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
       });
     }
     log.info("wizard finished", { sourceDirs: submission.dirs.length });
-    await useSectionsStore.getState().startSourceCheck();
+    await useSectionsStore.getState().startSourceCheck("automatic");
   } catch (error) {
     log.error("wizard save failed", toErrorFields(error));
     if (useWizardStore.getState().finishing) {

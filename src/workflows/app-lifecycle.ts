@@ -84,7 +84,7 @@ async function bootstrapOnce(): Promise<void> {
     // Event wiring, initial data, the first section projection, and source
     // presence are settled before this finite background pass starts. The
     // main interface is therefore usable and cannot miss its early state.
-    sourceCheckStarted = await useSectionsStore.getState().startSourceCheck();
+    sourceCheckStarted = await useSectionsStore.getState().startSourceCheck("automatic");
   }
   if (!sourceCheckStarted) {
     // The source pass wakes this independent tail at its terminal boundary.

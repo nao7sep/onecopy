@@ -9,6 +9,7 @@ import {
   mockCommands,
   mockSectionItems,
   resetTauriMocks,
+  invokeCalls,
 } from "../mocks/tauri";
 
 function counts(imageCount: number): SectionCounts {
@@ -77,6 +78,14 @@ beforeEach(() => {
 });
 
 void installScanEventWiring();
+
+it("distinguishes requested completion feedback from automatic maintenance", async () => {
+  mockCommand("start_source_check", () => true);
+  await useSectionsStore.getState().startSourceCheck();
+  await useSectionsStore.getState().startSourceCheck("automatic");
+  expect(invokeCalls.filter((call) => call.command === "start_source_check").map((call) => call.args))
+    .toEqual([{ explicit: true }, { explicit: false }]);
+});
 
 describe("out-of-order count snapshots", () => {
   it("keeps the newer snapshot when the older response arrives last", async () => {

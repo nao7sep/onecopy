@@ -122,7 +122,7 @@ export async function saveSettings(): Promise<void> {
   }
   if (sourceDirsChanged) {
     try {
-      await useSectionsStore.getState().startSourceCheck();
+      await useSectionsStore.getState().startSourceCheck("automatic");
     } catch (error) {
       followUpFailed = true;
       log.error("source-folder check failed to start after settings save", toErrorFields(error));

@@ -329,8 +329,13 @@ fn cache_root() -> Option<std::path::PathBuf> {
 }
 
 #[tauri::command(async)]
-fn start_source_check(app: AppHandle) -> Result<bool, String> {
-    source_check_runtime::start_explicit(app.clone()).map_err(|error| {
+fn start_source_check(app: AppHandle, explicit: bool) -> Result<bool, String> {
+    let result = if explicit {
+        source_check_runtime::start_explicit(app.clone())
+    } else {
+        source_check_runtime::start(app.clone())
+    };
+    result.map_err(|error| {
         if !app_lifecycle::shutting_down() {
             let _ = failure_runtime::report(&app, "source-check-failed", None, &error);
         }

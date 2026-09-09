@@ -42,7 +42,7 @@ interface SectionsState {
   rescanNeeded: boolean;
   loadCounts: () => Promise<void>;
   loadIndexWork: () => Promise<void>;
-  startSourceCheck: () => Promise<boolean>;
+  startSourceCheck: (request?: "explicit" | "automatic") => Promise<boolean>;
   stopSourceCheck: () => Promise<void>;
   admitBackgroundCompletion: () => Promise<void>;
   setFileInformationPaused: (paused: boolean) => Promise<void>;
@@ -129,7 +129,7 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     }
   },
 
-  startSourceCheck: async () => {
+  startSourceCheck: async (request = "explicit") => {
     set({ error: null });
     const operationId = newActivityOperationId("sourceCheck");
     recordActivity({
@@ -137,10 +137,10 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       owner: "sourceCheck",
       operationId,
       current: "running",
-      reason: "user",
+      reason: request === "explicit" ? "user" : undefined,
     });
     try {
-      const started = await invoke<boolean>("start_source_check");
+      const started = await invoke<boolean>("start_source_check", { explicit: request === "explicit" });
       if (started) {
         set({ rescanNeeded: false });
         await get().loadIndexWork();

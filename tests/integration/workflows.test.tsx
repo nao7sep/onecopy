@@ -243,7 +243,7 @@ describe("the culling workflow", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("starts the configured source check only after usable bootstrap", async () => {
+  it("starts the configured source check quietly only after usable bootstrap", async () => {
     mockCommand("load_app_data", () => ({
       status: "ready",
       data: {
@@ -263,7 +263,7 @@ describe("the culling workflow", () => {
     await settle();
 
     expect(invokeCalls.map((call) => call.command)).toContain("check_source_dirs");
-    expect(invokeCalls.map((call) => call.command)).toContain("start_source_check");
+    expect(invokeCalls.find((call) => call.command === "start_source_check")?.args).toEqual({ explicit: false });
     expect(invokeCalls.map((call) => call.command)).not.toContain(
       "admit_background_completion",
     );
