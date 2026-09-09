@@ -73,10 +73,12 @@ describe("the trash modal", () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
     const buttons = [...document.querySelectorAll("button")].filter(
-      (b) => b.textContent === "Empty…",
+      (b) => b.textContent === "Empty",
     );
     expect(buttons).toHaveLength(2);
     expect(buttons[0].hasAttribute("disabled")).toBe(false);
+    expect(buttons[0].className).toContain("border-danger/50");
+    expect(buttons[0].className.split(" ")).toContain("bg-danger-surface");
     expect(buttons[1].hasAttribute("disabled")).toBe(true);
   });
 
@@ -94,7 +96,7 @@ describe("the trash modal", () => {
     await act(async () => {});
 
     const empty = [...document.querySelectorAll("button")].find(
-      (b) => b.textContent === "Empty…" && !b.hasAttribute("disabled"),
+      (b) => b.textContent === "Empty" && !b.hasAttribute("disabled"),
     );
     await act(async () => empty!.click());
 
@@ -125,7 +127,7 @@ describe("the trash modal", () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
     const empty = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Empty…" && !button.hasAttribute("disabled"),
+      (button) => button.textContent === "Empty" && !button.hasAttribute("disabled"),
     )!;
     await act(async () => empty.click());
     const confirm = [...document.querySelectorAll("button")].find(
@@ -170,7 +172,7 @@ describe("the trash modal", () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
     const empty = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Empty…" && !button.hasAttribute("disabled"),
+      (button) => button.textContent === "Empty" && !button.hasAttribute("disabled"),
     )!;
     await act(async () => empty.click());
     const confirm = [...document.querySelectorAll("button")].find(

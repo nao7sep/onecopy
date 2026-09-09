@@ -235,7 +235,7 @@ export default function TrashModal({
                   disabled={busy || row.files === 0}
                   onClick={() => setConfirm(row)}
                 >
-                  Empty…
+                  Empty
                 </Button>
               )}
             </li>

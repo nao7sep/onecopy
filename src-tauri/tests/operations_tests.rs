@@ -779,6 +779,44 @@ fn identical_destination_skips_but_still_runs_the_post_action() {
 }
 
 #[test]
+fn dot_store_copy_overwrite_then_move_verifies_existing_output_and_only_cleans_sources() {
+    let f = fixture("dot-store-copy-move");
+    let source = f.root.join(".DS_Store");
+    std::fs::write(&source, b"new fixture bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let output = dest.join(".DS_Store");
+    std::fs::write(&output, b"old fixture bytes").unwrap();
+    let item = f.conn.query_row("SELECT content_hash, id FROM paths WHERE file_name = '.DS_Store'", [],
+        |row| Ok(ItemIdentity { hash: row.get(0)?, path_id: Some(row.get(1)?) })).unwrap();
+    let selection = std::slice::from_ref(&item);
+    let review = move_batch(&f.conn, &f.app_root, &f.cache, selection, &dest,
+        MoveOutMode::CopyKeepAll, &|| false, |_| {}).unwrap();
+    assert!(review.requires_conflict_choice);
+    assert_eq!(std::fs::read(&source).unwrap(), b"new fixture bytes");
+    assert_eq!(std::fs::read(&output).unwrap(), b"old fixture bytes");
+    let copied = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, selection, &dest,
+        MoveOutMode::CopyKeepAll, Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
+    assert_eq!(copied.exported, 1);
+    assert_eq!(copied.trashed_destination_files, 1);
+    assert_eq!(copied.post_action.deleted_files, 0);
+    assert_eq!(std::fs::read(&source).unwrap(), b"new fixture bytes");
+    assert_eq!(std::fs::read(&output).unwrap(), b"new fixture bytes");
+    let moved = move_batch(&f.conn, &f.app_root, &f.cache, selection, &dest,
+        MoveOutMode::MoveTrashRest, &|| false, |_| {}).unwrap();
+    assert!(!moved.requires_conflict_choice);
+    assert_eq!(moved.exported, 0);
+    assert_eq!(moved.skipped_identical, 1);
+    assert_eq!(moved.trashed_destination_files, 0);
+    assert_eq!(moved.post_action.deleted_files, 1);
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&output).unwrap(), b"new fixture bytes");
+    assert!(f.root.join(onecopy_lib::trash::TRASH_DIR_NAME).is_dir());
+}
+
+#[test]
 fn conflicting_destination_waits_for_one_reviewed_policy_before_any_effect() {
     let f = fixture("conflict");
     std::fs::write(f.root.join("clash.jpg"), b"mine").unwrap();

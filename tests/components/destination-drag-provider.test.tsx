@@ -263,7 +263,7 @@ describe("destination drag transport", () => {
 
     const view = render(<DestinationsTab />);
     expect(document.activeElement).toBe(view.getByRole("button", { name: "Cancel" }));
-    expect(view.getByRole("button", { name: "Move 1; delete sources" }).className).toContain(
+    expect(view.getByRole("button", { name: "Move 1" }).className).toContain(
       "bg-primary",
     );
     expect(view.getByRole("button", { name: "Copy 1" }).className).toContain(

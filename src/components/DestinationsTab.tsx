@@ -275,36 +275,38 @@ function ActionBar() {
       );
 
   const button =
-    "inline-flex h-7 items-center rounded-md px-2 text-xs font-medium transition-colors";
+    "h-7 px-2 text-xs";
   const countLabel = selectedCount > 0 ? ` ${selectedCount}` : "";
 
   return (
-    <div className="mt-2 shrink-0 border-t border-border pt-2">
-      <p className="mb-1 truncate text-sm font-medium text-ink-strong" title={activePath}>
+    <div className="-mx-3 mt-3 shrink-0 border-t border-border px-3 pt-3">
+      <p className="mb-2 truncate text-sm font-medium text-ink-strong" title={activePath}>
         {leafName(activePath)}
       </p>
       <div className="flex flex-wrap items-center gap-1">
-        <button
-          className={`${button} text-primary hover:bg-primary-surface`}
+        <Button
+          variant="primary"
+          className={button}
           title="Review moving the selection here and recoverably deleting its covered source copies"
           onClick={() => void moveSelectionTo(activePath, "move-trash-rest")}
         >
-          Move{countLabel} here; delete sources…
-        </button>
-        <button
-          className={`${button} text-ink hover:bg-surface-muted`}
+          Move{countLabel} here…
+        </Button>
+        <Button
+          className={button}
           title="Copy the selection here; nothing else is touched"
           onClick={() => void moveSelectionTo(activePath, "copy")}
         >
           Copy{countLabel} here
-        </button>
-        <button
-          className={`${button} text-danger hover:bg-danger-surface`}
-          title="Move the selection here and permanently delete its other copies"
+        </Button>
+        <Button
+          variant="danger"
+          className={button}
+          title="Move the selection here and permanently delete its covered source copies"
           onClick={() => void moveSelectionTo(activePath, "move-delete-rest")}
         >
-          Move{countLabel} here; Delete sources…
-        </button>
+          Move{countLabel} permanently…
+        </Button>
         {creating ? (
           <input
             autoFocus
@@ -333,31 +335,33 @@ function ActionBar() {
             }}
           />
         ) : (
-          <button
-            className={`${button} text-ink hover:bg-surface-muted`}
+          <Button
+            className={button}
             title="Create a subfolder inside this folder"
             onClick={() => setCreating(true)}
           >
             New subfolder
-          </button>
+          </Button>
         )}
         {!isRoot && emptiness[activePath] === true && parent !== null ? (
-          <button
-            className={`${button} text-danger hover:bg-danger-surface`}
+          <Button
+            variant="danger"
+            className={button}
             title="Delete this empty folder"
             onClick={() => void deleteFolder(activePath, parent)}
           >
             Delete empty
-          </button>
+          </Button>
         ) : null}
         {isRoot ? (
-          <button
-            className={`${button} text-ink-muted hover:bg-surface-muted hover:text-ink`}
+          <Button
+            variant="ghost"
+            className={button}
             title="Remove this root from the list (the folder itself is untouched)"
             onClick={() => void removeDestinationRoot(activePath)}
           >
             Remove root
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>
@@ -465,20 +469,20 @@ export default function DestinationsTab() {
         <ConfirmDialog
           title={
             pendingMove.mode === "move-delete-rest"
-              ? "Move and delete sources permanently?"
-              : "Move and delete source copies?"
+              ? "Move permanently?"
+              : "Move these items?"
           }
-          message={`Move ${pendingMove.count} logical item${
+          message={`Move ${pendingMove.count} item${
             pendingMove.count === 1 ? "" : "s"
-          } to ${pendingMove.destDir} and ${
+          } to ${pendingMove.destDir}? ${
             pendingMove.mode === "move-delete-rest"
-              ? "PERMANENTLY delete every covered source copy? They cannot be recovered."
-              : "recoverably delete every covered source copy?"
+              ? "All covered source copies and companions will be permanently deleted after delivery. They cannot be recovered."
+              : "All covered source copies and companions will go to Deleted files after delivery."
           }`}
           confirmLabel={
             pendingMove.mode === "move-delete-rest"
-              ? "Move and delete permanently"
-              : "Move and delete sources"
+              ? "Move permanently"
+              : "Move"
           }
           onConfirm={() => void confirmDestinationMove()}
           onCancel={() => useDestinationsStore.getState().cancelPendingMove()}
@@ -592,7 +596,7 @@ function DropChoiceModal({
               void acceptDestinationDropChoice("move-trash-rest");
             }}
           >
-            Move {count}; delete sources
+            Move {count}
           </Button>
           <Button
             onClick={() => {
@@ -608,9 +612,8 @@ function DropChoiceModal({
         {path}
       </p>
       <p className="mt-1 text-xs text-ink-muted">
-        Move delivers {count} logical item{count === 1 ? "" : "s"} here and
-        recoverably deletes every covered source copy; Copy leaves every
-        source in place.
+        {count} item{count === 1 ? "" : "s"}, including known copies and companions.
+        {" "}Move sends covered sources to Deleted files after delivery; Copy leaves them in place.
       </p>
     </ModalShell>
   );

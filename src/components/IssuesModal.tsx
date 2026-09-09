@@ -60,7 +60,7 @@ export default function IssuesModal({ open, onClose }: {
         <OperationResult level={revealResult.level}>{revealResult.text}</OperationResult>
       ) : error !== null ? <OperationResult level="error">{error}</OperationResult> : undefined}
       primaryAction={total > 0 ? (
-        <Button variant="danger" onClick={() => void dismissAll()}>Dismiss all</Button>
+        <Button onClick={() => void dismissAll()}>Dismiss all</Button>
       ) : undefined}
     >
       <p className="mb-3 text-sm text-ink-muted">

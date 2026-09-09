@@ -4,10 +4,12 @@ import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import DestinationsTab from "../../src/components/DestinationsTab";
 import { useDestinationsStore } from "../../src/state/destinations-store";
+import { useItemsStore } from "../../src/state/items-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  useItemsStore.setState({ selectedItem: "photo", selectedKeys: new Set(["photo"]) });
   useDestinationsStore.setState({
     roots: [],
     children: {},
@@ -20,12 +22,43 @@ beforeEach(() => {
     activePath: null,
     dragSelection: null,
     pendingDrop: null,
+    pendingMove: null,
   });
 });
 
 afterEach(() => cleanup());
 
 describe("destination folder states", () => {
+  it.each(["move-trash-rest", "move-delete-rest"] as const)("keeps %s behind a Cancel-first exact-scope review", (mode) => {
+    useDestinationsStore.setState({ pendingMove: {
+      destDir: "/dest", count: 2, mode,
+      selection: { items: [{ hash: "one", pathId: null }, { hash: "two", pathId: null }], anchorKey: "one" },
+    } });
+    const view = render(<DestinationsTab />);
+    const dialog = view.getByRole("dialog");
+    expect(dialog.textContent).toContain("Move 2 items to /dest?");
+    expect(dialog.textContent).toContain("source copies and companions");
+    expect(dialog.textContent).toContain(mode === "move-delete-rest" ? "cannot be recovered" : "Deleted files");
+    expect(view.getByRole("button", { name: mode === "move-delete-rest" ? "Move permanently" : "Move" })).toBeTruthy();
+    expect(document.activeElement).toBe(view.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(view.getByRole("button", { name: "Cancel" }));
+    expect(useDestinationsStore.getState().pendingMove).toBeNull();
+    expect(invokeCalls.some((call) => call.command === "move_items_out")).toBe(false);
+  });
+
+  it("distinguishes normal and permanent Move with concise buttons and an edge-to-edge divider", () => {
+    useDestinationsStore.setState({ roots: ["/dest"], activePath: "/dest" });
+    const view = render(<DestinationsTab />);
+    expect(view.getByRole("button", { name: "Move 1 here…" })).toBeTruthy();
+    const permanent = view.getByRole("button", { name: "Move 1 permanently…" });
+    expect(permanent.className.split(" ")).toContain("bg-danger-surface");
+    const actions = permanent.parentElement!.parentElement!;
+    expect(actions.className).toContain("-mx-3");
+    expect(actions.className).toContain("pt-3");
+    expect(actions.querySelector("p")?.className).toContain("mb-2");
+    expect(invokeCalls.some((call) => call.command === "move_items_out")).toBe(false);
+  });
+
   it("keeps the empty tree reachable and explains how to populate it", () => {
     render(<DestinationsTab />);
 
