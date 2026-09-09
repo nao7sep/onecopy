@@ -5,6 +5,7 @@ import {
 } from "../repositories";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
+import OperationResult from "./ui/OperationResult";
 import PassiveScrollRegion from "./ui/PassiveScrollRegion";
 
 interface ActivitySpan {
@@ -151,9 +152,10 @@ export default function ActivityTraceModal({
       title="Activity trace"
       onClose={onClose}
       widthClass="w-[min(920px,calc(100vw-3rem))]"
+      footerResult={error === null ? undefined : <OperationResult level="error">{error}</OperationResult>}
       footerStart={
-        <span className={error === null ? "text-xs text-ink-muted" : "text-xs text-danger"}>
-          {error ?? `${events.length} events loaded${nextCursor === null ? "" : " · scroll for older activity"}`}
+        <span className="text-xs text-ink-muted">
+          {`${events.length} events loaded${nextCursor === null ? "" : " · scroll for older activity"}`}
         </span>
       }
       primaryAction={

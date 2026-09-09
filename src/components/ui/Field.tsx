@@ -13,7 +13,7 @@
 import type { InputHTMLAttributes, SelectHTMLAttributes, ReactNode } from "react";
 
 const CONTROL =
-  "h-8 rounded-lg border border-border bg-background px-2.5 text-sm text-ink outline-none transition-colors focus:border-border-strong focus-visible:ring-2 focus-visible:ring-primary-ring disabled:text-ink-muted";
+  "h-8 max-w-full rounded-lg border border-border bg-background px-2.5 text-sm text-ink outline-none transition-colors focus:border-border-strong focus-visible:ring-2 focus-visible:ring-primary-ring disabled:text-ink-muted";
 
 export function Row({
   label,
@@ -25,12 +25,12 @@ export function Row({
   children: ReactNode;
 }) {
   return (
-    <label className="flex items-center justify-between gap-4 py-1.5">
-      <span className="min-w-0">
+    <label className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-1.5">
+      <span className="min-w-0 flex-1 basis-48 break-words">
         <span className="block text-sm text-ink">{label}</span>
         {hint ? <span className="block text-xs text-ink-muted">{hint}</span> : null}
       </span>
-      <span className="shrink-0">{children}</span>
+      <span className="ml-auto flex min-w-0 max-w-full flex-col items-end">{children}</span>
     </label>
   );
 }

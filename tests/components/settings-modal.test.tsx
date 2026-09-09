@@ -71,6 +71,29 @@ afterEach(() => {
 });
 
 describe("Settings categories", () => {
+  it("keeps timezone help outside the field's alignment and accessible label", () => {
+    render(<SettingsModal open onClose={() => {}} />);
+    const input = screen.getByDisplayValue("Asia/Tokyo");
+    const help = screen.getByRole("button", { name: "View timezone names" });
+    expect(input.className).toContain("w-48");
+    expect(input.className).toContain("max-w-full");
+    expect(input.parentElement?.className).toContain("max-w-full");
+    expect(input.closest("label")?.contains(help)).toBe(false);
+    expect(input.closest("label")?.className).toContain("flex-wrap");
+  });
+
+  it("shows the default font as a placeholder without writing it into the preference", () => {
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    const font = screen.getByPlaceholderText("System font") as HTMLInputElement;
+    expect(font.value).toBe("");
+    expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("");
+    fireEvent.change(font, { target: { value: "Example Sans, sans-serif" } });
+    expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("Example Sans, sans-serif");
+    fireEvent.change(font, { target: { value: "" } });
+    expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("");
+  });
+
   it("keeps screen controls reachable after identification failure and clears the result on retry", async () => {
     setMonitors([0, 1].map((index) => ({
       name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },

@@ -81,7 +81,7 @@ export default function BackgroundWorkModal({
       title="Background work"
       onClose={onClose}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
-      footerStart={
+      footerResult={
         indexError !== null || error !== null ? (
           <OperationResult level="error">{indexError ?? error}</OperationResult>
         ) : undefined

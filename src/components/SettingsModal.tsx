@@ -353,7 +353,7 @@ export default function SettingsModal({
       closeLabel="Cancel"
       closeDisabled={saving}
       widthClass="w-[min(760px,calc(100vw-3rem))]"
-      footerStart={
+      footerResult={
         message === "" ? undefined : (
           <OperationResult level={messageLevel ?? "info"}>{message}</OperationResult>
         )
@@ -462,30 +462,30 @@ export default function SettingsModal({
             Timestamps
           </h2>
           <Row label="Default timezone" hint="Used when metadata has no timezone">
-            <span>
-              <TextInput
-                className="w-48"
-                invalid={!timezonePending && !timezoneValid}
-                aria-describedby={
-                  !timezonePending && !timezoneValid ? timezoneErrorId : undefined
-                }
-                value={draft.defaultTimezone}
-                onChange={(e) => void validateTimezone(e.target.value)}
-              />
-              <span
-                id={timezoneErrorId}
-                role={!timezonePending && !timezoneValid ? "alert" : undefined}
-                className="mt-1 block min-h-4 text-xs text-danger"
-              >
-                {timezonePending
-                  ? "Checking timezone…"
-                  : timezoneValid
-                    ? ""
-                    : "Not a recognized timezone name"}
-              </span>
-              <TimezoneHelpLink />
-            </span>
+            <TextInput
+              className="w-48"
+              invalid={!timezonePending && !timezoneValid}
+              aria-describedby={
+                !timezonePending && !timezoneValid ? timezoneErrorId : undefined
+              }
+              value={draft.defaultTimezone}
+              onChange={(e) => void validateTimezone(e.target.value)}
+            />
           </Row>
+          <div className="mb-2 text-xs">
+            <div
+              id={timezoneErrorId}
+              role={!timezonePending && !timezoneValid ? "alert" : undefined}
+              className="text-danger"
+            >
+              {timezonePending
+                ? "Checking timezone…"
+                : timezoneValid
+                  ? ""
+                  : "Not a recognized timezone name"}
+            </div>
+            <TimezoneHelpLink />
+          </div>
           <NumberField
             label="Good range starts (year)"
             value={draft.goodRangeStartYear}
@@ -675,6 +675,7 @@ export default function SettingsModal({
             <TextInput
               className="w-64"
               value={draft.uiFontFamily}
+              placeholder="System font"
               onChange={(e) => update({ uiFontFamily: e.target.value })}
             />
           </Row>

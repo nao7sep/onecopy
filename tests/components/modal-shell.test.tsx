@@ -9,12 +9,12 @@ import Button from "../../src/components/ui/Button";
 afterEach(cleanup);
 
 describe("modal result growth", () => {
-  it("bounds the result and body while keeping footer actions fixed and reachable", () => {
+  it("separates wrapping results from fixed actions and leaves scrolling to the body", () => {
     render(
       <ModalShell
         title="Settings"
         onClose={() => undefined}
-        footerStart={
+        footerResult={
           <OperationResult level="error">
             A detailed failure that may wrap across several lines without
             displacing the controls that let the user leave or retry.
@@ -38,10 +38,25 @@ describe("modal result growth", () => {
     expect(body?.className).toContain("min-h-0");
     expect(body?.className).toContain("flex-1");
     expect(body?.className).toContain("overflow-y-auto");
-    expect(resultContainer?.className).toContain("max-h-24");
-    expect(resultContainer?.className).toContain("overflow-y-auto");
+    expect(resultContainer?.className).toContain("break-words");
+    expect(resultContainer?.className).not.toContain("overflow-y-auto");
+    expect(resultContainer?.querySelector("[data-modal-actions]")).toBeNull();
     expect(screen.getByText("Close").closest("button")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
+  it("aligns footer metadata and action text by baseline and allows actions to wrap", () => {
+    render(<ModalShell title="Activity" onClose={() => undefined}
+      footerStart={<span>100 events loaded</span>} primaryAction={<Button>Another action</Button>}>
+      Content
+    </ModalShell>);
+    const metadata = screen.getByText("100 events loaded").parentElement!;
+    const actions = screen.getByText("Close", { selector: "button" }).parentElement!;
+    expect(metadata.parentElement).toBe(actions.parentElement);
+    expect(actions.parentElement?.className).toContain("items-baseline");
+    expect(actions.className).toContain("items-baseline");
+    expect(actions.className).toContain("flex-wrap");
+    expect(metadata.className).toContain("min-w-0");
   });
 
   it("renders only the quiet dismiss mark, with no severity decoration or prefix", () => {

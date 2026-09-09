@@ -28,6 +28,7 @@ export default function ModalShell({
   initialFocus = "auto",
   footerArrowNavigation = false,
   footerStart,
+  footerResult,
   primaryAction,
   children,
 }: {
@@ -39,8 +40,10 @@ export default function ModalShell({
   closeDisabled?: boolean;
   initialFocus?: "auto" | "surface" | "close";
   footerArrowNavigation?: boolean;
-  /** Left-aligned footer content (status/error text). */
+  /** Short left-aligned metadata, sharing the actions' first text baseline. */
   footerStart?: React.ReactNode;
+  /** A wrapping operation result, in its own band above footer actions. */
+  footerResult?: React.ReactNode;
   /** The primary action button(s), rendered to the right of the dismiss. */
   primaryAction?: React.ReactNode;
   children: React.ReactNode;
@@ -75,23 +78,20 @@ export default function ModalShell({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-1">{children}</div>
-        <div className="flex shrink-0 flex-wrap items-end gap-2 px-5 pb-4 pt-4">
-          <div
-            className={
-              footerStart === undefined
-                ? "flex-1"
-                : "max-h-24 min-w-48 flex-1 overflow-y-auto"
-            }
-          >
-            {footerStart}
-          </div>
-          <div data-modal-actions className="flex items-center gap-2">
-            <Button data-modal-close data-modal-initial-focus={initialFocus === "close" ? true : undefined}
-              className={footerArrowNavigation ? "focus:ring-2 focus:ring-primary-ring" : ""}
-              disabled={closeDisabled} onClick={onClose}>
-              {closeLabel}
-            </Button>
-            {primaryAction}
+        <div className="shrink-0 space-y-3 px-5 pb-4 pt-4">
+          {footerResult === undefined ? null : <div className="min-w-0 break-words">{footerResult}</div>}
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-3">
+            {footerStart === undefined ? null : (
+              <div className="min-w-0 flex-1 basis-48 break-words">{footerStart}</div>
+            )}
+            <div data-modal-actions className="ml-auto flex max-w-full flex-wrap items-baseline justify-end gap-2">
+              <Button data-modal-close data-modal-initial-focus={initialFocus === "close" ? true : undefined}
+                className={footerArrowNavigation ? "focus:ring-2 focus:ring-primary-ring" : ""}
+                disabled={closeDisabled} onClick={onClose}>
+                {closeLabel}
+              </Button>
+              {primaryAction}
+            </div>
           </div>
         </div>
       </div>

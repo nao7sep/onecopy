@@ -48,7 +48,7 @@ export default function RevealCopiesDialog({
     <ModalShell
       title={`Show a copy of ${fileName}`}
       onClose={onClose}
-      footerStart={
+      footerResult={
         error === null ? undefined : (
           <OperationResult level="error">{error}</OperationResult>
         )

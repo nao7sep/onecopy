@@ -212,7 +212,7 @@ export default function BinariesModal({
       title="Managed tools"
       onClose={onClose}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
-      footerStart={
+      footerResult={
         entries.length > 0 && loadError !== null ? (
           <OperationResult level="error">{loadError}</OperationResult>
         ) : undefined

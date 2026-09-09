@@ -155,7 +155,7 @@ export default function TrashModal({
       onClose={onClose}
       closeDisabled={busy}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
-      footerStart={
+      footerResult={
         rows !== null && error !== null ? (
           <OperationResult level="error">{error}</OperationResult>
         ) : undefined
