@@ -1,5 +1,66 @@
 use onecopy_lib::index_store;
 
+#[test]
+fn offset_repair_marks_only_unknown_image_evidence_and_preserves_visibility() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    for (id, kind, source, offset_known, missing) in [
+        (1, "image", "metadata", 0, 0),
+        (2, "companion", "metadata", 0, 0),
+        (3, "image", "metadata", 1, 0),
+        (4, "video", "metadata", 0, 0),
+        (5, "image", "filename", 0, 0),
+        (6, "image", "metadata", 0, 1),
+    ] {
+        conn.execute("INSERT INTO paths(id, abs_path, dir_path, file_name, kind, indexed_at_utc, resolved_source, resolved_utc_ms, missing)
+            VALUES (?1, ?2, '/root', ?3, ?4, 'checked', ?5, 1000, ?6)",
+            rusqlite::params![id, format!("/root/{id}.tif"), format!("{id}.tif"), kind, source, missing]).unwrap();
+        conn.execute("INSERT INTO evidence(path_id, source, raw, offset_known) VALUES (?1, ?2, 'retained evidence', ?3)",
+            rusqlite::params![id, source, offset_known]).unwrap();
+    }
+    let policy = onecopy_lib::visibility::Policy::from_config(&serde_json::json!({
+        "ignoredFileNames": ["1.tif"], "hideDotNames": false,
+    })).unwrap();
+    onecopy_lib::visibility_index::apply_policy(&conn, &policy).unwrap();
+    let flags: i64 = conn.query_row("SELECT hidden_flags FROM visibility_policy", [], |row| row.get(0)).unwrap();
+    conn.execute_batch("PRAGMA user_version = 13").unwrap();
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    let pending: Vec<i64> = conn.prepare("SELECT id FROM paths WHERE indexed_at_utc IS NULL ORDER BY id").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(pending, vec![1, 2, 6]);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM evidence", [], |row| row.get::<_, i64>(0)).unwrap(), 6);
+    assert_eq!(conn.query_row("SELECT review_visible FROM paths WHERE id = 1", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT hidden_flags FROM visibility_policy", [], |row| row.get::<_, i64>(0)).unwrap(), flags);
+    assert_eq!(conn.query_row("SELECT name FROM visibility_ignored_names", [], |row| row.get::<_, String>(0)).unwrap(), "1.tif");
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM logical_projection_batch", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    conn.execute("UPDATE paths SET indexed_at_utc = 'checked again' WHERE id = 1", []).unwrap();
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    assert_eq!(conn.query_row("SELECT indexed_at_utc FROM paths WHERE id = 1", [], |row| row.get::<_, String>(0)).unwrap(), "checked again");
+}
+
+#[test]
+fn failed_offset_repair_rolls_back_version_evidence_and_projection_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    conn.execute_batch("INSERT INTO paths(id, abs_path, dir_path, file_name, kind, indexed_at_utc, resolved_source)
+          VALUES (1, '/root/a.tif', '/root', 'a.tif', 'image', 'checked', 'metadata');
+        INSERT INTO evidence(path_id, source, raw, offset_known) VALUES (1, 'metadata', 'retained', 0);
+        CREATE TRIGGER fail_offset_repair BEFORE UPDATE OF indexed_at_utc ON paths
+          BEGIN SELECT RAISE(ABORT, 'injected repair failure'); END;
+        PRAGMA user_version = 13;").unwrap();
+    drop(conn);
+    assert!(index_store::open(&db).is_err());
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 13);
+    assert_eq!(conn.query_row("SELECT indexed_at_utc FROM paths", [], |row| row.get::<_, String>(0)).unwrap(), "checked");
+    assert_eq!(conn.query_row("SELECT raw FROM evidence", [], |row| row.get::<_, String>(0)).unwrap(), "retained");
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM logical_projection_batch", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
 fn revision_twelve_fixture(path: &std::path::Path) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.create_collation("onecopy_nocase", |left, right| left.to_lowercase().cmp(&right.to_lowercase())).unwrap();

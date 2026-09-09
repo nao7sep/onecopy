@@ -1302,17 +1302,12 @@ fn contents_without_a_live_path_are_not_pending_work() {
     );
 }
 
-/// Builds a real JPEG carrying an EXIF APP1 segment.
-///
-/// Committed binary fixtures are avoided here deliberately: no tool on the
-/// build path can WRITE Exif (the image crate encodes pixels only), so a
-/// fixture would be opaque and unregenerable. Assembling the block makes every
-/// offset visible and the expectations hand-derivable.
-fn jpeg_with_exif(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+/// Builds a TIFF metadata container, also reusable as a JPEG EXIF payload.
+/// Every field and byte offset is explicit so no opaque fixture is required.
+fn tiff_with_exif(offset: &[u8]) -> Vec<u8> {
     const MAKE: &[u8] = b"TestCam\0";
     const MODEL: &[u8] = b"Model1\0";
     const TAKEN: &[u8] = b"2016:03:05 12:34:56\0"; // 20 bytes
-    const OFFSET: &[u8] = b"+09:00\0"; // 7 bytes
 
     // Offsets are relative to the start of the TIFF header.
     const IFD0: u32 = 8;
@@ -1345,14 +1340,18 @@ fn jpeg_with_exif(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     // Exif sub-IFD.
     tiff.extend_from_slice(&2u16.to_le_bytes());
     tiff.extend(entry(0x9003, 2, TAKEN.len() as u32, taken_at));
-    tiff.extend(entry(0x9011, 2, OFFSET.len() as u32, offset_at));
+    tiff.extend(entry(0x9011, 2, offset.len() as u32, offset_at));
     tiff.extend_from_slice(&0u32.to_le_bytes());
     assert_eq!(tiff.len() as u32, DATA, "the data area starts where declared");
     tiff.extend_from_slice(MAKE);
     tiff.extend_from_slice(MODEL);
     tiff.extend_from_slice(TAKEN);
-    tiff.extend_from_slice(OFFSET);
+    tiff.extend_from_slice(offset);
+    tiff
+}
 
+fn jpeg_with_exif(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let tiff = tiff_with_exif(b"+09:00\0");
     let mut payload = b"Exif\0\0".to_vec();
     payload.extend_from_slice(&tiff);
     let mut app1 = vec![0xFF, 0xE1];
@@ -1372,6 +1371,68 @@ fn jpeg_with_exif(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, &jpeg).unwrap();
     path
+}
+
+#[test]
+fn tiff_fallback_reads_the_separate_explicit_offset() {
+    use onecopy_lib::metadata::{read_tiff_metadata, MetadataTimestamp};
+    let f = fixture("tiff-offset");
+    let path = f.root.join("photo.arw");
+    let wall = chrono::NaiveDate::from_ymd_opt(2016, 3, 5).unwrap()
+        .and_hms_opt(12, 34, 56).unwrap().and_utc().timestamp_millis();
+    for (offset, minutes) in [(b"+09:00\0".as_slice(), 540), (b"-05:30\0".as_slice(), -330)] {
+        std::fs::write(&path, tiff_with_exif(offset)).unwrap();
+        let facts = read_tiff_metadata(&path).unwrap().unwrap();
+        assert_eq!(facts.taken, Some(MetadataTimestamp::Absolute { unix_ms: wall - minutes * 60_000 }));
+        assert_eq!(facts.make.as_deref(), Some("TestCam"));
+    }
+    std::fs::write(&path, tiff_with_exif(b"invalid\0")).unwrap();
+    assert!(matches!(read_tiff_metadata(&path).unwrap().unwrap().taken, Some(MetadataTimestamp::Naive { .. })));
+}
+
+#[test]
+fn offset_evidence_upgrade_resumes_metadata_without_rehashing_or_losing_results() {
+    use onecopy_lib::metadata::MetadataTimestamp;
+    let Fixture { _dir, root, conn } = fixture("offset-upgrade");
+    let file = root.join("photo.tif");
+    std::fs::write(&file, tiff_with_exif(b"+09:00\0")).unwrap();
+    walk_root(&conn, &root, &lists()).unwrap();
+    let cache = onecopy_lib::preview::CachePaths::new(_dir.path().join("cache"));
+    hash_pending(&conn, &cache).unwrap();
+    extract_pending(&conn).unwrap();
+    resolve_from_evidence(&conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+    let hash: String = conn.query_row("SELECT content_hash FROM paths", [], |row| row.get(0)).unwrap();
+    let naive = serde_json::to_string(&MetadataTimestamp::Naive {
+        year: 2016, month: 3, day: 5, hour: 12, minute: 34, second: 56,
+    }).unwrap();
+    conn.execute("UPDATE evidence SET raw = ?1, offset_known = 0 WHERE source = 'metadata'", [&naive]).unwrap();
+    conn.execute_batch("UPDATE contents SET derived_at_utc = 'preserved', face_score = 0.8;
+        UPDATE paths SET resolved_source = 'metadata'; PRAGMA user_version = 13;").unwrap();
+    index_store::upsert_issue(&conn, None, "fixture-issue", "retained").unwrap();
+    drop(conn);
+
+    let db = _dir.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    assert!(pending_index_work_exists(&conn).unwrap());
+    assert_eq!(conn.query_row("SELECT date_state FROM logical_contents", [], |row| row.get::<_, String>(0)).unwrap(), "pending");
+    assert_eq!(hash_pending(&conn, &cache).unwrap().full_hashed, 0);
+    // Another open before completion cannot consume the durable repair debt.
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    assert_eq!(extract_pending(&conn).unwrap().extracted, 1);
+    let mut config = resolution_config();
+    config.default_timezone = chrono_tz::America::New_York;
+    resolve_from_evidence(&conn, &config, ResolveScope::PendingOnly).unwrap();
+    let expected = chrono::NaiveDate::from_ymd_opt(2016, 3, 5).unwrap()
+        .and_hms_opt(3, 34, 56).unwrap().and_utc().timestamp_millis();
+    assert_eq!(conn.query_row("SELECT content_hash, resolved_utc_ms FROM paths", [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).unwrap(), (hash, expected));
+    assert_eq!(conn.query_row("SELECT derived_at_utc, face_score FROM contents", [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))).unwrap(), ("preserved".into(), 0.8));
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    assert_eq!(extract_pending(&conn).unwrap().extracted, 0);
 }
 
 #[test]

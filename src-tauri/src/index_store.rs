@@ -20,7 +20,7 @@ use rusqlite::Connection;
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 13;
+const SCHEMA_REVISION: i64 = 14;
 
 const ISSUE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS issues (
@@ -435,6 +435,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
+                13 => {}
                 9..=12 => {
                     if current == 9 {
                         conn.execute_batch(
@@ -510,9 +511,35 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 }
                 _ => return Err(format!("unsupported index schema revision: {current}")),
             }
-            crate::visibility_index::apply_policy_in_transaction(
-                &conn, &crate::visibility::Policy::from_config(&serde_json::json!({}))?
-            )?;
+            if current < 13 {
+                crate::visibility_index::apply_policy_in_transaction(
+                    &conn, &crate::visibility::Policy::from_config(&serde_json::json!({}))?
+                )?;
+            }
+            if (9..=13).contains(&current) {
+                // Older fallback extraction omitted the separate EXIF offset.
+                // Parser provenance was not retained, so any completed naive
+                // image evidence may be affected. Reuse normal checkpointed
+                // metadata completion once; do not rehash, erase evidence, or
+                // invalidate finished outputs and diagnostic history.
+                conn.execute_batch(
+                    "CREATE TEMP TABLE offset_repair_paths (id INTEGER PRIMARY KEY, content_hash TEXT);
+                     INSERT INTO offset_repair_paths SELECT id, content_hash FROM paths
+                       WHERE indexed_at_utc IS NOT NULL AND kind IN ('image', 'companion')
+                         AND EXISTS (SELECT 1 FROM evidence e WHERE e.path_id = paths.id
+                           AND e.source = 'metadata' AND e.offset_known = 0);
+                     INSERT INTO logical_projection_batch VALUES (1);
+                     UPDATE paths SET indexed_at_utc = NULL, resolved_utc_ms = NULL,
+                        resolved_source = NULL, date_only = 0 WHERE id IN (SELECT id FROM offset_repair_paths);
+                     DELETE FROM logical_contents WHERE content_hash IN (SELECT content_hash FROM offset_repair_paths);
+                     INSERT INTO logical_contents
+                       (content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count)
+                       SELECT content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count
+                       FROM logical_content_projection WHERE content_hash IN (SELECT content_hash FROM offset_repair_paths);
+                     DELETE FROM logical_projection_batch;
+                     DROP TABLE offset_repair_paths;"
+                ).map_err(|error| error.to_string())?;
+            }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())

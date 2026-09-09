@@ -48,10 +48,12 @@ pub struct MediaMetadata {
 pub fn read_image_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
     match nom_exif::read_exif(path) {
         Ok(exif) => return Ok(from_nom_exif(&exif)),
-        Err(nom_exif::Error::Io(error)) => return Err(error),
+        Err(nom_exif::Error::Io(error)) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
+            return Err(error)
+        }
         Err(_) => {}
     }
-    read_kamadak(path).map(Option::unwrap_or_default)
+    read_tiff_metadata(path).map(Option::unwrap_or_default)
 }
 
 /// Reads video track metadata (QuickTime/MP4/…). A parse failure is an empty
@@ -60,7 +62,9 @@ pub fn read_video_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
     let live_photo_identifier = crate::live_photo::quicktime_content_identifier(path);
     let track = match nom_exif::read_track(path) {
         Ok(track) => track,
-        Err(nom_exif::Error::Io(error)) => return Err(error),
+        Err(nom_exif::Error::Io(error)) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
+            return Err(error)
+        }
         Err(_) => {
             return Ok(MediaMetadata {
                 live_photo_identifier,
@@ -148,7 +152,7 @@ fn from_nom_exif(exif: &nom_exif::Exif) -> MediaMetadata {
 }
 
 /// kamadak-exif fallback for TIFF-family containers, metadata-only.
-fn read_kamadak(path: &Path) -> std::io::Result<Option<MediaMetadata>> {
+pub fn read_tiff_metadata(path: &Path) -> std::io::Result<Option<MediaMetadata>> {
     let file = std::fs::File::open(crate::winpath::for_fs(path).as_ref())?;
     let exif = match exif::Reader::new().read_from_container(&mut BufReader::new(file)) {
         Ok(exif) => exif,
@@ -183,9 +187,11 @@ fn read_kamadak(path: &Path) -> std::io::Result<Option<MediaMetadata>> {
                 minute: u32::from(dt.minute),
                 second: u32::from(dt.second),
             };
-            // kamadak surfaces the offset (from OffsetTimeOriginal) on the
-            // parsed DateTime when the container recorded one.
-            match dt.offset {
+            // DateTimeOriginal contains only wall-clock fields. Parsing that
+            // ASCII value does not also read the separate OffsetTimeOriginal
+            // tag, even though kamadak's DateTime type has an offset field.
+            match field_text(exif::Tag::OffsetTimeOriginal)
+                .as_deref().and_then(parse_utc_offset_minutes) {
                 Some(offset_min) => match naive {
                     MetadataTimestamp::Naive {
                         year,
@@ -201,7 +207,7 @@ fn read_kamadak(path: &Path) -> std::io::Result<Option<MediaMetadata>> {
                         hour,
                         minute,
                         second,
-                        i32::from(offset_min),
+                        offset_min,
                     )
                     .unwrap_or(naive),
                     absolute => absolute,
