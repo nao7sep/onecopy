@@ -65,6 +65,19 @@ export function monthKey(kind: ItemKind, month: string): string {
   return `month:${kind}:${month}`;
 }
 
+export interface SectionCursor { key: string; index: number }
+
+/** Preserve identity through insertions; recover at the former position when
+ * a row disappears. The open month seeds navigation, but never owns it. */
+export function resolveSectionCursor(
+  keys: string[], cursor: SectionCursor | null, selectedKey: string | null,
+): SectionCursor | null {
+  if (keys.length === 0) return null;
+  const existing = keys.indexOf(cursor?.key ?? selectedKey ?? "");
+  const index = existing >= 0 ? existing : Math.min(cursor?.index ?? 0, keys.length - 1);
+  return { key: keys[index], index };
+}
+
 /** Groups each kind's months by their leading year, preserving the core's
  * oldest-first order and lifting Undated out to the end. */
 export function buildSectionTree(counts: SectionCounts | null): KindNode[] {

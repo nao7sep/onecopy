@@ -17,6 +17,7 @@ import { installActivityPings } from "../state/derived-work-store";
 import { flushPreviewWindowPlacement, usePreviewStore } from "../state/preview-store";
 import { hasOpenModal } from "../utils/modalStack";
 import { isComposingEvent } from "./useComposing";
+import { isEditableTarget, shadowsMacTextEditing } from "../utils/shortcuts";
 import {
   placementFromLegacyState,
   prepareWindowPlacement,
@@ -187,7 +188,8 @@ export function useMainWindowLifecycle({
 
   useEffect(() => {
     const onZoomKey = (event: KeyboardEvent) => {
-      if (isComposingEvent(event) || hasOpenModal()) return;
+      if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
+        || (isEditableTarget(event.target) && shadowsMacTextEditing(event))) return;
       const zoomIn = isZoomIn(event);
       const zoomOut = isZoomOut(event);
       const zoomReset = isZoomReset(event);

@@ -1,147 +1,107 @@
-// The shortcuts help surface's content, as DATA rather than markup.
-//
-// A hand-maintained help list drifts silently: nothing connects a printed
-// chord to a live binding, so a row can outlive the key it describes and read
-// as a bug in the app rather than in the list. Holding the rows here means the
-// suite can walk them, and it is what makes "does this key actually work?" a
-// question with an answer.
-//
-// Chords follow the keyboard-shortcut-conventions: spelled-out key names, `+`
-// between a modifier and a key, `/` between alternatives that share one, and
-// the RUNNING platform's modifier word (both Cmd and Ctrl always fire).
-
 import { primaryModWord } from "../utils/shortcuts";
 
-export interface ShortcutRow {
-  chord: string;
-  action: string;
-}
+export interface ShortcutRow { chord: string; action: string }
+export interface ShortcutGroup { title: string; context: string; rows: ShortcutRow[] }
 
-export interface ShortcutGroup {
-  title: string;
-  /** Where these chords fire — every group is scoped to a focused surface,
-   * and the unstated scope was the one gap in an otherwise-pinned catalogue:
-   * a chord pressed with the wrong surface focused looks broken, not scoped. */
-  context: string;
-  rows: ShortcutRow[];
-}
-
-export function shortcutGroups(): ShortcutGroup[] {
+/** Semantic reading columns: Main navigation, viewing, then decisions/app.
+ * Narrow layouts retain that DOM order without splitting a group. */
+export function shortcutColumns(): ShortcutGroup[][] {
   const mod = primaryModWord();
+  const group = (title: string, context: string, rows: [string, string][]): ShortcutGroup =>
+    ({ title, context, rows: rows.map(([chord, action]) => ({ chord, action })) });
   return [
-    {
-      title: "Browsing",
-      context: "when the photo grid has focus",
-      rows: [
-        { chord: "Arrows", action: "Move the selection" },
-        { chord: "Home / End", action: "First or last item" },
-        { chord: "Page Up / Page Down", action: "Move by a screenful" },
-        { chord: "Shift+Arrows", action: "Extend the selection" },
-        { chord: "Click", action: "Select only that item" },
-        { chord: `${mod}+Click`, action: "Toggle one item in the selection" },
-        { chord: "Shift+Click", action: "Select a range" },
-      ],
-    },
-    {
-      title: "Looking",
-      context: "when Main's item area has focus",
-      rows: [
-        { chord: "Space", action: "Open Quick View" },
-        { chord: "Enter", action: "Compare images or control media playback" },
-        { chord: "F", action: "Open the selection in fullscreen" },
-        {
-          chord: "Escape",
-          action: "Close the active viewer or preview window",
-        },
-      ],
-    },
-    {
-      title: "Preview window",
-      context: "while the separate live Preview has focus",
-      rows: [
-        { chord: "F", action: "Toggle full screen without leaving the live Preview" },
-        { chord: "Escape", action: "Leave full screen; otherwise close Preview" },
-      ],
-    },
-    {
-      title: "Culling",
-      context: "when the photo grid has focus",
-      rows: [
-        {
-          chord: "Delete / Backspace",
-          action: "Delete the item and every copy (recoverable)",
-        },
-        {
-          chord: "Shift+Delete",
-          action: "Delete permanently, after confirming",
-        },
-      ],
-    },
-    {
-      title: "Comparison view",
-      context: "while a comparison is open",
-      rows: [
-        {
-          chord: "0–9 / A–Z",
-          action: "Toggle that image's keep mark",
-        },
-        { chord: "Space", action: "Open the picked image in a larger window; Space returns" },
-        { chord: "Arrows", action: "Move the active image spatially" },
-        { chord: "Shift+Arrows", action: "Extend the marked range" },
-        {
-          chord: "Home / End",
-          action: "Activate the first or last visible image",
-        },
-        { chord: "Page Up / Page Down", action: "Browse undecided pages" },
-        { chord: `${mod}+A`, action: "Mark the current page to keep" },
-        {
-          chord: "Enter",
-          action: "Close with no marks; otherwise review the visible decision",
-        },
-        {
-          chord: "Shift+Enter",
-          action:
-            "Review permanently deleting the marked images' visible complement",
-        },
-        {
-          chord: "Delete / Backspace",
-          action: "Delete the marked images (recoverable)",
-        },
-        {
-          chord: "Shift+Delete",
-          action: "Permanently delete the marked images after confirming",
-        },
-        {
-          chord: "Double-click",
-          action: "Activate that image for inspection",
-        },
-        {
-          chord: "Escape",
-          action: "Leave without applying the keep marks",
-        },
-      ],
-    },
-    {
-      title: "Confirmations",
-      context: "while a deletion confirmation is open; Cancel starts focused",
-      rows: [
-        { chord: "Left / Right", action: "Focus the adjacent footer action" },
-        { chord: "Tab", action: "Move from Cancel to Delete" },
-        { chord: "Enter", action: "Activate the focused action" },
-        { chord: "Escape", action: "Cancel" },
-      ],
-    },
-    {
-      title: "App",
-      context: "anywhere",
-      rows: [
-        { chord: `${mod}+R`, action: "Recheck this section" },
-        { chord: `${mod}+Comma`, action: "Settings" },
-        { chord: `${mod}+Slash / Question`, action: "This help" },
-        { chord: `${mod}+Equal/Plus/Semicolon`, action: "Zoom in" },
-        { chord: `${mod}+Minus`, action: "Zoom out" },
-        { chord: `${mod}+0`, action: "Reset zoom" },
-      ],
-    },
+    [
+      group("Main items", "item area focused; all file types", [
+        ["Arrows", "Move selection; Other files uses Up/Down"],
+        ["Home/End", "First/last item"],
+        ["PageUp/PageDown", "Move by a screenful"],
+        ["Shift+Arrows/Home/End/PageUp/PageDown", "Extend the selection range"],
+        ["Click", "Select only this item"],
+        [mod + "+Click", "Toggle this item's selection"],
+        ["Shift+Click", "Extend the selection range"],
+        ["Space", "Open Quick View"],
+        ["Double-click", "Select this item and open Quick View"],
+        ["Enter", "Compare images; play/pause an already visible video or audio player"],
+        ["F", "Open fullscreen"],
+        ["Delete/Backspace", "Trash selected items and all their copies"],
+        ["Shift+Delete/Backspace", "Review permanent deletion of the selection"],
+      ]),
+      group("Sections", "Sections tree focused", [
+        ["Up/Down", "Previous/next row; open a month"],
+        ["PageUp/PageDown", "Move ten rows"],
+        ["Home/End", "First/last row"],
+        ["Left/Right", "Collapse/expand or go to parent/child"],
+        ["Enter/Space", "Toggle a branch or open a month"],
+        ["Right/Tab", "From a month, focus Main items"],
+      ]),
+      group("Destinations", "destination tree focused", [
+        ["Up/Down", "Previous/next folder"],
+        ["PageUp/PageDown", "Move ten folders"],
+        ["Home/End", "First/last folder"],
+        ["Left/Right", "Collapse/expand or go to parent/child"],
+        ["Enter", "Expand/collapse only; use buttons to Copy or Move"],
+      ]),
+    ],
+    [
+      group("Quick View and fullscreen", "Main's temporary viewer; controls keep their own keys", [
+        ["Space", "Quick View: return to Main; fullscreen: switch to Quick View"],
+        ["F", "Quick View: switch to fullscreen; fullscreen: return to Main"],
+        ["Escape", "Return to Main"],
+        ["Left/Right", "Previous/next file"],
+        ["PageUp/PageDown", "Previous/next image, video, or audio file"],
+        ["Home/End", "First/last image, video, or audio file"],
+        ["Delete/Backspace", "Trash only the displayed item and its copies"],
+        ["Shift+Delete/Backspace", "Review permanent deletion of the displayed item"],
+      ]),
+      group("Preview window", "separate live Preview focused; controls and text keep their own keys", [
+        ["F", "Toggle fullscreen on this live Preview"],
+        ["Escape", "Leave fullscreen; otherwise close Preview"],
+        ["Arrows/Home/End/PageUp/PageDown", "Navigate Main; Shift extends its selection"],
+        ["Delete/Backspace", "Trash Main's complete selection"],
+        ["Shift+Delete/Backspace", "Review permanent deletion of Main's selection"],
+      ]),
+      group("Media and text", "visible player or focused read-only document", [
+        ["Enter", "Play/pause media; a focused timestamp seeks and plays"],
+        ["Up/Down/PageUp/PageDown/Home/End", "Scroll focused text, attributes, or transcript"],
+        [mod + "+A/C", "Select all/copy focused text"],
+        ["Press and hold", "Inspect original image pixels or the paused video frame"],
+      ]),
+      group("Confirmations", "deletion review; Cancel starts focused", [
+        ["Left/Right", "Focus the adjacent footer action"],
+        ["Tab", "Move from Cancel to Delete"],
+        ["Enter", "Activate the focused action"],
+        ["Escape", "Cancel"],
+      ]),
+    ],
+    [
+      group("Comparison", "Comparison item area; marks apply only to this page", [
+        ["0–9/A–Z", "Toggle the assigned image's keep mark (including F)"],
+        ["Click", "Pick an image without changing Keep"],
+        [mod + "+Click", "Toggle this image's keep mark"],
+        ["Shift+Click", "Extend the marked range"],
+        ["Space", "Open the picked image larger; Space/Escape returns"],
+        ["Arrows", "Move the picked image spatially"],
+        ["Home/End", "Pick the first/last image on this page"],
+        ["Shift+Arrows/Home/End", "Extend the marked range"],
+        ["PageUp/PageDown", "Browse undecided pages"],
+        [mod + "+A", "Mark the current page to keep"],
+        ["Enter", "No marks: close; with marks: review trashing the unmarked images"],
+        ["Shift+Enter", "With marks: review permanently deleting the unmarked images"],
+        ["Delete/Backspace", "Trash the marked images themselves"],
+        ["Shift+Delete/Backspace", "Review permanently deleting the marked images"],
+        ["Double-click", "Pick this image for inspection"],
+        ["Escape", "Leave without applying marks"],
+      ]),
+      group("App", "Main window; not while a dialog or menu owns input", [
+        [mod + "+R", "Recheck the section, outside Comparison/viewers and text editing"],
+        [mod + "+Comma", "Settings"],
+        [mod + "+Slash / Question", "Keyboard shortcuts; bare Question is inactive in text fields"],
+        [mod + "+Equal/Plus/Semicolon", "Zoom in"],
+        [mod + "+Minus", "Zoom out"],
+        [mod + "+0", "Reset zoom"],
+      ]),
+    ],
   ];
 }
+
+export function shortcutGroups(): ShortcutGroup[] { return shortcutColumns().flat(); }

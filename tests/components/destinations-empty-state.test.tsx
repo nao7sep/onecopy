@@ -6,9 +6,15 @@ import DestinationsTab from "../../src/components/DestinationsTab";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { pushModal, resetModalStack } from "../../src/utils/modalStack";
+import { useComparisonStore } from "../../src/state/comparison-store";
+import { useQuickViewStore } from "../../src/state/quick-view-store";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  resetModalStack();
+  useComparisonStore.setState({ open: false });
+  useQuickViewStore.setState({ session: null });
   useItemsStore.setState({ selectedItem: "photo", selectedKeys: new Set(["photo"]) });
   useDestinationsStore.setState({
     roots: [],
@@ -26,9 +32,18 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); resetModalStack(); });
 
 describe("destination folder states", () => {
+  it.each(["composition", "legacy composition", "modal", "comparison", "modifier"])("does not navigate behind %s input ownership", (owner) => {
+    useDestinationsStore.setState({ roots: ["/first", "/second"], activePath: "/first" });
+    const view = render(<DestinationsTab />);
+    if (owner === "modal") pushModal({});
+    if (owner === "comparison") useComparisonStore.setState({ open: true });
+    fireEvent.keyDown(view.getByRole("tree"), { key: "ArrowDown", isComposing: owner === "composition", keyCode: owner === "legacy composition" ? 229 : 0, ctrlKey: owner === "modifier" });
+    expect(useDestinationsStore.getState().activePath).toBe("/first");
+  });
+
   it.each(["move-trash-rest", "move-delete-rest"] as const)("keeps %s behind a Cancel-first exact-scope review", (mode) => {
     useDestinationsStore.setState({ pendingMove: {
       destDir: "/dest", count: 2, mode,

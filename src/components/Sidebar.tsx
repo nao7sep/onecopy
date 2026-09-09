@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { monthLabel, type SectionCounts } from "../models/sections";
 import {
@@ -6,12 +6,18 @@ import {
   buildSectionTree,
   defaultExpanded,
   visibleRows,
+  resolveSectionCursor,
+  type SectionCursor,
   type ItemKind,
   type Row,
 } from "../models/sectionTree";
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import OperationResult from "./ui/OperationResult";
+import { isComposingEvent } from "../hooks/useComposing";
+import { hasOpenModal } from "../utils/modalStack";
+import { useComparisonStore } from "../state/comparison-store";
+import { useQuickViewStore } from "../state/quick-view-store";
 
 // The left pane as ONE tree composite (the composite-control conventions):
 // the container is the single tab stop, Up/Down walk the VISIBLE rows,
@@ -49,7 +55,8 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   const selected = useItemsStore((s) => s.selected);
   const select = useItemsStore((s) => s.select);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(defaultExpanded);
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    new Set([...defaultExpanded(), ...branchesFor(selected)]));
   const error = useSectionsStore((state) => state.error);
 
   const tree = buildSectionTree(counts);
@@ -57,20 +64,33 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   // The restored (or newly chosen) section's branches open with it — a
   // selection the user cannot see would be worse than no restore at all.
   const selectedKey = selected ? `month:${selected.kind}:${selected.month}` : null;
-  useEffect(() => {
+  const [cursor, setCursor] = useState<SectionCursor | null>(null);
+  const previousSelectedKey = useRef(selectedKey);
+  useLayoutEffect(() => {
     const needed = branchesFor(selected);
-    if (needed.length === 0) return;
     setExpanded((current) => {
       if (needed.every((key) => current.has(key))) return current;
       const next = new Set(current);
       for (const key of needed) next.add(key);
       return next;
     });
-  }, [selected]);
+  }, [selectedKey]);
 
   const rows = visibleRows(tree, expanded);
   const keys = rows.map((r) => r.key);
-  const activeIndex = selectedKey === null ? -1 : keys.indexOf(selectedKey);
+  const active = resolveSectionCursor(keys, cursor, selectedKey);
+  const activeIndex = active?.index ?? -1;
+  useLayoutEffect(() => {
+    const selectionChanged = previousSelectedKey.current !== selectedKey;
+    previousSelectedKey.current = selectedKey;
+    // External restoration updates command position without taking DOM focus.
+    // Tree navigation keeps its independently chosen branch or month instead.
+    if (selectionChanged && document.activeElement !== containerRef.current) {
+      setCursor(selectedKey === null ? null : { key: selectedKey, index: Math.max(0, keys.indexOf(selectedKey)) });
+    } else if (active?.key !== cursor?.key || active?.index !== cursor?.index) {
+      setCursor(active);
+    }
+  }, [selectedKey, active?.key, active?.index, cursor]);
 
   const toggle = (key: string, open?: boolean) =>
     setExpanded((current) => {
@@ -88,6 +108,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   const focusRow = (index: number) => {
     const key = keys[index];
     if (key === undefined) return;
+    setCursor({ key, index });
     containerRef.current
       ?.querySelector(`[data-row-key="${CSS.escape(key)}"]`)
       ?.scrollIntoView({ block: "nearest" });
@@ -113,6 +134,9 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
+    if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
+      || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null
+      || event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Tab" && !event.shiftKey) {
       const itemArea = document.getElementById("main-item-area");
       if (itemArea !== null) {
@@ -198,7 +222,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       role="tree"
       aria-label="Sections"
       aria-activedescendant={activeIndex >= 0 ? `section-row-${activeIndex}` : undefined}
-      className="outline-none"
+      className="group/sections outline-none"
       onKeyDown={onKeyDown}
     >
       {rows.map((row, index) => {
@@ -216,7 +240,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
             aria-level={row.depth + 1}
             data-row-key={row.key}
             style={{ paddingLeft: 6 + row.depth * 14 }}
-            className={`flex cursor-pointer items-center gap-1 rounded-md py-1 pr-2 text-sm transition-colors ${
+            className={`flex cursor-pointer items-center gap-1 rounded-md py-1 pr-2 text-sm transition-colors ${index === activeIndex ? "group-focus-visible/sections:bg-surface-muted" : ""} ${
               isSelected
                 ? "bg-primary-surface font-medium text-primary"
                 : row.type === "kind"

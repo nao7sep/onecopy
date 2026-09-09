@@ -3,7 +3,7 @@ import {
   useDestinationsStore,
   type DirEntry,
 } from "../state/destinations-store";
-import { useComposing, isComposingKeyboardEvent } from "../hooks/useComposing";
+import { useComposing, isComposingKeyboardEvent, isComposingEvent } from "../hooks/useComposing";
 import ConfirmDialog from "./ConfirmDialog";
 import ModalShell from "./ModalShell";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
@@ -19,6 +19,9 @@ import { useDestinationReceiver } from "./DestinationDragProvider";
 import Button from "./ui/Button";
 import DestinationConflictModal from "./DestinationConflictModal";
 import { useItemsStore } from "../state/items-store";
+import { hasOpenModal } from "../utils/modalStack";
+import { useComparisonStore } from "../state/comparison-store";
+import { useQuickViewStore } from "../state/quick-view-store";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -396,6 +399,9 @@ export default function DestinationsTab() {
   // enters, Left collapses or exits to the parent, and Enter toggles the
   // active folder. File operations remain explicit action-bar commands.
   const onKeyDown = (event: React.KeyboardEvent) => {
+    if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
+      || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null
+      || event.metaKey || event.ctrlKey || event.altKey) return;
     const rows = visibleRows(roots, children, expanded);
     if (rows.length === 0) return;
     const index = activePath !== null ? rows.findIndex((r) => r.path === activePath) : -1;

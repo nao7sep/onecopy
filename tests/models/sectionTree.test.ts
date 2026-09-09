@@ -7,6 +7,7 @@ import {
   monthKey,
   visibleRows,
   yearKey,
+  resolveSectionCursor,
 } from "../../src/models/sectionTree";
 import type { SectionCounts } from "../../src/models/sections";
 
@@ -20,6 +21,17 @@ const COUNTS: SectionCounts = {
   videos: [{ month: "2016-01", count: 4 }],
   others: [],
 };
+
+it("keeps tree cursor identity through insertions and recovers at a removed row's position", () => {
+  const cursor = { key: "year:image:2026", index: 1 };
+  expect(resolveSectionCursor(["kind:image", "year:image:2025", cursor.key], cursor, "month:image:undated"))
+    .toEqual({ key: cursor.key, index: 2 });
+  expect(resolveSectionCursor(["kind:image", "kind:video"], cursor, null))
+    .toEqual({ key: "kind:video", index: 1 });
+  expect(resolveSectionCursor(["kind:image"], cursor, null))
+    .toEqual({ key: "kind:image", index: 0 });
+  expect(resolveSectionCursor([], cursor, null)).toBeNull();
+});
 
 describe("grouping months into years", () => {
   it("keeps the core's oldest-first order at both levels", () => {
