@@ -2,7 +2,7 @@
 
 ## Contract boundary
 
-This contract begins when an owning review surface submits an accepted operation plan. The review surface owns selection, view-specific command meaning, and the presentation of confirmation. A command with no modal freezes its plan when the command is accepted; when confirmation is required, accepting that confirmation freezes the plan. This contract owns the captured files and destinations and every filesystem effect that follows.
+This contract begins when an owning review surface submits an accepted operation plan. The review surface owns selection, view-specific command meaning, and when confirmation is requested; the common confirmation safety below applies across review surfaces. A command with no modal freezes its plan when the command is accepted; when confirmation is required, accepting that confirmation freezes the plan. This contract owns the captured files and destinations and every filesystem effect that follows.
 
 Confirmation freezes the complete batch from the physical copies, companion relationships, representative filenames, destinations, operation modes, and order OneCopy currently knows. Later discovery or background reconciliation does not broaden or reinterpret that batch. Missing preparation or incomplete optional information does not block an operation; OneCopy acts on the known files and relationships the user confirmed.
 
@@ -23,6 +23,8 @@ Move establishes each output group before applying that group's requested source
 Ordinary deletion sends every planned main copy and every locally paired companion in the submitted logical item to recoverable deleted-file storage. Permanent deletion deletes those planned files without recoverable storage. Deletion may complete sequentially across physical files and can therefore produce an honest partial result.
 
 New installations confirm direct single-item recoverable deletion by default; the user may disable that one confirmation. The preference applies only to a direct command targeting one explicitly selected item. Multi-item deletion, Comparison complement decisions, delete-every-visible, destination Move cleanup, overwrite displacement, and every permanent-deletion path always require an exact-scope review. Cancelling review performs no filesystem work and leaves the owning review state unchanged.
+
+Destructive confirmations explicitly focus the safe footer Cancel action on entry, visibly, before the next key can activate anything. Left/Right moves among footer actions without activating them; Tab reaches the adjacent Delete action in one step. Enter activates only the focused action, and Escape cancels only the topmost confirmation. A held entry/deletion key never confirms a newly opened dialog. There is no bare D shortcut. These footer arrows are a deliberate OneCopy confirmation exception, not a general modal navigation rule.
 
 ## Main and companion outputs
 

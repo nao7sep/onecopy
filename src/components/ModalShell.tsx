@@ -25,6 +25,8 @@ export default function ModalShell({
   widthClass = "w-[480px]",
   closeLabel = "Close",
   closeDisabled = false,
+  initialFocus = "auto",
+  footerArrowNavigation = false,
   footerStart,
   primaryAction,
   children,
@@ -35,6 +37,8 @@ export default function ModalShell({
   closeLabel?: string;
   /** True only while leaving would interrupt an operation at an unsafe edge. */
   closeDisabled?: boolean;
+  initialFocus?: "auto" | "surface" | "close";
+  footerArrowNavigation?: boolean;
   /** Left-aligned footer content (status/error text). */
   footerStart?: React.ReactNode;
   /** The primary action button(s), rendered to the right of the dismiss. */
@@ -43,7 +47,7 @@ export default function ModalShell({
 }) {
   const titleId = useId();
   const surfaceRef = useRef<HTMLDivElement>(null);
-  useModalLayer(surfaceRef, onClose, closeDisabled);
+  useModalLayer(surfaceRef, onClose, closeDisabled, footerArrowNavigation);
 
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-background/80">
@@ -53,6 +57,7 @@ export default function ModalShell({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
+        data-modal-initial-focus={initialFocus === "surface" ? true : undefined}
         className={`flex max-h-[90vh] ${widthClass} max-w-[90vw] flex-col rounded-2xl border border-border bg-surface shadow-xl`}
       >
         <div className="flex shrink-0 items-center justify-between gap-4 px-5 pb-3 pt-4">
@@ -80,10 +85,14 @@ export default function ModalShell({
           >
             {footerStart}
           </div>
-          <Button data-modal-close disabled={closeDisabled} onClick={onClose}>
-            {closeLabel}
-          </Button>
-          {primaryAction}
+          <div data-modal-actions className="flex items-center gap-2">
+            <Button data-modal-close data-modal-initial-focus={initialFocus === "close" ? true : undefined}
+              className={footerArrowNavigation ? "focus:ring-2 focus:ring-primary-ring" : ""}
+              disabled={closeDisabled} onClick={onClose}>
+              {closeLabel}
+            </Button>
+            {primaryAction}
+          </div>
         </div>
       </div>
     </div>

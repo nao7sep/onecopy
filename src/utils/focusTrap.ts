@@ -36,6 +36,7 @@ function isTypeableField(el: HTMLElement): boolean {
 // Where focus should land when the modal opens.
 //
 // Order matters for safety, not just convenience:
+//  0. The surface's explicit focus contract, when provided.
 //  1. The first TYPEABLE field — what the user opened the surface to edit.
 //     Without this, Settings opens on the first source directory's "Remove"
 //     button, one reflexive Enter away from dropping a scanned directory.
@@ -46,6 +47,9 @@ function isTypeableField(el: HTMLElement): boolean {
 //  3. Otherwise the first useful control, skipping the header close button.
 // Falls back to the surface itself when there is nothing else to focus.
 export function resolveInitialFocus(surface: HTMLElement): HTMLElement {
+  if (surface.hasAttribute("data-modal-initial-focus")) return surface;
+  const explicit = surface.querySelector<HTMLElement>("[data-modal-initial-focus]:not([disabled])");
+  if (explicit !== null) return explicit;
   const focusables = getFocusableElements(surface);
   const field = focusables.find(isTypeableField);
   if (field) return field;
@@ -60,6 +64,20 @@ export function resolveInitialFocus(surface: HTMLElement): HTMLElement {
     if (dismiss) return dismiss;
   }
   return focusables.find((el) => !el.hasAttribute("data-modal-close")) ?? surface;
+}
+
+/** Confirmation footer arrows are independent-button navigation, not a
+ * dialog-wide composite or an activation shortcut. */
+export function resolveFooterArrowTarget(
+  surface: HTMLElement, active: Element | null, direction: "left" | "right",
+): HTMLElement | null {
+  const footer = surface.querySelector<HTMLElement>("[data-modal-actions]");
+  if (footer === null) return null;
+  const actions = getFocusableElements(footer);
+  if (actions.length === 0) return null;
+  const index = actions.findIndex((action) => action === active);
+  if (index < 0) return null;
+  return actions[Math.max(0, Math.min(actions.length - 1, index + (direction === "left" ? -1 : 1)))];
 }
 
 // Given the current focus and Tab direction, return the element focus must move

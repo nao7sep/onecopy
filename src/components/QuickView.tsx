@@ -11,7 +11,8 @@ import {
 } from "../workflows/quick-view";
 import ConfirmDialog from "./ConfirmDialog";
 import PreviewSurface from "./PreviewSurface";
-import { isAudioFile } from "../models/items";
+import { isTopmostModal } from "../utils/modalStack";
+import { viewerOwnsKey } from "../utils/viewerKeys";
 import OperationResult from "./ui/OperationResult";
 
 export default function QuickView() {
@@ -20,7 +21,7 @@ export default function QuickView() {
   const failure = useQuickViewStore((state) => state.failure);
   const sectionKind = session?.detail.kind ?? null;
   const surfaceRef = useRef<HTMLDivElement>(null);
-  useModalLayer(surfaceRef, () => void closeViewer());
+  const layer = useModalLayer(surfaceRef, () => void closeViewer());
 
   const quickOpen = session?.presentation === "quick";
   const item = quickOpen ? (session?.item ?? null) : null;
@@ -28,31 +29,14 @@ export default function QuickView() {
   useEffect(() => {
     if (!quickOpen || item === null) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (pendingDelete !== null) return;
-      const notificationControl =
-        event.target instanceof Element && event.target.closest("[data-notification]") !== null;
-      if (notificationControl && event.key === "Enter") return;
-      const handled = new Set([
-        " ",
-        "f",
-        "F",
-        "ArrowLeft",
-        "ArrowRight",
-        "Delete",
-        "Backspace",
-      ]).has(event.key) ||
-        (sectionKind !== "other" && ["PageUp", "PageDown", "Home", "End"].includes(event.key));
-      const mediaEnter =
-        event.key === "Enter" &&
-        (sectionKind === "video" || isAudioFile(item.fileName));
-      if (!handled && !mediaEnter) return;
+      if (pendingDelete !== null || !isTopmostModal(layer) || !viewerOwnsKey(event, sectionKind, item.fileName)) return;
       event.preventDefault();
       event.stopPropagation();
       void handleViewerKey(event);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [item, pendingDelete, quickOpen, sectionKind]);
+  }, [item, pendingDelete, quickOpen, sectionKind, layer]);
 
   if (!quickOpen || session === null || item === null) return null;
   const currentDetail = session.detail;
@@ -63,6 +47,7 @@ export default function QuickView() {
     <div
       ref={surfaceRef}
       tabIndex={-1}
+      data-modal-initial-focus
       className="fixed inset-0 z-20 flex flex-col bg-background outline-none"
       role="dialog"
       aria-modal="true"
@@ -118,19 +103,13 @@ export default function QuickView() {
         </OperationResult>
       ) : null}
       <div className="min-h-0 flex-1">
-        {currentDetail === null ? (
-          <div className="flex h-full items-center justify-center text-sm text-ink-muted">
-            Loading…
-          </div>
-        ) : (
-          <PreviewSurface
-            surface="quick"
-            hash={item.hash}
-            pathId={item.hash === null ? item.pathId : null}
-            detail={currentDetail}
-            keyboardActive
-          />
-        )}
+        <PreviewSurface
+          surface="quick"
+          hash={item.hash}
+          pathId={item.hash === null ? item.pathId : null}
+          detail={currentDetail}
+          keyboardActive
+        />
       </div>
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         Left/Right: navigate · F: full screen · Space or Escape: back to the grid

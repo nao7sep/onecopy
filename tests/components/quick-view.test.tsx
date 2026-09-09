@@ -113,6 +113,27 @@ afterEach(() => {
 });
 
 describe("Quick View", () => {
+  it("enters with neutral command focus, not the first navigation action", async () => {
+    render(<Host />);
+    expect(document.activeElement).toBe(screen.getByRole("dialog", { name: "Quick View" }));
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(useQuickViewStore.getState().session?.member.hash).toBe("photo-hash");
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+  });
+
+  it("leaves a nested confirmation's arrows and Escape to the confirmation", async () => {
+    render(<Host />);
+    act(() => useQuickViewStore.setState({ pendingDelete: "permanent" }));
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.keyDown(cancel, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Delete permanently" }));
+    await act(async () => fireEvent.keyDown(document.activeElement!, { key: "Escape" }));
+    expect(useQuickViewStore.getState().pendingDelete).toBeNull();
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    expect(document.activeElement).toBe(screen.getByRole("dialog", { name: "Quick View" }));
+  });
+
   it("keeps the frozen image visible when Main selects a different section", () => {
     render(<Host />);
     act(() => useItemsStore.setState({

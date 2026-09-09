@@ -19,6 +19,7 @@ import { shortcutGroups } from "../../src/models/shortcuts";
 const SOURCES = [
   "src/App.tsx",
   "src/hooks/useGlobalCommands.ts",
+  "src/hooks/useModalLayer.ts",
   "src/hooks/useMainWindowLifecycle.ts",
   "src/components/Grid.tsx",
   "src/state/quick-view-store.ts",
@@ -48,6 +49,8 @@ const rows = shortcutGroups().flatMap((group) =>
  * the sheet cannot grow a row without someone naming what implements it. */
 const EVIDENCE: Record<string, () => boolean> = {
   Arrows: () => handles('"ArrowRight"', '"ArrowDown"'),
+  "Left / Right": () => handles("resolveFooterArrowTarget"),
+  Tab: () => handles("resolveTrapTarget"),
   "Home / End": () => handles('"Home"') && handles('"End"'),
   "Page Up / Page Down": () => handles('"PageUp"') && handles('"PageDown"'),
   "Shift+Arrows": () => handles("event.shiftKey"),

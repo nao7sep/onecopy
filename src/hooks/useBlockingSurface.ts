@@ -19,6 +19,6 @@ export function useBlockingSurface(): void {
   useEffect(() => {
     const token = {};
     pushModal(token);
-    return () => popModal(token);
+    return () => { popModal(token); };
   }, []);
 }

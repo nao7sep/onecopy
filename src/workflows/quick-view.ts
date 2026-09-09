@@ -425,7 +425,9 @@ async function deleteViewerCurrent(permanent: boolean): Promise<void> {
 export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> {
   if (message.metaKey || message.ctrlKey || message.altKey) return;
   const session = useQuickViewStore.getState().session;
-  if (session === null) return;
+  if (session === null || useQuickViewStore.getState().pendingDelete !== null) return;
+  if (message.repeat && ["Escape", " ", "f", "F", "Enter", "Delete", "Backspace"].includes(message.key)) return;
+  const sequenceBounds = session.detail.kind !== "other" || isAudioFile(session.item.fileName);
   if (message.key === "Escape") {
     await closeViewer();
   } else if (message.key === " ") {
@@ -440,17 +442,17 @@ export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> 
     moveViewer("next");
   } else if (
     message.key === "PageUp" &&
-    session.detail.kind !== "other"
+    sequenceBounds
   ) {
     moveViewer("previous");
   } else if (
     message.key === "PageDown" &&
-    session.detail.kind !== "other"
+    sequenceBounds
   ) {
     moveViewer("next");
-  } else if (message.key === "Home" && session.detail.kind !== "other") {
+  } else if (message.key === "Home" && sequenceBounds) {
     moveViewer("first");
-  } else if (message.key === "End" && session.detail.kind !== "other") {
+  } else if (message.key === "End" && sequenceBounds) {
     moveViewer("last");
   } else if (message.key === "Enter") {
     const item = currentItem();

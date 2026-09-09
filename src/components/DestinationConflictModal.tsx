@@ -23,6 +23,8 @@ export default function DestinationConflictModal({
       title={`${operation} name conflicts`}
       onClose={close}
       closeLabel="Cancel"
+      initialFocus="close"
+      footerArrowNavigation
       widthClass="w-[min(760px,calc(100vw-3rem))]"
       primaryAction={
         <>

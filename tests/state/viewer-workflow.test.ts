@@ -217,4 +217,17 @@ describe("viewer workflow", () => {
     );
     expect(useQuickViewStore.getState().session?.item?.hash).toBe("b");
   });
+
+  it("does not let a held entry key or a pending confirmation change presentation", async () => {
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const key of [" ", "f", "Escape", "Enter"]) {
+      await handleViewerKey({ key, repeat: true });
+      expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    }
+    useQuickViewStore.setState({ pendingDelete: "permanent" });
+    for (const key of [" ", "f", "Escape", "ArrowRight"]) await handleViewerKey({ key });
+    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+  });
 });

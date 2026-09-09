@@ -51,6 +51,7 @@
 ## Transient navigation and focus
 
 - While Quick View or fullscreen is active, it owns app commands so the hidden Main grid and sidebar cannot react.
+- Viewer entry and presentation return explicitly focus a neutral viewer command surface, never a navigation button chosen by DOM order. Enter on that surface cannot accidentally activate Previous or Next. Topmost dialogs and ongoing text composition take precedence over viewer commands.
 - Image and video sequences use Left/Right and Page Up/Page Down for previous and next, Home/End for bounds, and do not wrap. Up/Down has no fitted-media viewer action.
 - Mixed Other-file sequences always use Left/Right for previous and next. Audio uses Page Up and Page Down for previous and next plus Home and End for sequence bounds; Up and Down remain available to real controls. Focused text or attributes bodies use Up/Down, Page Up/Page Down, and Home/End for their document rather than sequence navigation.
 - Real media controls retain suitable Enter and Arrow accessibility. Space, `F`, and Escape remain transient-viewer commands rather than becoming media-control shortcuts.

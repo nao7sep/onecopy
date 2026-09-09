@@ -122,6 +122,16 @@ export function shortcutGroups(): ShortcutGroup[] {
       ],
     },
     {
+      title: "Confirmations",
+      context: "while a deletion confirmation is open; Cancel starts focused",
+      rows: [
+        { chord: "Left / Right", action: "Focus the adjacent footer action" },
+        { chord: "Tab", action: "Move from Cancel to Delete" },
+        { chord: "Enter", action: "Activate the focused action" },
+        { chord: "Escape", action: "Cancel" },
+      ],
+    },
+    {
       title: "App",
       context: "anywhere",
       rows: [

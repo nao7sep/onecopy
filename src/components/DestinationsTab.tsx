@@ -582,6 +582,8 @@ function DropChoiceModal({
       onClose={onClose}
       widthClass="w-[min(720px,calc(100vw-3rem))]"
       closeLabel="Cancel"
+      initialFocus="close"
+      footerArrowNavigation
       primaryAction={
         <>
           <Button

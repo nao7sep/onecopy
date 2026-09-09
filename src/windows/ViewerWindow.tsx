@@ -6,7 +6,8 @@ import type { ViewerBroadcast } from "../workflows/quick-view";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PreviewSurface from "../components/PreviewSurface";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
-import { isAudioFile } from "../models/items";
+import { viewerOwnsKey } from "../utils/viewerKeys";
+import { hasOpenModal } from "../utils/modalStack";
 import NotificationHost from "../components/NotificationHost";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
@@ -14,12 +15,17 @@ import OperationResult from "../components/ui/OperationResult";
 export default function ViewerWindow() {
   const [state, setState] = useState<ViewerBroadcast | null>(null);
   const [commandFailure, setCommandFailure] = useState<string | null>(null);
+  const surface = useRef<HTMLDivElement>(null);
   const pendingDeleteRef = useRef<ViewerBroadcast["pendingDelete"]>(null);
   const sectionKindRef = useRef<ViewerBroadcast["sectionKind"]>(null);
   const itemRef = useRef<ViewerBroadcast["item"]>(null);
   pendingDeleteRef.current = state?.pendingDelete ?? null;
   sectionKindRef.current = state?.sectionKind ?? null;
   itemRef.current = state?.item ?? null;
+  const hasItem = state?.item != null;
+  useEffect(() => {
+    if (hasItem && !hasOpenModal()) surface.current?.focus();
+  }, [hasItem]);
 
   const sendKey = (key: string, shiftKey = false): void => {
     void emit("viewer://key", { key, shiftKey })
@@ -39,25 +45,8 @@ export default function ViewerWindow() {
       setState,
     );
     const onKeyDown = (event: KeyboardEvent) => {
-      const notificationControl =
-        event.target instanceof Element && event.target.closest("[data-notification]") !== null;
-      if (notificationControl && event.key === "Enter") return;
-      const handled = [
-          "Escape",
-          " ",
-          "f",
-          "F",
-          "ArrowLeft",
-          "ArrowRight",
-          "Delete",
-          "Backspace",
-        ].includes(event.key) ||
-        (sectionKindRef.current !== "other" && ["PageUp", "PageDown", "Home", "End"].includes(event.key)) ||
-        (event.key === "Enter" &&
-          (sectionKindRef.current === "video" ||
-            (itemRef.current !== null && isAudioFile(itemRef.current.fileName))));
-      if (!handled) return;
-      if (pendingDeleteRef.current !== null) return;
+      if (pendingDeleteRef.current !== null || hasOpenModal()
+        || !viewerOwnsKey(event, sectionKindRef.current, itemRef.current?.fileName ?? "")) return;
       event.preventDefault();
       event.stopPropagation();
       void emit("viewer://key", {
@@ -76,10 +65,15 @@ export default function ViewerWindow() {
           recordActionFailure("viewer-command-failed", message, error);
         });
     };
+    const onFocus = () => {
+      if (!hasOpenModal()) surface.current?.focus();
+    };
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("focus", onFocus);
     return () => {
       unlisten();
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 
@@ -89,7 +83,7 @@ export default function ViewerWindow() {
 
   const item = state.item;
   return (
-    <div className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white">
+    <div ref={surface} tabIndex={-1} aria-label="Fullscreen viewer" className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white">
       <NotificationHost />
       <header className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-black/65 px-3 py-2 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         <span className="min-w-0 flex-1 truncate text-sm" title={item.fileName}>

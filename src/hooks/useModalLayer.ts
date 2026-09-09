@@ -1,6 +1,6 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useLayoutEffect, useRef, type RefObject } from "react";
 import { isComposingEvent } from "./useComposing";
-import { resolveInitialFocus, resolveTrapTarget } from "../utils/focusTrap";
+import { resolveFooterArrowTarget, resolveInitialFocus, resolveTrapTarget } from "../utils/focusTrap";
 import { isTopmostModal, popModal, pushModal } from "../utils/modalStack";
 import { acquireScrollLock, releaseScrollLock } from "../utils/scrollLock";
 
@@ -9,29 +9,40 @@ export function useModalLayer(
   surfaceRef: RefObject<HTMLElement | null>,
   onClose: () => void,
   closeDisabled = false,
-): void {
+  footerArrowNavigation = false,
+): object {
   const tokenRef = useRef<object>({});
   const onCloseRef = useRef(onClose);
   const closeDisabledRef = useRef(closeDisabled);
   onCloseRef.current = onClose;
   closeDisabledRef.current = closeDisabled;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const token = tokenRef.current;
+    const surface = surfaceRef.current;
+    if (surface === null) return;
     const opener = document.activeElement as HTMLElement | null;
-    pushModal(token);
+    pushModal(token, surface, opener);
     acquireScrollLock();
-    const raf = requestAnimationFrame(() => {
-      const surface = surfaceRef.current;
-      if (surface !== null && isTopmostModal(token)) resolveInitialFocus(surface).focus();
-    });
+    if (isTopmostModal(token)) resolveInitialFocus(surface).focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isTopmostModal(token)) return;
-      if (event.key === "Escape") {
-        if (isComposingEvent(event)) return;
+      if (!isTopmostModal(token) || event.defaultPrevented || isComposingEvent(event)) return;
+      if (footerArrowNavigation && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+        && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        const target = resolveFooterArrowTarget(surface, document.activeElement, event.key === "ArrowLeft" ? "left" : "right");
+        if (target !== null) {
+          event.preventDefault();
+          event.stopPropagation();
+          target.focus();
+        }
+      } else if (footerArrowNavigation && event.repeat && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
         event.stopPropagation();
-        if (!closeDisabledRef.current) onCloseRef.current();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat && !closeDisabledRef.current) onCloseRef.current();
       } else if (event.key === "Tab") {
         const surface = surfaceRef.current;
         if (surface === null) return;
@@ -44,11 +55,10 @@ export function useModalLayer(
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
-      cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKeyDown, true);
       releaseScrollLock();
-      popModal(token);
-      opener?.focus();
+      popModal(token)?.focus();
     };
-  }, [surfaceRef]);
+  }, [surfaceRef, footerArrowNavigation]);
+  return tokenRef.current;
 }
