@@ -237,6 +237,7 @@ describe("shared video presentation", () => {
     );
     const video = view.container.querySelector("video");
     expect(video).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Open in player" }).className).toContain("left-2");
     fireEvent.click(screen.getByRole("button", { name: "Expand" }));
     await act(async () => {
       fireTauriEvent("content-session://state", {
@@ -321,6 +322,7 @@ describe("shared video presentation", () => {
     );
 
     expect(view.container.querySelector("audio")).not.toBeNull();
+    expect(view.container.querySelector("audio")?.className).toBe("w-full");
     expect(await screen.findByRole("button", { name: "0:01" })).toBeTruthy();
     expect(screen.getByText("hello")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Re-transcribe" })).toBeTruthy();
@@ -340,7 +342,7 @@ describe("shared video presentation", () => {
       new Error("EACCES /private/tmp/transcript IPC sentinel"),
     );
 
-    fireEvent.scroll(transcript);
+    fireEvent.scroll(transcript.closest("section")!);
     expect(
       await screen.findByText("Couldn’t retain the transcript position."),
     ).toBeTruthy();
@@ -371,7 +373,7 @@ describe("shared video presentation", () => {
     emit.mockImplementationOnce(() => older);
     emit.mockResolvedValueOnce(undefined);
 
-    fireEvent.scroll(transcript);
+    fireEvent.scroll(transcript.closest("section")!);
     fireEvent.keyUp(transcript);
     await act(async () => {
       rejectOlder(new Error("stale transcript failure"));

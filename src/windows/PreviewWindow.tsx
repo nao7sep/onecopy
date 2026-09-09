@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isComposingEvent } from "../hooks/useComposing";
 import { isEditableTarget } from "../utils/shortcuts";
 import { hasOpenModal } from "../utils/modalStack";
+import { transcriptOwnsScrollKey } from "../utils/viewerKeys";
 import PreviewSurface from "../components/PreviewSurface";
 import type { PreviewPresentation, PreviewShowMessage } from "../state/preview-store";
 import { log, toErrorFields } from "../repositories";
@@ -100,6 +101,7 @@ export default function PreviewWindow() {
           "Backspace",
         ].includes(event.key)
       ) {
+        if (transcriptOwnsScrollKey(event)) return;
         if (
           event.target instanceof Element &&
           event.target.closest("button, input, select, textarea, [contenteditable='true']") !== null

@@ -211,91 +211,93 @@ export default function MetadataPane({
   // The parent pane is the sole scroller; a second overflow here would
   // produce a double scrollbar the moment a height constraint lands.
   return (
-    <dl className="p-3">
-      <Row label="Name" value={detail.fileName} />
-      <Row label="Taken" value={takenPresentation(detail)} />
-      <Row
-        label="Size"
-        value={detail.byteSize !== null ? formatBytes(detail.byteSize) : "—"}
-      />
-      {projectedWork !== null ? (
-        <WorkSection
-          states={projectedWork}
-          transcriptHasOwnSection={
-            (detail.kind === "video" || detail.kind === "audio") && hash !== null
-          }
+    <div className="p-3">
+      <dl>
+        <Row label="Name" value={detail.fileName} />
+        <Row label="Date" value={takenPresentation(detail)} />
+        <Row
+          label="Size"
+          value={detail.byteSize !== null ? formatBytes(detail.byteSize) : "—"}
         />
-      ) : null}
-      {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
-        <div className="mb-2">
-          <dt className="text-xs text-ink-muted">Snapshots</dt>
-          <dd className="mt-1 flex gap-1 overflow-x-auto pb-1">
-            {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => {
-              const atMs = stripTimestampMs(
-                detail.durationMs ?? 0,
-                detail.stripFrames ?? 0,
-                i,
-              );
-              return (
-                <button
-                  key={i}
-                  className="relative h-20 w-20 shrink-0 overflow-hidden rounded border border-border bg-background hover:border-border-strong"
-                  title={`Show video at ${timestampLabel(atMs)}`}
-                  aria-label={`Show video at ${timestampLabel(atMs)}`}
-                  onClick={() => {
-                    void openPreview({ hash, pathId: null }, detail).then(() => {
-                      seekMainPlayback(hash, atMs / 1000);
-                    });
-                  }}
-                >
-                  <img
-                    src={stripUrl(hash, i)}
-                    alt={`snapshot at ${timestampLabel(atMs)}`}
-                    loading="lazy"
-                    className="h-full w-full object-contain"
-                  />
-                  <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[11px] text-ink">
-                    {timestampLabel(atMs)}
-                  </span>
-                </button>
-              );
-            })}
-          </dd>
+        {projectedWork !== null ? (
+          <WorkSection
+            states={projectedWork}
+            transcriptHasOwnSection={
+              (detail.kind === "video" || detail.kind === "audio") && hash !== null
+            }
+          />
+        ) : null}
+        {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
+          <div className="mb-2">
+            <dt className="text-xs text-ink-muted">Snapshots</dt>
+            <dd className="mt-1 flex gap-1 overflow-x-auto pb-1">
+              {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => {
+                const atMs = stripTimestampMs(
+                  detail.durationMs ?? 0,
+                  detail.stripFrames ?? 0,
+                  i,
+                );
+                return (
+                  <button
+                    key={i}
+                    className="relative h-20 w-20 shrink-0 overflow-hidden rounded border border-border bg-background hover:border-border-strong"
+                    title={`Show video at ${timestampLabel(atMs)}`}
+                    aria-label={`Show video at ${timestampLabel(atMs)}`}
+                    onClick={() => {
+                      void openPreview({ hash, pathId: null }, detail).then(() => {
+                        seekMainPlayback(hash, atMs / 1000);
+                      });
+                    }}
+                  >
+                    <img
+                      src={stripUrl(hash, i)}
+                      alt={`snapshot at ${timestampLabel(atMs)}`}
+                      loading="lazy"
+                      className="h-full w-full object-contain"
+                    />
+                    <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[11px] text-ink">
+                      {timestampLabel(atMs)}
+                    </span>
+                  </button>
+                );
+              })}
+            </dd>
+          </div>
+        ) : null}
+        {detail.width !== null && detail.height !== null ? (
+          <Row label="Dimensions" value={`${detail.width} × ${detail.height}`} />
+        ) : null}
+        {detail.durationMs !== null ? (
+          <Row label="Duration" value={`${Math.round(detail.durationMs / 1000)} s`} />
+        ) : null}
+        {hash !== null && detail.kind === "image" ? <SimilarSection hash={hash} /> : null}
+        <div className="mb-1 mt-3">
+          <dt className="text-xs text-ink-muted">
+            Copies ({detail.copyPaths.length})
+          </dt>
+          {detail.copyPaths.map((path) => (
+            <PathRow key={path} path={path} />
+          ))}
         </div>
-      ) : null}
+        {detail.companionPaths.length > 0 ? (
+          <div className="mb-1">
+            <dt className="text-xs text-ink-muted">
+              Companions ({detail.companionPaths.length})
+            </dt>
+            {detail.companionPaths.map((path) => (
+              <PathRow key={path} path={path} />
+            ))}
+          </div>
+        ) : null}
+      </dl>
       {(detail.kind === "video" || detail.kind === "audio") && hash !== null ? (
         <TranscriptBlock
           hash={hash}
           medium={detail.kind}
-          variant="compact"
+          variant="details"
           work={projectedWork?.transcripts ?? null}
         />
       ) : null}
-      {detail.width !== null && detail.height !== null ? (
-        <Row label="Dimensions" value={`${detail.width} × ${detail.height}`} />
-      ) : null}
-      {detail.durationMs !== null ? (
-        <Row label="Duration" value={`${Math.round(detail.durationMs / 1000)} s`} />
-      ) : null}
-      {hash !== null && detail.kind === "image" ? <SimilarSection hash={hash} /> : null}
-      <div className="mb-1 mt-3">
-        <dt className="text-xs text-ink-muted">
-          Copies ({detail.copyPaths.length})
-        </dt>
-        {detail.copyPaths.map((path) => (
-          <PathRow key={path} path={path} />
-        ))}
-      </div>
-      {detail.companionPaths.length > 0 ? (
-        <div className="mb-1">
-          <dt className="text-xs text-ink-muted">
-            Companions ({detail.companionPaths.length})
-          </dt>
-          {detail.companionPaths.map((path) => (
-            <PathRow key={path} path={path} />
-          ))}
-        </div>
-      ) : null}
-    </dl>
+    </div>
   );
 }

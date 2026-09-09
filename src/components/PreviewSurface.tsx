@@ -177,7 +177,7 @@ function VideoSurface({
         )}
         {!hold.inspecting && !playbackFailed ? (
           <button
-            className="absolute right-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
+            className="absolute left-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => {
               setExternalError(null);
@@ -315,9 +315,7 @@ function VideoSurface({
           />
         </div>
       ) : null}
-      <div className="max-h-[35%] shrink-0 overflow-hidden">
-        <TranscriptBlock hash={hash} medium="video" />
-      </div>
+      <TranscriptBlock hash={hash} medium="video" />
     </div>
   );
 }
@@ -488,7 +486,7 @@ function AudioSurface({
           key={src}
           controls
           src={src}
-          className="w-full max-w-[420px]"
+          className="w-full"
           onPlay={playback.onPlay}
           onPause={playback.onPause}
           onTimeUpdate={playback.onTimeUpdate}
@@ -532,9 +530,7 @@ function AudioSurface({
         ) : null}
       </div>
       {hash !== null ? (
-        <div className="max-h-[45%] shrink-0 overflow-hidden">
-          <TranscriptBlock hash={hash} medium="audio" />
-        </div>
+        <TranscriptBlock hash={hash} medium="audio" />
       ) : null}
     </div>
   );

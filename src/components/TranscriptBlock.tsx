@@ -18,6 +18,8 @@ import type { TranscriptViewState } from "../models/contentSession";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import { useAppShellStore } from "../state/app-shell-store";
+import { transcriptOwnsScrollKey } from "../utils/viewerKeys";
+import { passiveScrollKey } from "./ui/PassiveScrollRegion";
 
 interface TranscriptSegment {
   seconds: number;
@@ -87,16 +89,17 @@ export function parseTranscript(text: string): TranscriptSegment[] {
 export default function TranscriptBlock({
   hash,
   medium,
-  variant = "full",
+  variant = "preview",
   work = null,
 }: {
   hash: string;
   medium: "video" | "audio";
-  variant?: "full" | "compact";
+  variant?: "preview" | "details";
   /** Backend-authored item projection when the owning surface has it. The
    * transcript store still owns content and manual-action lifecycle. */
   work?: ItemWorkState | null;
 }) {
+  const inDetails = variant === "details";
   const view = useTranscriptStore((state) => state.rows[hash]);
   const load = useTranscriptStore((state) => state.load);
   const start = useTranscriptStore((state) => state.start);
@@ -123,6 +126,7 @@ export default function TranscriptBlock({
     (state) => state.transcriptViews[hash],
   );
   const transcriptRef = useRef<HTMLOListElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
   const transcriptViewRequest = useRef(0);
   type SessionOwner = "installation" | "position" | "visibility";
   const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, string>>>({});
@@ -141,10 +145,10 @@ export default function TranscriptBlock({
 
   useEffect(() => {
     const element = transcriptRef.current;
-    if (element === null || transcriptView === undefined) return;
-    element.scrollTop = transcriptView.scrollTop;
+    if (inDetails || element === null || transcriptView === undefined) return;
+    if (panelRef.current !== null) panelRef.current.scrollTop = transcriptView.scrollTop;
     restoreSelection(element, transcriptView.selection);
-  }, [state.text, transcriptOpen, transcriptView]);
+  }, [inDetails, state.text, transcriptOpen, transcriptView]);
 
   const ffmpegInstalled = tools.some(
     (entry) => entry.id === "ffmpeg" && entry.status !== "not-installed",
@@ -154,7 +158,6 @@ export default function TranscriptBlock({
       entry.id === "whisper-large-v3-turbo" && entry.status !== "not-installed",
   );
   const toolsAvailable = ffmpegInstalled && modelInstalled;
-  const compact = variant === "compact";
   const unavailable =
     work !== null ? work.state === "unavailable" : !toolsAvailable;
   const waiting =
@@ -182,6 +185,7 @@ export default function TranscriptBlock({
   };
 
   useEffect(() => {
+    if (inDetails) return;
     let active = true;
     void installContentSessionClient().catch(() => {
       if (active) {
@@ -192,7 +196,7 @@ export default function TranscriptBlock({
       }
     });
     return () => { active = false; };
-  }, []);
+  }, [inDetails]);
 
   const retainTranscriptView = (next: TranscriptViewState) => {
     const request = ++transcriptViewRequest.current;
@@ -233,10 +237,19 @@ export default function TranscriptBlock({
           " The previous transcript remains available until the replacement is ready."
         }
       </p>
+    ) : state.status === "ready" && work?.state === "failed" ? (
+      <OperationResult level="error" className="mb-2">
+        The replacement failed. The previous transcript is still shown.{" "}{work.reason}
+      </OperationResult>
+    ) : state.status === "ready" && projectedRunning ? (
+      <p className="mb-2 text-xs text-primary">
+        Updating transcript{projectedProgress === null ? "…" : ` — ${projectedProgress}`}
+        {" The previous transcript remains available until the replacement is ready."}
+      </p>
     ) : null;
 
   let content: React.ReactNode;
-  if (state.status === "running" || projectedRunning) {
+  if (state.status !== "ready" && (state.status === "running" || projectedRunning)) {
     const progress =
       state.status === "running" ? state.percent : projectedProgress;
     content = (
@@ -247,7 +260,7 @@ export default function TranscriptBlock({
           : "…"}
       </p>
     );
-  } else if (state.status === "failed" || work?.state === "failed") {
+  } else if (state.status === "failed" || (state.status !== "ready" && work?.state === "failed")) {
     content = (
       <OperationResult level="error">
         {state.status === "failed"
@@ -262,24 +275,16 @@ export default function TranscriptBlock({
       ) : (
         <ol
           ref={transcriptRef}
-          className={`select-text overflow-y-auto font-sans leading-relaxed text-ink ${
-            compact ? "max-h-24 text-xs" : "max-h-48 text-sm"
-          }`}
-          onScroll={(event) => {
+          className="select-text font-sans text-sm leading-relaxed text-ink"
+          onMouseUp={inDetails ? undefined : (event) => {
             retainTranscriptView({
-              scrollTop: event.currentTarget.scrollTop,
-              selection: transcriptView?.selection ?? null,
-            });
-          }}
-          onMouseUp={(event) => {
-            retainTranscriptView({
-              scrollTop: event.currentTarget.scrollTop,
+              scrollTop: panelRef.current?.scrollTop ?? 0,
               selection: selectionOffsets(event.currentTarget),
             });
           }}
-          onKeyUp={(event) => {
+          onKeyUp={inDetails ? undefined : (event) => {
             retainTranscriptView({
-              scrollTop: event.currentTarget.scrollTop,
+              scrollTop: panelRef.current?.scrollTop ?? 0,
               selection: selectionOffsets(event.currentTarget),
             });
           }}
@@ -293,7 +298,7 @@ export default function TranscriptBlock({
             return (
               <li
                 key={`${segment.seconds}-${index}`}
-                className={`flex items-start gap-2 rounded px-1 py-0.5 ${
+                className={`flex items-baseline gap-2 rounded px-1 py-0.5 ${
                   current ? "bg-primary-surface" : ""
                 }`}
               >
@@ -306,7 +311,7 @@ export default function TranscriptBlock({
                     {segment.timestamp}
                   </button>
                 ) : null}
-                <span className="whitespace-pre-wrap">{segment.text}</span>
+                <span className="min-w-0 whitespace-pre-wrap break-words">{segment.text}</span>
               </li>
             );
           })}
@@ -350,7 +355,7 @@ export default function TranscriptBlock({
   const controlError = state.controlError ?? null;
 
   const actions: React.ReactNode[] = [];
-  if (!compact) {
+  if (!inDetails) {
     const openBackgroundWork = () => {
       useAppShellStore.getState().openUtility("backgroundWork");
       void useDerivedWorkStore.getState().load();
@@ -439,14 +444,36 @@ export default function TranscriptBlock({
     }
   }
 
-  const expanded = transcriptOpen;
+  const expanded = inDetails || transcriptOpen;
   return (
-    <section className={compact ? "mt-2" : "border-t border-border pt-3"}>
-      <div className="mb-1.5 flex items-center justify-between gap-3">
+    <section
+      ref={panelRef}
+      data-transcript-scroll={inDetails ? undefined : true}
+      tabIndex={inDetails ? undefined : 0}
+      aria-label="Transcript"
+      className={`border-t border-border pt-3 ${inDetails ? "mt-3" :
+        `min-h-0 shrink-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring ${medium === "video" ? "max-h-[35%]" : "max-h-[45%]"}`}`}
+      onKeyDown={inDetails ? undefined : (event) => {
+        if (!transcriptOwnsScrollKey(event.nativeEvent)) return;
+        const panel = event.currentTarget;
+        const action = passiveScrollKey(event.key, event.shiftKey, panel.clientHeight);
+        if (action === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (action === "start") panel.scrollTop = 0;
+        else if (action === "end") panel.scrollTop = panel.scrollHeight;
+        else panel.scrollTop += action;
+      }}
+      onScroll={inDetails ? undefined : (event) => retainTranscriptView({
+        scrollTop: event.currentTarget.scrollTop,
+        selection: transcriptView?.selection ?? null,
+      })}
+    >
+      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
           Transcript
         </h2>
-        <span className="flex items-center gap-2">
+        {!inDetails ? <span className="ml-auto flex flex-wrap items-baseline justify-end gap-2">
           {actions}
           <Button
             variant="ghost"
@@ -474,7 +501,7 @@ export default function TranscriptBlock({
           >
             {transcriptOpen ? "Collapse" : "Expand"}
           </Button>
-        </span>
+        </span> : null}
       </div>
       {controlError !== null ? (
         <OperationResult level="error" className="mb-2">
