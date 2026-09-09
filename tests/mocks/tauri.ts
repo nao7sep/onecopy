@@ -205,6 +205,7 @@ export class WebviewWindow {
   onResized = vi.fn(async (_handler: unknown) => () => {});
   onCloseRequested = vi.fn(async (_handler: unknown) => () => {});
   maximize = vi.fn(async () => {});
+  unmaximize = vi.fn(async () => {});
 }
 
 export const openDialog = vi.fn(async () => null as string | null);

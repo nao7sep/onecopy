@@ -1,7 +1,5 @@
-// The preview: ONE surface in one of two placements. Multi-monitor puts it in
-// the `preview` window on screen 2; a single monitor uses a split pane above
-// the grid in the main window — a separate window there would cover the grid
-// and steal the keyboard focus arrow navigation depends on.
+// Preview is one Main follower, in a user-chosen pane or separate window.
+// Separate-window geometry and screen choice last only for this app session.
 //
 // Follow model (FastStone's): `follow` on means the surface tracks the grid
 // anchor live. Opening the preview by ANY route turns follow on; the surface
@@ -16,20 +14,18 @@ import { create } from "zustand";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  placementFromLegacyState,
   prepareWindowPlacement,
-  restorableBounds,
   type WindowPlacementController,
 } from "../utils/windowBounds";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
-import { orderMonitors, priorityFromState } from "../utils/screens";
+import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
+import { allocatePreviewPlacement, hostingScreen, type PreviewWindowPlacement } from "../models/previewPlacement";
 import type { ItemDetail } from "../models/items";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
 import { waitForWindowCreated } from "../utils/windowCreation";
-import { useAppStore } from "./app-store";
 
 export interface PreviewPayload {
   hash: string | null;
@@ -45,11 +41,8 @@ export interface PreviewPresentation {
   error: string | null;
 }
 
-/** Where the user wants the preview; `null` means never chosen, which is the
- * in-window pane. Purely the user's statement — monitor counting left this
- * path entirely (the developer's call: two windows on halves of one screen,
- * or one window on one screen of three, are the user's business, and any
- * auto-rule makes one of those impossible to ask for). */
+/** Pane versus window remains an explicit user choice; screen allocation
+ * applies only after separate-window placement has been chosen. */
 export type PlacementPreference = "split" | "window" | null;
 
 export function resolvePlacement(preference: PlacementPreference): "window" | "split" {
@@ -99,6 +92,7 @@ interface PreviewState {
 // Cached existence flag: getByLabel per keystroke is an IPC round trip.
 let previewWindowOpen = false;
 let previewPlacementController: WindowPlacementController | null = null;
+let sessionPlacement: PreviewWindowPlacement | null = null;
 let surfaceRequest = 0;
 let surfaceTail: Promise<void> = Promise.resolve();
 let previewFullscreenApplied = false;
@@ -120,24 +114,62 @@ function recordStaleSurface(generation: number): void {
   });
 }
 
-async function ensurePreviewWindow(state: Record<string, unknown>): Promise<boolean> {
+async function rememberPreviewScreen(window: WebviewWindow): Promise<void> {
+  if (sessionPlacement === null || await window.isMinimized()) return;
+  const [position, size, monitors] = await Promise.all([
+    window.outerPosition(), window.outerSize(), availableMonitors(),
+  ]);
+  const screen = hostingScreen(monitors, { ...position, ...size });
+  if (screen) sessionPlacement = { ...sessionPlacement, screen: monitorKey(screen) };
+}
+
+async function preparePreviewPlacement(window: WebviewWindow, state: Record<string, unknown>): Promise<void> {
+  if (previewFullscreenApplied || previewFullscreenTransitions > 0) return;
+  if (previewPlacementController !== null) {
+    await previewPlacementController.flush();
+    await rememberPreviewScreen(window);
+    previewPlacementController.dispose();
+    previewPlacementController = null;
+  }
+  const main = getCurrentWindow();
+  const [monitors, position, size] = await Promise.all([
+    availableMonitors(), main.outerPosition(), main.outerSize(),
+  ]);
+  const allocation = allocatePreviewPlacement(
+    orderMonitors(monitors, priorityFromState(state)), { ...position, ...size }, sessionPlacement,
+  );
+  if (allocation === null) return; // The OS retains placement when no display is reported.
+  sessionPlacement = allocation;
+  if (await window.isMaximized()) await window.unmaximize();
+  previewPlacementController = await prepareWindowPlacement({
+    window,
+    saved: allocation,
+    minimum: { width: 1, height: 1 },
+    monitors,
+    isTransient: () => previewFullscreenApplied || previewFullscreenTransitions > 0,
+    persist: async (record) => {
+      sessionPlacement = { ...record, screen: sessionPlacement?.screen ?? allocation.screen };
+    },
+    report: (operation, error) => reportWindowCall(`preview ${operation}`)(error),
+  });
+}
+
+async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing !== null) {
     previewWindowOpen = true;
-    return false;
+    await preparePreviewPlacement(existing, state);
+    return;
   }
-  // A PLAIN window that remembers (Phase 33, superseding both earlier
-  // z-order designs): its own position, size, and maximized flag persist in
-  // state.json — written by the preview window itself — and nothing else.
-  // Never topmost: permanent always-on-top floated over OTHER APPS, which is
-  // obnoxious; the raise PULSE in frontPreviewWindow does the fronting.
-  // Created hidden so the restore is never seen as a jump.
+  // Prepare while hidden and unfocused. Raising must not activate Main over
+  // an overlapping Preview; the temporary raise pulse preserves command focus.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
     title: "OneCopy Preview",
     width: 1280,
     height: 800,
     visible: false,
+    focus: false,
   });
   try {
     await waitForWindowCreated(window, "Preview");
@@ -146,6 +178,7 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<bool
     await window.once("tauri://destroyed", () => {
       previewWindowOpen = false;
       previewFullscreenApplied = false;
+      previewPlacementController?.dispose();
       previewPlacementController = null;
       const store = usePreviewStore.getState();
       if (store.placement === "window") {
@@ -162,34 +195,7 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<bool
   }
   previewWindowOpen = true;
   try {
-    const monitors = await availableMonitors();
-    const saved = placementFromLegacyState(
-      state.previewWindowBounds,
-      state.previewWindowMaximized,
-      "maximized",
-    );
-    if (restorableBounds(saved.normalBounds, monitors as never) === null && monitors.length >= 2) {
-      // Nothing remembered: a POSITION nicety only — priority slot 2.
-      const ordered = orderMonitors(
-        monitors,
-        priorityFromState(state),
-      );
-      await window.setPosition(ordered[1].position);
-    }
-    previewPlacementController = await prepareWindowPlacement({
-      window,
-      saved,
-      minimum: { width: 1, height: 1 },
-      monitors: monitors as never,
-      isTransient: () => previewFullscreenApplied || previewFullscreenTransitions > 0,
-      persist: async (record) => {
-        await useAppStore.getState().patchState({
-          previewWindowBounds: record.normalBounds,
-          previewWindowMaximized: record.mode === "maximized",
-        }, { immediate: true });
-      },
-      report: (operation, error) => reportWindowCall(`preview ${operation}`)(error),
-    });
+    await preparePreviewPlacement(window, state);
     let closing = false;
     await window.onCloseRequested(async (event) => {
       event.preventDefault();
@@ -205,7 +211,6 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<bool
   } catch (error) {
     log.warn("preview window placement failed", toErrorFields(error));
   }
-  return true;
 }
 
 export async function restorePreviewAfterComparison(): Promise<void> {
@@ -256,6 +261,7 @@ async function closePreviewWindow(): Promise<void> {
     return;
   }
   await controller?.flush();
+  await rememberPreviewScreen(existing).catch(reportWindowCall("preview capture screen"));
   await invoke("set_window_fullscreen", { label: "preview", enable: false });
   previewFullscreenApplied = false;
   await existing.destroy();
@@ -370,18 +376,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
             recordStaleSurface(request);
             return;
           }
-          const created = await ensurePreviewWindow(windowState);
+          await ensurePreviewWindow(windowState);
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;
           }
           await frontPreviewWindow();
-          if (created) {
-            // Keep the keyboard where the culling happens.
-            await getCurrentWindow()
-              .setFocus()
-              .catch(reportWindowCall("main setFocus"));
-          }
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;
@@ -447,17 +447,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           return;
         }
         if (next === "window" && current !== null) {
-          const created = await ensurePreviewWindow(windowState);
+          await ensurePreviewWindow(windowState);
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;
           }
           await frontPreviewWindow();
-          if (created) {
-            await getCurrentWindow()
-              .setFocus()
-              .catch(reportWindowCall("main setFocus"));
-          }
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;

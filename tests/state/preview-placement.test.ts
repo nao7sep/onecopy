@@ -1,12 +1,6 @@
-// The preview's placement and anchor contracts after the rework.
-//
-// Placement is purely the user's choice — the developer's explicit call:
-// "app doesn't need to detect how many screens the system has for preview".
-// Any monitor-derived rule makes some legitimate arrangement (two windows on
-// halves of one screen; one window on one screen of three) impossible to ask
-// for, which is exactly what happened: on a two-screen machine the old rule
-// forced the window placement, opened it BEHIND the main window, and the
-// developer reported the preview as blank.
+// Pane versus window is an explicit user choice. Once a separate window is
+// chosen, its screen is allocated by the session-aware placement policy.
+// These tests cover the follower and pane/window choice, not screen geometry.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
