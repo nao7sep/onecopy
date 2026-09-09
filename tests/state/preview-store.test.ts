@@ -1,10 +1,6 @@
-// The preview-follow stream.
-//
-// The module header claims the stale-detail race is designed out and that the
-// follow path is throttled; nothing proved either. Both matter at the
-// keyboard: a slow detail painting a superseded anchor shows the wrong file
-// name beside the right image, and an unthrottled stream emits once per
-// arrow key while a held key repeats.
+// Preview owns one current identity/detail package. Cross-window delivery
+// coalesces rapid changes without losing matching details or reviving closed
+// and cleared selections.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePreviewStore } from "../../src/state/preview-store";
@@ -47,13 +43,12 @@ function armSplitFollow(): void {
   });
 }
 
-// The follow throttle keeps its clock in module scope, so without fake timers
-// one spec's delivery leaves the window closed for the next and every later
-// anchorChanged lands on the trailing path instead of the leading one.
+// Fake time exercises publications on both sides of the throttle boundary.
 beforeAll(() => vi.useFakeTimers());
 afterAll(() => vi.useRealTimers());
 
 beforeEach(() => {
+  usePreviewStore.getState().close();
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     patch_state: () => ({}),
@@ -68,17 +63,30 @@ beforeEach(() => {
     current: null,
     error: null,
   });
-  // Step past the throttle window so each spec starts on a leading edge.
-  vi.advanceTimersByTime(500);
 });
 
 describe("the stale-detail guard", () => {
+  it("retains B detail arriving before the trailing window publication", async () => {
+    new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
+    usePreviewStore.getState().anchorChanged(ITEM_A, null);
+    usePreviewStore.getState().anchorChanged(ITEM_B, null);
+    usePreviewStore.getState().detailLoaded(ITEM_B, detailFor("B.jpg"));
+    usePreviewStore.getState().detailLoaded(ITEM_A, detailFor("late A.jpg"));
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(usePreviewStore.getState().current).toEqual({
+      ...ITEM_B, detail: detailFor("B.jpg"),
+    });
+    expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
+      .toEqual({ ...ITEM_B, detail: detailFor("B.jpg") });
+  });
+
   it("drops a late detail for an anchor the user already left", () => {
     armSplitFollow();
     usePreviewStore.getState().anchorChanged(ITEM_A, null);
-    // Past the throttle window, so B is actually delivered rather than left
-    // pending behind A's leading edge.
-    vi.advanceTimersByTime(200);
     usePreviewStore.getState().anchorChanged(ITEM_B, null);
     expect(usePreviewStore.getState().current?.hash).toBe("hb");
 
@@ -106,25 +114,44 @@ describe("the stale-detail guard", () => {
 });
 
 describe("the follow throttle", () => {
-  it("emits the leading anchor immediately and coalesces the rest", () => {
-    {
-      armSplitFollow();
-      const anchors = ["h1", "h2", "h3", "h4", "h5"];
-      for (const hash of anchors) {
-        usePreviewStore.getState().anchorChanged({ hash, pathId: null }, null);
-      }
-      // Leading edge only so far — the rest are pending.
-      expect(usePreviewStore.getState().current?.hash).toBe("h1");
-
-      vi.advanceTimersByTime(200);
-      // The trailing edge carries the LAST anchor, not the second one: a held
-      // arrow key must land on where the user stopped.
-      expect(usePreviewStore.getState().current?.hash).toBe("h5");
+  it("keeps local identity current while coalescing cross-window publication", async () => {
+    new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, null);
+    emitCalls.length = 0;
+    vi.advanceTimersByTime(200);
+    const anchors = ["h1", "h2", "h3", "h4", "h5"];
+    for (const hash of anchors) {
+      usePreviewStore.getState().anchorChanged({ hash, pathId: null }, null);
     }
+    expect(usePreviewStore.getState().current?.hash).toBe("h5");
+    expect(emitCalls.filter((call) => call.event === "preview://show"))
+      .toEqual([{ event: "preview://show", payload: { hash: "h1", pathId: null, detail: null } }]);
+
+    vi.advanceTimersByTime(200);
+    expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
+      .toEqual({ hash: "h5", pathId: null, detail: null });
   });
 });
 
 describe("clearing the surface", () => {
+  it.each(["close", "anchorCleared"] as const)("invalidates queued delivery on %s", async (action) => {
+    new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, null);
+    usePreviewStore.getState().anchorChanged(ITEM_A, null);
+    usePreviewStore.getState().anchorChanged(ITEM_B, null);
+    usePreviewStore.getState()[action]();
+    const publishedCount = emitCalls.length;
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(emitCalls).toHaveLength(publishedCount);
+    expect(usePreviewStore.getState().current).toEqual(
+      action === "close" ? null : { hash: null, pathId: null, detail: null },
+    );
+  });
+
   it("stops showing an item once follow is turned off", () => {
     armSplitFollow();
     usePreviewStore.getState().anchorChanged(ITEM_A, null);
@@ -145,6 +172,61 @@ describe("clearing the surface", () => {
 });
 
 describe("preview window failures", () => {
+  it("does not lose queued detail when the placement is unchanged", async () => {
+    new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, null);
+    usePreviewStore.getState().detailLoaded(ITEM_A, detailFor("A.jpg"));
+
+    await usePreviewStore.getState().setPlacementPreference("window");
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
+      .toEqual({ ...ITEM_A, detail: detailFor("A.jpg") });
+  });
+
+  it.each(["open", "placement"] as const)("publishes the latest package after delayed %s", async (entry) => {
+    const window = new WebviewWindow("preview");
+    let finishShow: (() => void) | undefined;
+    window.show.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishShow = resolve;
+    }));
+    armSplitFollow();
+    usePreviewStore.getState().anchorChanged(ITEM_A, detailFor("A.jpg"));
+    if (entry === "open") usePreviewStore.setState({ placementPreference: "window" });
+    const opening = entry === "open"
+      ? usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"))
+      : usePreviewStore.getState().setPlacementPreference("window");
+    for (let index = 0; index < 10 && !finishShow; index += 1) await Promise.resolve();
+    expect(finishShow).toBeDefined();
+
+    usePreviewStore.getState().anchorChanged(ITEM_B, null);
+    usePreviewStore.getState().detailLoaded(ITEM_B, detailFor("B.jpg"));
+    finishShow?.();
+    await opening;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
+      .toEqual({ ...ITEM_B, detail: detailFor("B.jpg") });
+  });
+
+  it("cancels window publication when moving the latest package to the pane", async () => {
+    new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
+    usePreviewStore.getState().anchorChanged(ITEM_B, null);
+    usePreviewStore.getState().detailLoaded(ITEM_B, detailFor("B.jpg"));
+
+    await usePreviewStore.getState().setPlacementPreference("split");
+    const publishedCount = emitCalls.length;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(emitCalls).toHaveLength(publishedCount);
+    expect(usePreviewStore.getState()).toMatchObject({
+      placement: "split", current: { ...ITEM_B, detail: detailFor("B.jpg") },
+    });
+  });
+
   it("settles a rejected creation-listener registration as an authored Preview failure", async () => {
     rejectNextWindowListener(
       new Error("TypeError: EACCES /private/tmp/preview listener sentinel"),

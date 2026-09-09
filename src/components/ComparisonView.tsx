@@ -40,19 +40,13 @@ export default function ComparisonView({
     hash: string;
     fileName: string;
   } | null>(null);
-  const open = useComparisonStore((state) => state.open);
-  const members = useComparisonStore((state) => state.members);
-  const page = useComparisonStore((state) => state.page);
-  const maximumImages = useComparisonStore((state) => state.maximumImages);
-  const displayCount = useComparisonStore((state) => state.displayCount);
-  const spreadCount = useComparisonStore((state) => state.spreadCount);
-  const portraitDominant = useComparisonStore(
-    (state) => state.portraitDominant,
-  );
-  const pendingAction = useComparisonStore((state) => state.pendingAction);
-  const failure = useComparisonStore((state) => state.failure);
-  const message = useComparisonStore((state) => state.message);
-  const busy = useComparisonStore((state) => state.busy);
+  // Cards, marks, inspection and page controls render the same subscribed
+  // snapshot. An imperative read here can silently omit a render dependency.
+  const state = useComparisonStore();
+  const {
+    open, members, page, maximumImages, displayCount, spreadCount,
+    portraitDominant, pendingAction, failure, message, busy,
+  } = state;
   const mutationProgress = useMutationStore((state) => state.progress);
   const mutationCancelling = useMutationStore((state) => state.cancelling);
   const mutationResult = useMutationStore((state) => state.result);
@@ -79,7 +73,6 @@ export default function ComparisonView({
 
   if (!open) return null;
 
-  const state = useComparisonStore.getState();
   const pages = comparisonPages(members, maximumImages, displayCount);
   const chunks = comparisonChunks(state);
   const localChunk = chunks[0] ?? [];

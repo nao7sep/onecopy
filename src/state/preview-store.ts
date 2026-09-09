@@ -8,10 +8,9 @@
 // closing by any route turns it off — one flag, no half-open states. The flag
 // persists as app state (`previewFollow`).
 //
-// The follow path is throttled (leading edge + trailing coalesce) so holding
-// an arrow key sends a bounded stream, and the anchor's ItemDetail rides IN
-// the payload — the window never re-queries, so the stale-response race
-// (wrong filename beside the right image) cannot happen.
+// `current` is the latest anchor and its matching detail, never a delayed
+// selection. Only cross-window publication is throttled; each publication
+// reads this one package so loading detail cannot race a queued identity.
 
 import { create } from "zustand";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -140,6 +139,8 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<bool
       if (store.placement === "window") {
         // The placement PREFERENCE survives — closing the window means "not
         // now", not "never on that screen again".
+        surfaceRequest += 1;
+        cancelPublication();
         usePreviewStore.setState({ follow: false, placement: null, current: null });
       }
     });
@@ -257,23 +258,29 @@ function publishPreviewFailure(
   recordActionFailure(kind, message, error);
 }
 
-// ---- Follow throttle ------------------------------------------------------
+// ---- Cross-window publication --------------------------------------------
 
 const FOLLOW_THROTTLE_MS = 120;
-let lastSentAt = 0;
-let pending: PreviewShowMessage | null = null;
+let lastSentAt: number | null = null;
 let trailingTimer: ReturnType<typeof setTimeout> | null = null;
 
-function deliver(message: PreviewShowMessage): void {
-  const { placement } = usePreviewStore.getState();
-  // `current` is the last-shown message in EITHER placement (the split pane
-  // renders it; for the window it is the stale-guard baseline).
-  usePreviewStore.setState({ current: message });
-  if (placement === "window" && previewWindowOpen) {
-    void emit("preview://show", message)
-      .then(() => usePreviewStore.setState({ error: null }))
+function cancelPublication(): void {
+  if (trailingTimer !== null) clearTimeout(trailingTimer);
+  trailingTimer = null;
+  lastSentAt = null;
+}
+
+function publishCurrent(): void {
+  const { follow, placement, current } = usePreviewStore.getState();
+  if (follow && placement === "window" && previewWindowOpen && current !== null) {
+    const request = surfaceRequest;
+    lastSentAt = Date.now();
+    void emit("preview://show", current)
+      .then(() => {
+        if (request === surfaceRequest) usePreviewStore.setState({ error: null });
+      })
       .catch((error) =>
-        publishPreviewFailure(
+        request === surfaceRequest && publishPreviewFailure(
           "preview-update-failed",
           "Couldn’t update the Preview window.",
           error,
@@ -282,24 +289,20 @@ function deliver(message: PreviewShowMessage): void {
   }
 }
 
-function throttledDeliver(message: PreviewShowMessage): void {
+function schedulePublication(): void {
+  const { follow, placement } = usePreviewStore.getState();
+  if (!follow || placement !== "window" || !previewWindowOpen) return;
   const now = Date.now();
-  if (now - lastSentAt >= FOLLOW_THROTTLE_MS) {
-    lastSentAt = now;
-    deliver(message);
+  if (lastSentAt === null || now - lastSentAt >= FOLLOW_THROTTLE_MS) {
+    cancelPublication();
+    publishCurrent();
     return;
   }
-  pending = message;
   if (trailingTimer === null) {
     trailingTimer = setTimeout(() => {
       trailingTimer = null;
-      if (pending !== null) {
-        lastSentAt = Date.now();
-        const message = pending;
-        pending = null;
-        deliver(message);
-      }
-    }, FOLLOW_THROTTLE_MS);
+      publishCurrent();
+    }, FOLLOW_THROTTLE_MS - (now - lastSentAt));
   }
 }
 
@@ -315,6 +318,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   open: async (payload, detail, windowState = {}) => {
     const request = ++surfaceRequest;
+    cancelPublication();
     try {
       const placement = resolvePlacement(get().placementPreference);
       // State FIRST: the side pane renders `current` the moment this lands,
@@ -346,17 +350,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           // A freshly created webview misses this emit (still booting) — its
           // ready announcement fetches the current state instead; an already
           // -open window hears it directly.
-          void emit("preview://show", message).catch((error) => {
-            if (request !== surfaceRequest) {
-              recordStaleSurface(request);
-              return;
-            }
-            publishPreviewFailure(
-              "preview-update-failed",
-              "Couldn’t update the Preview window.",
-              error,
-            );
-          });
+          cancelPublication();
+          publishCurrent();
         });
       }
     } catch (error) {
@@ -375,6 +370,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   close: () => {
     surfaceRequest += 1;
+    cancelPublication();
     const { placement } = get();
     set({ follow: false, placement: null, current: null });
     if (placement === "window") {
@@ -397,6 +393,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       }
       const { placement, current } = get();
       if (next === placement) return;
+      cancelPublication();
       // The new placement is published BEFORE the old window is torn down.
       // The order is load-bearing: the preview window's destroyed handler
       // treats destruction while placement is still `window` as a manual
@@ -426,7 +423,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
             recordStaleSurface(request);
             return;
           }
-          await emit("preview://show", current);
+          cancelPublication();
+          publishCurrent();
         }
       } catch (error) {
         if (request !== surfaceRequest) {
@@ -453,7 +451,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   anchorCleared: () => {
     const { follow, placement } = get();
     if (!follow || placement === null) return;
-    deliver({ hash: null, pathId: null, detail: null });
+    cancelPublication();
+    set({ current: { hash: null, pathId: null, detail: null } });
+    publishCurrent();
   },
 
   anchorChanged: (payload, detail) => {
@@ -464,7 +464,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // supply the app-owned window geometry without a peer-store import.
       return;
     }
-    throttledDeliver({ ...payload, detail });
+    set({ current: { ...payload, detail } });
+    schedulePublication();
   },
 
   detailLoaded: (payload, detail) => {
@@ -474,7 +475,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     // for a superseded anchor must never paint the wrong name (the stale
     // race the old double-fetch had).
     if (current !== null && current.hash === payload.hash && current.pathId === payload.pathId) {
-      deliver({ ...payload, detail });
+      set({ current: { ...payload, detail } });
+      schedulePublication();
     }
   },
 }));
