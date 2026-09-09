@@ -49,8 +49,9 @@ function leaf(path: string): string {
 
 /** Compact status-bar words. Every number comes directly from the backend
  * snapshot; phase-specific work is never inferred from a detail string. */
-export function progressLine(progress: ScanProgress): string {
+export function progressLine(progress: ScanProgress, includeFailures = true): string {
   if (progress.phase === "indexed") {
+    if (!includeFailures) return "No work running";
     return progress.failures > 0
       ? `Indexed — ${count(progress.failures)} failed · open Issues`
       : "Up to date";
@@ -85,7 +86,7 @@ export function progressLine(progress: ScanProgress): string {
       parts.push(`${percent}%`);
     }
   }
-  if (progress.failures > 0) parts.push(`${count(progress.failures)} failed`);
+  if (includeFailures && progress.failures > 0) parts.push(`${count(progress.failures)} failed`);
   if (progress.nextPhase !== null && progress.done === progress.total) {
     parts.push(`Next: ${phaseLabel(progress.nextPhase)}`);
   }

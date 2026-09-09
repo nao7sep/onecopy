@@ -1,6 +1,6 @@
 //! Lifecycle owner for the finite `Check source folders` job.
 
-use crate::source_check_state::{ResultState, SourceCheckState};
+use crate::source_check_state::{Request, ResultState, SourceCheckState};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -65,10 +65,14 @@ pub fn running() -> bool {
 }
 
 pub fn start(app: AppHandle) -> Result<bool, String> {
-    start_requested(app, true)
+    start_requested(app, Request::Automatic)
 }
 
-fn start_requested(app: AppHandle, explicit: bool) -> Result<bool, String> {
+pub fn start_explicit(app: AppHandle) -> Result<bool, String> {
+    start_requested(app, Request::Explicit)
+}
+
+fn start_requested(app: AppHandle, request: Request) -> Result<bool, String> {
     let mut workers = WORKERS
         .lock()
         .map_err(|_| "source-folder worker state is unavailable".to_string())?;
@@ -76,7 +80,7 @@ fn start_requested(app: AppHandle, explicit: bool) -> Result<bool, String> {
         return Err(CLOSING.to_string());
     }
     join_finished(&mut workers);
-    if !state().begin(explicit, crate::scan_runtime::foreground_pending()) {
+    if !state().begin(request, crate::scan_runtime::foreground_pending()) {
         return Ok(false);
     }
     // Discovery must not sit invisibly behind an hours-long metadata tail.
@@ -179,9 +183,35 @@ fn worker(app: AppHandle) {
             (ResultState::Failed, json!({ "error": error }))
         }
     };
-    finish(terminal.0);
+    let notify_completion = finish(terminal.0);
     emit_state(&app);
     emit_done(&app, terminal.1);
+    if notify_completion {
+        let incomplete = matches!(terminal.0, ResultState::CompletedWithIssues);
+        let request = crate::notifications::NotificationRequest {
+            kind: "source-check-completed".to_string(),
+            path: None,
+            level: if incomplete {
+                crate::notifications::NotificationLevel::Warning
+            } else {
+                crate::notifications::NotificationLevel::Info
+            },
+            presentation: crate::notifications::NotificationPresentation::Timed,
+            message: if incomplete {
+                "Source-folder check finished. Some folders or files could not be checked."
+            } else {
+                "Source folders checked."
+            }
+            .to_string(),
+        };
+        if let Err(error) = crate::notifications::publish(&app, request) {
+            crate::scan_runtime::record_runtime_failure(
+                &app,
+                "source-check-feedback-failed",
+                &error,
+            );
+        }
+    }
     // A foreground action may have preempted this worker before it acquired
     // the index claim. In that order the foreground guard finishes first, so
     // its resume attempt sees this worker as still running. Retry here after
@@ -223,8 +253,8 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     Ok(summary)
 }
 
-fn finish(result: ResultState) {
-    state().finish(result);
+fn finish(result: ResultState) -> bool {
+    state().finish(result)
 }
 
 pub fn stop(app: &AppHandle) -> bool {
@@ -257,7 +287,7 @@ pub(crate) fn resume_if_requested(app: AppHandle) {
     if crate::app_lifecycle::shutting_down() {
         return;
     }
-    if let Err(error) = start_requested(app.clone(), false) {
+    if let Err(error) = start_requested(app.clone(), Request::Resume) {
         fail(&app, &error);
         emit_done(&app, json!({ "error": error }));
     }

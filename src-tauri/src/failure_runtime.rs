@@ -38,6 +38,8 @@ fn presentation_for(kind: &str) -> &'static str {
             "Transcription stopped unexpectedly. Restart OneCopy, then try again.",
         "shutdown-media-release-failed" | "shutdown-window-recovery-failed" | "shutdown-worker-failed" =>
             "OneCopy could not finish shutting down cleanly. Restart it before continuing.",
+        "source-check-feedback-failed" =>
+            "Source-folder checking finished, but OneCopy could not show its result.",
         "event-delivery-failed" =>
             "OneCopy could not update part of the interface. Reload the window before continuing.",
         "interface-failed" =>

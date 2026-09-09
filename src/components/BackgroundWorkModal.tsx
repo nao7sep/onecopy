@@ -10,7 +10,6 @@ import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { useSectionsStore } from "../state/sections-store";
 import OperationResult from "./ui/OperationResult";
-import { useAppShellStore } from "../state/app-shell-store";
 import { progressLine } from "../models/scan";
 
 function stateText(row: BackgroundClassSnapshot): string {
@@ -32,9 +31,8 @@ function stateText(row: BackgroundClassSnapshot): string {
     case "paused":
       return `${row.queued.toLocaleString()} queued — paused`;
     case "failed":
-      return `${row.failed.toLocaleString()} failed — open Issues to retry`;
     case "up-to-date":
-      return "Up to date";
+      return "No work running";
   }
 }
 
@@ -74,7 +72,6 @@ export default function BackgroundWorkModal({
 
   if (!open) return null;
   const rows = snapshot === null ? [] : backgroundRows(snapshot);
-  const failures = rows.filter((row) => row.failed > 0);
   const allPaused = fileInformation.paused && rows.every((row) =>
     row.state === "disabled" || snapshot?.pausedClasses.includes(row.id));
 
@@ -103,22 +100,11 @@ export default function BackgroundWorkModal({
       }
     >
       <p className="mb-4 text-sm text-ink-muted">
-        These jobs may run while you use OneCopy. Stopping or pausing keeps every fact already
-        saved and never changes your files.
+        Pausing keeps completed work and never changes your files. These controls apply to this
+        app session; Settings decides which optional features are enabled.
         {" "}Pause all pauses file information, preparation, and enrichment. Source checking has
         its own Stop control; folder watching stays active.
       </p>
-      {failures.length > 0 && (
-        <div className="mb-4 rounded-xl border border-warning/40 p-3">
-          <OperationResult level="warning">
-            Some outputs could not be prepared. Completed work is preserved.
-            {" "}{failures.map((row) => `${backgroundClassLabel(row.id)}: ${row.failed.toLocaleString()} failed`).join("; ")}.
-          </OperationResult>
-          <Button size="sm" onClick={() => useAppShellStore.getState().openUtility("issues")}>
-            Open Issues
-          </Button>
-        </div>
-      )}
       <ul className="mb-4 space-y-2">
         <li className="flex items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3">
           <span className="min-w-0 flex-1">
@@ -134,21 +120,16 @@ export default function BackgroundWorkModal({
                 : sourceCheck.waiting
                   ? "Waiting for the current file operation…"
                 : sourceCheck.running
-                  ? sourceCheck.progress === null ? "Running…" : progressLine(sourceCheck.progress)
+                  ? sourceCheck.progress === null ? "Running…" : progressLine(sourceCheck.progress, false)
                   : sourceCheck.lastResult === "completed"
                     ? "Completed — Start checks again"
                     : sourceCheck.lastResult === "completed-with-issues"
-                      ? "Completed with issues — some folders or files could not be checked"
+                      ? "Finished with incomplete checks"
                     : sourceCheck.lastResult === "failed"
-                      ? "Failed — open Issues to retry"
+                      ? "Could not complete check"
                       : "Stopped"}
             </span>
           </span>
-          {(sourceCheck.lastResult === "failed" || sourceCheck.lastResult === "completed-with-issues") && !sourceCheck.running && (
-            <Button size="sm" onClick={() => useAppShellStore.getState().openUtility("issues")}>
-              Open Issues
-            </Button>
-          )}
           <Button
             size="sm"
             disabled={sourceCheck.stopping}
@@ -176,10 +157,10 @@ export default function BackgroundWorkModal({
                     ? "Work queued — paused"
                     : "Paused"
                   : fileInformation.running
-                  ? fileInformation.progress === null ? "Running…" : progressLine(fileInformation.progress)
+                  ? fileInformation.progress === null ? "Running…" : progressLine(fileInformation.progress, false)
                     : fileInformation.queued
                       ? "Queued"
-                      : "Up to date"}
+                      : "No work running"}
             </span>
           </span>
           <Button
@@ -222,9 +203,6 @@ export default function BackgroundWorkModal({
                     }`}
                   >
                     {stateText(row)}
-                    {row.failed > 0 && row.state !== "failed"
-                      ? ` — ${row.failed.toLocaleString()} failed`
-                      : ""}
                   </span>
                 </span>
                 <Button

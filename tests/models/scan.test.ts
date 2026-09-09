@@ -100,4 +100,11 @@ describe("scan phase labels", () => {
       ),
     ).toBe("Indexed — 2 failed · open Issues");
   });
+
+  it("separates Background Work progress from failure reporting without claiming completion", () => {
+    const running = progress({ phase: "hash", done: 2, total: 4, failures: 2, nextPhase: null });
+    expect(progressLine(running, false)).toBe("Reading files — 2/4");
+    expect(running.failures).toBe(2);
+    expect(progressLine({ ...running, phase: "indexed" }, false)).toBe("No work running");
+  });
 });

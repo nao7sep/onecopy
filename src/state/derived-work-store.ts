@@ -184,9 +184,7 @@ export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): str
   if (rows.some((row) => row.state === "paused")) return "Some background work paused";
   const waiting = rows.find((row) => row.state === "waiting" || row.state === "unavailable");
   if (waiting) return waiting.reason ?? "Background work waiting";
-  const failures = snapshot.classes.reduce((total, row) => total + row.failed, 0);
-  if (failures > 0) return `Background work: ${failures.toLocaleString()} failed — open Issues`;
-  return "Background work: up to date";
+  return "Background work: no work running";
 }
 
 const ITEM_CLASS_FIELD: Record<ActiveItemWork["id"], keyof ItemWorkStates> = {

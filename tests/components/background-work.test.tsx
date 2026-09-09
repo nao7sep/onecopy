@@ -17,7 +17,6 @@ import {
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
-import { useAppShellStore } from "../../src/state/app-shell-store";
 
 const ids: BackgroundClassSnapshot["id"][] = [
   "previews",
@@ -160,7 +159,7 @@ describe("Background work", () => {
         ),
       ),
     ).toBe("Video transcription 42/100");
-    expect(backgroundWorkLine(snapshot())).toBe("Background work: up to date");
+    expect(backgroundWorkLine(snapshot())).toBe("Background work: no work running");
   });
 
   it("patches runtime progress without re-reading output debt", () => {
@@ -296,16 +295,14 @@ describe("Background work", () => {
     }
   });
 
-  it("explains the status failure and opens its recovery surface", async () => {
+  it("keeps failed output facts without duplicating the Issues surface", async () => {
     current = snapshot({}, { previews: { state: "failed", failed: 2 } });
     useDerivedWorkStore.setState({ snapshot: current });
     render(<BackgroundWorkModal open onClose={() => {}} />);
-    expect(backgroundWorkLine(current)).toBe("Background work: 2 failed — open Issues");
-    expect(document.body.textContent).toContain("Thumbnails, previews, and posters: 2 failed");
-    expect(document.body.textContent).toContain("Completed work is preserved");
-    const issues = [...document.querySelectorAll("button")].find((button) => button.textContent === "Open Issues")!;
-    await act(async () => issues.click());
-    expect(useAppShellStore.getState().utilitySurface).toBe("issues");
+    expect(backgroundWorkLine(current)).toBe("Background work: no work running");
+    expect(document.body.textContent).not.toMatch(/failed|Issues|up to date|could not be prepared/i);
+    expect(document.body.textContent).toContain("No work running");
+    expect(useDerivedWorkStore.getState().snapshot?.classes[0].failed).toBe(2);
   });
 
   it("distinguishes a completed source pass from a stopped or failed pass", () => {
@@ -320,12 +317,12 @@ describe("Background work", () => {
         sourceCheck: { ...state.sourceCheck, lastResult: "failed" },
       }));
     });
-    expect(document.body.textContent).toContain("Failed — open Issues to retry");
+    expect(document.body.textContent).toContain("Could not complete check");
     act(() => {
       useSectionsStore.setState((state) => ({ sourceCheck: { ...state.sourceCheck, lastResult: "completed-with-issues" } }));
     });
-    expect(document.body.textContent).toContain("some folders or files could not be checked");
-    expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Open Issues")).toBe(true);
+    expect(document.body.textContent).toContain("Finished with incomplete checks");
+    expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Open Issues")).toBe(false);
     view.unmount();
   });
 
@@ -343,5 +340,20 @@ describe("Background work", () => {
     );
     expect(resume?.disabled).toBe(true);
     expect(document.body.textContent).toContain("Stopping and releasing resources…");
+  });
+
+  it("keeps Settings-disabled features disabled after Pause all while enabled rows can resume", async () => {
+    current = snapshot({}, { "audio-transcripts": { state: "disabled", reason: "Off in Settings" } });
+    useDerivedWorkStore.setState({ snapshot: current });
+    const view = render(<BackgroundWorkModal open onClose={() => {}} />);
+    await act(async () => view.getByRole("button", { name: "Pause all" }).click());
+    const audio = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Audio transcription"))!;
+    expect(audio.textContent).toContain("Off in Settings");
+    expect(audio.querySelector("button")!.disabled).toBe(true);
+    const video = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Video transcription"))!;
+    await act(async () => video.querySelector("button")!.click());
+    expect(current.pausedClasses).not.toContain("video-transcripts");
+    expect(current.classes.find((row) => row.id === "audio-transcripts")!.state).toBe("disabled");
+    expect(view.container.textContent).toContain("Settings decides which optional features are enabled");
   });
 });

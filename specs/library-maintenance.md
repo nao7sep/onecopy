@@ -24,6 +24,8 @@ The pass does not block the usable main window. It compares inexpensive recorded
 
 Background Work provides Start and Stop for checking source folders and shows its progress plus running, stopped, completed, or failed state. Stop takes effect at a safe checkpoint and preserves discoveries already recorded. The finite pass has no separate Pause state whose meaning duplicates Stop.
 
+An explicitly requested source-folder check acknowledges successful completion even when it finds no changes and finishes immediately. Automatic launch checks stay quiet. Foreground preemption retains the explicit request and acknowledges only its eventual completion, not a yielded attempt; stopping or failing it does not produce success. Feedback never delays the work or claims the remaining preparation is finished.
+
 A missing configured source or unavailable drive does not block the entire application. OneCopy continues with available copies, reports unavailable paths, and allows files to reappear when their source returns. It retains a reachable in-app path to recheck presence or repair the configured root without restarting.
 
 ## Watchers and section recheck
@@ -100,7 +102,7 @@ Video and audio transcription retain separate enabled settings, queue states, an
 
 `Pause all` is a bulk action on file-information completion, preparation, and enrichment, not an overriding master state. Each row remains independently resumable afterward; resuming one leaves the others paused and never enables a feature disabled in Settings. Source checking retains its separate Start/Stop control, and watchers remain active. Pauses are temporary for the current app run.
 
-Background Work identifies failed output counts and offers a direct Issues action for details and recovery. Runtime progress, preemption, and pause transitions never erase durable failure or prerequisite state or turn it into an unsupported claim of completion.
+Background Work owns controls, progress, temporary pauses, and prerequisites, not an Issues inbox. It shows neither failed-output counts nor links to Issues, including in its status-bar segment. Settled work uses neutral no-running-work wording rather than implying every output succeeded. Issues retains its separate status-bar entry and failure details. Runtime progress, preemption, and pause transitions never erase durable failure or prerequisite state or turn it into an unsupported claim of completion.
 
 ## Priority and resource use
 
