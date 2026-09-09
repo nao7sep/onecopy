@@ -55,10 +55,12 @@ fn runtime_cancelled(runtime: &RuntimeState, shutting_down: bool) -> bool {
 #[derive(Clone, Copy)]
 pub struct RuntimeConditions {
     pub busy: bool,
+    pub worker_running: bool,
 }
 
 #[derive(Clone)]
 pub struct RuntimeSnapshot {
+    pub(crate) worker_running: bool,
     pub(crate) paused_classes: u8,
     pub(crate) active: Option<ActiveWorkSnapshot>,
     pub(crate) active_hash: Option<String>,
@@ -594,6 +596,7 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
                 .map(WorkClass::id)
                 .collect::<Vec<_>>();
             json!({
+                "workerRunning": crate::derived_work::started(),
                 "pausedClasses": paused_classes,
                 "active": runtime.active.map(|active| json!({
                     "id": active.class.id(),
@@ -629,6 +632,7 @@ pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String
         )
     };
     Ok(RuntimeSnapshot {
+        worker_running: conditions.worker_running,
         paused_classes,
         active,
         active_hash,

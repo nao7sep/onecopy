@@ -7,6 +7,7 @@ import {
   BackgroundActivityProjection,
   backgroundWorkLine,
   backgroundRows,
+  backgroundRowCanResume,
   mergeBackgroundRuntime,
   mergeActiveItemWork,
   installDerivedWorkEventWiring,
@@ -32,7 +33,7 @@ function snapshot(
   rows: Partial<Record<BackgroundClassSnapshot["id"], Partial<BackgroundClassSnapshot>>> = {},
 ): BackgroundWorkSnapshot {
   return {
-    pausedClasses: [],
+    workerRunning: true, pausedClasses: [],
     activeItem: null,
     classes: ids.map((id) => ({
       id,
@@ -60,7 +61,7 @@ beforeEach(async () => {
       const targets = classId === null ? ids : [classId as typeof ids[number]];
       const pausedSet = new Set(current.pausedClasses);
       for (const id of targets) { if (paused) pausedSet.add(id); else pausedSet.delete(id); }
-      current = { ...current, pausedClasses: [...pausedSet] };
+      current = { ...current, workerRunning: current.workerRunning || !paused, pausedClasses: [...pausedSet] };
       if (classId === null) useSectionsStore.setState((state) => ({
         fileInformation: { ...state.fileInformation, paused: Boolean(paused) },
       }));
@@ -104,10 +105,39 @@ beforeEach(async () => {
 afterEach(cleanup);
 
 describe("Background work", () => {
+  it("directly resumes stopped processing without unpausing other classes or enabling Settings-disabled work", async () => {
+    current = snapshot({ workerRunning: false, pausedClasses: ["video-transcripts"] }, {
+      previews: { state: "queued", queued: 12, failed: 2 },
+      "audio-transcripts": { state: "disabled", reason: "Off in Settings" },
+    });
+    useDerivedWorkStore.setState({ snapshot: current });
+    const view = render(<BackgroundWorkModal open onClose={() => {}} />);
+    expect(backgroundWorkLine(current)).toBe("Preparation and enrichment stopped");
+    const previews = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Thumbnails, previews, and posters"))!;
+    expect(previews.textContent).toContain("Stopped");
+    expect(previews.querySelector("button")!.textContent).toBe("Resume");
+    await act(async () => previews.querySelector("button")!.click());
+    expect(invokeCalls).toContainEqual({ command: "background_work_set_paused", args: { classId: "previews", paused: false } });
+    expect(current.workerRunning).toBe(true);
+    expect(current.pausedClasses).toEqual(["video-transcripts"]);
+    expect(current.classes[0].failed).toBe(2);
+    const audio = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Audio transcription"))!;
+    expect(audio.querySelector("button")!.disabled).toBe(true);
+  });
+
+  it("keeps active manual work pausable when its automatic coordinator is stopped", () => {
+    const state = snapshot({ workerRunning: false, activeItem: { id: "video-transcripts", hash: "manual", done: 2, total: 10, stopping: false } });
+    const rows = backgroundRows(state);
+    const transcription = rows.find((row) => row.id === "video-transcripts")!;
+    expect(backgroundRowCanResume(state, transcription)).toBe(false);
+    expect(backgroundRowCanResume(state, rows[0])).toBe(true);
+    expect(backgroundWorkLine(state)).toBe("Video transcription 2/10");
+  });
+
   it("projects coordinator pulses as one class lifecycle until authoritative quiet", () => {
     const projection = new BackgroundActivityProjection();
     const running = {
-      pausedClasses: [],
+      workerRunning: true, pausedClasses: [],
       active: {
         id: "previews" as const,
         hash: "private-hash",
@@ -164,7 +194,7 @@ describe("Background work", () => {
 
   it("patches runtime progress without re-reading output debt", () => {
     const merged = mergeBackgroundRuntime(current, {
-      pausedClasses: [],
+      workerRunning: true, pausedClasses: [],
       active: {
         id: "previews",
         hash: "photo-hash",
@@ -211,7 +241,7 @@ describe("Background work", () => {
 
   it("handles live runtime events without another database snapshot command", () => {
     fireEvent("derived://state-changed", {
-      pausedClasses: [],
+      workerRunning: true, pausedClasses: [],
       active: {
         id: "previews",
         hash: "photo-hash",
@@ -287,10 +317,10 @@ describe("Background work", () => {
   it("retains failed and unavailable debt across running, stopping, pause, and resume overlays", () => {
     for (const state of ["failed", "unavailable", "disabled"] as const) {
       const base = snapshot({}, { previews: { state, failed: 2, reason: "Inspect Issues" } });
-      const running = mergeBackgroundRuntime(base, { pausedClasses: [], active: { id: "previews", hash: "x", done: 1, total: 2, stopping: false } })!;
+      const running = mergeBackgroundRuntime(base, { workerRunning: true, pausedClasses: [], active: { id: "previews", hash: "x", done: 1, total: 2, stopping: false } })!;
       expect(backgroundRows(running)[0].state).toBe("running");
-      const paused = mergeBackgroundRuntime(running, { pausedClasses: ["previews"], active: null })!;
-      const resumed = mergeBackgroundRuntime(paused, { pausedClasses: [], active: null })!;
+      const paused = mergeBackgroundRuntime(running, { workerRunning: true, pausedClasses: ["previews"], active: null })!;
+      const resumed = mergeBackgroundRuntime(paused, { workerRunning: true, pausedClasses: [], active: null })!;
       expect(backgroundRows(resumed)[0]).toEqual(base.classes[0]);
     }
   });
@@ -328,7 +358,7 @@ describe("Background work", () => {
 
   it("does not allow resume to race a class that is still stopping", () => {
     useDerivedWorkStore.setState({
-      snapshot: snapshot({ pausedClasses: ids, activeItem: { id: "video-transcripts", hash: "video", done: null, total: null, stopping: true } }, { "video-transcripts": { state: "queued", queued: 3 } }),
+      snapshot: snapshot({ workerRunning: true, pausedClasses: ids, activeItem: { id: "video-transcripts", hash: "video", done: null, total: null, stopping: true } }, { "video-transcripts": { state: "queued", queued: 3 } }),
     });
     render(<BackgroundWorkModal open onClose={() => {}} />);
 

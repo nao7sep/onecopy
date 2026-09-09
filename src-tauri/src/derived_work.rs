@@ -432,6 +432,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
         })?;
     workers.push(worker);
     drop(workers);
+    crate::derived_runtime::emit_state_changed(&app);
     wake();
     Ok(true)
 }
@@ -461,13 +462,17 @@ pub fn started() -> bool {
 
 fn derived_worker(app: AppHandle) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_worker_loop(&app)));
-    STARTED.store(false, Ordering::SeqCst);
     let failure = match outcome {
-        Ok(Ok(())) => return,
+        Ok(Ok(())) => {
+            STARTED.store(false, Ordering::SeqCst);
+            crate::derived_runtime::emit_state_changed(&app);
+            return;
+        }
         Ok(Err(error)) => error,
         Err(payload) => crate::failure_runtime::panic_message(payload),
     };
     if crate::app_lifecycle::shutting_down() {
+        STARTED.store(false, Ordering::SeqCst);
         logging::error(
             "derived-media worker failed during shutdown",
             json!({ "error": { "message": failure } }),
@@ -480,6 +485,10 @@ fn derived_worker(app: AppHandle) {
         None,
         &failure,
     );
+    // Finish the old worker's failure record before admitting its replacement;
+    // otherwise the replacement could resolve a condition not yet recorded.
+    STARTED.store(false, Ordering::SeqCst);
+    crate::derived_runtime::emit_state_changed(&app);
     crate::failure_runtime::emit_or_record(
         &app,
         "derived://worker-failed",

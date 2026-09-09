@@ -18,6 +18,8 @@ fn presentation_for(kind: &str) -> &'static str {
     match kind {
         "sleep-prevention-failed" =>
             "OneCopy could not prevent idle system sleep. Library work can continue. Turn the keep-awake setting off and on to retry; if it still fails, restart OneCopy.",
+        "derived-worker-failed" =>
+            "Preparation and enrichment stopped unexpectedly. Resume a row in Background work to restart processing.",
         "config-save-failed" | "state-save-failed" =>
             "OneCopy could not save an application setting. Your library files were not changed.",
         "source-check-failed" | "watcher-failed" | "watcher-root-failed" =>
@@ -237,6 +239,7 @@ mod tests {
         assert!(!presentation.contains("/private/tmp"));
         assert!(!presentation.contains("Error invoking remote method"));
         assert!(presentation.contains("file operation"));
+        assert!(presentation_for("derived-worker-failed").contains("Resume a row in Background work"));
     }
 }
 

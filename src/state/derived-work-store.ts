@@ -35,6 +35,7 @@ export interface BackgroundClassSnapshot {
 }
 
 export interface BackgroundWorkSnapshot {
+  workerRunning: boolean;
   pausedClasses: BackgroundClassSnapshot["id"][];
   activeItem: ActiveItemWork | null;
   classes: BackgroundClassSnapshot[];
@@ -49,6 +50,7 @@ export interface ActiveItemWork {
 }
 
 interface BackgroundRuntimeSnapshot {
+  workerRunning: boolean;
   pausedClasses: BackgroundClassSnapshot["id"][];
   active: ActiveItemWork | null;
 }
@@ -176,6 +178,7 @@ export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): str
     const progress = running.done !== null && running.total !== null ? ` ${running.done}/${running.total}` : "…";
     return `${backgroundClassLabel(running.id)}${progress}`;
   }
+  if (!snapshot.workerRunning) return "Preparation and enrichment stopped";
   if (rows.some((row) => row.state === "paused") && rows.every((row) => row.state === "paused" || row.state === "disabled")) {
     return "Background work paused";
   }
@@ -323,9 +326,16 @@ export function mergeBackgroundRuntime(
   if (snapshot === null) return null;
   return {
     ...snapshot,
+    workerRunning: runtime.workerRunning,
     pausedClasses: runtime.pausedClasses,
     activeItem: runtime.active,
   };
+}
+
+/** Resume a stopped coordinator without changing other rows' pause choices. */
+export function backgroundRowCanResume(snapshot: BackgroundWorkSnapshot, row: BackgroundClassSnapshot): boolean {
+  return row.state !== "disabled" && (row.state === "paused" || row.state === "stopping" ||
+    (!snapshot.workerRunning && snapshot.activeItem?.id !== row.id));
 }
 
 /** Runtime is a reversible overlay; database-authored availability never gets overwritten. */

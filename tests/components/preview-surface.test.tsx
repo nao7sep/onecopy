@@ -86,7 +86,7 @@ beforeEach(() => {
       byteSize: 22,
     }),
     background_work_snapshot: () => ({
-      pausedClasses: [],
+      workerRunning: true, pausedClasses: [],
       classes: [],
       activeItem: null,
     }),

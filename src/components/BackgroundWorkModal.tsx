@@ -3,6 +3,7 @@ import { Pause, Play, Square } from "lucide-react";
 import {
   backgroundClassLabel,
   backgroundRows,
+  backgroundRowCanResume,
   type BackgroundClassSnapshot,
   useDerivedWorkStore,
 } from "../state/derived-work-store";
@@ -176,6 +177,11 @@ export default function BackgroundWorkModal({
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
         Preparation and enrichment
       </h2>
+      {snapshot !== null && !snapshot.workerRunning ? (
+        <p className="mb-3 text-sm text-ink-muted">
+          Automatic processing is stopped. Resume a row to restart it; other unpaused rows can run too.
+        </p>
+      ) : null}
       {snapshot === null ? (
         <p className="py-6 text-center text-sm text-ink-muted">
           {loading ? "Reading background work…" : "Background-work status is unavailable."}
@@ -183,7 +189,7 @@ export default function BackgroundWorkModal({
       ) : (
         <ul className="space-y-2">
           {rows.map((row) => {
-            const paused = row.state === "paused" || row.state === "stopping";
+            const canResume = backgroundRowCanResume(snapshot, row);
             const rowChanging = changing === row.id;
             return (
               <li
@@ -202,7 +208,7 @@ export default function BackgroundWorkModal({
                       row.state === "unavailable" ? "text-warning" : "text-ink"
                     }`}
                   >
-                    {stateText(row)}
+                    {!snapshot.workerRunning && row.state === "queued" ? "Stopped" : stateText(row)}
                   </span>
                 </span>
                 <Button
@@ -212,10 +218,10 @@ export default function BackgroundWorkModal({
                     row.state === "disabled" ||
                     row.state === "stopping"
                   }
-                  onClick={() => void setPaused(row.id, !paused)}
+                  onClick={() => void setPaused(row.id, !canResume)}
                 >
-                  {paused ? <Play size={13} /> : <Pause size={13} />}
-                  {rowChanging ? "Saving…" : paused ? "Resume" : "Pause"}
+                  {canResume ? <Play size={13} /> : <Pause size={13} />}
+                  {rowChanging ? "Saving…" : canResume ? "Resume" : "Pause"}
                 </Button>
               </li>
             );

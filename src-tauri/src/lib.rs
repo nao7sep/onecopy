@@ -1523,6 +1523,7 @@ fn background_work_snapshot(
         &data_root,
         derived_runtime::snapshot(derived_runtime::RuntimeConditions {
             busy: !derived_work::available(),
+            worker_running: derived_work::started(),
         })?,
         derived_work::work_capabilities(&data_root)?,
     )

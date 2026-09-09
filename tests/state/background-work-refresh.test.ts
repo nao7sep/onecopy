@@ -7,7 +7,7 @@ it("refreshes newly discovered debt without an open modal and preserves newer ru
   vi.useFakeTimers();
   resetTauriMocks();
   const row = { id: "previews", state: "up-to-date", queued: 0, failed: 0, done: null, total: null, reason: null };
-  mockCommands({ background_work_snapshot: () => ({ pausedClasses: [], classes: [row], activeItem: null }) });
+  mockCommands({ background_work_snapshot: () => ({ workerRunning: true, pausedClasses: [], classes: [row], activeItem: null }) });
   await installDerivedWorkEventWiring();
   let finish = (_value: unknown): void => {};
   mockCommands({ background_work_snapshot: () => new Promise((resolve) => { finish = resolve; }) });
@@ -15,12 +15,18 @@ it("refreshes newly discovered debt without an open modal and preserves newer ru
   await vi.advanceTimersByTimeAsync(1000);
   expect(invokeCalls.filter((call) => call.command === "background_work_snapshot")).toHaveLength(2);
   fireEvent("derived://state-changed", {
-    pausedClasses: [],
+    workerRunning: true, pausedClasses: [],
     active: { id: "previews", hash: "now", done: 1, total: 20, stopping: false },
   });
-  finish({ pausedClasses: [], classes: [{ ...row, state: "queued", queued: 20 }], activeItem: null });
+  finish({ workerRunning: true, pausedClasses: [], classes: [{ ...row, state: "queued", queued: 20 }], activeItem: null });
   await vi.advanceTimersByTimeAsync(0);
   expect(backgroundRows(useDerivedWorkStore.getState().snapshot!)[0]).toMatchObject({ state: "running", queued: 20, done: 1 });
   expect(useDerivedWorkStore.getState().activeItem?.hash).toBe("now");
+  const reload = useDerivedWorkStore.getState().load();
+  fireEvent("derived://state-changed", { workerRunning: false, pausedClasses: [], active: null });
+  finish({ workerRunning: true, pausedClasses: [], classes: [row], activeItem: null });
+  await reload;
+  expect(useDerivedWorkStore.getState().snapshot?.workerRunning).toBe(false);
+  expect(useDerivedWorkStore.getState().activeItem).toBeNull();
   vi.useRealTimers();
 });

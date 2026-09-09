@@ -12,6 +12,7 @@ use crate::derived_state::{WorkCapabilities, WorkClass};
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundWorkSnapshot {
+    worker_running: bool,
     paused_classes: Vec<&'static str>,
     classes: Vec<BackgroundClassSnapshot>,
     active_item: Option<BackgroundActiveItemSnapshot>,
@@ -75,6 +76,7 @@ pub fn snapshot(
         });
     }
     Ok(BackgroundWorkSnapshot {
+        worker_running: runtime.worker_running,
         paused_classes: WorkClass::ALL.into_iter().filter(|class| runtime.paused_classes & class.bit() != 0).map(WorkClass::id).collect(),
         classes,
         active_item: runtime.active.map(|active| BackgroundActiveItemSnapshot {

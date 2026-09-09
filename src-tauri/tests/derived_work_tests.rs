@@ -496,6 +496,7 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
+                    worker_running: true,
                 },
             )
             .unwrap(),
@@ -535,6 +536,7 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
+                    worker_running: true,
                 },
             )
             .unwrap(),
@@ -543,6 +545,17 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
         .unwrap(),
     )
     .unwrap();
+    assert_eq!(value["workerRunning"], true);
+    let stopped = serde_json::to_value(snapshot(
+        dir.path(),
+        onecopy_lib::derived_runtime::snapshot(onecopy_lib::derived_runtime::RuntimeConditions {
+            busy: false,
+            worker_running: false,
+        }).unwrap(),
+        onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
+    ).unwrap()).unwrap();
+    assert_eq!(stopped["workerRunning"], false);
+    assert_eq!(stopped["classes"], value["classes"], "stopping the coordinator must preserve prerequisite and output facts");
     let previews = value["classes"]
         .as_array()
         .unwrap()
@@ -596,6 +609,7 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
             onecopy_lib::derived_runtime::snapshot(
                 onecopy_lib::derived_runtime::RuntimeConditions {
                     busy: false,
+                    worker_running: true,
                 },
             )
             .unwrap(),
