@@ -40,6 +40,12 @@ path = "tests/suites/ai.rs"
 name = "library_test_suite"
 path = "tests/suites/library.rs"
 
+# Scenarios that deliberately set the process-wide scanner cancellation flag
+# cannot share a process with ordinary parallel readers of that flag.
+[[test]]
+name = "scan_lifecycle_test_suite"
+path = "tests/suites/scan_lifecycle.rs"
+
 [[test]]
 name = "media_test_suite"
 path = "tests/suites/media.rs"

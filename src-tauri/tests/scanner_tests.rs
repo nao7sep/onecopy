@@ -790,28 +790,6 @@ fn duplicate_live_photo_identifiers_never_cross_directory_cohorts() {
 }
 
 #[test]
-#[serial_test::serial(scan_cancel)]
-fn cancelled_pairing_preserves_the_previous_complete_projection() {
-    let f = fixture("pairing-cancel");
-    std::fs::write(f.root.join("IMG.JPG"), b"jpeg").unwrap();
-    std::fs::write(f.root.join("IMG.ARW"), b"raw").unwrap();
-    walk_root(&f.conn, &f.root, &lists()).unwrap();
-    pair_companions(&f.conn, true).unwrap();
-
-    SCAN_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(pair_companions(&f.conn, false).unwrap_err(), CANCELLED);
-    SCAN_CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(
-        count(
-            &f.conn,
-            "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL"
-        ),
-        1,
-        "cancellation happens before the atomic projection changes"
-    );
-}
-
-#[test]
 fn corpus_live_photos_pair_by_identifier_not_stem_and_honor_the_toggle() {
     fn source(parts: &[&str]) -> std::path::PathBuf {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

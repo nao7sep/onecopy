@@ -186,6 +186,7 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
 #[test]
 #[serial_test::serial(scan_cancel)]
 fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
+    let _reset = super::ResetScanCancellation;
     scanner::SCAN_CANCEL.store(false, Ordering::Relaxed);
     let w = world("workflow");
     let conn = index_store::open(&w.home.join("index.sqlite3")).unwrap();
@@ -403,6 +404,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
 #[test]
 #[serial_test::serial(scan_cancel)]
 fn a_cancelled_index_resumes_to_the_same_facts_an_uninterrupted_run_builds() {
+    let _reset = super::ResetScanCancellation;
     let interrupted = world("resume");
     let control = World {
         home: interrupted._dir.path().join("control-home"),

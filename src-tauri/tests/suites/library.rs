@@ -1,5 +1,3 @@
-#[path = "../core_integration_tests.rs"]
-mod core_integration_tests;
 #[path = "../activity_tests.rs"]
 mod activity_tests;
 #[path = "../derived_state_tests.rs"]
