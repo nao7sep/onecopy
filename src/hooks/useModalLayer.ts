@@ -10,10 +10,13 @@ export function useModalLayer(
   onClose: () => void,
   closeDisabled = false,
   footerArrowNavigation = false,
+  returnFocus?: () => HTMLElement | null,
 ): object {
   const tokenRef = useRef<object>({});
   const onCloseRef = useRef(onClose);
   const closeDisabledRef = useRef(closeDisabled);
+  const returnFocusRef = useRef(returnFocus);
+  returnFocusRef.current = returnFocus;
   onCloseRef.current = onClose;
   closeDisabledRef.current = closeDisabled;
 
@@ -57,7 +60,7 @@ export function useModalLayer(
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       releaseScrollLock();
-      popModal(token)?.focus();
+      popModal(token, returnFocusRef.current?.())?.focus();
     };
   }, [surfaceRef, footerArrowNavigation]);
   return tokenRef.current;

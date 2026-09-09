@@ -952,6 +952,52 @@ fn identity_section_lookup_admits_only_real_unhashed_other_items() {
 }
 
 #[test]
+fn diagnostic_paths_resolve_only_current_source_members_and_companion_owners() {
+    let conn = db();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("source");
+    let roots = vec![root.to_string_lossy().into_owned()];
+    let file = |relative: &str| root.join(relative).to_string_lossy().into_owned();
+    let outside = fixture.path().join("source-sibling/outside.txt").to_string_lossy().into_owned();
+    conn.execute("INSERT INTO contents(hash, kind, byte_size) VALUES ('image', 'image', 1)", []).unwrap();
+    for (id, path, kind, hash, parent, missing) in [
+        (1, file("photo.jpg"), "image", Some("image"), None, 0),
+        (2, file("photo.xmp"), "other", None, Some(1), 0),
+        (3, file("note.txt"), "text", None, None, 0),
+        (4, file("missing.txt"), "other", None, None, 1),
+        (5, outside.clone(), "other", None, None, 0),
+        (6, file(".onecopy-trash/deleted.txt"), "other", None, None, 0),
+        (7, file("unidentified.jpg"), "image", None, None, 0),
+        (8, file("bad-owner.xmp"), "other", None, Some(5), 0),
+        (9, file(".onecopy-trash-notes/note.txt"), "other", None, None, 0),
+    ] {
+        conn.execute("INSERT INTO paths(id, abs_path, dir_path, file_name, kind, content_hash, companion_of, missing)
+            VALUES (?1, ?2, ?3, 'fixture', ?4, ?5, ?6, ?7)",
+            params![id, path, roots[0], kind, hash, parent, missing]).unwrap();
+    }
+    let resolve = |path: &str| queries::resolve_library_path(&conn, path, &roots, chrono_tz::UTC).unwrap();
+    for name in ["photo.jpg", "photo.xmp"] {
+        let target = resolve(&file(name)).unwrap();
+        assert_eq!(target.identity.hash.as_deref(), Some("image"));
+        assert_eq!(target.identity.path_id, 1);
+        assert_eq!(target.section.kind, "image");
+    }
+    let other = resolve(&file("note.txt")).unwrap();
+    assert_eq!(other.identity.hash, None);
+    assert_eq!(other.identity.path_id, 3);
+    assert_eq!(other.section.kind, "other");
+    assert!(resolve(&file(".onecopy-trash-notes/note.txt")).is_some());
+    for path in [outside, file("missing.txt"), file(".onecopy-trash/deleted.txt"),
+        file("unidentified.jpg"), file("bad-owner.xmp"), file("not-indexed.txt"),
+        file("../source-sibling/outside.txt"), "relative.txt".to_string()] {
+        assert!(resolve(&path).is_none(), "{path}");
+    }
+    assert!(queries::resolve_library_path(&conn, &file("photo.jpg"), &[], chrono_tz::UTC).unwrap().is_none());
+    conn.execute("UPDATE paths SET missing = 1 WHERE id = 1", []).unwrap();
+    assert!(resolve(&file("photo.xmp")).is_none());
+}
+
+#[test]
 fn section_dirs_cover_hashed_and_unhashed_other_files_when_dated_or_undated() {
     let conn = db();
     conn.execute_batch(

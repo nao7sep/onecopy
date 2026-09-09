@@ -695,6 +695,13 @@ fn get_item_section(app: AppHandle, identity: queries::SectionIdentity) -> Resul
     queries::section_for_identity(&conn, &identity, display_timezone())
 }
 
+#[tauri::command(async)]
+fn resolve_library_path(app: AppHandle, path: String) -> Result<Option<queries::LibraryTarget>, String> {
+    let data_root = paths::data_root(&app)?;
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+    queries::resolve_library_path(&conn, &path, &storage::load_config_source_dirs(&data_root)?, display_timezone())
+}
+
 // Moves or copies one ordered logical-item set to a destination directory. Modes:
 // "move-trash-rest" (plain drag), "move-delete-rest" (Shift), "copy" (Cmd/Ctrl).
 // Destinations under a configured source root are rejected — moving files into
@@ -2063,6 +2070,7 @@ pub fn run() {
             get_section_counts,
             get_section_window,
             get_item_section,
+            resolve_library_path,
             reconcile_section,
             get_section_range,
             get_section_family_context,

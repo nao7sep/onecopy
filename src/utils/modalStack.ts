@@ -28,7 +28,7 @@ export function pushModal(token: object, surface?: HTMLElement, opener: HTMLElem
 }
 
 /** Remove a layer and return its valid focus destination, only if it was topmost. */
-export function popModal(token: object): HTMLElement | null {
+export function popModal(token: object, destination?: HTMLElement | null): HTMLElement | null {
   const index = stack.findIndex((entry) => entry.token === token);
   if (index < 0) return null;
   const wasTopmost = index === stack.length - 1;
@@ -38,6 +38,7 @@ export function popModal(token: object): HTMLElement | null {
   }
   if (!wasTopmost) return null;
   const remaining = stack[stack.length - 1]?.surface;
+  if (destination?.isConnected && (!remaining || remaining.contains(destination))) return destination;
   if (closed.opener?.isConnected && (!remaining || remaining.contains(closed.opener))) return closed.opener;
   return remaining ?? null;
 }

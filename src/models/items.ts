@@ -68,6 +68,11 @@ export interface SectionLocation {
   month: string;
 }
 
+export interface LibraryTarget {
+  identity: SectionIdentity;
+  section: SectionLocation;
+}
+
 export interface PositionedSectionIdentity extends SectionIdentity {
   index: number;
 }

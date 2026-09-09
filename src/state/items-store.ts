@@ -14,6 +14,7 @@ import {
   itemKey,
   replaceDerivedItem,
   type ItemDetail,
+  type LibraryTarget,
   type PositionedSectionIdentity,
   type SectionItem,
   type SectionReconciliation,
@@ -81,6 +82,7 @@ interface ItemsState {
   loadWindow: (start: number, force?: boolean) => Promise<void>;
   selectPosition: (index: number, extend: boolean) => Promise<void>;
   selectIdentity: (key: string) => Promise<void>;
+  revealPath: (path: string, isCurrent: () => boolean) => Promise<"revealed" | "unavailable" | "superseded" | "failed">;
   selectItem: (key: string | null, align?: "nearest" | "center", position?: number) => void;
   setAnchor: (key: string | null, position?: number) => void;
   toggleItem: (key: string, position?: number) => void;
@@ -167,6 +169,42 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       current.order === order ? { order, desc: !current.desc } : { order, desc: DEFAULT_DESC[order] };
     set({ sortOrders: { ...state.sortOrders, [lane]: next }, loading: state.selected !== null });
     void reconcileCurrent(set, get, false, "center");
+  },
+
+  revealPath: async (path, isCurrent) => {
+    const ownsIntent = rangeLoad.begin();
+    const fresh = () => ownsIntent() && isCurrent();
+    const sorts = get().sortOrders;
+    try {
+      const target = await invoke<LibraryTarget | null>("resolve_library_path", { path });
+      if (!fresh()) return "superseded";
+      if (target === null) return "unavailable";
+      const result = await invoke<SectionReconciliation>("reconcile_section", {
+        ...target.section,
+        sort: target.section.kind === "other" ? sorts.other : sorts.media,
+        selected: [target.identity], anchor: target.identity,
+        rangeOrigin: target.identity, rangeBase: [target.identity],
+        recovery: null, selectFirst: false, limit: SECTION_WINDOW_LIMIT,
+      });
+      if (!fresh()) return "superseded";
+      if (result.anchor === null || identityKey(result.anchor) !== identityKey(target.identity)) return "unavailable";
+      const before = get();
+      const sectionMemory = { ...before.sectionMemory };
+      if (before.selected !== null) {
+        sectionMemory[sectionId(before.selected)] = { anchor: before.selectedItem, context: before.currentContext };
+      }
+      // Invalidate older ordinary loads only when this navigation is ready to publish.
+      sectionLoad.begin();
+      windowLoad.begin();
+      invalidateMainFeedback("section");
+      publishReconciliation(set, get, result, "center", { selected: target.section, sectionMemory });
+      return "revealed";
+    } catch (error) {
+      if (!fresh()) return "superseded";
+      log.error("in-app reveal failed", toErrorFields(error));
+      recordActionFailure("in-app-reveal-failed", "Couldn’t reveal this file in Main.", error);
+      return "failed";
+    }
   },
 
   select: async (section, restore) => {
@@ -629,40 +667,7 @@ async function reconcileCurrent(
       !sameSort(current.currentSort(), sort)
     )
       return;
-    const selectedPositions = membersMap(result.selected);
-    const anchor = result.anchor === null ? null : identityKey(result.anchor);
-    if (anchor !== null && result.anchor !== null) selectedPositions.set(anchor, result.anchor.index);
-    if (anchor !== current.selectedItem || selectedPositions.size !== current.selectedKeys.size ||
-      [...selectedPositions.keys()].some((key) => !current.selectedKeys.has(key))) {
-      invalidateMainFeedback("selection");
-    }
-    const rangeBasePositions = membersMap(result.rangeBase);
-    if (rangeBasePositions.size === 0 && anchor !== null && selectedPositions.size === 1) {
-      rangeBasePositions.set(anchor, result.anchor!.index);
-    }
-    const rangeOrigin = result.rangeOrigin === null ? anchor : identityKey(result.rangeOrigin);
-    const rangeOriginPosition = result.rangeOrigin?.index ?? result.anchor?.index ?? null;
-    set({
-      items: result.window.items,
-      totalItems: result.window.total,
-      windowStart: result.window.start,
-      itemPositions: positionMap(result.window.start, result.window.items),
-      reconciliationId: current.reconciliationId + 1,
-      loading: false,
-      loadError: null,
-      selectedItem: anchor,
-      selectedKeys: new Set(selectedPositions.keys()),
-      selectedPositions,
-      rangeOrigin,
-      rangeOriginPosition,
-      rangeBase: new Set(rangeBasePositions.keys()),
-      rangeBasePositions,
-      currentContext: anchorContextFromPayload(result.context),
-      scrollRequest:
-        anchor === null || result.anchor === null ? null : requestScroll(anchor, result.anchor.index, align),
-      ...(anchor !== before.selectedItem ? { detail: null } : {}),
-    });
-    if (anchor !== before.selectedItem) loadAnchorDetail(anchor);
+    publishReconciliation(set, get, result, align);
   } catch (error) {
     if (!fresh()) return;
     if (ownsIntent !== undefined && !ownsIntent()) {
@@ -709,4 +714,49 @@ function loadAnchorDetail(key: string | null): void {
       feedback.finish({ tone: "danger", text: "Couldn’t load details for this item." });
       recordActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
     });
+}
+
+function publishReconciliation(
+  set: (patch: Partial<ItemsState>) => void,
+  get: () => ItemsState,
+  result: SectionReconciliation,
+  align: "nearest" | "center",
+  patch: Partial<ItemsState> = {},
+): void {
+  const current = get();
+  const selectedPositions = membersMap(result.selected);
+  const anchor = result.anchor === null ? null : identityKey(result.anchor);
+  if (anchor !== null && result.anchor !== null) selectedPositions.set(anchor, result.anchor.index);
+  if (anchor !== current.selectedItem || selectedPositions.size !== current.selectedKeys.size ||
+    [...selectedPositions.keys()].some((key) => !current.selectedKeys.has(key))) {
+    invalidateMainFeedback("selection");
+  }
+  const rangeBasePositions = membersMap(result.rangeBase);
+  if (rangeBasePositions.size === 0 && anchor !== null && selectedPositions.size === 1) {
+    rangeBasePositions.set(anchor, result.anchor!.index);
+  }
+  const rangeOrigin = result.rangeOrigin === null ? anchor : identityKey(result.rangeOrigin);
+  const rangeOriginPosition = result.rangeOrigin?.index ?? result.anchor?.index ?? null;
+  set({
+    ...patch,
+    items: result.window.items,
+    totalItems: result.window.total,
+    windowStart: result.window.start,
+    itemPositions: positionMap(result.window.start, result.window.items),
+    reconciliationId: current.reconciliationId + 1,
+    loading: false,
+    loadError: null,
+    selectedItem: anchor,
+    selectedKeys: new Set(selectedPositions.keys()),
+    selectedPositions,
+    rangeOrigin,
+    rangeOriginPosition,
+    rangeBase: new Set(rangeBasePositions.keys()),
+    rangeBasePositions,
+    currentContext: anchorContextFromPayload(result.context),
+    scrollRequest:
+      anchor === null || result.anchor === null ? null : requestScroll(anchor, result.anchor.index, align),
+    ...(anchor !== current.selectedItem ? { detail: null } : {}),
+  });
+  if (anchor !== current.selectedItem) loadAnchorDetail(anchor);
 }

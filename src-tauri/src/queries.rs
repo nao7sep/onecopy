@@ -40,6 +40,42 @@ pub struct SectionLocation {
     pub month: String,
 }
 
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryTarget {
+    pub identity: SectionIdentity,
+    pub section: SectionLocation,
+}
+
+/// Diagnostic paths are lookup keys, never permission to discover new files.
+pub fn resolve_library_path(
+    conn: &Connection,
+    path: &str,
+    source_dirs: &[String],
+    display_tz: Tz,
+) -> Result<Option<LibraryTarget>, String> {
+    let in_sources = |value: &str| {
+        let path = Path::new(value);
+        path.is_absolute()
+            && !path.components().any(|part| matches!(part, std::path::Component::ParentDir)
+                || part.as_os_str() == ".onecopy-trash")
+            && source_dirs.iter().any(|root| path.starts_with(root))
+    };
+    if !in_sources(path) { return Ok(None); }
+    let row: Option<(i64, Option<String>, String)> = conn.query_row(
+        "SELECT main.id, main.content_hash, main.abs_path FROM paths AS target
+         JOIN paths AS main ON main.id = COALESCE(target.companion_of, target.id)
+         WHERE target.abs_path = ?1 AND target.missing = 0
+           AND main.missing = 0 AND main.companion_of IS NULL",
+        [path], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional().map_err(|error| error.to_string())?;
+    let Some((path_id, hash, main_path)) = row else { return Ok(None); };
+    if !in_sources(&main_path) { return Ok(None); }
+    let identity = SectionIdentity { hash, path_id };
+    Ok(section_for_identity(conn, &identity, display_tz)?
+        .map(|section| LibraryTarget { identity, section }))
+}
+
 /// Resolve one current logical identity, never its former ordinal or directory.
 pub fn section_for_identity(
     conn: &Connection,

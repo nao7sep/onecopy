@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { cleanup, render, screen } from "@testing-library/react";
+import { popModal, pushModal } from "../../src/utils/modalStack";
 import { afterEach, describe, expect, it } from "vitest";
 import ModalShell from "../../src/components/ModalShell";
 import OperationResult from "../../src/components/ui/OperationResult";
@@ -9,6 +10,18 @@ import Button from "../../src/components/ui/Button";
 afterEach(cleanup);
 
 describe("modal result growth", () => {
+  it("honors an explicit navigation destination only outside any surviving modal", () => {
+    const view = render(<><button>Main</button><div role="dialog"><button>Inside</button></div></>);
+    const main = screen.getByText("Main");
+    const inside = screen.getByText("Inside");
+    const parent = {}, child = {};
+    pushModal(parent, screen.getByRole("dialog"), main);
+    pushModal(child, undefined, inside);
+    expect(popModal(child, main)).toBe(inside);
+    expect(popModal(parent, main)).toBe(main);
+    view.unmount();
+  });
+
   it("separates wrapping results from fixed actions and leaves scrolling to the body", () => {
     render(
       <ModalShell

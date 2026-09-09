@@ -83,6 +83,78 @@ beforeEach(() => {
 });
 
 describe("bounded section state", () => {
+  it("reveals a distant diagnostic target atomically with exclusive selection and centered scrolling", async () => {
+    mockSection([item(1), item(2)]);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().toggleItem("h2", 1);
+    const old = useItemsStore.getState();
+    let resolveTarget!: (value: unknown) => void;
+    mockCommands({ resolve_library_path: () => new Promise((resolve) => { resolveTarget = resolve; }) });
+    const navigation = useItemsStore.getState().revealPath("/fixture/target.jpg", () => true);
+    expect(useItemsStore.getState()).toBe(old);
+    mockSection(Array.from({ length: 1200 }, (_, index) => item(index + 1)));
+    resolveTarget({ identity: { hash: "h901", pathId: 901 }, section: { kind: "image", month: "2026-02" } });
+    expect(await navigation).toBe("revealed");
+    const state = useItemsStore.getState();
+    expect(state.selected).toEqual({ kind: "image", month: "2026-02" });
+    expect([...state.selectedKeys]).toEqual(["h901"]);
+    expect(state.selectedItem).toBe("h901");
+    expect(state.items.length).toBeLessThanOrEqual(512);
+    expect(state.scrollRequest).toMatchObject({ key: "h901", index: 900, align: "center" });
+    expect(state.sectionMemory["image:2026-01"].anchor).toBe(old.selectedItem);
+    expect(invokeCalls.some((call) => /retry|recheck/.test(call.command))).toBe(false);
+  });
+
+  it.each(["missing", "failed", "cancelled", "new-selection", "new-sort", "disappeared"])(
+    "preserves Main when diagnostic navigation is %s", async (condition) => {
+      mockSection([item(1), item(2)]);
+      await useItemsStore.getState().select(SECTION);
+      let resolveTarget!: (value: unknown) => void;
+      let rejectTarget!: (error: unknown) => void;
+      mockCommands({ resolve_library_path: () => new Promise((resolve, reject) => {
+        resolveTarget = resolve; rejectTarget = reject;
+      }) });
+      let current = true;
+      const navigation = useItemsStore.getState().revealPath("/fixture/target.jpg", () => current);
+      if (condition === "cancelled") current = false;
+      if (condition === "new-selection") useItemsStore.getState().selectItem("h2", "nearest", 1);
+      if (condition === "new-sort") {
+        useItemsStore.getState().setSortOrder("name");
+        await Promise.resolve();
+      }
+      const before = useItemsStore.getState();
+      if (condition === "failed") rejectTarget(new Error("private lookup sentinel"));
+      else resolveTarget(condition === "missing" ? null : {
+        identity: { hash: "gone", pathId: 901 }, section: { kind: "image", month: "2026-02" },
+      });
+      expect(await navigation).toBe(condition === "failed" ? "failed"
+        : condition === "missing" || condition === "disappeared" ? "unavailable" : "superseded");
+      const after = useItemsStore.getState();
+      expect(after.selected).toEqual(before.selected);
+      expect(after.selectedItem).toBe(before.selectedItem);
+      expect(after.selectedKeys).toEqual(before.selectedKeys);
+      expect(after.scrollRequest).toEqual(before.scrollRequest);
+    },
+  );
+
+  it("cancels a resolved target while its bounded section read is still pending", async () => {
+    mockSection([item(1)]);
+    await useItemsStore.getState().select(SECTION);
+    const before = useItemsStore.getState();
+    let resolveRows!: (value: SectionItem[]) => void;
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    mockCommands({ resolve_library_path: () => ({ identity: { hash: "h2", pathId: 2 }, section: SECTION }) });
+    mockSection(() => new Promise((resolve) => { resolveRows = resolve; started(); }));
+    let current = true;
+    const navigation = useItemsStore.getState().revealPath("/fixture/target.jpg", () => current);
+    await reading;
+    current = false;
+    resolveRows([item(2)]);
+    expect(await navigation).toBe("superseded");
+    expect(useItemsStore.getState()).toBe(before);
+  });
+
   it("selects the first item and retains only the capped backend window", async () => {
     const rows = Array.from({ length: 900 }, (_, index) => item(index + 1));
     mockSection(rows);

@@ -30,6 +30,12 @@ Every restored or recovered anchor is scrolled into view. Restoration and disapp
 
 Sorting, refreshed information, and newly discovered items preserve surviving selection and anchor by logical identity. Reordering and insertion never steal selection.
 
+## Diagnostic navigation
+
+A diagnostic file link resolves the current indexed file within configured sources to its logical Main item; an attached companion resolves to its owning main item. Reveal opens the current section, exclusively selects and anchors that item, scrolls it into view with surrounding context, and returns command focus to Main. Resolution and bounded section loading preserve the prior Main state until the target is available; a newer navigation intent or a closed requesting surface supersedes pending work.
+
+Missing, deleted, unindexed, or otherwise unavailable review targets receive a truthful unavailable result rather than an invented section or neighboring selection. Reveal neither retries failed preparation nor expands configured-source authority. Diagnostic records remain unchanged.
+
 ## Focus ownership
 
 Opening a section from the sidebar leaves keyboard focus in the sidebar so section navigation can continue. Right Arrow or Tab enters the item area. Item commands, including Space, Enter, Delete, and Backspace, do not act while the sidebar owns focus.

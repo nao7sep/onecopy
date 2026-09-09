@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { revealInMain } from "../../src/workflows/reveal-in-main";
 import {
   handleViewerKey,
   moveViewer,
@@ -112,6 +113,22 @@ beforeEach(() => {
 });
 
 describe("viewer workflow", () => {
+  it("reveals a diagnostic target out of Quick View without replacing its new Main selection on close", async () => {
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    mockCommand("resolve_library_path", () => ({
+      identity: { hash: "a", pathId: 1 }, section: { kind: "image", month: "2026-01" },
+    }));
+    let modalClosed = false;
+    expect(await revealInMain("/fixture/a.jpg", () => true, () => { modalClosed = true; })).toBe("revealed");
+    expect(modalClosed).toBe(true);
+    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useItemsStore.getState().selectedItem).toBe("a");
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["a"]);
+    expect(invokeCalls.filter((call) => call.command === "reconcile_section")).toHaveLength(1);
+    expect(invokeCalls.some((call) => call.command === "viewer_sequence_close")).toBe(true);
+  });
+
   it("owns its identity, detail and content commands independently of Main", async () => {
     expect(openViewerFromMain("quick")).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));

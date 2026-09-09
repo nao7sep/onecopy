@@ -27,6 +27,7 @@ export default function ModalShell({
   closeDisabled = false,
   initialFocus = "auto",
   footerArrowNavigation = false,
+  returnFocus,
   footerStart,
   footerResult,
   primaryAction,
@@ -40,6 +41,8 @@ export default function ModalShell({
   closeDisabled?: boolean;
   initialFocus?: "auto" | "surface" | "close";
   footerArrowNavigation?: boolean;
+  /** An explicit successful navigation may return to its destination instead of the opener. */
+  returnFocus?: () => HTMLElement | null;
   /** Short left-aligned metadata, sharing the actions' first text baseline. */
   footerStart?: React.ReactNode;
   /** A wrapping operation result, in its own band above footer actions. */
@@ -50,7 +53,7 @@ export default function ModalShell({
 }) {
   const titleId = useId();
   const surfaceRef = useRef<HTMLDivElement>(null);
-  useModalLayer(surfaceRef, onClose, closeDisabled, footerArrowNavigation);
+  useModalLayer(surfaceRef, onClose, closeDisabled, footerArrowNavigation, returnFocus);
 
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-background/80">
