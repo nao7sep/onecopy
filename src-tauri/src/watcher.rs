@@ -52,6 +52,9 @@ pub fn restat_dir(
     dir: &Path,
     lists: &ScanLists,
 ) -> Result<u64, String> {
+    if crate::trash::is_trash_path(dir) {
+        return Ok(0);
+    }
     // notify reports ordinary Windows paths even when the full scan stores
     // their long-path spelling. Normalize at the boundary so a watcher pass
     // cannot turn one physical file into a second database row.
@@ -102,7 +105,7 @@ pub fn restat_dir(
             continue;
         }
         let abs = path.to_string_lossy().to_string();
-        if abs.contains(crate::trash::TRASH_DIR_NAME) {
+        if crate::trash::is_trash_path(&path) {
             continue;
         }
         present.insert(abs.clone());
@@ -440,6 +443,9 @@ pub fn collect(
                 return;
             }
             for path in event.paths {
+                if crate::trash::is_trash_path(&path) {
+                    continue;
+                }
                 let dir = if path.is_dir() {
                     path
                 } else {
@@ -448,9 +454,6 @@ pub fn collect(
                         None => continue,
                     }
                 };
-                if dir.to_string_lossy().contains(crate::trash::TRASH_DIR_NAME) {
-                    continue;
-                }
                 dirty.insert(dir);
             }
         }

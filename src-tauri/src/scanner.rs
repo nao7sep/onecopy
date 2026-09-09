@@ -997,7 +997,11 @@ fn walk_root_with_progress(
 
     // The walk root carries the long-path form so every entry beneath it
     // inherits it; without this a deep tree is simply invisible on Windows.
-    for entry in walkdir::WalkDir::new(fs_root.as_ref()).follow_links(false) {
+    for entry in walkdir::WalkDir::new(fs_root.as_ref())
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !crate::trash::is_trash_path(entry.path()))
+    {
         check_cancel()?;
         let entry = match entry {
             Ok(e) => e,
@@ -1022,11 +1026,6 @@ fn walk_root_with_progress(
         }
         let path = entry.path();
         let abs = path.to_string_lossy().to_string();
-        // The app's own trash is never indexed.
-        if abs.contains(crate::trash::TRASH_DIR_NAME) {
-            continue;
-        }
-
         stats.seen += 1;
         record_present
             .execute([&abs])

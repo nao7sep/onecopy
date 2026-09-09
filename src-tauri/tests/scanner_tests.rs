@@ -1048,10 +1048,18 @@ fn app_trash_directories_are_never_indexed() {
     std::fs::create_dir_all(&trash).unwrap();
     std::fs::write(trash.join("deleted.jpg"), b"gone").unwrap();
     std::fs::write(f.root.join("kept.jpg"), b"here").unwrap();
+    let lookalike = f.root.join(".onecopy-trash-notes");
+    std::fs::create_dir(&lookalike).unwrap();
+    std::fs::write(lookalike.join("kept.jpg"), b"ordinary hidden copy").unwrap();
+    std::fs::write(f.root.join(".onecopy-trash.jpg"), b"ordinary filename").unwrap();
+    let nested_trash = lookalike.join(".onecopy-trash");
+    std::fs::create_dir(&nested_trash).unwrap();
+    std::fs::write(nested_trash.join("deleted.jpg"), b"gone too").unwrap();
 
     let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
-    assert_eq!(stats.seen, 1);
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
+    assert_eq!(stats.seen, 3);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 3);
+    assert_eq!(stats.errors, 0);
 }
 
 #[test]

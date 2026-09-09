@@ -31,6 +31,14 @@ use serde::Serialize;
 use crate::logging;
 
 pub const TRASH_DIR_NAME: &str = ".onecopy-trash";
+
+/// Deleted material is never source inventory or a browsable destination.
+/// Match complete native path components, not unrelated names containing the
+/// reserved name. This boundary is independent of user visibility preferences.
+pub fn is_trash_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str().eq_ignore_ascii_case(TRASH_DIR_NAME))
+}
 /// The per-day restore ledger. Named once so the sizing pass can recognise and
 /// exclude its own bookkeeping (see `tree_size`).
 pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";

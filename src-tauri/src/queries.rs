@@ -57,8 +57,8 @@ pub fn resolve_library_path(
     let in_sources = |value: &str| {
         let path = Path::new(value);
         path.is_absolute()
-            && !path.components().any(|part| matches!(part, std::path::Component::ParentDir)
-                || part.as_os_str() == ".onecopy-trash")
+            && !crate::trash::is_trash_path(path)
+            && !path.components().any(|part| matches!(part, std::path::Component::ParentDir))
             && source_dirs.iter().any(|root| path.starts_with(root))
     };
     if !in_sources(path) { return Ok(None); }

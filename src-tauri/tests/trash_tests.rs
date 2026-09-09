@@ -4,6 +4,25 @@
 use onecopy_lib::trash::*;
 use std::path::{Path, PathBuf};
 
+#[test]
+fn reserved_trash_components_do_not_hide_unrelated_names() {
+    for path in [
+        PathBuf::from(TRASH_DIR_NAME),
+        Path::new("root").join(".ONECOPY-TRASH").join("photo.jpg"),
+        Path::new("root").join(TRASH_DIR_NAME).join("day").join("photo.jpg"),
+    ] {
+        assert!(is_trash_path(&path));
+    }
+    for path in [
+        "root/.onecopy-trash-notes/photo.jpg",
+        "root/my.onecopy-trash/photo.jpg",
+        "root/.onecopy-trash.jpg",
+        "root/.photo.jpg",
+    ] {
+        assert!(!is_trash_path(Path::new(path)), "{path}");
+    }
+}
+
 // These tests run entirely under a configured temp root, so recoverable
 // deletions stay inside the same permission and filesystem boundary.
 

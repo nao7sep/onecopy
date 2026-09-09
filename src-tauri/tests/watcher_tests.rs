@@ -167,6 +167,43 @@ fn the_apps_own_trash_is_never_marked_dirty() {
 }
 
 #[test]
+fn trash_filter_uses_the_event_path_before_resolving_its_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    // A removed trash directory no longer answers is_dir(). It must not dirty
+    // the ordinary parent just because the event refers to a vanished path.
+    let (dirty, overflowed) = fold(vec![dir.path().join(".onecopy-trash")]);
+    assert!(!overflowed);
+    assert!(dirty.is_empty());
+
+    let lookalike = dir.path().join(".onecopy-trash-notes");
+    std::fs::create_dir(&lookalike).unwrap();
+    let file = lookalike.join("photo.jpg");
+    std::fs::write(&file, b"ordinary").unwrap();
+    let (dirty, _) = fold(vec![file]);
+    assert_eq!(dirty, HashSet::from([lookalike]));
+}
+
+#[test]
+fn restat_keeps_trash_lookalikes_but_never_opens_deleted_storage() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let lookalike = dir.path().join(".onecopy-trash-notes");
+    std::fs::create_dir(&lookalike).unwrap();
+    std::fs::write(lookalike.join(".onecopy-trash.jpg"), b"ordinary").unwrap();
+    assert_eq!(restat_dir(&conn, &lookalike, &lists()).unwrap(), 1);
+    // Intentionally absent: an excluded location needs no enumeration and
+    // must not produce an inaccessible-directory Issue.
+    let excluded = lookalike.join(".onecopy-trash").join("day");
+    assert_eq!(restat_dir(&conn, &excluded, &lists()).unwrap(), 0);
+    let counts: (i64, i64) = conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM paths), (SELECT COUNT(*) FROM issues)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(counts, (1, 0));
+}
+
+#[test]
 fn a_lost_event_batch_flags_an_overflow() {
     // notify drops events under load; the flag is what turns that into a
     // visible "Rescan needed" instead of a silently incomplete index.

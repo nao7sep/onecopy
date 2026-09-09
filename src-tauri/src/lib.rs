@@ -736,18 +736,17 @@ fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
 }
 
 fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
+    if crate::trash::is_trash_path(path) {
+        return Ok(Vec::new());
+    }
     let mut entries: Vec<DirEntry> = Vec::new();
     let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     for entry in read {
         let entry = entry.map_err(|error| error.to_string())?;
-        let file_type = entry.file_type().map_err(|error| error.to_string())?;
-        if !file_type.is_dir() {
+        if !is_browsable_destination_child(&entry)? {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
-            continue; // dotfolders (incl. .onecopy-trash) stay out of the tree
-        }
         let child_path = entry.path();
         let (has_children, is_empty) = child_directory_facts(&child_path)?;
         entries.push(DirEntry {
@@ -761,17 +760,18 @@ fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
+fn is_browsable_destination_child(entry: &std::fs::DirEntry) -> Result<bool, String> {
+    Ok(!entry.file_name().to_string_lossy().starts_with('.')
+        && entry.file_type().map_err(|error| error.to_string())?.is_dir())
+}
+
 fn child_directory_facts(path: &std::path::Path) -> Result<(bool, bool), String> {
     let children = std::fs::read_dir(path).map_err(|error| error.to_string())?;
     let mut is_empty = true;
     for child in children {
         let child = child.map_err(|error| error.to_string())?;
         is_empty = false;
-        if child
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-        {
+        if is_browsable_destination_child(&child)? {
             return Ok((true, false));
         }
     }
@@ -795,6 +795,8 @@ mod destination_listing_tests {
         std::fs::write(root.path().join("files-only/item.txt"), b"item").unwrap();
         std::fs::create_dir_all(root.path().join("nested/child")).unwrap();
         std::fs::create_dir(root.path().join(".hidden")).unwrap();
+        std::fs::create_dir_all(root.path().join("hidden-only/.hidden")).unwrap();
+        std::fs::create_dir_all(root.path().join("trash-only/.onecopy-trash/day")).unwrap();
 
         let rows = list_subdirs_at(root.path()).unwrap();
         let facts = |name: &str| {
@@ -804,7 +806,11 @@ mod destination_listing_tests {
         assert_eq!(facts("empty"), (false, true));
         assert_eq!(facts("files-only"), (false, false));
         assert_eq!(facts("nested"), (true, false));
+        assert_eq!(facts("hidden-only"), (false, false));
+        assert_eq!(facts("trash-only"), (false, false));
         assert!(rows.iter().all(|row| row.name != ".hidden"));
+        assert!(list_subdirs_at(&root.path().join("trash-only/.onecopy-trash"))
+            .unwrap().is_empty());
     }
 }
 
