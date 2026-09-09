@@ -10,9 +10,8 @@ import {
 } from "../models/mutation";
 import { log, toErrorFields } from "../repositories";
 import { useMutationStore } from "../state/mutation-store";
-import { useItemsStore } from "../state/items-store";
 import { recordRecentNotification } from "../state/notifications-store";
-import { recordInterfaceFailure } from "../utils/failureSurface";
+import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActivity } from "../repositories/activity";
 
@@ -115,9 +114,7 @@ const install = createEventInstaller(
     log.warn("file operation event wiring failed", toErrorFields(error));
     recordInterfaceFailure("Live file-operation status is unavailable. Restart OneCopy before changing more files.");
     useMutationStore.setState({ progress: null, cancelling: false });
-    useItemsStore.setState({
-      message: "Live file-operation status is unavailable. Restart OneCopy before changing more files.",
-    });
+    presentEscapedFailure("Live file-operation status is unavailable. Reload OneCopy before changing more files.");
   },
 );
 

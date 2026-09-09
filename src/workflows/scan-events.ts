@@ -4,7 +4,7 @@
 import type { SectionItem } from "../models/items";
 import type { ScanProgress } from "../models/scan";
 import { log, toErrorFields } from "../repositories";
-import { recordInterfaceFailure } from "../utils/failureSurface";
+import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
@@ -274,9 +274,7 @@ const install = createEventInstaller(
       log.error("previews and analysis worker stopped", {
         error: { message: event.payload.message },
       });
-      useItemsStore.setState({
-        message: "Previews and analysis stopped. Restart OneCopy, then try again.",
-      });
+      // The backend already publishes the persistent worker failure notice.
       void useIssuesStore.getState().load();
     });
     await listeners.listen("derived://similarity-updated", () => {
@@ -296,7 +294,7 @@ const install = createEventInstaller(
       void useIssuesStore.getState().load();
     });
     await listeners.listen<{ message: string }>("failure://direct", (event) => {
-      useItemsStore.setState({ message: event.payload.message });
+      presentEscapedFailure(event.payload.message);
     });
     await useSectionsStore.getState().loadIndexWork();
   },
@@ -305,10 +303,7 @@ const install = createEventInstaller(
     recordInterfaceFailure(
       "Live library updates are unavailable. Restart OneCopy to repair them.",
     );
-    useItemsStore.setState({
-      message:
-        "Live library updates are unavailable. Restart OneCopy to repair them.",
-    });
+    presentEscapedFailure("Live library updates are unavailable. Reload OneCopy to repair them.");
   },
 );
 

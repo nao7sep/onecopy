@@ -22,6 +22,8 @@ Repeated occurrences of the same unresolved condition update one record with a c
 
 ## Notifications and modals
 
+Expected command ineligibility is informational feedback, not an application failure. Main's command feedback belongs to the selection or section that the command evaluated; changing that context or successfully replacing the same command clears obsolete feedback. Delayed responses cannot restore it into a newer context. Independent unresolved failures and file-operation results remain with their notification, Issue, or operation owner rather than competing for one untyped status message.
+
 OneCopy uses three distinct interruption levels:
 
 - A timed notification reports minor information that is safe to miss. Its display duration is configurable and defaults to six seconds. Hovering or focusing it pauses the timer.

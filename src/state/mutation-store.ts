@@ -6,8 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { MutationProgress, MutationResult } from "../models/mutation";
 import { log, toErrorFields } from "../repositories";
-import { useItemsStore } from "./items-store";
-import { recordActionFailure } from "./notifications-store";
+import { reportActionFailure } from "./notifications-store";
 
 interface MutationState {
   progress: MutationProgress | null;
@@ -38,8 +37,7 @@ export const useMutationStore = create<MutationState>((set, get) => ({
       }
     } catch (error) {
       log.error("file operation cancellation failed", toErrorFields(error));
-      useItemsStore.setState({ message: "Couldn’t cancel the file operation." });
-      recordActionFailure("file-operation-cancel-failed", "Couldn’t cancel the file operation.", error);
+      reportActionFailure("file-operation-cancel-failed", "Couldn’t cancel the file operation.", error);
       if (get().progress?.operationId === progress.operationId) {
         set({ cancelling: false });
       }

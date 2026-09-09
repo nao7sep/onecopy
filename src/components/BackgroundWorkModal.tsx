@@ -120,7 +120,7 @@ export default function BackgroundWorkModal({
                 : sourceCheck.waiting
                   ? "Waiting for the current file operation…"
                 : sourceCheck.running
-                  ? sourceCheck.progress === null ? "Running…" : progressLine(sourceCheck.progress, false)
+                  ? sourceCheck.progress === null ? "Running…" : progressLine(sourceCheck.progress)
                   : sourceCheck.lastResult === "completed"
                     ? "Completed — Start checks again"
                     : sourceCheck.lastResult === "completed-with-issues"
@@ -157,7 +157,7 @@ export default function BackgroundWorkModal({
                     ? "Work queued — paused"
                     : "Paused"
                   : fileInformation.running
-                  ? fileInformation.progress === null ? "Running…" : progressLine(fileInformation.progress, false)
+                  ? fileInformation.progress === null ? "Running…" : progressLine(fileInformation.progress)
                     : fileInformation.queued
                       ? "Queued"
                       : "No work running"}

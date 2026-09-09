@@ -21,6 +21,7 @@ import {
 } from "../repositories/activity";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
+import { beginMainFeedback } from "../state/main-feedback-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import { recordActionFailure } from "../state/notifications-store";
 import { deleteItems } from "./items";
@@ -129,15 +130,17 @@ function beginFullscreen(
   preferredMonitor?: ViewerMonitor,
 ): void {
   const request = ++fullscreenRequest;
+  const feedback = beginMainFeedback("viewer");
   void enterViewerFullscreen(preferredMonitor)
     .then(broadcastViewer)
-    .catch((error) => recoverFullscreenFailure(error, fallback, request));
+    .catch((error) => recoverFullscreenFailure(error, fallback, request, feedback));
 }
 
 function recoverFullscreenFailure(
   error: unknown,
   fallback: "quick" | "main",
   request: number,
+  feedback: ReturnType<typeof beginMainFeedback>,
 ): void {
   log.error("fullscreen viewer failed", toErrorFields(error));
   if (request !== fullscreenRequest) return;
@@ -151,7 +154,7 @@ function recoverFullscreenFailure(
     if (fallback === "quick") {
       useQuickViewStore.getState().setFailure("Couldn’t open full screen.");
     } else {
-      useItemsStore.setState({ message: "Couldn’t open full screen." });
+      feedback.finish({ tone: "danger", text: "Couldn’t open full screen." });
     }
     recordActionFailure("fullscreen-open-failed", "Couldn’t open full screen.", error);
   }
@@ -232,9 +235,10 @@ export function openViewerFromMain(
   preferredMonitor?: ViewerMonitor,
 ): boolean {
   if (useComparisonStore.getState().open) return false;
+  const feedback = beginMainFeedback("viewer");
   const items = useItemsStore.getState();
   if (items.selectedItem === null || items.selectedKeys.size === 0) {
-    useItemsStore.setState({ message: "Select an item to open the viewer." });
+    feedback.finish({ tone: "normal", text: "Select an item to open the viewer." });
     return false;
   }
   const section = items.selected;
@@ -243,7 +247,7 @@ export function openViewerFromMain(
   );
   const anchorPosition = items.selectedPositions.get(items.selectedItem) ?? loadedPositions.get(items.selectedItem);
   if (section === null || anchorPosition === undefined) {
-    useItemsStore.setState({ message: "The selected item is no longer available." });
+    feedback.finish({ tone: "normal", text: "The selected item is no longer available." });
     return false;
   }
   const request = ++viewerOpenRequest;
@@ -286,6 +290,7 @@ export function openViewerFromMain(
         return;
       }
       useQuickViewStore.getState().start(snapshot, presentation);
+      feedback.finish();
       recordActivity({
         kind: "opened",
         owner,
@@ -299,7 +304,7 @@ export function openViewerFromMain(
     .catch((error) => {
       if (request !== viewerOpenRequest) return;
       log.error("viewer sequence start failed", toErrorFields(error));
-      useItemsStore.setState({ message: "Couldn’t open the viewer." });
+      feedback.finish({ tone: "danger", text: "Couldn’t open the viewer." });
       recordActionFailure("viewer-open-failed", "Couldn’t open the viewer.", error);
       recordActivity({
         kind: "failed",

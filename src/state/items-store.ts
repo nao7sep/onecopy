@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "./notifications-store";
+import { beginMainFeedback, invalidateMainFeedback } from "./main-feedback-store";
 import {
   DEFAULT_DESC,
   SORT_ORDERS,
@@ -68,7 +69,6 @@ interface ItemsState {
   detail: ItemDetail | null;
   sortOrders: { media: SortChoice; other: SortChoice };
   currentSort: () => SortChoice;
-  message: string | null;
   setSortOrder: (order: SortOrder) => void;
   select: (
     section: SelectedSection,
@@ -148,7 +148,6 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     media: SORT_ORDERS.media.defaultChoice,
     other: SORT_ORDERS.other.defaultChoice,
   },
-  message: null,
 
   currentSort: () => {
     const state = get();
@@ -171,6 +170,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     const before = get();
     const sameSection = before.selected?.kind === section.kind && before.selected.month === section.month;
     if (!sameSection) {
+      invalidateMainFeedback("section");
       const previousOperationId = latestActivityOperationId("section");
       if (previousOperationId !== undefined) {
         recordActivity({
@@ -299,6 +299,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   selectIdentity: async (key) => {
+    invalidateMainFeedback("selection");
     const ownsIntent = rangeLoad.begin();
     await reconcileCurrent(
       set,
@@ -312,6 +313,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   selectItem: (key, align = "nearest", position) => {
+    invalidateMainFeedback("selection");
     rangeLoad.begin();
     if (key === null) {
       const operationId = latestActivityOperationId("selection");
@@ -380,6 +382,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   setAnchor: (key, position) => {
+    invalidateMainFeedback("selection");
     rangeLoad.begin();
     const previousAnchor = get().selectedItem;
     const operationId = newActivityOperationId("anchor");
@@ -422,6 +425,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   toggleItem: (key, position) => {
+    invalidateMainFeedback("selection");
     rangeLoad.begin();
     const state = get();
     const index = position ?? knownPosition(state, key);
@@ -459,6 +463,8 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   rangeSelect: async (key, position) => {
+    invalidateMainFeedback("selection");
+    const feedback = beginMainFeedback("selection");
     const state = get();
     const section = state.selected;
     const target = position ?? state.itemPositions.get(key);
@@ -499,7 +505,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return;
       log.error("section range selection failed", toErrorFields(error));
-      set({ message: "Couldn’t extend the selection." });
+      feedback.finish({ tone: "danger", text: "Couldn’t extend the selection." });
       recordActionFailure("section-range-load-failed", "Couldn’t extend the selection.", error);
     }
   },
@@ -614,6 +620,10 @@ async function reconcileCurrent(
     const selectedPositions = membersMap(result.selected);
     const anchor = result.anchor === null ? null : identityKey(result.anchor);
     if (anchor !== null && result.anchor !== null) selectedPositions.set(anchor, result.anchor.index);
+    if (anchor !== current.selectedItem || selectedPositions.size !== current.selectedKeys.size ||
+      [...selectedPositions.keys()].some((key) => !current.selectedKeys.has(key))) {
+      invalidateMainFeedback("selection");
+    }
     const rangeBasePositions = membersMap(result.rangeBase);
     if (rangeBasePositions.size === 0 && anchor !== null && selectedPositions.size === 1) {
       rangeBasePositions.set(anchor, result.anchor!.index);
@@ -664,6 +674,7 @@ function contextFromWindow(state: ItemsState, index: number): AnchorContext {
 
 function loadAnchorDetail(key: string | null): void {
   if (key === null) return;
+  const feedback = beginMainFeedback("detail");
   const payload = identityFromKey(key);
   const fresh = detailLoad.begin();
   void invoke<ItemDetail>("get_item_detail", {
@@ -673,14 +684,13 @@ function loadAnchorDetail(key: string | null): void {
     .then((detail) => {
       if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ detail });
+        feedback.finish();
       }
     })
     .catch((error) => {
       if (!fresh() || useItemsStore.getState().selectedItem !== key) return;
       log.error("item detail load failed", toErrorFields(error));
-      useItemsStore.setState({
-        message: "Couldn’t load details for this item.",
-      });
+      feedback.finish({ tone: "danger", text: "Couldn’t load details for this item." });
       recordActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
     });
 }

@@ -1,25 +1,6 @@
-// What the status bar says, as a pure function of what the app knows.
-//
-// The bar used to render scan progress and NOTHING ELSE, so the strip was
-// blank except during a scan — which made a finished scan look like the status
-// bar had disappeared. The app-chrome conventions call a status bar "a curated
-// summary surface" that is "always reserved and always visible"; a surface that
-// is only ever occupied for a few seconds fails that on both counts.
-//
-// The standing state for an inbox-zero handler is HOW MUCH IS LEFT. It is the
-// one number that answers "am I making progress", it changes with every cull,
-// and it is the reason the app exists. Transient conditions outrank it, in the
-// order below, because each is something the user needs to act on:
-//
-//   1. a delete that did not happen  — the one thing they just did that failed
-//   2. an explicit file mutation     — the user's foreground destructive work
-//   3. a scan in progress            — work happening now, with its own detail
-//   4. rescan needed                 — the index is knowingly incomplete
-//   5. the library totals            — the standing state, whenever nothing above
-//
-// Deliberately NOT here: the app version (About owns it), the ffmpeg version
-// (the tools modal owns it, and the chip beside this line carries the states
-// that matter), and anything that would accumulate.
+// Main's standing library totals, live work, and context-bound command result.
+// Persistent failures belong to Notifications/Issues; mutation receipts retain
+// their own truthful accounting and dismissal boundary.
 
 import type { SectionCounts } from "./sections";
 import { progressLine, progressTitle, type ScanProgress } from "./scan";
@@ -39,6 +20,22 @@ export interface Status {
   title?: string;
 }
 
+interface MaintenanceWork {
+  running: boolean;
+  stopping: boolean;
+  progress: ScanProgress | null;
+}
+
+export function activeMaintenanceStatus(source: MaintenanceWork, information: MaintenanceWork) {
+  const work = source.running ? source : information.running ? information : null;
+  return {
+    scanning: work !== null,
+    stopping: work?.stopping ?? false,
+    progress: work?.progress ?? null,
+    workKind: source.running ? "source-check" as const : "file-information" as const,
+  };
+}
+
 function total(sections: { count: number }[]): number {
   return sections.reduce((sum, section) => sum + section.count, 0);
 }
@@ -56,8 +53,7 @@ export function libraryLine(counts: SectionCounts): string {
 }
 
 export function statusLine(input: {
-  /** A failed delete or a refused command; null when the last action was clean. */
-  message: string | null;
+  feedback: Status | null;
   mutation: { progress: MutationProgress; cancelling: boolean } | null;
   mutationResult: MutationResult | null;
   exiting: boolean;
@@ -74,9 +70,6 @@ export function statusLine(input: {
       text: "Finishing current file before exit…",
       title: "OneCopy is waiting until it no longer owns an unsafe file change.",
     };
-  }
-  if (input.message !== null && input.message !== "") {
-    return { tone: "danger", text: input.message, title: input.message };
   }
   if (input.mutation !== null) {
     const text = mutationProgressLine(
@@ -106,6 +99,7 @@ export function statusLine(input: {
       title: text,
     };
   }
+  if (input.feedback !== null) return input.feedback;
   if (input.scanning) {
     const sourceCheck = input.workKind === "source-check";
     if (input.stopping) {
@@ -141,14 +135,6 @@ export function statusLine(input: {
     return { tone: "normal", text: "Starting…" };
   }
   const line = libraryLine(input.counts);
-  if (input.progress?.phase === "indexed") {
-    const terminal = progressLine(input.progress);
-    return {
-      tone: input.progress.failures > 0 ? "warning" : "normal",
-      text: line === "" ? terminal : `${terminal} · ${line}`,
-      title: progressTitle(input.progress),
-    };
-  }
   return line === ""
     ? { tone: "normal", text: "Nothing to handle" }
     : { tone: "normal", text: line };

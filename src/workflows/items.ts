@@ -8,9 +8,10 @@ import { log, toErrorFields } from "../repositories";
 import { retainStatePatch, useAppStore } from "../state/app-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
+import { beginMainFeedback } from "../state/main-feedback-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
-import { recordActionFailure } from "../state/notifications-store";
+import { recordActionFailure, reportActionFailure } from "../state/notifications-store";
 
 interface DeleteBatchOutcome {
   error: string | null;
@@ -109,7 +110,6 @@ export async function deleteItems(
   permanent: boolean,
 ): Promise<void> {
   if (keys.size === 0) return;
-  useItemsStore.setState({ message: null });
   try {
     const positions = useItemsStore.getState().selectedPositions;
     const orderedKeys = [...keys].sort(
@@ -127,16 +127,9 @@ export async function deleteItems(
       }),
       permanent,
     });
-    if (outcome.error !== null) {
-      useItemsStore.setState({
-        message:
-          "The delete operation stopped before it could finish. Review Issues before retrying.",
-      });
-      await useIssuesStore.getState().load();
-    } else if (outcome.failedFiles > 0) {
-      useItemsStore.setState({
-        message: `${outcome.failedFiles} file${outcome.failedFiles === 1 ? "" : "s"} could not be deleted — see Issues.`,
-      });
+    // The mutation runtime owns the complete operation receipt and its
+    // dismissal. Do not shadow it with a second sticky item-store message.
+    if (outcome.error !== null || outcome.failedFiles > 0) {
       await useIssuesStore.getState().load();
     }
     // The item store reconciles selection against the prior displayed order:
@@ -146,10 +139,7 @@ export async function deleteItems(
     await useSectionsStore.getState().loadCounts();
   } catch (error) {
     log.error("delete failed", toErrorFields(error));
-    recordActionFailure("delete-start-failed", "The delete operation could not start.", error);
-    useItemsStore.setState({
-      message: "The delete operation could not start. No further files were changed.",
-    });
+    reportActionFailure("delete-start-failed", "The delete operation could not finish. Review Issues before retrying.", error);
     // A structural error can arrive after earlier logical units committed.
     // Re-read every durable owner instead of leaving removed rows projected.
     await useItemsStore.getState().refresh();
@@ -162,6 +152,7 @@ export async function deleteItems(
 export async function rescanCurrentSection(): Promise<void> {
   const selected = useItemsStore.getState().selected;
   if (!selected) return;
+  const feedback = beginMainFeedback("recheck");
   try {
     const outcome = await invoke<RescanSectionOutcome>("rescan_section", {
       kind: selected.kind,
@@ -170,9 +161,10 @@ export async function rescanCurrentSection(): Promise<void> {
     if (outcome.status === "cancelled") return;
     await useItemsStore.getState().refresh();
     await useSectionsStore.getState().loadCounts();
+    feedback.finish();
   } catch (error) {
     log.error("section rescan failed", toErrorFields(error));
-    useItemsStore.setState({ message: "This section could not be refreshed. Try again." });
+    feedback.finish({ tone: "danger", text: "This section could not be refreshed. Try again." });
     recordActionFailure("section-refresh-failed", "Couldn’t refresh this section.", error);
     await useIssuesStore.getState().load();
   }

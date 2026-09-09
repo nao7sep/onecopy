@@ -15,6 +15,8 @@ import { useWizardStore } from "../../src/state/wizard-store";
 import { useAppStore } from "../../src/state/app-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useItemsStore } from "../../src/state/items-store";
+import { useMainFeedbackStore } from "../../src/state/main-feedback-store";
+import { useMutationStore } from "../../src/state/mutation-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
@@ -142,6 +144,8 @@ beforeEach(() => {
     admit_background_completion: () => null,
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
+  useMainFeedbackStore.setState({ entries: {} });
+  useMutationStore.setState({ progress: null, cancelling: false, result: null, exiting: false });
   useWizardStore.setState({
     open: false,
     dirs: [],
@@ -177,7 +181,6 @@ beforeEach(() => {
     selectedItem: null,
     selectedKeys: new Set(),
     detail: null,
-    message: null,
   });
   usePreviewStore.setState({ follow: false, current: null });
   useQuickViewStore.setState({ session: null, pendingDelete: null });
@@ -507,12 +510,27 @@ describe("the failure workflow", () => {
 
     // The disk says no: the outcome reports the failure, never a rejection,
     // and the issues surface starts carrying it.
-    mockCommand("delete_items", ({ items }) => ({
-      cancelled: false,
-      error: null,
-      failedFiles: 1,
-      items: [{ item: (items as unknown[])[0], failedFiles: 1 }],
-    }));
+    mockCommand("delete_items", async ({ items }) => {
+      // Native mutations publish their complete receipt independently of the
+      // invocation return value; the composed seam must exercise that owner.
+      const progress = {
+        operationId: 77, kind: "delete", phase: "deleting", itemsDone: 0, itemsTotal: 1,
+        filesDone: 0, filesTotal: 1, bytesDone: 0, bytesTotal: 1000, failures: 0,
+        currentFileBytesDone: null, currentFileBytesTotal: null, nextPhase: "complete",
+      };
+      await fireEvent("mutation://progress", progress);
+      await fireEvent("mutation://done", {
+        progress: { ...progress, phase: "complete", failures: 1 }, cancelled: false,
+        summary: {
+          itemsCompleted: 0, itemsPartial: 1, itemsUnstarted: 0, filesCompleted: 0,
+          filesFailed: 1, filesUnstarted: 0, trashAvailable: false, error: null,
+        },
+      });
+      return {
+        cancelled: false, error: null, failedFiles: 1,
+        items: [{ item: (items as unknown[])[0], failedFiles: 1 }],
+      };
+    });
     mockCommand("get_issues", () => ({
       issues: [
         {
@@ -538,8 +556,9 @@ describe("the failure workflow", () => {
     });
     await settle();
 
-    // Status bar: the failure message AND the danger-tinted issues count.
-    expect(view.container.textContent).toContain("could not be deleted");
+    // The authoritative operation receipt and separate Issues count survive
+    // ordinary selection changes; dismissing the receipt reveals no shadow.
+    expect(view.container.textContent).toContain("1 failed");
     expect(view.container.textContent).toContain("1 issue");
 
     // The selection survived the failed delete: recovery moved the anchor to
@@ -547,5 +566,10 @@ describe("the failure workflow", () => {
     const { selectedItem, selectedKeys } = useItemsStore.getState();
     expect(selectedItem).not.toBeNull();
     expect(selectedKeys.size).toBeGreaterThan(0);
+    await act(async () => useItemsStore.getState().selectItem("h2", "nearest", 1));
+    expect(view.container.textContent).toContain("1 failed");
+    await act(async () => useMutationStore.getState().dismissResult());
+    expect(view.container.querySelector("footer")?.textContent).not.toContain("1 failed");
+    expect(view.container.textContent).toContain("1 issue");
   });
 });

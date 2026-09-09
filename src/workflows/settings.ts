@@ -9,7 +9,7 @@ import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
-import { recordActionFailure } from "../state/notifications-store";
+import { recordActionFailure, reportActionFailure } from "../state/notifications-store";
 import { newActivityOperationId, recordActivity } from "../repositories/activity";
 import { useAppShellStore } from "../state/app-shell-store";
 import { refreshBackgroundWorkSoon } from "../state/derived-work-store";
@@ -88,13 +88,10 @@ export async function saveSettings(): Promise<void> {
   try {
     resolved = await invoke<number>("re_resolve_all");
   } catch (error) {
-    useItemsStore.setState({
-      message: "Settings were saved, but the library could not be updated. Try refreshing the section.",
-    });
     log.error("settings re-index failed after save", toErrorFields(error));
-    recordActionFailure(
+    reportActionFailure(
       "settings-reindex-failed",
-      "Settings were saved, but OneCopy couldn’t update the library.",
+      "Settings were saved, but OneCopy couldn’t update the library. Try refreshing the section.",
       error,
     );
   }
@@ -106,10 +103,7 @@ export async function saveSettings(): Promise<void> {
     ]);
   } catch (error) {
     log.error("settings projections refresh failed", toErrorFields(error));
-    useItemsStore.setState({
-      message: "Settings were saved, but OneCopy couldn’t refresh the interface.",
-    });
-    recordActionFailure(
+    reportActionFailure(
       "settings-refresh-failed",
       "Settings were saved, but OneCopy couldn’t refresh the interface.",
       error,

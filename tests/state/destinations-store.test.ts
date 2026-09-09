@@ -74,7 +74,6 @@ function selectAll(keys: string[]): void {
     },
     loading: false,
     detail: null,
-    message: null,
   });
 }
 

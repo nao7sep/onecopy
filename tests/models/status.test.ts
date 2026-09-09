@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { libraryLine, statusLine } from "../../src/models/status";
+import { activeMaintenanceStatus, libraryLine, statusLine } from "../../src/models/status";
 import type { SectionCounts } from "../../src/models/sections";
 import type { ScanProgress } from "../../src/models/scan";
 
@@ -13,7 +13,7 @@ const COUNTS: SectionCounts = {
 };
 
 const IDLE = {
-  message: null,
+  feedback: null,
   mutation: null,
   mutationResult: null,
   exiting: false,
@@ -53,6 +53,18 @@ describe("the library line", () => {
 });
 
 describe("what the status bar shows", () => {
+  it("uses progress and stopping state from the actual running maintenance owner", () => {
+    const source = { running: false, stopping: true, progress: { ...HASH_PROGRESS, phase: "indexed", failures: 2 } };
+    const information = { running: true, stopping: false, progress: HASH_PROGRESS };
+    expect(activeMaintenanceStatus(source, information)).toEqual({
+      scanning: true, stopping: false, progress: HASH_PROGRESS, workKind: "file-information",
+    });
+    expect(activeMaintenanceStatus({ ...source, running: true, progress: null }, information)).toEqual({
+      scanning: true, stopping: true, progress: null, workKind: "source-check",
+    });
+    expect(activeMaintenanceStatus(source, { ...information, running: false }).progress).toBeNull();
+  });
+
   it("is NEVER blank", () => {
     // The whole finding: the bar rendered scan progress and nothing else, so
     // it stood empty except during a scan and looked broken.
@@ -62,7 +74,7 @@ describe("what the status bar shows", () => {
       { ...IDLE, counts: { images: [], videos: [], others: [] } },
       { ...IDLE, scanning: true },
       { ...IDLE, rescanNeeded: true },
-      { ...IDLE, message: "2 files could not be deleted — see Issues." },
+      { ...IDLE, feedback: { tone: "normal" as const, text: "Select an item." } },
     ];
     for (const input of cases) {
       expect(statusLine(input).text).not.toBe("");
@@ -76,23 +88,22 @@ describe("what the status bar shows", () => {
     });
   });
 
-  it("puts a failed delete above everything else", () => {
-    // It is the one thing the user just did that did not happen; a scan
-    // starting behind it must not bury the news.
+  it("keeps owner-authored command guidance informational above background progress", () => {
     const status = statusLine({
       ...IDLE,
-      message: "2 files could not be deleted — see Issues.",
+      feedback: { tone: "normal", text: "Comparison requires images from one similar group." },
       scanning: true,
       progress: HASH_PROGRESS,
       rescanNeeded: true,
     });
-    expect(status.tone).toBe("danger");
-    expect(status.text).toContain("could not be deleted");
+    expect(status.tone).toBe("normal");
+    expect(status.text).toContain("Comparison requires");
   });
 
   it("shows an explicit mutation above background indexing", () => {
     const status = statusLine({
       ...IDLE,
+      feedback: { tone: "normal", text: "Older command guidance" },
       mutation: {
         cancelling: false,
         progress: {
@@ -146,7 +157,7 @@ describe("what the status bar shows", () => {
     const status = statusLine({
       ...IDLE,
       exiting: true,
-      message: "an older message",
+      feedback: { tone: "danger", text: "an older message" },
     });
     expect(status.text).toBe("Finishing current file before exit…");
   });
@@ -174,7 +185,7 @@ describe("what the status bar shows", () => {
     expect(status.title).toContain("current safe step");
   });
 
-  it("keeps an indexed terminal state beside the standing totals", () => {
+  it("returns to library totals instead of retaining old terminal progress", () => {
     const progress: ScanProgress = {
       ...HASH_PROGRESS,
       phase: "indexed",
@@ -186,12 +197,11 @@ describe("what the status bar shows", () => {
       nextPhase: null,
     };
     expect(statusLine({ ...IDLE, progress })).toMatchObject({
-      text: "Up to date · 1,204 images · 87 videos",
-      title: expect.stringContaining("Background work"),
+      text: "1,204 images · 87 videos",
     });
   });
 
-  it("warns when indexing finishes with recoverable file failures", () => {
+  it("leaves settled failures to the separate Issues surface", () => {
     const progress: ScanProgress = {
       ...HASH_PROGRESS,
       phase: "indexed",
@@ -204,8 +214,8 @@ describe("what the status bar shows", () => {
       nextPhase: null,
     };
     expect(statusLine({ ...IDLE, progress })).toMatchObject({
-      tone: "warning",
-      text: "Indexed — 2 failed · open Issues · 1,204 images · 87 videos",
+      tone: "normal",
+      text: "1,204 images · 87 videos",
     });
   });
 

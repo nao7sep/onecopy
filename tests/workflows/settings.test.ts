@@ -36,7 +36,7 @@ beforeEach(() => {
       quarantines: [],
     },
   });
-  useItemsStore.setState({ selected: null, message: null });
+  useItemsStore.setState({ selected: null });
 });
 
 describe("Settings save boundary", () => {
@@ -83,9 +83,10 @@ describe("Settings save boundary", () => {
     await saveSettings();
 
     expect(useAppShellStore.getState().utilitySurface).toBeNull();
-    expect(useItemsStore.getState().message).toContain(
-      "Settings were saved, but the library could not be updated",
-    );
+    expect(invokeCalls.find((call) => call.command === "publish_notification")?.args.request).toMatchObject({
+      message: "Settings were saved, but OneCopy couldn’t update the library. Try refreshing the section.",
+      presentation: "persistent",
+    });
   });
 
   it("does not check sources after saving unrelated settings", async () => {

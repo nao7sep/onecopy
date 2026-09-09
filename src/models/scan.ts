@@ -31,7 +31,7 @@ const PHASE_DESCRIPTIONS: Record<string, string> = {
   resolve: "Chooses each file's display date from saved metadata, filename, and filesystem facts.",
   pair: "Connects RAW sidecars and Live Photo companions to their primary media.",
   indexed:
-    "The durable index is up to date. Previews, snapshots, similarity, faces, and transcripts continue separately in Background work.",
+    "The file-information pass has ended. Previews, snapshots, similarity, faces, and transcripts continue separately in Background work.",
 };
 
 export function phaseLabel(phase: string): string {
@@ -49,12 +49,9 @@ function leaf(path: string): string {
 
 /** Compact status-bar words. Every number comes directly from the backend
  * snapshot; phase-specific work is never inferred from a detail string. */
-export function progressLine(progress: ScanProgress, includeFailures = true): string {
+export function progressLine(progress: ScanProgress): string {
   if (progress.phase === "indexed") {
-    if (!includeFailures) return "No work running";
-    return progress.failures > 0
-      ? `Indexed — ${count(progress.failures)} failed · open Issues`
-      : "Up to date";
+    return "No work running";
   }
 
   const parts: string[] = [];
@@ -86,7 +83,6 @@ export function progressLine(progress: ScanProgress, includeFailures = true): st
       parts.push(`${percent}%`);
     }
   }
-  if (includeFailures && progress.failures > 0) parts.push(`${count(progress.failures)} failed`);
   if (progress.nextPhase !== null && progress.done === progress.total) {
     parts.push(`Next: ${phaseLabel(progress.nextPhase)}`);
   }
@@ -94,10 +90,7 @@ export function progressLine(progress: ScanProgress, includeFailures = true): st
 }
 
 export function progressTitle(progress: ScanProgress): string {
-  const description =
-    progress.phase === "indexed" && progress.failures > 0
-      ? `Indexing finished with ${count(progress.failures)} failed file${progress.failures === 1 ? "" : "s"}; open Issues to inspect them. Previews, snapshots, similarity, faces, and transcripts continue separately in Background work.`
-      : (PHASE_DESCRIPTIONS[progress.phase] ?? phaseLabel(progress.phase));
+  const description = PHASE_DESCRIPTIONS[progress.phase] ?? phaseLabel(progress.phase);
   return progress.nextPhase === null
     ? description
     : `${description} Next: ${phaseLabel(progress.nextPhase)}.`;

@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
+import { beginMainFeedback } from "../state/main-feedback-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useAppShellStore } from "../state/app-shell-store";
@@ -134,13 +135,12 @@ export function useGlobalCommands() {
           items.selected?.kind === "video" ||
           (anchor !== undefined && isAudioFile(anchor.fileName))
         ) {
+          const feedback = beginMainFeedback("playback");
           if (
             items.selectedItem !== null &&
             !toggleMainPlayback(items.selectedItem)
           ) {
-            useItemsStore.setState({
-              message: "This item is not playable in OneCopy right now.",
-            });
+            feedback.finish({ tone: "normal", text: "This item is not playable in OneCopy right now." });
           }
         }
       }

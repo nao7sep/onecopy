@@ -51,7 +51,7 @@ describe("scan phase labels", () => {
     ).toBe("Checking source folders \u2014 source 1/2 · 812 files found · /photos");
   });
 
-  it("shows streamed byte percentage, failures, and the explicit next phase", () => {
+  it("shows streamed byte percentage and the explicit next phase without duplicating failures", () => {
     expect(
       progressLine(
         progress({
@@ -65,7 +65,7 @@ describe("scan phase labels", () => {
           nextPhase: "extract",
         }),
       ),
-    ).toBe("Reading files — 12/40 · large.mov · 55% · 2 failed");
+    ).toBe("Reading files — 12/40 · large.mov · 55%");
     expect(
       progressLine(
         progress({ phase: "pair", done: 3, total: 3, nextPhase: "indexed" }),
@@ -82,12 +82,12 @@ describe("scan phase labels", () => {
     );
   });
 
-  it("claims Up to date only when the index pass has no failures", () => {
+  it("uses neutral settled wording independent of failure facts", () => {
     expect(
       progressLine(
         progress({ phase: "indexed", done: 1, total: 1, nextPhase: null }),
       ),
-    ).toBe("Up to date");
+    ).toBe("No work running");
     expect(
       progressLine(
         progress({
@@ -98,13 +98,13 @@ describe("scan phase labels", () => {
           nextPhase: null,
         }),
       ),
-    ).toBe("Indexed — 2 failed · open Issues");
+    ).toBe("No work running");
   });
 
   it("separates Background Work progress from failure reporting without claiming completion", () => {
     const running = progress({ phase: "hash", done: 2, total: 4, failures: 2, nextPhase: null });
-    expect(progressLine(running, false)).toBe("Reading files — 2/4");
+    expect(progressLine(running)).toBe("Reading files — 2/4");
     expect(running.failures).toBe(2);
-    expect(progressLine({ ...running, phase: "indexed" }, false)).toBe("No work running");
+    expect(progressLine({ ...running, phase: "indexed" })).toBe("No work running");
   });
 });

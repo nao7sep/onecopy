@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
+import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { deleteSelectedItems } from "../../src/workflows/items";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
@@ -59,7 +60,6 @@ function resetStore(): void {
       media: { order: "time", desc: false },
       other: { order: "name", desc: false },
     },
-    message: null,
   });
 }
 
@@ -231,7 +231,7 @@ describe("explicit selection", () => {
     rejectRange?.(new Error("obsolete range failure"));
     await olderRange;
 
-    expect(useItemsStore.getState().message).toBeNull();
+    expect(currentMainFeedback(useMainFeedbackStore.getState())).toBeNull();
     expect(
       invokeCalls.filter((call) => call.command === "record_recent_notification"),
     ).toEqual([]);

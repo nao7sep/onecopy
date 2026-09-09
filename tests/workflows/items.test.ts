@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { rescanCurrentSection } from "../../src/workflows/items";
 import { useItemsStore } from "../../src/state/items-store";
+import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  useMainFeedbackStore.setState({ entries: {} });
   mockCommands({
     log_event: () => null,
     get_issues: () => ({ total: 0, rows: [] }),
   });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
-    message: null,
   });
 });
 
@@ -21,7 +22,7 @@ describe("section repair outcome", () => {
 
     await rescanCurrentSection();
 
-    expect(useItemsStore.getState().message).toBeNull();
+    expect(currentMainFeedback(useMainFeedbackStore.getState())).toBeNull();
   });
 
   it("keeps an unexpected repair failure visible", async () => {
@@ -34,9 +35,9 @@ describe("section repair outcome", () => {
 
     await rescanCurrentSection();
 
-    expect(useItemsStore.getState().message).toBe(
-      "This section could not be refreshed. Try again.",
-    );
-    expect(useItemsStore.getState().message).not.toContain("HOSTILE-SENTINEL");
+    expect(currentMainFeedback(useMainFeedbackStore.getState())).toMatchObject({
+      tone: "danger", text: "This section could not be refreshed. Try again.",
+    });
+    expect(currentMainFeedback(useMainFeedbackStore.getState())?.text).not.toContain("HOSTILE-SENTINEL");
   });
 });

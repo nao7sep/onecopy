@@ -19,10 +19,12 @@ import {
 } from "../state/comparison-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
+import { beginMainFeedback } from "../state/main-feedback-store";
+import { recordActionFailure } from "../state/notifications-store";
 import { useMutationStore } from "../state/mutation-store";
 import { restorePreviewAfterComparison } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
-import { recordInterfaceFailure } from "../utils/failureSurface";
+import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { hasOpenModal } from "../utils/modalStack";
 import { focusComparison, installComparisonImageEvents, openComparisonImage } from "./comparison-image";
@@ -123,6 +125,7 @@ export async function openComparison(
 }
 
 export async function requestComparisonFromMain(): Promise<void> {
+  const feedback = beginMainFeedback("comparison");
   const { selected, selectedKeys, selectedItem } = useItemsStore.getState();
   const hashes = [...selectedKeys].filter((key) => !key.startsWith("path-"));
   const hash = selectedItem !== null && !selectedItem.startsWith("path-") ? selectedItem : null;
@@ -131,9 +134,7 @@ export async function requestComparisonFromMain(): Promise<void> {
     hash === null ||
     hashes.length !== selectedKeys.size
   ) {
-    useItemsStore.setState({
-      message: "Comparison requires images from one similar group.",
-    });
+    feedback.finish({ tone: "normal", text: "Comparison requires images from one similar group." });
     return;
   }
   const operationId = newActivityOperationId("comparison");
@@ -149,10 +150,13 @@ export async function requestComparisonFromMain(): Promise<void> {
   });
   try {
     const valid = await invoke<boolean>("comparison_selection_valid", { hashes });
+    if (!feedback.current()) {
+      recordActivity({ kind: "stale", owner: "comparison", operationId,
+        previous: "running", current: "stale", reason: "superseded" });
+      return;
+    }
     if (!valid) {
-      useItemsStore.setState({
-        message: "Comparison requires images from one similar group.",
-      });
+      feedback.finish({ tone: "normal", text: "Comparison requires images from one similar group." });
       recordActivity({
         kind: "completed",
         owner: "comparison",
@@ -165,7 +169,8 @@ export async function requestComparisonFromMain(): Promise<void> {
     }
   } catch (error) {
     log.error("comparison admission failed", toErrorFields(error));
-    useItemsStore.setState({ message: "Couldn’t check the selected images." });
+    feedback.finish({ tone: "danger", text: "Couldn’t check the selected images." });
+    recordActionFailure("comparison-admission-failed", "Couldn’t check the selected images.", error);
     recordActivity({
       kind: "failed",
       owner: "comparison",
@@ -178,9 +183,7 @@ export async function requestComparisonFromMain(): Promise<void> {
   }
   const result = await openComparison(hash, selectedItem);
   if (result === "unavailable") {
-    useItemsStore.setState({
-      message: "There are no similar images left to compare.",
-    });
+    feedback.finish({ tone: "normal", text: "There are no similar images left to compare." });
     recordActivity({
       kind: "completed",
       owner: "comparison",
@@ -190,9 +193,7 @@ export async function requestComparisonFromMain(): Promise<void> {
       reason: "dependency",
     });
   } else if (result === "failed") {
-    useItemsStore.setState({
-      message: "Couldn’t open Comparison. See Issues for details.",
-    });
+    feedback.finish({ tone: "danger", text: "Couldn’t open Comparison. See Issues for details." });
     recordActivity({
       kind: "failed",
       owner: "comparison",
@@ -202,6 +203,7 @@ export async function requestComparisonFromMain(): Promise<void> {
       reason: "error",
     });
   } else {
+    feedback.finish();
     recordActivity({
       kind: "opened",
       owner: "comparison",
@@ -468,10 +470,7 @@ const installEvents = createEventInstaller(
     recordInterfaceFailure(
       "Comparison-display controls are unavailable. Restart OneCopy to repair them.",
     );
-    useItemsStore.setState({
-      message:
-        "Comparison-display controls are unavailable. Restart OneCopy to repair them.",
-    });
+    presentEscapedFailure("Comparison-display controls are unavailable. Reload OneCopy to repair them.");
   },
 );
 

@@ -145,7 +145,6 @@ beforeEach(() => {
     scrollRequest: null,
     detail: null,
     sortOrders: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
-    message: null,
   });
 });
 

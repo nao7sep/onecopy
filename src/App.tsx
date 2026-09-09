@@ -8,7 +8,8 @@ import {
   SPLITTER_WIDTH,
 } from "./utils/windowSizing";
 import { useSectionsStore } from "./state/sections-store";
-import { statusLine } from "./models/status";
+import { activeMaintenanceStatus, statusLine } from "./models/status";
+import { currentMainFeedback, useMainFeedbackStore } from "./state/main-feedback-store";
 import { useItemsStore } from "./state/items-store";
 import { itemKey } from "./models/items";
 import Sidebar from "./components/Sidebar";
@@ -61,7 +62,7 @@ import DestinationDragProvider from "./components/DestinationDragProvider";
 import { setMediumAutoplay, setSoundEnabled } from "./workflows/playback";
 import NotificationHost from "./components/NotificationHost";
 import StartupFailureScreen from "./components/StartupFailureScreen";
-import { recordActionFailure } from "./state/notifications-store";
+import { reportActionFailure } from "./state/notifications-store";
 import { bootstrapApplication } from "./workflows/app-lifecycle";
 import { useAppShellStore } from "./state/app-shell-store";
 
@@ -114,11 +115,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const counts = useSectionsStore((s) => s.counts);
   const sourceCheck = useSectionsStore((s) => s.sourceCheck);
   const fileInformation = useSectionsStore((s) => s.fileInformation);
-  const scanning = sourceCheck.running || fileInformation.running;
-  const stoppingScan = sourceCheck.stopping || fileInformation.stopping;
-  const progress = sourceCheck.progress ?? fileInformation.progress;
+  const maintenanceStatus = activeMaintenanceStatus(sourceCheck, fileInformation);
+  const { scanning } = maintenanceStatus;
   const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
-  const itemsMessage = useItemsStore((s) => s.message);
+  const feedback = useMainFeedbackStore(currentMainFeedback);
   const mutationProgress = useMutationStore((s) => s.progress);
   const mutationCancelling = useMutationStore((s) => s.cancelling);
   const mutationResult = useMutationStore((s) => s.result);
@@ -185,16 +185,13 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   });
 
   const status = statusLine({
-    message: itemsMessage,
+    feedback,
     mutation: mutationProgress === null
       ? null
       : { progress: mutationProgress, cancelling: mutationCancelling },
     mutationResult,
     exiting: exitQuiescing,
-    scanning,
-    workKind: sourceCheck.running ? "source-check" : "file-information",
-    stopping: stoppingScan,
-    progress,
+    ...maintenanceStatus,
     rescanNeeded,
     counts,
   });
@@ -369,8 +366,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                   // machine-managed and no fleet app reveals its own innards.
                   void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
                     log.warn("reveal logs failed", toErrorFields(error));
-                    useItemsStore.setState({ message: "Couldn’t reveal the logs folder." });
-                    recordActionFailure("reveal-logs-failed", "Couldn’t reveal the logs folder.", error);
+                    reportActionFailure("reveal-logs-failed", "Couldn’t reveal the logs folder.", error);
                   });
                 }}
               >
@@ -547,7 +543,8 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 ? "text-warning"
                 : "text-ink-muted"
           }`}
-          title={status.title}
+          title={status.title ?? status.text}
+          role={status === feedback ? status.tone === "danger" ? "alert" : "status" : undefined}
         >
           {status.text}
         </span>
@@ -559,8 +556,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             onClick={() => {
               void setSoundEnabled(!soundEnabled).catch((error) => {
                 log.error("sound setting failed", toErrorFields(error));
-                useItemsStore.setState({ message: "Couldn’t change Sound." });
-                recordActionFailure("sound-setting-failed", "Couldn’t change Sound.", error);
+                reportActionFailure("sound-setting-failed", "Couldn’t change Sound.", error);
               });
             }}
           >
@@ -573,8 +569,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             onClick={() => {
               void setMediumAutoplay("video", !videoAutoplay).catch((error) => {
                 log.error("video autoplay setting failed", toErrorFields(error));
-                useItemsStore.setState({ message: "Couldn’t change video autoplay." });
-                recordActionFailure("video-autoplay-setting-failed", "Couldn’t change video autoplay.", error);
+                reportActionFailure("video-autoplay-setting-failed", "Couldn’t change video autoplay.", error);
               });
             }}
           >
@@ -587,8 +582,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             onClick={() => {
               void setMediumAutoplay("audio", !audioAutoplay).catch((error) => {
                 log.error("audio autoplay setting failed", toErrorFields(error));
-                useItemsStore.setState({ message: "Couldn’t change audio autoplay." });
-                recordActionFailure("audio-autoplay-setting-failed", "Couldn’t change audio autoplay.", error);
+                reportActionFailure("audio-autoplay-setting-failed", "Couldn’t change audio autoplay.", error);
               });
             }}
           >

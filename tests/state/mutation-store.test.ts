@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MutationProgress } from "../../src/models/mutation";
-import { useItemsStore } from "../../src/state/items-store";
 import { useMutationStore } from "../../src/state/mutation-store";
 import { installMutationEventWiring } from "../../src/workflows/mutation-events";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -29,7 +28,6 @@ beforeEach(() => {
     result: null,
     exiting: false,
   });
-  useItemsStore.setState({ message: "" });
 });
 
 describe("the shared mutation activity projection", () => {
@@ -126,6 +124,8 @@ describe("the shared mutation activity projection", () => {
     await useMutationStore.getState().cancel();
 
     expect(useMutationStore.getState().cancelling).toBe(false);
-    expect(useItemsStore.getState().message).toBe("Couldn’t cancel the file operation.");
+    expect(invokeCalls.find((call) => call.command === "publish_notification")?.args.request).toMatchObject({
+      message: "Couldn’t cancel the file operation.", presentation: "persistent", level: "error",
+    });
   });
 });
