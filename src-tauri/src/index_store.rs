@@ -20,7 +20,29 @@ use rusqlite::Connection;
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 10;
+const SCHEMA_REVISION: i64 = 11;
+
+const ISSUE_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS issues (
+  id             INTEGER PRIMARY KEY,
+  path           TEXT NOT NULL DEFAULT '',
+  kind           TEXT NOT NULL,
+  message        TEXT,
+  first_seen_utc TEXT NOT NULL,
+  last_seen_utc  TEXT NOT NULL,
+  occurrence_count INTEGER NOT NULL DEFAULT 1,
+  closed_at_utc  TEXT,
+  closure        TEXT CHECK (closure IN ('dismissed', 'resolved')),
+  CHECK ((closed_at_utc IS NULL) = (closure IS NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_live_identity
+  ON issues (kind, path) WHERE closed_at_utc IS NULL;
+CREATE INDEX IF NOT EXISTS idx_issues_first_seen
+  ON issues (first_seen_utc, id) WHERE closed_at_utc IS NULL;
+CREATE VIEW IF NOT EXISTS active_issues AS
+  SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count
+  FROM issues WHERE closed_at_utc IS NULL;
+";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -293,24 +315,6 @@ CREATE TABLE IF NOT EXISTS similar_group_members (
 CREATE INDEX IF NOT EXISTS idx_similar_members_content
   ON similar_group_members (content_hash);
 
--- Issues are CURRENT-STATE diagnostics. Identity is (kind, path): a recurrence
--- UPDATES the row, so a condition persisting for weeks is one line, not one
--- per scan. `path` is ''
--- when the condition has no file anchor (a rootless walk error); NULLs would
--- break the unique identity, which is why the column is NOT NULL.
-CREATE TABLE IF NOT EXISTS issues (
-  id             INTEGER PRIMARY KEY,
-  path           TEXT NOT NULL DEFAULT '',
-  kind           TEXT NOT NULL,
-  message        TEXT,
-  first_seen_utc TEXT NOT NULL,
-  last_seen_utc  TEXT NOT NULL,
-  occurrence_count INTEGER NOT NULL DEFAULT 1,
-  UNIQUE (kind, path)
-);
-CREATE INDEX IF NOT EXISTS idx_issues_first_seen
-  ON issues (first_seen_utc, id);
-
 -- Recent is restart-persistent notification history, not an operation plan
 -- or permanent ledger. Equal notices coalesce and the owning publisher prunes
 -- the table to the approved age/count window after each write.
@@ -389,10 +393,22 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                9 => {
-                    conn.execute_batch(
+                9 | 10 => {
+                    if current == 9 {
+                        conn.execute_batch(
                         "ALTER TABLE paths ADD COLUMN hash_attempt_failed INTEGER NOT NULL DEFAULT 0;
                          ALTER TABLE paths ADD COLUMN metadata_attempt_failed INTEGER NOT NULL DEFAULT 0;"
+                        ).map_err(|error| error.to_string())?;
+                    }
+                    conn.execute_batch(
+                        "ALTER TABLE issues RENAME TO issues_before_history;
+                         DROP INDEX IF EXISTS idx_issues_first_seen;"
+                    ).map_err(|error| error.to_string())?;
+                    conn.execute_batch(ISSUE_SCHEMA).map_err(|error| error.to_string())?;
+                    conn.execute_batch(
+                        "INSERT INTO issues (id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count)
+                         SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM issues_before_history;
+                         DROP TABLE issues_before_history;"
                     ).map_err(|error| error.to_string())?;
                 }
                 0..=8 => {
@@ -413,6 +429,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
              DROP TABLE IF EXISTS paths;
              DROP TABLE IF EXISTS contents;
              DROP TABLE IF EXISTS scan_dirs;
+             DROP VIEW IF EXISTS active_issues;
              DROP TABLE IF EXISTS issues;
              DROP TABLE IF EXISTS recent_notifications;
              DROP TABLE IF EXISTS volumes;
@@ -421,6 +438,8 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                     )
                     .map_err(|error| error.to_string())?;
                     conn.execute_batch(SCHEMA)
+                        .map_err(|error| error.to_string())?;
+                    conn.execute_batch(ISSUE_SCHEMA)
                         .map_err(|error| error.to_string())?;
                 }
                 _ => return Err(format!("unsupported index schema revision: {current}")),
@@ -455,10 +474,9 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
 
 // EXCEPTION (tests-folder conventions): the schema-shape test stays in-file
 // because it asserts the private SCHEMA constant's effect on a fresh file,
-/// Records (or refreshes) one issue. Identity is (kind, path): a recurrence
-/// updates the message and last-seen stamp, never inserts a second row, so a
-/// condition persisting across many scans stays ONE line. `path` None anchors
-/// to '' — the rootless case.
+/// Coalesces one live condition by (kind, path). Closed records stay immutable;
+/// a new failed attempt after dismissal or resolution gets a new identity.
+/// `path` None anchors to '' so rootless conditions also coalesce.
 pub fn upsert_issue(
     conn: &Connection,
     path: Option<&str>,
@@ -469,7 +487,7 @@ pub fn upsert_issue(
     conn.execute(
         "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
          VALUES (?1, ?2, ?3, ?4, ?4) \
-         ON CONFLICT (kind, path) DO UPDATE \
+         ON CONFLICT (kind, path) WHERE closed_at_utc IS NULL DO UPDATE \
          SET message = excluded.message,
              last_seen_utc = excluded.last_seen_utc,
              occurrence_count = issues.occurrence_count + 1",
@@ -479,28 +497,34 @@ pub fn upsert_issue(
     Ok(())
 }
 
-/// Clears an issue whose condition a scan has just found RESOLVED — the
-/// success counterpart of `upsert_issue`, which is what makes scan-derived
-/// issues current-state rather than a log: a fixed file's row disappears the
-/// next time the pipeline touches it. Clearing something never recorded is a
-/// no-op by design.
+/// Retires resolved live conditions without erasing their diagnostic context.
 pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<(), String> {
+    let now = crate::logging::now_iso_millis();
     for kind in kinds {
         conn.execute(
-            "DELETE FROM issues WHERE kind = ?1 AND path = ?2",
-            rusqlite::params![kind, path],
+            "UPDATE issues SET closure = 'resolved', closed_at_utc = ?3
+             WHERE kind = ?1 AND path = ?2 AND closed_at_utc IS NULL",
+            rusqlite::params![kind, path, now],
         )
         .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Whether any issue rows exist at all — the walk and the passes consult this
-/// once so a clean index never pays a per-file DELETE for conditions that were
-/// never recorded.
+/// Whether live conditions exist; retained history never causes cleanup work.
 pub fn any_issues(conn: &Connection) -> Result<bool, String> {
-    conn.query_row("SELECT EXISTS (SELECT 1 FROM issues)", [], |r| r.get(0))
+    conn.query_row("SELECT EXISTS (SELECT 1 FROM active_issues)", [], |r| r.get(0))
         .map_err(|error| error.to_string())
+}
+
+/// Dismiss one live record or the complete live inbox, not just a loaded page.
+pub fn dismiss_issues(conn: &Connection, id: Option<i64>) -> Result<(), String> {
+    conn.execute(
+        "UPDATE issues SET closure = 'dismissed', closed_at_utc = ?2
+         WHERE closed_at_utc IS NULL AND (?1 IS NULL OR id = ?1)",
+        rusqlite::params![id, crate::logging::now_iso_millis()],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Clears only reconstructible library facts. Durable configuration, managed

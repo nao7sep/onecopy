@@ -978,7 +978,7 @@ pub fn transcript_result(
         Some(FAILED) => {
             let message = conn
                 .query_row(
-                    "SELECT i.message FROM issues i JOIN paths p ON p.abs_path = i.path
+                    "SELECT i.message FROM active_issues i JOIN paths p ON p.abs_path = i.path
                      WHERE i.kind = ?1 AND p.content_hash = ?2 LIMIT 1",
                     params![TRANSCRIPT_ERROR, hash],
                     |row| row.get(0),
@@ -1377,7 +1377,7 @@ fn content_hash_for_issue(
 ) -> Result<Option<(String, String, String)>, String> {
     conn.query_row(
         "SELECT i.kind, i.path, p.content_hash
-         FROM issues i
+         FROM active_issues i
          JOIN paths p ON p.abs_path = i.path AND p.missing = 0
          WHERE i.id = ?1 AND p.content_hash IS NOT NULL
          LIMIT 1",
@@ -1522,7 +1522,7 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
         .execute(
             "UPDATE contents SET derived_at_utc = NULL \
              WHERE derived_at_utc IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
                            WHERE p.content_hash = contents.hash AND p.missing = 0 \
                              AND i.kind IN (?1, ?2))",
             params![PREVIEW_ERROR, VIDEO_POSTER_ERROR],
@@ -1532,7 +1532,7 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
         .execute(
             "UPDATE contents SET strip_frames = NULL \
              WHERE strip_frames IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
                            WHERE p.content_hash = contents.hash AND p.missing = 0 \
                              AND i.kind = ?1)",
             [VIDEO_STRIP_ERROR],
@@ -1542,7 +1542,7 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
         .execute(
             "UPDATE analysis_receipts SET face_state = NULL, face_updated_at_utc = NULL \
              WHERE face_state IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
                            WHERE p.content_hash = analysis_receipts.content_hash \
                              AND p.missing = 0 AND i.kind = ?1)",
             [FACE_ERROR],
@@ -1553,7 +1553,7 @@ pub fn retry_all(conn: &Connection) -> Result<u64, String> {
             "UPDATE analysis_receipts \
              SET transcript_state = NULL, transcript_updated_at_utc = NULL \
              WHERE transcript_state IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN issues i ON i.path = p.abs_path \
+               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
                            WHERE p.content_hash = analysis_receipts.content_hash \
                              AND p.missing = 0 AND i.kind = ?1)",
             [TRANSCRIPT_ERROR],
@@ -1624,7 +1624,7 @@ pub(crate) fn resource_class_for_issue(
     issue_id: i64,
 ) -> Result<Option<WorkClass>, String> {
     let kind: Option<String> = conn
-        .query_row("SELECT kind FROM issues WHERE id = ?1", [issue_id], |row| {
+        .query_row("SELECT kind FROM active_issues WHERE id = ?1", [issue_id], |row| {
             row.get(0)
         })
         .optional()
@@ -1641,7 +1641,7 @@ pub(crate) fn take_resource_issue(
 ) -> Result<Option<WorkClass>, String> {
     let class = resource_class_for_issue(conn, issue_id)?;
     if class.is_some() {
-        conn.execute("DELETE FROM issues WHERE id = ?1", [issue_id])
+        conn.execute("UPDATE issues SET closure = 'resolved', closed_at_utc = ?2 WHERE id = ?1 AND closed_at_utc IS NULL", rusqlite::params![issue_id, crate::logging::now_iso_millis()])
             .map_err(|error| error.to_string())?;
     }
     Ok(class)
@@ -1649,7 +1649,7 @@ pub(crate) fn take_resource_issue(
 
 pub(crate) fn take_all_resource_issues(conn: &Connection) -> Result<Vec<WorkClass>, String> {
     let mut statement = conn
-        .prepare("SELECT DISTINCT kind FROM issues WHERE kind LIKE 'resource-limit-%'")
+        .prepare("SELECT DISTINCT kind FROM active_issues WHERE kind LIKE 'resource-limit-%'")
         .map_err(|error| error.to_string())?;
     let kinds = statement
         .query_map([], |row| row.get::<_, String>(0))
@@ -1665,7 +1665,7 @@ pub(crate) fn take_all_resource_issues(conn: &Connection) -> Result<Vec<WorkClas
         })
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
-    conn.execute("DELETE FROM issues WHERE kind LIKE 'resource-limit-%'", [])
+    conn.execute("UPDATE issues SET closure = 'resolved', closed_at_utc = ?1 WHERE kind LIKE 'resource-limit-%' AND closed_at_utc IS NULL", [crate::logging::now_iso_millis()])
         .map_err(|error| error.to_string())?;
     Ok(classes)
 }

@@ -106,7 +106,7 @@ pub fn recheck_filesystem_issue(
 ) -> Result<RecheckOutcome, String> {
     let issue: Option<(String, String)> = conn
         .query_row(
-            "SELECT kind, path FROM issues WHERE id = ?1",
+            "SELECT kind, path FROM active_issues WHERE id = ?1",
             [issue_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -1233,7 +1233,8 @@ fn walk_root_with_progress(
             .map_err(|error| error.to_string())?;
         publication
             .execute(
-                "DELETE FROM issues WHERE kind IN (?1, ?2, ?3, ?4, ?5) \
+                "UPDATE issues SET closure = 'resolved', closed_at_utc = ?6 \
+                 WHERE closed_at_utc IS NULL AND kind IN (?1, ?2, ?3, ?4, ?5) \
                  AND path IN (\
                      SELECT abs_path FROM walk_vanished_paths\
                  )",
@@ -1243,6 +1244,7 @@ fn walk_root_with_progress(
                     READ_ERROR,
                     METADATA_READ_ERROR,
                     COPIES_DISAGREE,
+                    &logging::now_iso_millis(),
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -1293,9 +1295,10 @@ fn walk_root_with_progress(
         // root no longer exist, including when the failed entry itself was
         // removed and therefore yielded no success event above.
         conn.execute(
-            "DELETE FROM issues WHERE kind = ?1 \
+            "UPDATE issues SET closure = 'resolved', closed_at_utc = ?4 \
+             WHERE closed_at_utc IS NULL AND kind = ?1 \
              AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
-            params![WALK_ERROR, root_str, placeholders_root],
+            params![WALK_ERROR, root_str, placeholders_root, logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
 
@@ -1304,7 +1307,7 @@ fn walk_root_with_progress(
         // preserve the exact paths that failed again in this pass.
         let mut statement = conn
             .prepare(
-                "SELECT path FROM issues WHERE kind = ?1 \
+                "SELECT path FROM active_issues WHERE kind = ?1 \
                  AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
             )
             .map_err(|error| error.to_string())?;

@@ -1,5 +1,22 @@
 use onecopy_lib::index_store;
 
+fn restore_legacy_issue_shape(conn: &rusqlite::Connection) {
+    conn.execute_batch(
+        "DROP VIEW active_issues;
+         ALTER TABLE issues RENAME TO fixture_history_shape;
+         DROP INDEX idx_issues_live_identity;
+         DROP INDEX idx_issues_first_seen;
+         CREATE TABLE issues (
+           id INTEGER PRIMARY KEY, path TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, message TEXT,
+           first_seen_utc TEXT NOT NULL, last_seen_utc TEXT NOT NULL,
+           occurrence_count INTEGER NOT NULL DEFAULT 1, UNIQUE(kind, path)
+         );
+         INSERT INTO issues SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM fixture_history_shape;
+         DROP TABLE fixture_history_shape;
+         CREATE INDEX idx_issues_first_seen ON issues(first_seen_utc, id);"
+    ).unwrap();
+}
+
 #[test]
 fn revision_nine_upgrade_preserves_library_and_diagnostics_across_concurrent_openers() {
     let root = tempfile::tempdir().unwrap();
@@ -15,6 +32,7 @@ fn revision_nine_upgrade_preserves_library_and_diagnostics_across_concurrent_ope
          ALTER TABLE paths DROP COLUMN metadata_attempt_failed;
          PRAGMA user_version = 9;"
     ).unwrap();
+    restore_legacy_issue_shape(&conn);
     drop(conn);
     let start = std::sync::Arc::new(std::sync::Barrier::new(4));
     let workers = (0..4)
@@ -60,6 +78,92 @@ fn revision_nine_upgrade_preserves_library_and_diagnostics_across_concurrent_ope
             .get::<_, String>(0))
             .unwrap(),
         "ready"
+    );
+}
+
+#[test]
+fn revision_ten_upgrade_retains_issue_identity_and_allows_new_occurrences_after_dismissal() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail").unwrap();
+    index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail").unwrap();
+    restore_legacy_issue_shape(&conn);
+    let before: (i64, String, String, i64) = conn
+        .query_row(
+            "SELECT id, first_seen_utc, last_seen_utc, occurrence_count FROM issues",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    conn.pragma_update(None, "user_version", 10).unwrap();
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    let after = conn
+        .query_row(
+            "SELECT id, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+    index_store::dismiss_issues(&conn, Some(before.0)).unwrap();
+    index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "new attempt").unwrap();
+    assert_eq!(onecopy_lib::queries::issues(&conn, 10).unwrap().0, 1);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn failed_history_upgrade_rolls_back_the_whole_migration() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    index_store::upsert_issue(&conn, None, "read-error", "retained").unwrap();
+    restore_legacy_issue_shape(&conn);
+    // A malformed old schema fails after the rename, while copying records.
+    conn.execute_batch(
+        "ALTER TABLE issues DROP COLUMN message;
+        ALTER TABLE paths DROP COLUMN hash_attempt_failed;
+        ALTER TABLE paths DROP COLUMN metadata_attempt_failed;
+        PRAGMA user_version = 9;",
+    )
+    .unwrap();
+    drop(conn);
+    assert!(index_store::open(&db).is_err());
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        9
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('paths') WHERE name = 'hash_attempt_failed'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'issues_before_history'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
     );
 }
 

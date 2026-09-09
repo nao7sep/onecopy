@@ -85,10 +85,19 @@ fn section_recheck_reopens_both_stages_and_success_clears_the_condition() {
     assert_eq!(scanner::hash_pending(&conn, &cache).unwrap().full_hashed, 1);
     assert_eq!(scanner::extract_pending(&conn).unwrap().extracted, 1);
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row
+        conn.query_row("SELECT COUNT(*) FROM active_issues", [], |row| row
             .get::<_, i64>(0))
             .unwrap(),
         0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
     );
 }
 

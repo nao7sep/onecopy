@@ -1626,10 +1626,7 @@ fn trash_empty_cancel() -> Result<bool, String> {
     mutation_runtime::request_active_cancel()
 }
 
-// Dismissal is the user's half of the issues lifecycle: scan-derived rows
-// clear themselves when a scan finds the condition resolved, these two clear
-// everything else. Deleting is honest — the log file keeps the history, and a
-// dismissed-but-persisting scan condition returns on the next scan.
+// Dismissal hides the live entry while retaining its diagnostic record.
 #[tauri::command(async)]
 fn dismiss_issue(app: AppHandle, id: i64) -> Result<(), String> {
     logging::boundary(
@@ -1638,9 +1635,7 @@ fn dismiss_issue(app: AppHandle, id: i64) -> Result<(), String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            conn.execute("DELETE FROM issues WHERE id = ?1", [id])
-                .map_err(|e| e.to_string())?;
-            Ok(())
+            index_store::dismiss_issues(&conn, Some(id))
         },
         |_| json!({}),
     )
@@ -1654,9 +1649,7 @@ fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
         || {
             let data_root = paths::data_root(&app)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            conn.execute("DELETE FROM issues", [])
-                .map_err(|e| e.to_string())?;
-            Ok(())
+            index_store::dismiss_issues(&conn, None)
         },
         |_| json!({}),
     )

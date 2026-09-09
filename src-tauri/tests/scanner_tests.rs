@@ -137,7 +137,7 @@ fn walk_adds_then_skips_unchanged_then_marks_missing() {
     let s2 = walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!((s2.added, s2.unchanged), (0, 2));
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'stat-error'"),
+        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'stat-error'"),
         0,
         "a complete walk retires a vanished pre-insert stat failure"
     );
@@ -242,7 +242,8 @@ fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
     assert_eq!(repaired.errors, 0);
     assert_eq!(repaired.marked_missing, 1);
     assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 0);
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM issues"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues"), 0);
+    assert!(count(&f.conn, "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'") > 0);
 }
 
 #[test]
@@ -314,7 +315,8 @@ fn filesystem_issue_rechecks_are_exact_and_leave_pipeline_scope_explicit() {
             .unwrap(),
         1
     );
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM issues"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues"), 0);
+    assert!(count(&f.conn, "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'") > 0);
 }
 
 #[test]

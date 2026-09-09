@@ -79,7 +79,7 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
     assert_eq!(restat_dir(&conn, &root, &lists()).unwrap(), 1);
     let state: (i64, i64) = conn
         .query_row(
-            "SELECT (SELECT missing FROM paths), (SELECT COUNT(*) FROM issues)",
+            "SELECT (SELECT missing FROM paths), (SELECT COUNT(*) FROM active_issues)",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

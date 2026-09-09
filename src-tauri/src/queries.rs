@@ -1745,14 +1745,14 @@ pub struct IssueRow {
 }
 
 const ISSUES_PAGE_SQL: &str =
-    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM issues
+    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
      ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
 
 /// OLDEST first (the developer's call — the longest-standing condition leads),
 /// capped; the count comes with it for the status-bar element.
 pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), String> {
     let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(ISSUES_PAGE_SQL)

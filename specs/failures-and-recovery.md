@@ -18,7 +18,7 @@ Technical context belongs in the application log. User-facing records use plain 
 
 A failure requiring user attention becomes a restart-persistent Issue. If OneCopy cannot save the promised Issue, it stops the affected work and presents the recording failure directly instead of continuing without a durable explanation.
 
-Repeated occurrences of the same unresolved condition update one record with a count plus useful first and latest occurrence times rather than producing an unlimited stream of duplicates. A successful retry or recheck may resolve a recoverable condition. A record otherwise remains until the user dismisses it or its owning feature establishes that it no longer applies.
+Repeated occurrences of the same visible unresolved condition update one record with a count plus useful first and latest occurrence times rather than producing an unlimited stream of duplicates. A successful retry or recheck may resolve a recoverable condition. Dismissal and resolution remove a record from the live inbox, not from retained diagnostics: the record keeps its original context and the time and reason it left the inbox. Dismiss all applies to every live entry, including entries beyond the loaded page, without changing already archived records or notification history. A later genuinely failed attempt creates a new visible record rather than reviving or modifying the dismissed or resolved one. Reading or refreshing the inbox never constitutes a new attempt, and archived records do not participate in current recovery controls or work eligibility.
 
 ## Notifications and modals
 

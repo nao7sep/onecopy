@@ -61,7 +61,7 @@ pub fn projection(
 
 pub fn issue_has_kind(conn: &Connection, issue_id: i64, kind: &str) -> Result<bool, String> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM issues WHERE id = ?1 AND kind = ?2)",
+        "SELECT EXISTS(SELECT 1 FROM active_issues WHERE id = ?1 AND kind = ?2)",
         rusqlite::params![issue_id, kind],
         |row| row.get(0),
     )
@@ -70,7 +70,7 @@ pub fn issue_has_kind(conn: &Connection, issue_id: i64, kind: &str) -> Result<bo
 
 pub fn contains_kind(conn: &Connection, kind: &str) -> Result<bool, String> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM issues WHERE kind = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM active_issues WHERE kind = ?1)",
         [kind],
         |row| row.get(0),
     )

@@ -831,7 +831,7 @@ fn a_recurring_issue_is_one_row_whose_last_seen_moves() {
 #[test]
 fn clearing_retires_only_the_named_kinds_at_the_path() {
     // The success counterpart that makes issues current-state: a scan that
-    // finds the condition resolved deletes the row, and only that row.
+    // finds the condition resolved retires the row, and only that row.
     let conn = db();
     index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "x").unwrap();
     index_store::upsert_issue(&conn, Some("/root/a.jpg"), "delete-error", "op record").unwrap();
