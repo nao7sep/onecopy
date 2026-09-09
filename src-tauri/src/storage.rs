@@ -228,6 +228,23 @@ pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
     load_from_root(&paths::data_root(app)?)
 }
 
+/// Appearance is a read-only projection, not another application bootstrap.
+/// It never materializes, repairs, or drains quarantine notices owned by Main.
+pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
+    let config: JsonValue = match std::fs::read(root.join(CONFIG_FILE_NAME)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !config.is_object() {
+        return Err("Appearance requires a configuration object".to_string());
+    }
+    Ok(serde_json::json!({
+        "theme": config.get("theme"),
+        "uiFontFamily": config.get("uiFontFamily"),
+    }))
+}
+
 /// Reads config for the pre-window setup paths. A quarantine here happens
 /// before any reporting surface exists, so its record is parked for the
 /// frontend's `load_from_root` to publish.

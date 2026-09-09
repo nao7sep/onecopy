@@ -10,7 +10,7 @@ import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
 import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, initLogging } from "./repositories";
-import { watchSystemTheme } from "./utils/theme";
+import { installWindowAppearance } from "./workflows/window-appearance";
 import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
@@ -23,10 +23,6 @@ const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
 // already works before this resolves (defaulting to the dev-build gate).
 void initLogging();
-
-// Theme before first meaningful paint, in EVERY window (one bundle serves
-// all); the OS-preference listener keeps "system" live.
-watchSystemTheme();
 
 // The webview's default context menu (Look Up, Translate, Search with
 // Google, Inspect Element…) belongs to a web page, not a desktop app —
@@ -74,7 +70,7 @@ window.addEventListener("unhandledrejection", (event) => {
   presentEscapedFailure(presentation);
 });
 
-void installMediaUseBoundary()
+void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
   .then(() => {
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>

@@ -220,6 +220,16 @@ fn record_interface_failure(window: tauri::WebviewWindow, message: String) -> Re
     )
 }
 
+#[tauri::command(async)]
+fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
+    logging::boundary(
+        "appearance_preferences",
+        json!({}),
+        || storage::read_appearance_preferences(&paths::data_root(&app)?),
+        |_| json!({}),
+    )
+}
+
 // Config and state saves are PATCHES merged core-side: the core holds the
 // file, so it is the one owner of the read-modify-write, and no frontend
 // store's stale cached copy can blind-overwrite another's save. Returns the
@@ -249,6 +259,8 @@ fn patch_config(
             ai_acceleration::validate_patch(&patch)?;
             let outcome = storage::patch_config(&app, &patch)?;
             report_quarantine(&app, outcome.quarantined);
+            // Invalidation, not a potentially stale snapshot from a racing save.
+            failure_runtime::emit_or_record(&app, "appearance://changed", json!({}));
             let current_source_dirs = outcome
                 .merged
                 .get("sourceDirs")
@@ -2147,6 +2159,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_app_data,
             patch_config,
+            appearance_preferences,
             patch_state,
             record_interface_failure,
             start_source_check,

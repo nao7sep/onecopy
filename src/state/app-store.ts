@@ -18,7 +18,6 @@ import {
   type QuarantineRecord,
   type StartupFailure,
 } from "../repositories";
-import { applyTheme, applyUiFont } from "../utils/theme";
 import { listen } from "@tauri-apps/api/event";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { reportActionFailure } from "./notifications-store";
@@ -68,10 +67,8 @@ export function retainStatePatch(patch: Record<string, unknown>): void {
   void useAppStore.getState().patchState(patch).catch(reportStatePatchFailure);
 }
 
-// Startup appearance and application bootstrap both need the same document.
-// Keep that first read single-flight: load_app_data also carries one-shot
-// quarantine records, so two independent readers could let the appearance
-// probe consume a recovery notice before the main surface sees it.
+// Main bootstrap is single-flight because load_app_data carries one-shot
+// quarantine records. Auxiliary appearance reads never use this channel.
 let initialization: Promise<LoadedAppData | null> | null = null;
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -87,9 +84,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) =>
         s.appData === null ? s : { appData: { ...s.appData, config: merged } },
       );
-      // The main window re-themes live; other windows apply at their load.
-      applyTheme(merged.theme);
-      applyUiFont(merged.uiFontFamily);
     } catch (error) {
       log.error("config patch failed", toErrorFields(error));
       throw error;
@@ -149,14 +143,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       try {
         const result = await loadAppData();
         if (result.status === "blocked") {
-          applyTheme("system");
-          applyUiFont(undefined);
           set({ startupFailure: result.failure });
           return null;
         }
         const data = result.data;
-        applyTheme(data.config?.theme);
-        applyUiFont(data.config?.uiFontFamily);
         set((s) => ({
           appData: data,
           startupFailure: null,
@@ -171,8 +161,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
         return data;
       } catch (error) {
-        applyTheme("system");
-        applyUiFont(undefined);
         set({
           startupFailure: {
             title: "OneCopy could not start safely",

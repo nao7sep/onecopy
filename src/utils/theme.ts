@@ -1,9 +1,8 @@
 // Theme application: config's `theme` preference ("system" | "light" |
 // "dark", default system) resolves against the OS preference and lands as
 // the `.dark` class on the root element — the switch every semantic token in
-// App.css keys off. Every webview window runs this through main.tsx, so the
-// preview and comparison windows follow the same preference (they pick up an
-// in-session change on their next load; the main window re-applies live).
+// App.css keys off. The shared window-appearance bootstrap owns initialization
+// and saved-preference updates for every webview.
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { log, toErrorFields } from "../repositories";
@@ -60,8 +59,11 @@ export function applyUiFont(family: unknown): void {
 }
 
 /** Re-applies on OS theme changes while the preference is "system". */
-export function watchSystemTheme(): void {
-  window
-    .matchMedia("(prefers-color-scheme: dark)")
-    .addEventListener("change", () => applyTheme(currentPref));
+export function watchSystemTheme(): () => void {
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const changed = () => {
+    if (currentPref !== "light" && currentPref !== "dark") applyTheme(currentPref);
+  };
+  media.addEventListener("change", changed);
+  return () => media.removeEventListener("change", changed);
 }
