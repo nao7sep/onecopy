@@ -25,6 +25,8 @@ import { useSectionsStore } from "../state/sections-store";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { hasOpenModal } from "../utils/modalStack";
+import { focusComparison, installComparisonImageEvents, openComparisonImage } from "./comparison-image";
+import type { MonitorRect } from "../utils/windowBounds";
 import {
   latestActivityOperationId,
   newActivityOperationId,
@@ -56,6 +58,11 @@ async function refreshLibrary(): Promise<void> {
   ]);
 }
 
+async function restoreMainFocus(): Promise<void> {
+  await getCurrentWindow().setFocus();
+  document.getElementById("main-item-area")?.focus();
+}
+
 async function applyResult(
   result: ComparisonCommitResult | null,
 ): Promise<void> {
@@ -72,6 +79,7 @@ async function applyResult(
   await useItemsStore.getState().selectAfterFamily(mainRecoveryAfterFamily);
   mainRecoveryAfterFamily = null;
   await restorePreviewAfterComparison();
+  await restoreMainFocus();
 }
 
 export async function openComparison(
@@ -87,6 +95,7 @@ export async function openComparison(
       appState(),
     );
   if (result === "opened") {
+    await focusComparison();
     const items = useItemsStore.getState();
     const section = items.selected;
     const hashes = useComparisonStore.getState().originalMemberHashes;
@@ -212,6 +221,7 @@ export async function closeComparison(): Promise<void> {
   await useComparisonStore.getState().close();
   await refreshLibrary();
   await restorePreviewAfterComparison();
+  await restoreMainFocus();
   recordActivity({
     kind: "closed",
     owner: "comparison",
@@ -268,6 +278,7 @@ export async function unlinkComparisonSelection(): Promise<void> {
   await Promise.all([refreshLibrary(), useIssuesStore.getState().load()]);
   if (result === "closed") {
     await restorePreviewAfterComparison();
+    await restoreMainFocus();
   } else {
     await reconcileComparisonMembership();
   }
@@ -288,6 +299,7 @@ export async function reconcileComparisonMembership(): Promise<void> {
     if (!stillOpen) {
       await refreshLibrary();
       await restorePreviewAfterComparison();
+      await restoreMainFocus();
     }
   } catch (error) {
     log.warn("comparison membership refresh failed", toErrorFields(error));
@@ -344,6 +356,8 @@ export function handleComparisonKey(event: {
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
+  returnWindow?: string;
+  monitor?: MonitorRect;
 }): boolean {
   const store = useComparisonStore.getState();
   if (!store.open || hasOpenModal()) return false;
@@ -421,7 +435,7 @@ export function handleComparisonKey(event: {
     }
   }
   if (event.key === " ") {
-    store.toggleActive();
+    void openComparisonImage(event.returnWindow, event.monitor);
     return true;
   }
   return false;
@@ -430,6 +444,10 @@ export function handleComparisonKey(event: {
 const installEvents = createEventInstaller(
   async (listeners) => {
     if (getCurrentWindow().label !== "main") return;
+    await installComparisonImageEvents(listeners);
+    await listeners.listen<{ slice: number; aspect: number }>("comparison://layout", (event) => {
+      useComparisonStore.getState().setDisplayAspect(event.payload.slice, event.payload.aspect);
+    });
     await listeners.listen<{
       key: string;
       repeat?: boolean;
@@ -437,6 +455,8 @@ const installEvents = createEventInstaller(
       metaKey?: boolean;
       ctrlKey?: boolean;
       altKey?: boolean;
+      returnWindow?: string;
+      monitor?: MonitorRect;
     }>("comparison://key", (event) => {
       handleComparisonKey(event.payload);
     });

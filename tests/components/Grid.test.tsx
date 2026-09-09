@@ -21,6 +21,9 @@ import {
 import { useDerivedWorkStore } from "../../src/state/derived-work-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useDestinationsStore } from "../../src/state/destinations-store";
+import ComparisonView from "../../src/components/ComparisonView";
+import { useComparisonStore } from "../../src/state/comparison-store";
+import { pushModal, popModal } from "../../src/utils/modalStack";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -88,6 +91,7 @@ function press(container: HTMLElement, key: string, init: KeyboardEventInit = {}
 }
 
 beforeEach(() => {
+  useComparisonStore.setState({ open: false });
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     patch_state: () => ({}),
@@ -230,6 +234,46 @@ describe("Home and End", () => {
 });
 
 describe("Space", () => {
+  it("keeps Comparison and modal keys out of the mounted Main grid", async () => {
+    const { container } = renderGrid();
+    await anchor("h2");
+    useComparisonStore.setState({
+      open: true, members: [0, 1, 2, 3].map((index) => ({
+        hash: `c${index}`, fileName: `comparison-${index}.jpg`, width: 4000,
+        height: 3000, byteSize: 100, sharpness: null, faceScore: null, copyCount: 1, hasThumb: true,
+      })),
+      page: 0, maximumImages: 4, displayCount: 1, displayAspects: [16 / 9],
+      capacities: [4], portraitDominant: false, spreadCount: 0,
+      selected: new Set(), anchor: null, anchors: new Set(), rangeOrigin: null,
+      rangeBase: new Set(), busy: false, pendingAction: null, failure: null,
+    });
+    const comparison = render(<ComparisonView onRevealTrash={() => {}} />);
+    expect(document.activeElement?.id).toBe("comparison-item-area");
+    // Explicitly leave focus behind to exercise the owning boundaries, not
+    // just the happy path where focus transfer masks the old leak.
+    container.focus();
+    await act(async () => press(container, " ", { cancelable: true }));
+    expect(useQuickViewStore.getState().session).toBeNull();
+    await act(async () => press(container, "ArrowRight", { cancelable: true }));
+    expect(useComparisonStore.getState().anchor).toBe("c0");
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+
+    const modal = {};
+    pushModal(modal);
+    for (const key of [" ", "ArrowRight", "Enter", "Delete", "Escape"]) {
+      await act(async () => press(container, key, { cancelable: true }));
+    }
+    popModal(modal);
+    for (const key of [" ", "ArrowRight", "Enter", "Delete", "Escape", "1"]) {
+      await act(async () => press(container, key, { isComposing: true, cancelable: true }));
+    }
+    expect(useComparisonStore.getState()).toMatchObject({ open: true, anchor: "c0", selected: new Set() });
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+    expect(useQuickViewStore.getState().session).toBeNull();
+    comparison.unmount();
+    useComparisonStore.setState({ open: false });
+  });
+
   it("opens Quick View without changing persistent Preview or selection", async () => {
     // It used to toggle the anchor in and out of the multi-selection, which
     // nobody found and which made Space a way to silently DESELECT the photo

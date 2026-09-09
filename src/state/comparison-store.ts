@@ -51,6 +51,7 @@ export interface ComparisonBroadcast {
   pageCount: number;
   remainingCount: number;
   portraitDominant: boolean;
+  displayAspects: number[];
 }
 
 export type ComparisonActionKind = "page" | "selection";
@@ -89,7 +90,7 @@ interface ComparisonState extends ComparisonDecisionDraft {
     screenState?: Record<string, unknown>,
   ) => Promise<ComparisonOpenResult>;
   selectSlot: (slotIndex: number, mode: ComparisonCardInteraction) => void;
-  toggleActive: () => void;
+  setDisplayAspect: (slice: number, aspect: number) => void;
   moveActive: (
     direction: "left" | "right" | "up" | "down",
     extend: boolean,
@@ -256,6 +257,7 @@ export function broadcastComparison(): void {
     pageCount: pages.length,
     remainingCount: state.members.length,
     portraitDominant: state.portraitDominant,
+    displayAspects: state.displayAspects,
   };
   void emit("comparison://state", payload);
 }
@@ -608,7 +610,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         base,
         members,
         initialPage,
-        entryAnchor,
       );
       await queueComparisonLifecycle(async () => {
         if (!fresh()) return;
@@ -641,6 +642,16 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     }
   },
 
+  setDisplayAspect: (slice, aspect) => {
+    const state = get();
+    if (!state.open || !Number.isInteger(slice) || slice < 0 || slice >= state.displayCount
+      || !Number.isFinite(aspect) || aspect <= 0 || state.displayAspects[slice] === aspect) return;
+    const displayAspects = [...state.displayAspects];
+    displayAspects[slice] = aspect;
+    set({ displayAspects });
+    broadcastComparison();
+  },
+
   selectSlot: (slotIndex, mode) => {
     const state = get();
     if (state.busy || state.pendingAction !== null) return;
@@ -654,26 +665,13 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     broadcastComparison();
   },
 
-  toggleActive: () => {
-    const state = get();
-    if (state.anchor === null) return;
-    const visible = visibleMembers(state);
-    const slotIndex = visible.findIndex(
-      (member) => member.hash === state.anchor,
-    );
-    if (slotIndex >= 0) get().selectSlot(slotIndex, "toggle");
-  },
-
   moveActive: (direction, extend) => {
     const state = get();
     if (state.busy || state.pendingAction !== null) return;
     const visible = visibleMembers(state);
     if (visible.length === 0) return;
-    const current = Math.max(
-      0,
-      visible.findIndex((member) => member.hash === state.anchor),
-    );
-    const target = spatialTarget(
+    const current = visible.findIndex((member) => member.hash === state.anchor);
+    const target = current < 0 ? 0 : spatialTarget(
       current,
       direction,
       comparisonChunks(state).map((chunk) => chunk.length),

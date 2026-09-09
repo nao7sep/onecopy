@@ -432,7 +432,7 @@ describe("the culling workflow", () => {
     expect(comparison.open).toBe(true);
     expect(comparison.members.map((m) => m!.hash)).toEqual(["h2", "h1", "h3"]);
 
-    // ---- Entry is active but unmarked; an explicit key mark plus reviewed
+    // ---- Entry is neutral; an explicit key mark plus reviewed
     //      Enter decision changes the visible page ----
     const deleted: string[] = [];
     mockCommand("delete_items", (args) => {
@@ -452,7 +452,7 @@ describe("the culling workflow", () => {
       item(2, { similarGroupId: null }),
       item(4),
     ]);
-    expect(useComparisonStore.getState().anchor).toBe("h2");
+    expect(useComparisonStore.getState().anchor).toBeNull();
     expect(useComparisonStore.getState().selected.size).toBe(0);
     await act(async () => {
       pressWindow("0");
@@ -474,6 +474,7 @@ describe("the culling workflow", () => {
       "h2",
       "h4",
     ]);
+    expect(document.activeElement?.id).toBe("main-item-area");
   }, 30_000);
 });
 

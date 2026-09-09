@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import { isComposingEvent } from "../hooks/useComposing";
+import { useComparisonLayout } from "../hooks/useComparisonLayout";
+import { reportWindowCall } from "../repositories";
 import { listenThenAnnounce } from "../utils/handshake";
 import ComparisonSlot from "../components/ComparisonSlot";
 import { type ComparisonBroadcast } from "../state/comparison-store";
@@ -12,6 +16,7 @@ import { comparisonKeyIsRoutable } from "../workflows/comparison";
 // window remains the sole owner of selection and file operations.
 
 export default function ComparisonWindow({ slice }: { slice: number }) {
+  const itemArea = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<ComparisonBroadcast | null>(null);
   const [revealMember, setRevealMember] = useState<{
     hash: string;
@@ -19,8 +24,15 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
   } | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+  useComparisonLayout(itemArea, (state?.chunks[slice]?.length ?? 0) > 0, (aspect) => {
+    void emit("comparison://layout", { slice, aspect }).catch(reportWindowCall("comparison layout"));
+  });
 
   useEffect(() => {
+    itemArea.current?.focus();
+    const stopFocus = listenThenAnnounce<{ label: string }>("comparison://focus", "comparison://ready", ({ label }) => {
+      if (label === getCurrentWindow().label) itemArea.current?.focus();
+    });
     // Announce only once this window can hear the reply (see handshake.ts).
     const unlisten = listenThenAnnounce<ComparisonBroadcast>(
       "comparison://state",
@@ -29,6 +41,7 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
     );
     const onKeyDown = (event: KeyboardEvent) => {
       if (
+        event.defaultPrevented || isComposingEvent(event) ||
         hasOpenModal() ||
         (event.target instanceof Element &&
           event.target.closest(
@@ -44,18 +57,24 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         ) ?? 0;
       if (!comparisonKeyIsRoutable(event, visibleCount)) return;
       event.preventDefault();
-      void emit("comparison://key", {
+      event.stopPropagation();
+      const message = {
         key: event.key,
         repeat: event.repeat,
         shiftKey: event.shiftKey,
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,
-      });
+        returnWindow: getCurrentWindow().label,
+      };
+      void (event.key === " " ? currentMonitor() : Promise.resolve(null))
+        .then((monitor) => emit("comparison://key", { ...message, monitor: monitor ?? undefined }))
+        .catch(reportWindowCall("comparison key forwarding"));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
       unlisten();
+      stopFocus();
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
@@ -64,14 +83,10 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
   const offset = (state?.chunks ?? [])
     .slice(0, slice)
     .reduce((count, members) => count + members.length, 0);
-  const fullest = Math.max(
-    1,
-    ...(state?.chunks ?? []).map((members) => members.length),
-  );
   const grid = gridFor(
-    fullest,
+    chunk.length,
     state?.portraitDominant ?? false,
-    window.innerWidth / Math.max(1, window.innerHeight),
+    state?.displayAspects[slice],
   );
 
   if (state !== null && chunk.length === 0) {
@@ -88,7 +103,12 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         />
       ) : null}
       <div
-        className="grid min-h-0 flex-1 grid-flow-col gap-3 p-3"
+        ref={itemArea}
+        tabIndex={0}
+        role="listbox"
+        aria-label="Images on the current comparison display"
+        aria-multiselectable="true"
+        className="grid min-h-0 flex-1 grid-flow-row gap-3 p-3"
         style={{
           gridTemplateColumns: `repeat(${grid.columns}, minmax(0, 1fr))`,
           gridTemplateRows: `repeat(${grid.rows}, minmax(0, 1fr))`,
@@ -104,12 +124,13 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
               slotKey={slot.slotKey}
               marked={slot.marked}
               anchor={slot.anchor}
-              onSelect={(mode) =>
+              onSelect={(mode) => {
+                itemArea.current?.focus();
                 void emit("comparison://select", {
                   slotIndex: offset + index,
                   mode,
-                })
-              }
+                }).catch(reportWindowCall("comparison card selection"));
+              }}
               onReveal={() =>
                 setRevealMember({
                   hash: slot.member.hash,
@@ -121,7 +142,7 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         )}
       </div>
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        0–9, A–Z, Space, or Keep toggle marks · Arrows inspect · Enter reviews
+        0–9, A–Z, or Keep toggle marks · Space opens the picked image · Arrows inspect · Enter reviews
         marked keepers and the visible Trash set · Escape closes
       </footer>
     </div>

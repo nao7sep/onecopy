@@ -38,6 +38,11 @@ import FaceRating from "./FaceRating";
 import { usePreviewStore } from "../state/preview-store";
 import { setPreviewPlacement } from "../workflows/preview";
 import OperationResult from "./ui/OperationResult";
+import { isComposingEvent } from "../hooks/useComposing";
+import { useComparisonStore } from "../state/comparison-store";
+import { useQuickViewStore } from "../state/quick-view-store";
+import { hasOpenModal } from "../utils/modalStack";
+import { isEditableTarget } from "../utils/shortcuts";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -611,6 +616,9 @@ export default function Grid({
   }, [selectedSection?.kind, selectedSection?.month, attentionSignature]);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
+    if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
+      || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null
+      || isEditableTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
     // Space opens the transient Quick View. Persistent Preview visibility is
     // chrome-only; a focused video player may decline this route and keep the
     // key for play/pause.

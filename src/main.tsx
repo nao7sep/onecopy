@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import PreviewWindow from "./windows/PreviewWindow";
 import ComparisonWindow from "./windows/ComparisonWindow";
+import ComparisonImageWindow from "./windows/ComparisonImageWindow";
 import IdentifyWindow from "./windows/IdentifyWindow";
 import ViewerWindow from "./windows/ViewerWindow";
 import RootErrorBoundary from "./components/RootErrorBoundary";
@@ -82,6 +83,8 @@ void installMediaUseBoundary()
             <PreviewWindow />
           ) : view === "comparison" ? (
             <ComparisonWindow slice={slice} />
+          ) : view === "comparison-image" ? (
+            <ComparisonImageWindow />
           ) : view === "identify" ? (
             <IdentifyWindow number={slice} />
           ) : view === "viewer" ? (

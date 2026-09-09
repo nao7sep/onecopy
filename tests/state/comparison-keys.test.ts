@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   comparisonKeyIsRoutable,
@@ -7,6 +9,12 @@ import {
   useComparisonStore,
   type GroupMember,
 } from "../../src/state/comparison-store";
+import { openComparisonImage } from "../../src/workflows/comparison-image";
+
+vi.mock("../../src/workflows/comparison-image", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/workflows/comparison-image")>(),
+  openComparisonImage: vi.fn(async () => {}),
+}));
 
 function member(index: number): GroupMember {
   return {
@@ -64,10 +72,10 @@ describe("comparison keyboard selection", () => {
   it("moves spatially and Shift extends from the range origin", () => {
     handleComparisonKey({ key: "ArrowRight" });
     expect(useComparisonStore.getState().selected).toEqual(new Set());
-    expect(useComparisonStore.getState().anchor).toBe("h2");
+    expect(useComparisonStore.getState().anchor).toBe("h1");
     handleComparisonKey({ key: "ArrowDown", shiftKey: true });
     expect(useComparisonStore.getState().selected).toEqual(
-      new Set(["h2", "h3"]),
+      new Set(["h1", "h2", "h3"]),
     );
   });
 
@@ -75,7 +83,7 @@ describe("comparison keyboard selection", () => {
     handleComparisonKey({ key: "3" });
     handleComparisonKey({ key: "ArrowUp", shiftKey: true });
     expect(useComparisonStore.getState().selected).toEqual(
-      new Set(["h2", "h3"]),
+      new Set(["h1", "h2", "h3"]),
     );
     handleComparisonKey({ key: "ArrowDown", shiftKey: true });
     expect(useComparisonStore.getState().selected).toEqual(
@@ -90,9 +98,17 @@ describe("comparison keyboard selection", () => {
     );
   });
 
-  it("uses Space to toggle the active keep mark", () => {
+  it("uses Space for the image window without toggling a keep mark", () => {
     expect(handleComparisonKey({ key: " " })).toBe(true);
-    expect(useComparisonStore.getState().selected).toEqual(new Set(["h0"]));
+    expect(openComparisonImage).toHaveBeenCalled();
+    expect(useComparisonStore.getState().selected).toEqual(new Set());
+  });
+
+  it("starts Arrow navigation from the first card without inventing keep intent", () => {
+    useComparisonStore.setState({ anchor: null, anchors: new Set(), rangeOrigin: null });
+    handleComparisonKey({ key: "ArrowRight" });
+    expect(useComparisonStore.getState().anchor).toBe("h0");
+    expect(useComparisonStore.getState().selected.size).toBe(0);
   });
 
   it("does not repeat direct toggles", () => {

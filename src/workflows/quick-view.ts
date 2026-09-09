@@ -31,6 +31,7 @@ import {
   type ViewerMonitor,
 } from "./viewer-window";
 import { createEventInstaller } from "../utils/eventInstallation";
+import { useComparisonStore } from "../state/comparison-store";
 export type { ViewerMonitor } from "./viewer-window";
 
 export interface ViewerBroadcast {
@@ -230,6 +231,7 @@ export function openViewerFromMain(
   presentation: ViewerPresentation,
   preferredMonitor?: ViewerMonitor,
 ): boolean {
+  if (useComparisonStore.getState().open) return false;
   const items = useItemsStore.getState();
   if (items.selectedItem === null || items.selectedKeys.size === 0) {
     useItemsStore.setState({ message: "Select an item to open the viewer." });

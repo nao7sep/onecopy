@@ -76,6 +76,11 @@ beforeEach(() => {
 });
 
 describe("opening Comparison across displays", () => {
+  it("opens the entry page without an active card or keep marks", async () => {
+    mockCommands({ get_similar_group: () => members(10) });
+    await useComparisonStore.getState().openGroup("m6", "m6", 4);
+    expect(useComparisonStore.getState()).toMatchObject({ page: 1, anchor: null, selected: new Set(), anchors: new Set() });
+  });
   it("does not surface an obsolete open failure after a newer group opens", async () => {
     let rejectOld: ((error: Error) => void) | undefined;
     let request = 0;

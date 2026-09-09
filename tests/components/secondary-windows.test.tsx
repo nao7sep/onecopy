@@ -12,6 +12,7 @@ import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import PreviewWindow from "../../src/windows/PreviewWindow";
 import ComparisonWindow from "../../src/windows/ComparisonWindow";
+import ComparisonImageWindow from "../../src/windows/ComparisonImageWindow";
 import type { ComparisonBroadcast } from "../../src/state/comparison-store";
 import {
   emitCalls,
@@ -43,6 +44,31 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+describe("the Comparison image window", () => {
+  it("shows the whole picked image and routes Space/Escape only back to Comparison", async () => {
+    const view = render(<ComparisonImageWindow />);
+    await act(async () => {});
+    await act(async () => fireEvent("comparison-image://state", {
+      token: 7, sessionId: 1, returnWindow: "comparison-1",
+      member: { hash: "image-hash", fileName: "picked.jpg", width: 4000, height: 3000 },
+    }));
+    expect(view.getByAltText("picked.jpg")).toBeTruthy();
+    const press = (key: string, init: KeyboardEventInit = {}) => window.dispatchEvent(new KeyboardEvent("keydown", { key, cancelable: true, ...init }));
+    press(" ", { repeat: true });
+    press(" ", { isComposing: true });
+    press("Escape", { ctrlKey: true });
+    press("1");
+    expect(emitCalls.some((call) => call.event.endsWith("://close"))).toBe(false);
+    press(" ");
+    press("Escape");
+    expect(emitCalls.filter((call) => call.event === "comparison-image://close")).toEqual([
+      { event: "comparison-image://close", payload: { token: 7 } },
+      { event: "comparison-image://close", payload: { token: 7 } },
+    ]);
+    expect(emitCalls.some((call) => ["viewer://key", "comparison://key"].includes(call.event))).toBe(false);
+  });
+});
 
 describe("the preview window", () => {
   it("mounts without throwing and shows its placeholder", () => {
@@ -134,6 +160,7 @@ describe("the preview window", () => {
 
 describe("a comparison window", () => {
   const broadcast: ComparisonBroadcast = {
+    displayAspects: [16 / 9, 16 / 9],
     chunks: [
       [],
       [

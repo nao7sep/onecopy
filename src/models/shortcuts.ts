@@ -85,7 +85,7 @@ export function shortcutGroups(): ShortcutGroup[] {
           chord: "0–9 / A–Z",
           action: "Toggle that image's keep mark",
         },
-        { chord: "Space", action: "Toggle the active image's keep mark" },
+        { chord: "Space", action: "Open the picked image in a larger window; Space returns" },
         { chord: "Arrows", action: "Move the active image spatially" },
         { chord: "Shift+Arrows", action: "Extend the marked range" },
         {

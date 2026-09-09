@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { isComposingEvent } from "../hooks/useComposing";
+import { useComparisonLayout } from "../hooks/useComparisonLayout";
 import { comparisonPages, gridFor } from "../models/comparisonSession";
 import { mutationProgressLine, mutationResultLine } from "../models/mutation";
 import {
@@ -36,6 +38,7 @@ export default function ComparisonView({
 }: {
   onRevealTrash: () => void;
 }) {
+  const itemArea = useRef<HTMLDivElement>(null);
   const [revealMember, setRevealMember] = useState<{
     hash: string;
     fileName: string;
@@ -53,19 +56,25 @@ export default function ComparisonView({
   const exitQuiescing = useMutationStore((state) => state.exiting);
   const cancelMutation = useMutationStore((state) => state.cancel);
   const dismissMutationResult = useMutationStore((state) => state.dismissResult);
+  useComparisonLayout(itemArea, open, (aspect) => useComparisonStore.getState().setDisplayAspect(0, aspect));
 
   useEffect(() => {
     if (!open) return;
+    itemArea.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented ||
+        isComposingEvent(event) ||
         hasOpenModal() ||
         isEditableTarget(event.target) ||
         interactiveTarget(event.target)
       ) {
         return;
       }
-      if (handleComparisonKey(event)) event.preventDefault();
+      if (handleComparisonKey(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -79,7 +88,7 @@ export default function ComparisonView({
   const grid = gridFor(
     localChunk.length,
     portraitDominant,
-    window.innerWidth / Math.max(1, window.innerHeight),
+    state.displayAspects[0],
   );
   const markedCount = chunks
     .flat()
@@ -169,10 +178,13 @@ export default function ComparisonView({
       </header>
 
       <div
+        id="comparison-item-area"
+        ref={itemArea}
+        tabIndex={0}
         role="listbox"
         aria-label="Images on the current comparison page"
         aria-multiselectable="true"
-        className="grid min-h-0 flex-1 grid-flow-col gap-3 p-3"
+        className="grid min-h-0 flex-1 grid-flow-row gap-3 p-3"
         style={{
           gridTemplateColumns: `repeat(${grid.columns}, minmax(0, 1fr))`,
           gridTemplateRows: `repeat(${grid.rows}, minmax(0, 1fr))`,
@@ -185,9 +197,10 @@ export default function ComparisonView({
             slotKey={slot.slotKey}
             marked={slot.marked}
             anchor={slot.anchor}
-            onSelect={(mode) =>
-              useComparisonStore.getState().selectSlot(index, mode)
-            }
+            onSelect={(mode) => {
+              itemArea.current?.focus();
+              useComparisonStore.getState().selectSlot(index, mode);
+            }}
             onReveal={() =>
               setRevealMember({
                 hash: slot.member.hash,
@@ -200,7 +213,7 @@ export default function ComparisonView({
 
       <footer className="flex shrink-0 items-center justify-between gap-4 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span>
-          0–9, A–Z, Space, or Keep toggle marks · Arrows inspect · Page Up/Down browse · Enter reviews marked keepers and visible deletions ·
+          0–9, A–Z, or Keep toggle marks · Space opens the picked image · Arrows inspect · Page Up/Down browse · Enter reviews marked keepers and visible deletions ·
           Delete reviews marked images · Escape closes
         </span>
         {message !== null ? (

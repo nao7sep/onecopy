@@ -59,7 +59,7 @@ export default function ComparisonSlot({
         );
       }}
       onDoubleClick={() => onSelect("activate")}
-      title="Click to inspect. Use Keep, Space, or the visible key to mark this image."
+      title="Click to pick, then Space to open a larger image. Use Keep or the visible key to mark this image."
     >
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         <InspectableImage
@@ -101,11 +101,12 @@ export default function ComparisonSlot({
           ×{member.copyCount}
         </span>
       ) : null}
+      <div className="flex shrink-0 items-center gap-2 px-1 pt-2">
       <button
-        className={`absolute right-2 top-10 rounded border px-2 py-1 text-xs font-medium ${
+        className={`order-last ml-auto min-h-12 min-w-20 rounded-full border-2 px-4 py-2 text-sm font-semibold shadow-sm ${
           marked
-            ? "border-primary bg-primary text-ink-inverted"
-            : "border-border bg-surface-muted text-ink"
+            ? "border-amber-700 bg-amber-400 text-slate-950"
+            : "border-amber-500 bg-surface text-ink hover:bg-amber-100 hover:text-slate-950"
         }`}
         aria-label={`${marked ? "Remove keep mark from" : "Keep"} ${member.fileName}`}
         aria-pressed={marked}
@@ -119,7 +120,7 @@ export default function ComparisonSlot({
         {marked ? "Keeping" : "Keep"}
       </button>
       <button
-        className="absolute bottom-8 left-2 rounded-md bg-surface-muted p-1 text-ink-muted hover:text-ink"
+        className="rounded-md bg-surface-muted p-2 text-ink-muted hover:text-ink"
         aria-label={`Open ${member.fileName} in default app`}
         title="Open in default app"
         onClick={(event) => {
@@ -136,7 +137,7 @@ export default function ComparisonSlot({
         <ExternalLink size={14} />
       </button>
       <button
-        className="absolute bottom-8 left-9 rounded-md bg-surface-muted p-1 text-ink-muted hover:text-ink"
+        className="rounded-md bg-surface-muted p-2 text-ink-muted hover:text-ink"
         aria-label={`Choose a copy of ${member.fileName} to reveal`}
         title="Reveal a physical copy"
         onClick={(event) => {
@@ -148,6 +149,7 @@ export default function ComparisonSlot({
       >
         <FolderOpen size={14} />
       </button>
+      </div>
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">
           <span className="truncate text-ink" title={member.fileName}>

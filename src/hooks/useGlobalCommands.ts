@@ -21,6 +21,8 @@ import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
 import { handleFViewer, handleSpaceQuickView } from "../workflows/quick-view";
 import { isAudioFile, itemKey } from "../models/items";
 import { toggleMainPlayback } from "../workflows/playback";
+import { isComposingEvent } from "./useComposing";
+import { useQuickViewStore } from "../state/quick-view-store";
 
 export function useGlobalCommands() {
   const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
@@ -38,6 +40,7 @@ export function useGlobalCommands() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()) return;
       const editable = isEditableTarget(event.target);
       if (editable && (event.key === "?" || shadowsMacTextEditing(event)))
         return;
@@ -55,7 +58,7 @@ export function useGlobalCommands() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (hasOpenModal() || useComparisonStore.getState().open) return;
+      if (hasOpenModal() || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null || isComposingEvent(event)) return;
       if (event.defaultPrevented || isEditableTarget(event.target)) return;
       if (isSectionRecheckShortcut(event)) {
         event.preventDefault();

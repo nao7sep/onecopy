@@ -153,9 +153,7 @@ export function activatePage(
   const anchor =
     preferredAnchor !== null && visible.has(preferredAnchor)
       ? preferredAnchor
-      : (hashes.find((hash) => selection.anchors.has(hash)) ??
-        hashes[0] ??
-        null);
+      : (hashes.find((hash) => selection.anchors.has(hash)) ?? null);
   const allSelected = new Set(selection.selected);
   for (const hash of hashes) allSelected.delete(hash);
   for (const hash of selected) allSelected.add(hash);
@@ -259,7 +257,7 @@ export function chunkMembers<T>(members: T[], capacities: number[]): T[][] {
   return chunks;
 }
 
-/** Number of columns while DOM order flows top-to-bottom, then left-to-right. */
+/** Row-major grid shared by rendering and spatial navigation. */
 export function gridFor(
   count: number,
   portraitDominant: boolean,
@@ -304,35 +302,33 @@ export function spatialTarget(
   if (displayIndex < 0) return currentIndex;
   const grid = grids[displayIndex];
   const local = currentIndex - grid.start;
-  const column = Math.floor(local / grid.rows);
-  const row = local % grid.rows;
+  const column = local % grid.columns;
+  const row = Math.floor(local / grid.columns);
 
   if (direction === "up") {
-    return row > 0 ? currentIndex - 1 : currentIndex;
+    return row > 0 ? currentIndex - grid.columns : currentIndex;
   }
   if (direction === "down") {
-    return row + 1 < grid.rows && local + 1 < grid.count
-      ? currentIndex + 1
+    return local + grid.columns < grid.count
+      ? currentIndex + grid.columns
       : currentIndex;
   }
   if (direction === "left") {
     if (column > 0) {
-      const candidate = local - grid.rows;
-      return grid.start + Math.min(candidate, grid.count - 1);
+      return currentIndex - 1;
     }
     const previous = grids[displayIndex - 1];
     if (previous === undefined) return currentIndex;
-    const previousColumn = previous.columns - 1;
     return (
       previous.start +
-      Math.min(previous.count - 1, previousColumn * previous.rows + row)
+      Math.min(previous.count - 1, Math.min(row, previous.rows - 1) * previous.columns + previous.columns - 1)
     );
   }
   if (column + 1 < grid.columns) {
-    const candidate = local + grid.rows;
+    const candidate = local + 1;
     return candidate < grid.count ? grid.start + candidate : currentIndex;
   }
   const next = grids[displayIndex + 1];
   if (next === undefined) return currentIndex;
-  return next.start + Math.min(row, next.count - 1);
+  return next.start + Math.min(row, next.rows - 1) * next.columns;
 }

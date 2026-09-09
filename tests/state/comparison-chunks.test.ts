@@ -61,10 +61,10 @@ describe("comparison capacity", () => {
 });
 
 describe("comparison card order and navigation", () => {
-  it("flows landscape cards top-to-bottom then left-to-right", () => {
+  it("flows landscape cards left-to-right then top-to-bottom", () => {
     expect(gridFor(4, false)).toEqual({ count: 4, columns: 2, rows: 2 });
-    expect(spatialTarget(0, "down", [4], false)).toBe(1);
-    expect(spatialTarget(0, "right", [4], false)).toBe(2);
+    expect(spatialTarget(0, "down", [4], false)).toBe(2);
+    expect(spatialTarget(0, "right", [4], false)).toBe(1);
   });
 
   it("adapts the grid to a portrait display", () => {
@@ -81,9 +81,16 @@ describe("comparison card order and navigation", () => {
   });
 
   it("crosses display edges without wrapping the outer bounds", () => {
-    expect(spatialTarget(2, "right", [4, 4], false)).toBe(4);
-    expect(spatialTarget(4, "left", [4, 4], false)).toBe(2);
+    expect(spatialTarget(1, "right", [4, 4], false)).toBe(4);
+    expect(spatialTarget(3, "right", [4, 4], false)).toBe(6);
+    expect(spatialTarget(4, "left", [4, 4], false)).toBe(1);
     expect(spatialTarget(0, "left", [4, 4], false)).toBe(0);
+  });
+
+  it("matches partial rows and differently shaped neighboring displays", () => {
+    expect(spatialTarget(3, "right", [4, 3], false, [16 / 9, 9 / 16])).toBe(5);
+    expect(spatialTarget(6, "left", [4, 3], false, [16 / 9, 9 / 16])).toBe(3);
+    expect(spatialTarget(2, "down", [3], false)).toBe(2);
   });
 });
 
