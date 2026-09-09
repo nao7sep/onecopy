@@ -919,6 +919,40 @@ fn section_dirs_matches_the_directories_of_section_items() {
 }
 
 #[test]
+fn local_month_queries_agree_across_midnight_gaps_overlaps_and_fractional_offsets() {
+    for (zone, previous, current, boundary_utc) in [
+        ("Africa/Cairo", "2014-07", "2014-08", "2014-07-31T22:00:00Z"),
+        ("America/Havana", "2015-10", "2015-11", "2015-11-01T04:00:00Z"),
+        ("Asia/Kathmandu", "2026-01", "2026-02", "2026-01-31T18:15:00Z"),
+        ("America/New_York", "2024-03", "2024-04", "2024-04-01T04:00:00Z"),
+    ] {
+        let conn = db();
+        let zone: Tz = zone.parse().unwrap();
+        let boundary = chrono::DateTime::parse_from_rfc3339(boundary_utc).unwrap().timestamp_millis();
+        seed_at(&conn, "before", "/before", "before.jpg", boundary - 1);
+        seed_at(&conn, "start", "/start", "start.jpg", boundary);
+        seed_at(&conn, "after", "/after", "after.jpg", boundary + 3_600_000);
+
+        let counts = queries::section_counts(&conn, zone).unwrap();
+        assert_eq!(counts.images.iter().map(|row| (row.month.as_str(), row.count)).collect::<Vec<_>>(),
+            vec![(previous, 1), (current, 2)], "{zone}");
+        for (month, expected) in [(previous, vec!["before"]), (current, vec!["start", "after"])] {
+            let items = section_items(&conn, "image", month, zone);
+            assert_eq!(items.iter().map(|item| item.hash.as_deref().unwrap()).collect::<Vec<_>>(), expected, "{zone} {month}");
+            let mut dirs = queries::section_dirs(&conn, "image", month, zone).unwrap();
+            dirs.sort();
+            let mut expected_dirs = expected.iter().map(|hash| format!("/{hash}")).collect::<Vec<_>>();
+            expected_dirs.sort();
+            assert_eq!(dirs, expected_dirs, "{zone} {month}");
+            for item in items {
+                let identity = queries::SectionIdentity { hash: item.hash, path_id: item.path_id };
+                assert_eq!(queries::section_for_identity(&conn, &identity, zone).unwrap().unwrap().month, month);
+            }
+        }
+    }
+}
+
+#[test]
 fn identity_section_lookup_uses_current_logical_date_and_display_zone() {
     let conn = db();
     seed_at(&conn, "moved", "/photos", "photo.jpg", 1_769_889_600_000);

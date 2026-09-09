@@ -1895,20 +1895,21 @@ pub(crate) fn month_bounds(month: &str, display_tz: Tz) -> Result<Option<(i64, i
         .filter(|(_, mon)| (1..=12).contains(mon))
         .ok_or_else(|| format!("bad month key: {month}"))?;
     let (next_year, next_mon) = if mon == 12 {
-        (year + 1, 1)
+        (year.checked_add(1).ok_or_else(|| format!("bad month key: {month}"))?, 1)
     } else {
         (year, mon + 1)
     };
-    let start = display_tz
-        .with_ymd_and_hms(year, mon, 1, 0, 0, 0)
-        .earliest()
-        .ok_or_else(|| format!("bad month start: {month}"))?
-        .timestamp_millis();
-    let end = display_tz
-        .with_ymd_and_hms(next_year, next_mon, 1, 0, 0, 0)
-        .earliest()
-        .ok_or_else(|| format!("bad month end: {month}"))?
-        .timestamp_millis();
+    // A local month need not start at an existing midnight. Use the actual
+    // transition boundary rather than rejecting every query for that month
+    // (and its predecessor), or inventing a UTC interpretation of local time.
+    let boundary = |year, month| {
+        let local = chrono::NaiveDate::from_ymd_opt(year, month, 1)?.and_hms_opt(0, 0, 0)?;
+        display_tz.from_local_datetime(&local).earliest()
+            .or_else(|| chrono_tz::GapInfo::new(&local, &display_tz)?.end)
+            .map(|instant| instant.timestamp_millis())
+    };
+    let start = boundary(year, mon).ok_or_else(|| format!("bad month start: {month}"))?;
+    let end = boundary(next_year, next_mon).ok_or_else(|| format!("bad month end: {month}"))?;
     Ok(Some((start, end)))
 }
 
