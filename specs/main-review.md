@@ -91,3 +91,5 @@ Ordinary click selects one destination. Up and Down navigate visible folders; Le
 Explicit destination controls state the frozen logical-item count and whether covered source copies will receive recoverable deletion. Copy begins its named operation directly; Move and permanent-Move always open an exact-scope review before any filesystem work. Dropping a Main item freezes the complete current Main selection and asks whether to Copy or Move before any filesystem work. The active destination and expanded folders are remembered only for the current app run.
 
 A selected descendant reached beneath a configured destination root is an eligible receiver without being configured separately. Destination admission and file-operation effects are governed by `file-operations.md`.
+
+Drag hover and release require the pointer inside a currently visible destination row. The dragged image overlapping a row is insufficient while its pointer remains in Main, pane chrome, dead space, or a clipped part of the tree. Release revalidates the actual row under the final pointer; a stale highlight, detached row, or cancelled drag never opens a delivery choice or starts filesystem work.

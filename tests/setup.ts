@@ -15,6 +15,9 @@ if (typeof globalThis.navigator === "undefined") {
 if (typeof document !== "undefined" && document.getAnimations === undefined) {
   document.getAnimations = () => [];
 }
+if (typeof Element !== "undefined" && Element.prototype.getAnimations === undefined) {
+  Element.prototype.getAnimations = () => [];
+}
 
 // Tauri is faked for the whole suite from here, because this is the only place
 // a `vi.mock` reaches every spec file — registering them per-spec would drift.

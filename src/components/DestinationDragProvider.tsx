@@ -7,9 +7,12 @@ import {
 } from "@dnd-kit/react";
 import {
   Accessibility,
+  Droppable,
   PointerActivationConstraints,
   PointerSensor,
 } from "@dnd-kit/dom";
+import { pointerIntersection, type CollisionDetector } from "@dnd-kit/collision";
+import { getElementFromPoint, getEventCoordinates, isPointerEvent } from "@dnd-kit/dom/utilities";
 import { useDestinationsStore } from "../state/destinations-store";
 import {
   beginDestinationDrag,
@@ -21,6 +24,26 @@ import DestinationDragPreview from "./DestinationDragPreview";
 const ITEM_TYPE = "destination-item";
 const ITEM_ID_PREFIX = "destination-item:";
 const RECEIVER_ID_PREFIX = "destination-receiver:";
+
+// A row is a receiver only where the DOM actually exposes it to the pointer.
+// Hit testing handles tree clipping and covering controls without duplicating
+// the maintained library's scroll/rectangle/transport machinery.
+function rowContainsHit(element: Element | undefined, hit: Element | null): boolean {
+  return element?.isConnected === true
+    && element.contains(hit);
+}
+
+const destinationCollision: CollisionDetector = (input) => {
+  const receiver = input.droppable;
+  if (!(receiver instanceof Droppable)) return null;
+  // Shape intersection is appropriate for sorting, not delivery into another
+  // pane. The pointer must enter the destination itself.
+  const collision = pointerIntersection(input);
+  const element = receiver.element;
+  if (!collision || !element) return null;
+  return rowContainsHit(element, getElementFromPoint(element.ownerDocument, input.dragOperation.position.current))
+    ? collision : null;
+};
 
 // Each draggable is also the listbox's click-to-select surface. Immediate
 // pointer activation would turn an ordinary selection click into drag start;
@@ -68,9 +91,24 @@ export default function DestinationDragProvider({
           event.preventDefault();
         }
       }}
-      onDragEnd={(event) => {
-        const path = event.operation.target?.data.path as string | undefined;
-        if (event.canceled || path === undefined) {
+      onDragEnd={(event, manager) => {
+        const source = event.operation.source;
+        if (event.canceled || !source?.element || !event.nativeEvent || !isPointerEvent(event.nativeEvent)) {
+          cancelDestinationDrag();
+          return;
+        }
+        // Pointer-up may precede the library's next scheduled collision pass.
+        // Re-read registered receivers at the actual release point, not the
+        // previous hover target or the dragged preview's rectangle.
+        const point = getEventCoordinates(event.nativeEvent);
+        const hit = getElementFromPoint(source.element.ownerDocument, point);
+        const receiver = [...manager.registry.droppables].find((candidate) =>
+          String(candidate.id).startsWith(RECEIVER_ID_PREFIX)
+          && !candidate.disabled && candidate.accepts(source)
+          && rowContainsHit(candidate.element, hit),
+        );
+        const path = receiver?.data.path;
+        if (typeof path !== "string") {
           cancelDestinationDrag();
           return;
         }
@@ -112,6 +150,7 @@ export function useDestinationReceiver(path: string) {
     id: `${RECEIVER_ID_PREFIX}${path}`,
     accept: ITEM_TYPE,
     data: { path },
+    collisionDetector: destinationCollision,
   });
   return { ref, isDropTarget };
 }

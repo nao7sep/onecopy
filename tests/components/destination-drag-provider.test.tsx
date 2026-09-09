@@ -122,6 +122,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   cancelDestinationDrag();
+  vi.restoreAllMocks();
 });
 
 describe("destination drag transport", () => {
@@ -157,13 +158,15 @@ describe("destination drag transport", () => {
   });
 
   it("freezes selection and gives every valid release to the explicit choice", () => {
-    render(
+    const view = render(
       <DestinationDragProvider>
         <RegistrationHarness />
       </DestinationDragProvider>,
     );
     const provider = dnd.provider!;
     const preventDefault = vi.fn();
+    const element = view.getByText("Keep");
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(element);
 
     act(() => {
       provider.onBeforeDragStart({
@@ -180,9 +183,9 @@ describe("destination drag transport", () => {
       provider.onDragEnd({
         canceled: false,
         // A modifier no longer makes a silent product decision at release.
-        nativeEvent: { metaKey: true, ctrlKey: false },
-        operation: { target: { data: { path: "/keep" } } },
-      });
+        nativeEvent: new PointerEvent("pointerup", { clientX: 20, clientY: 20, metaKey: true }),
+        operation: { source: { element: view.getByText("Source") }, target: null },
+      }, { registry: { droppables: [{ id: "destination-receiver:/keep", data: { path: "/keep" }, element, accepts: () => true }] } });
     });
     expect(useDestinationsStore.getState().pendingDrop).toMatchObject({
       path: "/keep",
