@@ -36,7 +36,6 @@ const accelerationCapabilities = [
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
-    similar_exclusions_count: () => 0,
     rebuild_library_index: () => null,
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ total: 0, rows: [] }),

@@ -90,7 +90,6 @@ pub mod resolution;
 pub mod resource_limits;
 pub mod scan_runtime;
 pub mod scanner;
-pub mod similar_exclusions;
 pub mod similarity;
 pub mod source_check_runtime;
 pub mod source_check_state;
@@ -2018,71 +2017,6 @@ fn comparison_live_hashes(app: AppHandle, hashes: Vec<String>) -> Result<Vec<Str
     )
 }
 
-// The comparison view's unlink: this image is not the same subject as its
-// similar-family. Persistent — an excluded pair never regroups on any later
-// rebuild — and non-destructive: no file is touched.
-#[tauri::command(async)]
-fn similar_unlink(app: AppHandle, hash: String) -> Result<u64, String> {
-    logging::boundary(
-        "similar_unlink",
-        json!({ "hash": hash }),
-        || {
-            let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let written = similarity::unlink_from_group(&conn, &data_root, &hash)?;
-            if written > 0 {
-                derived_work::wake();
-            }
-            Ok(written)
-        },
-        |written| json!({ "exclusions": written }),
-    )
-}
-
-// The Settings surface for the unlink store: how many verdicts exist, and the
-// one way to take them all back. Without a visible count the exclusions would
-// be an invisible permanent store — the kind of silence the app avoids.
-#[tauri::command(async)]
-fn similar_exclusions_count(app: AppHandle) -> Result<u64, String> {
-    logging::boundary(
-        "similar_exclusions_count",
-        json!({}),
-        || {
-            let data_root = paths::data_root(&app)?;
-            similar_exclusions::count(&data_root)
-        },
-        |n| json!({ "count": n }),
-    )
-}
-
-#[tauri::command(async)]
-fn similar_exclusions_clear(app: AppHandle) -> Result<u64, String> {
-    logging::boundary(
-        "similar_exclusions_clear",
-        json!({}),
-        || {
-            let data_root = paths::data_root(&app)?;
-            let previous = similar_exclusions::count(&data_root)?;
-            if previous == 0 {
-                return similar_exclusions::clear(&data_root);
-            }
-            let config = storage::read_config_for_setup(&data_root)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let settings = derived_work::settings_from_config(config.as_ref(), &data_root)?;
-            similarity::ensure_config_current(&conn, &settings.similarity)?;
-            similarity::mark_all_buckets_dirty(&conn)?;
-            let cleared = similar_exclusions::clear(&data_root)?;
-            similarity::record_all_exclusions_change(
-                &conn,
-                &similar_exclusions::pairs(&data_root)?,
-            )?;
-            derived_work::wake();
-            Ok(cleared)
-        },
-        |n| json!({ "cleared": n }),
-    )
-}
-
 // The metadata pane's detail for one logical item.
 #[tauri::command(async)]
 fn get_item_detail(
@@ -2234,9 +2168,6 @@ pub fn run() {
             get_item_detail,
             get_similar_group,
             comparison_live_hashes,
-            similar_unlink,
-            similar_exclusions_count,
-            similar_exclusions_clear,
             delete_items,
             mutation_cancel,
             move_items_out,

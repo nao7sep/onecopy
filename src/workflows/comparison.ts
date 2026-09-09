@@ -272,18 +272,6 @@ export async function retryComparisonFailure(): Promise<void> {
   );
 }
 
-export async function unlinkComparisonSelection(): Promise<void> {
-  const result = await useComparisonStore.getState().unlinkSelected();
-  if (result === null) return;
-  await Promise.all([refreshLibrary(), useIssuesStore.getState().load()]);
-  if (result === "closed") {
-    await restorePreviewAfterComparison();
-    await restoreMainFocus();
-  } else {
-    await reconcileComparisonMembership();
-  }
-}
-
 export async function reconcileComparisonMembership(): Promise<void> {
   const store = useComparisonStore.getState();
   if (!store.open || store.busy) return;

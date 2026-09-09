@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, X } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { revealInFileManager } from "../workflows/external-open";
 import {
@@ -84,8 +84,6 @@ function PathRow({ path }: { path: string }) {
 function SimilarSection({ hash }: { hash: string }) {
   const [members, setMembers] = useState<GroupMember[]>([]);
   const [error, setError] = useState<string | null>(null);
-  // Bumped after an unlink so the list refetches without an anchor move.
-  const [generation, setGeneration] = useState(0);
   useEffect(() => {
     let stale = false;
     void invoke<GroupMember[]>("get_similar_group", { hash })
@@ -102,7 +100,7 @@ function SimilarSection({ hash }: { hash: string }) {
     return () => {
       stale = true;
     };
-  }, [hash, generation]);
+  }, [hash]);
   if (members.length < 2) {
     return error === null ? null : (
       <OperationResult level="error" className="mt-3">
@@ -140,25 +138,6 @@ function SimilarSection({ hash }: { hash: string }) {
                 loading="lazy"
                 className="h-full w-full object-contain"
               />
-            </button>
-            {/* The unlink where intruders are usually SPOTTED. Non-destructive
-                and persistent: the pair never regroups on any later scan. */}
-            <button
-              className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-muted text-[11px] leading-none text-ink-muted hover:text-danger group-hover/similar:flex"
-              title={`Not similar — remove ${member.fileName} from this set. The photo is not deleted.`}
-              onClick={() => {
-                void invoke("similar_unlink", { hash: member.hash })
-                  .then(() => setGeneration((n) => n + 1))
-                  .catch((failure) => {
-                    log.warn("similar unlink failed", {
-                      hash: member.hash,
-                      ...toErrorFields(failure),
-                    });
-                    setError("Couldn’t unlink this photo.");
-                  });
-              }}
-            >
-              <X size={12} />
             </button>
           </span>
         ))}

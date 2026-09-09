@@ -6,14 +6,11 @@ import {
   type GroupMember,
 } from "../../src/state/comparison-store";
 import {
-  invokeCalls,
   mockCommands,
   resetTauriMocks,
-  WebviewWindow,
 } from "../mocks/tauri";
 import {
   reconcileComparisonMembership,
-  unlinkComparisonSelection,
 } from "../../src/workflows/comparison";
 import { useItemsStore } from "../../src/state/items-store";
 import { useSectionsStore } from "../../src/state/sections-store";
@@ -63,7 +60,6 @@ function openSession(count = 5): void {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
-    similar_unlink: () => 4,
     set_window_fullscreen: () => null,
   });
   useItemsStore.setState({ refresh: vi.fn(async () => undefined) });
@@ -71,67 +67,6 @@ beforeEach(() => {
   useIssuesStore.setState({ load: vi.fn(async () => undefined) });
   usePreviewStore.setState({ follow: false, placement: null, current: null });
   openSession();
-});
-
-describe("Not similar", () => {
-  it("records and removes every selected image without leaving holes", async () => {
-    await useComparisonStore.getState().unlinkSelected();
-
-    expect(
-      invokeCalls
-        .filter((call) => call.command === "similar_unlink")
-        .map((call) => call.args.hash),
-    ).toEqual(["h1", "h2"]);
-    expect(
-      useComparisonStore.getState().members.map((item) => item.hash),
-    ).toEqual(["h0", "h3", "h4"]);
-    expect(useComparisonStore.getState().selected).toEqual(new Set());
-    expect(useComparisonStore.getState().anchor).toBe("h3");
-  });
-
-  it("keeps failed selected images and explains the partial result", async () => {
-    mockCommands({
-      similar_unlink: ({ hash }) => {
-        if (hash === "h2") throw new Error("write failed");
-        return 4;
-      },
-    });
-
-    await useComparisonStore.getState().unlinkSelected();
-
-    expect(
-      useComparisonStore.getState().members.map((item) => item.hash),
-    ).toEqual(["h0", "h2", "h3", "h4"]);
-    expect(useComparisonStore.getState().message).toContain(
-      "1 image could not",
-    );
-  });
-
-  it("closes when fewer than two comparable images remain", async () => {
-    openSession(2);
-    useComparisonStore.setState({
-      selected: new Set(["h0"]),
-      anchors: new Set(["h0"]),
-      anchor: "h0",
-    });
-    await useComparisonStore.getState().unlinkSelected();
-    expect(useComparisonStore.getState().open).toBe(false);
-  });
-
-  it("restores a persistent Preview window after an automatic close", async () => {
-    const preview = new WebviewWindow("preview");
-    usePreviewStore.setState({ follow: true, placement: "window" });
-    openSession(2);
-    useComparisonStore.setState({
-      selected: new Set(["h0"]),
-      anchors: new Set(["h0"]),
-      anchor: "h0",
-    });
-
-    await unlinkComparisonSelection();
-
-    expect(preview.show).toHaveBeenCalledOnce();
-  });
 });
 
 describe("live membership reconciliation", () => {

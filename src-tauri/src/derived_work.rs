@@ -1167,18 +1167,16 @@ fn run_optional_class(
         WorkClass::Similarity => {
             let result = with_active(app, class, || {
                 if foreground {
-                    crate::similarity::rebuild_priority_bucket_for_root_cancellable(
+                    crate::similarity::rebuild_priority_bucket_cancellable(
                         conn,
                         &settings.similarity,
-                        &settings.data_root,
                         priority,
                         &stop,
                     )
                 } else {
-                    crate::similarity::rebuild_next_dirty_bucket_for_root_cancellable(
+                    crate::similarity::rebuild_next_dirty_bucket_cancellable(
                         conn,
                         &settings.similarity,
-                        &settings.data_root,
                         &stop,
                     )
                 }

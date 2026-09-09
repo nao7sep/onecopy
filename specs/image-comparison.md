@@ -8,7 +8,7 @@ Comparison is a temporary decision workspace for deciding which images to retain
 
 Main Enter or the visible Compare action may open Comparison only when the complete Main selection resolves to one live similar-image group. Comparison opens the complete group, even when Main selected only part of it. If fewer than two comparable live members remain, OneCopy stays in Main and explains that there is nothing to compare.
 
-Membership freezes when the session opens. Images discovered or automatically regrouped later wait for the next session. Missing images leave the active session. A deliberate Not similar decision also removes its selected images immediately.
+Membership freezes when the session opens. Images discovered or automatically regrouped later wait for the next session. Missing images leave the active session.
 
 OneCopy never restores an unfinished Comparison session, its page, active card, or keep marks after restart.
 
@@ -53,12 +53,6 @@ Auto-repeat does not repeat a direct-key toggle or Space inspection transition. 
 The thirty-seventh and later visible images have no direct key and remain fully selectable through pointer and grid navigation. Comparison has no multi-character key system, modifier alphabet, alternate shortcut mode, or key subpages.
 
 When `F` is assigned to a visible card, bare `F` is that card's direct key and does not enter fullscreen. When `F` is unassigned, it does nothing in Comparison. Other assigned letters similarly keep their visible Comparison meaning.
-
-## Not similar
-
-Not similar removes the keep-marked images from the similarity group without changing their files. The exclusion is a user-authored decision that automatic similarity rebuilding respects. Settings provides a deliberate way to clear these exclusions.
-
-If Not similar leaves fewer than two comparable images in the session, Comparison closes without applying any uncommitted keep or discard decision.
 
 ## File actions on the selection
 

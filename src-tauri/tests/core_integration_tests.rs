@@ -146,7 +146,7 @@ fn derive_all(conn: &Connection, world: &World) {
     )
     .unwrap();
     assert_eq!(stats.derived, 4);
-    similarity::rebuild_groups_for_root(conn, &settings.similarity, &world.home).unwrap();
+    similarity::rebuild_groups(conn, &settings.similarity).unwrap();
 }
 
 fn live_files(corpus: &Path) -> Vec<String> {

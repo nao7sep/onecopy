@@ -12,7 +12,6 @@
 //! - `logs/`             — per-session logs.                    not recorded (append-mode, by construction)
 //! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
 //! - `dependencies.json` — managed-binaries facts.              not recorded (re-derivable dependency/update facts)
-//! - `similar-exclusions.json` — durable user verdicts.         RECORDED (managed authored text)
 //! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
 //! Recoverable deleted files live below their configured roots, outside this
 //! application-data directory.

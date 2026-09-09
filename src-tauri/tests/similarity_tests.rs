@@ -83,11 +83,11 @@ fn spare_shots_within_the_gap_group_together() {
 
 #[test]
 fn cancellation_keeps_the_previous_complete_similarity_cohort() {
-    let (dir, conn) = seeded();
+    let (_dir, conn) = seeded();
     let t = 1_700_000_000_000i64;
     insert_image(&conn, "a", "Ricoh", t, 0, 1.0);
     insert_image(&conn, "b", "Ricoh", t + 1_000, 1, 1.0);
-    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    rebuild_groups(&conn, &config()).unwrap();
     let before: i64 = conn
         .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| {
             row.get(0)
@@ -99,9 +99,7 @@ fn cancellation_keeps_the_previous_complete_similarity_cohort() {
         [],
     )
     .unwrap();
-    let error =
-        rebuild_next_dirty_bucket_for_root_cancellable(&conn, &config(), dir.path(), &|| true)
-            .unwrap_err();
+    let error = rebuild_next_dirty_bucket_cancellable(&conn, &config(), &|| true).unwrap_err();
     let after: i64 = conn
         .query_row("SELECT COUNT(*) FROM similar_group_members", [], |row| {
             row.get(0)
@@ -283,14 +281,14 @@ fn complete_bucket_rebuild_is_idempotent() {
 
 #[test]
 fn rebuilding_one_dirty_month_preserves_the_other_months_publication() {
-    let (dir, conn) = seeded();
+    let (_dir, conn) = seeded();
     let jan = 1_704_067_200_000i64;
     let mar = 1_709_251_200_000i64;
     insert_image(&conn, "jan-a", "Ricoh", jan, 0, 1.0);
     insert_image(&conn, "jan-b", "Ricoh", jan + 1_000, 1, 1.0);
     insert_image(&conn, "mar-a", "Ricoh", mar, 0, 1.0);
     insert_image(&conn, "mar-b", "Ricoh", mar + 1_000, 1, 1.0);
-    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    rebuild_groups(&conn, &config()).unwrap();
     let group_id = |bucket: &str| {
         conn.query_row(
             "SELECT id FROM similar_groups WHERE bucket = ?1",
@@ -305,10 +303,9 @@ fn rebuilding_one_dirty_month_preserves_the_other_months_publication() {
     conn.execute("UPDATE contents SET phash = phash WHERE hash = 'jan-a'", [])
         .unwrap();
     assert_eq!(dirty_bucket_count(&conn).unwrap(), 1);
-    let stats =
-        rebuild_next_dirty_bucket_for_root_cancellable(&conn, &config(), dir.path(), &|| false)
-            .unwrap()
-            .unwrap();
+    let stats = rebuild_next_dirty_bucket_cancellable(&conn, &config(), &|| false)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(stats.last_bucket.as_deref(), Some("2024-01"));
     assert_ne!(group_id("2024-01"), jan_before);
@@ -318,11 +315,11 @@ fn rebuilding_one_dirty_month_preserves_the_other_months_publication() {
 
 #[test]
 fn date_change_invalidates_both_the_old_and_new_months() {
-    let (dir, conn) = seeded();
+    let (_dir, conn) = seeded();
     let jan = 1_704_067_200_000i64;
     let mar = 1_709_251_200_000i64;
     insert_image(&conn, "moved", "Ricoh", jan, 0, 1.0);
-    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    rebuild_groups(&conn, &config()).unwrap();
 
     conn.execute(
         "UPDATE paths SET resolved_utc_ms = ?1 WHERE content_hash = 'moved'",
@@ -345,7 +342,9 @@ fn pre_epoch_dates_keep_their_actual_utc_month() {
     insert_image(&conn, "old", "Ricoh", -1, 0, 1.0);
 
     let bucket: String = conn
-        .query_row("SELECT bucket FROM similarity_dirty_buckets", [], |row| row.get(0))
+        .query_row("SELECT bucket FROM similarity_dirty_buckets", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(bucket, "1969-12");
 }
@@ -358,7 +357,7 @@ fn a_new_invalidation_during_computation_cannot_publish_stale_membership() {
     let t = 1_700_000_000_000i64;
     insert_image(&conn, "a", "Ricoh", t, 0, 1.0);
     insert_image(&conn, "b", "Ricoh", t + 1_000, 1, 1.0);
-    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    rebuild_groups(&conn, &config()).unwrap();
     conn.execute(
         "UPDATE contents SET camera_model = 'first-change' WHERE hash = 'a'",
         [],
@@ -378,7 +377,7 @@ fn a_new_invalidation_during_computation_cannot_publish_stale_membership() {
         }
         false
     };
-    let stats = rebuild_next_dirty_bucket_for_root_cancellable(&conn, &config(), dir.path(), &stop)
+    let stats = rebuild_next_dirty_bucket_cancellable(&conn, &config(), &stop)
         .unwrap()
         .unwrap();
 
@@ -391,8 +390,6 @@ fn a_new_invalidation_during_computation_cannot_publish_stale_membership() {
         0
     );
 }
-
-// ---- Unlink: the user's "not the same subject" verdicts ----
 
 /// Two images whose phashes pair, seeded the way the engine reads them.
 fn seed_pairable(conn: &Connection, hash: &str, phash: i64) {
@@ -412,88 +409,66 @@ fn seed_pairable(conn: &Connection, hash: &str, phash: i64) {
 }
 
 #[test]
-fn split_by_exclusions_removes_the_intruder_and_keeps_the_family_whole() {
-    use std::collections::HashSet;
-    let family = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    // The intruder was unlinked against every member — the shape the unlink
-    // command writes.
-    let excluded: HashSet<(String, String)> = ["a", "b", "c"]
-        .iter()
-        .map(|m| {
-            let (x, y) = if *m < "intruder" {
-                (m.to_string(), "intruder".into())
-            } else {
-                ("intruder".into(), m.to_string())
-            };
-            (x, y)
-        })
-        .collect();
-    let out = split_by_exclusions(vec![family(&["a", "b", "intruder", "c"])], &excluded);
-    assert_eq!(
-        out,
-        vec![family(&["a", "b", "c"])],
-        "family whole, intruder out (dropped: alone)"
-    );
-
-    // No exclusions → untouched, same allocation path.
-    let untouched = split_by_exclusions(vec![family(&["a", "b"])], &HashSet::new());
-    assert_eq!(untouched, vec![family(&["a", "b"])]);
+fn grouping_ignores_retired_exclusion_files_and_preserves_their_bytes() {
+    let (dir, conn) = seeded();
+    seed_pairable(&conn, "a", 1);
+    seed_pairable(&conn, "b", 3);
+    let path = dir.path().join("similar-exclusions.json");
+    for bytes in [
+        br#"{"exclusions":[{"hashA":"a","hashB":"b","createdAtUtc":"2026-09-09T00:00:00.000Z"}]}"#
+            .as_slice(),
+        b"{ invalid retired data".as_slice(),
+    ] {
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(rebuild_groups(&conn, &config()).unwrap().grouped_items, 2);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+    index_store::clear_reconstructible(&conn).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"{ invalid retired data");
 }
 
 #[test]
-fn an_unlinked_pair_never_regroups_however_similar_their_pixels_are() {
-    // The persistence promise: a rebuilt cohort replaces its groups, so an
-    // unlink stored against the group would evaporate. Stored against the
-    // pair, it must hold on every later cohort rebuild.
+fn retired_grouping_version_is_invalidated_once_without_resetting_prepared_content() {
     let (dir, conn) = seeded();
-    seed_pairable(&conn, "keeper", 0b0001);
-    seed_pairable(&conn, "bolt", 0b0011); // distance 1 — pairs on looks
-
-    let cfg = config();
-    rebuild_groups(&conn, &cfg).unwrap();
-    let grouped: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
-            r.get(0)
-        })
+    seed_pairable(&conn, "a", 1);
+    seed_pairable(&conn, "b", 3);
+    rebuild_groups(&conn, &config()).unwrap();
+    // An older index can retain its unused column; only the current grouping
+    // version participates in eligibility. Simulate a previously split pair.
+    conn.execute_batch(
+        "ALTER TABLE similarity_state ADD COLUMN exclusions_fingerprint TEXT NOT NULL DEFAULT '';
+         UPDATE similarity_state SET config_fingerprint = '90:4:10:2', exclusions_fingerprint = 'old';
+         DELETE FROM similar_group_members;
+         DELETE FROM similar_groups;
+         DELETE FROM similarity_dirty_buckets;
+         UPDATE contents SET derived_at_utc = '2026-09-09T00:00:00.000Z', derived_version = 12;",
+    ).unwrap();
+    drop(conn);
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let first = rebuild_next_dirty_bucket_cancellable(&conn, &config(), &|| false)
+        .unwrap()
         .unwrap();
-    assert_eq!(grouped, 2, "they pair before the verdict");
-
-    let written = unlink_from_group(&conn, dir.path(), "bolt").unwrap();
-    assert_eq!(written, 1, "one exclusion per other member");
-    assert_eq!(dirty_bucket_count(&conn).unwrap(), 1);
-    // Immediate effect, no rescan needed: membership gone, and a group of one
-    // is dissolved rather than left as a phantom ≈ badge.
-    let (members, groups): (i64, i64) = (
-        conn.query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
-            r.get(0)
-        })
-        .unwrap(),
-        conn.query_row("SELECT COUNT(*) FROM similar_groups", [], |r| r.get(0))
-            .unwrap(),
+    assert_eq!(first.grouped_items, 2);
+    assert!(
+        rebuild_next_dirty_bucket_cancellable(&conn, &config(), &|| false)
+            .unwrap()
+            .is_none()
     );
-    assert_eq!((members, groups), (0, 0));
-
-    // And the verdict binds every future rebuild.
-    rebuild_groups_for_root(&conn, &cfg, dir.path()).unwrap();
-    let regrouped: i64 = conn
-        .query_row("SELECT COUNT(*) FROM similar_group_members", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(regrouped, 0, "the pair must never re-form");
-
-    // Unlinking something ungrouped is a quiet no-op, not an error.
-    assert_eq!(unlink_from_group(&conn, dir.path(), "keeper").unwrap(), 0);
+    let prepared: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM contents WHERE derived_at_utc = '2026-09-09T00:00:00.000Z' AND derived_version = 12",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(prepared, 2);
 }
 
 #[test]
 fn a_config_change_invalidates_every_bucket_once() {
-    let (dir, conn) = seeded();
+    let (_dir, conn) = seeded();
     let jan = 1_704_067_200_000i64;
     let mar = 1_709_251_200_000i64;
     insert_image(&conn, "jan", "Ricoh", jan, 0, 1.0);
     insert_image(&conn, "mar", "Ricoh", mar, 0, 1.0);
-    rebuild_groups_for_root(&conn, &config(), dir.path()).unwrap();
+    rebuild_groups(&conn, &config()).unwrap();
 
     let changed = SimilarityConfig {
         phash_max_distance: 5,
@@ -518,42 +493,6 @@ fn a_config_change_invalidates_every_bucket_once() {
         revisions(),
         once,
         "the same config must not re-invalidate cohorts"
-    );
-}
-
-#[test]
-fn an_unlinked_image_still_groups_with_a_genuine_twin() {
-    // The exclusion is PAIRWISE, not a ban on the image: a real duplicate of
-    // the unlinked photo arriving later must still pair with it.
-    let (dir, conn) = seeded();
-    seed_pairable(&conn, "bolt", 0b0011);
-    seed_pairable(&conn, "family", 0b0001);
-    let cfg = config();
-    rebuild_groups(&conn, &cfg).unwrap();
-    unlink_from_group(&conn, dir.path(), "bolt").unwrap();
-
-    seed_pairable(&conn, "bolt-copy", 0b0010); // distance 1 from bolt
-    rebuild_groups_for_root(&conn, &cfg, dir.path()).unwrap();
-    let bolt_group: Option<i64> = conn
-        .query_row(
-            "SELECT group_id FROM similar_group_members WHERE content_hash = 'bolt'",
-            [],
-            |r| r.get(0),
-        )
-        .map(Some)
-        .unwrap_or(None);
-    let group = bolt_group.expect("the twin pairs with the unlinked image");
-    let with: Vec<String> = conn
-        .prepare("SELECT content_hash FROM similar_group_members WHERE group_id = ?1 ORDER BY 1")
-        .unwrap()
-        .query_map([group], |r| r.get(0))
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
-    assert!(with.contains(&"bolt-copy".to_string()));
-    assert!(
-        !with.contains(&"family".to_string()),
-        "the verdict still holds: {with:?}"
     );
 }
 

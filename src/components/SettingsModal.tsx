@@ -238,64 +238,6 @@ function NumberField({
   );
 }
 
-/** The unlink store's one surface: how many "not the same subject" verdicts
- * exist, and the way to take them all back. Without the count the exclusions
- * would be an invisible permanent store; with only the count there would be
- * no recovery from an accidental unlink. */
-function UnlinkedPairsRow() {
-  const [count, setCount] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    void invoke<number>("similar_exclusions_count")
-      .then(setCount)
-      .catch((failure) => {
-        log.warn("exclusions count failed", toErrorFields(failure));
-        setError("Couldn’t read unlinked pairs.");
-        recordActionFailure("unlinked-pairs-load-failed", "Couldn’t read unlinked pairs.", failure);
-      });
-  }, []);
-  if (count === null) {
-    return error === null ? null : (
-      <OperationResult level="error">{error}</OperationResult>
-    );
-  }
-  if (count === 0) return null;
-  return (
-    <>
-      <Row
-        label={`Unlinked pairs (${count})`}
-        hint="Photos you marked as not similar. Forgetting lets them group again on the next scan."
-      >
-        <Button
-          onClick={() => {
-            void invoke("similar_exclusions_clear")
-              .then(() => {
-                setCount(0);
-                setError(null);
-              })
-              .catch((failure) => {
-                log.warn("exclusions clear failed", toErrorFields(failure));
-                setError("Couldn’t forget unlinked pairs.");
-                recordActionFailure(
-                  "unlinked-pairs-clear-failed",
-                  "Couldn’t forget unlinked pairs.",
-                  failure,
-                );
-              });
-          }}
-        >
-          Forget all
-        </Button>
-      </Row>
-      {error !== null ? (
-        <OperationResult level="error" className="mt-1">
-          {error}
-        </OperationResult>
-      ) : null}
-    </>
-  );
-}
-
 function CheckField({
   label,
   checked,
@@ -627,7 +569,6 @@ export default function SettingsModal({
               Reset similar photo settings
             </Button>
           </div>
-          <UnlinkedPairsRow />
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Library maintenance
           </h2>

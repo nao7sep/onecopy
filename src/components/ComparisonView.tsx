@@ -16,7 +16,6 @@ import {
   decideComparisonPage,
   handleComparisonKey,
   retryComparisonFailure,
-  unlinkComparisonSelection,
 } from "../workflows/comparison";
 import ComparisonSlot from "./ComparisonSlot";
 import ConfirmDialog from "./ConfirmDialog";
@@ -152,13 +151,6 @@ export default function ComparisonView({
             onClick={() => useComparisonStore.getState().nextPage()}
           >
             Next Page
-          </button>
-          <button
-            className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
-            disabled={busy || markedCount === 0}
-            onClick={() => void unlinkComparisonSelection()}
-          >
-            Not similar
           </button>
           <button
             className="rounded border border-danger/50 px-2 py-1 text-danger hover:bg-danger/10 disabled:opacity-50"

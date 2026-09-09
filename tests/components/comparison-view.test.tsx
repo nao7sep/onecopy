@@ -37,6 +37,7 @@ describe("Comparison view and decision store composition", () => {
   });
   it("renders Keep and unkeep immediately without an unrelated update", () => {
     const view = render(<ComparisonView onRevealTrash={vi.fn()} />);
+    expect(view.queryByRole("button", { name: "Not similar" })).toBeNull();
     const card = view.getByRole("option", { name: "Key 1: photo-1.jpg" });
 
     fireEvent.click(view.getByRole("button", { name: "Keep photo-1.jpg" }));

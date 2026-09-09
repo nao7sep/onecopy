@@ -99,7 +99,6 @@ interface ComparisonState extends ComparisonDecisionDraft {
   markAll: () => void;
   nextPage: () => void;
   prevPage: () => void;
-  unlinkSelected: () => Promise<"open" | "closed" | null>;
   requestPageDecision: (
     permanent: boolean,
     trashAll?: boolean,
@@ -732,52 +731,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
 
   nextPage: () => movePage(set, get, 1),
   prevPage: () => movePage(set, get, -1),
-
-  unlinkSelected: async () => {
-    const state = get();
-    if (state.busy || state.pendingAction !== null) return null;
-    const selected = visibleKeepMarks(state.selected, visibleMembers(state));
-    if (selected.size === 0) {
-      set({ message: "Select at least one image to mark as not similar." });
-      return null;
-    }
-    set({ busy: true, message: null });
-    const removed = new Set<string>();
-    const failed: string[] = [];
-    for (const hash of selected) {
-      try {
-        await invoke("similar_unlink", { hash });
-        removed.add(hash);
-      } catch (error) {
-        log.error("similar unlink failed", { hash, ...toErrorFields(error) });
-        const fileName = state.members.find((member) => member.hash === hash)?.fileName;
-        recordInterfaceFailure(
-          `Couldn’t mark ${fileName ?? "one image"} as not similar.`,
-        );
-        failed.push(hash);
-      }
-    }
-    const current = get();
-    const members = current.members.filter(
-      (member) => !removed.has(member.hash),
-    );
-    if (members.length < 2) {
-      const spreadCount = current.spreadCount;
-      set(closedComparisonState());
-      await queueComparisonLifecycle(() => teardownComparison(spreadCount));
-      return "closed";
-    }
-    set({
-      busy: false,
-      ...viewPatch(current, members),
-      message:
-        failed.length === 0
-          ? null
-          : `${failed.length} image${failed.length === 1 ? "" : "s"} could not be marked as not similar.`,
-    });
-    synchronizeSpread(current.spreadCount);
-    return "open";
-  },
 
   requestPageDecision: async (
     permanent,

@@ -160,8 +160,7 @@ CREATE TABLE IF NOT EXISTS similarity_dirty_buckets (
 -- invalidate every existing cohort exactly once.
 CREATE TABLE IF NOT EXISTS similarity_state (
   singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-  config_fingerprint TEXT NOT NULL,
-  exclusions_fingerprint TEXT NOT NULL DEFAULT ''
+  config_fingerprint TEXT NOT NULL
 );
 
 -- Only the current trigger definitions may maintain the projection.
@@ -402,7 +401,6 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
              DROP TABLE IF EXISTS recent_notifications;
              DROP TABLE IF EXISTS volumes;
              DROP TABLE IF EXISTS source_volumes;
-             DROP TABLE IF EXISTS similar_exclusions;
              PRAGMA user_version = 0;
              PRAGMA foreign_keys = ON;",
         )
@@ -490,7 +488,7 @@ pub fn any_issues(conn: &Connection) -> Result<bool, String> {
 }
 
 /// Clears only reconstructible library facts. Durable configuration, managed
-/// tools, and authored similarity exclusions live in separate stores and are
+/// tools, and retained authored records live in separate stores and are
 /// deliberately outside this transaction.
 pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
     let transaction = conn

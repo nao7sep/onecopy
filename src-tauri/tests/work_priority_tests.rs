@@ -158,10 +158,9 @@ fn similarity_priority_does_not_consume_an_unrelated_earlier_cohort() {
     }
     let settings = onecopy_lib::derived_work::settings_from_config(None, root.path()).unwrap();
     similarity::ensure_config_current(&conn, &settings.similarity).unwrap();
-    let stats = similarity::rebuild_priority_bucket_for_root_cancellable(
+    let stats = similarity::rebuild_priority_bucket_cancellable(
         &conn,
         &settings.similarity,
-        root.path(),
         &["visible".to_string()],
         &|| false,
     )
@@ -177,10 +176,9 @@ fn similarity_priority_does_not_consume_an_unrelated_earlier_cohort() {
         .unwrap(),
         1
     );
-    assert!(similarity::rebuild_priority_bucket_for_root_cancellable(
+    assert!(similarity::rebuild_priority_bucket_cancellable(
         &conn,
         &settings.similarity,
-        root.path(),
         &["visible".to_string()],
         &|| false
     )
