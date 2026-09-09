@@ -71,6 +71,7 @@ pub mod fs_recovery;
 pub mod hashing;
 pub mod index_store;
 pub mod indexed_file;
+pub mod information_attempts;
 mod instance_owner;
 pub mod issue_recovery;
 pub mod live_photo;
@@ -1060,11 +1061,13 @@ fn rescan_section(
                 );
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
+                let bounds = queries::month_bounds(&month, display_timezone())?;
+                information_attempts::reset_section(&conn, &kind, bounds)?;
                 let reopened = derived_state::reset_failed_outputs(
                     &conn,
                     derived_state::FailedOutputScope::Section {
                         kind: &kind,
-                        bounds: queries::month_bounds(&month, display_timezone())?,
+                        bounds,
                     },
                 )?;
                 if reopened > 0 {

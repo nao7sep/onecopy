@@ -117,6 +117,7 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     )?;
     // Once per process, before any executor or window-driven request exists.
     // Opening another database connection or section must never reset failure.
+    crate::information_attempts::reset_library(&conn)?;
     crate::derived_state::reset_failed_outputs(
         &conn,
         crate::derived_state::FailedOutputScope::Library,

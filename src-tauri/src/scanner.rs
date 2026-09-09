@@ -40,8 +40,9 @@ pub static SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
 pub const WALK_ERROR: &str = "walk-error";
 pub const STAT_ERROR: &str = "stat-error";
 pub const READ_ERROR: &str = "read-error";
+pub const METADATA_READ_ERROR: &str = "metadata-read-error";
 pub const COPIES_DISAGREE: &str = "copies-disagree";
-const PATH_SCAN_ISSUES: &[&str] = &[WALK_ERROR, STAT_ERROR, READ_ERROR, COPIES_DISAGREE];
+const PATH_SCAN_ISSUES: &[&str] = &[WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA_READ_ERROR, COPIES_DISAGREE];
 
 pub fn filesystem_issue_recheckable(kind: &str) -> bool {
     matches!(kind, WALK_ERROR | STAT_ERROR | READ_ERROR)
@@ -126,7 +127,11 @@ pub fn recheck_filesystem_issue(
                 // worker may repeat this exceptional read rather than create
                 // a second identity path here.
                 match crate::hashing::full_hash_cancellable(Path::new(&path), &SCAN_CANCEL) {
-                    Ok(_) => (true, false),
+                    Ok(_) => {
+                        conn.execute("UPDATE paths SET hash_attempt_failed = 0 WHERE abs_path = ?1", [&path])
+                            .map_err(|error| error.to_string())?;
+                        (true, false)
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         mark_path_missing(conn, &path)?;
                         (true, true)
@@ -773,13 +778,13 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     };
     if probe(
         "SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 AND content_hash IS NULL \
-         AND kind IN ('image', 'video', 'audio'))",
+         AND hash_attempt_failed = 0 AND kind IN ('image', 'video', 'audio'))",
     )? {
         return Ok(true);
     }
     if probe(
         "SELECT EXISTS(SELECT 1 FROM paths \
-         WHERE missing = 0 AND indexed_at_utc IS NULL)",
+         WHERE missing = 0 AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0)",
     )? {
         return Ok(true);
     }
@@ -794,7 +799,7 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     // file was checked and carries no Live Photo identifier.
     if probe(
         "SELECT EXISTS(SELECT 1 FROM paths p \
-         WHERE p.missing = 0 AND p.kind IN ('image', 'video') \
+         WHERE p.missing = 0 AND p.metadata_attempt_failed = 0 AND p.kind IN ('image', 'video') \
            AND NOT EXISTS (SELECT 1 FROM evidence e \
                            WHERE e.path_id = p.id \
                              AND e.source = 'live-photo-identifier'))",
@@ -859,7 +864,7 @@ fn run_index_tail_scoped(
     summary.copies_disagree = hash_stats.copies_disagree;
     summary.failures += hash_stats.errors;
 
-    extract_pending_with_progress(conn, progress)?;
+    summary.failures += extract_pending_with_progress(conn, progress)?.failed;
 
     let resolve_stats = resolve_from_evidence_with_progress(
         conn,
@@ -1022,6 +1027,7 @@ pub fn upsert_file(
             conn.execute(
                 "UPDATE paths SET size = ?2, mtime_ms = ?3, birthtime_ms = ?4, ext = ?5, \
                  kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
+                 hash_attempt_failed = 0, metadata_attempt_failed = 0, \
                  indexed_at_utc = NULL, resolved_utc_ms = NULL, resolved_source = NULL, \
                  date_only = 0, missing = 0 WHERE abs_path = ?1",
                 params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem],
@@ -1227,7 +1233,7 @@ fn walk_root_with_progress(
             .map_err(|error| error.to_string())?;
         publication
             .execute(
-                "DELETE FROM issues WHERE kind IN (?1, ?2, ?3, ?4) \
+                "DELETE FROM issues WHERE kind IN (?1, ?2, ?3, ?4, ?5) \
                  AND path IN (\
                      SELECT abs_path FROM walk_vanished_paths\
                  )",
@@ -1235,6 +1241,7 @@ fn walk_root_with_progress(
                     WALK_ERROR,
                     STAT_ERROR,
                     READ_ERROR,
+                    METADATA_READ_ERROR,
                     COPIES_DISAGREE,
                 ],
             )
@@ -1486,7 +1493,7 @@ fn hash_pending_with_progress(
     let mut stmt = conn
         .prepare(
             "SELECT id, abs_path, size, kind, content_hash, prehash FROM paths \
-             WHERE missing = 0 AND (content_hash IS NULL OR content_hash GLOB 'p*')",
+             WHERE missing = 0 AND hash_attempt_failed = 0 AND (content_hash IS NULL OR content_hash GLOB 'p*')",
         )
         .map_err(|e| e.to_string())?;
     let rows: Vec<Row> = stmt
@@ -1611,7 +1618,7 @@ fn hash_pending_with_progress(
                 // file problem — no issue row for it.
                 check_cancel()?;
                 stats.errors += 1;
-                record_issue(conn, Some(row.abs.clone()), "read-error", &err.to_string())?;
+                crate::information_attempts::failed(conn, row.id, &row.abs, crate::information_attempts::Stage::Identity, &err.to_string())?;
                 Ok(None)
             }
         }
@@ -1665,7 +1672,7 @@ fn hash_pending_with_progress(
                     }
                     Err(err) => {
                         stats.errors += 1;
-                        record_issue(conn, Some(row.abs.clone()), "read-error", &err.to_string())?;
+                        crate::information_attempts::failed(conn, row.id, &row.abs, crate::information_attempts::Stage::Identity, &err.to_string())?;
                         done += 1;
                         report_path(&row, done, stats.errors, None, None);
                         None
@@ -1730,6 +1737,7 @@ fn hash_pending_with_progress(
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct ExtractStats {
     pub extracted: u64,
+    pub failed: u64,
 }
 
 pub const LIVE_PHOTO_REPAIR_PAGE_SIZE: usize = 64;
@@ -1752,12 +1760,13 @@ fn extract_pending_with_progress(
     let rows: Vec<(i64, String, String, String)> = collect_rows_4(
         conn,
         "SELECT id, abs_path, file_name, kind FROM paths \
-         WHERE missing = 0 AND indexed_at_utc IS NULL",
+         WHERE missing = 0 AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0",
     )?;
     let repair_total = conn
         .query_row(
             "SELECT COUNT(*) FROM paths p \
              WHERE p.missing = 0 AND p.indexed_at_utc IS NOT NULL \
+               AND p.metadata_attempt_failed = 0 \
                AND p.kind IN ('image', 'video') \
                AND NOT EXISTS (SELECT 1 FROM evidence e \
                                WHERE e.path_id = p.id \
@@ -1781,16 +1790,31 @@ fn extract_pending_with_progress(
             done,
             total,
             &abs,
-            0,
+            stats.failed,
             ScanPhase::Resolve,
         ));
         let path = Path::new(&abs);
         let meta = match kind.as_str() {
-            "image" => Some(metadata::read_image_metadata(path)),
-            "video" => Some(metadata::read_video_metadata(path)),
+            "image" => metadata::read_image_metadata(path).map(Some),
+            "video" => metadata::read_video_metadata(path).map(Some),
             // Companion RAW files are TIFF containers with readable EXIF.
-            "companion" => Some(metadata::read_image_metadata(path)),
-            _ => None,
+            "companion" => metadata::read_image_metadata(path).map(Some),
+            _ => Ok(None),
+        };
+        let meta = match meta {
+            Ok(meta) => meta,
+            Err(error) => {
+                crate::information_attempts::failed(
+                    conn,
+                    id,
+                    &abs,
+                    crate::information_attempts::Stage::Metadata,
+                    &error.to_string(),
+                )?;
+                stats.failed += 1;
+                done += 1;
+                continue;
+            }
         };
 
         // Re-extraction replaces this path's evidence wholesale.
@@ -1841,6 +1865,11 @@ fn extract_pending_with_progress(
             params![id, logging::now_iso_millis()],
         )
         .map_err(|e| e.to_string())?;
+        crate::index_store::clear_issues(
+            conn,
+            &abs,
+            &[crate::information_attempts::Stage::Metadata.issue_kind()],
+        )?;
         stats.extracted += 1;
         done += 1;
         progress(ScanProgress::at_path(
@@ -1848,7 +1877,7 @@ fn extract_pending_with_progress(
             done,
             total,
             &abs,
-            0,
+            stats.failed,
             ScanPhase::Resolve,
         ));
     }
@@ -1858,11 +1887,8 @@ fn extract_pending_with_progress(
     // durable "checked, absent" result, so later passes do not reopen them.
     let mut after_id = 0;
     loop {
-        let pending_live_photo = live_photo_repair_candidates(
-            conn,
-            after_id,
-            LIVE_PHOTO_REPAIR_PAGE_SIZE,
-        )?;
+        let pending_live_photo =
+            live_photo_repair_candidates(conn, after_id, LIVE_PHOTO_REPAIR_PAGE_SIZE)?;
         if pending_live_photo.is_empty() {
             break;
         }
@@ -1873,14 +1899,34 @@ fn extract_pending_with_progress(
                 done,
                 total,
                 &abs,
-                0,
+                stats.failed,
                 ScanPhase::Resolve,
             ));
             let path = Path::new(&abs);
             let identifier = match kind.as_str() {
-                "image" => crate::live_photo::still_content_identifier(path),
-                "video" => crate::live_photo::quicktime_content_identifier(path),
-                _ => None,
+                "image" => {
+                    metadata::read_image_metadata(path).map(|meta| meta.live_photo_identifier)
+                }
+                "video" => {
+                    metadata::read_video_metadata(path).map(|meta| meta.live_photo_identifier)
+                }
+                _ => Ok(None),
+            };
+            let identifier = match identifier {
+                Ok(identifier) => identifier,
+                Err(error) => {
+                    crate::information_attempts::failed(
+                        conn,
+                        id,
+                        &abs,
+                        crate::information_attempts::Stage::Metadata,
+                        &error.to_string(),
+                    )?;
+                    stats.failed += 1;
+                    done += 1;
+                    after_id = id;
+                    continue;
+                }
             };
             conn.execute(
                 "INSERT INTO evidence (path_id, source, raw, offset_known) \
@@ -1888,6 +1934,11 @@ fn extract_pending_with_progress(
                 params![id, identifier],
             )
             .map_err(|e| e.to_string())?;
+            crate::index_store::clear_issues(
+                conn,
+                &abs,
+                &[crate::information_attempts::Stage::Metadata.issue_kind()],
+            )?;
             stats.extracted += 1;
             done += 1;
             after_id = id;
@@ -1896,7 +1947,7 @@ fn extract_pending_with_progress(
                 done,
                 total,
                 &abs,
-                0,
+                stats.failed,
                 ScanPhase::Resolve,
             ));
         }
@@ -1905,7 +1956,7 @@ fn extract_pending_with_progress(
     progress(ScanProgress::completed(
         ScanPhase::Extract,
         total,
-        0,
+        stats.failed,
         Some(ScanPhase::Resolve),
     ));
 
@@ -1923,7 +1974,7 @@ pub fn live_photo_repair_candidates(
     let mut stmt = conn
         .prepare(
             "SELECT p.id, p.abs_path, p.kind FROM paths p \
-             WHERE p.missing = 0 AND p.id > ?1 \
+             WHERE p.missing = 0 AND p.id > ?1 AND p.metadata_attempt_failed = 0 \
                AND p.kind IN ('image', 'video') \
                AND NOT EXISTS (SELECT 1 FROM evidence e \
                                WHERE e.path_id = p.id \

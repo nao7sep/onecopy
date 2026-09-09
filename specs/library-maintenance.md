@@ -42,6 +42,8 @@ While all configured sources are already being checked, section recheck is unava
 
 Stopping a source-folder check does not stop completion of information already discovered. Watcher-discovered work can also complete while the broader source check is stopped. Missing information does not disable unrelated library use; surfaces and operations use the facts currently known and remain truthful about what is unavailable.
 
+An input-local identity-read or metadata-read failure settles that attempt without making the information complete. Later unrelated completion passes and ordinary browsing do not retry it. Restart, explicit recheck of its section, or an observed source change admits a new attempt; successfully completed information remains reusable. Absent or unsupported embedded metadata is an empty successful result, distinct from filesystem I/O failure. Failure receipts belong to file-information eligibility, independently of Issue visibility or dismissal.
+
 ## Required preparation
 
 Required work is work without which OneCopy's library or review surfaces are incomplete. Computational cost does not make it optional, and neither the first-launch wizard nor Settings provides a durable switch that disables it.

@@ -3,9 +3,8 @@
 //! directories, so the file is never backed up and may be deleted between runs
 //! at the cost of a full re-index (persisted-store-separation conventions).
 //!
-//! Schema v0, pre-release: evolved in place with `CREATE ... IF NOT EXISTS`
-//! (plus a fresh file when a change is large) — no migration scaffolding until
-//! release, per PLAYBOOK.
+//! Current dogfood indexes and diagnostic records survive schema upgrades.
+//! Earlier disposable schema generations may still require reconstruction.
 //!
 //! The unit model: `contents` holds one row per unique content hash (the
 //! logical file every view shows); `paths` holds one row per physical path,
@@ -19,11 +18,9 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-// This is an idempotent schema-generation stamp, not a migration ladder. The
-// index is reconstructible and pre-release: bumping the stamp makes the next
-// open apply the complete current schema once, while ordinary read commands
-// avoid replaying DDL and replacing triggers on every connection.
-const SCHEMA_REVISION: i64 = 9;
+// Ordinary reads do not replay DDL. Current durable dogfood generations use
+// explicit transactional upgrades rather than discarding diagnostic history.
+const SCHEMA_REVISION: i64 = 10;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
@@ -73,6 +70,8 @@ CREATE TABLE IF NOT EXISTS paths (
   prehash          TEXT,
   content_hash     TEXT REFERENCES contents(hash),
   indexed_at_utc   TEXT,
+  hash_attempt_failed INTEGER NOT NULL DEFAULT 0,
+  metadata_attempt_failed INTEGER NOT NULL DEFAULT 0,
   missing          INTEGER NOT NULL DEFAULT 0,
   companion_of     INTEGER REFERENCES paths(id),
   resolved_utc_ms  INTEGER,
@@ -380,11 +379,28 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| error.to_string())?;
     if schema_revision != SCHEMA_REVISION {
-        // The index contains only reconstructible facts. Before release there
-        // is no compatibility ladder: any schema mismatch discards the old
-        // projection wholesale and creates the one current schema below.
-        conn.execute_batch(
-            "PRAGMA foreign_keys = OFF;
+        conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE")
+            .map_err(|error| error.to_string())?;
+        let setup = (|| {
+            // Another opener may have completed the upgrade while this one
+            // waited for SQLite's write lock. Its observed version owns DDL.
+            let current = conn
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            match current {
+                SCHEMA_REVISION => return Ok(()),
+                9 => {
+                    conn.execute_batch(
+                        "ALTER TABLE paths ADD COLUMN hash_attempt_failed INTEGER NOT NULL DEFAULT 0;
+                         ALTER TABLE paths ADD COLUMN metadata_attempt_failed INTEGER NOT NULL DEFAULT 0;"
+                    ).map_err(|error| error.to_string())?;
+                }
+                0..=8 => {
+                    // Only the earlier disposable index generations retain
+                    // the old reconstruction path. Revision 9 and later carry
+                    // diagnostic history that must survive this upgrade.
+                    conn.execute_batch(
+                        "
              DROP TABLE IF EXISTS analysis_receipts;
              DROP TABLE IF EXISTS similar_group_members;
              DROP TABLE IF EXISTS similar_groups;
@@ -401,16 +417,14 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
              DROP TABLE IF EXISTS recent_notifications;
              DROP TABLE IF EXISTS volumes;
              DROP TABLE IF EXISTS source_volumes;
-             PRAGMA user_version = 0;
-             PRAGMA foreign_keys = ON;",
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    if schema_revision != SCHEMA_REVISION {
-        conn.execute_batch("BEGIN IMMEDIATE")
-            .map_err(|e| e.to_string())?;
-        let setup = (|| {
-            conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+             PRAGMA user_version = 0;",
+                    )
+                    .map_err(|error| error.to_string())?;
+                    conn.execute_batch(SCHEMA)
+                        .map_err(|error| error.to_string())?;
+                }
+                _ => return Err(format!("unsupported index schema revision: {current}")),
+            }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
@@ -433,6 +447,8 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 return Err(error);
             }
         }
+        conn.pragma_update(None, "foreign_keys", true)
+            .map_err(|error| error.to_string())?;
     }
     Ok(conn)
 }
@@ -601,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_schema_mismatch_reconstructs_instead_of_migrating_old_rows() {
+    fn an_earlier_disposable_schema_reconstructs_old_rows() {
         let dir = tempfile::Builder::new()
             .prefix("onecopy-index-upgrade-")
             .tempdir()
@@ -610,7 +626,7 @@ mod tests {
         let conn = open(&db).unwrap();
         conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image')", [])
             .unwrap();
-        conn.pragma_update(None, "user_version", SCHEMA_REVISION - 1)
+        conn.pragma_update(None, "user_version", 8)
             .unwrap();
         drop(conn);
 

@@ -18,6 +18,8 @@ mod hashing_tests;
 mod index_store_tests;
 #[path = "../indexed_file_tests.rs"]
 mod indexed_file_tests;
+#[path = "../information_attempts_tests.rs"]
+mod information_attempts_tests;
 #[path = "../live_photo_tests.rs"]
 mod live_photo_tests;
 #[path = "../path_identity_tests.rs"]

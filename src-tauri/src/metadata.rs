@@ -45,22 +45,28 @@ pub struct MediaMetadata {
 /// Reads still-image metadata (EXIF). nom-exif first (JPEG/HEIC/PNG and some
 /// RAW containers), kamadak-exif as the TIFF-family fallback. A parse failure
 /// is an empty result, not an error — many files simply carry no EXIF.
-pub fn read_image_metadata(path: &Path) -> MediaMetadata {
-    if let Ok(exif) = nom_exif::read_exif(path) {
-        return from_nom_exif(&exif);
+pub fn read_image_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
+    match nom_exif::read_exif(path) {
+        Ok(exif) => return Ok(from_nom_exif(&exif)),
+        Err(nom_exif::Error::Io(error)) => return Err(error),
+        Err(_) => {}
     }
-    read_kamadak(path).unwrap_or_default()
+    read_kamadak(path).map(Option::unwrap_or_default)
 }
 
 /// Reads video track metadata (QuickTime/MP4/…). A parse failure is an empty
 /// result.
-pub fn read_video_metadata(path: &Path) -> MediaMetadata {
+pub fn read_video_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
     let live_photo_identifier = crate::live_photo::quicktime_content_identifier(path);
-    let Ok(track) = nom_exif::read_track(path) else {
-        return MediaMetadata {
-            live_photo_identifier,
-            ..MediaMetadata::default()
-        };
+    let track = match nom_exif::read_track(path) {
+        Ok(track) => track,
+        Err(nom_exif::Error::Io(error)) => return Err(error),
+        Err(_) => {
+            return Ok(MediaMetadata {
+                live_photo_identifier,
+                ..MediaMetadata::default()
+            })
+        }
     };
 
     let text = |tag: TrackInfoTag| match track.get(tag) {
@@ -73,7 +79,7 @@ pub fn read_video_metadata(path: &Path) -> MediaMetadata {
         _ => None,
     };
 
-    MediaMetadata {
+    Ok(MediaMetadata {
         // QuickTime dates carry an offset (Apple's creationdate key when
         // present, else UTC creation_time) — nom-exif hands us a zoned value,
         // so the result is always Absolute.
@@ -94,7 +100,7 @@ pub fn read_video_metadata(path: &Path) -> MediaMetadata {
             _ => None,
         },
         live_photo_identifier,
-    }
+    })
 }
 
 fn from_nom_exif(exif: &nom_exif::Exif) -> MediaMetadata {
@@ -142,11 +148,17 @@ fn from_nom_exif(exif: &nom_exif::Exif) -> MediaMetadata {
 }
 
 /// kamadak-exif fallback for TIFF-family containers, metadata-only.
-fn read_kamadak(path: &Path) -> Option<MediaMetadata> {
-    let file = std::fs::File::open(crate::winpath::for_fs(path).as_ref()).ok()?;
-    let exif = exif::Reader::new()
-        .read_from_container(&mut BufReader::new(file))
-        .ok()?;
+fn read_kamadak(path: &Path) -> std::io::Result<Option<MediaMetadata>> {
+    let file = std::fs::File::open(crate::winpath::for_fs(path).as_ref())?;
+    let exif = match exif::Reader::new().read_from_container(&mut BufReader::new(file)) {
+        Ok(exif) => exif,
+        // A truncated metadata container is a parse failure, not a failed
+        // filesystem read. Other I/O errors retain their native error kind.
+        Err(exif::Error::Io(error)) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
+            return Err(error)
+        }
+        Err(_) => return Ok(None),
+    };
 
     let field_text = |tag: exif::Tag| {
         exif.get_field(tag, exif::In::PRIMARY)
@@ -198,7 +210,7 @@ fn read_kamadak(path: &Path) -> Option<MediaMetadata> {
             }
         });
 
-    Some(MediaMetadata {
+    Ok(Some(MediaMetadata {
         taken,
         make: field_text(exif::Tag::Make),
         model: field_text(exif::Tag::Model),
@@ -206,7 +218,7 @@ fn read_kamadak(path: &Path) -> Option<MediaMetadata> {
         height: None,
         duration_ms: None,
         live_photo_identifier: None,
-    })
+    }))
 }
 
 fn naive_from_chrono(ndt: chrono::NaiveDateTime) -> MetadataTimestamp {
@@ -301,20 +313,20 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_files_yield_empty_metadata_not_errors() {
+    fn unsupported_metadata_containers_yield_empty_metadata() {
         let dir = tempfile::Builder::new()
             .prefix("onecopy-meta-")
             .tempdir()
             .unwrap();
         let path = dir.path().join("not-a-photo.jpg");
         std::fs::write(&path, b"plainly not a jpeg").unwrap();
-        let meta = read_image_metadata(&path);
+        let meta = read_image_metadata(&path).unwrap();
         assert!(meta.taken.is_none());
         assert!(meta.make.is_none());
 
         let video = dir.path().join("not-a-video.mp4");
         std::fs::write(&video, b"nope").unwrap();
-        let meta = read_video_metadata(&video);
+        let meta = read_video_metadata(&video).unwrap();
         assert!(meta.taken.is_none());
         assert!(meta.duration_ms.is_none());
     }
