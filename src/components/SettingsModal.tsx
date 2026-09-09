@@ -1,7 +1,7 @@
-import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { availableMonitors } from "@tauri-apps/api/window";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { availableMonitors, type Monitor } from "@tauri-apps/api/window";
+import { identifyScreens } from "../workflows/identify-screens";
 import { useSettingsStore } from "../state/settings-store";
 import { saveSettings } from "../workflows/settings";
 import { log, toErrorFields } from "../repositories";
@@ -31,38 +31,33 @@ import TimezoneHelpLink from "./TimezoneHelpLink";
  * identifiers are machine-specific and reordering applies immediately, like
  * a pane width. Meaningful only with two or more monitors. */
 function ScreensSection() {
-  const [monitors, setMonitors] = useState<
-    {
-      name: string | null;
-      position: { x: number; y: number };
-      size: { width: number; height: number };
-      scaleFactor?: number;
-    }[]
-  >([]);
+  const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [screenError, setScreenError] = useState<string | null>(null);
+  const [identifying, setIdentifying] = useState(false);
+  const mounted = useRef(false);
   const priority = priorityFromState(
     useAppStore((s) => s.appData?.state) ?? null,
   );
   useEffect(() => {
+    mounted.current = true;
+    let current = true;
     void availableMonitors()
       .then((available) => {
+        if (!current) return;
         setMonitors(available);
         setScreenError(null);
       })
       .catch((error) => {
+        if (!current) return;
         log.warn("settings monitor query failed", toErrorFields(error));
         setScreenError("Couldn’t read the connected screens.");
         recordActionFailure("screen-list-failed", "Couldn’t read the connected screens.", error);
       });
+    return () => { current = false; mounted.current = false; };
   }, []);
-  if (screenError !== null) {
-    return (
-      <OperationResult level="error" className="mt-6">
-        {screenError}
-      </OperationResult>
-    );
-  }
-  if (monitors.length < 2) return null;
+  if (monitors.length < 2) return screenError === null ? null : (
+    <OperationResult level="error" className="mt-6">{screenError}</OperationResult>
+  );
 
   const ordered = orderMonitors(monitors, priority);
   const move = (index: number, delta: number) => {
@@ -87,65 +82,36 @@ function ScreensSection() {
       <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
         Screens
       </h2>
-      <p className="mb-1 text-xs text-ink-muted">
+      <p className="mb-3 text-xs text-ink-muted">
         Order decides the role: 1 = main window, 2 = preview, the rest join the
         comparison spread. Applies immediately.
       </p>
       <Button
         className="mb-2"
-        onClick={() => {
-          // One self-closing flash per monitor, showing its ordinal — the
-          // only way to tell a matched pair apart beyond "left"/"right".
+        disabled={identifying}
+        onClick={async () => {
+          setIdentifying(true);
+          setScreenError(null);
           try {
-            ordered.forEach((monitor, index) => {
-              const scale = monitor.scaleFactor || 1;
-              const window = new WebviewWindow(`identify-${index + 1}`, {
-                url: `index.html?view=identify&slice=${index + 1}`,
-                title: "OneCopy",
-                x:
-                  monitor.position.x / scale +
-                  monitor.size.width / scale / 2 -
-                  110,
-                y:
-                  monitor.position.y / scale +
-                  monitor.size.height / scale / 2 -
-                  110,
-                width: 220,
-                height: 220,
-                decorations: false,
-                alwaysOnTop: true,
-                skipTaskbar: true,
-                resizable: false,
-                focus: false,
-              });
-              void window.once("tauri://error", (event) => {
-                const failure = new Error(String(event.payload));
-                log.warn(
-                  "screen identification failed",
-                  toErrorFields(failure),
-                );
-                setScreenError("Couldn’t identify the connected screens.");
-                recordActionFailure(
-                  "screen-identify-failed",
-                  "Couldn’t identify the connected screens.",
-                  failure,
-                );
-              });
-            });
-            setScreenError(null);
+            await identifyScreens(ordered);
           } catch (error) {
             log.warn("screen identification failed", toErrorFields(error));
-            setScreenError("Couldn’t identify the connected screens.");
+            if (mounted.current) setScreenError("Couldn’t identify all connected screens. Try again.");
             recordActionFailure(
               "screen-identify-failed",
-              "Couldn’t identify the connected screens.",
+              "Couldn’t identify all connected screens. Try again.",
               error,
             );
+          } finally {
+            if (mounted.current) setIdentifying(false);
           }
         }}
       >
-        Identify screens
+        {identifying ? "Identifying screens…" : "Identify screens"}
       </Button>
+      {screenError !== null && (
+        <OperationResult level="error" className="mb-3">{screenError}</OperationResult>
+      )}
       {ordered.map((monitor, index) => (
         <div
           key={monitorKey(monitor)}

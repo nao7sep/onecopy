@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import SettingsModal from "../../src/components/SettingsModal";
 import { useSettingsStore } from "../../src/state/settings-store";
-import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { createdWindows, invokeCalls, mockCommands, resetTauriMocks, setMonitors, setWindowCreatedHook, WebviewWindow } from "../mocks/tauri";
 
 const config = {
   sourceDirs: ["C:\\Photos"],
@@ -61,6 +61,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setWindowCreatedHook(null);
   useSettingsStore.setState({
     draft: null,
     opened: null,
@@ -70,6 +71,39 @@ afterEach(() => {
 });
 
 describe("Settings categories", () => {
+  it("keeps screen controls reachable after identification failure and clears the result on retry", async () => {
+    setMonitors([0, 1].map((index) => ({
+      name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },
+      size: { width: 1920, height: 1080 }, scaleFactor: 1,
+    })));
+    mockCommands({ record_recent_notification: () => ({ id: 1 }) });
+    let fail = true;
+    setWindowCreatedHook((label) => {
+      queueMicrotask(async () => {
+        const window = (await WebviewWindow.getByLabel(label))!;
+        const handlers = window.once.mock.calls as unknown as Array<[string, (event: { payload: unknown }) => void]>;
+        handlers.find(([event]) => event === (fail ? "tauri://error" : "tauri://created"))![1]({ payload: "fixture native failure" });
+      });
+    });
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    const identify = await screen.findByRole("button", { name: "Identify screens" });
+    await act(async () => identify.click());
+    expect(screen.getByText("Couldn’t identify all connected screens. Try again.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Move up" })).toHaveLength(2);
+    expect((screen.getByRole("button", { name: "Identify screens" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1);
+
+    fail = false;
+    await act(async () => screen.getByRole("button", { name: "Identify screens" }).click());
+    expect(screen.queryByText(/Couldn’t identify/)).toBeNull();
+    const oldWindow = (await WebviewWindow.getByLabel(createdWindows[0].label))!;
+    const oldHandlers = oldWindow.once.mock.calls as unknown as Array<[string, (event: { payload: unknown }) => void]>;
+    await act(async () => oldHandlers.find(([event]) => event === "tauri://error")![1]({ payload: "obsolete failure" }));
+    expect(screen.queryByText(/Couldn’t identify/)).toBeNull();
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1);
+  });
+
   it("explains how to populate an empty source-directory list", () => {
     useSettingsStore.getState().beginEditing({ ...config, sourceDirs: [] });
     render(<SettingsModal open onClose={() => {}} />);
