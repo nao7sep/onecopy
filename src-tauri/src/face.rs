@@ -479,6 +479,7 @@ pub fn face_scores_pending(
     }
     stats.candidates_found = true;
 
+    let _awake = crate::sleep_prevention::begin_work();
     let mut scorer = FaceScorer::load(runtime, detector_model, emotion_model)?;
     let total = pending.len() as u64;
     for (hash, path) in pending {

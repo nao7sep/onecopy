@@ -477,6 +477,7 @@ fn process_dirty_claimed(
     dirs: &[PathBuf],
     generation: u64,
 ) -> Result<u64, String> {
+    let _awake = crate::sleep_prevention::begin_work();
     let data_root = crate::paths::data_root(app)?;
     let loaded = crate::storage::load_app_data(app)?;
     let settings = scanner::settings_from_config(

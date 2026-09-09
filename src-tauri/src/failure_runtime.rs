@@ -16,6 +16,8 @@ use tauri::{AppHandle, Emitter};
 /// persisted as presentation.
 fn presentation_for(kind: &str) -> &'static str {
     match kind {
+        "sleep-prevention-failed" =>
+            "OneCopy could not prevent idle system sleep. Library work can continue. Turn the keep-awake setting off and on to retry; if it still fails, restart OneCopy.",
         "config-save-failed" | "state-save-failed" =>
             "OneCopy could not save an application setting. Your library files were not changed.",
         "source-check-failed" | "watcher-failed" | "watcher-root-failed" =>

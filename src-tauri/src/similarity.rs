@@ -653,6 +653,7 @@ fn rebuild_next_dirty_bucket(
         let Some((bucket, revision)) = next_dirty_bucket(conn)? else {
             return Ok(None);
         };
+        let _awake = crate::sleep_prevention::begin_work();
         let candidates = candidates_for_bucket(conn, &bucket)?;
         let groups = groups_for_bucket(&candidates, config, stop)?;
         if let Some(stats) = publish_bucket(conn, &bucket, revision, &groups, stop)? {
@@ -717,6 +718,7 @@ pub fn rebuild_priority_bucket_cancellable(
             .optional()
             .map_err(|error| error.to_string())?;
         if let Some((bucket, revision)) = bucket {
+            let _awake = crate::sleep_prevention::begin_work();
             crate::resource_limits::require_available(
                 crate::resource_limits::SIMILARITY_REQUIRED_AVAILABLE,
                 "Similarity analysis",

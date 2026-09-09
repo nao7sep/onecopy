@@ -1511,6 +1511,7 @@ pub fn ensure_exact_identity(
     if !crate::scanner::is_provisional(hash) {
         return Ok(hash.to_string());
     }
+    let _awake = crate::sleep_prevention::begin_work();
     let real = crate::hashing::full_hash_with_cancel(path, &cancelled).map_err(|error| {
         if error.kind() == std::io::ErrorKind::Interrupted {
             crate::scanner::CANCELLED.to_string()
@@ -1674,6 +1675,7 @@ pub fn complete_transcription_attempt(
         return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
     }
     let claim = crate::transcription::claim()?;
+    let _awake = crate::sleep_prevention::begin_work();
     let finished = std::sync::Arc::new(AtomicBool::new(false));
     let memory_pressure = Arc::new(AtomicBool::new(false));
     let pressure_signal = memory_pressure.clone();

@@ -401,6 +401,9 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
         doc.insert(key.clone(), value.clone());
     }
     atomic_write_json(target, &current)?;
+    if target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
+        crate::sleep_prevention::configure(&current);
+    }
     Ok(PatchOutcome {
         merged: current,
         quarantined,

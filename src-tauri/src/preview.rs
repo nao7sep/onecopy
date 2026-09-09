@@ -501,6 +501,7 @@ pub fn derive_one(
                 .to_string(),
         );
     }
+    let _awake = crate::sleep_prevention::begin_work();
     if crate::scanner::is_provisional(hash) {
         let (real, facts) =
             generate_for_image_teeing(src, cache, thumb_edge, preview_long_edge, ffmpeg)
@@ -774,6 +775,7 @@ fn derive_candidate_rows(
         if crate::derived_runtime::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
+        let _awake = crate::sleep_prevention::begin_work();
         if let (Some(report), Some((hash, _))) = (on_item, chunk.first()) {
             report(hash);
         }

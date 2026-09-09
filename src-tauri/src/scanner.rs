@@ -214,7 +214,6 @@ pub struct ScanSettings {
     pub lists: ScanLists,
     pub resolution: ResolutionConfig,
     pub pairing_enabled: bool,
-    pub keep_awake: bool,
     pub cache_root: std::path::PathBuf,
 }
 
@@ -346,9 +345,6 @@ pub fn settings_from_config(
         pairing_enabled: get("pairingEnabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.pairing_enabled),
-        keep_awake: get("keepAwakeDuringIndexing")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(defaults.keep_awake_during_indexing),
         cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),
     }
 }
@@ -668,6 +664,7 @@ pub fn run_source_check(
     settings: &ScanSettings,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ScanSummary, String> {
+    let _awake = crate::sleep_prevention::begin_work();
     let mut summary = ScanSummary::default();
 
     // Reconcile configuration BEFORE walking: a root the user removed should
@@ -855,6 +852,7 @@ fn run_index_tail_scoped(
     progress: &dyn Fn(ScanProgress),
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
+    let _awake = crate::sleep_prevention::begin_work();
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
     let hash_stats = hash_pending_with_progress(conn, &cache, progress)?;
     summary.full_hashed = hash_stats.full_hashed;

@@ -248,6 +248,7 @@ fn derive_videos_pending_limit(
     let rows = crate::derived_state::video_candidates(conn, true, limit, only_hash)?;
 
     for (hash, path) in rows {
+        let _awake = crate::sleep_prevention::begin_work();
         if let Some(report) = on_item {
             report(&hash);
         }
@@ -343,6 +344,7 @@ pub fn derive_strips_pending(
         if stop() {
             break;
         }
+        let _awake = crate::sleep_prevention::begin_work();
         on_item(&hash);
         stats.attempted += 1;
         stats.last_attempted_hash = Some(hash.clone());

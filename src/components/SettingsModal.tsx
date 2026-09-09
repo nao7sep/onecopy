@@ -721,7 +721,7 @@ export default function SettingsModal({
             onChange={(v) => update({ pairingEnabled: v })}
           />
           <CheckField
-            label="Keep the system awake while indexing"
+            label="Keep the system awake during background work"
             checked={draft.keepAwakeDuringIndexing}
             onChange={(v) => update({ keepAwakeDuringIndexing: v })}
           />

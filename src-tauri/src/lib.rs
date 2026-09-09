@@ -51,6 +51,7 @@ pub mod activity;
 pub mod ai_acceleration;
 pub mod ai_dependencies;
 mod app_lifecycle;
+mod sleep_prevention;
 pub mod background_work;
 pub mod backup_store;
 pub mod binaries;
@@ -2288,6 +2289,7 @@ pub fn run() {
                 );
             }
             source_check_runtime::shutdown();
+            sleep_prevention::shutdown();
             file_information_runtime::shutdown();
             watcher::shutdown();
             scan_runtime::shutdown();
@@ -2305,6 +2307,7 @@ pub fn run() {
                 .spawn(move || {
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         source_check_runtime::join();
+                        sleep_prevention::join();
                         file_information_runtime::join();
                         watcher::join();
                         binaries_manager::wait_for_idle();
@@ -2352,6 +2355,7 @@ pub fn run() {
             activity::record_shutdown();
             app_lifecycle::begin_shutdown();
             source_check_runtime::shutdown();
+            sleep_prevention::shutdown();
             file_information_runtime::shutdown();
             watcher::shutdown();
             scan_runtime::shutdown();
@@ -2363,6 +2367,7 @@ pub fn run() {
                 let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
             source_check_runtime::join();
+            sleep_prevention::join();
             file_information_runtime::join();
             watcher::join();
             binaries_manager::wait_for_idle();

@@ -693,7 +693,6 @@ fn source_check_leaves_relationship_work_for_the_independent_tail() {
         lists: lists(),
         resolution: resolution_config(),
         pairing_enabled: true,
-        keep_awake: false,
         cache_root: f._dir.path().join("cache"),
     };
 
@@ -722,7 +721,6 @@ fn source_check_continues_after_an_unavailable_root() {
         lists: lists(),
         resolution: resolution_config(),
         pairing_enabled: true,
-        keep_awake: false,
         cache_root: f._dir.path().join("cache"),
     };
 

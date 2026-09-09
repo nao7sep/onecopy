@@ -194,6 +194,8 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     } = state;
 
     let derived_handle = app.handle().clone();
+    let sleep_handle = app.handle().clone();
+    let keep_awake = crate::sleep_prevention::configured(setup_config.as_ref());
     let cache_service = {
         let db_path = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
         let cache = crate::preview::CachePaths::new(cache_root);
@@ -345,6 +347,11 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     // start failure cannot skip the services that follow it.
     run_runtime_services(
         vec![
+            RuntimeService {
+                name: "sleep prevention",
+                issue_kind: "sleep-prevention-failed",
+                start: Box::new(move || crate::sleep_prevention::start(sleep_handle, keep_awake)),
+            },
             RuntimeService {
                 name: "derived work",
                 issue_kind: crate::issue_recovery::DERIVED_WORKER_FAILED,

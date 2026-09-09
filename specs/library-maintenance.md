@@ -106,6 +106,8 @@ Background Work owns controls, progress, temporary pauses, and prerequisites, no
 
 ## Priority and resource use
 
+When the keep-awake preference is enabled, actual source checking, information completion, preparation, and enrichment prevent idle system sleep. Queued, paused, stopped, failed, prerequisite-waiting, and otherwise idle work do not retain that assertion. Overlapping execution shares one assertion until the last operation ends; later discoveries reacquire it when work begins. Disabling the preference or shutting down releases it even if work is still finishing. This does not keep the display lit or override an explicit system-sleep request. Failure to acquire the assertion is reported without stopping independent library work; switching the preference off and on retries it.
+
 Maintenance continuously consumes runnable work after startup admission. User inactivity is never a prerequisite for background preparation or enrichment. Explicit pause, unavailable prerequisites, foreground exclusivity, and resource safety may prevent admission. Main, persistent Preview, Quick View/fullscreen, and Comparison contribute to one current attention snapshot; hidden surfaces cannot replace the active workspace's priorities. Priority is:
 
 1. Required work for the selected item, visible items, and a bounded region around the viewport.
