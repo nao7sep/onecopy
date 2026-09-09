@@ -3,9 +3,10 @@
 // item selection, and persists public Preview choices one way.
 
 import { retainStatePatch, useAppStore } from "../state/app-store";
-import { listen } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { reportWindowCall } from "../repositories";
+import { createEventInstaller } from "../utils/eventInstallation";
 import { useItemsStore } from "../state/items-store";
 import { itemKey } from "../models/items";
 import {
@@ -15,7 +16,6 @@ import {
 } from "../state/preview-store";
 
 let persistenceInstalled = false;
-let commandInstallation: Promise<void> | null = null;
 
 interface PreviewKeyMessage {
   key: string;
@@ -48,8 +48,22 @@ export function installPreviewPersistence(): void {
 
 /** The separate Preview is a follower, so it forwards library commands to
  * the Main grid instead of maintaining a second navigation implementation. */
-export function installPreviewCommandWiring(): Promise<void> {
-  commandInstallation ??= listen<PreviewKeyMessage>("preview://key", async (event) => {
+const installCommands = createEventInstaller(async (listeners) => {
+  const publishPresentation = () => {
+    const { fullscreen, error } = usePreviewStore.getState();
+    void emit("preview://fullscreen-state", { fullscreen, error })
+      .catch(reportWindowCall("preview fullscreen state"));
+  };
+  await listeners.listen("preview://ready", publishPresentation);
+  await listeners.listen("preview://dismiss-error", () => usePreviewStore.getState().clearError());
+  await listeners.listen<"toggle" | "exit">("preview://fullscreen", (event) => {
+    const preview = usePreviewStore.getState();
+    void preview.setFullscreen(event.payload === "toggle" ? !preview.fullscreen : false);
+  });
+  listeners.retain(usePreviewStore.subscribe((state, previous) => {
+    if (state.fullscreen !== previous.fullscreen || state.error !== previous.error) publishPresentation();
+  }));
+  await listeners.listen<PreviewKeyMessage>("preview://key", async (event) => {
     const message = event.payload;
     const area = document.getElementById("main-item-area");
     if (area === null) return;
@@ -74,13 +88,11 @@ export function installPreviewCommandWiring(): Promise<void> {
         cancelable: true,
       }),
     );
-  })
-    .then(() => undefined)
-    .catch((error) => {
-      commandInstallation = null;
-      throw error;
-    });
-  return commandInstallation;
+  });
+}, () => undefined, { propagateFailure: true });
+
+export function installPreviewCommandWiring(): Promise<void> {
+  return installCommands();
 }
 
 export async function openPreview(

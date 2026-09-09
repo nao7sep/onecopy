@@ -98,6 +98,7 @@ describe("the placement lifecycle", () => {
     let resized: (() => void) | null = null;
     let minimized = false;
     let fullscreen = false;
+    let appFullscreen = false;
     let maximized = false;
     const persisted: unknown[] = [];
     const window: PlacementWindow = {
@@ -128,6 +129,7 @@ describe("the placement lifecycle", () => {
       },
       minimum: { width: 900, height: 600 },
       monitors: [MONITOR],
+      isTransient: () => appFullscreen,
       persist: async (record) => { persisted.push(record); },
       report: (operation, error) => { throw new Error(operation, { cause: error }); },
     });
@@ -169,6 +171,28 @@ describe("the placement lifecycle", () => {
       mode: "maximized",
     });
     fullscreen = false;
+    appFullscreen = true;
+    const beforeTransient = persisted.length;
+    (resized as (() => void) | null)?.();
+    await vi.advanceTimersByTimeAsync(400);
+    await controller.flush();
+    expect(persisted).toHaveLength(beforeTransient);
+    appFullscreen = false;
+    // Fullscreen may start while native geometry getters are in flight.
+    const originalPosition = window.outerPosition;
+    let releasePosition!: () => void;
+    window.outerPosition = async () => {
+      await new Promise<void>((resolve) => { releasePosition = resolve; });
+      return originalPosition();
+    };
+    const flushing = controller.flush();
+    await vi.advanceTimersByTimeAsync(0);
+    appFullscreen = true;
+    releasePosition();
+    await flushing;
+    expect(persisted).toHaveLength(beforeTransient);
+    window.outerPosition = originalPosition;
+    appFullscreen = false;
     Object.assign(current, { x: 220, y: 240, width: 1460, height: 920 });
     (resized as (() => void) | null)?.();
     await vi.advanceTimersByTimeAsync(400);

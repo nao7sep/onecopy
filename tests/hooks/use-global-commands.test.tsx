@@ -51,7 +51,7 @@ function Harness() {
 beforeEach(() => {
   resetTauriMocks();
   mockSectionItems(() => [ITEM]);
-  mockCommand("set_window_simple_fullscreen", () => null);
+  mockCommand("set_window_fullscreen", () => null);
   setCurrentMonitor({
     position: { x: 0, y: 0 },
     size: { width: 1920, height: 1080 },

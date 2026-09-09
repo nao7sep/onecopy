@@ -76,6 +76,38 @@ fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
     assert_eq!(snapshot.length, 5);
     assert_eq!(snapshot.index, 2);
     assert_eq!(snapshot.item.hash.as_deref(), Some("h3"));
+    assert_eq!(snapshot.detail.file_name, snapshot.item.file_name);
+    assert_eq!(snapshot.detail.copy_paths, vec!["/root/3.jpg"]);
+
+    conn.execute(
+        "UPDATE contents SET width = 'invalid' WHERE hash = 'h4'",
+        [],
+    )
+    .unwrap();
+    assert!(viewer_sequence::move_current(
+        &snapshot.token,
+        viewer_sequence::Move::Next,
+        &conn,
+        projection(),
+    )
+    .is_err());
+    conn.execute("UPDATE contents SET width = 640 WHERE hash = 'h4'", [])
+        .unwrap();
+    let retried = viewer_sequence::move_current(
+        &snapshot.token,
+        viewer_sequence::Move::Next,
+        &conn,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(retried.item.hash.as_deref(), Some("h4"));
+    viewer_sequence::move_current(
+        &snapshot.token,
+        viewer_sequence::Move::Previous,
+        &conn,
+        projection(),
+    )
+    .unwrap();
 
     conn.execute("DELETE FROM paths WHERE content_hash = 'h4'", [])
         .unwrap();
@@ -92,6 +124,8 @@ fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
     )
     .unwrap();
     assert_eq!(next.item.hash.as_deref(), Some("h5"));
+    assert_eq!(next.detail.file_name, next.item.file_name);
+    assert_eq!(next.detail.copy_paths, vec!["/root/5.jpg"]);
     assert_eq!(next.index, 3);
     viewer_sequence::close(Some(&snapshot.token)).unwrap();
     assert!(!root

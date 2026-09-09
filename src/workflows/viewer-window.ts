@@ -30,7 +30,7 @@ function queue(action: () => Promise<void>): Promise<void> {
 function setSimpleFullscreen(enable: boolean): Promise<void> {
   const next = fullscreenTransition
     .catch(() => undefined)
-    .then(() => invoke<void>("set_window_simple_fullscreen", { label: VIEWER_LABEL, enable }));
+    .then(() => invoke<void>("set_window_fullscreen", { label: VIEWER_LABEL, enable }));
   fullscreenTransition = next;
   return next;
 }

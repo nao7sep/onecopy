@@ -316,7 +316,7 @@ function setComparisonFullscreen(
   const next = comparisonFullscreenTransition
     .catch(() => undefined)
     .then(() =>
-      invoke<void>("set_window_simple_fullscreen", {
+      invoke<void>("set_window_fullscreen", {
         label: COMPARISON_PRESENTATION_OWNER,
         enable,
       }),

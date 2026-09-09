@@ -144,6 +144,8 @@ export async function prepareWindowPlacement(options: {
   monitors: readonly MonitorRect[];
   persist: (record: WindowPlacementRecord) => Promise<void>;
   beforeNormalCapture?: () => Promise<void>;
+  /** App-owned non-Spaces fullscreen is not reported by Tauri isFullscreen. */
+  isTransient?: () => boolean;
   report: (operation: string, error: unknown) => void;
 }): Promise<WindowPlacementController> {
   const { window, saved, minimum, monitors, persist, beforeNormalCapture, report } = options;
@@ -213,8 +215,9 @@ export async function prepareWindowPlacement(options: {
     mode,
   });
   const capture = async () => {
-    if (!enabled || disposed) return;
+    if (!enabled || disposed || options.isTransient?.()) return;
     const snapshot = await currentSnapshot(window);
+    if (options.isTransient?.()) return;
     if (snapshot.minimized || snapshot.fullscreen || snapshot.maximized) {
       cancel();
       const next = settledWindowPlacement(currentRecord(), snapshot);
@@ -229,11 +232,13 @@ export async function prepareWindowPlacement(options: {
       timer = null;
       eventTail = eventTail
         .then(async () => {
-          if (!enabled || disposed) return;
+          if (!enabled || disposed || options.isTransient?.()) return;
           let settled = await currentSnapshot(window);
+          if (options.isTransient?.()) return;
           if (!settled.minimized && !settled.fullscreen && !settled.maximized) {
             await beforeNormalCapture?.();
             settled = await currentSnapshot(window);
+            if (options.isTransient?.()) return;
           }
           const next = settledWindowPlacement(currentRecord(), settled);
           normalBounds = next.normalBounds ?? normalBounds;
@@ -271,11 +276,13 @@ export async function prepareWindowPlacement(options: {
     flush: async () => {
       cancel();
       await eventTail;
-      if (!enabled || disposed) return;
+      if (!enabled || disposed || options.isTransient?.()) return;
       let snapshot = await currentSnapshot(window);
+      if (options.isTransient?.()) return;
       if (!snapshot.minimized && !snapshot.fullscreen && !snapshot.maximized) {
         await beforeNormalCapture?.();
         snapshot = await currentSnapshot(window);
+        if (options.isTransient?.()) return;
       }
       const next = settledWindowPlacement(currentRecord(), snapshot);
       normalBounds = next.normalBounds ?? normalBounds;

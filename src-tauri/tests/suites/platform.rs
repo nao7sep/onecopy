@@ -10,6 +10,8 @@ mod binaries_tests;
 mod dependencies_tests;
 #[path = "../presence_tests.rs"]
 mod presence_tests;
+#[path = "../presentation_tests.rs"]
+mod presentation_tests;
 #[path = "../storage_file_names.rs"]
 mod storage_file_names;
 #[path = "../storage_tests.rs"]

@@ -6,6 +6,7 @@ import {
   handleViewerKey,
   moveViewer,
   openViewerFromMain,
+  viewerBroadcast,
 } from "../../src/workflows/quick-view";
 import {
   WebviewWindow,
@@ -24,6 +25,13 @@ function sequenceSnapshot() {
     token: "viewer-token",
     member: { hash: current.hash, pathId: current.pathId },
     item: current,
+    detail: {
+      fileName: current.fileName, kind: "image", byteSize: current.byteSize,
+      width: current.width, height: current.height, durationMs: null,
+      dateState: "dated", resolvedUtcMs: current.resolvedUtcMs,
+      resolvedSource: "metadata", dateOnly: false, copyPaths: [],
+      companionPaths: [], stripFrames: null,
+    },
     index: sequenceIndex,
     length: sequence.length,
     sectionIndex: current.pathId - 1,
@@ -54,7 +62,7 @@ function item(key: string, pathId: number): SectionItem {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  mockCommand("set_window_simple_fullscreen", () => null);
+  mockCommand("set_window_fullscreen", () => null);
   mockCommand("viewer_sequence_start", ({ selected }) => {
     const picked = selected as Array<{ hash: string; index: number }>;
     sequence = picked.length === 1
@@ -96,6 +104,22 @@ beforeEach(() => {
 });
 
 describe("viewer workflow", () => {
+  it("owns its identity, detail and content commands independently of Main", async () => {
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const frozen = viewerBroadcast();
+
+    useItemsStore.setState({ selectedItem: "unrelated", detail: null, selected: { kind: "other", month: "undated" } });
+
+    expect(viewerBroadcast()).toEqual(frozen);
+    expect(frozen.item?.fileName).toBe("b.jpg");
+    expect(frozen.detail?.fileName).toBe("b.jpg");
+    await handleViewerKey({ key: "PageDown" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(viewerBroadcast().item?.fileName).toBe("c.jpg");
+    expect(viewerBroadcast().detail?.fileName).toBe("c.jpg");
+  });
+
   it("freezes displayed order and makes whole-section navigation exclusive", async () => {
     expect(openViewerFromMain("quick")).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -145,14 +169,14 @@ describe("viewer workflow", () => {
     expect(viewer.setSize).toHaveBeenCalledWith({ width: 1920, height: 1080 });
     expect(viewer.setAlwaysOnTop).toHaveBeenCalledWith(true);
     expect(invokeCalls).toContainEqual({
-      command: "set_window_simple_fullscreen",
+      command: "set_window_fullscreen",
       args: { label: "viewer", enable: true },
     });
 
     await handleViewerKey({ key: "f" });
 
     expect(invokeCalls).toContainEqual({
-      command: "set_window_simple_fullscreen",
+      command: "set_window_fullscreen",
       args: { label: "viewer", enable: false },
     });
     expect(viewer.setAlwaysOnTop).toHaveBeenLastCalledWith(false);

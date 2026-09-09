@@ -68,15 +68,15 @@ function currentItem(): SectionItem | null {
 export function viewerBroadcast(): ViewerBroadcast {
   const session = useQuickViewStore.getState().session;
   const item = currentItem();
-  const items = useItemsStore.getState();
   return {
     item,
-    detail:
-      item !== null && items.selectedItem === itemKey(item) ? items.detail : null,
+    detail: session?.detail ?? null,
     index: session?.index ?? 0,
     length: session?.length ?? 0,
     pendingDelete: useQuickViewStore.getState().pendingDelete,
-    sectionKind: items.selected?.kind ?? null,
+    sectionKind: session === null ? null
+      : session.detail.kind === "image" ? "image"
+      : session.detail.kind === "video" ? "video" : "other",
     failure: useQuickViewStore.getState().failure,
   };
 }
@@ -175,9 +175,6 @@ const install = createEventInstaller(
     await listeners.listen("viewer://dismiss-failure", () => {
       useQuickViewStore.getState().setFailure(null);
     });
-    await listeners.listen<ViewerMonitor | null>("preview://fullscreen", (event) => {
-      openViewerFromMain("fullscreen", event.payload ?? undefined);
-    });
     listeners.retain(useQuickViewStore.subscribe(broadcastViewer));
     listeners.retain(useItemsStore.subscribe((state, previous) => {
       if (state.reconciliationId === previous.reconciliationId || itemReconcileQueued) return;
@@ -186,11 +183,6 @@ const install = createEventInstaller(
         itemReconcileQueued = false;
         void reconcileViewerSequence();
       });
-    }));
-    listeners.retain(useItemsStore.subscribe((state, previous) => {
-      if (state.detail !== previous.detail || state.selectedItem !== previous.selectedItem) {
-        broadcastViewer();
-      }
     }));
   },
   (error) => log.error("viewer workflow wiring failed", toErrorFields(error)),
@@ -446,21 +438,21 @@ export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> 
     moveViewer("next");
   } else if (
     message.key === "PageUp" &&
-    useItemsStore.getState().selected?.kind !== "other"
+    session.detail.kind !== "other"
   ) {
     moveViewer("previous");
   } else if (
     message.key === "PageDown" &&
-    useItemsStore.getState().selected?.kind !== "other"
+    session.detail.kind !== "other"
   ) {
     moveViewer("next");
-  } else if (message.key === "Home" && useItemsStore.getState().selected?.kind !== "other") {
+  } else if (message.key === "Home" && session.detail.kind !== "other") {
     moveViewer("first");
-  } else if (message.key === "End" && useItemsStore.getState().selected?.kind !== "other") {
+  } else if (message.key === "End" && session.detail.kind !== "other") {
     moveViewer("last");
   } else if (message.key === "Enter") {
     const item = currentItem();
-    const kind = useItemsStore.getState().selected?.kind;
+    const kind = session.detail.kind;
     if (item !== null && (kind === "video" || isAudioFile(item.fileName))) {
       toggleMainPlayback(itemKey(item));
     }

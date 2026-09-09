@@ -20,7 +20,7 @@
 
 - The pane never becomes a second item-navigation context. Main continues to own selection and command position.
 - When the separate Preview window is focused and no native or body-specific interactive control owns input, it forwards Arrow, Page, Home, End, Shift-range, content-specific Enter, Delete/Backspace, and confirmed permanent-deletion commands to Main. Read-only text selection and document scrolling remain local to the body; Main resumes command ownership when that body does not consume the key.
-- Space has no separate Preview-window action. Escape closes the ordinary Preview window. `F` invokes the app-level transient viewer in true fullscreen using Main's selection and anchor.
+- Space has no separate Preview-window action. `F` toggles true fullscreen on that same live Main-following Preview window; it never starts a frozen Main viewer. `F` or Escape from fullscreen restores the ordinary Preview window and keeps command focus there. Escape from ordinary Preview closes it. Changing Main's anchor continues to update fullscreen Preview.
 - Ordinary and double-click have no Preview-level image action. Video picture click and media controls retain the content actions defined by `content-presentation.md`.
 - Delete/Backspace in persistent Preview Trashes Main's complete selection for every read-only image, video, audio, text, or attributes body. A multi-item selection always receives exact-count review; confirmed permanent deletion has the same scope. Only a genuinely editable control consumes deletion keys for editing. Holding Enter, Delete, or Backspace never repeats a forwarded entry or file action against a newly opened or recovered context.
 
@@ -44,8 +44,8 @@
 - Presentation switches retain the same session without reloading content, starting another player, reapplying autoplay, or resetting navigation, inspection, transcript, failure, or notification state.
 - Quick View is a temporary presentation over Main's usable content area. True fullscreen fills one physical display and hides OneCopy chrome plus the operating-system menu bar, Dock, or taskbar.
 - macOS true fullscreen does not use Spaces fullscreen. One reusable borderless viewer presentation covers the invoking display while Main remains in its workspace. Embedded or native media controls do not start a competing fullscreen mode.
-- Fullscreen enter, leave, close, error, and shutdown transitions are serialized so every exit restores system chrome and Main focus. Hiding system chrome is application-owned presentation state: it applies only while OneCopy is the active application. Switching to another application restores the menu bar and Dock without discarding a still-open fullscreen session; returning to OneCopy reapplies fullscreen only if that session still wants it.
-- `F` is an app-level command. A visible Preview does not reinterpret it, although a focused separate Preview window may determine which display receives fullscreen.
+- Fullscreen enter, leave, close, error, and shutdown transitions are serialized. A transient Main viewer returns focus to Main; persistent Preview returns focus to its own window. Fullscreen geometry belongs to each window's live session, while system-chrome visibility belongs to the application. Switching to another application restores the menu bar and Dock without changing any still-open fullscreen window's geometry, style, or session. Returning to OneCopy hides system chrome when an open fullscreen presentation still requires it. Closing one fullscreen presentation does not dismantle another.
+- `F` follows the focused workspace: Main invokes the transient viewer; separate Preview toggles its live follower. A Preview merely visible beside Main does not change Main's command meaning.
 - Double-click never enters fullscreen. Fullscreen remains discoverable through `F` and a visible fullscreen control.
 
 ## Transient navigation and focus

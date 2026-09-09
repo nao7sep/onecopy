@@ -265,6 +265,14 @@ export function mockSectionItems(handler: InvokeHandler): void {
   > = [];
   let viewerIndex = 0;
   let viewerScope: "section" | "selection" = "section";
+  let viewerKind = "image";
+  const viewerDetail = (item: Record<string, unknown>) => ({
+    fileName: item.fileName, kind: viewerKind, byteSize: item.byteSize ?? null,
+    width: item.width ?? null, height: item.height ?? null, durationMs: item.durationMs ?? null,
+    dateState: item.resolvedUtcMs == null ? "undated" : "dated",
+    resolvedUtcMs: item.resolvedUtcMs ?? null, resolvedSource: null, dateOnly: false,
+    copyPaths: [], companionPaths: [], stripFrames: null,
+  });
   handlers.set("get_section_window", async (args) => {
     const all = await ordered(args);
     const start = Number(args.start ?? 0);
@@ -349,6 +357,7 @@ export function mockSectionItems(handler: InvokeHandler): void {
     };
   });
   handlers.set("viewer_sequence_start", async (args) => {
+    viewerKind = String(args.kind);
     const all = await ordered(args);
     const selected = args.selected as Array<{
       hash: string | null;
@@ -378,6 +387,7 @@ export function mockSectionItems(handler: InvokeHandler): void {
       token: "mock-viewer",
       member: { hash: current.hash, pathId: current.pathId },
       item: current,
+      detail: viewerDetail(current),
       index: viewerIndex,
       length: viewerMembers.length,
       sectionIndex: all.indexOf(current),
@@ -398,6 +408,7 @@ export function mockSectionItems(handler: InvokeHandler): void {
       token: "mock-viewer",
       member: { hash: current.hash, pathId: current.pathId },
       item: current,
+      detail: viewerDetail(current),
       index: viewerIndex,
       length: viewerMembers.length,
       sectionIndex: viewerIndex,

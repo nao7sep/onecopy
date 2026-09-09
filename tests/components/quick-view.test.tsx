@@ -33,6 +33,12 @@ beforeEach(() => {
     session: {
       presentation: "quick",
       token: "viewer-token",
+      detail: {
+        fileName: "family.jpg", kind: "image", byteSize: 10, width: 4000,
+        height: 3000, durationMs: null, dateState: "dated", resolvedUtcMs: 0,
+        resolvedSource: "metadata", dateOnly: false,
+        copyPaths: ["/photos/family.jpg"], companionPaths: [], stripFrames: null,
+      },
       member: { hash: "photo-hash", pathId: 1 },
       item: {
         hash: "photo-hash",
@@ -107,6 +113,15 @@ afterEach(() => {
 });
 
 describe("Quick View", () => {
+  it("keeps the frozen image visible when Main selects a different section", () => {
+    render(<Host />);
+    act(() => useItemsStore.setState({
+      selected: { kind: "video", month: "undated" }, selectedItem: "another-item", detail: null,
+    }));
+    expect(screen.getByAltText("family.jpg")).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
   it("uses the shared media surface and Escape returns focus to the grid", async () => {
     const opener = document.createElement("button");
     document.body.append(opener);

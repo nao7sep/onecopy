@@ -63,7 +63,7 @@ beforeEach(() => {
       successfulDelete(
         items as Array<{ hash: string | null; pathId: number | null }>,
       ),
-    set_window_simple_fullscreen: () => null,
+    set_window_fullscreen: () => null,
   });
   openSession(8);
 });

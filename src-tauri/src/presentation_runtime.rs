@@ -1,187 +1,138 @@
+use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "macos")]
 use std::sync::{LazyLock, Mutex};
 
-use tauri::AppHandle;
-#[cfg(target_os = "macos")]
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 
-#[cfg(any(target_os = "macos", test))]
+/// Fullscreen membership is independent of application activation.
+/// Activation controls only the process-wide menu bar and Dock policy.
 #[derive(Default)]
-struct PresentationState {
-    desired: Option<String>,
-    applied: Option<String>,
+pub struct PresentationState {
+    windows: BTreeSet<String>,
+    #[cfg(target_os = "macos")]
+    normal_options: Option<objc2_app_kit::NSApplicationPresentationOptions>,
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl PresentationState {
-    fn set_desired(&mut self, label: &str, enable: bool) {
-        if enable {
-            self.desired = Some(label.to_string());
-        } else if self.desired.as_deref() == Some(label) {
-            self.desired = None;
+    pub fn contains(&self, label: &str) -> bool {
+        self.windows.contains(label)
+    }
+
+    pub fn set_fullscreen(&mut self, label: &str, enabled: bool) {
+        if enabled {
+            self.windows.insert(label.to_owned());
+        } else {
+            self.windows.remove(label);
         }
     }
 
-    fn target(&self, application_active: bool) -> Option<String> {
-        if !application_active {
-            return None;
-        }
-        self.desired.clone()
+    pub fn hides_system_chrome(&self, application_active: bool) -> bool {
+        application_active && !self.windows.is_empty()
     }
 }
 
-#[cfg(target_os = "macos")]
 static STATE: LazyLock<Mutex<PresentationState>> =
     LazyLock::new(|| Mutex::new(PresentationState::default()));
 #[cfg(target_os = "macos")]
 static ACTIVATION_RECONCILE_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
-fn application_active() -> Result<bool, String> {
+fn apply_system_chrome(app: &AppHandle) -> Result<(), String> {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
+    use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions};
 
     let marker = MainThreadMarker::new()
-        .ok_or_else(|| "macOS presentation state must be reconciled on the main thread".to_string())?;
-    Ok(NSApplication::sharedApplication(marker).isActive())
-}
-
-#[cfg(target_os = "macos")]
-fn apply(app: &AppHandle, active: bool) -> Result<(), String> {
+        .ok_or_else(|| "macOS presentation state must run on the main thread".to_string())?;
+    let application = NSApplication::sharedApplication(marker);
     let mut state = STATE
         .lock()
         .map_err(|_| "presentation state lock is poisoned".to_string())?;
-    let target = state.target(active);
-    if state.applied == target {
+    let Some(normal) = state.normal_options else {
         return Ok(());
-    }
-
-    if let Some(label) = state.applied.clone() {
-        let window = app
-            .get_webview_window(&label)
-            .ok_or_else(|| format!("no window labeled {label}"))?;
-        window
-            .set_simple_fullscreen(false)
-            .map_err(|error| error.to_string())?;
-        state.applied = None;
-    }
-
-    if let Some(label) = target {
-        let window = app
-            .get_webview_window(&label)
-            .ok_or_else(|| format!("no window labeled {label}"))?;
-        window
-            .set_simple_fullscreen(true)
-            .map_err(|error| error.to_string())?;
-        state.applied = Some(label);
+    };
+    let visible_fullscreen = state.windows.iter().any(|label| {
+        app.get_webview_window(label)
+            .is_some_and(|window| window.is_visible().unwrap_or(false))
+    });
+    let options = if state.hides_system_chrome(application.isActive() && visible_fullscreen) {
+        NSApplicationPresentationOptions::AutoHideDock
+            | NSApplicationPresentationOptions::AutoHideMenuBar
+    } else {
+        normal
+    };
+    application.setPresentationOptions(options);
+    if state.windows.is_empty() {
+        state.normal_options = None;
     }
     Ok(())
 }
 
-/// Updates durable presentation intent, then applies it only while OneCopy is
-/// active. Exactly one window owns Tauri's process-global macOS presentation
-/// options even when Comparison spans several borderless display windows.
+/// Explicit entry/exit is the only path that changes window geometry.
+/// macOS uses non-Spaces fullscreen; Windows uses the native fullscreen path.
 pub fn set_desired(app: &AppHandle, label: &str, enable: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(label)
+        .ok_or_else(|| format!("no window labeled {label}"))?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| "presentation state lock is poisoned".to_string())?;
+    if state.contains(label) == enable {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
-        if enable && app.get_webview_window(label).is_none() {
-            return Err(format!("no window labeled {label}"));
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+        let marker = MainThreadMarker::new()
+            .ok_or_else(|| "macOS fullscreen must run on the main thread".to_string())?;
+        if enable && state.normal_options.is_none() {
+            state.normal_options =
+                Some(NSApplication::sharedApplication(marker).presentationOptions());
         }
-        STATE
-            .lock()
-            .map_err(|_| "presentation state lock is poisoned".to_string())?
-            .set_desired(label, enable);
-        apply(app, application_active()?)
+        window
+            .set_simple_fullscreen(enable)
+            .map_err(|error| error.to_string())?;
     }
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, label, enable);
-        Ok(())
-    }
+    window
+        .set_fullscreen(enable)
+        .map_err(|error| error.to_string())?;
+    state.set_fullscreen(label, enable);
+    // Tauri queues native window mutations. Reconcile process options after
+    // the event batch, including Tao's own entry/exit presentation writes.
+    note_focus_transition();
+    Ok(())
 }
 
-/// Marks an app-window focus transition for reconciliation after the event
-/// loop has delivered the complete activation/deactivation sequence.
+pub fn window_destroyed(label: &str) {
+    if let Ok(mut state) = STATE.lock() {
+        state.set_fullscreen(label, false);
+    }
+    note_focus_transition();
+}
+
 pub fn note_focus_transition() {
     #[cfg(target_os = "macos")]
-    {
-        ACTIVATION_RECONCILE_PENDING.store(true, Ordering::SeqCst);
-    }
+    ACTIVATION_RECONCILE_PENDING.store(true, Ordering::SeqCst);
 }
 
-/// Reconciles at MainEventsCleared rather than inside windowDidResignKey.
-/// AppKit may still consider the application active during that earlier
-/// callback; after the event batch its application-active bit reliably
-/// distinguishes leaving OneCopy from moving among OneCopy windows.
-pub fn reconcile_pending_activation(app: &AppHandle) -> Result<(), String> {
+/// Focus changes never enter or leave fullscreen on any window.
+pub fn reconcile_pending_activation(_app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
-        if ACTIVATION_RECONCILE_PENDING.swap(false, Ordering::SeqCst) {
-            apply(app, application_active()?)
-        } else {
-            Ok(())
-        }
+    if ACTIVATION_RECONCILE_PENDING.swap(false, Ordering::SeqCst) {
+        return apply_system_chrome(_app);
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        Ok(())
-    }
+    Ok(())
 }
 
-/// Clears intent and restores system chrome before longer shutdown work.
-pub fn shutdown(app: &AppHandle) -> Result<(), String> {
+pub fn shutdown(_app: &AppHandle) -> Result<(), String> {
+    STATE
+        .lock()
+        .map_err(|_| "presentation state lock is poisoned".to_string())?
+        .windows
+        .clear();
     #[cfg(target_os = "macos")]
-    {
-        STATE
-            .lock()
-            .map_err(|_| "presentation state lock is poisoned".to_string())?
-            .desired = None;
-        apply(app, false)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::PresentationState;
-
-    #[test]
-    fn a_new_request_transfers_process_global_presentation_ownership() {
-        let mut state = PresentationState::default();
-        state.set_desired("comparison-1", true);
-        state.applied = state.target(true);
-        state.set_desired("viewer", true);
-
-        assert_eq!(state.target(true).as_deref(), Some("viewer"));
-    }
-
-    #[test]
-    fn deactivation_suspends_application_presentation_without_losing_intent() {
-        let mut state = PresentationState::default();
-        state.set_desired("viewer", true);
-        state.applied = state.target(true);
-
-        assert_eq!(state.target(false), None);
-        assert_eq!(state.desired.as_deref(), Some("viewer"));
-        state.applied = state.target(false);
-        assert_eq!(state.target(true).as_deref(), Some("viewer"));
-    }
-
-    #[test]
-    fn a_stale_exit_does_not_revoke_the_current_owner() {
-        let mut state = PresentationState::default();
-        state.set_desired("comparison-1", true);
-        state.applied = state.target(true);
-        state.set_desired("viewer", true);
-        state.set_desired("comparison-1", false);
-
-        assert_eq!(state.target(true).as_deref(), Some("viewer"));
-    }
+    apply_system_chrome(_app)?;
+    Ok(())
 }

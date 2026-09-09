@@ -55,12 +55,14 @@ beforeEach(() => {
     get_item_detail: () => null,
     log_event: () => null,
     record_recent_notification: () => ({}),
+    set_window_fullscreen: () => null,
   });
   usePreviewStore.setState({
     follow: false,
     placement: null,
     placementPreference: null,
     current: null,
+    fullscreen: false,
     error: null,
   });
 });
@@ -172,6 +174,28 @@ describe("clearing the surface", () => {
 });
 
 describe("preview window failures", () => {
+  it("round-trips fullscreen on the live Preview and keeps focus there", async () => {
+    const window = new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
+
+    await usePreviewStore.getState().setFullscreen(true);
+    usePreviewStore.getState().anchorChanged(ITEM_B, detailFor("B.jpg"));
+    await vi.advanceTimersByTimeAsync(200);
+    await usePreviewStore.getState().setFullscreen(false);
+    await usePreviewStore.getState().setFullscreen(true);
+
+    expect(usePreviewStore.getState().current?.detail?.fileName).toBe("B.jpg");
+    expect(usePreviewStore.getState().fullscreen).toBe(true);
+    expect(window.setFocus).toHaveBeenCalledTimes(3);
+    expect(invokeCalls.filter((call) => call.command === "set_window_fullscreen").slice(-3).map((call) => call.args))
+      .toEqual([
+        { label: "preview", enable: true }, { label: "preview", enable: false },
+        { label: "preview", enable: true },
+      ]);
+    expect(invokeCalls.some((call) => call.command === "viewer_sequence_start")).toBe(false);
+  });
+
   it("does not lose queued detail when the placement is unchanged", async () => {
     new WebviewWindow("preview");
     usePreviewStore.setState({ placementPreference: "window" });

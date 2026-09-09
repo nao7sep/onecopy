@@ -62,7 +62,7 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     similar_unlink: () => 4,
-    set_window_simple_fullscreen: () => null,
+    set_window_fullscreen: () => null,
   });
   useItemsStore.setState({ refresh: vi.fn(async () => undefined) });
   useSectionsStore.setState({ loadCounts: vi.fn(async () => undefined) });

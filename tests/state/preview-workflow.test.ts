@@ -12,6 +12,6 @@ describe("preview command wiring", () => {
     await expect(installPreviewCommandWiring()).rejects.toBe(cause);
     await expect(installPreviewCommandWiring()).resolves.toBeUndefined();
 
-    expect(listen).toHaveBeenCalledTimes(2);
+    expect(listen).toHaveBeenCalledTimes(5);
   });
 });

@@ -83,7 +83,7 @@ pub mod notifications;
 pub mod operations;
 pub mod path_identity;
 pub mod paths;
-mod presentation_runtime;
+pub mod presentation_runtime;
 pub mod preview;
 pub mod queries;
 pub mod resolution;
@@ -1462,13 +1462,10 @@ fn transcript_get(app: AppHandle, hash: String) -> Result<derived_state::Transcr
     derived_state::transcript_result(&conn, &cache, &hash)
 }
 
-// Borderless presentation windows use macOS simple fullscreen so they cover
-// system chrome without moving into a Space. Elsewhere their exact monitor
-// bounds already cover the taskbar, so the command is deliberately a no-op.
-// simple fullscreen (the pre-Lion kind) hides the menu bar and dock WITHOUT
-// the Spaces animation that made real fullscreen unusable at keystroke pace.
+// Explicit window entry/exit is separate from application system-chrome policy.
+// macOS uses non-Spaces fullscreen; Windows uses native fullscreen.
 #[tauri::command]
-fn set_window_simple_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<(), String> {
+fn set_window_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<(), String> {
     presentation_runtime::set_desired(&app, &label, enable)
 }
 
@@ -2256,7 +2253,7 @@ pub fn run() {
             background_work_snapshot,
             background_work_set_paused,
             prioritize_derived_work,
-            set_window_simple_fullscreen,
+            set_window_fullscreen,
             ensure_preview,
             re_resolve_all,
             rescan_section,
@@ -2303,6 +2300,11 @@ pub fn run() {
             event: tauri::WindowEvent::Focused(_),
             ..
         } => presentation_runtime::note_focus_transition(),
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Destroyed,
+            ..
+        } => presentation_runtime::window_destroyed(&label),
         tauri::RunEvent::MainEventsCleared => {
             if let Err(error) = presentation_runtime::reconcile_pending_activation(app_handle) {
                 logging::warn(

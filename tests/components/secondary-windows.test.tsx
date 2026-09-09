@@ -18,6 +18,7 @@ import {
   fireEvent,
   mockCommands,
   resetTauriMocks,
+  close,
 } from "../mocks/tauri";
 
 const DETAIL = {
@@ -74,7 +75,7 @@ describe("the preview window", () => {
     expect(img?.getAttribute("src")).toContain("preview-abc");
   });
 
-  it("forwards navigation, keeps Space inert, and requests shared fullscreen with F", async () => {
+  it("forwards navigation, keeps Space inert, and requests live Preview fullscreen with F", async () => {
     render(<PreviewWindow />);
     await act(async () => {});
 
@@ -102,9 +103,32 @@ describe("the preview window", () => {
           (call.payload as { key?: string }).key === " ",
       ),
     ).toBe(false);
-    expect(
-      emitCalls.some((call) => call.event === "preview://fullscreen"),
-    ).toBe(true);
+    expect(emitCalls).toContainEqual({ event: "preview://fullscreen", payload: "toggle" });
+  });
+
+  it("uses Escape to leave fullscreen before closing Preview and ignores repeated F", async () => {
+    render(<PreviewWindow />);
+    await act(async () => {});
+    await act(async () => fireEvent("preview://fullscreen-state", { fullscreen: true, error: null }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", repeat: true }));
+    expect(emitCalls.filter((call) => call.event === "preview://fullscreen"))
+      .toEqual([{ event: "preview://fullscreen", payload: "exit" }]);
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => fireEvent("preview://fullscreen-state", { fullscreen: false, error: null }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not consume composing fullscreen or navigation keys", async () => {
+    render(<PreviewWindow />);
+    await act(async () => {});
+    for (const key of ["f", "Escape", "ArrowRight", "Delete", " "]) {
+      const event = new KeyboardEvent("keydown", { key, isComposing: true, cancelable: true });
+      window.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(emitCalls.some((call) => ["preview://fullscreen", "preview://key"].includes(call.event))).toBe(false);
   });
 });
 

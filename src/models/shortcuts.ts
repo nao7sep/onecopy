@@ -44,7 +44,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     },
     {
       title: "Looking",
-      context: "anywhere in the main window",
+      context: "when Main's item area has focus",
       rows: [
         { chord: "Space", action: "Open Quick View" },
         { chord: "Enter", action: "Compare images or control media playback" },
@@ -53,6 +53,14 @@ export function shortcutGroups(): ShortcutGroup[] {
           chord: "Escape",
           action: "Close the active viewer or preview window",
         },
+      ],
+    },
+    {
+      title: "Preview window",
+      context: "while the separate live Preview has focus",
+      rows: [
+        { chord: "F", action: "Toggle full screen without leaving the live Preview" },
+        { chord: "Escape", action: "Leave full screen; otherwise close Preview" },
       ],
     },
     {

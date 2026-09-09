@@ -72,7 +72,7 @@ beforeEach(() => {
     failure: null,
     spreadCount: 0,
   });
-  mockCommands({ set_window_simple_fullscreen: () => null });
+  mockCommands({ set_window_fullscreen: () => null });
 });
 
 describe("opening Comparison across displays", () => {
@@ -154,7 +154,7 @@ describe("opening Comparison across displays", () => {
 
     expect(
       invokeCalls
-        .filter((call) => call.command === "set_window_simple_fullscreen")
+        .filter((call) => call.command === "set_window_fullscreen")
         .map((call) => call.args),
     ).toEqual([{ label: "comparison-1", enable: true }]);
   });
@@ -231,7 +231,7 @@ describe("opening Comparison across displays", () => {
     expect(createdWindows).toHaveLength(count);
     expect(
       invokeCalls
-        .filter((call) => call.command === "set_window_simple_fullscreen")
+        .filter((call) => call.command === "set_window_fullscreen")
         .map((call) => call.args.enable),
     ).toEqual([false, true]);
   });

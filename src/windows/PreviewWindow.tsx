@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listenThenAnnounce } from "../utils/handshake";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { currentMonitor } from "@tauri-apps/api/window";
+import { isComposingEvent } from "../hooks/useComposing";
+import { isEditableTarget } from "../utils/shortcuts";
+import { hasOpenModal } from "../utils/modalStack";
 import PreviewSurface from "../components/PreviewSurface";
-import type { PreviewShowMessage } from "../state/preview-store";
+import type { PreviewPresentation, PreviewShowMessage } from "../state/preview-store";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
@@ -19,6 +21,9 @@ import OperationResult from "../components/ui/OperationResult";
 export default function PreviewWindow() {
   const [message, setMessage] = useState<PreviewShowMessage | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [presentationError, setPresentationError] = useState<string | null>(null);
+  const fullscreenRef = useRef(false);
 
   const reportActionError = (kind: string, message: string, error: unknown) => {
     log.error("preview window action failed", { kind, ...toErrorFields(error) });
@@ -34,7 +39,15 @@ export default function PreviewWindow() {
       "preview://ready",
       setMessage,
     );
+    const stopPresentation = listenThenAnnounce<PreviewPresentation>(
+      "preview://fullscreen-state", "preview://ready", (value) => {
+        fullscreenRef.current = value.fullscreen;
+        setFullscreen(value.fullscreen);
+        setPresentationError(value.error);
+      },
+    );
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal() || isEditableTarget(event.target)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === " ") {
         // Persistent Preview never reinterprets Space as playback or as a
@@ -44,8 +57,8 @@ export default function PreviewWindow() {
       } else if (event.key.toLowerCase() === "f") {
         event.preventDefault();
         event.stopPropagation();
-        void currentMonitor()
-          .then((monitor) => emit("preview://fullscreen", monitor))
+        if (event.repeat) return;
+        void emit("preview://fullscreen", "toggle")
           .then(() => setActionError(null))
           .catch((error) =>
             reportActionError(
@@ -57,6 +70,12 @@ export default function PreviewWindow() {
       } else if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
+        if (event.repeat) return;
+        if (fullscreenRef.current) {
+          void emit("preview://fullscreen", "exit").catch((error) =>
+            reportActionError("preview-fullscreen-failed", "Couldn’t leave Preview full screen.", error));
+          return;
+        }
         void getCurrentWindow()
           .close()
           .catch((error) =>
@@ -111,6 +130,7 @@ export default function PreviewWindow() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
       unlisten();
+      stopPresentation();
       window.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
@@ -133,21 +153,32 @@ export default function PreviewWindow() {
           pathId={message.pathId}
         />
       </div>
-      {actionError !== null ? (
+      {actionError !== null || presentationError !== null ? (
         <OperationResult
           level="error"
           className="mx-3 mb-2 shrink-0"
-          onDismiss={() => setActionError(null)}
+          onDismiss={() => {
+            setActionError(null);
+            void emit("preview://dismiss-error").catch((error) =>
+              reportActionError("preview-dismiss-failed", "Couldn’t dismiss this Preview result.", error));
+          }}
           dismissLabel="Dismiss preview result"
         >
-          {actionError}
+          {actionError ?? presentationError}
         </OperationResult>
       ) : null}
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span className="truncate" title={message.detail?.fileName ?? ""}>
           {message.detail?.fileName ?? "…"}
         </span>
-        <span>Hold: original pixels · F: full screen · Escape: close</span>
+        <div className="flex items-center gap-3">
+          <span>Hold: original pixels · {fullscreen ? "F or Escape: leave full screen" : "F: full screen · Escape: close"}</span>
+          <button className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"
+            onClick={() => void emit("preview://fullscreen", "toggle").catch((error) =>
+              reportActionError("preview-fullscreen-failed", "Couldn’t change Preview full screen.", error))}>
+            {fullscreen ? "Leave full screen" : "Full screen"}
+          </button>
+        </div>
       </footer>
     </div>
   );

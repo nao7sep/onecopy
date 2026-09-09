@@ -1,12 +1,13 @@
 export type ViewerPresentation = "quick" | "fullscreen";
 export type ViewerSequenceScope = "section" | "selection";
 
-import type { SectionIdentity, SectionItem } from "./items";
+import type { ItemDetail, SectionIdentity, SectionItem } from "./items";
 
 export interface ViewerSequenceSnapshot {
   token: string;
   member: SectionIdentity;
   item: SectionItem;
+  detail: ItemDetail;
   index: number;
   length: number;
   sectionIndex: number;

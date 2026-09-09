@@ -43,6 +43,7 @@ pub struct Snapshot {
     pub token: String,
     pub member: SectionIdentity,
     pub item: SectionItem,
+    pub detail: queries::ItemDetail,
     pub index: u64,
     pub length: u64,
     pub section_index: u64,
@@ -207,10 +208,15 @@ pub fn move_current(
         Move::First => edge_ordinal(&sequence.conn, false)?,
         Move::Last => edge_ordinal(&sequence.conn, true)?,
     };
+    let previous_ordinal = sequence.current_ordinal;
     if let Some(ordinal) = ordinal {
         sequence.current_ordinal = ordinal;
     }
-    snapshot_locked(sequence, index_conn, projection)
+    let snapshot = snapshot_locked(sequence, index_conn, projection);
+    if snapshot.is_err() {
+        sequence.current_ordinal = previous_ordinal;
+    }
+    snapshot
 }
 
 pub fn reconcile(
@@ -305,6 +311,11 @@ fn snapshot_locked(
                 .max(0) as u64;
             return Ok(Snapshot {
                 token: sequence.token.clone(),
+                detail: queries::item_detail(
+                    index_conn,
+                    member.hash.as_deref(),
+                    Some(member.path_id),
+                )?,
                 member,
                 item,
                 index,

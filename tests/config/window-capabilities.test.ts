@@ -72,8 +72,9 @@ describe("window calls and granted capabilities", () => {
     expect(capabilities.permissions).toContain(permission);
   });
 
-  it("never sets native Spaces fullscreen", () => {
-    expect(ALL_SOURCE).not.toContain("setFullscreen(");
+  it("keeps native fullscreen setters behind the platform-aware app command", () => {
+    // App-owned setters may have the same name; webviews must not receive
+    // permission to invoke Tauri's macOS Spaces setter directly.
     expect(capabilities.permissions).not.toContain("core:window:allow-set-fullscreen");
     expect(capabilities.permissions).toContain("core:window:allow-is-fullscreen");
   });

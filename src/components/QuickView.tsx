@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Maximize2, X } from "lucide-react";
 import { useModalLayer } from "../hooks/useModalLayer";
-import { useItemsStore } from "../state/items-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import {
   closeViewer,
@@ -12,21 +11,18 @@ import {
 } from "../workflows/quick-view";
 import ConfirmDialog from "./ConfirmDialog";
 import PreviewSurface from "./PreviewSurface";
-import { identityKey, isAudioFile } from "../models/items";
+import { isAudioFile } from "../models/items";
 import OperationResult from "./ui/OperationResult";
 
 export default function QuickView() {
   const session = useQuickViewStore((state) => state.session);
   const pendingDelete = useQuickViewStore((state) => state.pendingDelete);
   const failure = useQuickViewStore((state) => state.failure);
-  const selectedItem = useItemsStore((state) => state.selectedItem);
-  const detail = useItemsStore((state) => state.detail);
-  const sectionKind = useItemsStore((state) => state.selected?.kind ?? null);
+  const sectionKind = session?.detail.kind ?? null;
   const surfaceRef = useRef<HTMLDivElement>(null);
   useModalLayer(surfaceRef, () => void closeViewer());
 
   const quickOpen = session?.presentation === "quick";
-  const key = quickOpen && session !== null ? identityKey(session.member) : null;
   const item = quickOpen ? (session?.item ?? null) : null;
 
   useEffect(() => {
@@ -59,7 +55,7 @@ export default function QuickView() {
   }, [item, pendingDelete, quickOpen, sectionKind]);
 
   if (!quickOpen || session === null || item === null) return null;
-  const currentDetail = selectedItem === key ? detail : null;
+  const currentDetail = session.detail;
   const atStart = session.index === 0;
   const atEnd = session.index === session.length - 1;
 
