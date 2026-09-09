@@ -11,7 +11,8 @@ import type {
   ViewerPresentation,
   ViewerSequenceSnapshot,
 } from "../models/viewerSession";
-import type { ItemDetail, SectionItem } from "../models/items";
+import { viewerMainIndex } from "../models/viewerSession";
+import type { ItemDetail, SectionItem, SectionLocation } from "../models/items";
 import { identityFromKey, identityKey, isAudioFile, itemKey } from "../models/items";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import {
@@ -102,15 +103,55 @@ function clearFullscreenSurface(): void {
   } satisfies ViewerBroadcast).catch(reportWindowCall("viewer clear broadcast"));
 }
 
-function syncMainAnchor(): void {
+async function syncMainAnchor(): Promise<void> {
   const viewer = useQuickViewStore.getState();
   const key = viewer.currentKey();
   const session = viewer.session;
   if (key === null || session === null) return;
-  if (viewer.session?.scope === "selection") {
-    useItemsStore.getState().setAnchor(key, session.sectionIndex);
-  } else {
-    useItemsStore.getState().selectItem(key, "nearest", session.sectionIndex);
+  const before = useItemsStore.getState();
+  const sort = before.currentSort();
+  const position = viewerMainIndex(session, {
+    section: before.selected, sort, revision: before.reconciliationId,
+    loading: before.loading, positions: before.itemPositions,
+  });
+  const subsetMatches = session.main.selectedKeys.length === before.selectedKeys.size &&
+    session.main.selectedKeys.every((member) => before.selectedKeys.has(member));
+  if (position !== null && (session.scope === "section" || subsetMatches)) {
+    if (session.scope === "selection") before.setAnchor(key, position);
+    else before.selectItem(key, "nearest", position);
+    return;
+  }
+  const ownsViewer = () => useQuickViewStore.getState().session?.token === session.token &&
+    useQuickViewStore.getState().currentKey() === key;
+  let section: SectionLocation | null;
+  try {
+    section = await invoke<SectionLocation | null>("get_item_section", { identity: session.member });
+  } catch (error) {
+    log.error("viewer Main location failed", toErrorFields(error));
+    if (ownsViewer()) {
+      const message = "Couldn’t locate this item in Main.";
+      useQuickViewStore.getState().setFailure(message);
+      recordActionFailure("viewer-main-location-failed", message, error);
+    }
+    return;
+  }
+  const current = useItemsStore.getState();
+  if (!ownsViewer() || current.selected !== before.selected ||
+    current.selectedKeys !== before.selectedKeys || current.selectedItem !== before.selectedItem ||
+    current.currentSort().order !== sort.order || current.currentSort().desc !== sort.desc) return;
+  if (section === null) {
+    useQuickViewStore.getState().setFailure("This item is no longer available in Main.");
+    return;
+  }
+  await current.select(section, {
+    anchor: key, context: null,
+    selectedKeys: session.scope === "selection" ? session.main.selectedKeys : [],
+  });
+  const restored = useItemsStore.getState();
+  if (ownsViewer() && !restored.loading && restored.loadError === null && restored.selectedItem === key) {
+    useQuickViewStore.getState().attachMainProjection({
+      section: restored.selected, sort: restored.currentSort(), revision: restored.reconciliationId,
+    });
   }
 }
 
@@ -216,9 +257,10 @@ async function reconcileViewerSequence(): Promise<void> {
       }
       useQuickViewStore.getState().update(snapshot);
       useQuickViewStore.getState().setFailure(null);
-      if (identityKey(snapshot.member) !== before) syncMainAnchor();
+      if (identityKey(snapshot.member) !== before) await syncMainAnchor();
     } catch (error) {
       log.error("viewer sequence reconciliation failed", toErrorFields(error));
+      if (useQuickViewStore.getState().session?.token !== session.token) return;
       const message = "Couldn’t refresh the open viewer.";
       useQuickViewStore.getState().setFailure(message);
       recordActionFailure(
@@ -267,10 +309,11 @@ export function openViewerFromMain(
     const index = items.selectedPositions.get(key) ?? loadedPositions.get(key);
     return index === undefined ? [] : [{ ...identityFromKey(key), index }];
   });
+  const entrySort = items.currentSort();
   void invoke<ViewerSequenceSnapshot>("viewer_sequence_start", {
     kind: section.kind,
     month: section.month,
-    sort: items.currentSort(),
+    sort: entrySort,
     selected,
     anchor: identityFromKey(items.selectedItem),
   })
@@ -289,7 +332,10 @@ export function openViewerFromMain(
         );
         return;
       }
-      useQuickViewStore.getState().start(snapshot, presentation);
+      useQuickViewStore.getState().start(snapshot, presentation, {
+        projection: { section, sort: entrySort, revision: items.reconciliationId },
+        selectedKeys: [...items.selectedKeys], frozenPositionsValid: true,
+      });
       feedback.finish();
       recordActivity({
         kind: "opened",
@@ -355,9 +401,10 @@ export function moveViewer(move: ViewerMove): void {
       if (useQuickViewStore.getState().session?.token !== session.token) return;
       useQuickViewStore.getState().update(snapshot);
       useQuickViewStore.getState().setFailure(null);
-      syncMainAnchor();
+      await syncMainAnchor();
     } catch (error) {
       log.error("viewer navigation failed", toErrorFields(error));
+      if (useQuickViewStore.getState().session?.token !== session.token) return;
       const message = "Couldn’t move in the viewer.";
       useQuickViewStore.getState().setFailure(message);
       recordActionFailure("viewer-navigation-failed", message, error);
@@ -403,7 +450,8 @@ export async function closeViewer(): Promise<void> {
     clearFullscreenSurface();
     await exitViewerFullscreen();
   }
-  await useItemsStore.getState().refresh();
+  // Library updates and mutations own Main reconciliation. Closing a viewer
+  // must not replace an already-admitted Main navigation with a second load.
   await restoreMainFocus();
 }
 

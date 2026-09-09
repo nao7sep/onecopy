@@ -34,6 +34,43 @@ pub struct SectionCounts {
     pub others: Vec<MonthSection>,
 }
 
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct SectionLocation {
+    pub kind: String,
+    pub month: String,
+}
+
+/// Resolve one current logical identity, never its former ordinal or directory.
+pub fn section_for_identity(
+    conn: &Connection,
+    identity: &SectionIdentity,
+    display_tz: Tz,
+) -> Result<Option<SectionLocation>, String> {
+    let facts: Option<(String, Option<i64>)> = if let Some(hash) = &identity.hash {
+        conn.query_row(
+            "SELECT kind, resolved_utc_ms FROM logical_contents WHERE content_hash = ?1 AND live_copy_count > 0",
+            [hash], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()
+    } else {
+        conn.query_row(
+            "SELECT 'other', resolved_utc_ms FROM paths WHERE id = ?1 AND missing = 0
+             AND companion_of IS NULL AND content_hash IS NULL AND kind NOT IN ('image', 'video')",
+            [identity.path_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()
+    }.map_err(|error| error.to_string())?;
+    facts.map(|(kind, instant)| {
+        let month = match instant {
+            None => "undated".to_string(),
+            Some(value) => {
+                let local = display_tz.timestamp_millis_opt(value).single()
+                    .ok_or_else(|| "Item date is outside the supported range".to_string())?;
+                format!("{:04}-{:02}", local.year(), local.month())
+            }
+        };
+        Ok(SectionLocation { kind, month })
+    }).transpose()
+}
+
 const LOGICAL_MONTH_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM logical_contents INDEXED BY idx_logical_contents_section
      WHERE kind = ?1 AND resolved_utc_ms >= ?2 AND resolved_utc_ms < ?3";

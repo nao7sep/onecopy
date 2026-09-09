@@ -62,6 +62,10 @@ beforeEach(() => {
       length: 1,
       sectionIndex: 0,
       scope: "section",
+      main: {
+        projection: { section: { kind: "image", month: "2026-01" }, sort: { order: "name", desc: false }, revision: 0 },
+        selectedKeys: ["photo-hash"], frozenPositionsValid: true,
+      },
     },
     pendingDelete: null,
   });

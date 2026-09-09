@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { identityFromKey } from "../models/items";
+import { viewerMainIndex } from "../models/viewerSession";
 import { resolveWorkAttention, type ViewportAttention } from "../models/workAttention";
 import { useItemsStore } from "../state/items-store";
 import { comparisonChunks, useComparisonStore } from "../state/comparison-store";
@@ -42,7 +43,13 @@ function publish(): void {
   }, comparison.open ? {
     selected: comparison.anchor,
     visible: comparisonChunks(comparison).flat().map(({ member }) => member.hash),
-  } : null, viewer === null ? null : { hash: viewer.member.hash, sectionIndex: viewer.sectionIndex });
+  } : null, viewer === null ? null : {
+    hash: viewer.member.hash,
+    sectionIndex: viewerMainIndex(viewer, {
+      section, sort: items.currentSort(), revision: items.reconciliationId,
+      loading: items.loading, positions: items.itemPositions,
+    }),
+  });
   const signature = JSON.stringify(attention);
   if (signature === last) return;
   last = signature;

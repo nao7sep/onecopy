@@ -688,6 +688,13 @@ fn display_timezone() -> chrono_tz::Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
+#[tauri::command(async)]
+fn get_item_section(app: AppHandle, identity: queries::SectionIdentity) -> Result<Option<queries::SectionLocation>, String> {
+    let data_root = paths::data_root(&app)?;
+    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+    queries::section_for_identity(&conn, &identity, display_timezone())
+}
+
 // Moves or copies one ordered logical-item set to a destination directory. Modes:
 // "move-trash-rest" (plain drag), "move-delete-rest" (Shift), "copy" (Cmd/Ctrl).
 // Destinations under a configured source root are rejected — moving files into
@@ -2055,6 +2062,7 @@ pub fn run() {
             rebuild_library_index,
             get_section_counts,
             get_section_window,
+            get_item_section,
             reconcile_section,
             get_section_range,
             get_section_family_context,

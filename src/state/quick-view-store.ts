@@ -4,6 +4,8 @@ import type {
   ActiveViewerSession,
   ViewerPresentation,
   ViewerSequenceSnapshot,
+  ViewerMainRelationship,
+  ViewerMainProjection,
 } from "../models/viewerSession";
 
 interface QuickViewState {
@@ -11,7 +13,8 @@ interface QuickViewState {
   pendingDelete: "trash" | "permanent" | null;
   failure: string | null;
   currentKey: () => string | null;
-  start: (snapshot: ViewerSequenceSnapshot, presentation: ViewerPresentation) => void;
+  start: (snapshot: ViewerSequenceSnapshot, presentation: ViewerPresentation, main: ViewerMainRelationship) => void;
+  attachMainProjection: (projection: ViewerMainProjection) => void;
   update: (snapshot: ViewerSequenceSnapshot) => void;
   setPresentation: (presentation: ViewerPresentation) => void;
   requestDelete: (kind: "trash" | "permanent") => void;
@@ -28,13 +31,19 @@ export const useQuickViewStore = create<QuickViewState>((set, get) => ({
     const session = get().session;
     return session === null ? null : identityKey(session.member);
   },
-  start: (snapshot, presentation) => {
-    set({ session: { ...snapshot, presentation }, pendingDelete: null, failure: null });
+  start: (snapshot, presentation, main) => {
+    set({ session: { ...snapshot, presentation, main }, pendingDelete: null, failure: null });
+  },
+  attachMainProjection: (projection) => {
+    const session = get().session;
+    if (session !== null) set({ session: { ...session, main: {
+      ...session.main, projection, frozenPositionsValid: false,
+    } } });
   },
   update: (snapshot) => {
     const session = get().session;
     if (session !== null && session.token === snapshot.token) {
-      set({ session: { ...snapshot, presentation: session.presentation } });
+      set({ session: { ...snapshot, presentation: session.presentation, main: session.main } });
     }
   },
   setPresentation: (presentation) => {

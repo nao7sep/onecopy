@@ -39,4 +39,14 @@ describe("work attention", () => {
     expect(view.visibleHashes).toEqual(["audio"]);
     expect(resolveWorkAttention({ ...main, sectionKind: "other", ...view, sectionAnchor: view.anchor }, null, null).sectionKind).toBe("other");
   });
+
+  it("retains the visible viewer target without borrowing an unrelated Main section", () => {
+    const view = resolveWorkAttention(main, null, { hash: "far", sectionIndex: null });
+    expect(view.selectedHash).toBe("far");
+    expect(view.visibleHashes).toEqual(["far"]);
+    expect(view.nearbyHashes).toEqual([]);
+    expect(view.sectionKind).toBeNull();
+    expect(view.sectionMonth).toBeNull();
+    expect(view.sectionTotal).toBe(0);
+  });
 });

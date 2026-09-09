@@ -63,6 +63,11 @@ export interface SectionIdentity {
   pathId: number;
 }
 
+export interface SectionLocation {
+  kind: "image" | "video" | "other";
+  month: string;
+}
+
 export interface PositionedSectionIdentity extends SectionIdentity {
   index: number;
 }

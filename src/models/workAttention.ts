@@ -44,7 +44,7 @@ export function viewportAttention(
 export function resolveWorkAttention(
   main: WorkAttention,
   comparison: { selected: string | null; visible: string[] } | null,
-  viewer: { hash: string | null; sectionIndex: number } | null,
+  viewer: { hash: string | null; sectionIndex: number | null } | null,
 ): WorkAttention {
   if (comparison !== null) return {
     ...main, selectedHash: comparison.selected, visibleHashes: comparison.visible,
@@ -54,8 +54,11 @@ export function resolveWorkAttention(
     ...main, selectedHash: viewer.hash,
     visibleHashes: viewer.hash === null ? [] : [viewer.hash],
     // Main scrolls to the viewer; only use its neighborhood once it catches up.
-    nearbyHashes: main.visibleHashes.includes(viewer.hash ?? "") ? main.nearbyHashes : [],
-    sectionAnchor: viewer.sectionIndex,
+    nearbyHashes: viewer.sectionIndex !== null && main.visibleHashes.includes(viewer.hash ?? "") ? main.nearbyHashes : [],
+    sectionAnchor: viewer.sectionIndex ?? 0,
+    sectionKind: viewer.sectionIndex === null ? null : main.sectionKind,
+    sectionMonth: viewer.sectionIndex === null ? null : main.sectionMonth,
+    sectionTotal: viewer.sectionIndex === null ? 0 : main.sectionTotal,
   };
   return main;
 }

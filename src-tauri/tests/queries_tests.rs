@@ -919,6 +919,39 @@ fn section_dirs_matches_the_directories_of_section_items() {
 }
 
 #[test]
+fn identity_section_lookup_uses_current_logical_date_and_display_zone() {
+    let conn = db();
+    seed_at(&conn, "moved", "/photos", "photo.jpg", 1_769_889_600_000);
+    let identity = queries::SectionIdentity { hash: Some("moved".into()), path_id: 0 };
+    let tokyo = queries::section_for_identity(&conn, &identity, "Asia/Tokyo".parse().unwrap()).unwrap().unwrap();
+    assert_eq!(tokyo.kind, "image");
+    assert_eq!(tokyo.month, "2026-02");
+    assert_eq!(queries::section_for_identity(&conn, &identity, chrono_tz::UTC).unwrap().unwrap().month, "2026-01");
+    conn.execute("UPDATE paths SET resolved_utc_ms = NULL WHERE content_hash = 'moved'", []).unwrap();
+    assert_eq!(queries::section_for_identity(&conn, &identity, chrono_tz::UTC).unwrap().unwrap().month, "undated");
+    conn.execute("UPDATE paths SET missing = 1 WHERE content_hash = 'moved'", []).unwrap();
+    assert!(queries::section_for_identity(&conn, &identity, chrono_tz::UTC).unwrap().is_none());
+}
+
+#[test]
+fn identity_section_lookup_admits_only_real_unhashed_other_items() {
+    let conn = db();
+    conn.execute_batch("INSERT INTO paths(id, abs_path, dir_path, file_name, kind, companion_of, missing) VALUES
+        (1, '/note.txt', '/', 'note.txt', 'text', NULL, 0),
+        (2, '/missing.txt', '/', 'missing.txt', 'text', NULL, 1),
+        (3, '/note.xmp', '/', 'note.xmp', 'other', 1, 0),
+        (4, '/unidentified.jpg', '/', 'unidentified.jpg', 'image', NULL, 0);").unwrap();
+    for id in 1..=5 {
+        let section = queries::section_for_identity(&conn, &queries::SectionIdentity { hash: None, path_id: id }, chrono_tz::UTC).unwrap();
+        assert_eq!(section.is_some(), id == 1);
+        if let Some(section) = section {
+            assert_eq!(section.kind, "other");
+            assert_eq!(section.month, "undated");
+        }
+    }
+}
+
+#[test]
 fn section_dirs_cover_hashed_and_unhashed_other_files_when_dated_or_undated() {
     let conn = db();
     conn.execute_batch(

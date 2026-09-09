@@ -7,11 +7,13 @@ import {
   moveViewer,
   openViewerFromMain,
   viewerBroadcast,
+  closeViewer,
 } from "../../src/workflows/quick-view";
 import {
   WebviewWindow,
   invokeCalls,
   mockCommand,
+  mockSectionItems,
   resetTauriMocks,
   setCurrentMonitor,
 } from "../mocks/tauri";
@@ -62,6 +64,9 @@ function item(key: string, pathId: number): SectionItem {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  mockSectionItems(({ kind }) => kind === "image"
+    ? [item("a", 1), item("b", 2), item("c", 3)] : [item("unrelated", 99)]);
+  mockCommand("get_item_section", () => ({ kind: "image", month: "2026-01" }));
   mockCommand("set_window_fullscreen", () => null);
   mockCommand("viewer_sequence_start", ({ selected }) => {
     const picked = selected as Array<{ hash: string; index: number }>;
@@ -90,6 +95,9 @@ beforeEach(() => {
     selectedPositions: new Map([["b", 1]]),
     totalItems: 3,
     windowStart: 0,
+    reconciliationId: 0,
+    loading: false,
+    loadError: null,
     itemPositions: new Map([
       ["c", 2],
       ["a", 0],
@@ -118,6 +126,8 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(viewerBroadcast().item?.fileName).toBe("c.jpg");
     expect(viewerBroadcast().detail?.fileName).toBe("c.jpg");
+    expect(useItemsStore.getState().selected).toEqual({ kind: "image", month: "2026-01" });
+    expect(useItemsStore.getState().selectedItem).toBe("c");
   });
 
   it("freezes displayed order and makes whole-section navigation exclusive", async () => {
@@ -149,6 +159,95 @@ describe("viewer workflow", () => {
 
     expect(useItemsStore.getState().selectedItem).toBe("a");
     expect(useItemsStore.getState().selectedKeys).toEqual(new Set(["c", "a"]));
+  });
+
+  it("maps frozen navigation into Main's new sort without refreezing or reusing its old ordinal", async () => {
+    openViewerFromMain("quick");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    useItemsStore.getState().setSortOrder("name");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    moveViewer("next");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().session?.index).toBe(2);
+    expect(useItemsStore.getState().selectedItem).toBe("c");
+    expect(useItemsStore.getState().scrollRequest?.index).toBe(0);
+    const reads = invokeCalls.filter((call) => call.command === "reconcile_section").length;
+    moveViewer("previous");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useItemsStore.getState().selectedItem).toBe("b");
+    expect(invokeCalls.filter((call) => call.command === "reconcile_section")).toHaveLength(reads);
+    expect(invokeCalls.filter((call) => call.command === "viewer_sequence_start")).toHaveLength(1);
+  });
+
+  it("recovers the frozen subset after Main leaves its section", async () => {
+    useItemsStore.setState({ selectedItem: "c", selectedKeys: new Set(["a", "c"]),
+      selectedPositions: new Map([["a", 0], ["c", 2]]) });
+    openViewerFromMain("quick");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await useItemsStore.getState().select({ kind: "other", month: "undated" });
+    moveViewer("previous");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useItemsStore.getState().selectedKeys).toEqual(new Set(["a", "c"]));
+    expect(useItemsStore.getState().selectedItem).toBe("a");
+    expect(useQuickViewStore.getState().session?.length).toBe(2);
+  });
+
+  it("does not redirect Main if a newer user intent wins the section lookup", async () => {
+    openViewerFromMain("quick");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await useItemsStore.getState().select({ kind: "other", month: "undated" });
+    let release!: (value: { kind: string; month: string }) => void;
+    mockCommand("get_item_section", () => new Promise((resolve) => { release = resolve; }));
+    moveViewer("next");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    useItemsStore.getState().selectItem("unrelated", "nearest", 0);
+    release({ kind: "image", month: "2026-01" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useItemsStore.getState().selected?.kind).toBe("other");
+    expect(useItemsStore.getState().selectedItem).toBe("unrelated");
+  });
+
+  it("lets an admitted Main restore finish when the viewer closes", async () => {
+    openViewerFromMain("quick");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await useItemsStore.getState().select({ kind: "other", month: "undated" });
+    let release!: () => void;
+    mockCommand("reconcile_section", () => new Promise((resolve) => { release = () => resolve({
+      anchor: { hash: "c", pathId: 3, index: 2 }, selected: [{ hash: "c", pathId: 3, index: 2 }],
+      rangeOrigin: null, rangeBase: [], context: null,
+      window: { start: 0, total: 3, items: [item("a", 1), item("b", 2), item("c", 3)] },
+    }); }));
+    moveViewer("next");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await closeViewer();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useItemsStore.getState().loading).toBe(false);
+    expect(useItemsStore.getState().selectedItem).toBe("c");
+  });
+
+  it("reports a Main lookup failure without misreporting the successful viewer move", async () => {
+    openViewerFromMain("quick");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await useItemsStore.getState().select({ kind: "other", month: "undated" });
+    mockCommand("get_item_section", () => { throw new Error("database unavailable"); });
+    moveViewer("next");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(viewerBroadcast().item?.fileName).toBe("c.jpg");
+    expect(useQuickViewStore.getState().failure).toBe("Couldn’t locate this item in Main.");
+    expect(useItemsStore.getState().selected?.kind).toBe("other");
+  });
+
+  it("does not invent a Main section for a no-longer-available viewer item", async () => {
+    openViewerFromMain("quick");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await useItemsStore.getState().select({ kind: "other", month: "undated" });
+    mockCommand("get_item_section", () => null);
+    moveViewer("next");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().failure).toBe("This item is no longer available in Main.");
+    expect(useItemsStore.getState().selected?.kind).toBe("other");
   });
 
   it("reuses one borderless fullscreen window and leaves presentation before hiding", async () => {

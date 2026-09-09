@@ -17,6 +17,7 @@ import {
   type PositionedSectionIdentity,
   type SectionItem,
   type SectionReconciliation,
+  type SectionLocation,
   type SectionWindow,
   type SortChoice,
   type SortOrder,
@@ -34,9 +35,12 @@ import {
   recordActivity,
 } from "../repositories/activity";
 
-export interface SelectedSection {
-  kind: "image" | "video" | "other";
-  month: string;
+export type SelectedSection = SectionLocation;
+
+interface ExplicitRestore {
+  anchor: string | null;
+  context: AnchorContext | null;
+  selectedKeys?: readonly string[];
 }
 
 const SECTION_WINDOW_LIMIT = 512;
@@ -72,7 +76,7 @@ interface ItemsState {
   setSortOrder: (order: SortOrder) => void;
   select: (
     section: SelectedSection,
-    restore?: { anchor: string | null; context: AnchorContext | null },
+    restore?: ExplicitRestore,
   ) => Promise<void>;
   loadWindow: (start: number, force?: boolean) => Promise<void>;
   selectPosition: (index: number, extend: boolean) => Promise<void>;
@@ -161,12 +165,12 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     const current = state.sortOrders[lane];
     const next: SortChoice =
       current.order === order ? { order, desc: !current.desc } : { order, desc: DEFAULT_DESC[order] };
-    set({ sortOrders: { ...state.sortOrders, [lane]: next } });
+    set({ sortOrders: { ...state.sortOrders, [lane]: next }, loading: state.selected !== null });
     void reconcileCurrent(set, get, false, "center");
   },
 
   select: async (section, restore) => {
-    rangeLoad.begin();
+    const freshIntent = rangeLoad.begin();
     const before = get();
     const sameSection = before.selected?.kind === section.kind && before.selected.month === section.month;
     if (!sameSection) {
@@ -229,7 +233,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       get,
       !sameSection && remembered === null,
       remembered === null ? "nearest" : "center",
-      !sameSection ? remembered : undefined,
+      restore ?? (!sameSection ? remembered : undefined),
+      restore !== undefined,
+      freshIntent,
     );
   },
 
@@ -574,7 +580,7 @@ async function reconcileCurrent(
   get: () => ItemsState,
   selectFirst: boolean,
   align: "nearest" | "center",
-  remembered?: { anchor: string | null; context: AnchorContext | null } | null,
+  remembered?: ExplicitRestore | null,
   replaceSelection = false,
   ownsIntent?: () => boolean,
 ): Promise<void> {
@@ -583,7 +589,9 @@ async function reconcileCurrent(
   if (section === null) return;
   const sort = before.currentSort();
   const fresh = sectionLoad.begin();
-  const selected = replaceSelection ? [] : [...before.selectedKeys].map(identityFromKey);
+  const selected = remembered?.selectedKeys !== undefined
+    ? remembered.selectedKeys.map(identityFromKey)
+    : replaceSelection ? [] : [...before.selectedKeys].map(identityFromKey);
   const rangeBase = replaceSelection ? [] : [...before.rangeBase].map(identityFromKey);
   const requestedAnchor = remembered === undefined ? before.selectedItem : (remembered?.anchor ?? null);
   const inferredContext =
@@ -609,6 +617,10 @@ async function reconcileCurrent(
       limit: SECTION_WINDOW_LIMIT,
     });
     const current = get();
+    if (fresh() && ownsIntent !== undefined && !ownsIntent()) {
+      set({ loading: false });
+      return;
+    }
     if (
       !fresh() ||
       (ownsIntent !== undefined && !ownsIntent()) ||
@@ -653,6 +665,10 @@ async function reconcileCurrent(
     if (anchor !== before.selectedItem) loadAnchorDetail(anchor);
   } catch (error) {
     if (!fresh()) return;
+    if (ownsIntent !== undefined && !ownsIntent()) {
+      set({ loading: false });
+      return;
+    }
     log.error("section reconciliation failed", toErrorFields(error));
     set({ loading: false, loadError: "Couldn’t load this section." });
     recordActionFailure("section-items-load-failed", "Couldn’t load this section.", error);
