@@ -24,6 +24,7 @@ import {
   type WindowPlacementController,
 } from "../utils/windowBounds";
 import { computeMinWindowHeight, computeMinWindowWidth } from "../utils/windowSizing";
+import { installDisplayZoneReconciliation } from "../workflows/display-zone";
 import {
   ZOOM_DEFAULT,
   isZoomIn,
@@ -44,6 +45,7 @@ export function useMainWindowLifecycle({
 }: MainWindowLifecycleOptions) {
   // The derived-work coordinator's view of the user: throttled input pings.
   useEffect(() => installActivityPings(window), []);
+  useEffect(() => installDisplayZoneReconciliation(), []);
 
   // A newly opened preview window asks for the exact message already owned
   // by the preview store. Rebuilding it from selection would lose one-shot

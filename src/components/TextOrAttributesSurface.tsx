@@ -4,6 +4,7 @@ import { ExternalLink, FolderOpen } from "lucide-react";
 import type { ItemDetail } from "../models/items";
 import { formatBytes } from "../models/items";
 import { takenPresentation } from "../models/itemPresentation";
+import { useDisplayZone } from "../hooks/useDisplayZone";
 import { textEncodingKey } from "../models/contentSession";
 import { log, toErrorFields } from "../repositories";
 import {
@@ -305,6 +306,7 @@ function AttributesBodyView({
   byteSize: number | null;
   onOpen: () => void;
 }) {
+  useDisplayZone();
   const [revealError, setRevealError] = useState<string | null>(null);
   return (
     <div className="h-full w-full overflow-auto p-5">

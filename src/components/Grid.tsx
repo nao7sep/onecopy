@@ -19,6 +19,7 @@ import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { viewportAttention } from "../models/workAttention";
 import { setWorkViewport } from "../workflows/work-attention";
 import { formatLocalMinute } from "../utils/displayTime";
+import { useDisplayZone } from "../hooks/useDisplayZone";
 import PreviewControl from "./PreviewControl";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { rescanCurrentSection } from "../workflows/items";
@@ -419,6 +420,7 @@ export default function Grid({
    * nothing to show in a tile. */
   layout: "tiles" | "list";
 }) {
+  useDisplayZone();
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedPositions = useItemsStore((s) => s.selectedPositions);
   const selectedItem = useItemsStore((s) => s.selectedItem);

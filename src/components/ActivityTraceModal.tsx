@@ -8,6 +8,7 @@ import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import PassiveScrollRegion from "./ui/PassiveScrollRegion";
 import { revealInMain } from "../workflows/reveal-in-main";
+import { useDisplayZone } from "../hooks/useDisplayZone";
 
 export { formatActivityTime } from "../models/activity-history";
 
@@ -118,6 +119,7 @@ export default function ActivityTraceModal({ open, onClose }: { open: boolean; o
 }
 
 function ActivityHistory({ onClose }: { onClose: () => void }) {
+  useDisplayZone();
   const [rows, setRows] = useState<ActivityOperation[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);

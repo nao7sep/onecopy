@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useDisplayZone } from "../hooks/useDisplayZone";
 import { FolderOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { revealInFileManager } from "../workflows/external-open";
@@ -202,6 +203,7 @@ export default function MetadataPane({
   hash: string | null;
   item: SectionItem | null;
 }) {
+  useDisplayZone();
   const activeWork = useDerivedWorkStore((state) => state.activeItem);
   const projectedWork =
     item === null ? null : mergeActiveItemWork(item.derivedWork, item.hash, activeWork);

@@ -8,6 +8,7 @@ import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
+import { useDisplayZone } from "../hooks/useDisplayZone";
 import OperationResult from "./ui/OperationResult";
 import { formatBytes } from "../models/items";
 
@@ -65,6 +66,7 @@ function factLine(entry: DependencyState): string | null {
 }
 
 function EntryRow({ entry }: { entry: DependencyState }) {
+  useDisplayZone();
   const progress = useBinariesStore((s) => s.installing[entry.id]);
   const error = useBinariesStore((s) => s.errors[entry.id]);
   const checking = useBinariesStore((s) => s.checking);

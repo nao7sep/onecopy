@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { useIssuesStore } from "../state/issues-store";
 import { formatLocalMinute } from "../utils/displayTime";
+import { useDisplayZone } from "../hooks/useDisplayZone";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
@@ -11,6 +12,7 @@ export default function IssuesModal({ open, onClose }: {
   open: boolean;
   onClose: () => void;
 }) {
+  useDisplayZone();
   const { rows, total, loading, error, load, dismiss, dismissAll } = useIssuesStore();
   const request = useRef(0);
   const revealed = useRef(false);
