@@ -1,27 +1,21 @@
-// Application-edge reactions for the Issues owner's restart-persistent views.
-// Notification presentation and issue history deliberately remain separate
-// stores; backend events are the boundary that keeps an open history current.
+// Notification failures refresh both the current-run inbox and status count.
 
 import { listen } from "@tauri-apps/api/event";
 import { log, toErrorFields } from "../repositories";
 import { useIssuesStore } from "../state/issues-store";
 import { recordInterfaceFailure } from "../utils/failureSurface";
-import { useAppShellStore } from "../state/app-shell-store";
 
 let installation: Promise<void> | null = null;
 
-function refreshRecentWhenOpen(): void {
-  const issues = useIssuesStore.getState();
-  if (useAppShellStore.getState().utilitySurface === "issues") {
-    void issues.loadRecent();
-  }
+function refreshIssues(): void {
+  void useIssuesStore.getState().load();
 }
 
 async function install(): Promise<void> {
   const unlisten: Array<() => void> = [];
   try {
-    unlisten.push(await listen("notification://published", refreshRecentWhenOpen));
-    unlisten.push(await listen("notification://recorded", refreshRecentWhenOpen));
+    unlisten.push(await listen("notification://published", refreshIssues));
+    unlisten.push(await listen("notification://recorded", refreshIssues));
   } catch (error) {
     for (const stop of unlisten) stop();
     throw error;

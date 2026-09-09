@@ -1,4 +1,4 @@
-// Fixed-class output receipts and the safe Issues recovery boundary.
+// Fixed-class output receipts and explicit attempt boundaries.
 
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::{derived_state, index_store, queries};
@@ -259,38 +259,7 @@ fn failed_replacement_keeps_its_completed_transcript_across_reattempt_boundaries
 }
 
 #[test]
-fn only_reconstructible_failures_offer_retry_and_stay_visible_while_queued() {
-    let (_dir, conn) = seeded();
-    let (_, rows) = queries::issues(&conn, 20).unwrap();
-    assert_eq!(rows.len(), 6);
-    assert!(rows
-        .iter()
-        .filter(|row| row.kind != "delete-error")
-        .all(|row| row.recovery.as_ref().map(|action| action.status) == Some("available")));
-    assert!(rows
-        .iter()
-        .find(|row| row.kind == "delete-error")
-        .unwrap()
-        .recovery
-        .is_none());
-
-    let face = rows
-        .iter()
-        .find(|row| row.kind == derived_state::FACE_ERROR)
-        .unwrap();
-    assert!(derived_state::retry_issue(&conn, face.id).unwrap());
-
-    let (total, rows) = queries::issues(&conn, 20).unwrap();
-    assert_eq!(total, 6, "retry never dismisses the evidence early");
-    let face = rows
-        .iter()
-        .find(|row| row.kind == derived_state::FACE_ERROR)
-        .unwrap();
-    assert_eq!(face.recovery.as_ref().unwrap().status, "queued");
-}
-
-#[test]
-fn resource_safety_pause_offers_resume_without_attaching_to_one_file() {
+fn resource_safety_issue_is_not_attached_to_one_file() {
     let (_dir, conn) = seeded();
     index_store::upsert_issue(
         &conn,
@@ -306,56 +275,7 @@ fn resource_safety_pause_offers_resume_without_attaching_to_one_file() {
         .find(|row| row.kind == "resource-limit-video-transcripts")
         .unwrap();
     assert!(issue.path.is_none());
-    assert_eq!(issue.recovery.as_ref().unwrap().label, "Resume");
-    assert_eq!(issue.recovery.as_ref().unwrap().status, "available");
-}
-
-#[test]
-fn retry_all_resets_each_safe_output_without_replaying_destructive_intent() {
-    let (_dir, conn) = seeded();
-    assert_eq!(derived_state::retry_all(&conn).unwrap(), 5);
-    assert_eq!(
-        derived_state::retry_all(&conn).unwrap(),
-        0,
-        "already queued outputs are deduplicated"
-    );
-
-    let derived: (Option<String>, Option<String>, Option<i64>) = conn
-        .query_row(
-            "SELECT
-               (SELECT derived_at_utc FROM contents WHERE hash = 'image'),
-               (SELECT derived_at_utc FROM contents WHERE hash = 'poster'),
-               (SELECT strip_frames FROM contents WHERE hash = 'strip')",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(derived, (None, None, None));
-    let face_state: Option<String> = conn
-        .query_row(
-            "SELECT face_state FROM analysis_receipts WHERE content_hash = 'face'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(face_state, None);
-    let transcript: Option<String> = conn
-        .query_row(
-            "SELECT transcript_state FROM analysis_receipts
-             WHERE content_hash = 'speech'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(transcript, None);
-
-    let (_, rows) = queries::issues(&conn, 20).unwrap();
-    assert!(rows
-        .iter()
-        .find(|row| row.kind == "delete-error")
-        .unwrap()
-        .recovery
-        .is_none());
+    assert!(issue.message.as_ref().unwrap().contains("memory"));
 }
 
 #[test]
@@ -449,8 +369,7 @@ fn preview_poster_and_snapshot_failures_checkpoint_once_for_retry() {
         derived_state::VIDEO_POSTER_ERROR,
         derived_state::VIDEO_STRIP_ERROR,
     ] {
-        let issue = issues.iter().find(|row| row.kind == kind).unwrap();
-        assert_eq!(issue.recovery.as_ref().unwrap().status, "available");
+        assert!(issues.iter().any(|row| row.kind == kind));
     }
 }
 
@@ -464,7 +383,7 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
     assert_eq!(
         failed.message.as_deref(),
         Some(
-            "OneCopy could not transcribe this media file. The original file was not changed. Try again."
+            "OneCopy could not transcribe this media file. The original file was not changed. Recheck its section to try again."
         )
     );
 

@@ -20,7 +20,7 @@ use rusqlite::Connection;
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 11;
+const SCHEMA_REVISION: i64 = 12;
 
 const ISSUE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS issues (
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS issues (
   last_seen_utc  TEXT NOT NULL,
   occurrence_count INTEGER NOT NULL DEFAULT 1,
   closed_at_utc  TEXT,
-  closure        TEXT CHECK (closure IN ('dismissed', 'resolved')),
+  closure        TEXT CHECK (closure IN ('dismissed', 'resolved', 'app-restart', 'rechecked')),
   CHECK ((closed_at_utc IS NULL) = (closure IS NULL))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_live_identity
@@ -393,7 +393,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                9 | 10 => {
+                9..=11 => {
                     if current == 9 {
                         conn.execute_batch(
                         "ALTER TABLE paths ADD COLUMN hash_attempt_failed INTEGER NOT NULL DEFAULT 0;
@@ -401,15 +401,21 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                         ).map_err(|error| error.to_string())?;
                     }
                     conn.execute_batch(
-                        "ALTER TABLE issues RENAME TO issues_before_history;
-                         DROP INDEX IF EXISTS idx_issues_first_seen;"
+                        "DROP VIEW IF EXISTS active_issues;
+                         ALTER TABLE issues RENAME TO issues_before_history;
+                         DROP INDEX IF EXISTS idx_issues_first_seen;
+                         DROP INDEX IF EXISTS idx_issues_live_identity;"
                     ).map_err(|error| error.to_string())?;
                     conn.execute_batch(ISSUE_SCHEMA).map_err(|error| error.to_string())?;
-                    conn.execute_batch(
-                        "INSERT INTO issues (id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count)
-                         SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM issues_before_history;
+                    let columns = if current == 11 {
+                        "id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count, closed_at_utc, closure"
+                    } else {
+                        "id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count"
+                    };
+                    conn.execute_batch(&format!(
+                        "INSERT INTO issues ({columns}) SELECT {columns} FROM issues_before_history;
                          DROP TABLE issues_before_history;"
-                    ).map_err(|error| error.to_string())?;
+                    )).map_err(|error| error.to_string())?;
                 }
                 0..=8 => {
                     // Only the earlier disposable index generations retain
@@ -523,6 +529,16 @@ pub fn dismiss_issues(conn: &Connection, id: Option<i64>) -> Result<(), String> 
         "UPDATE issues SET closure = 'dismissed', closed_at_utc = ?2
          WHERE closed_at_utc IS NULL AND (?1 IS NULL OR id = ?1)",
         rusqlite::params![id, crate::logging::now_iso_millis()],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Startup admission, never ordinary connection opening, begins the next inbox.
+pub fn begin_issue_run(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE issues SET closure = 'app-restart', closed_at_utc = ?1
+         WHERE closed_at_utc IS NULL",
+        [crate::logging::now_iso_millis()],
     ).map_err(|error| error.to_string())?;
     Ok(())
 }

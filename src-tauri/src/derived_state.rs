@@ -1085,22 +1085,22 @@ fn record_content_failure(
 fn derived_issue_presentation(issue_kind: &str) -> &'static str {
     match issue_kind {
         PREVIEW_ERROR => {
-            "OneCopy could not prepare a preview for this file. The original file was not changed. Repair or replace the file, then retry."
+            "OneCopy could not prepare a preview for this file. The original file was not changed. Repair or replace the file, then recheck its section."
         }
         VIDEO_POSTER_ERROR => {
-            "OneCopy could not prepare this video for playback. The original file was not changed. Repair or replace the file, then retry."
+            "OneCopy could not prepare this video for playback. The original file was not changed. Repair or replace the file, then recheck its section."
         }
         VIDEO_STRIP_ERROR => {
-            "OneCopy could not generate scene snapshots for this video. The original file was not changed. Repair or replace the file, then retry."
+            "OneCopy could not generate scene snapshots for this video. The original file was not changed. Repair or replace the file, then recheck its section."
         }
         FACE_ERROR => {
-            "OneCopy could not score faces in this photo. The original file was not changed. Try again."
+            "OneCopy could not score faces in this photo. The original file was not changed. Recheck its section to try again."
         }
         TRANSCRIPT_ERROR => {
-            "OneCopy could not transcribe this media file. The original file was not changed. Try again."
+            "OneCopy could not transcribe this media file. The original file was not changed. Recheck its section to try again."
         }
         _ => {
-            "OneCopy could not finish preparing this file. The original file was not changed. Try again."
+            "OneCopy could not finish preparing this file. The original file was not changed. Recheck its section to try again."
         }
     }
 }
@@ -1371,23 +1371,6 @@ mod transcript_replacement_tests {
     }
 }
 
-fn content_hash_for_issue(
-    conn: &Connection,
-    issue_id: i64,
-) -> Result<Option<(String, String, String)>, String> {
-    conn.query_row(
-        "SELECT i.kind, i.path, p.content_hash
-         FROM active_issues i
-         JOIN paths p ON p.abs_path = i.path AND p.missing = 0
-         WHERE i.id = ?1 AND p.content_hash IS NOT NULL
-         LIMIT 1",
-        [issue_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )
-    .optional()
-    .map_err(|error| error.to_string())
-}
-
 /// An explicit attempt boundary, not a query side effect or an Issues action.
 pub enum FailedOutputScope<'a> {
     Library,
@@ -1400,6 +1383,16 @@ pub enum FailedOutputScope<'a> {
 /// Reopens only failed outputs. Completed values, waiting prerequisites,
 /// feature policy, and diagnostic records are deliberately untouched.
 pub fn reset_failed_outputs(
+    conn: &Connection,
+    scope: FailedOutputScope<'_>,
+) -> Result<u64, String> {
+    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let count = reset_failed_outputs_in_transaction(&transaction, scope)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(count)
+}
+
+pub(crate) fn reset_failed_outputs_in_transaction(
     conn: &Connection,
     scope: FailedOutputScope<'_>,
 ) -> Result<u64, String> {
@@ -1424,9 +1417,6 @@ pub fn reset_failed_outputs(
             )
         }
     };
-    let transaction = conn
-        .unchecked_transaction()
-        .map_err(|error| error.to_string())?;
     let mut count = 0;
     for (table, key, reset, failed) in [
         (
@@ -1459,14 +1449,13 @@ pub fn reset_failed_outputs(
         } else {
             format!(" AND {key}{membership}")
         };
-        count += transaction
+        count += conn
             .execute(
                 &format!("UPDATE {table} SET {reset} WHERE {failed}{filter}"),
                 params_from_iter(values.iter()),
             )
             .map_err(|error| error.to_string())? as u64;
     }
-    transaction.commit().map_err(|error| error.to_string())?;
     Ok(count)
 }
 
@@ -1477,195 +1466,4 @@ pub(crate) fn preview_failed(conn: &Connection, hash: &str) -> Result<bool, Stri
         |row| row.get(0),
     )
     .map_err(|error| error.to_string())
-}
-
-/// Resets only a reconstructible output named by the current issue. The issue
-/// remains visible until that output succeeds and clears it.
-pub fn retry_issue(conn: &Connection, issue_id: i64) -> Result<bool, String> {
-    let Some((kind, _path, hash)) = content_hash_for_issue(conn, issue_id)? else {
-        return Ok(false);
-    };
-    let changed = match kind.as_str() {
-        PREVIEW_ERROR | VIDEO_POSTER_ERROR => conn.execute(
-            "UPDATE contents SET derived_at_utc = NULL
-             WHERE hash = ?1 AND derived_at_utc IS NOT NULL",
-            [&hash],
-        ),
-        VIDEO_STRIP_ERROR => conn.execute(
-            "UPDATE contents SET strip_frames = NULL
-             WHERE hash = ?1 AND strip_frames IS NOT NULL",
-            [&hash],
-        ),
-        FACE_ERROR => conn.execute(
-            "UPDATE analysis_receipts SET face_state = NULL,
-                 face_updated_at_utc = NULL
-             WHERE content_hash = ?1 AND face_state IS NOT NULL",
-            [&hash],
-        ),
-        TRANSCRIPT_ERROR => conn.execute(
-            "UPDATE analysis_receipts SET transcript_state = NULL,
-                 transcript_updated_at_utc = NULL
-             WHERE content_hash = ?1 AND transcript_state IS NOT NULL",
-            [&hash],
-        ),
-        _ => return Ok(false),
-    }
-    .map_err(|error| error.to_string())?;
-    Ok(changed > 0)
-}
-
-pub fn retry_all(conn: &Connection) -> Result<u64, String> {
-    let transaction = conn
-        .unchecked_transaction()
-        .map_err(|error| error.to_string())?;
-    let mut retried = transaction
-        .execute(
-            "UPDATE contents SET derived_at_utc = NULL \
-             WHERE derived_at_utc IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
-                           WHERE p.content_hash = contents.hash AND p.missing = 0 \
-                             AND i.kind IN (?1, ?2))",
-            params![PREVIEW_ERROR, VIDEO_POSTER_ERROR],
-        )
-        .map_err(|error| error.to_string())? as u64;
-    retried += transaction
-        .execute(
-            "UPDATE contents SET strip_frames = NULL \
-             WHERE strip_frames IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
-                           WHERE p.content_hash = contents.hash AND p.missing = 0 \
-                             AND i.kind = ?1)",
-            [VIDEO_STRIP_ERROR],
-        )
-        .map_err(|error| error.to_string())? as u64;
-    retried += transaction
-        .execute(
-            "UPDATE analysis_receipts SET face_state = NULL, face_updated_at_utc = NULL \
-             WHERE face_state IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
-                           WHERE p.content_hash = analysis_receipts.content_hash \
-                             AND p.missing = 0 AND i.kind = ?1)",
-            [FACE_ERROR],
-        )
-        .map_err(|error| error.to_string())? as u64;
-    retried += transaction
-        .execute(
-            "UPDATE analysis_receipts \
-             SET transcript_state = NULL, transcript_updated_at_utc = NULL \
-             WHERE transcript_state IS NOT NULL \
-               AND EXISTS (SELECT 1 FROM paths p JOIN active_issues i ON i.path = p.abs_path \
-                           WHERE p.content_hash = analysis_receipts.content_hash \
-                             AND p.missing = 0 AND i.kind = ?1)",
-            [TRANSCRIPT_ERROR],
-        )
-        .map_err(|error| error.to_string())? as u64;
-    transaction.commit().map_err(|error| error.to_string())?;
-    Ok(retried)
-}
-
-pub fn issue_recovery(
-    conn: &Connection,
-    issue_id: i64,
-) -> Result<Option<crate::issue_recovery::IssueRecovery>, String> {
-    if resource_class_for_issue(conn, issue_id)?.is_some() {
-        return Ok(Some(crate::issue_recovery::IssueRecovery {
-            action: "retry",
-            label: "Resume",
-            status: "available",
-        }));
-    }
-    let Some((kind, _path, hash)) = content_hash_for_issue(conn, issue_id)? else {
-        return Ok(None);
-    };
-    let queued = match kind.as_str() {
-        PREVIEW_ERROR | VIDEO_POSTER_ERROR => conn
-            .query_row(
-                "SELECT derived_at_utc IS NULL FROM contents WHERE hash = ?1",
-                [&hash],
-                |row| row.get::<_, bool>(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?,
-        VIDEO_STRIP_ERROR => conn
-            .query_row(
-                "SELECT strip_frames IS NULL FROM contents WHERE hash = ?1",
-                [&hash],
-                |row| row.get::<_, bool>(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?,
-        FACE_ERROR => conn
-            .query_row(
-                "SELECT face_state IS NULL FROM analysis_receipts WHERE content_hash = ?1",
-                [&hash],
-                |row| row.get::<_, bool>(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?,
-        TRANSCRIPT_ERROR => conn
-            .query_row(
-                "SELECT transcript_state IS NULL FROM analysis_receipts WHERE content_hash = ?1",
-                [&hash],
-                |row| row.get::<_, bool>(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?,
-        _ => return Ok(None),
-    };
-    Ok(queued.map(|queued| crate::issue_recovery::IssueRecovery {
-        action: "retry",
-        label: "Retry",
-        status: if queued { "queued" } else { "available" },
-    }))
-}
-
-pub(crate) fn resource_class_for_issue(
-    conn: &Connection,
-    issue_id: i64,
-) -> Result<Option<WorkClass>, String> {
-    let kind: Option<String> = conn
-        .query_row("SELECT kind FROM active_issues WHERE id = ?1", [issue_id], |row| {
-            row.get(0)
-        })
-        .optional()
-        .map_err(|error| error.to_string())?;
-    Ok(kind
-        .as_deref()
-        .and_then(|kind| kind.strip_prefix(RESOURCE_ISSUE_PREFIX))
-        .and_then(WorkClass::parse))
-}
-
-pub(crate) fn take_resource_issue(
-    conn: &Connection,
-    issue_id: i64,
-) -> Result<Option<WorkClass>, String> {
-    let class = resource_class_for_issue(conn, issue_id)?;
-    if class.is_some() {
-        conn.execute("UPDATE issues SET closure = 'resolved', closed_at_utc = ?2 WHERE id = ?1 AND closed_at_utc IS NULL", rusqlite::params![issue_id, crate::logging::now_iso_millis()])
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(class)
-}
-
-pub(crate) fn take_all_resource_issues(conn: &Connection) -> Result<Vec<WorkClass>, String> {
-    let mut statement = conn
-        .prepare("SELECT DISTINCT kind FROM active_issues WHERE kind LIKE 'resource-limit-%'")
-        .map_err(|error| error.to_string())?;
-    let kinds = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-    let classes = kinds
-        .iter()
-        .map(|kind| {
-            kind.strip_prefix(RESOURCE_ISSUE_PREFIX)
-                .and_then(WorkClass::parse)
-                .ok_or_else(|| format!("unknown resource issue kind: {kind}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    conn.execute("UPDATE issues SET closure = 'resolved', closed_at_utc = ?1 WHERE kind LIKE 'resource-limit-%' AND closed_at_utc IS NULL", [crate::logging::now_iso_millis()])
-        .map_err(|error| error.to_string())?;
-    Ok(classes)
 }

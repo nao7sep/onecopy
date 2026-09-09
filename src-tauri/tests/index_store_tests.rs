@@ -168,6 +168,53 @@ fn failed_history_upgrade_rolls_back_the_whole_migration() {
 }
 
 #[test]
+fn revision_eleven_preserves_archived_closures_and_accepts_new_attempt_reasons() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    index_store::upsert_issue(&conn, None, "test", "dismissed detail").unwrap();
+    index_store::dismiss_issues(&conn, None).unwrap();
+    index_store::upsert_issue(&conn, None, "test", "live detail").unwrap();
+    let old: (i64, String, String) = conn
+        .query_row(
+            "SELECT id, closed_at_utc, closure FROM issues WHERE closure IS NOT NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    conn.execute_batch("PRAGMA user_version = 11;").unwrap();
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    let kept = conn
+        .query_row(
+            "SELECT id, closed_at_utc, closure FROM issues WHERE closure IS NOT NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(old, kept);
+    index_store::begin_issue_run(&conn).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE closure = 'app-restart'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE closure = 'dismissed'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn newer_unknown_schema_is_not_destructively_downgraded() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");

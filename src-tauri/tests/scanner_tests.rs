@@ -247,7 +247,7 @@ fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
 }
 
 #[test]
-fn filesystem_issue_rechecks_are_exact_and_leave_pipeline_scope_explicit() {
+fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
     let f = fixture("issue-recheck");
     let readable = f.root.join("readable.jpg");
     std::fs::write(&readable, b"readable bytes").unwrap();
@@ -257,19 +257,7 @@ fn filesystem_issue_rechecks_are_exact_and_leave_pipeline_scope_explicit() {
 
     let readable_path = readable.to_string_lossy().to_string();
     index_store::upsert_issue(&f.conn, Some(&readable_path), READ_ERROR, "read failed").unwrap();
-    let read_id: i64 = f
-        .conn
-        .query_row(
-            "SELECT id FROM issues WHERE kind = ?1 AND path = ?2",
-            rusqlite::params![READ_ERROR, readable_path],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        recheck_filesystem_issue(&f.conn, read_id, &lists()).unwrap(),
-        RecheckOutcome::Resolved { include_walk: false },
-        "a successful exact read resumes only the index tail"
-    );
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!(
         f.conn
             .query_row(
@@ -292,19 +280,7 @@ fn filesystem_issue_rechecks_are_exact_and_leave_pipeline_scope_explicit() {
         )
         .unwrap();
     index_store::upsert_issue(&f.conn, Some(&missing_path), STAT_ERROR, "stat failed").unwrap();
-    let stat_id: i64 = f
-        .conn
-        .query_row(
-            "SELECT id FROM issues WHERE kind = ?1 AND path = ?2",
-            rusqlite::params![STAT_ERROR, missing_path],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        recheck_filesystem_issue(&f.conn, stat_id, &lists()).unwrap(),
-        RecheckOutcome::Resolved { include_walk: true },
-        "a vanished path needs the normal repairing walk"
-    );
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!(
         f.conn
             .query_row(
@@ -315,7 +291,7 @@ fn filesystem_issue_rechecks_are_exact_and_leave_pipeline_scope_explicit() {
             .unwrap(),
         1
     );
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'stat-error'"), 0);
     assert!(count(&f.conn, "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'") > 0);
 }
 

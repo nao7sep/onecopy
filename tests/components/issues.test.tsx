@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 //
-// Active keeps the status-bar count and safe recovery controls; Recent keeps
-// bounded notification history without becoming a replay surface.
+// One current-run diagnostic inbox, without work-admission controls.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, cleanup, act, fireEvent } from "@testing-library/react";
+import { render, cleanup, act } from "@testing-library/react";
 import IssuesModal from "../../src/components/IssuesModal";
 import { useIssuesStore, type IssueRow } from "../../src/state/issues-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -18,24 +17,17 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
     firstSeenUtc: `2026-08-0${id}T00:00:00.000Z`,
     lastSeenUtc: "2026-08-16T00:00:00.000Z",
     occurrenceCount: 1,
-    recovery: null,
     ...over,
   };
 }
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  mockCommands({ get_recent_notifications: () => ({ total: 0, rows: [] }) });
   useIssuesStore.setState({
     total: 0,
     rows: [],
     loading: false,
     error: null,
-    recentTotal: 0,
-    recentRows: [],
-    recentLoading: false,
-    recentError: null,
-    view: "active",
   });
 });
 
@@ -112,142 +104,33 @@ describe("the issues modal", () => {
     );
     await act(async () => all!.click());
 
-    expect(document.body.textContent).toContain("No active issues");
+    expect(document.body.textContent).toContain("No issues");
   });
 
-  it("retries only backend-authorized rows and leaves them visible as queued", async () => {
-    let rows = [
-      row(1, { recovery: { action: "retry", label: "Retry", status: "available" } }),
-      row(2, { kind: "delete-error" }),
-    ];
-    mockCommands({
-      get_issues: () => ({ total: rows.length, rows }),
-      retry_issue: (args) => {
-        rows = rows.map((item) =>
-          item.id === args.id
-            ? {
-                ...item,
-                recovery: {
-                  action: "retry" as const,
-                  label: "Retry",
-                  status: "queued" as const,
-                },
-              }
-            : item,
-        );
-        return true;
-      },
-    });
+  it("shows failed actions and conditions together without tabs or retry controls", async () => {
+    mockCommands({ get_issues: () => ({ total: 501, rows: [row(1), row(2, {
+      kind: "open-failed", message: "Couldn’t open the file.", occurrenceCount: 2,
+    })] }) });
     render(<IssuesModal open onClose={() => {}} />);
     await act(async () => {});
-
-    const retry = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Retry",
-    );
-    await act(async () => retry!.click());
-
-    expect(invokeCalls.some((call) => call.command === "retry_issue")).toBe(true);
-    expect(document.body.textContent).toContain("Queued");
-    expect(document.querySelectorAll("li")).toHaveLength(2);
-  });
-
-  it("offers retry all only while at least one safe retry is available", async () => {
-    let rows = [
-      row(1, { recovery: { action: "retry", label: "Retry", status: "available" } }),
-      row(2, { recovery: { action: "retry", label: "Retry", status: "queued" } }),
-    ];
-    mockCommands({
-      get_issues: () => ({ total: rows.length, rows }),
-      retry_all_issues: () => {
-        rows = rows.map((item) => ({
-          ...item,
-          recovery: {
-            action: "retry" as const,
-            label: "Retry",
-            status: "queued" as const,
-          },
-        }));
-        return 1;
-      },
-    });
-    render(<IssuesModal open onClose={() => {}} />);
-    await act(async () => {});
-
-    const retryAll = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Retry all",
-    );
-    await act(async () => retryAll!.click());
-
-    expect(invokeCalls.some((call) => call.command === "retry_all_issues")).toBe(true);
-    expect(document.body.textContent).not.toContain("Retry all");
-  });
-
-  it("runs a backend-authored filesystem recheck without folding it into retry all", async () => {
-    let rows = [
-      row(1, {
-        kind: "read-error",
-        recovery: { action: "recheck", label: "Recheck", status: "available" },
-      }),
-    ];
-    let release!: () => void;
-    mockCommands({
-      get_issues: () => ({ total: rows.length, rows }),
-      recheck_issue: () =>
-        new Promise<{ status: "started" }>((resolve) => {
-          release = () => {
-            rows = [];
-            resolve({ status: "started" });
-          };
-        }),
-    });
-    render(<IssuesModal open onClose={() => {}} />);
-    await act(async () => {});
-
-    const recheck = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Recheck",
-    );
-    act(() => recheck!.click());
-    expect(document.body.textContent).toContain("Running");
-    expect(document.body.textContent).not.toContain("Retry all");
-
-    await act(async () => release());
-    expect(invokeCalls.some((call) => call.command === "recheck_issue")).toBe(true);
-    expect(document.body.textContent).toContain("No active issues");
-  });
-
-  it("keeps restart-persistent notification history separate from active conditions", async () => {
-    mockCommands({
-      get_issues: () => ({ total: 0, rows: [] }),
-      get_recent_notifications: () => ({
-        total: 1,
-        rows: [
-          {
-            id: 9,
-            kind: "open-failed",
-            path: null,
-            level: "error",
-            presentation: "persistent",
-            message: "Couldn’t open the selected file.",
-            firstSeenUtc: "2026-08-30T00:00:00.000Z",
-            lastSeenUtc: "2026-08-31T00:00:00.000Z",
-            occurrenceCount: 2,
-          },
-        ],
-      }),
-    });
-    render(<IssuesModal open onClose={() => {}} />);
-    await act(async () => {});
-    await act(async () => useIssuesStore.getState().setView("recent"));
-
-    expect(document.body.textContent).toContain("Recent (1)");
-    expect(document.body.textContent).toContain("Couldn’t open the selected file.");
+    expect(document.querySelector('[role="tablist"]')).toBeNull();
+    expect(document.body.textContent).toContain("Couldn’t open the file.");
     expect(document.body.textContent).toContain("×2");
-    expect(document.body.textContent).not.toContain("Dismiss all");
+    expect(document.body.textContent).toContain("Showing the oldest 2 of 501");
+    expect(document.body.textContent).not.toContain("Retry");
+    expect(invokeCalls.map((call) => call.command)).toEqual(["get_issues"]);
+  });
 
-    const recentTab = document.getElementById("issues-tab-recent") as HTMLElement;
-    recentTab.focus();
-    fireEvent.keyDown(recentTab, { key: "ArrowLeft" });
-    expect(useIssuesStore.getState().view).toBe("active");
-    expect(document.activeElement?.id).toBe("issues-tab-active");
+  it("does not restore stale rows over a newer refresh", async () => {
+    let resolveOld!: (value: { total: number; rows: IssueRow[] }) => void;
+    let calls = 0;
+    mockCommands({ get_issues: () => ++calls === 1
+      ? new Promise((resolve) => { resolveOld = resolve; }) : { total: 0, rows: [] } });
+    const old = useIssuesStore.getState().load();
+    await useIssuesStore.getState().load();
+    resolveOld({ total: 1, rows: [row(1)] });
+    await old;
+    expect(useIssuesStore.getState().rows).toEqual([]);
+    expect(useIssuesStore.getState().total).toBe(0);
   });
 });

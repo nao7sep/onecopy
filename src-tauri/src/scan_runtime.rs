@@ -2,8 +2,7 @@
 //!
 //! Source-folder checking and file-information completion own independent
 //! lifecycles in their runtime modules. This module owns only the database
-//! projection lock, scanner cancellation hand-off, foreground admission, and
-//! issue-recheck identity used by read projections.
+//! projection lock, scanner cancellation hand-off, and foreground admission.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -15,7 +14,6 @@ use tauri::AppHandle;
 static INDEXING: Mutex<()> = Mutex::new(());
 static ACTIVE_OWNER: AtomicU8 = AtomicU8::new(0);
 static FOREGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
-static ACTIVE_RECHECK_ISSUE: Mutex<Option<i64>> = Mutex::new(None);
 const CLOSING: &str = "OneCopy is closing; no new library work can start.";
 
 struct ForegroundWait {
@@ -217,62 +215,6 @@ pub(crate) fn begin_admitted_mutation(app: &AppHandle) -> ForegroundGuard {
 
 pub(crate) fn foreground_pending() -> bool {
     FOREGROUND_WAITERS.load(Ordering::SeqCst) != 0
-}
-
-struct RecheckClaim;
-
-impl Drop for RecheckClaim {
-    fn drop(&mut self) {
-        if let Ok(mut active) = ACTIVE_RECHECK_ISSUE.lock() {
-            *active = None;
-        } else {
-            crate::logging::error("issue-recheck state is unavailable", serde_json::json!({}));
-        }
-    }
-}
-
-/// An issue recheck is deliberately non-queuing. The Issues surface already
-/// has an explicit Busy result and can be retried after the active safe step.
-pub fn try_with_recheck_claim<T>(
-    issue_id: i64,
-    work: impl FnOnce() -> T,
-) -> Result<Option<T>, String> {
-    if crate::app_lifecycle::shutting_down() {
-        return Err(CLOSING.to_string());
-    }
-    if crate::source_check_runtime::running() {
-        return Ok(None);
-    }
-    let _index = match INDEXING.try_lock() {
-        Ok(index) => index,
-        Err(TryLockError::WouldBlock) => return Ok(None),
-        Err(TryLockError::Poisoned(poisoned)) => {
-            crate::logging::error(
-                "index admission state recovered after a panic",
-                serde_json::json!({}),
-            );
-            INDEXING.clear_poison();
-            poisoned.into_inner()
-        }
-    };
-    let _active_owner = enter(Owner::Foreground, crate::app_lifecycle::shutting_down);
-    if crate::app_lifecycle::shutting_down() {
-        return Err(CLOSING.to_string());
-    }
-    let mut active = ACTIVE_RECHECK_ISSUE
-        .lock()
-        .map_err(|_| "issue-recheck state is unavailable".to_string())?;
-    *active = Some(issue_id);
-    drop(active);
-    let _active_recheck = RecheckClaim;
-    Ok(Some(work()))
-}
-
-pub fn active_recheck_issue() -> Result<Option<i64>, String> {
-    ACTIVE_RECHECK_ISSUE
-        .lock()
-        .map(|active| *active)
-        .map_err(|_| "issue-recheck state is unavailable".to_string())
 }
 
 pub fn running() -> bool {

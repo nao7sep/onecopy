@@ -16,7 +16,7 @@ Power loss, operating-system termination, exhausted process memory, and fatal op
 
 Technical context belongs in the application log. User-facing records use plain language and identify the attempted action, relevant source or destination when applicable, and a useful reason. Operation conflicts, full storage, unavailable sources, failed cleanup, worker failure, and whole-operation failure must not exist only as temporary interface text.
 
-A failure requiring user attention becomes a restart-persistent Issue. If OneCopy cannot save the promised Issue, it stops the affected work and presents the recording failure directly instead of continuing without a durable explanation.
+A failure requiring user attention becomes an Issue in the current app run, with a retained diagnostic record. If OneCopy cannot save the promised Issue, it stops the affected work and presents the recording failure directly instead of continuing without a durable explanation.
 
 Repeated occurrences of the same visible unresolved condition update one record with a count plus useful first and latest occurrence times rather than producing an unlimited stream of duplicates. A successful retry or recheck may resolve a recoverable condition. Dismissal and resolution remove a record from the live inbox, not from retained diagnostics: the record keeps its original context and the time and reason it left the inbox. Dismiss all applies to every live entry, including entries beyond the loaded page, without changing already archived records or notification history. A later genuinely failed attempt creates a new visible record rather than reviving or modifying the dismissed or resolved one. Reading or refreshing the inbox never constitutes a new attempt, and archived records do not participate in current recovery controls or work eligibility.
 
@@ -32,20 +32,17 @@ OneCopy uses three distinct interruption levels:
 
 Notifications belong to the main application frame rather than a transient viewer. Closing Quick View or switching between Quick View and fullscreen does not dismiss or lose a persistent notification. Notifications do not intercept the viewer's navigation or exit commands.
 
-An expected unsupported format or unavailable richer preview remains truthful inside the affected content surface and does not become an Active Issue merely because OneCopy has no suitable decoder. A failed user-requested action is recorded in Recent notification history. A condition that remains unresolved and requires permission, repair, retry, a tool, or another user action appears in Active. One failed action may therefore enter Recent while its unresolved cause remains in Active.
+An expected unsupported format or unavailable richer preview remains truthful inside the affected content surface and does not become an Issue merely because OneCopy has no suitable decoder. Failed requested actions and unresolved conditions share the same Issues inbox. Warning and error notifications retain their corresponding Issue even after the live notice is dismissed; informational notices do not create Issues. Reporting the same occurrence through both an Issue and a notice does not count it twice.
 
-Every warning or error notification is recorded immediately in Recent. A broad operation such as a source check may present one summary notification while retaining the individual affected paths and explanations in its Active details when the condition still needs attention.
+A broad operation such as a source check may present one summary notification while retaining the individual affected paths and explanations in Issues. Notification presentation and history remain independent of Issue dismissal.
 
 ## Issues
 
-The Issues surface has two distinct views:
-
-- `Active` contains unresolved conditions that need attention, retry, repair, permission, a required tool, or dismissal.
-- `Recent` contains failed requested actions and the history of timed and persistent notifications across ordinary restarts.
+The Issues surface is one current-run inbox, without separate Active and Recent views or Issue-owned Retry controls. Safe recovery remains with the feature that owns it: section recheck, source checking and source repair, Background Work Resume, Managed Tools, or explicit reload/restart guidance where in-process recovery cannot be safe. Dismissing diagnostics never resumes or retries work.
 
 Repeated background failures are combined with a count. Issue presentation must remain useful when many files fail; it summarizes the condition without hiding access to the affected files and technical context.
 
-Issues and Recent history are reconstructible library state rather than a permanent operation ledger. They follow the rebuild lifetime defined by `library-maintenance.md`.
+Retained Issue records and existing notification history are not deleted when the inbox is simplified or the app restarts. They are reconstructible library diagnostics rather than a permanent operation ledger and follow the explicit rebuild lifetime defined by `library-maintenance.md`.
 
 ## Background-worker failure
 
@@ -59,8 +56,10 @@ A drawing or rendering failure produces a visible reload or restart path instead
 
 Recovery failures are themselves contained and reported. Recovery does not retry recursively or without limit. When a fallback cannot restore a safe usable state, OneCopy stops the affected surface or operation and leaves the user a direct reload, restart, retry, or repair action.
 
-Every retryable failure retains a reachable recovery action at the surviving owner; reopening the surface or restarting the application is not the only way to rediscover it. A fatal startup halt names a safe next step, provides access to application logs when they can help, and retains a labelled exit. It offers in-process retry only when startup can be attempted again without bypassing or duplicating an already-admitted service.
+Every retryable failure identifies a reachable recovery boundary at the surviving owner; ordinary surface reopening never substitutes for explicit section recheck. A fatal startup halt names a safe next step, provides access to application logs when they can help, and retains a labelled exit. It offers in-process retry only when startup can be attempted again without bypassing or duplicating an already-admitted service.
 
 ## Restart behavior
 
-Active Issues survive ordinary application restart until their normal resolution or dismissal boundary. Recent notification history also survives ordinary restart, subject to its retention policy. Restart does not replay a failed or partial destructive operation. Feature owners re-evaluate current state before offering a retry, and completed durable steps remain completed.
+Restart begins a fresh Issues inbox and retains prior entries with an app-restart closure reason. Explicit section recheck similarly retires the section's failed preparation/information/enrichment entries as rechecked, not as successfully repaired, before admitting another attempt. A new failure creates a fresh visible entry; merely changing or reopening a section does neither. Attempt eligibility and the preservation of successful results are owned by `library-maintenance.md`.
+
+Restart and recheck never replay a failed or partial destructive operation. Notification history survives ordinary restart subject to its retention policy, and completed durable steps remain completed.

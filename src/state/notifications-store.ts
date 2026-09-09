@@ -160,7 +160,7 @@ export function reportActionFailure(
   });
 }
 
-/** Records a failed locally owned action in required Recent history without
+/** Records a failed locally owned action in Issues and diagnostic history without
  * publishing a second live persistent notice over its inline result. */
 export function recordActionFailure(
   kind: string,

@@ -156,7 +156,7 @@ A transcript belongs to the content identity, so byte-identical copies share one
 
 Video and audio queues share one coordinated heavy transcription engine and receive fair turns so neither medium starves the other. The coordinator never starts a second engine for a manual request.
 
-When automatic transcription is enabled for a medium, a pending selected item is prioritized automatically rather than receiving a redundant Transcribe command. When automatic transcription is disabled for that medium, `Transcribe this file` submits an intentional one-off request. A one-off request made while another transcript is running enters the same coordinator as the next manual-priority job. Failed work does not retry without limit and provides Retry.
+When automatic transcription is enabled for a medium, a pending selected item is prioritized automatically rather than receiving a redundant Transcribe command. When automatic transcription is disabled for that medium, `Transcribe this file` submits an intentional one-off request. A one-off request made while another transcript is running enters the same coordinator as the next manual-priority job. Failed work remains settled until an explicit attempt boundary; the Issues inbox does not own its retry controls.
 
 Pause and required-work preemption take effect at the transcription engine's safe cancellation boundary. Partial text is never published as complete. Preempted automatic work returns to its queue.
 

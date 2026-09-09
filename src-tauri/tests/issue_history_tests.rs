@@ -1,4 +1,4 @@
-use onecopy_lib::{derived_state, index_store, information_attempts, issue_recovery, queries};
+use onecopy_lib::{attempt_boundaries, index_store, information_attempts, queries};
 
 fn db() -> (tempfile::TempDir, rusqlite::Connection) {
     let root = tempfile::tempdir().unwrap();
@@ -84,24 +84,25 @@ fn dismiss_all_covers_the_full_live_inbox_and_preserves_other_history() {
 }
 
 #[test]
-fn archived_failures_do_not_supply_recovery_actions_or_reopen_work() {
+fn archived_failures_do_not_reopen_work() {
     let (_root, conn) = db();
     conn.execute_batch("INSERT INTO contents(hash, byte_size, kind, derived_at_utc) VALUES ('hash', 4, 'image', 'failed');
         INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash, hash_attempt_failed) VALUES ('/a.jpg', '/', 'a.jpg', 'image', 'hash', 1);").unwrap();
     for kind in [
         "decode-error",
         "resource-limit-preparation",
-        issue_recovery::DERIVED_WORKER_FAILED,
+        onecopy_lib::derived_work::WORKER_FAILED,
     ] {
         index_store::upsert_issue(&conn, Some("/a.jpg"), kind, "failed").unwrap();
     }
-    let rows = queries::issues(&conn, 10).unwrap().1;
     index_store::dismiss_issues(&conn, None).unwrap();
-    for row in rows {
-        assert!(!issue_recovery::issue_has_kind(&conn, row.id, &row.kind).unwrap());
-        assert!(!derived_state::retry_issue(&conn, row.id).unwrap());
-    }
-    assert!(!issue_recovery::contains_kind(&conn, issue_recovery::DERIVED_WORKER_FAILED).unwrap());
+    assert_eq!(queries::issues(&conn, 10).unwrap().0, 0);
+    assert_eq!(
+        conn.query_row("SELECT derived_at_utc FROM contents", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "failed"
+    );
     assert_eq!(
         conn.query_row("SELECT hash_attempt_failed FROM paths", [], |row| row
             .get::<_, i64>(0))
@@ -124,4 +125,133 @@ fn failed_dismissal_leaves_live_diagnostics_visible() {
     conn.execute_batch("CREATE TRIGGER reject_close BEFORE UPDATE OF closed_at_utc ON issues BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
     assert!(index_store::dismiss_issues(&conn, None).is_err());
     assert_eq!(queries::issues(&conn, 10).unwrap().0, 1);
+}
+
+#[test]
+fn only_startup_admission_begins_a_new_run_and_keeps_all_history() {
+    let (root, conn) = db();
+    index_store::upsert_issue(&conn, Some("/a.jpg"), "decode-error", "failed").unwrap();
+    let old_id = queries::issues(&conn, 10).unwrap().1[0].id;
+    drop(conn);
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    assert_eq!(
+        queries::issues(&conn, 10).unwrap().0,
+        1,
+        "connection opens are not app starts"
+    );
+    attempt_boundaries::begin_run(&conn).unwrap();
+    assert_eq!(queries::issues(&conn, 10).unwrap().0, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT closure FROM issues WHERE id = ?1",
+            [old_id],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "app-restart"
+    );
+    index_store::upsert_issue(&conn, Some("/a.jpg"), "decode-error", "failed again").unwrap();
+    assert_ne!(queries::issues(&conn, 10).unwrap().1[0].id, old_id);
+}
+
+fn section_fixture(conn: &rusqlite::Connection) {
+    conn.execute_batch("INSERT INTO contents(hash, byte_size, kind, derived_at_utc) VALUES
+        ('photo', 4, 'image', 'failed'), ('next-month', 4, 'image', 'failed'), ('video', 4, 'video', 'failed');
+        INSERT INTO paths(id, abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source, metadata_attempt_failed) VALUES
+        (1, '/same/photo.jpg', '/same', 'photo.jpg', 'image', 'photo', 10, 'filesystem', 1),
+        (2, '/same/next.jpg', '/same', 'next.jpg', 'image', 'next-month', 100, 'filesystem', 1),
+        (3, '/same/video.mp4', '/same', 'video.mp4', 'video', 'video', 10, 'filesystem', 1);
+        INSERT INTO paths(id, abs_path, dir_path, file_name, kind, companion_of, metadata_attempt_failed) VALUES
+        (4, '/same/photo.xmp', '/same', 'photo.xmp', 'companion', 1, 1);
+        INSERT INTO paths(id, abs_path, dir_path, file_name, kind, resolved_utc_ms, resolved_source, hash_attempt_failed) VALUES
+        (5, '/same/unidentified.jpg', '/same', 'unidentified.jpg', 'image', 10, 'filesystem', 1);").unwrap();
+    for (path, kind) in [
+        ("/same/photo.jpg", "decode-error"),
+        ("/same/photo.xmp", "metadata-read-error"),
+        ("/same/unidentified.jpg", "read-error"),
+        ("/same/next.jpg", "decode-error"),
+        ("/same/video.mp4", "transcription-error"),
+        ("/same/photo.jpg", "delete-error"),
+    ] {
+        index_store::upsert_issue(conn, Some(path), kind, "failed").unwrap();
+    }
+}
+
+#[test]
+fn section_attempt_retires_only_its_preparation_failures_and_never_claims_repair() {
+    let (_root, conn) = db();
+    section_fixture(&conn);
+    assert_eq!(
+        attempt_boundaries::recheck_section(&conn, "image", Some((0, 100))).unwrap(),
+        1
+    );
+    let live = queries::issues(&conn, 20).unwrap();
+    assert_eq!(live.0, 3);
+    assert!(live.1.iter().any(|row| row.kind == "delete-error"));
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE closure = 'rechecked'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        3
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT SUM(metadata_attempt_failed + hash_attempt_failed) FROM paths",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    index_store::upsert_issue(
+        &conn,
+        Some("/same/photo.jpg"),
+        "decode-error",
+        "failed again",
+    )
+    .unwrap();
+    let fresh = queries::issues(&conn, 20)
+        .unwrap()
+        .1
+        .into_iter()
+        .find(|row| row.path.as_deref() == Some("/same/photo.jpg") && row.kind == "decode-error")
+        .unwrap();
+    assert_eq!(fresh.occurrence_count, 1);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
+}
+
+#[test]
+fn failed_attempt_admission_rolls_back_diagnostic_retirement_and_all_receipts() {
+    let (_root, conn) = db();
+    section_fixture(&conn);
+    conn.execute_batch("CREATE TRIGGER reject_reset BEFORE UPDATE OF derived_at_utc ON contents BEGIN SELECT RAISE(ABORT, 'fixture reset failure'); END;").unwrap();
+    assert!(attempt_boundaries::recheck_section(&conn, "image", Some((0, 100))).is_err());
+    assert!(attempt_boundaries::begin_run(&conn).is_err());
+    assert_eq!(queries::issues(&conn, 20).unwrap().0, 6);
+    assert_eq!(
+        conn.query_row(
+            "SELECT SUM(metadata_attempt_failed + hash_attempt_failed) FROM paths",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        5
+    );
 }

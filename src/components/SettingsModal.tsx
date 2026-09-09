@@ -385,7 +385,7 @@ export default function SettingsModal({
       {confirmRebuild ? (
         <ConfirmDialog
           title="Rebuild library index?"
-          message="OneCopy will clear rebuildable library information, Active Issues, and Recent notification history, then check your source folders again. Your files, settings, managed tools, and choices will not change."
+          message="OneCopy will clear rebuildable library information and retained Issue and notification history, then check your source folders again. Your files, settings, managed tools, and choices will not change."
           confirmLabel="Rebuild"
           onConfirm={() => {
             setConfirmRebuild(false);
@@ -540,7 +540,7 @@ export default function SettingsModal({
           </h2>
           <Row
             label="Rebuild library index"
-            hint="Clears rebuildable library information, Active Issues, and Recent notification history, then checks every source folder again. Your files and choices are preserved."
+            hint="Clears rebuildable library information and retained Issue and notification history, then checks every source folder again. Your files and choices are preserved."
           >
             <Button
               disabled={dirty || saving || rebuilding}

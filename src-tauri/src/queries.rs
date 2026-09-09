@@ -1741,7 +1741,6 @@ pub struct IssueRow {
     pub first_seen_utc: String,
     pub last_seen_utc: String,
     pub occurrence_count: u64,
-    pub recovery: Option<crate::issue_recovery::IssueRecovery>,
 }
 
 const ISSUES_PAGE_SQL: &str =
@@ -1757,7 +1756,7 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
     let mut stmt = conn
         .prepare(ISSUES_PAGE_SQL)
         .map_err(|e| e.to_string())?;
-    let mut rows: Vec<IssueRow> = stmt
+    let rows: Vec<IssueRow> = stmt
         .query_map([limit], |r| {
             let path: String = r.get(1)?;
             // Issue rows are written straight from `abs_path`, and on Windows
@@ -1778,22 +1777,11 @@ pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), Str
                 first_seen_utc: r.get(4)?,
                 last_seen_utc: r.get(5)?,
                 occurrence_count: r.get::<_, i64>(6)?.max(1) as u64,
-                recovery: None,
             })
         })
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
-    let active_recheck_issue = crate::scan_runtime::active_recheck_issue()?;
-    for row in &mut rows {
-        row.recovery = crate::issue_recovery::projection(
-            conn,
-            row.id,
-            &row.kind,
-            row.path.is_some(),
-            active_recheck_issue,
-        )?;
-    }
     Ok((total.max(0) as u64, rows))
 }
 

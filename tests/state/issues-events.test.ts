@@ -12,23 +12,23 @@ import {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  useIssuesStore.setState({ loadRecent: vi.fn(async () => undefined) });
+  useIssuesStore.setState({ load: vi.fn(async () => undefined) });
   useAppShellStore.setState({ utilitySurface: null });
 });
 
-describe("issue history event ownership", () => {
-  it("refreshes an open Recent view for published and history-only notices", async () => {
+describe("issue event ownership", () => {
+  it("refreshes the status count when closed and the inbox when open", async () => {
     await installIssuesEventWiring();
-    const loadRecent = useIssuesStore.getState().loadRecent;
+    const load = useIssuesStore.getState().load;
 
     fireEvent("notification://published");
-    expect(loadRecent).not.toHaveBeenCalled();
+    expect(load).toHaveBeenCalledTimes(1);
 
     useAppShellStore.getState().openUtility("issues");
     fireEvent("notification://published");
     fireEvent("notification://recorded");
 
-    expect(loadRecent).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenCalledTimes(3);
     expect(listenerCount("notification://published")).toBe(1);
     expect(listenerCount("notification://recorded")).toBe(1);
   });

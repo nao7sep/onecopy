@@ -72,8 +72,8 @@ pub mod hashing;
 pub mod index_store;
 pub mod indexed_file;
 pub mod information_attempts;
+pub mod attempt_boundaries;
 mod instance_owner;
-pub mod issue_recovery;
 pub mod live_photo;
 pub mod logging;
 pub mod media_protocol;
@@ -1062,14 +1062,7 @@ fn rescan_section(
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
                 let bounds = queries::month_bounds(&month, display_timezone())?;
-                information_attempts::reset_section(&conn, &kind, bounds)?;
-                let reopened = derived_state::reset_failed_outputs(
-                    &conn,
-                    derived_state::FailedOutputScope::Section {
-                        kind: &kind,
-                        bounds,
-                    },
-                )?;
+                let reopened = attempt_boundaries::recheck_section(&conn, &kind, bounds)?;
                 if reopened > 0 {
                     // The index claim prevents automatic execution until this
                     // admitted recheck releases it, even if later stat fails.
@@ -1127,24 +1120,6 @@ fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, S
             Ok(json!({ "total": total, "rows": rows }))
         },
         |v| json!({ "total": v.get("total") }),
-    )
-}
-
-#[tauri::command(async)]
-fn get_recent_notifications(
-    app: AppHandle,
-    limit: Option<u32>,
-) -> Result<serde_json::Value, String> {
-    logging::boundary(
-        "get_recent_notifications",
-        json!({}),
-        || {
-            let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let (total, rows) = notifications::recent(&conn, limit.unwrap_or(500).min(500))?;
-            Ok(json!({ "total": total, "rows": rows }))
-        },
-        |value| json!({ "total": value.get("total") }),
     )
 }
 
@@ -1656,106 +1631,6 @@ fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
     )
 }
 
-#[tauri::command(async)]
-fn retry_issue(app: AppHandle, id: i64) -> Result<bool, String> {
-    logging::boundary(
-        "retry_issue",
-        json!({ "id": id }),
-        || {
-            let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            if issue_recovery::issue_has_kind(&conn, id, issue_recovery::DERIVED_WORKER_FAILED)? {
-                derived_work::start(app.clone())?;
-                derived_work::wake();
-                return Ok(true);
-            }
-            if let Some(class) = derived_state::take_resource_issue(&conn, id)? {
-                derived_runtime::set_paused(&app, Some(class.id()), false)?;
-                derived_work::wake();
-                return Ok(true);
-            }
-            let retried = derived_state::retry_issue(&conn, id)?;
-            if retried {
-                derived_work::wake();
-            }
-            Ok(retried)
-        },
-        |retried| json!({ "retried": retried }),
-    )
-}
-
-#[tauri::command(async)]
-fn retry_all_issues(app: AppHandle) -> Result<u64, String> {
-    logging::boundary(
-        "retry_all_issues",
-        json!({}),
-        || {
-            let data_root = paths::data_root(&app)?;
-            let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-            let restart_derived =
-                issue_recovery::contains_kind(&conn, issue_recovery::DERIVED_WORKER_FAILED)?;
-            let mut retried = derived_state::retry_all(&conn)?;
-            for class in derived_state::take_all_resource_issues(&conn)? {
-                derived_runtime::set_paused(&app, Some(class.id()), false)?;
-                retried += 1;
-            }
-            if restart_derived {
-                derived_work::start(app.clone())?;
-                retried += 1;
-            }
-            if retried > 0 {
-                derived_work::wake();
-            }
-            Ok(retried)
-        },
-        |retried| json!({ "retried": retried }),
-    )
-}
-
-#[tauri::command(async)]
-fn recheck_issue(app: AppHandle, id: i64) -> Result<issue_recovery::RecheckResult, String> {
-    logging::boundary(
-        "recheck_issue",
-        json!({ "id": id }),
-        || {
-            let data_root = paths::data_root(&app)?;
-            let loaded = storage::load_app_data(&app)?;
-            let settings = scanner::settings_from_config(
-                loaded.config.as_ref(),
-                &data_root,
-                chrono::Utc::now().timestamp_millis(),
-            );
-            let db_file = data_root.join(storage::INDEX_DB_FILE_NAME);
-            let outcome = scan_runtime::try_with_recheck_claim(id, || {
-                let conn = index_store::open(&db_file)?;
-                scanner::recheck_filesystem_issue(&conn, id, &settings.lists)
-            })?;
-            let Some(outcome) = outcome else {
-                return Ok(issue_recovery::RecheckResult::Busy);
-            };
-            let include_walk = match outcome? {
-                scanner::RecheckOutcome::Resolved { include_walk } => include_walk,
-                scanner::RecheckOutcome::NotRecoverable => {
-                    return Ok(issue_recovery::RecheckResult::NotRecoverable)
-                }
-                scanner::RecheckOutcome::StillFailing => {
-                    return Ok(issue_recovery::RecheckResult::StillFailing)
-                }
-            };
-            // Recheck itself is one bounded path/directory probe. Any durable
-            // index debt it reveals resumes through the one existing worker,
-            // with its normal cancellation and progress surface.
-            if include_walk {
-                let _ = source_check_runtime::start(app.clone())?;
-            } else {
-                file_information_runtime::wake(app.clone());
-            }
-            Ok(issue_recovery::RecheckResult::Started)
-        },
-        |result| json!({ "result": result }),
-    )
-}
-
 // Every managed dependency's presence + facts + derived status, in display
 // order — the Managed tools window renders one row per entry, and the ffmpeg
 // chip reads its entry out of the same list.
@@ -2212,7 +2087,6 @@ pub fn run() {
             re_resolve_all,
             rescan_section,
             get_issues,
-            get_recent_notifications,
             get_active_notifications,
             publish_notification,
             record_recent_notification,
@@ -2227,9 +2101,6 @@ pub fn run() {
             trash_empty_cancel,
             dismiss_issue,
             dismiss_all_issues,
-            retry_issue,
-            retry_all_issues,
-            recheck_issue,
             binaries_state,
             binaries_install,
             binaries_cancel,

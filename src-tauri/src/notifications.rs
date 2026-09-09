@@ -3,7 +3,7 @@
 //!
 //! Recent history belongs in the reconstructible index database. Live notices
 //! do not: they are presentation state for this process and disappear at
-//! restart, while their history remains queryable in Issues → Recent.
+//! restart, while diagnostic history is retained independently of the inbox.
 
 use std::sync::{LazyLock, Mutex};
 
@@ -110,6 +110,11 @@ fn record_recent(
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
+    if request.level != NotificationLevel::Info {
+        crate::index_store::upsert_issue(
+            &transaction, request.path.as_deref(), &request.kind, &request.message,
+        )?;
+    }
     let record = transaction
         .query_row(
             "INSERT INTO recent_notifications
@@ -183,18 +188,12 @@ fn record_delivery_failure(app: &AppHandle, event: &str, error: &str) -> Result<
     );
     let root = crate::paths::data_root(app)?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-    crate::index_store::upsert_issue(
-        &conn,
-        Some(event),
-        "event-delivery-failed",
-        error,
-    )?;
     let fallback = NotificationRequest {
         kind: "event-delivery-failed".to_string(),
         path: Some(event.to_string()),
         level: NotificationLevel::Error,
         presentation: NotificationPresentation::Persistent,
-        message: error.to_string(),
+        message: "OneCopy could not update part of the interface. Reload the window before continuing.".to_string(),
     };
     let _ = record_recent(&conn, &fallback)?;
     Ok(())
@@ -320,6 +319,46 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(second.occurrence_count, 2);
         assert_eq!(recent(&conn, 500).unwrap().0, 1);
+        let issues = crate::queries::issues(&conn, 10).unwrap();
+        assert_eq!(issues.0, 1);
+        assert_eq!(issues.1[0].occurrence_count, 2, "one occurrence per publication, not one per presentation channel");
+    }
+
+    #[test]
+    fn informational_notices_are_not_issues_and_dismissal_does_not_erase_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let conn = crate::index_store::open(&directory.path().join("index.sqlite3")).unwrap();
+        let mut request = NotificationRequest {
+            kind: "operation".into(), path: None, level: NotificationLevel::Info,
+            presentation: NotificationPresentation::Timed, message: "Source folders checked.".into(),
+        };
+        record_recent(&conn, &request).unwrap();
+        assert_eq!(crate::queries::issues(&conn, 10).unwrap().0, 0);
+        request.level = NotificationLevel::Warning;
+        request.message = "Some files could not be checked.".into();
+        record_recent(&conn, &request).unwrap();
+        let old_id = crate::queries::issues(&conn, 10).unwrap().1[0].id;
+        crate::index_store::dismiss_issues(&conn, None).unwrap();
+        record_recent(&conn, &request).unwrap();
+        let issues = crate::queries::issues(&conn, 10).unwrap();
+        assert_ne!(issues.1[0].id, old_id);
+        assert_eq!(issues.1[0].occurrence_count, 1);
+        assert_eq!(recent(&conn, 10).unwrap().0, 2);
+    }
+
+    #[test]
+    fn notification_and_issue_recording_fail_as_one_transaction() {
+        for blocked in ["issues", "recent_notifications"] {
+            let directory = tempfile::tempdir().unwrap();
+            let conn = crate::index_store::open(&directory.path().join("index.sqlite3")).unwrap();
+            conn.execute_batch(&format!("CREATE TRIGGER reject_insert BEFORE INSERT ON {blocked} BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;")).unwrap();
+            assert!(record_recent(&conn, &NotificationRequest {
+                kind: "failed".into(), path: None, level: NotificationLevel::Error,
+                presentation: NotificationPresentation::Persistent, message: "Failed action.".into(),
+            }).is_err());
+            assert_eq!(crate::queries::issues(&conn, 10).unwrap().0, 0);
+            assert_eq!(recent(&conn, 10).unwrap().0, 0);
+        }
     }
 
     #[test]

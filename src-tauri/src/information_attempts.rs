@@ -80,6 +80,24 @@ pub fn reset_section(
     kind: &str,
     bounds: Option<(i64, i64)>,
 ) -> Result<u64, String> {
+    let members = section_paths(kind, bounds)?;
+    conn.execute(
+        &format!(
+            "UPDATE paths SET hash_attempt_failed = 0, metadata_attempt_failed = 0
+         WHERE (hash_attempt_failed = 1 OR metadata_attempt_failed = 1)
+           AND id IN ({members})"
+        ),
+        params![
+            kind,
+            bounds.map(|(start, _)| start),
+            bounds.map(|(_, end)| end)
+        ],
+    )
+    .map(|count| count as u64)
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn section_paths(kind: &str, bounds: Option<(i64, i64)>) -> Result<String, String> {
     if !matches!(kind, "image" | "video" | "other") {
         return Err(format!("bad section kind: {kind}"));
     }
@@ -91,17 +109,15 @@ pub fn reset_section(
     } else {
         "resolved_utc_ms IS NULL AND ?2 IS NULL AND ?3 IS NULL"
     };
-    conn.execute(&format!(
+    Ok(format!(
         "WITH section_contents AS (
            SELECT content_hash FROM logical_contents WHERE kind = ?1 AND {dates}
          )
-         UPDATE paths SET hash_attempt_failed = 0, metadata_attempt_failed = 0
-         WHERE (hash_attempt_failed = 1 OR metadata_attempt_failed = 1) AND missing = 0
+         SELECT id FROM paths WHERE missing = 0
            AND (content_hash IN (SELECT content_hash FROM section_contents)
                 OR companion_of IN (SELECT id FROM paths WHERE content_hash IN (SELECT content_hash FROM section_contents))
                 OR (content_hash IS NULL AND companion_of IS NULL
                     AND CASE WHEN kind IN ('image', 'video') THEN kind ELSE 'other' END = ?1
                     AND {dates}))"
-    ), params![kind, bounds.map(|(start, _)| start), bounds.map(|(_, end)| end)])
-        .map(|count| count as u64).map_err(|error| error.to_string())
+    ))
 }

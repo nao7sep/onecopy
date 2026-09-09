@@ -117,11 +117,7 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     )?;
     // Once per process, before any executor or window-driven request exists.
     // Opening another database connection or section must never reset failure.
-    crate::information_attempts::reset_library(&conn)?;
-    crate::derived_state::reset_failed_outputs(
-        &conn,
-        crate::derived_state::FailedOutputScope::Library,
-    )?;
+    crate::attempt_boundaries::begin_run(&conn)?;
     drop(conn);
 
     // Download staging is crash debris by definition: wipe at launch.
@@ -362,7 +358,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
             },
             RuntimeService {
                 name: "derived work",
-                issue_kind: crate::issue_recovery::DERIVED_WORKER_FAILED,
+                issue_kind: crate::derived_work::WORKER_FAILED,
                 start: Box::new(move || crate::derived_work::start(derived_handle).map(|_| ())),
             },
             cache_service,

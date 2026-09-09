@@ -28,6 +28,8 @@ use crate::derived_state::WorkClass;
 use crate::logging;
 use crate::preview::CachePaths;
 
+pub const WORKER_FAILED: &str = "derived-worker-failed";
+
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static AUTOMATIC_ADMITTED: AtomicBool = AtomicBool::new(false);
@@ -481,7 +483,7 @@ fn derived_worker(app: AppHandle) {
     }
     let _ = crate::failure_runtime::report(
         &app,
-        crate::issue_recovery::DERIVED_WORKER_FAILED,
+        WORKER_FAILED,
         None,
         &failure,
     );
@@ -549,7 +551,7 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
                 if !cleared_previous_failure {
                     crate::failure_runtime::clear(
                         app,
-                        crate::issue_recovery::DERIVED_WORKER_FAILED,
+                        WORKER_FAILED,
                         None,
                     )?;
                     cleared_previous_failure = true;

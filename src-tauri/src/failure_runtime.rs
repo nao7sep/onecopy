@@ -1,7 +1,7 @@
 //! Shared last-resort reporting for failures that need user attention.
 //!
 //! The application log keeps technical history. The Issues table keeps one
-//! restart-persistent current condition per `(kind, path)`. If that durable
+//! current-run condition per `(kind, path)` plus retained history. If that durable
 //! record cannot be written, the affected owner must stop and this module
 //! attempts a direct interface event instead of pretending the failure was
 //! safely recorded.
@@ -11,7 +11,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
 /// User-facing failure copy is owned here, where arbitrary runtime diagnostics
-/// cross into Issues, Recent, and the direct last-resort surface. Callers keep
+/// cross into Issues, notifications, and the direct last-resort surface. Callers keep
 /// supplying the complete diagnostic for the log; no exception prose is
 /// persisted as presentation.
 fn presentation_for(kind: &str) -> &'static str {
@@ -48,8 +48,6 @@ fn presentation_for(kind: &str) -> &'static str {
             "OneCopy could not update part of the interface. Reload the window before continuing.",
         "interface-failed" =>
             "This window could not finish an interface operation. Reload it before continuing.",
-        "issue-recovery-failed" =>
-            "OneCopy could not complete the selected recovery. Review Issues, then try again.",
         _ => "A OneCopy background operation stopped unexpectedly. Restart OneCopy before continuing.",
     }
 }
@@ -61,7 +59,10 @@ pub fn report(
     message: &str,
 ) -> Result<(), String> {
     let presentation = presentation_for(kind);
-    record_active(app, kind, path, message)?;
+    crate::logging::error(
+        "application failure",
+        json!({ "kind": kind, "path": path, "error": { "message": message } }),
+    );
     crate::notifications::publish(
         app,
         crate::notifications::NotificationRequest {
@@ -72,12 +73,12 @@ pub fn report(
             message: presentation.to_string(),
         },
     )
-    .map_err(|error| present_unrecorded(app, kind, path, message, "Recent", &error))?;
+    .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
     Ok(())
 }
 
 /// Records one unresolved condition without creating a per-input notification.
-/// Large operations use this for detailed Active rows and publish one summary
+/// Large operations use this for detailed Issue rows and publish one summary
 /// through their owning result surface.
 pub fn record_active(
     app: &AppHandle,
@@ -104,22 +105,6 @@ pub fn record_active(
             "failure notification event failed",
             json!({ "error": { "message": &emit_error } }),
         );
-        crate::index_store::upsert_issue(
-            &conn,
-            Some("failure://reported"),
-            "event-delivery-failed",
-            presentation_for("event-delivery-failed"),
-        )
-        .map_err(|save_error| {
-            present_unrecorded(
-                app,
-                "event-delivery-failed",
-                Some("failure://reported"),
-                &emit_error,
-                "Issues",
-                &save_error,
-            )
-        })?;
         crate::notifications::record_history(
             app,
             crate::notifications::NotificationRequest {
@@ -136,7 +121,7 @@ pub fn record_active(
                 "event-delivery-failed",
                 Some("failure://reported"),
                 &emit_error,
-                "Recent",
+                "Issues",
                 &save_error,
             )
         })?;
