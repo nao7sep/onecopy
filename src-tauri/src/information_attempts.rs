@@ -111,12 +111,12 @@ pub(crate) fn section_paths(kind: &str, bounds: Option<(i64, i64)>) -> Result<St
     };
     Ok(format!(
         "WITH section_contents AS (
-           SELECT content_hash FROM logical_contents WHERE kind = ?1 AND {dates}
+           SELECT content_hash FROM review_contents WHERE kind = ?1 AND {dates}
          )
          SELECT id FROM paths WHERE missing = 0
            AND (content_hash IN (SELECT content_hash FROM section_contents)
                 OR companion_of IN (SELECT id FROM paths WHERE content_hash IN (SELECT content_hash FROM section_contents))
-                OR (content_hash IS NULL AND companion_of IS NULL
+                OR (content_hash IS NULL AND companion_of IS NULL AND review_visible = 1
                     AND CASE WHEN kind IN ('image', 'video') THEN kind ELSE 'other' END = ?1
                     AND {dates}))"
     ))

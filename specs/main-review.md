@@ -30,6 +30,8 @@ Every restored or recovered anchor is scrolled into view. Restoration and disapp
 
 Sorting, refreshed information, and newly discovered items preserve surviving selection and anchor by logical identity. Reordering and insertion never steal selection.
 
+Review eligibility and destination filtering follow `library-visibility.md`. An item becoming hidden-only uses the same recovery as a disappearing item.
+
 ## Diagnostic navigation
 
 A diagnostic file link resolves the current indexed file within configured sources to its logical Main item; an attached companion resolves to its owning main item. Reveal opens the current section, exclusively selects and anchors that item, scrolls it into view with surrounding context, and returns command focus to Main. Resolution and bounded section loading preserve the prior Main state until the target is available; a newer navigation intent or a closed requesting surface supersedes pending work.

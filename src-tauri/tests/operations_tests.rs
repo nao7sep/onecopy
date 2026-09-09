@@ -95,6 +95,92 @@ fn scan(f: &Fixture) {
 }
 
 #[test]
+fn visibility_never_exempts_identical_hidden_copies_from_cleanup() {
+    for action in ["copy", "move", "trash", "permanent"] {
+        let f = fixture("hidden-copy-cleanup");
+        for name in ["photo.jpg", ".photo.jpg"] {
+            std::fs::write(f.root.join(name), b"same-image-bytes").unwrap();
+        }
+        std::fs::write(f.root.join(".different.jpg"), b"different-image").unwrap();
+        scan(&f);
+        let hash: String = f.conn.query_row("SELECT content_hash FROM paths WHERE file_name = 'photo.jpg'", [], |row| row.get(0)).unwrap();
+        let item = ItemIdentity { hash: Some(hash.clone()), path_id: None };
+        let detail = onecopy_lib::queries::item_detail(&f.conn, Some(&hash), None).unwrap();
+        assert_eq!(detail.file_name, "photo.jpg");
+        assert_eq!(detail.copy_paths.len(), 2);
+        if matches!(action, "copy" | "move") {
+            let dest = f._dir.path().join("destination");
+            std::fs::create_dir(&dest).unwrap();
+            let outcome = move_batch(&f.conn, &f.app_root, &f.cache, &[item], &dest,
+                if action == "copy" { MoveOutMode::CopyKeepAll } else { MoveOutMode::MoveTrashRest }, &|| false, |_| {}).unwrap();
+            assert_eq!(outcome.exported, 1);
+            assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"same-image-bytes");
+            assert!(!dest.join(".photo.jpg").exists());
+            assert_eq!(outcome.post_action.deleted_files, if action == "copy" { 0 } else { 2 });
+        } else {
+            let outcome = delete_item(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash),
+                if action == "trash" { DeleteMode::Trash } else { DeleteMode::Permanent }).unwrap();
+            assert_eq!(outcome.deleted_files, 2);
+            assert_eq!(outcome.failed_files, 0);
+        }
+        for name in ["photo.jpg", ".photo.jpg"] { assert_eq!(f.root.join(name).exists(), action == "copy", "{action}: {name}"); }
+        assert_eq!(std::fs::read(f.root.join(".different.jpg")).unwrap(), b"different-image");
+    }
+}
+
+#[test]
+fn visibility_changes_before_conflict_acceptance_require_fresh_review() {
+    let f = fixture("visibility-frozen-delivery");
+    for name in ["photo.jpg", ".photo.jpg"] { std::fs::write(f.root.join(name), b"same-image").unwrap(); }
+    scan(&f);
+    let hash: String = f.conn.query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| row.get(0)).unwrap();
+    let items = [ItemIdentity { hash: Some(hash), path_id: None }];
+    let dest = f._dir.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::write(dest.join("photo.jpg"), b"old-image").unwrap();
+    let review = move_batch(&f.conn, &f.app_root, &f.cache, &items, &dest, MoveOutMode::MoveTrashRest, &|| false, |_| {}).unwrap();
+    assert!(review.requires_conflict_choice);
+    onecopy_lib::visibility_index::apply_policy(&f.conn,
+        &onecopy_lib::visibility::Policy::from_config(&serde_json::json!({"hideDotNames": false})).unwrap()).unwrap();
+    std::fs::write(f.root.join("late.jpg"), b"same-image").unwrap();
+    scan(&f);
+    let result = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &dest, MoveOutMode::MoveTrashRest,
+        Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(), DestinationRenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
+    assert!(result.plan_changed);
+    assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"old-image");
+    assert!(!dest.join(".photo.jpg").exists());
+    assert_eq!(result.post_action.deleted_files, 0);
+    assert!(f.root.join("photo.jpg").exists());
+    assert!(f.root.join(".photo.jpg").exists());
+    assert!(f.root.join("late.jpg").exists());
+}
+
+#[test]
+fn visibility_changes_do_not_rename_or_broaden_an_accepted_delivery() {
+    let f = fixture("visibility-accepted-delivery");
+    for name in ["photo.jpg", ".photo.jpg"] { std::fs::write(f.root.join(name), b"same-image").unwrap(); }
+    scan(&f);
+    let hash: String = f.conn.query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| row.get(0)).unwrap();
+    let items = [ItemIdentity { hash: Some(hash), path_id: None }];
+    let dest = f._dir.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+    let mut changed = false;
+    let result = move_batch(&f.conn, &f.app_root, &f.cache, &items, &dest, MoveOutMode::MoveTrashRest, &|| false, |progress| {
+        if changed || !matches!(progress, MoveBatchProgress::Delivering { .. }) { return; }
+        changed = true;
+        onecopy_lib::visibility_index::apply_policy(&f.conn,
+            &onecopy_lib::visibility::Policy::from_config(&serde_json::json!({"hideDotNames": false})).unwrap()).unwrap();
+        std::fs::write(f.root.join("late.jpg"), b"same-image").unwrap();
+        scan(&f);
+    }).unwrap();
+    assert!(changed);
+    assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"same-image");
+    assert!(!dest.join(".photo.jpg").exists());
+    assert_eq!(result.post_action.deleted_files, 2);
+    assert!(f.root.join("late.jpg").exists());
+}
+
+#[test]
 fn deleting_a_logical_item_trashes_every_copy_and_companion() {
     let f = fixture("cascade");
     for sub in ["a", "b"] {

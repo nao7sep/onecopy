@@ -17,6 +17,8 @@ Similarity grouping and the best-shot ordering are deliberately best-effort — 
 
 ## Deleted files
 
+Visibility filters in Settings hide items from review, not from duplicate accounting. A hidden byte-identical copy is still included when you move or delete its visible counterpart; a different hidden file is not. Visible copies supply displayed and exported filenames, while dates and copy counts still use every known copy. Changing a filter never deletes a file.
+
 Recoverable deletion in OneCopy moves a file to `.onecopy-trash` beneath its most-specific configured source root. Files displaced by an approved destination overwrite use the selected configured destination root. This keeps the file inside the same permission and filesystem boundary rather than sharing deleted files at a drive or application-home level. Inside, each UTC day gets a folder holding that day's deletions flat, plus a `manifest.jsonl` recording every file's original path, stored name, and content hash.
 
 OneCopy never empties or prunes this storage on its own. The *Deleted files…* window lists the location for each configured root, shows file counts and sizes, creates and reveals an empty location on request, and can permanently empty one only after confirmation. Recovery is manual in Finder or Explorer; OneCopy does not provide Restore or Undo. Deleting one of these folders yourself is also safe because the app never depends on its contents to replay or reverse an operation.

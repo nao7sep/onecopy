@@ -8,7 +8,7 @@ Comparison is a temporary decision workspace for deciding which images to retain
 
 Main Enter or the visible Compare action may open Comparison only when the complete Main selection resolves to one live similar-image group. Comparison opens the complete group, even when Main selected only part of it. If fewer than two comparable live members remain, OneCopy stays in Main and explains that there is nothing to compare.
 
-Membership freezes when the session opens. Images discovered or automatically regrouped later wait for the next session. Missing images leave the active session.
+Membership freezes when the session opens. Images discovered or automatically regrouped later wait for the next session. Missing images and those losing review eligibility under `library-visibility.md` leave the active session.
 
 OneCopy never restores an unfinished Comparison session, its page, active card, or keep marks after restart.
 

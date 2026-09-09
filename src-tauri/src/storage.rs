@@ -46,6 +46,10 @@ pub const CACHE_DIR_NAME: &str = "cache";
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DefaultConfig {
+    pub ignored_file_names: Vec<String>,
+    pub hide_dot_names: bool,
+    pub hide_hidden_attributes: bool,
+    pub hide_system_attributes: bool,
     /// IANA name applied when interpreting naive local timestamps (EXIF without
     /// an offset). Seeded from the system timezone; the wizard owns it after.
     pub default_timezone: String,
@@ -131,6 +135,10 @@ pub struct DefaultConfig {
 impl Default for DefaultConfig {
     fn default() -> Self {
         DefaultConfig {
+            ignored_file_names: vec![".DS_Store".into(), "Thumbs.db".into(), "desktop.ini".into()],
+            hide_dot_names: true,
+            hide_hidden_attributes: true,
+            hide_system_attributes: true,
             default_timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string()),
             good_range_start_year: 1995,
             similarity_max_gap_seconds: 90,

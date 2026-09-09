@@ -6,6 +6,9 @@ use onecopy_lib::storage;
 use onecopy_lib::viewer_sequence;
 use rusqlite::{params, Connection};
 
+// Both fixtures exercise the application's one process-wide viewer session.
+static VIEWER_SESSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn projection() -> queries::ItemProjectionContext {
     queries::ItemProjectionContext {
         capabilities: derived_state::WorkCapabilities {
@@ -42,7 +45,29 @@ fn seed_image(conn: &Connection, index: u64) {
 }
 
 #[test]
+fn filter_changes_prune_a_frozen_sequence_without_adding_revealed_members() {
+    let _session = VIEWER_SESSION.lock().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let index_path = root.path().join(storage::INDEX_DB_FILE_NAME);
+    let conn = index_store::open(&index_path).unwrap();
+    for index in 1..=3 { seed_image(&conn, index); }
+    let policy = |names| onecopy_lib::visibility::Policy::from_config(&serde_json::json!({"ignoredFileNames": names})).unwrap();
+    onecopy_lib::visibility_index::apply_policy(&conn, &policy(vec!["3.jpg"])).unwrap();
+    let anchor = queries::SectionIdentity { hash: Some("h1".into()), path_id: 1 };
+    let snapshot = viewer_sequence::start(root.path(), &conn, "image", "2026-01", Tz::UTC,
+        queries::SectionSort { order: queries::SectionSortOrder::Name, desc: false },
+        vec![queries::PositionedSectionIdentity { hash: Some("h1".into()), path_id: 1, index: 0 }], &anchor, projection()).unwrap();
+    assert_eq!(snapshot.length, 2);
+    onecopy_lib::visibility_index::apply_policy(&conn, &policy(vec!["1.jpg"])).unwrap();
+    let next = viewer_sequence::reconcile(&snapshot.token, &index_path, &conn, projection()).unwrap().unwrap();
+    assert_eq!(next.length, 1);
+    assert_eq!(next.item.hash.as_deref(), Some("h2"));
+    viewer_sequence::close(Some(&snapshot.token)).unwrap();
+}
+
+#[test]
 fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
+    let _session = VIEWER_SESSION.lock().unwrap();
     let root = tempfile::tempdir().unwrap();
     let index_path = root.path().join(storage::INDEX_DB_FILE_NAME);
     let conn = index_store::open(&index_path).unwrap();

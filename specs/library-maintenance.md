@@ -46,6 +46,8 @@ An input-local identity-read or metadata-read failure settles that attempt witho
 
 ## Required preparation
 
+Inventory and file-information completion include hidden source copies under `library-visibility.md`. Presentation preparation and optional enrichment target review-eligible logical items; hiding an item retains its completed results rather than creating work to remove them.
+
 Required work is work without which OneCopy's library or review surfaces are incomplete. Computational cost does not make it optional, and neither the first-launch wizard nor Settings provides a durable switch that disables it.
 
 Required work comprises:

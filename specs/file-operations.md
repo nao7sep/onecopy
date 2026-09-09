@@ -6,6 +6,8 @@ This contract begins when an owning review surface submits an accepted operation
 
 Confirmation freezes the complete batch from the physical copies, companion relationships, representative filenames, destinations, operation modes, and order OneCopy currently knows. Later discovery or background reconciliation does not broaden or reinterpret that batch. Missing preparation or incomplete optional information does not block an operation; OneCopy acts on the known files and relationships the user confirmed.
 
+Visibility under `library-visibility.md` does not exempt known physical copies or locally paired companions from an accepted logical-item operation. Copy preserves them, Move handles covered sources, and deletion handles every planned copy as defined below; hidden non-identical items are not added to that scope.
+
 File operations remain available while background work runs. Background work yields after its current bounded unit so the foreground operation can proceed. Only one file-changing operation is active at a time. A second mutation or library-index rebuild is refused with an explanation rather than queued against stale state.
 
 ## Current-file boundary

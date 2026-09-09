@@ -31,6 +31,7 @@ export interface DestinationResult {
 
 let nextListingGeneration = 0;
 const listingGenerations = new Map<string, number>();
+let visibilityGeneration = 0;
 
 interface DestinationsState {
   roots: string[];
@@ -74,6 +75,7 @@ interface DestinationsState {
    * this on mount and when the app window regains focus, so a folder created
    * in Finder/Explorer appears without a restart. */
   refreshExpanded: () => Promise<void>;
+  reconcileVisibility: () => Promise<void>;
   createFolder: (parent: string, name: string) => Promise<void>;
   deleteFolder: (path: string, parent: string) => Promise<void>;
 }
@@ -107,6 +109,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
 
   init: (config) => {
     const roots = stringArrayField(config, "destinationRoots");
+    if (JSON.stringify(roots) !== JSON.stringify(get().roots)) visibilityGeneration++;
     set({ roots });
   },
 
@@ -174,6 +177,29 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     for (const path of get().expanded) {
       await get().refreshNode(path);
     }
+  },
+
+  reconcileVisibility: async () => {
+    const generation = ++visibilityGeneration;
+    const before = get();
+    listingGenerations.clear();
+    set({ children: {}, listing: {}, emptiness: {}, expanded: new Set(), activePath: null });
+    const reachable = new Set(before.roots);
+    const visit = async (path: string) => {
+      if (generation !== visibilityGeneration) return;
+      await get().refreshNode(path);
+      if (generation !== visibilityGeneration) return;
+      for (const child of get().children[path] ?? []) {
+        reachable.add(child.path);
+        if (before.expanded.has(child.path) || before.children[child.path]) await visit(child.path);
+      }
+    };
+    for (const root of before.roots) await visit(root);
+    if (generation !== visibilityGeneration) return;
+    set({
+      expanded: new Set([...get().expanded, ...[...before.expanded].filter((path) => reachable.has(path))]),
+      activePath: get().activePath ?? (before.activePath !== null && reachable.has(before.activePath) ? before.activePath : null),
+    });
   },
 
   createFolder: async (parent, name) => {

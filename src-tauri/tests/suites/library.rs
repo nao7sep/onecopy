@@ -38,3 +38,5 @@ mod timestamps_tests;
 mod viewer_sequence_tests;
 #[path = "../watcher_tests.rs"]
 mod watcher_tests;
+#[path = "../visibility_tests.rs"]
+mod visibility_tests;

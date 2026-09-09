@@ -1364,7 +1364,7 @@ fn collect_move_unit(
                 conn,
                 "SELECT id, abs_path, content_hash, size FROM paths \
                  WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL \
-                 ORDER BY resolved_utc_ms IS NULL, resolved_utc_ms, \
+                 ORDER BY review_visible DESC, resolved_utc_ms IS NULL, resolved_utc_ms, \
                           abs_path COLLATE onecopy_nocase, abs_path",
                 params![hash],
             )?,
@@ -1374,7 +1374,7 @@ fn collect_move_unit(
                  FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                  WHERE pri.content_hash = ?1 AND pri.missing = 0 \
                    AND pri.companion_of IS NULL AND comp.missing = 0 \
-                 ORDER BY pri.resolved_utc_ms IS NULL, pri.resolved_utc_ms, \
+                 ORDER BY pri.review_visible DESC, pri.resolved_utc_ms IS NULL, pri.resolved_utc_ms, \
                           pri.abs_path COLLATE onecopy_nocase, pri.abs_path, \
                           comp.abs_path COLLATE onecopy_nocase, comp.abs_path",
                 params![hash],

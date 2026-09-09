@@ -9,6 +9,8 @@ pub fn begin_run(conn: &Connection) -> Result<(), String> {
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
     index_store::begin_issue_run(&transaction)?;
+    transaction.execute("UPDATE paths SET visibility_checked = 0 WHERE visibility_checked = -1", [])
+        .map_err(|error| error.to_string())?;
     information_attempts::reset_library(&transaction)?;
     derived_state::reset_failed_outputs_in_transaction(
         &transaction,

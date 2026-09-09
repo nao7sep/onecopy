@@ -30,7 +30,7 @@
 
 - From Main, Space opens Quick View and `F` opens true fullscreen. No selection prevents entry with a plain explanation.
 - One selected item freezes the whole current section in displayed order and starts at the anchor. Multiple selected items freeze only that selected subset in displayed order and start at the anchor.
-- Later discovery, sorting, regrouping, and section changes do not rewrite the active sequence. External disappearance and successful current-item deletion remove only the affected item from that frozen sequence.
+- Later discovery, sorting, regrouping, and section changes do not rewrite the active sequence. External disappearance, loss of review eligibility under `library-visibility.md`, and successful current-item deletion remove only the affected item from that frozen sequence.
 - Whole-section navigation makes the viewed item Main's exclusive selection and anchor. Selected-subset navigation preserves the selected set and moves only its anchor.
 - Main keeps the current anchor visible behind the transient presentation, and persistent Preview follows it without becoming another playback owner.
 - The transient session never restores after restart.

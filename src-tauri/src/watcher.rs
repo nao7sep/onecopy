@@ -51,6 +51,7 @@ pub fn restat_dir(
     conn: &rusqlite::Connection,
     dir: &Path,
     lists: &ScanLists,
+    source_roots: &[String],
 ) -> Result<u64, String> {
     if crate::trash::is_trash_path(dir) {
         return Ok(0);
@@ -60,7 +61,11 @@ pub fn restat_dir(
     // cannot turn one physical file into a second database row.
     let dir = crate::winpath::for_fs(dir);
     let dir = dir.as_ref();
-    let mut changed = 0u64;
+    let roots = crate::visibility_index::source_root_spellings(conn, source_roots)?;
+    let root = crate::visibility_index::root_for(&roots, dir).ok_or("Changed directory is outside configured sources")?;
+    let mut visibility_directories = crate::visibility_index::DirectoryFacts::default();
+    let inherited = visibility_directories.refresh(conn, &root, dir)?;
+    let mut changed = visibility_directories.changed_files as u64;
     let mut present: HashSet<String> = HashSet::new();
 
     let entries = match std::fs::read_dir(dir) {
@@ -109,7 +114,7 @@ pub fn restat_dir(
             continue;
         }
         present.insert(abs.clone());
-        match scanner::upsert_file(conn, &path, lists) {
+        match scanner::upsert_file(conn, &path, lists, inherited) {
             Ok(scanner::Upsert::Unchanged) => {}
             Ok(_) => changed += 1,
             Err(error) => {
@@ -500,7 +505,7 @@ fn process_dirty_claimed(
         if !owns_generation(generation) {
             return Err(scanner::CANCELLED.to_string());
         }
-        changed += restat_dir(&conn, dir, &settings.lists)?;
+        changed += restat_dir(&conn, dir, &settings.lists, &settings.source_dirs)?;
     }
     if !owns_generation(generation) {
         return Err(scanner::CANCELLED.to_string());

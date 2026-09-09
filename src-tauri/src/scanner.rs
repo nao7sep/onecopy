@@ -542,6 +542,7 @@ pub fn run_source_check(
     forget_unconfigured_roots(conn, &settings.source_dirs, &cache)?;
 
     let root_total = settings.source_dirs.len() as u64;
+    let visibility_roots = crate::visibility_index::source_root_spellings(conn, &settings.source_dirs)?;
     let mut walk_failures = 0u64;
     progress(ScanProgress::phase(ScanPhase::Walk, root_total, None));
     for (root_index, root) in settings.source_dirs.iter().enumerate() {
@@ -574,6 +575,7 @@ pub fn run_source_check(
             conn,
             Path::new(root),
             &settings.lists,
+            &visibility_roots,
             root_index as u64,
             root_total,
             walk_failures,
@@ -669,6 +671,9 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     )? {
         return Ok(true);
     }
+    if probe("SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 AND visibility_checked = 0)")? {
+        return Ok(true);
+    }
     if probe("SELECT EXISTS(SELECT 1 FROM scan_dirs WHERE relationship_dirty = 1)")? {
         return Ok(true);
     }
@@ -721,6 +726,7 @@ fn run_index_tail_scoped(
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
     let _awake = crate::sleep_prevention::begin_work();
+    crate::visibility_index::complete_missing_facts(conn, &settings.source_dirs)?;
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
     let hash_stats = hash_pending_with_progress(conn, &cache, progress)?;
     summary.full_hashed = hash_stats.full_hashed;
@@ -814,6 +820,7 @@ pub fn upsert_file(
     conn: &Connection,
     path: &Path,
     lists: &ScanLists,
+    inherited_visibility_flags: i64,
 ) -> Result<Upsert, String> {
     let abs = path.to_string_lossy().to_string();
     let file_name = path
@@ -821,6 +828,8 @@ pub fn upsert_file(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let meta = std::fs::metadata(crate::winpath::for_fs(path).as_ref()).map_err(|e| e.to_string())?;
+    let own_visibility_flags = crate::visibility::entry_flags(path, &meta);
+    let visibility_flags = own_visibility_flags | inherited_visibility_flags;
     let size = meta.len() as i64;
     let mtime_ms = meta
         .modified()
@@ -859,12 +868,13 @@ pub fn upsert_file(
 
     match existing {
         Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
-            conn.execute(
-                "UPDATE paths SET missing = 0 WHERE abs_path = ?1 AND missing = 1",
-                [&abs],
+            let changed = conn.execute(
+                "UPDATE paths SET missing = 0, own_visibility_flags = ?2, visibility_flags = ?3, visibility_checked = 1
+                 WHERE abs_path = ?1 AND (missing = 1 OR own_visibility_flags != ?2 OR visibility_flags != ?3 OR visibility_checked != 1)",
+                params![abs, own_visibility_flags, visibility_flags],
             )
             .map_err(|e| e.to_string())?;
-            Ok(Upsert::Unchanged)
+            Ok(if changed == 0 { Upsert::Unchanged } else { Upsert::Updated })
         }
         Some(_) => {
             // A provisional key is `p<path_id>` — derived from the path, not
@@ -892,8 +902,8 @@ pub fn upsert_file(
                  kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
                  hash_attempt_failed = 0, metadata_attempt_failed = 0, \
                  indexed_at_utc = NULL, resolved_utc_ms = NULL, resolved_source = NULL, \
-                 date_only = 0, missing = 0 WHERE abs_path = ?1",
-                params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem],
+                 date_only = 0, missing = 0, own_visibility_flags = ?8, visibility_flags = ?9, visibility_checked = 1 WHERE abs_path = ?1",
+                params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem, own_visibility_flags, visibility_flags],
             )
             .map_err(|e| e.to_string())?;
             // Only a row nothing else references: a provisional key that was
@@ -915,8 +925,9 @@ pub fn upsert_file(
                 .unwrap_or_default();
             conn.execute(
                 "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, \
-                 mtime_ms, birthtime_ms, missing) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
-                params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms],
+                 mtime_ms, birthtime_ms, missing, own_visibility_flags, visibility_flags, visibility_checked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 1)",
+                params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms, own_visibility_flags, visibility_flags],
             )
             .map_err(|e| e.to_string())?;
             Ok(Upsert::Added)
@@ -929,13 +940,14 @@ pub fn upsert_file(
 /// resumes cheap), resets content facts when a file changed, and marks rows
 /// under the root that no longer exist as missing.
 pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
-    walk_root_with_progress(conn, root, lists, 0, 1, 0, &|_| {})
+    walk_root_with_progress(conn, root, lists, &[crate::winpath::for_fs(root).to_string_lossy().into_owned()], 0, 1, 0, &|_| {})
 }
 
 fn walk_root_with_progress(
     conn: &Connection,
     root: &Path,
     lists: &ScanLists,
+    visibility_roots: &[String],
     completed_roots: u64,
     total_roots: u64,
     failures_before: u64,
@@ -994,6 +1006,7 @@ fn walk_root_with_progress(
     let mut current_stat_failures = std::collections::HashSet::<String>::new();
     // One probe up front so a clean index never pays a per-file DELETE.
     let issues_present = crate::index_store::any_issues(conn)?;
+    let mut visibility_directories = crate::visibility_index::DirectoryFacts::default();
 
     // The walk root carries the long-path form so every entry beneath it
     // inherits it; without this a deep tree is simply invisible on Windows.
@@ -1031,7 +1044,12 @@ fn walk_root_with_progress(
             .execute([&abs])
             .map_err(|error| error.to_string())?;
 
-        match upsert_file(conn, path, lists) {
+        let upsert = (|| {
+            let visibility_root = crate::visibility_index::root_for(visibility_roots, path).ok_or("File is outside configured sources")?;
+            let inherited = visibility_directories.refresh(conn, &visibility_root, path.parent().ok_or("File has no parent")?)?;
+            upsert_file(conn, path, lists, inherited)
+        })();
+        match upsert {
             Ok(outcome) => {
                 match outcome {
                     Upsert::Added => stats.added += 1,
@@ -1136,10 +1154,10 @@ fn walk_root_with_progress(
             .execute(
                 "INSERT INTO logical_contents \
                    (content_hash, kind, date_state, resolved_utc_ms, \
-                    representative_path_id, live_copy_count) \
+                    representative_path_id, live_copy_count, visible_copy_count) \
                  SELECT projection.content_hash, projection.kind, \
                         projection.date_state, projection.resolved_utc_ms, \
-                        projection.representative_path_id, projection.live_copy_count \
+                        projection.representative_path_id, projection.live_copy_count, projection.visible_copy_count \
                  FROM logical_content_projection projection \
                  WHERE projection.content_hash IN (\
                      SELECT content_hash FROM walk_vanished_paths \

@@ -115,6 +115,8 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     let conn = crate::index_store::open(
         &data_root.join(crate::storage::INDEX_DB_FILE_NAME),
     )?;
+    let config = crate::storage::read_config_for_setup(data_root)?;
+    crate::visibility_index::apply_policy(&conn, &crate::visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?)?;
     // Once per process, before any executor or window-driven request exists.
     // Opening another database connection or section must never reset failure.
     crate::attempt_boundaries::begin_run(&conn)?;

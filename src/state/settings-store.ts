@@ -14,6 +14,10 @@ import { recordActionFailure } from "./notifications-store";
 import type { AiAccelerationCapability } from "../repositories";
 
 export interface SettingsDraft {
+  ignoredFileNames: string[];
+  hideDotNames: boolean;
+  hideHiddenAttributes: boolean;
+  hideSystemAttributes: boolean;
   defaultTimezone: string;
   goodRangeStartYear: number;
   similarityMaxGapSeconds: number;
@@ -74,6 +78,13 @@ function draftFrom(
   state: Record<string, unknown> | null,
   accelerationCapabilities: AiAccelerationCapability[],
 ): SettingsDraft {
+  if (config?.ignoredFileNames !== undefined && (!Array.isArray(config.ignoredFileNames)
+    || config.ignoredFileNames.some((name) => typeof name !== "string"))) {
+    throw new Error("Ignored file names must be a list of names.");
+  }
+  for (const key of ["hideDotNames", "hideHiddenAttributes", "hideSystemAttributes"]) {
+    if (config?.[key] !== undefined && typeof config[key] !== "boolean") throw new Error(`${key} must be a boolean.`);
+  }
   const storedAcceleration =
     config?.aiAcceleration &&
     typeof config.aiAcceleration === "object" &&
@@ -87,6 +98,12 @@ function draftFrom(
       typeof stored === "string" ? stored : capability.default;
   }
   return {
+    ignoredFileNames: config?.ignoredFileNames === undefined
+      ? [".DS_Store", "Thumbs.db", "desktop.ini"]
+      : stringArrayField(config, "ignoredFileNames"),
+    hideDotNames: config?.hideDotNames !== false,
+    hideHiddenAttributes: config?.hideHiddenAttributes !== false,
+    hideSystemAttributes: config?.hideSystemAttributes !== false,
     defaultTimezone:
       typeof config?.defaultTimezone === "string"
         ? config.defaultTimezone

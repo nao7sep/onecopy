@@ -40,6 +40,7 @@ beforeEach(() => {
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ total: 0, rows: [] }),
     text_encodings: () => ["utf-8", "shift_jis"],
+    visibility_capabilities: () => ({ hiddenAttributes: true, systemAttributes: false }),
     index_work_snapshot: () => ({
       sourceCheck: {
         running: true,
@@ -71,6 +72,27 @@ afterEach(() => {
 });
 
 describe("Settings categories", () => {
+  it("edits the complete ignored-name list and exposes only supported native attributes", async () => {
+    render(<SettingsModal open onClose={() => {}} />);
+    await screen.findByRole("checkbox", { name: "Hide files and folders marked hidden" });
+    expect(screen.queryByRole("checkbox", { name: "Hide files and folders marked system" })).toBeNull();
+    expect((screen.getByRole("checkbox", { name: "Hide names beginning with a dot" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.change(screen.getByLabelText("Ignored file name 1"), { target: { value: "custom.cache" } });
+    expect(useSettingsStore.getState().draft?.ignoredFileNames[0]).toBe("custom.cache");
+    for (let count = 3; count > 0; count--) fireEvent.click(screen.getByRole("button", { name: "Remove ignored file name 1" }));
+    expect(useSettingsStore.getState().draft?.ignoredFileNames).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Add file name" }));
+    fireEvent.change(screen.getByLabelText("Ignored file name 1"), { target: { value: "local.ini" } });
+    expect(useSettingsStore.getState().draft?.ignoredFileNames).toEqual(["local.ini"]);
+  });
+
+  it("offers the system attribute option when the backend supports it", async () => {
+    mockCommands({ visibility_capabilities: () => ({ hiddenAttributes: true, systemAttributes: true }) });
+    render(<SettingsModal open onClose={() => {}} />);
+    const system = await screen.findByRole("checkbox", { name: "Hide files and folders marked system" });
+    expect((system as HTMLInputElement).checked).toBe(true);
+  });
+
   it("keeps timezone help outside the field's alignment and accessible label", () => {
     render(<SettingsModal open onClose={() => {}} />);
     const input = screen.getByDisplayValue("Asia/Tokyo");

@@ -325,7 +325,7 @@ struct Candidate {
 const DATED_CANDIDATES_SQL: &str = "SELECT c.hash,
             COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''),
             l.resolved_utc_ms, c.phash
-     FROM logical_contents l
+     FROM review_contents l
      JOIN contents c ON c.hash = l.content_hash
      WHERE l.kind = 'image' AND l.resolved_utc_ms >= ?1
        AND l.resolved_utc_ms < ?2 AND c.phash IS NOT NULL";
@@ -333,7 +333,7 @@ const DATED_CANDIDATES_SQL: &str = "SELECT c.hash,
 const UNDATED_CANDIDATES_SQL: &str = "SELECT c.hash,
             COALESCE(c.camera_make, '') || '|' || COALESCE(c.camera_model, ''),
             l.resolved_utc_ms, c.phash
-     FROM logical_contents l
+     FROM review_contents l
      JOIN contents c ON c.hash = l.content_hash
      WHERE l.kind = 'image' AND l.resolved_utc_ms IS NULL
        AND c.phash IS NOT NULL";
@@ -368,7 +368,7 @@ fn mark_all_buckets_dirty_in(conn: &Connection) -> Result<(), String> {
          SELECT bucket, 1
          FROM (
            SELECT {bucket} AS bucket
-           FROM logical_contents l
+           FROM review_contents l
            WHERE l.kind = 'image'
            UNION
            SELECT bucket FROM similar_groups
@@ -707,7 +707,7 @@ pub fn rebuild_priority_bucket_cancellable(
     let expression = dirty_bucket_expression("l");
     let mut statement = conn
         .prepare(&format!(
-            "SELECT d.bucket, d.revision FROM logical_contents l \
+            "SELECT d.bucket, d.revision FROM review_contents l \
          JOIN similarity_dirty_buckets d ON d.bucket = {expression} \
          WHERE l.content_hash = ?1 AND l.kind = 'image'"
         ))

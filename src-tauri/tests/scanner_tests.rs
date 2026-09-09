@@ -257,7 +257,7 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
 
     let readable_path = readable.to_string_lossy().to_string();
     index_store::upsert_issue(&f.conn, Some(&readable_path), READ_ERROR, "read failed").unwrap();
-    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists()).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[f.root.to_string_lossy().into_owned()]).unwrap();
     assert_eq!(
         f.conn
             .query_row(
@@ -280,7 +280,7 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
         )
         .unwrap();
     index_store::upsert_issue(&f.conn, Some(&missing_path), STAT_ERROR, "stat failed").unwrap();
-    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists()).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[f.root.to_string_lossy().into_owned()]).unwrap();
     assert_eq!(
         f.conn
             .query_row(
@@ -588,7 +588,7 @@ fn scoped_pairing_repairs_only_the_affected_directory() {
     assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
 
     std::fs::remove_file(left.join("IMG.JPG")).unwrap();
-    onecopy_lib::watcher::restat_dir(&f.conn, &left, &lists()).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &left, &lists(), &[left.to_string_lossy().into_owned()]).unwrap();
     let right_before: i64 = f
         .conn
         .query_row(

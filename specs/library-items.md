@@ -26,16 +26,17 @@ Changing the date-selection policy recomputes logical-item dates from saved evid
 
 Every logical item has one deterministic representative among its currently available physical copies. Copies are ranked by the following rules, in order:
 
-1. A copy with an acceptable date precedes a copy without one.
-2. An earlier acceptable date precedes a later acceptable date.
-3. Equal dates are ordered by complete path without regard to case.
-4. If those paths still tie, their exact complete paths break the tie.
+1. A copy visible under `library-visibility.md` precedes a hidden copy.
+2. A copy with an acceptable date precedes a copy without one.
+3. An earlier acceptable date precedes a later acceptable date.
+4. Equal dates are ordered by complete path without regard to case.
+5. If those paths still tie, their exact complete paths break the tie.
 
-The first copy in that order is the representative. A completed Undated item uses the same path ordering because all of its copies tie on date.
+The first copy in that order is the representative. A completed Undated item uses visibility and then path ordering because all of its copies tie on date.
 
-The representative supplies the logical item's chosen date when it has one and supplies its current displayed and output filename. The rule applies to every filename difference, not only capitalization. Other copies do not outvote the representative's filename.
+The representative supplies the current displayed and output filename. The rule applies to every filename difference, not only capitalization. Other copies do not outvote the representative's filename. Date evidence remains independent of visibility: once every available copy has completed date checking, the earliest acceptable date across all copies supplies the logical item's date, including evidence from a hidden copy.
 
-When OneCopy detects that the representative disappeared or became unavailable, it applies the same ordering to the remaining available copies. The replacement representative supplies both the resulting date and its current filename.
+When OneCopy detects that the representative disappeared, became unavailable, or changed visibility, it applies the same ordering to the remaining available copies. Changing visibility alone never discards an earlier acceptable logical-item date.
 
 ## Companion relationships
 

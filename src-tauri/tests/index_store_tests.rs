@@ -1,5 +1,32 @@
 use onecopy_lib::index_store;
 
+fn revision_twelve_fixture(path: &std::path::Path) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.create_collation("onecopy_nocase", |left, right| left.to_lowercase().cmp(&right.to_lowercase())).unwrap();
+    conn.execute_batch(include_str!("fixtures/index-v12.sql")).unwrap();
+    conn
+}
+
+#[test]
+fn revision_twelve_visibility_upgrade_preserves_history_caches_and_copy_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = revision_twelve_fixture(&db);
+    conn.execute_batch("INSERT INTO contents (hash, byte_size, kind, derived_at_utc) VALUES ('photo', 3, 'image', 'ready');
+        INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_source, resolved_utc_ms)
+          VALUES ('/root/a.jpg', '/root', 'a.jpg', 'image', 'photo', 'filename', 1000),
+                 ('/root/b.jpg', '/root', 'b.jpg', 'image', 'photo', 'filename', 2000);").unwrap();
+    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "retained").unwrap();
+    index_store::dismiss_issues(&conn, None).unwrap();
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    assert_eq!(conn.query_row("SELECT live_copy_count, visible_copy_count, resolved_utc_ms FROM logical_contents", [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))).unwrap(), (2, 2, 1000));
+    assert_eq!(conn.query_row("SELECT derived_at_utc FROM contents", [], |row| row.get::<_, String>(0)).unwrap(), "ready");
+    assert_eq!(conn.query_row("SELECT closure FROM issues", [], |row| row.get::<_, String>(0)).unwrap(), "dismissed");
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM paths WHERE visibility_checked = 0", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+}
+
 fn restore_legacy_issue_shape(conn: &rusqlite::Connection) {
     conn.execute_batch(
         "DROP VIEW active_issues;
@@ -21,7 +48,7 @@ fn restore_legacy_issue_shape(conn: &rusqlite::Connection) {
 fn revision_nine_upgrade_preserves_library_and_diagnostics_across_concurrent_openers() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
-    let conn = index_store::open(&db).unwrap();
+    let conn = revision_twelve_fixture(&db);
     conn.execute_batch(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc) VALUES ('kept', 4, 'image', 'ready');
          INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES ('/kept.jpg', '/', 'kept.jpg', 'image', 'kept');
@@ -85,7 +112,7 @@ fn revision_nine_upgrade_preserves_library_and_diagnostics_across_concurrent_ope
 fn revision_ten_upgrade_retains_issue_identity_and_allows_new_occurrences_after_dismissal() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
-    let conn = index_store::open(&db).unwrap();
+    let conn = revision_twelve_fixture(&db);
     index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail").unwrap();
     index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail").unwrap();
     restore_legacy_issue_shape(&conn);
@@ -122,7 +149,7 @@ fn revision_ten_upgrade_retains_issue_identity_and_allows_new_occurrences_after_
 fn failed_history_upgrade_rolls_back_the_whole_migration() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
-    let conn = index_store::open(&db).unwrap();
+    let conn = revision_twelve_fixture(&db);
     index_store::upsert_issue(&conn, None, "read-error", "retained").unwrap();
     restore_legacy_issue_shape(&conn);
     // A malformed old schema fails after the rename, while copying records.
@@ -171,7 +198,7 @@ fn failed_history_upgrade_rolls_back_the_whole_migration() {
 fn revision_eleven_preserves_archived_closures_and_accepts_new_attempt_reasons() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
-    let conn = index_store::open(&db).unwrap();
+    let conn = revision_twelve_fixture(&db);
     index_store::upsert_issue(&conn, None, "test", "dismissed detail").unwrap();
     index_store::dismiss_issues(&conn, None).unwrap();
     index_store::upsert_issue(&conn, None, "test", "live detail").unwrap();

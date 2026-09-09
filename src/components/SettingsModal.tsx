@@ -316,6 +316,20 @@ export default function SettingsModal({
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [textEncodings, setTextEncodings] = useState<string[]>([]);
+  const [visibilityCapabilities, setVisibilityCapabilities] = useState<{
+    hiddenAttributes: boolean; systemAttributes: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let current = true;
+    void invoke<{ hiddenAttributes: boolean; systemAttributes: boolean }>("visibility_capabilities")
+      .then((capabilities) => { if (current) setVisibilityCapabilities(capabilities); })
+      .catch((error) => {
+        if (current) recordActionFailure("visibility-capabilities-failed", "Couldn’t read this platform’s visibility options.", error);
+      });
+    return () => { current = false; };
+  }, [open]);
 
   useEffect(() => {
     if (!open || textEncodings.length > 0) return;
@@ -457,6 +471,36 @@ export default function SettingsModal({
             <Plus size={14} />
             Add directory
           </Button>
+
+          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Visibility
+          </h2>
+          <p className="mb-3 text-xs text-ink-muted">
+            Applies to source files and destination folders. Hidden copies of a visible item still count as copies and are included when you move or delete it.
+          </p>
+          <CheckField label="Hide names beginning with a dot" checked={draft.hideDotNames}
+            onChange={(value) => update({ hideDotNames: value })} />
+          {visibilityCapabilities?.hiddenAttributes ? (
+            <CheckField label="Hide files and folders marked hidden" checked={draft.hideHiddenAttributes}
+              onChange={(value) => update({ hideHiddenAttributes: value })} />
+          ) : null}
+          {visibilityCapabilities?.systemAttributes ? (
+            <CheckField label="Hide files and folders marked system" checked={draft.hideSystemAttributes}
+              onChange={(value) => update({ hideSystemAttributes: value })} />
+          ) : null}
+          <p className="mb-2 mt-3 text-sm">Ignored file names</p>
+          <p className="mb-2 text-xs text-ink-muted">Complete file names, ignoring case. Files only; no wildcard syntax.</p>
+          <ul className="mb-2 space-y-2">
+            {draft.ignoredFileNames.map((name, index) => (
+              <li key={index} className="flex items-center gap-2">
+                <TextInput className="min-w-0 flex-1" aria-label={`Ignored file name ${index + 1}`} value={name}
+                  onChange={(event) => update({ ignoredFileNames: draft.ignoredFileNames.map((entry, position) => position === index ? event.target.value : entry) })} />
+                <Button aria-label={`Remove ignored file name ${index + 1}`}
+                  onClick={() => update({ ignoredFileNames: draft.ignoredFileNames.filter((_, position) => position !== index) })}>Remove</Button>
+              </li>
+            ))}
+          </ul>
+          <Button onClick={() => update({ ignoredFileNames: [...draft.ignoredFileNames, ""] })}>Add file name</Button>
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Timestamps

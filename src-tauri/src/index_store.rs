@@ -20,7 +20,7 @@ use rusqlite::Connection;
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 12;
+const SCHEMA_REVISION: i64 = 13;
 
 const ISSUE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS issues (
@@ -98,7 +98,11 @@ CREATE TABLE IF NOT EXISTS paths (
   companion_of     INTEGER REFERENCES paths(id),
   resolved_utc_ms  INTEGER,
   resolved_source  TEXT,
-  date_only        INTEGER NOT NULL DEFAULT 0
+  date_only        INTEGER NOT NULL DEFAULT 0,
+  visibility_flags INTEGER NOT NULL DEFAULT 0,
+  own_visibility_flags INTEGER NOT NULL DEFAULT 0,
+  visibility_checked INTEGER NOT NULL DEFAULT 1,
+  review_visible   INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_paths_content_hash ON paths (content_hash);
 CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
@@ -106,10 +110,12 @@ CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
 CREATE INDEX IF NOT EXISTS idx_paths_resolved ON paths (kind, resolved_utc_ms);
 CREATE INDEX IF NOT EXISTS idx_paths_companion ON paths (companion_of);
 CREATE INDEX IF NOT EXISTS idx_paths_media_repair_by_id ON paths (missing, id);
+CREATE INDEX IF NOT EXISTS idx_paths_visibility_pending ON paths (id)
+  WHERE missing = 0 AND visibility_checked = 0;
 CREATE INDEX IF NOT EXISTS idx_paths_unhashed_other_section
   ON paths (resolved_utc_ms, id)
   WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
-    AND kind NOT IN ('image', 'video');
+    AND kind NOT IN ('image', 'video') AND review_visible = 1;
 
 -- The UI reads logical items, not physical paths. Keeping this one-row summary
 -- beside the source tables lets opening a small month seek that month instead
@@ -123,15 +129,18 @@ CREATE TABLE IF NOT EXISTS logical_contents (
   resolved_utc_ms        INTEGER,
   representative_path_id INTEGER NOT NULL REFERENCES paths(id),
   live_copy_count        INTEGER NOT NULL,
+  visible_copy_count     INTEGER NOT NULL DEFAULT 1,
   CHECK (
     (date_state = 'dated' AND resolved_utc_ms IS NOT NULL) OR
     (date_state IN ('pending', 'undated') AND resolved_utc_ms IS NULL)
   )
 );
 CREATE INDEX IF NOT EXISTS idx_logical_contents_section
-  ON logical_contents (kind, resolved_utc_ms, content_hash);
+  ON logical_contents (kind, resolved_utc_ms, content_hash) WHERE visible_copy_count > 0;
 CREATE INDEX IF NOT EXISTS idx_logical_contents_work
-  ON logical_contents (kind, content_hash);
+  ON logical_contents (kind, content_hash) WHERE visible_copy_count > 0;
+CREATE VIEW IF NOT EXISTS review_contents AS
+  SELECT * FROM logical_contents WHERE visible_copy_count > 0;
 
 -- A path batch suppresses the row trigger while one transaction changes many
 -- physical copies, then republishes each affected logical item once from the
@@ -141,6 +150,40 @@ CREATE INDEX IF NOT EXISTS idx_logical_contents_work
 CREATE TABLE IF NOT EXISTS logical_projection_batch (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
 );
+
+CREATE TABLE IF NOT EXISTS visibility_policy (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  hidden_flags INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO visibility_policy VALUES (1, 0);
+CREATE TABLE IF NOT EXISTS visibility_ignored_names (
+  name TEXT PRIMARY KEY COLLATE onecopy_nocase
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS visibility_directories (
+  abs_path TEXT PRIMARY KEY,
+  parent_path TEXT,
+  own_flags INTEGER NOT NULL,
+  flags INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_visibility_directories_parent
+  ON visibility_directories (parent_path);
+
+CREATE TRIGGER IF NOT EXISTS paths_visibility_after_insert
+AFTER INSERT ON paths
+BEGIN
+  UPDATE paths SET review_visible =
+    (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+    AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name)
+  WHERE id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS paths_visibility_after_update
+AFTER UPDATE OF visibility_flags, file_name ON paths
+BEGIN
+  UPDATE paths SET review_visible =
+    (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+    AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name)
+  WHERE id = NEW.id;
+END;
 
 CREATE VIEW IF NOT EXISTS logical_content_projection AS
 SELECT c.hash AS content_hash,
@@ -159,10 +202,11 @@ SELECT c.hash AS content_hash,
        (SELECT ranked.id FROM paths ranked
         WHERE ranked.content_hash = c.hash
           AND ranked.missing = 0 AND ranked.companion_of IS NULL
-        ORDER BY ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+        ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
                  ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
         LIMIT 1) AS representative_path_id,
-       COUNT(*) AS live_copy_count
+       COUNT(*) AS live_copy_count,
+       SUM(p.review_visible) AS visible_copy_count
 FROM contents c JOIN paths p ON p.content_hash = c.hash
 WHERE p.missing = 0 AND p.companion_of IS NULL
 GROUP BY c.hash, c.kind;
@@ -198,15 +242,15 @@ BEGIN
 
   INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
-     live_copy_count)
+     live_copy_count, visible_copy_count)
   SELECT content_hash, kind, date_state, resolved_utc_ms,
-         representative_path_id, live_copy_count
+         representative_path_id, live_copy_count, visible_copy_count
   FROM logical_content_projection WHERE content_hash = NEW.content_hash;
 END;
 
 CREATE TRIGGER IF NOT EXISTS paths_logical_after_update_v2
 AFTER UPDATE OF content_hash, resolved_utc_ms, resolved_source, missing,
-                companion_of, file_name ON paths
+                companion_of, file_name, review_visible ON paths
 WHEN NOT EXISTS (SELECT 1 FROM logical_projection_batch)
 BEGIN
   DELETE FROM logical_contents
@@ -214,9 +258,9 @@ BEGIN
 
   INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
-     live_copy_count)
+     live_copy_count, visible_copy_count)
   SELECT content_hash, kind, date_state, resolved_utc_ms,
-         representative_path_id, live_copy_count
+         representative_path_id, live_copy_count, visible_copy_count
   FROM logical_content_projection
   WHERE content_hash IN (OLD.content_hash, NEW.content_hash);
 END;
@@ -230,9 +274,9 @@ BEGIN
 
   INSERT INTO logical_contents
     (content_hash, kind, date_state, resolved_utc_ms, representative_path_id,
-     live_copy_count)
+     live_copy_count, visible_copy_count)
   SELECT content_hash, kind, date_state, resolved_utc_ms,
-         representative_path_id, live_copy_count
+         representative_path_id, live_copy_count, visible_copy_count
   FROM logical_content_projection WHERE content_hash = OLD.content_hash;
 END;
 
@@ -393,19 +437,20 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                9..=11 => {
+                9..=12 => {
                     if current == 9 {
                         conn.execute_batch(
                         "ALTER TABLE paths ADD COLUMN hash_attempt_failed INTEGER NOT NULL DEFAULT 0;
                          ALTER TABLE paths ADD COLUMN metadata_attempt_failed INTEGER NOT NULL DEFAULT 0;"
                         ).map_err(|error| error.to_string())?;
                     }
-                    conn.execute_batch(
+                    if current < 12 {
+                        conn.execute_batch(
                         "DROP VIEW IF EXISTS active_issues;
                          ALTER TABLE issues RENAME TO issues_before_history;
                          DROP INDEX IF EXISTS idx_issues_first_seen;
                          DROP INDEX IF EXISTS idx_issues_live_identity;"
-                    ).map_err(|error| error.to_string())?;
+                        ).map_err(|error| error.to_string())?;
                     conn.execute_batch(ISSUE_SCHEMA).map_err(|error| error.to_string())?;
                     let columns = if current == 11 {
                         "id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count, closed_at_utc, closure"
@@ -416,6 +461,23 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                         "INSERT INTO issues ({columns}) SELECT {columns} FROM issues_before_history;
                          DROP TABLE issues_before_history;"
                     )).map_err(|error| error.to_string())?;
+                    }
+                    conn.execute_batch(
+                        "ALTER TABLE paths ADD COLUMN visibility_flags INTEGER NOT NULL DEFAULT 0;
+                         ALTER TABLE paths ADD COLUMN own_visibility_flags INTEGER NOT NULL DEFAULT 0;
+                         ALTER TABLE paths ADD COLUMN visibility_checked INTEGER NOT NULL DEFAULT 0;
+                         ALTER TABLE paths ADD COLUMN review_visible INTEGER NOT NULL DEFAULT 1;
+                         ALTER TABLE logical_contents ADD COLUMN visible_copy_count INTEGER NOT NULL DEFAULT 1;
+                         UPDATE logical_contents SET visible_copy_count = live_copy_count;
+                         DROP INDEX idx_paths_unhashed_other_section;
+                         DROP INDEX idx_logical_contents_section;
+                         DROP INDEX idx_logical_contents_work;
+                         DROP VIEW logical_content_projection;
+                         DROP TRIGGER paths_logical_after_insert_v2;
+                         DROP TRIGGER paths_logical_after_update_v2;
+                         DROP TRIGGER paths_logical_after_delete_v2;"
+                    ).map_err(|error| error.to_string())?;
+                    conn.execute_batch(SCHEMA).map_err(|error| error.to_string())?;
                 }
                 0..=8 => {
                     // Only the earlier disposable index generations retain
@@ -450,6 +512,9 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 }
                 _ => return Err(format!("unsupported index schema revision: {current}")),
             }
+            crate::visibility_index::apply_policy_in_transaction(
+                &conn, &crate::visibility::Policy::from_config(&serde_json::json!({}))?
+            )?;
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
@@ -559,6 +624,7 @@ pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
              DELETE FROM logical_projection_batch;
              DELETE FROM logical_contents;
              DELETE FROM paths;
+             DELETE FROM visibility_directories;
              DELETE FROM contents;
              DELETE FROM similarity_dirty_buckets;
              DELETE FROM similarity_state;
@@ -616,6 +682,9 @@ mod tests {
             "similar_groups",
             "similarity_dirty_buckets",
             "similarity_state",
+            "visibility_directories",
+            "visibility_ignored_names",
+            "visibility_policy",
             "volumes",
         ];
         expected.sort_unstable();

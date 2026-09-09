@@ -84,13 +84,13 @@ pub fn section_for_identity(
 ) -> Result<Option<SectionLocation>, String> {
     let facts: Option<(String, Option<i64>)> = if let Some(hash) = &identity.hash {
         conn.query_row(
-            "SELECT kind, resolved_utc_ms FROM logical_contents WHERE content_hash = ?1 AND live_copy_count > 0",
+            "SELECT kind, resolved_utc_ms FROM review_contents WHERE content_hash = ?1 AND live_copy_count > 0",
             [hash], |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()
     } else {
         conn.query_row(
             "SELECT 'other', resolved_utc_ms FROM paths WHERE id = ?1 AND missing = 0
-             AND companion_of IS NULL AND content_hash IS NULL AND kind NOT IN ('image', 'video')",
+             AND review_visible = 1 AND companion_of IS NULL AND content_hash IS NULL AND kind NOT IN ('image', 'video')",
             [identity.path_id], |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()
     }.map_err(|error| error.to_string())?;
@@ -109,18 +109,18 @@ pub fn section_for_identity(
 
 const LOGICAL_MONTH_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM logical_contents INDEXED BY idx_logical_contents_section
-     WHERE kind = ?1 AND resolved_utc_ms >= ?2 AND resolved_utc_ms < ?3";
+     WHERE visible_copy_count > 0 AND kind = ?1 AND resolved_utc_ms >= ?2 AND resolved_utc_ms < ?3";
 const UNHASHED_OTHER_MONTH_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM paths INDEXED BY idx_paths_unhashed_other_section
-     WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+     WHERE missing = 0 AND review_visible = 1 AND companion_of IS NULL AND content_hash IS NULL
        AND kind NOT IN ('image', 'video')
        AND resolved_utc_ms >= ?1 AND resolved_utc_ms < ?2";
 const LOGICAL_UNDATED_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM logical_contents INDEXED BY idx_logical_contents_section
-     WHERE kind = ?1 AND resolved_utc_ms IS NULL";
+     WHERE visible_copy_count > 0 AND kind = ?1 AND resolved_utc_ms IS NULL";
 const UNHASHED_OTHER_UNDATED_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM paths INDEXED BY idx_paths_unhashed_other_section
-     WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+     WHERE missing = 0 AND review_visible = 1 AND companion_of IS NULL AND content_hash IS NULL
        AND kind NOT IN ('image', 'video') AND resolved_utc_ms IS NULL";
 
 /// Logical items per kind per month (oldest month first, Undated last).
@@ -137,7 +137,7 @@ fn logical_edge_sql(newest: bool) -> String {
     format!(
         "SELECT resolved_utc_ms
          FROM logical_contents INDEXED BY idx_logical_contents_section
-         WHERE kind = ?1 AND resolved_utc_ms IS NOT NULL
+         WHERE visible_copy_count > 0 AND kind = ?1 AND resolved_utc_ms IS NOT NULL
          ORDER BY resolved_utc_ms {direction} LIMIT 1"
     )
 }
@@ -147,7 +147,7 @@ fn unhashed_other_edge_sql(newest: bool) -> String {
     format!(
         "SELECT resolved_utc_ms
          FROM paths INDEXED BY idx_paths_unhashed_other_section
-         WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+         WHERE missing = 0 AND review_visible = 1 AND companion_of IS NULL AND content_hash IS NULL
            AND kind NOT IN ('image', 'video') AND resolved_utc_ms IS NOT NULL
          ORDER BY resolved_utc_ms {direction} LIMIT 1"
     )
@@ -954,7 +954,7 @@ fn section_candidates_sql(include_unhashed_other: bool, has_bounds: bool) -> Str
                 rp.file_name AS file_name, l.resolved_utc_ms AS resolved_utc_ms, \
                 c.byte_size AS byte_size, c.width AS width, c.height AS height, \
                 lower(rp.ext) AS extension \
-         FROM logical_contents l \
+         FROM review_contents l \
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths rp ON rp.id = l.representative_path_id \
          WHERE l.kind = ?1 AND {logical_time}"
@@ -970,7 +970,7 @@ fn section_candidates_sql(include_unhashed_other: bool, has_bounds: bool) -> Str
              SELECT NULL, p.id, p.file_name, p.resolved_utc_ms, p.size, \
                     NULL, NULL, lower(p.ext) \
              FROM paths p \
-             WHERE p.missing = 0 AND p.companion_of IS NULL \
+             WHERE p.missing = 0 AND p.review_visible = 1 AND p.companion_of IS NULL \
                AND p.content_hash IS NULL AND p.kind NOT IN ('image', 'video') \
                AND {other_time}"
         ));
@@ -1110,7 +1110,7 @@ fn section_work_rows(
     }
     if let Some(pending) = pending {
         filters.push(format!(
-            "EXISTS (SELECT 1 FROM logical_contents l \
+            "EXISTS (SELECT 1 FROM review_contents l \
             JOIN contents c ON c.hash = l.content_hash \
             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
             WHERE l.content_hash = candidates.hash AND ({pending}))"
@@ -1202,7 +1202,7 @@ fn section_items_by_identity(
             .join(",");
         let sql = format!(
             "SELECT id, file_name, resolved_utc_ms, size, dir_path FROM paths \
-             WHERE id IN ({placeholders}) AND missing = 0 AND companion_of IS NULL \
+             WHERE id IN ({placeholders}) AND missing = 0 AND review_visible = 1 AND companion_of IS NULL \
                AND content_hash IS NULL AND kind NOT IN ('image', 'video')"
         );
         let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -1338,7 +1338,7 @@ pub fn item_by_identity(
     }
     conn.query_row(
         "SELECT id, file_name, resolved_utc_ms, size, dir_path FROM paths \
-         WHERE id = ?1 AND missing = 0 AND companion_of IS NULL \
+         WHERE id = ?1 AND missing = 0 AND review_visible = 1 AND companion_of IS NULL \
            AND content_hash IS NULL AND kind NOT IN ('image', 'video')",
         [identity.path_id],
         |row| unhashed_other_item_from_row(row, projection),
@@ -1360,7 +1360,7 @@ pub fn comparison_selection_valid(
     let mut statement = conn
         .prepare(
             "SELECT m.group_id FROM similar_group_members m \
-             JOIN logical_contents l ON l.content_hash = m.content_hash \
+             JOIN review_contents l ON l.content_hash = m.content_hash \
              WHERE m.content_hash = ?1 AND l.live_copy_count > 0 LIMIT 1",
         )
         .map_err(|error| error.to_string())?;
@@ -1390,7 +1390,7 @@ fn hashed_section_select() -> String {
             (SELECT m.group_id FROM similar_group_members m \
              WHERE m.content_hash = c.hash LIMIT 1), \
             (SELECT COUNT(*) FROM similar_group_members members \
-             JOIN logical_contents member_items \
+             JOIN review_contents member_items \
                ON member_items.content_hash = members.content_hash \
              WHERE member_items.live_copy_count > 0 \
                AND members.group_id = (SELECT m.group_id FROM similar_group_members m \
@@ -1409,7 +1409,7 @@ fn hashed_section_select() -> String {
                 'undated'
               )
             ) \
-     FROM logical_contents l \
+     FROM review_contents l \
      JOIN contents c ON c.hash = l.content_hash \
      JOIN paths rp ON rp.id = l.representative_path_id \
      LEFT JOIN analysis_receipts r ON r.content_hash = c.hash "
@@ -1511,11 +1511,11 @@ pub fn similar_group_of(
         .prepare(&format!(
             "SELECT c.hash, representative.file_name, \
              c.width, c.height, c.byte_size, c.sharpness, c.face_score, \
-             (SELECT COUNT(*) FROM paths p WHERE p.content_hash = c.hash AND p.missing = 0), \
+             logical.live_copy_count, \
              {preview_available} \
              FROM similar_group_members m \
              JOIN contents c ON c.hash = m.content_hash \
-             JOIN logical_contents logical ON logical.content_hash = c.hash \
+             JOIN review_contents logical ON logical.content_hash = c.hash \
              JOIN paths representative ON representative.id = logical.representative_path_id \
              WHERE m.group_id = ?1 \
              ORDER BY CASE WHEN ?2 THEN COALESCE(c.face_score, 0) ELSE 0 END DESC, \
@@ -1555,7 +1555,7 @@ pub fn live_content_hashes(
 ) -> Result<Vec<String>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT EXISTS(SELECT 1 FROM paths WHERE content_hash = ?1 AND missing = 0)",
+            "SELECT EXISTS(SELECT 1 FROM review_contents WHERE content_hash = ?1)",
         )
         .map_err(|error| error.to_string())?;
     let mut live = Vec::with_capacity(hashes.len());
@@ -1611,8 +1611,8 @@ pub fn item_detail(
                 .prepare(
                     "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
                          p.resolved_utc_ms, p.resolved_source, p.date_only \
-                         FROM paths p WHERE p.content_hash = ?1 AND p.missing = 0 \
-                         ORDER BY p.resolved_utc_ms IS NULL, p.resolved_utc_ms, \
+                         FROM paths p WHERE p.content_hash = ?1 AND p.missing = 0 AND p.companion_of IS NULL \
+                         ORDER BY p.review_visible DESC, p.resolved_utc_ms IS NULL, p.resolved_utc_ms, \
                                   p.abs_path COLLATE onecopy_nocase, p.abs_path",
                     )
                     .map_err(|e| e.to_string())?;
@@ -1628,7 +1628,7 @@ pub fn item_detail(
                     .prepare(
                         "SELECT p.id, p.abs_path, p.file_name, p.kind, p.size, \
                          p.resolved_utc_ms, p.resolved_source, p.date_only \
-                         FROM paths p WHERE p.id = ?1 AND p.missing = 0",
+                         FROM paths p WHERE p.id = ?1 AND p.missing = 0 AND p.review_visible = 1",
                     )
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
@@ -1648,7 +1648,7 @@ pub fn item_detail(
     let (date_state, resolved_utc_ms) = match hash {
         Some(hash) => conn
             .query_row(
-                "SELECT date_state, resolved_utc_ms FROM logical_contents \
+                "SELECT date_state, resolved_utc_ms FROM review_contents \
                  WHERE content_hash = ?1",
                 [hash],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
@@ -1695,10 +1695,12 @@ pub fn item_detail(
         .map(|path| crate::winpath::for_display(&path).into_owned())
         .collect();
     drop(stmt);
+    let date_copy = copies.iter().filter(|copy| copy.5 == resolved_utc_ms)
+        .min_by(|left, right| left.1.to_lowercase().cmp(&right.1.to_lowercase()).then_with(|| left.1.cmp(&right.1)));
     let resolved_source = if date_state == "pending" {
         None
     } else {
-        first.6.clone()
+        date_copy.and_then(|copy| copy.6.clone())
     };
 
     Ok(ItemDetail {
@@ -1711,7 +1713,7 @@ pub fn item_detail(
         date_state,
         resolved_utc_ms,
         resolved_source,
-        date_only: resolved_utc_ms.is_some() && first.7 != 0,
+        date_only: resolved_utc_ms.is_some() && date_copy.is_some_and(|copy| copy.7 != 0),
         // Keep the verbatim spelling in SQLite for filesystem work, but never
         // make the Windows implementation detail part of a user-facing path.
         copy_paths: copies
@@ -1733,7 +1735,7 @@ fn section_dirs_sql(has_bounds: bool) -> String {
     };
     format!(
         "SELECT DISTINCT p.dir_path
-         FROM logical_contents l
+         FROM review_contents l
          JOIN paths p ON p.content_hash = l.content_hash
          WHERE l.kind = ?1 {time_clause}
            AND p.missing = 0 AND p.companion_of IS NULL"
@@ -1749,7 +1751,7 @@ fn unhashed_other_section_dirs_sql(has_bounds: bool) -> String {
     format!(
         "SELECT DISTINCT dir_path
          FROM paths INDEXED BY idx_paths_unhashed_other_section
-         WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
+         WHERE missing = 0 AND review_visible = 1 AND companion_of IS NULL AND content_hash IS NULL
            AND kind NOT IN ('image', 'video') {time_clause}"
     )
 }

@@ -239,13 +239,13 @@ pub fn reconcile(
     let result = sequence.conn.execute(
         "DELETE FROM members \
          WHERE (hash IS NOT NULL AND NOT EXISTS (\
-                  SELECT 1 FROM library.logical_contents l \
+                  SELECT 1 FROM library.review_contents l \
                   WHERE l.content_hash = members.hash AND l.live_copy_count > 0\
                 )) \
             OR (hash IS NULL AND NOT EXISTS (\
                   SELECT 1 FROM library.paths p \
                   WHERE p.id = members.path_id AND p.missing = 0 \
-                    AND p.companion_of IS NULL AND p.content_hash IS NULL\
+                    AND p.review_visible = 1 AND p.companion_of IS NULL AND p.content_hash IS NULL\
                 ))",
         [],
     );

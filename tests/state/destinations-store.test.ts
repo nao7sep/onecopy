@@ -44,6 +44,22 @@ function item(pathId: number): SectionItem {
   };
 }
 
+it("invalidates old visibility listings and removes a now-hidden destination", async () => {
+  const entry = (path: string) => ({ path, name: path.split("/").at(-1)!, hasChildren: false, isEmpty: false });
+  useDestinationsStore.setState({ roots: ["/dest"], activePath: "/dest/.hidden", expanded: new Set(["/dest", "/dest/.hidden"]),
+    children: { "/dest": [entry("/dest/.hidden"), entry("/dest/visible")] }, listing: {}, emptiness: {} });
+  let oldResolve!: (entries: ReturnType<typeof entry>[]) => void;
+  mockCommands({ list_subdirs: () => new Promise<ReturnType<typeof entry>[]>((resolve) => { oldResolve = resolve; }) });
+  const stale = useDestinationsStore.getState().refreshNode("/dest");
+  mockCommands({ list_subdirs: () => [entry("/dest/visible")] });
+  await useDestinationsStore.getState().reconcileVisibility();
+  oldResolve([entry("/dest/.hidden")]);
+  await stale;
+  expect(useDestinationsStore.getState().activePath).toBeNull();
+  expect([...useDestinationsStore.getState().expanded]).toEqual(["/dest"]);
+  expect(useDestinationsStore.getState().children["/dest"]).toEqual([entry("/dest/visible")]);
+});
+
 const OUTCOME = {
   cancelled: false,
   error: null,

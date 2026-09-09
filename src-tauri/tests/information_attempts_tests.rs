@@ -226,13 +226,13 @@ fn source_change_reopens_receipts_but_unchanged_stat_does_not() {
         companions: vec![],
     };
     std::fs::write(&path, b"data").unwrap();
-    scanner::upsert_file(&conn, &path, &lists).unwrap();
+    scanner::upsert_file(&conn, &path, &lists, 0).unwrap();
     conn.execute(
         "UPDATE paths SET hash_attempt_failed = 1, metadata_attempt_failed = 1",
         [],
     )
     .unwrap();
-    scanner::upsert_file(&conn, &path, &lists).unwrap();
+    scanner::upsert_file(&conn, &path, &lists, 0).unwrap();
     assert_eq!(
         conn.query_row("SELECT hash_attempt_failed FROM paths", [], |row| row
             .get::<_, i64>(0))
@@ -240,7 +240,7 @@ fn source_change_reopens_receipts_but_unchanged_stat_does_not() {
         1
     );
     std::fs::write(&path, b"changed bytes").unwrap();
-    scanner::upsert_file(&conn, &path, &lists).unwrap();
+    scanner::upsert_file(&conn, &path, &lists, 0).unwrap();
     assert_eq!(
         conn.query_row(
             "SELECT hash_attempt_failed + metadata_attempt_failed FROM paths",

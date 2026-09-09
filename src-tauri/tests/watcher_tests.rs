@@ -29,7 +29,7 @@ fn restat_upserts_new_files_and_marks_vanished_missing() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("new.jpg"), b"fresh").unwrap();
 
-    let changed = restat_dir(&conn, &root, &lists()).unwrap();
+    let changed = restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap();
     assert_eq!(changed, 1);
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0))
@@ -37,11 +37,11 @@ fn restat_upserts_new_files_and_marks_vanished_missing() {
     assert_eq!(rows, 1);
 
     // Unchanged re-stat: nothing to do.
-    assert_eq!(restat_dir(&conn, &root, &lists()).unwrap(), 0);
+    assert_eq!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap(), 0);
 
     // Vanished file: marked missing, row kept.
     std::fs::remove_file(root.join("new.jpg")).unwrap();
-    assert_eq!(restat_dir(&conn, &root, &lists()).unwrap(), 1);
+    assert_eq!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap(), 1);
     let missing: i64 = conn
         .query_row("SELECT COUNT(*) FROM paths WHERE missing = 1", [], |r| r.get(0))
         .unwrap();
@@ -58,10 +58,10 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
     let root = dir.path().join("watched");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("known.jpg"), b"known").unwrap();
-    restat_dir(&conn, &root, &lists()).unwrap();
+    restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
-    assert!(restat_dir(&conn, &root, &lists()).is_err());
+    assert!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).is_err());
     let missing: i64 = conn
         .query_row("SELECT missing FROM paths", [], |row| row.get(0))
         .unwrap();
@@ -76,7 +76,7 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
     assert_eq!(issues, 1, "the failure must remain visible and recheckable");
 
     std::fs::create_dir_all(&root).unwrap();
-    assert_eq!(restat_dir(&conn, &root, &lists()).unwrap(), 1);
+    assert_eq!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap(), 1);
     let state: (i64, i64) = conn
         .query_row(
             "SELECT (SELECT missing FROM paths), (SELECT COUNT(*) FROM active_issues)",
@@ -101,7 +101,7 @@ fn restat_uses_the_same_windows_spelling_as_a_full_scan() {
 
     let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
     onecopy_lib::scanner::walk_root(&conn, &stored_root, &lists()).unwrap();
-    assert_eq!(restat_dir(&conn, &root, &lists()).unwrap(), 0);
+    assert_eq!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap(), 0);
 
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
@@ -190,11 +190,11 @@ fn restat_keeps_trash_lookalikes_but_never_opens_deleted_storage() {
     let lookalike = dir.path().join(".onecopy-trash-notes");
     std::fs::create_dir(&lookalike).unwrap();
     std::fs::write(lookalike.join(".onecopy-trash.jpg"), b"ordinary").unwrap();
-    assert_eq!(restat_dir(&conn, &lookalike, &lists()).unwrap(), 1);
+    assert_eq!(restat_dir(&conn, &lookalike, &lists(), &[lookalike.to_string_lossy().into_owned()]).unwrap(), 1);
     // Intentionally absent: an excluded location needs no enumeration and
     // must not produce an inaccessible-directory Issue.
     let excluded = lookalike.join(".onecopy-trash").join("day");
-    assert_eq!(restat_dir(&conn, &excluded, &lists()).unwrap(), 0);
+    assert_eq!(restat_dir(&conn, &excluded, &lists(), &[excluded.to_string_lossy().into_owned()]).unwrap(), 0);
     let counts: (i64, i64) = conn.query_row(
         "SELECT (SELECT COUNT(*) FROM paths), (SELECT COUNT(*) FROM issues)",
         [],

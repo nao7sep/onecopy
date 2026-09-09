@@ -20,7 +20,7 @@ beforeEach(() => {
     patch_config: () => ({}),
     patch_state: ({ patch }) => patch,
     log_event: () => null,
-    re_resolve_all: () => 0,
+    apply_library_settings: () => 0,
     start_source_check: () => true,
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     check_source_dirs: () => ({ missing: [], substituted: [] }),
@@ -40,6 +40,19 @@ beforeEach(() => {
 });
 
 describe("Settings save boundary", () => {
+  it("changes visibility without recomputing date evidence or rechecking sources", async () => {
+    useSettingsStore.getState().update({ hideDotNames: false, ignoredFileNames: [] });
+    await saveSettings();
+    expect(invokeCalls.find((call) => call.command === "apply_library_settings")?.args).toEqual({ resolveDates: false });
+    expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(false);
+    expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({ patch: { hideDotNames: false, ignoredFileNames: [] } });
+  });
+
+  it("still recomputes evidence when the date policy changes", async () => {
+    useSettingsStore.getState().update({ goodRangeStartYear: 2000 });
+    await saveSettings();
+    expect(invokeCalls.find((call) => call.command === "apply_library_settings")?.args).toEqual({ resolveDates: true });
+  });
   it("keeps the draft open when config publication itself fails", async () => {
     mockCommands({ patch_config: () => Promise.reject(new Error("disk full")) });
 
@@ -49,7 +62,7 @@ describe("Settings save boundary", () => {
     expect(useSettingsStore.getState().message).toBe(
       "Settings could not be saved. Your changes are still here; try again.",
     );
-    expect(invokeCalls.some((call) => call.command === "re_resolve_all")).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(false);
     expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({
       reportFailure: false,
     });
@@ -59,7 +72,7 @@ describe("Settings save boundary", () => {
     let resolutionStarted = false;
     let finishResolution = (_value: number): void => {};
     mockCommands({
-      re_resolve_all: () =>
+      apply_library_settings: () =>
         new Promise<number>((resolve) => {
           resolutionStarted = true;
           finishResolution = resolve;
@@ -78,7 +91,7 @@ describe("Settings save boundary", () => {
   });
 
   it("reports projection failure globally without pretending the config is unsaved", async () => {
-    mockCommands({ re_resolve_all: () => Promise.reject(new Error("index unavailable")) });
+    mockCommands({ apply_library_settings: () => Promise.reject(new Error("index unavailable")) });
 
     await saveSettings();
 
@@ -138,7 +151,7 @@ describe("Settings save boundary", () => {
       messageLevel: "error",
     });
     expect(useAppShellStore.getState().utilitySurface).toBe("settings");
-    expect(invokeCalls.some((call) => call.command === "re_resolve_all")).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(true);
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
   });
 

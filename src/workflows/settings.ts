@@ -13,12 +13,18 @@ import { recordActionFailure, reportActionFailure } from "../state/notifications
 import { newActivityOperationId, recordActivity } from "../repositories/activity";
 import { useAppShellStore } from "../state/app-shell-store";
 import { refreshBackgroundWorkSoon } from "../state/derived-work-store";
+import { useDestinationsStore } from "../state/destinations-store";
+import { reconcileComparisonMembership } from "./comparison";
 
 export async function saveSettings(): Promise<void> {
   const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
   if (!draft || !timezoneValid || timezonePending) return;
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
+  const resolveDates = opened === null || ["defaultTimezone", "goodRangeStartYear", "pairingEnabled"]
+    .some((key) => draft[key as keyof typeof draft] !== opened[key as keyof typeof opened]);
+  const visibilityChanged = opened === null || ["ignoredFileNames", "hideDotNames", "hideHiddenAttributes", "hideSystemAttributes"]
+    .some((key) => JSON.stringify(draft[key as keyof typeof draft]) !== JSON.stringify(opened[key as keyof typeof opened]));
   const { soundEnabled, playbackVolume, ...configDraft } = draft;
   useSettingsStore.setState({ saving: true, message: "", messageLevel: null });
   const operationId = newActivityOperationId("settings");
@@ -86,7 +92,7 @@ export async function saveSettings(): Promise<void> {
 
   let resolved: number | null = null;
   try {
-    resolved = await invoke<number>("re_resolve_all");
+    resolved = await invoke<number>("apply_library_settings", { resolveDates });
   } catch (error) {
     log.error("settings re-index failed after save", toErrorFields(error));
     reportActionFailure(
@@ -96,11 +102,13 @@ export async function saveSettings(): Promise<void> {
     );
   }
   try {
+    if (visibilityChanged) await useDestinationsStore.getState().reconcileVisibility();
     await Promise.all([
       useSectionsStore.getState().loadCounts(),
       useItemsStore.getState().refresh(),
       useWizardStore.getState().recheckPresence(),
     ]);
+    if (visibilityChanged) await reconcileComparisonMembership();
   } catch (error) {
     log.error("settings projections refresh failed", toErrorFields(error));
     reportActionFailure(

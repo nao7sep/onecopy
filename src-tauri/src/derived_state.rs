@@ -128,7 +128,7 @@ fn work_debt_sql(ffmpeg: bool) -> String {
            COALESCE(SUM(c.kind = 'video' AND r.transcript_state = '{FAILED}'), 0),
            COALESCE(SUM(c.kind = 'audio' AND r.transcript_state IS NULL), 0),
            COALESCE(SUM(c.kind = 'audio' AND r.transcript_state = '{FAILED}'), 0)
-         FROM logical_contents l
+         FROM review_contents l
          JOIN contents c ON c.hash = l.content_hash
          LEFT JOIN analysis_receipts r ON r.content_hash = l.content_hash"
     )
@@ -585,7 +585,7 @@ pub(crate) fn priority_candidates(
         let sql = format!(
             "WITH hinted(hash, priority) AS (VALUES {values}) \
              SELECT h.hash FROM hinted h \
-             JOIN logical_contents l ON l.content_hash = h.hash \
+             JOIN review_contents l ON l.content_hash = h.hash \
              JOIN contents c ON c.hash = l.content_hash \
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
              WHERE {predicate} ORDER BY h.priority LIMIT {limit}"
@@ -609,7 +609,7 @@ pub(crate) fn priority_candidates(
         "AND l.resolved_utc_ms IS NULL"
     };
     let sql = format!(
-        "SELECT l.content_hash FROM logical_contents l \
+        "SELECT l.content_hash FROM review_contents l \
          JOIN contents c ON c.hash = l.content_hash \
          LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
          WHERE l.kind = ?1 {time_clause} AND {predicate} \
@@ -686,7 +686,7 @@ pub(crate) fn image_candidates(
     let mut statement = conn
         .prepare(&format!(
             "SELECT l.content_hash, p.abs_path \
-             FROM logical_contents l \
+             FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              WHERE l.kind = 'image' AND {pending} AND p.missing = 0 \
@@ -715,7 +715,7 @@ pub(crate) fn video_candidates(
     let mut statement = conn
         .prepare(&format!(
             "SELECT l.content_hash, p.abs_path \
-             FROM logical_contents l \
+             FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              WHERE l.kind = 'video' AND {pending} AND p.missing = 0 \
@@ -743,7 +743,7 @@ pub fn strip_candidates(
     let mut statement = conn
         .prepare(&format!(
             "SELECT c.hash, c.duration_ms, p.abs_path \
-             FROM logical_contents l \
+             FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              WHERE l.kind = 'video' AND c.strip_frames IS NULL \
@@ -778,7 +778,7 @@ pub fn prioritized_strip_candidates(
     let sql = format!(
         "WITH hinted(hash, priority) AS (VALUES {values}) \
          SELECT c.hash, c.duration_ms, p.abs_path FROM hinted h \
-         JOIN logical_contents l ON l.content_hash = h.hash \
+         JOIN review_contents l ON l.content_hash = h.hash \
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
          WHERE l.kind = 'video' AND c.strip_frames IS NULL \
@@ -805,7 +805,7 @@ pub fn face_candidates(
     let mut statement = conn
         .prepare(&format!(
             "SELECT c.hash, p.abs_path \
-             FROM logical_contents l \
+             FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
@@ -841,7 +841,7 @@ pub fn prioritized_face_candidates(
     let sql = format!(
         "WITH hinted(hash, priority) AS (VALUES {values}) \
          SELECT c.hash, p.abs_path FROM hinted h \
-         JOIN logical_contents l ON l.content_hash = h.hash \
+         JOIN review_contents l ON l.content_hash = h.hash \
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
          LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
@@ -872,7 +872,7 @@ pub fn transcript_candidates(
     let mut statement = conn
         .prepare(
             "SELECT c.hash, p.abs_path \
-             FROM logical_contents l \
+             FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
@@ -912,7 +912,7 @@ pub fn prioritized_transcript_candidates(
     let sql = format!(
         "WITH hinted(hash, priority) AS (VALUES {values}) \
          SELECT c.hash, p.abs_path FROM hinted h \
-         JOIN logical_contents l ON l.content_hash = h.hash \
+         JOIN review_contents l ON l.content_hash = h.hash \
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
          LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
@@ -1412,7 +1412,7 @@ pub(crate) fn reset_failed_outputs_in_transaction(
                 None => "AND resolved_utc_ms IS NULL",
             };
             (
-                format!(" IN (SELECT content_hash FROM logical_contents WHERE kind = ?1 {dates})"),
+                format!(" IN (SELECT content_hash FROM review_contents WHERE kind = ?1 {dates})"),
                 values,
             )
         }

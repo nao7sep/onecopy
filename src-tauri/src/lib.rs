@@ -70,6 +70,8 @@ pub mod fs_publish;
 pub mod fs_recovery;
 pub mod hashing;
 pub mod index_store;
+pub mod visibility;
+pub mod visibility_index;
 pub mod indexed_file;
 pub mod information_attempts;
 pub mod attempt_boundaries;
@@ -259,6 +261,7 @@ fn patch_config(
                 *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
             }
             ai_acceleration::validate_patch(&patch)?;
+            visibility::Policy::from_config(&patch)?;
             let outcome = storage::patch_config(&app, &patch)?;
             report_quarantine(&app, outcome.quarantined);
             // Invalidation, not a potentially stale snapshot from a racing save.
@@ -731,11 +734,13 @@ struct DirEntry {
 }
 
 #[tauri::command(async)]
-fn list_subdirs(path: String) -> Result<Vec<DirEntry>, String> {
-    list_subdirs_at(std::path::Path::new(&path))
+fn list_subdirs(app: AppHandle, path: String) -> Result<Vec<DirEntry>, String> {
+    let config = storage::read_config_for_setup(&paths::data_root(&app)?)?;
+    let policy = visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
+    list_subdirs_at(std::path::Path::new(&path), &policy)
 }
 
-fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
+fn list_subdirs_at(path: &std::path::Path, policy: &visibility::Policy) -> Result<Vec<DirEntry>, String> {
     if crate::trash::is_trash_path(path) {
         return Ok(Vec::new());
     }
@@ -743,12 +748,12 @@ fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
     let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     for entry in read {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !is_browsable_destination_child(&entry)? {
+        if !is_browsable_destination_child(&entry, policy)? {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let child_path = entry.path();
-        let (has_children, is_empty) = child_directory_facts(&child_path)?;
+        let (has_children, is_empty) = child_directory_facts(&child_path, policy)?;
         entries.push(DirEntry {
             name,
             path: child_path.to_string_lossy().to_string(),
@@ -760,18 +765,21 @@ fn list_subdirs_at(path: &std::path::Path) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
-fn is_browsable_destination_child(entry: &std::fs::DirEntry) -> Result<bool, String> {
-    Ok(!entry.file_name().to_string_lossy().starts_with('.')
-        && entry.file_type().map_err(|error| error.to_string())?.is_dir())
+fn is_browsable_destination_child(entry: &std::fs::DirEntry, policy: &visibility::Policy) -> Result<bool, String> {
+    if trash::is_trash_path(&entry.path()) || !entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+        return Ok(false);
+    }
+    let metadata = entry.metadata().map_err(|error| error.to_string())?;
+    Ok(policy.visible(&entry.file_name().to_string_lossy(), true, visibility::entry_flags(&entry.path(), &metadata)))
 }
 
-fn child_directory_facts(path: &std::path::Path) -> Result<(bool, bool), String> {
+fn child_directory_facts(path: &std::path::Path, policy: &visibility::Policy) -> Result<(bool, bool), String> {
     let children = std::fs::read_dir(path).map_err(|error| error.to_string())?;
     let mut is_empty = true;
     for child in children {
         let child = child.map_err(|error| error.to_string())?;
         is_empty = false;
-        if is_browsable_destination_child(&child)? {
+        if is_browsable_destination_child(&child, policy)? {
             return Ok((true, false));
         }
     }
@@ -798,7 +806,7 @@ mod destination_listing_tests {
         std::fs::create_dir_all(root.path().join("hidden-only/.hidden")).unwrap();
         std::fs::create_dir_all(root.path().join("trash-only/.onecopy-trash/day")).unwrap();
 
-        let rows = list_subdirs_at(root.path()).unwrap();
+        let rows = list_subdirs_at(root.path(), &visibility::Policy::from_config(&json!({})).unwrap()).unwrap();
         let facts = |name: &str| {
             let row = rows.iter().find(|row| row.name == name).unwrap();
             (row.has_children, row.is_empty)
@@ -809,7 +817,7 @@ mod destination_listing_tests {
         assert_eq!(facts("hidden-only"), (false, false));
         assert_eq!(facts("trash-only"), (false, false));
         assert!(rows.iter().all(|row| row.name != ".hidden"));
-        assert!(list_subdirs_at(&root.path().join("trash-only/.onecopy-trash"))
+        assert!(list_subdirs_at(&root.path().join("trash-only/.onecopy-trash"), &visibility::Policy::from_config(&json!({})).unwrap())
             .unwrap().is_empty());
     }
 }
@@ -1012,13 +1020,18 @@ fn text_encodings() -> &'static [&'static str] {
     text_preview::encodings()
 }
 
-// Re-resolves every indexed item from stored evidence. Similarity is marked
-// stale for its sole owner to rebuild; this command never performs derived
-// work itself.
+#[tauri::command]
+fn visibility_capabilities() -> visibility::Capabilities {
+    visibility::capabilities()
+}
+
+// Publishes Settings-owned index projections. Visibility uses saved facts;
+// only a changed date/pairing policy recomputes those projections. The
+// derived-work coordinator remains the sole owner of preparation/enrichment.
 #[tauri::command(async)]
-fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
+fn apply_library_settings(app: AppHandle, resolve_dates: bool) -> Result<u64, String> {
     logging::boundary(
-        "re_resolve_all",
+        "apply_library_settings",
         json!({}),
         || {
             scan_runtime::run_foreground(&app, || {
@@ -1030,6 +1043,11 @@ fn re_resolve_all(app: AppHandle) -> Result<u64, String> {
                     chrono::Utc::now().timestamp_millis(),
                 );
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+                visibility_index::apply_policy(&conn, &visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?)?;
+                if !resolve_dates {
+                    derived_work::wake();
+                    return Ok(0);
+                }
                 // Resolution rows carry their own resumable debt. Pairing is an
                 // atomic projection, so retain the existing coarse dirty-root
                 // receipt across the whole Settings rebuild; cancellation before
@@ -1092,7 +1110,7 @@ fn rescan_section(
                 let mut changed = 0u64;
                 for dir in &dirs {
                     changed +=
-                        watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists)?;
+                        watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists, &settings.source_dirs)?;
                 }
                 // Finish any interrupted index checkpoints too. Derived media is
                 // woken after the index tail instead of being smuggled into the
@@ -2106,7 +2124,8 @@ pub fn run() {
             prioritize_derived_work,
             set_window_fullscreen,
             ensure_preview,
-            re_resolve_all,
+            apply_library_settings,
+            visibility_capabilities,
             rescan_section,
             get_issues,
             get_active_notifications,
