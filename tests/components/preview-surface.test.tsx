@@ -19,7 +19,6 @@ import {
   emit,
   fireEvent as fireTauriEvent,
   invokeCalls,
-  listen,
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
@@ -91,6 +90,7 @@ beforeEach(() => {
       activeItem: null,
     }),
     log_event: () => null,
+    record_recent_notification: () => ({}),
   });
   useTranscriptStore.setState({ rows: {} });
   useContentSessionStore.setState({
@@ -125,49 +125,22 @@ afterEach(() => {
 });
 
 describe("shared video presentation", () => {
-  it("retains a failed shared-session listener at each visible owner and retries from a control", async () => {
-    mockCommands({ record_recent_notification: () => ({}) });
-    listen.mockRejectedValueOnce(
-      new Error("TypeError: EACCES /private/tmp/content listener IPC sentinel"),
-    );
-
-    render(
-      <>
-        <PreviewSurface surface="quick" hash={null} pathId={8} detail={OTHER_DETAIL} />
-        <PreviewSurface surface="preview-split" hash="audio-hash" detail={AUDIO_DETAIL} />
-      </>,
-    );
-
-    expect(
-      await screen.findByText(
-        "Preview settings could not be synchronized. Try a preview control again.",
-      ),
-    ).toBeTruthy();
-    expect(
-      await screen.findByText(
-        "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
-      ),
-    ).toBeTruthy();
-    expect(document.body.textContent).not.toContain("EACCES");
-    expect(document.body.textContent).not.toContain("/private/tmp");
-    expect(document.body.textContent).not.toContain("IPC sentinel");
-
-    fireEvent.click(await screen.findByRole("button", { name: "Wrap on" }));
+  it.each([2, 3, 4])("shows one noticeable video failure for media error %s and keeps native diagnostics out of the UI", async (code) => {
+    const view = render(<PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />);
+    const video = view.container.querySelector("video")!;
+    Object.defineProperty(video, "error", { value: { code, message: "fixture native decoder sentinel" } });
+    fireEvent.error(video);
+    const result = screen.getByRole("alert");
+    expect(result.textContent).toContain(code === 2 ? "could not be read" : code === 3 ? "could not be decoded" : "could not be loaded");
+    expect(screen.queryByText(/fixture native decoder sentinel/)).toBeNull();
+    expect(screen.queryByText(/This codec/)).toBeNull();
+    expect(screen.getByAltText("family.mov")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Open in default app" })).toBeTruthy();
     await act(async () => {});
-
-    expect(
-      screen.queryByText(
-        "Preview settings could not be synchronized. Try a preview control again.",
-      ),
-    ).toBeNull();
-    expect(
-      screen.getByText(
-        "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
-      ),
-    ).toBeTruthy();
-    expect(
-      listen.mock.calls.filter(([event]) => event === "content-session://state"),
-    ).toHaveLength(2);
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification" &&
+      (call.args?.request as { kind?: string })?.kind === "video-playback-failed")).toHaveLength(1);
+    expect(invokeCalls.some((call) => call.command === "log_event" &&
+      (call.args?.entry as { diagnostic?: string })?.diagnostic === "fixture native decoder sentinel")).toBe(true);
   });
 
   it("registers one named playback surface for central ownership", async () => {
@@ -624,8 +597,9 @@ describe("shared video presentation", () => {
     fireEvent.error(view.container.querySelector("audio")!);
 
     expect(
-      await screen.findByText("Built-in audio playback failed."),
+      await screen.findByText("This audio could not be played in the app."),
     ).toBeTruthy();
     expect(screen.getByText(/first line/)).toBeTruthy();
+    expect(await screen.findByText("hello")).toBeTruthy();
   });
 });

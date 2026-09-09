@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { choosePlaybackSession, type PlaybackSession } from "../../src/models/playback";
+import { choosePlaybackSession, playbackFailureMessage, type PlaybackSession } from "../../src/models/playback";
 
 const policy = {
   videoAutoplay: true,
@@ -7,6 +7,20 @@ const policy = {
   soundEnabled: true,
   volume: 0.6,
 };
+
+describe("playback failure messages", () => {
+  it.each([
+    [1, "interrupted"], [2, "could not be read"], [3, "could not be decoded"],
+    [4, "could not be loaded"], [null, "could not be played"], [99, "could not be played"],
+  ] as const)("reports code %s without inventing an exact codec cause", (code, words) => {
+    for (const medium of ["video", "audio"] as const) {
+      const message = playbackFailureMessage(medium, code);
+      expect(message).toContain(words);
+      expect(message.toLowerCase()).toContain(medium);
+      expect(message).not.toContain("This codec");
+    }
+  });
+});
 
 describe("playback ownership", () => {
   it("gives the transient viewer priority over persistent Preview", () => {

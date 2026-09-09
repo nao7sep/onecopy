@@ -1,6 +1,17 @@
 export type PlaybackMedium = "video" | "audio";
 export type PlaybackSurface = "preview-split" | "preview-window" | "quick" | "viewer";
 
+/** Standard MediaError codes do not establish a specific codec or file defect. */
+export function playbackFailureMessage(medium: PlaybackMedium, code: number | null): string {
+  switch (code) {
+    case 1: return `${medium === "video" ? "Video" : "Audio"} playback was interrupted.`;
+    case 2: return `This ${medium} could not be read. The file or its connection may be unavailable.`;
+    case 3: return `This ${medium} could not be decoded. It may be damaged or use unsupported features.`;
+    case 4: return `This ${medium} could not be loaded. Its format may be unsupported, or the file may be unavailable.`;
+    default: return `This ${medium} could not be played in the app.`;
+  }
+}
+
 export interface PlaybackRegistration {
   surface: PlaybackSurface;
   key: string;

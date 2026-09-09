@@ -25,7 +25,7 @@ import InspectableImage, {
 } from "./InspectableImage";
 import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
 import type { ItemDetail } from "../models/items";
-import type { PlaybackSurface } from "../models/playback";
+import { playbackFailureMessage, type PlaybackSurface, type PlaybackMedium } from "../models/playback";
 import { ExternalLink, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import TranscriptBlock from "./TranscriptBlock";
 import { usePlaybackMedia } from "../hooks/usePlaybackMedia";
@@ -34,6 +34,19 @@ import TextOrAttributesSurface from "./TextOrAttributesSurface";
 import { openInDefaultApp } from "../workflows/external-open";
 import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import { recordActionFailure } from "../state/notifications-store";
+
+function capturePlaybackFailure(element: HTMLMediaElement, key: string, medium: PlaybackMedium): string {
+  const code = element.error?.code ?? null;
+  const message = playbackFailureMessage(medium, code);
+  log.warn("media playback failed", {
+    key, medium, code, diagnostic: element.error?.message ?? null,
+    networkState: element.networkState, readyState: element.readyState,
+    position: element.currentTime,
+  });
+  recordActionFailure(`${medium}-playback-failed`, message);
+  return message;
+}
 
 function VideoSurface({
   hash,
@@ -46,7 +59,8 @@ function VideoSurface({
   surface: PlaybackSurface;
   keyboardActive?: boolean;
 }) {
-  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [playbackFailure, setPlaybackFailure] = useState<string | null>(null);
+  const playbackFailed = playbackFailure !== null;
   const [externalError, setExternalError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -147,7 +161,7 @@ function VideoSurface({
                   )
                 : undefined
             }
-            onError={() => setPlaybackFailed(true)}
+            onError={(event) => setPlaybackFailure(capturePlaybackFailure(event.currentTarget, hash, "video"))}
             onClick={() => playback.toggle()}
             onLoadedMetadata={(event) =>
               setDuration(event.currentTarget.duration)
@@ -282,14 +296,9 @@ function VideoSurface({
         ) : null}
       </div>
       {playbackFailed ? (
-        <p className="shrink-0 text-xs text-ink-muted">
-          This codec does not play in the app.
-          {detail.byteSize !== null ? ` ${formatBytes(detail.byteSize)}` : ""}
-          {detail.width !== null && detail.height !== null
-            ? ` · ${detail.width}×${detail.height}`
-            : ""}
-          {` · ${detail.copyPaths.length.toLocaleString()} ${detail.copyPaths.length === 1 ? "copy" : "copies"}`}
-        </p>
+        <OperationResult level="error" className="shrink-0 text-sm">
+          {playbackFailure}
+        </OperationResult>
       ) : null}
       {externalError !== null ? (
         <OperationResult level="error" className="shrink-0">
@@ -311,7 +320,6 @@ function VideoSurface({
             hash={hash}
             pathId={null}
             detail={detail}
-            specializedFailure="Built-in video playback failed."
           />
         </div>
       ) : null}
@@ -454,7 +462,8 @@ function AudioSurface({
   pathId: number | null;
 }) {
   const [externalError, setExternalError] = useState<string | null>(null);
-  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [playbackFailure, setPlaybackFailure] = useState<string | null>(null);
+  const playbackFailed = playbackFailure !== null;
   const playback = usePlaybackMedia<HTMLAudioElement>(
     surface,
     playbackKey,
@@ -463,12 +472,13 @@ function AudioSurface({
   );
   if (playbackFailed) {
     return (
-      <TextOrAttributesSurface
-        hash={hash}
-        pathId={pathId}
-        detail={detail}
-        specializedFailure="Built-in audio playback failed."
-      />
+      <div className="flex h-full min-h-0 w-full flex-col gap-3 p-3">
+        <OperationResult level="error" className="shrink-0 text-sm">{playbackFailure}</OperationResult>
+        <div className="min-h-0 flex-1">
+          <TextOrAttributesSurface hash={hash} pathId={pathId} detail={detail} />
+        </div>
+        {hash === null ? null : <TranscriptBlock hash={hash} medium="audio" />}
+      </div>
     );
   }
   return (
@@ -492,7 +502,7 @@ function AudioSurface({
           onTimeUpdate={playback.onTimeUpdate}
           onVolumeChange={playback.onVolumeChange}
           onEnded={playback.onEnded}
-          onError={() => setPlaybackFailed(true)}
+          onError={(event) => setPlaybackFailure(capturePlaybackFailure(event.currentTarget, playbackKey, "audio"))}
         />
         <p className="text-xs text-ink-muted">
           {detail.byteSize === null
