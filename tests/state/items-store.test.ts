@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { deleteSelectedItems } from "../../src/workflows/items";
@@ -103,6 +103,15 @@ describe("bounded section state", () => {
     expect(state.scrollRequest).toMatchObject({ key: "h901", index: 900, align: "center" });
     expect(state.sectionMemory["image:2026-01"].anchor).toBe(old.selectedItem);
     expect(invokeCalls.some((call) => /retry|recheck/.test(call.command))).toBe(false);
+  });
+
+  it("does not reveal replacement content at an Activity target's old path", async () => {
+    mockSection([item(1)]);
+    await useItemsStore.getState().select(SECTION);
+    const before = useItemsStore.getState();
+    mockCommands({ resolve_library_path: () => ({ identity: { hash: "replacement", pathId: 1 }, section: SECTION }) });
+    expect(await useItemsStore.getState().revealPath("/fixture/target.jpg", () => true, "original")).toBe("unavailable");
+    expect(useItemsStore.getState()).toBe(before);
   });
 
   it.each(["missing", "failed", "cancelled", "new-selection", "new-sort", "disappeared"])(
@@ -229,6 +238,7 @@ describe("explicit selection", () => {
 
     useItemsStore.getState().setAnchor("h2", 1);
 
+    await vi.waitFor(() => expect(invokeCalls.some((call) => call.command === "activity_record" && (call.args.draft as { owner: string }).owner === "anchor")).toBe(true));
     const event = invokeCalls
       .filter((call) => call.command === "activity_record")
       .map((call) => call.args.draft as Record<string, unknown>)

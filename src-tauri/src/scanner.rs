@@ -1336,6 +1336,7 @@ pub fn promote_identity(
         queued: None,
         done: None,
         total: None,
+        target_hash: None,
     });
     Ok(())
 }

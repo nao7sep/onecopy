@@ -190,6 +190,7 @@ pub fn emit_checked<T: Clone + Serialize>(
                 queued: None,
                 done: None,
                 total: None,
+                target_hash: None,
             });
             format!("could not publish {event}: {error}")
         })

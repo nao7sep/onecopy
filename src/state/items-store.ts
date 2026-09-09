@@ -82,7 +82,7 @@ interface ItemsState {
   loadWindow: (start: number, force?: boolean) => Promise<void>;
   selectPosition: (index: number, extend: boolean) => Promise<void>;
   selectIdentity: (key: string) => Promise<void>;
-  revealPath: (path: string, isCurrent: () => boolean) => Promise<"revealed" | "unavailable" | "superseded" | "failed">;
+  revealPath: (path: string, isCurrent: () => boolean, expectedHash?: string) => Promise<"revealed" | "unavailable" | "superseded" | "failed">;
   selectItem: (key: string | null, align?: "nearest" | "center", position?: number) => void;
   setAnchor: (key: string | null, position?: number) => void;
   toggleItem: (key: string, position?: number) => void;
@@ -171,7 +171,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     void reconcileCurrent(set, get, false, "center");
   },
 
-  revealPath: async (path, isCurrent) => {
+  revealPath: async (path, isCurrent, expectedHash) => {
     const ownsIntent = rangeLoad.begin();
     const fresh = () => ownsIntent() && isCurrent();
     const sorts = get().sortOrders;
@@ -179,6 +179,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       const target = await invoke<LibraryTarget | null>("resolve_library_path", { path });
       if (!fresh()) return "superseded";
       if (target === null) return "unavailable";
+      if (expectedHash !== undefined && target.identity.hash !== expectedHash) return "unavailable";
       const result = await invoke<SectionReconciliation>("reconcile_section", {
         ...target.section,
         sort: target.section.kind === "other" ? sorts.other : sorts.media,

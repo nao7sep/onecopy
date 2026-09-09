@@ -250,7 +250,16 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
                 return Ok(None);
             }
             let mut summary = crate::scanner::ScanSummary::default();
-            crate::scanner::run_index_tail(&conn, &settings, &progress, &mut summary)?;
+            let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::FileInformation, None, None);
+            let report = trace.progress_reporter();
+            let result = crate::scanner::run_index_tail(&conn, &settings, &|value| {
+                report(value.done, value.total);
+                progress(value);
+            }, &mut summary);
+            if result.is_ok() && summary.failures > 0 {
+                trace.finish(crate::activity::ActivityState::Failed, None);
+            } else { trace.result(&result); }
+            result?;
             Ok(Some(summary))
         },
     )?;

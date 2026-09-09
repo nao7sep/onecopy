@@ -654,12 +654,23 @@ fn rebuild_next_dirty_bucket(
             return Ok(None);
         };
         let _awake = crate::sleep_prevention::begin_work();
-        let candidates = candidates_for_bucket(conn, &bucket)?;
-        let groups = groups_for_bucket(&candidates, config, stop)?;
-        if let Some(stats) = publish_bucket(conn, &bucket, revision, &groups, stop)? {
+        if let Some(stats) = rebuild_bucket(conn, config, &bucket, revision, stop)? {
             return Ok(Some(stats));
         }
     }
+}
+
+fn rebuild_bucket(conn: &Connection, config: &SimilarityConfig, bucket: &str, revision: i64, stop: &dyn Fn() -> bool) -> Result<Option<GroupStats>, String> {
+    let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
+        Some(crate::activity::ActivitySubject::Similarity), None);
+    let result = (|| {
+        let candidates = candidates_for_bucket(conn, bucket)?;
+        let groups = groups_for_bucket(&candidates, config, stop)?;
+        publish_bucket(conn, bucket, revision, &groups, stop)
+    })();
+    if matches!(result, Ok(None)) { trace.finish(crate::activity::ActivityState::Stale, None); }
+    else { trace.result(&result); }
+    result
 }
 
 fn rebuild_all_dirty(
@@ -723,9 +734,7 @@ pub fn rebuild_priority_bucket_cancellable(
                 crate::resource_limits::SIMILARITY_REQUIRED_AVAILABLE,
                 "Similarity analysis",
             )?;
-            let candidates = candidates_for_bucket(conn, &bucket)?;
-            let groups = groups_for_bucket(&candidates, config, stop)?;
-            return publish_bucket(conn, &bucket, revision, &groups, stop);
+            return rebuild_bucket(conn, config, &bucket, revision, stop);
         }
     }
     Ok(None)

@@ -4,7 +4,6 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import BackgroundWorkModal from "../../src/components/BackgroundWorkModal";
 import {
-  BackgroundActivityProjection,
   backgroundWorkLine,
   backgroundRows,
   backgroundRowCanResume,
@@ -134,43 +133,6 @@ describe("Background work", () => {
     expect(backgroundWorkLine(state)).toBe("Video transcription 2/10");
   });
 
-  it("projects coordinator pulses as one class lifecycle until authoritative quiet", () => {
-    const projection = new BackgroundActivityProjection();
-    const running = {
-      workerRunning: true, pausedClasses: [],
-      active: {
-        id: "previews" as const,
-        hash: "private-hash",
-        done: null,
-        total: null,
-        stopping: false,
-      },
-    };
-
-    const started = projection.observe(running, "priority:7");
-    expect(started).toMatchObject([
-      {
-        kind: "started",
-        subject: "previews",
-        causeId: "priority:7",
-        current: "running",
-      },
-    ]);
-    const operationId = started[0]!.operationId;
-    expect(operationId).toMatch(/^backgroundWork:/);
-    expect(projection.observe({ ...running, active: null }, "priority:7")).toEqual([]);
-    expect(projection.observe(running, "priority:7")).toEqual([]);
-    expect(projection.quiet("priority:7")).toMatchObject([
-      {
-        kind: "completed",
-        subject: "previews",
-        operationId,
-        causeId: "priority:7",
-        current: "idle",
-      },
-    ]);
-    expect(projection.quiet("priority:7")).toEqual([]);
-  });
 
   it("keeps the status segment meaningful for running, queued, and settled work", () => {
     expect(backgroundWorkLine(current)).toBe("Thumbnails, previews, and posters: 12 queued");

@@ -60,6 +60,7 @@ export async function saveSettings(): Promise<void> {
   }
 
   let stateSaveFailed = false;
+  let followUpFailed = false;
   try {
     await useAppStore.getState().patchState(
       { soundEnabled, playbackVolume },
@@ -94,6 +95,7 @@ export async function saveSettings(): Promise<void> {
   try {
     resolved = await invoke<number>("apply_library_settings", { resolveDates });
   } catch (error) {
+    followUpFailed = true;
     log.error("settings re-index failed after save", toErrorFields(error));
     reportActionFailure(
       "settings-reindex-failed",
@@ -110,6 +112,7 @@ export async function saveSettings(): Promise<void> {
     ]);
     if (visibilityChanged) await reconcileComparisonMembership();
   } catch (error) {
+    followUpFailed = true;
     log.error("settings projections refresh failed", toErrorFields(error));
     reportActionFailure(
       "settings-refresh-failed",
@@ -121,6 +124,7 @@ export async function saveSettings(): Promise<void> {
     try {
       await useSectionsStore.getState().startSourceCheck();
     } catch (error) {
+      followUpFailed = true;
       log.error("source-folder check failed to start after settings save", toErrorFields(error));
       recordActionFailure(
         "settings-source-check-failed",
@@ -129,16 +133,17 @@ export async function saveSettings(): Promise<void> {
       );
     }
   }
-  log.info(stateSaveFailed ? "settings partially saved" : "settings saved", {
+  const failed = stateSaveFailed || followUpFailed;
+  log.info(failed ? "settings partially saved" : "settings saved", {
     resolved,
   });
   refreshBackgroundWorkSoon();
   recordActivity({
-    kind: stateSaveFailed ? "failed" : "completed",
+    kind: failed ? "failed" : "completed",
     owner: "settings",
     operationId,
     previous: "running",
-    current: stateSaveFailed ? "failed" : "succeeded",
-    reason: stateSaveFailed ? "error" : "completion",
+    current: failed ? "failed" : "succeeded",
+    reason: failed ? "error" : "completion",
   });
 }

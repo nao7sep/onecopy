@@ -249,6 +249,8 @@ fn derive_videos_pending_limit(
 
     for (hash, path) in rows {
         let _awake = crate::sleep_prevention::begin_work();
+        let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
+            Some(crate::activity::ActivitySubject::Previews), Some(&hash));
         if let Some(report) = on_item {
             report(&hash);
         }
@@ -286,14 +288,17 @@ fn derive_videos_pending_limit(
                     &path,
                     duration_ms,
                 )?;
+                trace.finish(crate::activity::ActivityState::Succeeded, None);
                 stats.changed_hashes.push(hash);
             }
             Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                trace.finish(crate::activity::ActivityState::Cancelled, None);
                 return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) => {
                 stats.failed += 1;
                 crate::derived_state::record_poster_failure(conn, &hash, &path, &err)?;
+                trace.finish(crate::activity::ActivityState::Failed, None);
                 stats.changed_hashes.push(hash);
             }
         }
@@ -346,6 +351,8 @@ pub fn derive_strips_pending(
         }
         let _awake = crate::sleep_prevention::begin_work();
         on_item(&hash);
+        let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
+            Some(crate::activity::ActivitySubject::Snapshots), Some(&hash));
         stats.attempted += 1;
         stats.last_attempted_hash = Some(hash.clone());
         let src = Path::new(&path);
@@ -362,17 +369,20 @@ pub fn derive_strips_pending(
                 });
                 crate::fs_recovery::remove_file(&staged, "video snapshot staging cleanup");
                 frame_result?;
+                trace.progress(index as u64 + 1, count as u64);
             }
             Ok(())
         })();
         match result {
             Ok(()) => {
                 crate::derived_state::record_strip_success(conn, &hash, &path, count)?;
+                trace.finish(crate::activity::ActivityState::Succeeded, None);
                 on_change(&hash);
                 stats.completed += 1;
                 progress(stats.attempted, total);
             }
             Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                trace.finish(crate::activity::ActivityState::Cancelled, None);
                 for index in 0..count {
                     crate::fs_recovery::remove_file(
                         &strip_path(cache, &hash, index),
@@ -389,6 +399,7 @@ pub fn derive_strips_pending(
                 // DERIVE_VERSION bump re-derives; the issue row carries the
                 // reason meanwhile.
                 crate::derived_state::record_strip_failure(conn, &hash, &path, &err)?;
+                trace.finish(crate::activity::ActivityState::Failed, None);
                 on_change(&hash);
                 stats.failed += 1;
                 progress(stats.attempted, total);

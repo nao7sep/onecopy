@@ -328,9 +328,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               <MenuItem onSelect={() => openUtility("backgroundWork")}>Background work…</MenuItem>
               <MenuItem onSelect={() => openUtility("deletedFiles")}>Deleted files…</MenuItem>
               <MenuItem onSelect={() => openUtility("issues")}>Issues…</MenuItem>
-              {appData.debugEnabled ? (
-                <MenuItem onSelect={() => openUtility("activityTrace")}>Activity trace…</MenuItem>
-              ) : null}
+              <MenuItem onSelect={() => openUtility("activityTrace")}>Activity trace…</MenuItem>
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}

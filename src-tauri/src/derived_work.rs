@@ -1686,6 +1686,16 @@ pub fn complete_transcription_attempt(
         return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
     }
     let claim = crate::transcription::claim()?;
+    let subject = match attempt.conn.query_row("SELECT kind FROM contents WHERE hash = ?1", [&hash], |row| row.get::<_, String>(0)) {
+        Ok(kind) => Some(if kind == "video" { crate::activity::ActivitySubject::VideoTranscription } else { crate::activity::ActivitySubject::AudioTranscription }),
+        Err(error) => {
+            crate::logging::warn("activity transcription scope unavailable", serde_json::json!({"error": error.to_string()}));
+            None
+        }
+    };
+    let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::Transcript, subject, Some(&hash));
+    let activity_progress = trace.progress_reporter();
+    let outcome = (|| {
     let _awake = crate::sleep_prevention::begin_work();
     let finished = std::sync::Arc::new(AtomicBool::new(false));
     let memory_pressure = Arc::new(AtomicBool::new(false));
@@ -1732,7 +1742,10 @@ pub fn complete_transcription_attempt(
         &ffmpeg,
         Path::new(attempt.source_path),
         attempt.acceleration,
-        move |percent| on_progress(&progress_hash, percent),
+        move |percent| {
+            activity_progress(percent.clamp(0, 100) as u64, 100);
+            on_progress(&progress_hash, percent);
+        },
     );
     drop(finish_signal);
     if let Some(watch) = watch {
@@ -1753,6 +1766,16 @@ pub fn complete_transcription_attempt(
     Ok(outcome.unwrap_or(TranscriptionAttemptOutcome::Cancelled {
         hash: cancelled_hash,
     }))
+    })();
+    match &outcome {
+        Ok(TranscriptionAttemptOutcome::Completed { hash, .. }) => trace.finish(crate::activity::ActivityState::Succeeded, Some(hash)),
+        Ok(TranscriptionAttemptOutcome::Cancelled { .. }) => trace.finish(crate::activity::ActivityState::Cancelled, None),
+        Ok(TranscriptionAttemptOutcome::Unavailable { .. }) => trace.finish(crate::activity::ActivityState::Waiting, None),
+        Ok(TranscriptionAttemptOutcome::ResourceSafety { .. }) => trace.finish(crate::activity::ActivityState::Paused, None),
+        Ok(TranscriptionAttemptOutcome::Failed { .. }) => trace.finish(crate::activity::ActivityState::Failed, None),
+        Err(_) => trace.result(&outcome),
+    }
+    outcome
 }
 
 /// Runs the same identity, cache, publication, receipt, replacement, and

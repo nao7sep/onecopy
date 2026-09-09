@@ -13,7 +13,6 @@ import { createEventInstaller } from "../utils/eventInstallation";
 import { useSectionsStore } from "./sections-store";
 import {
   finishActivityOperation,
-  latestActivityOperationId,
   newActivityOperationId,
   recordActivity,
   type ActivityDraft,
@@ -199,104 +198,6 @@ const ITEM_CLASS_FIELD: Record<ActiveItemWork["id"], keyof ItemWorkStates> = {
   "audio-transcripts": "transcripts",
 };
 
-type ProjectedActiveWork = Pick<ActiveItemWork, "id" | "done" | "total" | "stopping"> & {
-  operationId: string;
-};
-
-/**
- * Turns the coordinator's high-frequency runtime projection into lifecycle
- * evidence. A momentary `active: null` is an implementation pulse between
- * items, not proof that the class is finished; `derived://quiet` is the
- * authoritative settled boundary.
- */
-export class BackgroundActivityProjection {
-  private active: ProjectedActiveWork | null = null;
-
-  observe(runtime: BackgroundRuntimeSnapshot, causeId?: string): ActivityDraft[] {
-    const next = runtime.active;
-    if (next === null) return [];
-
-    const events: ActivityDraft[] = [];
-    if (this.active !== null && this.active.id !== next.id) {
-      events.push(this.completed(this.active.id, this.active.operationId, causeId));
-      finishActivityOperation("backgroundWork", this.active.operationId);
-      this.active = null;
-    }
-
-    if (this.active === null) {
-      const operationId = newActivityOperationId("backgroundWork");
-      events.push({
-        kind: next.stopping ? "stopping" : "started",
-        owner: "backgroundWork",
-        subject: ACTIVITY_SUBJECTS[next.id],
-        operationId,
-        causeId,
-        current: next.stopping ? "stopping" : "running",
-        reason: next.stopping ? "preemption" : undefined,
-        done: next.done ?? undefined,
-        total: next.total ?? undefined,
-      });
-      this.active = {
-        id: next.id,
-        done: next.done,
-        total: next.total,
-        stopping: next.stopping,
-        operationId,
-      };
-    } else if (
-      this.active.stopping !== next.stopping ||
-      this.active.done !== next.done ||
-      this.active.total !== next.total
-    ) {
-      events.push({
-        kind: next.stopping ? "stopping" : "progressed",
-        owner: "backgroundWork",
-        subject: ACTIVITY_SUBJECTS[next.id],
-        operationId: this.active.operationId,
-        causeId,
-        current: next.stopping ? "stopping" : "running",
-        reason: next.stopping ? "preemption" : undefined,
-        done: next.done ?? undefined,
-        total: next.total ?? undefined,
-      });
-    }
-
-    if (this.active !== null) {
-      this.active = {
-        ...this.active,
-        id: next.id,
-        done: next.done,
-        total: next.total,
-        stopping: next.stopping,
-      };
-    }
-    return events;
-  }
-
-  quiet(causeId?: string): ActivityDraft[] {
-    if (this.active === null) return [];
-    const event = this.completed(this.active.id, this.active.operationId, causeId);
-    finishActivityOperation("backgroundWork", this.active.operationId);
-    this.active = null;
-    return [event];
-  }
-
-  private completed(
-    id: ActiveItemWork["id"],
-    operationId: string,
-    causeId?: string,
-  ): ActivityDraft {
-    return {
-      kind: "completed",
-      owner: "backgroundWork",
-      subject: ACTIVITY_SUBJECTS[id],
-      operationId,
-      causeId,
-      current: "idle",
-      reason: "completion",
-    };
-  }
-}
 
 export function mergeActiveItemWork(
   states: ItemWorkStates,
@@ -376,8 +277,6 @@ export function installActivityPings(target: Window): () => void {
   };
 }
 
-const backgroundActivity = new BackgroundActivityProjection();
-
 const installEvents = createEventInstaller(
   async (listeners) => {
     await listeners.listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
@@ -387,14 +286,8 @@ const installEvents = createEventInstaller(
         snapshot: mergeBackgroundRuntime(state.snapshot, event.payload),
         activeItem: event.payload.active,
       }));
-      for (const draft of backgroundActivity.observe(event.payload, latestActivityOperationId("priority"))) {
-        recordActivity(draft);
-      }
     });
     await listeners.listen("derived://quiet", () => {
-      for (const draft of backgroundActivity.quiet(latestActivityOperationId("priority"))) {
-        recordActivity(draft);
-      }
       refreshBackgroundWorkSoon();
     });
     for (const event of [

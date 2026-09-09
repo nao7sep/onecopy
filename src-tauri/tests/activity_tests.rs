@@ -19,6 +19,7 @@ fn draft(operation_id: Option<&str>) -> ActivityDraft {
         queued: None,
         done: None,
         total: None,
+        target_hash: None,
     }
 }
 
@@ -171,4 +172,185 @@ fn concrete_timing_owners_serialize_without_free_form_payloads() {
         assert!(value.get("path").is_none());
         assert!(value.get("payload").is_none());
     }
+}
+
+#[test]
+fn operation_pages_keep_start_and_duration_outside_the_latest_raw_slice() {
+    let (_temp, recorder) = recorder("one");
+    recorder
+        .record_at(draft(Some("long")), "2026-09-07T00:00:00.000Z".into(), 10)
+        .unwrap();
+    for i in 1..=250 {
+        let mut progress = draft(Some("long"));
+        progress.kind = ActivityKind::Progressed;
+        progress.done = Some(i);
+        progress.total = Some(250);
+        recorder
+            .record_at(progress, "2026-09-07T00:00:01.000Z".into(), i + 10)
+            .unwrap();
+    }
+    recorder
+        .record_at(draft(Some("new")), "2026-09-07T00:00:02.000Z".into(), 300)
+        .unwrap();
+    let mut terminal = draft(Some("long"));
+    terminal.kind = ActivityKind::Completed;
+    terminal.current = Some(ActivityState::Succeeded);
+    terminal.item_count = None;
+    recorder
+        .record_at(terminal, "2026-09-07T00:00:03.000Z".into(), 400)
+        .unwrap();
+    let page = recorder.operations(None, None, 1).unwrap();
+    assert_eq!(
+        page.operations[0].first.draft.operation_id.as_deref(),
+        Some("new")
+    );
+    let older = recorder.operations(page.next_cursor, None, 1).unwrap();
+    let row = &older.operations[0];
+    assert_eq!(row.event_count, 252);
+    assert_eq!(row.started.as_ref().unwrap().monotonic_ms, 10);
+    assert_eq!(row.latest.monotonic_ms, 400);
+    assert_eq!(row.latest.draft.current, Some(ActivityState::Succeeded));
+    assert_eq!(row.progress.as_ref().unwrap().draft.done, Some(250));
+    let (events, cursor) = recorder.events(row.id, None, 100).unwrap();
+    assert_eq!(events.len(), 100);
+    assert!(cursor.is_some());
+    assert!(events
+        .iter()
+        .all(|event| event.draft.operation_id.as_deref() == Some("long")));
+    let mut all = events;
+    let mut before = cursor;
+    while before.is_some() {
+        let (events, next) = recorder.events(row.id, before, 100).unwrap();
+        all.extend(events);
+        before = next;
+    }
+    assert_eq!(all.len(), 252);
+    assert_eq!(all.last().unwrap().event_id, row.first.event_id);
+}
+
+#[test]
+fn projection_reads_use_seek_indexes_and_reject_corrupt_upgrades_without_partial_changes() {
+    let (temp, recorder) = recorder("one");
+    drop(recorder);
+    let conn = rusqlite::Connection::open(temp.path().join("activity.sqlite3")).unwrap();
+    for (query, expected) in [
+        ("SELECT * FROM activity_operations WHERE last_id > 1 ORDER BY last_id LIMIT 101", "activity_operations_changed"),
+        ("SELECT * FROM activity_operations WHERE first_id < 100 ORDER BY first_id DESC LIMIT 101", "INTEGER PRIMARY KEY"),
+        ("SELECT * FROM activity_events WHERE session_id = 'one' AND operation_id = 'work:1' AND id < 100 ORDER BY id DESC LIMIT 101", "activity_events_operation"),
+    ] {
+        let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {query}")).unwrap();
+        let details = statement.query_map([], |row| row.get::<_, String>(3)).unwrap()
+            .collect::<Result<Vec<_>, _>>().unwrap().join(" ");
+        assert!(details.contains(expected), "{details}");
+        assert!(!details.contains("SCAN "), "{details}");
+    }
+    conn.execute_batch("DROP TRIGGER activity_project_insert; DROP TABLE activity_operations;
+        ALTER TABLE activity_events DROP COLUMN user_visible; PRAGMA user_version = 0;
+        INSERT INTO activity_events(session_id, sequence, event_time_utc, monotonic_ms, owner, kind, draft_json)
+        VALUES('old',1,'2026-09-09T00:00:00.000Z',0,'settings','started','broken');").unwrap();
+    assert!(onecopy_lib::activity_history::initialize(&conn).is_err());
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM activity_events", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('activity_events') WHERE name = 'user_visible'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn forward_operation_cursor_catches_every_burst_and_changes_to_old_rows() {
+    let (_temp, recorder) = recorder("one");
+    recorder
+        .record_at(draft(Some("old")), "2026-09-07T00:00:00.000Z".into(), 0)
+        .unwrap();
+    let mut revision = recorder.operations(None, None, 100).unwrap().revision;
+    for i in 0..251 {
+        recorder
+            .record_at(
+                draft(Some(&format!("burst:{i}"))),
+                "2026-09-07T00:00:01.000Z".into(),
+                i + 1,
+            )
+            .unwrap();
+    }
+    let mut end = draft(Some("old"));
+    end.kind = ActivityKind::Failed;
+    end.current = Some(ActivityState::Failed);
+    recorder
+        .record_at(end, "2026-09-07T00:00:02.000Z".into(), 999)
+        .unwrap();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let page = recorder.operations(None, Some(revision), 100).unwrap();
+        assert!(page.operations.len() <= 100);
+        for row in page.operations {
+            assert!(seen.insert(row.id));
+        }
+        revision = page.revision;
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 252);
+    assert!(seen.contains(&1));
+    assert!(recorder
+        .operations(None, Some(revision), 100)
+        .unwrap()
+        .operations
+        .is_empty());
+}
+
+#[test]
+fn operation_projection_upgrade_keeps_old_events_and_separates_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("activity.sqlite3");
+    let original = ActivityRecorder::new("one".into(), db.clone()).unwrap();
+    let mut work = draft(Some("same"));
+    work.owner = ActivityOwner::ManagedTools;
+    original
+        .record_at(work, "2026-09-07T00:00:00.000Z".into(), 2)
+        .unwrap();
+    original
+        .record_at(
+            draft(Some("internal")),
+            "2026-09-07T00:00:00.001Z".into(),
+            3,
+        )
+        .unwrap();
+    drop(original);
+    // Restore the original history schema, retaining its event exactly.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "DROP TRIGGER activity_project_insert; DROP TABLE activity_operations;
+        ALTER TABLE activity_events DROP COLUMN user_visible; PRAGMA user_version = 0;",
+    )
+    .unwrap();
+    drop(conn);
+    let next = ActivityRecorder::new("two".into(), db).unwrap();
+    next.record_at(draft(Some("same")), "2026-09-08T00:00:00.000Z".into(), 1)
+        .unwrap();
+    let page = next.operations(None, None, 100).unwrap();
+    assert_eq!(page.operations.len(), 2);
+    assert_eq!(page.operations[1].first.session_id, "one");
+    assert_eq!(page.operations[1].first.sequence, 1);
+    assert_eq!(page.operations[1].first.monotonic_ms, 2);
+    assert_eq!(
+        next.page(None, 100).unwrap().0.len(),
+        3,
+        "internal raw history is retained without ordinary rows"
+    );
 }

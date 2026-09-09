@@ -1,4 +1,4 @@
-import { beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { ensureRequestedPreview } from "../../src/repositories/requested-previews";
 import {
   invokeCalls,
@@ -29,9 +29,9 @@ it("preserves the backend's coalesced result for concurrent callers", async () =
   expect(
     invokeCalls.filter((call) => call.command === "ensure_preview"),
   ).toHaveLength(2);
-  expect(
+  await vi.waitFor(() => expect(
     invokeCalls.filter((call) => call.command === "activity_record"),
-  ).toHaveLength(4);
+  ).toHaveLength(4));
 });
 
 it("does not coalesce different previews", async () => {

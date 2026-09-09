@@ -71,14 +71,17 @@ export default function PassiveScrollRegion({
   label,
   className = "",
   onScroll,
+  viewportRef: suppliedViewportRef,
   children,
 }: {
   label: string;
   className?: string;
   onScroll?: React.UIEventHandler<HTMLDivElement>;
+  viewportRef?: React.RefObject<HTMLDivElement | null>;
   children: React.ReactNode;
 }) {
-  const viewportRef = useRef<HTMLDivElement>(null);
+  const internalViewportRef = useRef<HTMLDivElement>(null);
+  const viewportRef = suppliedViewportRef ?? internalViewportRef;
   const contentRef = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<number | null>(null);
   const engagementRef = useRef({ focused: false, near: false });
@@ -129,7 +132,7 @@ export default function PassiveScrollRegion({
         viewport.clientHeight,
       ),
     );
-  }, []);
+  }, [viewportRef]);
 
   useLayoutEffect(() => {
     refreshGeometry();

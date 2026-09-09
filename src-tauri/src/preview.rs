@@ -504,6 +504,9 @@ pub fn derive_one(
                 .to_string(),
         );
     }
+    let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
+        Some(crate::activity::ActivitySubject::Previews), Some(hash));
+    let result = (|| {
     let _awake = crate::sleep_prevention::begin_work();
     if crate::scanner::is_provisional(hash) {
         let (real, facts) =
@@ -537,6 +540,12 @@ pub fn derive_one(
         facts.phash,
     )?;
     Ok(hash.to_string())
+    })();
+    match &result {
+        Ok(key) => trace.finish(crate::activity::ActivityState::Succeeded, Some(key)),
+        Err(_) => trace.result(&result),
+    }
+    result
 }
 
 fn record_preview_failure_or_combine(
@@ -796,6 +805,8 @@ fn derive_candidate_rows(
             Vec::new()
         };
         let mut outcomes: Vec<Option<DeriveOutcome>> = (0..chunk.len()).map(|_| None).collect();
+        let mut traces: Vec<_> = chunk.iter().map(|(hash, _)| crate::activity::WorkTrace::begin(
+            crate::activity::ActivityOwner::BackgroundWork, Some(crate::activity::ActivitySubject::Previews), Some(hash))).collect();
         if parallel.len() > 1 {
             for (index, outcome) in
                 derive_native_candidates_parallel(&parallel, cache, thumb_edge, preview_long_edge)?
@@ -852,6 +863,7 @@ fn derive_candidate_rows(
                         facts.sharpness,
                         facts.phash,
                     )?;
+                    traces[index].finish(crate::activity::ActivityState::Succeeded, Some(&key));
                     stats.changes.push((hash.clone(), key));
                 }
                 Err(err) if err == NEEDS_FFMPEG => {
@@ -859,14 +871,17 @@ fn derive_candidate_rows(
                     // keeps it inert until ffmpeg arrives and wakes the owner.
                     stats.blocked_no_ffmpeg += 1;
                     crate::derived_state::record_preview_blocked(conn, hash)?;
+                    traces[index].finish(crate::activity::ActivityState::Waiting, None);
                     stats.changes.push((hash.clone(), hash.clone()));
                 }
                 Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                    traces[index].finish(crate::activity::ActivityState::Cancelled, None);
                     return Err(crate::scanner::CANCELLED.to_string());
                 }
                 Err(err) => {
                     stats.failed += 1;
                     crate::derived_state::record_preview_failure(conn, hash, path, &err)?;
+                    traces[index].finish(crate::activity::ActivityState::Failed, None);
                     stats.changes.push((hash.clone(), hash.clone()));
                 }
             }

@@ -242,8 +242,17 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
         crate::scan_runtime::Owner::SourceCheck,
         || state().cancelled(),
         || {
-            crate::index_store::open(&db_file)
-                .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &progress))
+            let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::SourceCheck, None, None);
+            let report = trace.progress_reporter();
+            let result = crate::index_store::open(&db_file)
+                .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &|value| {
+                    report(value.done, value.total);
+                    progress(value);
+                }));
+            if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
+                trace.finish(crate::activity::ActivityState::Failed, None);
+            } else { trace.result(&result); }
+            result
         },
     )?;
     if crate::app_lifecycle::shutting_down() {

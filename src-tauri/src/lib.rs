@@ -48,6 +48,8 @@ fn menu_with_safe_quit(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 pub mod activity;
+pub mod activity_history;
+mod sqlite;
 pub mod ai_acceleration;
 pub mod ai_dependencies;
 mod app_lifecycle;
@@ -2020,12 +2022,27 @@ async fn activity_record(
 
 #[tauri::command(async)]
 async fn activity_page(
+    app: AppHandle,
     before: Option<i64>,
+    after: Option<i64>,
     limit: Option<usize>,
-) -> Result<activity::ActivityPage, String> {
-    tokio::task::spawn_blocking(move || activity::page(before, limit))
+) -> Result<activity_history::OperationPage, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut page = activity::operations(before, after, limit)?;
+        if page.operations.iter().any(|row| row.target_hash.is_some()) {
+            let conn = index_store::open(&paths::data_root(&app)?.join(storage::INDEX_DB_FILE_NAME))?;
+            activity_history::resolve_targets(&conn, &mut page.operations)?;
+        }
+        Ok(page)
+    })
         .await
         .map_err(|error| format!("activity page worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn activity_events(operation: i64, before: Option<i64>, limit: Option<usize>) -> Result<activity::ActivityPage, String> {
+    tokio::task::spawn_blocking(move || activity::events(operation, before, limit)).await
+        .map_err(|error| format!("activity details worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2152,6 +2169,7 @@ pub fn run() {
             logging_debug_enabled,
             activity_record,
             activity_page,
+            activity_events,
             request_app_exit
         ])
         .build(tauri::generate_context!());

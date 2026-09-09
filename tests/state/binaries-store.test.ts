@@ -289,13 +289,13 @@ describe("managed-tool terminal ownership", () => {
     expect(
       invokeCalls.filter((call) => call.command === "publish_notification"),
     ).toEqual([]);
-    expect(
+    await vi.waitFor(() => expect(
       invokeCalls.some(
         (call) =>
           call.command === "activity_record" &&
           (call.args.draft as { kind?: string }).kind === "stale",
       ),
-    ).toBe(true);
+    ).toBe(true));
   });
 
   it("applies an authoritative check response without a second status request", async () => {

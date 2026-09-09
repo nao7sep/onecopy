@@ -2,6 +2,7 @@
 
 | File | Solely owns | Explicitly excludes |
 |---|---|---|
+| `activity-history.md` | Retained operation history, ordinary versus debug activity, complete live/older reads, stable reading position, and progressive diagnostic detail | Work admission, scheduling, output truth, Issues, and Main navigation mechanics |
 | `library-visibility.md` | Editable filename and native-attribute visibility policy, inventory versus review eligibility, hidden-copy membership, and source/destination filtering | Date and representative ranking, source-check lifecycle, review recovery mechanics, and filesystem execution |
 | `library-items.md` | Logical content identity, physical copies, date evidence and completion, deterministic representatives, ordinary and Live Photo companions, and stable section classification | Source walking, background scheduling, review interaction, content presentation, and file-operation effects |
 | `library-maintenance.md` | Configured-source checking, watcher ingestion, completing known file information, required preparation, optional enrichment, Background Work, first-launch explanation, priority, transcription generation, and index rebuilding | Presentation of completed results, review selection, file-operation effects, and general failure presentation |

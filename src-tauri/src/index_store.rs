@@ -419,16 +419,14 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         left.to_lowercase().cmp(&right.to_lowercase())
     })
     .map_err(|error| error.to_string())?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "busy_timeout", 5000)
-        .map_err(|e| e.to_string())?;
+    static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
+    JOURNAL.configure(&conn, std::time::Duration::from_secs(5))?;
     let schema_revision = conn
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("read index schema revision: {error}"))?;
     if schema_revision != SCHEMA_REVISION {
         conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE")
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("claim index upgrade: {error}"))?;
         let setup = (|| {
             // Another opener may have completed the upgrade while this one
             // waited for SQLite's write lock. Its observed version owns DDL.

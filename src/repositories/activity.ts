@@ -45,6 +45,8 @@ export type ActivityOwner =
   | "delivery";
 
 export type ActivitySubject =
+  | "installTools" | "checkToolUpdates"
+  | "copyFiles" | "moveFiles" | "deleteFiles" | "emptyDeletedFiles"
   | "previews"
   | "snapshots"
   | "similarity"
@@ -99,6 +101,7 @@ export interface ActivityDraft {
   queued?: number;
   done?: number;
   total?: number;
+  targetHash?: string;
 }
 
 export interface ActivityEvent extends ActivityDraft {
@@ -109,7 +112,7 @@ export interface ActivityEvent extends ActivityDraft {
   monotonicMs: number;
 }
 
-export interface ActivityPage {
+export interface ActivityEventPage {
   debugEnabled: boolean;
   sessionId: string | null;
   monotonicNowMs: number;
@@ -117,7 +120,28 @@ export interface ActivityPage {
   nextCursor: number | null;
 }
 
+export interface ActivityOperation {
+  id: number;
+  first: ActivityEvent;
+  latest: ActivityEvent;
+  started: ActivityEvent | null;
+  progress: ActivityEvent | null;
+  eventCount: number;
+  targetHash: string | null;
+  target: { name: string; path: string } | null;
+}
+
+export interface ActivityPage {
+  operations: ActivityOperation[];
+  nextCursor: number | null;
+  revision: number;
+  hasMore: boolean;
+  sessionId: string;
+  monotonicNowMs: number;
+}
+
 const latestOperations = new Map<ActivityOwner, string>();
+let pendingRecord: Promise<unknown> = Promise.resolve();
 
 export function newActivityOperationId(owner: ActivityOwner): string {
   // Every webview has its own JavaScript realm, so a module-local counter can
@@ -136,17 +160,23 @@ export function finishActivityOperation(owner: ActivityOwner, operationId: strin
   if (latestOperations.get(owner) === operationId) latestOperations.delete(owner);
 }
 
-/** Fire-and-forget developer evidence. It must never change product control flow. */
+/** Fire-and-forget observation. It must never change product control flow. */
 export function recordActivity(draft: ActivityDraft): void {
-  if (!isDebugLoggingEnabled()) return;
-  void invoke("activity_record", { draft }).catch((error) =>
-    log.warn("activity recording failed", toErrorFields(error)),
-  );
+  if (!isDebugLoggingEnabled() && draft.owner !== "managedTools" && draft.owner !== "settings") return;
+  // Preserve each renderer's lifecycle order across asynchronously dispatched
+  // native commands without making product work wait for diagnostic I/O.
+  pendingRecord = pendingRecord.then(() => invoke("activity_record", { draft }))
+    .catch((error) => log.warn("activity recording failed", toErrorFields(error)));
 }
 
 export function loadActivityPage(
   before: number | null = null,
   limit = 100,
+  after: number | null = null,
 ): Promise<ActivityPage> {
-  return invoke<ActivityPage>("activity_page", { before, limit });
+  return invoke<ActivityPage>("activity_page", { before, after, limit });
+}
+
+export function loadActivityEvents(operation: number, before: number | null = null): Promise<ActivityEventPage> {
+  return invoke("activity_events", { operation, before, limit: 100 });
 }

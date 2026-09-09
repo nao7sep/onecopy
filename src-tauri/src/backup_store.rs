@@ -116,12 +116,10 @@ fn open(store_file: &Path) -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let conn = Connection::open(store_file).map_err(|e| e.to_string())?;
-    // WAL for cross-process overlap; contention may delay a save by
-    // at most 100 ms before this best-effort record is dropped and warned.
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "busy_timeout", 100)
-        .map_err(|e| e.to_string())?;
+    // WAL for cross-process overlap. SQLite contention uses a 100 ms timeout
+    // before this best-effort record is dropped and warned.
+    static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
+    JOURNAL.configure(&conn, std::time::Duration::from_millis(100))?;
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     Ok(conn)
 }

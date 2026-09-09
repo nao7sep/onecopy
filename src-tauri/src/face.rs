@@ -419,6 +419,8 @@ pub fn complete_face_scoring_attempt(
     mut on_change: impl FnMut(&str),
     inference: impl FnOnce(&DynamicImage) -> Result<f32, String>,
 ) -> Result<FaceScoringAttemptOutcome, String> {
+    let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
+        Some(crate::activity::ActivitySubject::Faces), Some(hash));
     let preview = cache.preview(hash);
     let decoded = std::fs::read(&preview)
         .map_err(|error| error.to_string())
@@ -427,14 +429,17 @@ pub fn complete_face_scoring_attempt(
     match outcome {
         Ok(score) => {
             crate::derived_state::record_face_success(conn, hash, source_path, score as f64)?;
+            trace.finish(crate::activity::ActivityState::Succeeded, None);
             on_change(hash);
             Ok(FaceScoringAttemptOutcome::Completed { score })
         }
         Err(_) if cancel_when() || crate::scanner::cancelled() => {
+            trace.finish(crate::activity::ActivityState::Cancelled, None);
             Ok(FaceScoringAttemptOutcome::Cancelled)
         }
         Err(message) => {
             crate::derived_state::record_face_failure(conn, hash, source_path, &message)?;
+            trace.finish(crate::activity::ActivityState::Failed, None);
             on_change(hash);
             Ok(FaceScoringAttemptOutcome::Failed { message })
         }

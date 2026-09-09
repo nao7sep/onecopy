@@ -229,6 +229,7 @@ struct ResultSummary {
 }
 
 struct Publisher {
+    trace: Option<crate::activity::WorkTrace>,
     app: AppHandle,
     last_emit: Instant,
     last_phase: Option<Phase>,
@@ -239,6 +240,7 @@ impl Publisher {
     fn new(app: &AppHandle) -> Self {
         Self {
             app: app.clone(),
+            trace: None,
             last_emit: Instant::now() - Duration::from_secs(1),
             last_phase: None,
             last_failures: 0,
@@ -246,6 +248,16 @@ impl Publisher {
     }
 
     fn progress(&mut self, progress: &Progress) {
+        if self.trace.is_none() {
+            use crate::activity::{ActivityOwner, ActivitySubject, WorkTrace};
+            self.trace = Some(WorkTrace::begin(ActivityOwner::Mutation, Some(match progress.kind {
+                Kind::Delete => ActivitySubject::DeleteFiles,
+                Kind::DestinationCopy => ActivitySubject::CopyFiles,
+                Kind::DestinationMove => ActivitySubject::MoveFiles,
+                Kind::TrashEmpty => ActivitySubject::EmptyDeletedFiles,
+            }), None));
+        }
+        if let Some(trace) = &self.trace { trace.progress(progress.files_done, progress.files_total); }
         let now = Instant::now();
         let phase_changed = self.last_phase != Some(progress.phase);
         let failure_changed = self.last_failures != progress.failures;
@@ -266,6 +278,13 @@ impl Publisher {
 
     fn done(&mut self, progress: &Progress, cancelled: bool, summary: Option<ResultSummary>) {
         self.progress(progress);
+        if let Some(trace) = &mut self.trace {
+            use crate::activity::ActivityState;
+            trace.finish(if cancelled { ActivityState::Cancelled }
+                else if summary.as_ref().is_some_and(|result| result.files_failed > 0 || result.error.is_some()) { ActivityState::Failed }
+                else if summary.is_none() { ActivityState::Idle }
+                else { ActivityState::Succeeded }, None);
+        }
         crate::failure_runtime::emit_or_record(
             &self.app,
             "mutation://done",
@@ -273,7 +292,8 @@ impl Publisher {
         );
     }
 
-    fn error(&self, progress: &Progress, error: &str) {
+    fn error(&mut self, progress: &Progress, error: &str) {
+        if let Some(trace) = &mut self.trace { trace.finish(crate::activity::ActivityState::Failed, None); }
         let started = progress.items_done.saturating_add(u64::from(
             progress.phase != Phase::Planning && progress.items_done < progress.items_total,
         ));
@@ -834,7 +854,7 @@ pub(crate) fn empty_trash(
                 )),
             );
         }
-        Err(error) => publisher.borrow().error(&progress.borrow(), error),
+        Err(error) => publisher.borrow_mut().error(&progress.borrow(), error),
     }
     result
 }

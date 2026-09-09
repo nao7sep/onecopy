@@ -100,6 +100,8 @@ describe("Settings save boundary", () => {
       message: "Settings were saved, but OneCopy couldn’t update the library. Try refreshing the section.",
       presentation: "persistent",
     });
+    await settleUntil(() => invokeCalls.some((call) => call.command === "activity_record" && (call.args.draft as { kind: string }).kind === "failed"));
+    expect(invokeCalls.filter((call) => call.command === "activity_record").map((call) => (call.args.draft as { kind: string }).kind)).toEqual(["started", "failed"]);
   });
 
   it("does not check sources after saving unrelated settings", async () => {

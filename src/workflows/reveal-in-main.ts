@@ -6,12 +6,12 @@ import { closeComparison } from "./comparison";
 import { closeViewer } from "./quick-view";
 
 /** Shared diagnostic navigation; the requesting modal owns its inline result. */
-export async function revealInMain(path: string, isCurrent: () => boolean, onRevealed: () => void) {
+export async function revealInMain(path: string, isCurrent: () => boolean, onRevealed: () => void, expectedHash?: string) {
   const canLeave = () => !useComparisonStore.getState().busy &&
     useComparisonStore.getState().pendingAction === null &&
     useQuickViewStore.getState().pendingDelete === null;
   if (!canLeave()) return "blocked" as const;
-  const result = await useItemsStore.getState().revealPath(path, () => isCurrent() && canLeave());
+  const result = await useItemsStore.getState().revealPath(path, () => isCurrent() && canLeave(), expectedHash);
   if (result !== "revealed") return result;
   // Closing the requesting modal precedes native focus restoration. The
   // existing view owners dispose their readers/windows and restore Preview.

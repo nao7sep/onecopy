@@ -83,10 +83,10 @@ describe("the title band", () => {
     }
   });
 
-  it("exposes Activity trace only through the developer gate", () => {
+  it("exposes Activity trace independently of the developer gate", () => {
     const releaseView = renderReadyApp();
     fireEvent.click(releaseView.getByRole("button", { name: "Open menu" }));
-    expect(releaseView.queryByText("Activity trace…")).toBeNull();
+    expect(releaseView.getByText("Activity trace…")).toBeTruthy();
     releaseView.unmount();
 
     useAppStore.setState({

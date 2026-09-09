@@ -2,7 +2,7 @@
 // terminal events; managed-tool progress alone is event-driven and is
 // correlated to the authoritative command-owned terminal boundary.
 
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
   invokeCalls,
@@ -178,7 +178,7 @@ describe("library work events", () => {
     expect(sections.getState().sourceCheck).toMatchObject({ running: true, waiting: true, stopping: false });
   });
 
-  it("does not let delayed progress or state resurrect settled work", () => {
+  it("does not let delayed progress or state resurrect settled work", async () => {
     const progress = scanProgress();
     fireEvent("source-check://progress", { eventSequence: 2, progress });
     fireEvent("source-check://done", { eventSequence: 4, sourceCheck: { running: false, stopping: false, waiting: false, lastResult: "completed", eventSequence: 4 } });
@@ -194,14 +194,14 @@ describe("library work events", () => {
     expect(sections.getState().sourceCheck.running).toBe(false);
     expect(sections.getState().sourceCheck.stopping).toBe(false);
     expect(sections.getState().sourceCheck.lastResult).toBe("completed");
-    expect(
+    await vi.waitFor(() => expect(
       invokeCalls.some(
         (call) =>
           call.command === "activity_record" &&
           (call.args.draft as { owner?: string; kind?: string }).owner === "sourceCheck" &&
           (call.args.draft as { owner?: string; kind?: string }).kind === "stale",
       ),
-    ).toBe(true);
+    ).toBe(true));
   });
 });
 

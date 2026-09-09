@@ -324,6 +324,7 @@ fn record_activity(
         queued: None,
         done: None,
         total: None,
+        target_hash: None,
     });
 }
 
