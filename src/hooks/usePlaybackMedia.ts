@@ -70,6 +70,7 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
       element.volume = session.volume;
     if (element.muted === session.soundEnabled)
       element.muted = !session.soundEnabled;
+    let current = true;
     const applyPosition = () => {
       if (Math.abs(element.currentTime - session.position) > 0.35) {
         try {
@@ -81,6 +82,10 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
       }
       if (session.playing) {
         void element.play().catch((error) => {
+          // play() can reject after a seek, handoff, disable, or unmount has
+          // superseded this application of the session. Only its current
+          // owner may turn a rejected start into a paused observation.
+          if (!current) return;
           log.warn("media playback start failed", toErrorFields(error));
           emitPlayback("playback://observe", {
             surface,
@@ -98,7 +103,10 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
     if (element.readyState >= HTMLMediaElement.HAVE_METADATA) applyPosition();
     else
       element.addEventListener("loadedmetadata", applyPosition, { once: true });
-    return () => element.removeEventListener("loadedmetadata", applyPosition);
+    return () => {
+      current = false;
+      element.removeEventListener("loadedmetadata", applyPosition);
+    };
   }, [elementRef, enabled, key, session, surface]);
 
   const observe = useCallback(() => {
