@@ -140,6 +140,8 @@ One coordinator owns derived-work admission, priority, cancellation, and publica
 
 Background Work refreshes durable debt when discovery, information completion, derived results, settings, or tools change it. Pending work remains visible before an executor starts, and queued, paused, waiting, failed, and complete remain distinct.
 
+Restarting OneCopy and explicitly rechecking a section make its failed generated outputs eligible for a new attempt, including transcription. Merely reopening a section, selecting an item, or opening its preview does not retry a recorded failure. Each boundary reopens existing failed receipts, not successful caches or prerequisite-waiting states, and does not enable disabled enrichment or resume paused classes. Attempt eligibility is independent of Issue dismissal or retained diagnostic history. Rechecking a section scopes this reset to its current logical members, not every item sharing their folders; a failure from the new attempt remains settled until another explicit attempt boundary.
+
 Database publication and user-visible state remain single-owned even when image conversion runs concurrently. Transcription, model-heavy analysis, ffmpeg work, and whole-library computation do not overlap another heavy class unless measured platform evidence establishes safe memory use, cancellation, and responsiveness. No user setting can disable resource-safety limits or choose a raw thread count.
 
 ## Transcription generation

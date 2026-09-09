@@ -112,9 +112,16 @@ fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
 
 fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     crate::storage::materialize_config_if_missing(data_root)?;
-    drop(crate::index_store::open(
+    let conn = crate::index_store::open(
         &data_root.join(crate::storage::INDEX_DB_FILE_NAME),
-    )?);
+    )?;
+    // Once per process, before any executor or window-driven request exists.
+    // Opening another database connection or section must never reset failure.
+    crate::derived_state::reset_failed_outputs(
+        &conn,
+        crate::derived_state::FailedOutputScope::Library,
+    )?;
+    drop(conn);
 
     // Download staging is crash debris by definition: wipe at launch.
     crate::binaries_manager::reset_temp_dir(data_root);

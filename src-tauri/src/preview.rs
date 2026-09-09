@@ -487,6 +487,9 @@ pub fn derive_one(
     if cache.thumb(hash).exists() && cache.preview(hash).exists() {
         return Ok(hash.to_string());
     }
+    if crate::derived_state::preview_failed(conn, hash)? {
+        return Err("Preview generation failed. Recheck this section to try again.".to_string());
+    }
     let path: String = conn
         .query_row(
             "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",

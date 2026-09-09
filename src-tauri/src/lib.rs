@@ -1060,6 +1060,18 @@ fn rescan_section(
                 );
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
+                let reopened = derived_state::reset_failed_outputs(
+                    &conn,
+                    derived_state::FailedOutputScope::Section {
+                        kind: &kind,
+                        bounds: queries::month_bounds(&month, display_timezone())?,
+                    },
+                )?;
+                if reopened > 0 {
+                    // The index claim prevents automatic execution until this
+                    // admitted recheck releases it, even if later stat fails.
+                    derived_work::wake();
+                }
                 let repair_roots = scanner::begin_scoped_index_repair(&conn, &dirs)?;
                 let mut changed = 0u64;
                 for dir in &dirs {

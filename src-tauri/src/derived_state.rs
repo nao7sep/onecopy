@@ -1388,6 +1388,97 @@ fn content_hash_for_issue(
     .map_err(|error| error.to_string())
 }
 
+/// An explicit attempt boundary, not a query side effect or an Issues action.
+pub enum FailedOutputScope<'a> {
+    Library,
+    Section {
+        kind: &'a str,
+        bounds: Option<(i64, i64)>,
+    },
+}
+
+/// Reopens only failed outputs. Completed values, waiting prerequisites,
+/// feature policy, and diagnostic records are deliberately untouched.
+pub fn reset_failed_outputs(
+    conn: &Connection,
+    scope: FailedOutputScope<'_>,
+) -> Result<u64, String> {
+    let (membership, values) = match scope {
+        FailedOutputScope::Library => (String::new(), Vec::new()),
+        FailedOutputScope::Section { kind, bounds } => {
+            if !matches!(kind, "image" | "video" | "other") {
+                return Err(format!("bad section kind: {kind}"));
+            }
+            let mut values = vec![rusqlite::types::Value::Text(kind.to_string())];
+            let dates = match bounds {
+                Some((start, end)) if start < end => {
+                    values.extend([start.into(), end.into()]);
+                    "AND resolved_utc_ms >= ?2 AND resolved_utc_ms < ?3"
+                }
+                Some(_) => return Err("section date range must be increasing".to_string()),
+                None => "AND resolved_utc_ms IS NULL",
+            };
+            (
+                format!(" IN (SELECT content_hash FROM logical_contents WHERE kind = ?1 {dates})"),
+                values,
+            )
+        }
+    };
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let mut count = 0;
+    for (table, key, reset, failed) in [
+        (
+            "contents",
+            "hash",
+            "derived_at_utc = NULL",
+            "derived_at_utc = 'failed'",
+        ),
+        (
+            "contents",
+            "hash",
+            "strip_frames = NULL",
+            "strip_frames = -1",
+        ),
+        (
+            "analysis_receipts",
+            "content_hash",
+            "face_state = NULL, face_updated_at_utc = NULL",
+            "face_state = 'failed'",
+        ),
+        (
+            "analysis_receipts",
+            "content_hash",
+            "transcript_state = NULL, transcript_updated_at_utc = NULL",
+            "transcript_state = 'failed'",
+        ),
+    ] {
+        let filter = if membership.is_empty() {
+            String::new()
+        } else {
+            format!(" AND {key}{membership}")
+        };
+        count += transaction
+            .execute(
+                &format!("UPDATE {table} SET {reset} WHERE {failed}{filter}"),
+                params_from_iter(values.iter()),
+            )
+            .map_err(|error| error.to_string())? as u64;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(count)
+}
+
+pub(crate) fn preview_failed(conn: &Connection, hash: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1 AND derived_at_utc = ?2)",
+        params![hash, FAILED],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Resets only a reconstructible output named by the current issue. The issue
 /// remains visible until that output succeeds and clears it.
 pub fn retry_issue(conn: &Connection, issue_id: i64) -> Result<bool, String> {

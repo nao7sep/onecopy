@@ -2,6 +2,7 @@
 
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::{derived_state, index_store, queries};
+use derived_state::FailedOutputScope;
 
 fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
     let dir = tempfile::Builder::new()
@@ -39,6 +40,222 @@ fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
         index_store::upsert_issue(&conn, Some(path), kind, "failed").unwrap();
     }
     (dir, conn)
+}
+
+#[test]
+fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() {
+    let (_dir, conn) = seeded();
+    // Dismissal/history cannot decide whether an output is eligible again.
+    conn.execute("DELETE FROM issues", []).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, strip_frames)
+         VALUES ('waiting', 1, 'image', 'needs-ffmpeg', NULL),
+                ('ready', 1, 'video', 'ready', 8);
+         INSERT INTO analysis_receipts (content_hash, transcript_state, face_state)
+         VALUES ('ready', 'ready-empty', 'ready');",
+    )
+    .unwrap();
+    assert_eq!(
+        derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap(),
+        5
+    );
+    assert_eq!(
+        derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap(),
+        0
+    );
+    let preserved: (String, i64, String, String, String) = conn.query_row(
+        "SELECT c.derived_at_utc, c.strip_frames, r.transcript_state, r.face_state,
+          (SELECT derived_at_utc FROM contents WHERE hash = 'waiting')
+         FROM contents c JOIN analysis_receipts r ON r.content_hash = c.hash WHERE c.hash = 'ready'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).unwrap();
+    assert_eq!(
+        preserved,
+        (
+            "ready".into(),
+            8,
+            "ready-empty".into(),
+            "ready".into(),
+            "needs-ffmpeg".into()
+        )
+    );
+    assert_eq!(queries::issues(&conn, 20).unwrap().0, 0);
+}
+
+#[test]
+fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folders() {
+    let (_dir, conn) = seeded();
+    conn.execute_batch(
+        "UPDATE paths SET resolved_source = 'filename', resolved_utc_ms = 100 WHERE content_hash IN ('image', 'face');
+         UPDATE paths SET resolved_source = 'filename', resolved_utc_ms = 200 WHERE content_hash = 'face';",
+    ).unwrap();
+    assert_eq!(
+        derived_state::reset_failed_outputs(
+            &conn,
+            FailedOutputScope::Section {
+                kind: "image",
+                bounds: Some((100, 200))
+            }
+        )
+        .unwrap(),
+        1
+    );
+    let states: (Option<String>, String, String) = conn
+        .query_row(
+            "SELECT (SELECT derived_at_utc FROM contents WHERE hash = 'image'),
+          (SELECT face_state FROM analysis_receipts WHERE content_hash = 'face'),
+          (SELECT derived_at_utc FROM contents WHERE hash = 'poster')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(states, (None, "failed".into(), "failed".into()));
+    assert_eq!(
+        queries::issues(&conn, 20).unwrap().0,
+        6,
+        "reopening work does not dismiss its diagnostics"
+    );
+    assert_eq!(
+        derived_state::reset_failed_outputs(
+            &conn,
+            FailedOutputScope::Section {
+                kind: "video",
+                bounds: None
+            }
+        )
+        .unwrap(),
+        3
+    );
+    assert_eq!(
+        derived_state::reset_failed_outputs(
+            &conn,
+            FailedOutputScope::Section {
+                kind: "image",
+                bounds: None
+            }
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn audio_transcription_is_reopened_by_its_other_files_section() {
+    let (_dir, conn) = seeded();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('audio', 1, 'audio');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+         VALUES ('/speech.wav', '/', 'speech.wav', 'audio', 'audio');",
+    )
+    .unwrap();
+    derived_state::record_transcript_failure(&conn, "audio", "/speech.wav", "failed").unwrap();
+    assert_eq!(
+        derived_state::reset_failed_outputs(
+            &conn,
+            FailedOutputScope::Section {
+                kind: "other",
+                bounds: None
+            }
+        )
+        .unwrap(),
+        1
+    );
+    let states: (Option<String>, String) = conn
+        .query_row(
+            "SELECT (SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'audio'),
+          (SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(states, (None, "failed".into()));
+}
+
+#[test]
+fn opening_database_and_querying_section_do_not_repeat_a_failed_new_attempt() {
+    let (dir, conn) = seeded();
+    derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap();
+    derived_state::record_transcript_failure(&conn, "speech", "/speech.mov", "new attempt failed")
+        .unwrap();
+    drop(conn);
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    for _ in 0..3 {
+        queries::section_dirs(&conn, "video", "undated", chrono_tz::UTC).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "failed"
+        );
+    }
+    assert_eq!(
+        derived_state::reset_failed_outputs(
+            &conn,
+            FailedOutputScope::Section {
+                kind: "video",
+                bounds: None
+            }
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn requested_preview_honors_failure_until_explicit_reset_even_if_file_is_now_valid() {
+    let (dir, conn) = seeded();
+    let path = dir.path().join("fixed.png");
+    image::RgbImage::new(2, 2).save(&path).unwrap();
+    conn.execute(
+        "UPDATE paths SET abs_path = ?1 WHERE content_hash = 'image'",
+        [path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let before = queries::issues(&conn, 20).unwrap().0;
+    for _ in 0..2 {
+        let error =
+            onecopy_lib::preview::derive_one(&conn, &cache, 32, 64, None, "image").unwrap_err();
+        assert!(error.contains("Recheck this section"));
+    }
+    assert!(!cache.preview("image").exists());
+    assert_eq!(queries::issues(&conn, 20).unwrap().0, before);
+    derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap();
+    assert_eq!(
+        onecopy_lib::preview::derive_one(&conn, &cache, 32, 64, None, "image").unwrap(),
+        "image"
+    );
+    assert!(cache.preview("image").exists());
+}
+
+#[test]
+fn failed_replacement_keeps_its_completed_transcript_across_reattempt_boundaries() {
+    let (_dir, conn) = seeded();
+    derived_state::record_transcript_success(&conn, "speech", "/speech.mov", true).unwrap();
+    derived_state::record_transcript_replacement_failure(
+        &conn,
+        "/speech.mov",
+        "replacement failed",
+    )
+    .unwrap();
+    derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "ready-text"
+    );
+    assert!(queries::issues(&conn, 20)
+        .unwrap()
+        .1
+        .iter()
+        .any(|row| row.kind == derived_state::TRANSCRIPT_ERROR));
 }
 
 #[test]
