@@ -1,6 +1,6 @@
 // Preview application journeys. The preview store owns its surface and native
-// window mechanics; this edge supplies persisted app state and the current
-// item selection, and persists public Preview choices one way.
+// window mechanics; this edge supplies the current item selection and
+// persists public Preview choices one way.
 
 import { retainStatePatch, useAppStore } from "../state/app-store";
 import { emit } from "@tauri-apps/api/event";
@@ -25,10 +25,6 @@ interface PreviewKeyMessage {
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
-}
-
-function windowState(): Record<string, unknown> {
-  return useAppStore.getState().appData?.state ?? {};
 }
 
 export function installPreviewPersistence(): void {
@@ -99,7 +95,7 @@ export async function openPreview(
   payload: PreviewPayload,
   detail: ReturnType<typeof useItemsStore.getState>["detail"],
 ): Promise<void> {
-  await usePreviewStore.getState().open(payload, detail, windowState());
+  await usePreviewStore.getState().open(payload, detail);
 }
 
 export function closePreview(): void {
@@ -133,7 +129,5 @@ export async function togglePreview(): Promise<void> {
 export async function setPreviewPlacement(
   preference: PlacementPreference,
 ): Promise<void> {
-  await usePreviewStore
-    .getState()
-    .setPlacementPreference(preference, windowState());
+  await usePreviewStore.getState().setPlacementPreference(preference);
 }

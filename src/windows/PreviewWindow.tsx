@@ -12,7 +12,7 @@ import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
 
-// The preview window placement (screen 2): renders the shared PreviewSurface
+// The separate Preview window renders the shared PreviewSurface
 // from `preview://show` messages — payload AND detail arrive together from
 // the anchor owner, so this window queries nothing and can never race a
 // stale response. The previous message keeps rendering until the next one

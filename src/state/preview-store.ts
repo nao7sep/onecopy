@@ -1,6 +1,4 @@
 // Preview is one Main follower, in a user-chosen pane or separate window.
-// Separate-window geometry and screen choice last only for this app session.
-//
 // Follow model (FastStone's): `follow` on means the surface tracks the grid
 // anchor live. Opening the preview by ANY route turns follow on; the surface
 // closing by any route turns it off — one flag, no half-open states. The flag
@@ -12,16 +10,9 @@
 
 import { create } from "zustand";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  prepareWindowPlacement,
-  type WindowPlacementController,
-} from "../utils/windowBounds";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
-import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
-import { allocatePreviewPlacement, hostingScreen, type PreviewWindowPlacement } from "../models/previewPlacement";
 import type { ItemDetail } from "../models/items";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
@@ -41,8 +32,7 @@ export interface PreviewPresentation {
   error: string | null;
 }
 
-/** Pane versus window remains an explicit user choice; screen allocation
- * applies only after separate-window placement has been chosen. */
+/** Pane versus separate window remains an explicit user choice. */
 export type PlacementPreference = "split" | "window" | null;
 
 export function resolvePlacement(preference: PlacementPreference): "window" | "split" {
@@ -68,14 +58,12 @@ interface PreviewState {
   open: (
     payload: PreviewPayload,
     detail: ItemDetail | null,
-    windowState?: Record<string, unknown>,
   ) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
   close: () => void;
   /** Moves the open surface to the other placement, and remembers the choice. */
   setPlacementPreference: (
     preference: PlacementPreference,
-    windowState?: Record<string, unknown>,
   ) => Promise<void>;
   /** Restores the persisted follow flag without opening anything yet. */
   restoreFollow: (on: boolean, preference: PlacementPreference) => void;
@@ -87,16 +75,13 @@ interface PreviewState {
   detailLoaded: (payload: PreviewPayload, detail: ItemDetail) => void;
 }
 
-// ---- Window-placement plumbing --------------------------------------------
+// ---- Separate-window lifecycle --------------------------------------------
 
 // Cached existence flag: getByLabel per keystroke is an IPC round trip.
 let previewWindowOpen = false;
-let previewPlacementController: WindowPlacementController | null = null;
-let sessionPlacement: PreviewWindowPlacement | null = null;
 let surfaceRequest = 0;
 let surfaceTail: Promise<void> = Promise.resolve();
 let previewFullscreenApplied = false;
-let previewFullscreenTransitions = 0;
 
 function enqueueSurface(task: () => Promise<void>): Promise<void> {
   const operation = surfaceTail.then(task, task);
@@ -114,51 +99,10 @@ function recordStaleSurface(generation: number): void {
   });
 }
 
-async function rememberPreviewScreen(window: WebviewWindow): Promise<void> {
-  if (sessionPlacement === null || await window.isMinimized()) return;
-  const [position, size, monitors] = await Promise.all([
-    window.outerPosition(), window.outerSize(), availableMonitors(),
-  ]);
-  const screen = hostingScreen(monitors, { ...position, ...size });
-  if (screen) sessionPlacement = { ...sessionPlacement, screen: monitorKey(screen) };
-}
-
-async function preparePreviewPlacement(window: WebviewWindow, state: Record<string, unknown>): Promise<void> {
-  if (previewFullscreenApplied || previewFullscreenTransitions > 0) return;
-  if (previewPlacementController !== null) {
-    await previewPlacementController.flush();
-    await rememberPreviewScreen(window);
-    previewPlacementController.dispose();
-    previewPlacementController = null;
-  }
-  const main = getCurrentWindow();
-  const [monitors, position, size] = await Promise.all([
-    availableMonitors(), main.outerPosition(), main.outerSize(),
-  ]);
-  const allocation = allocatePreviewPlacement(
-    orderMonitors(monitors, priorityFromState(state)), { ...position, ...size }, sessionPlacement,
-  );
-  if (allocation === null) return; // The OS retains placement when no display is reported.
-  sessionPlacement = allocation;
-  if (await window.isMaximized()) await window.unmaximize();
-  previewPlacementController = await prepareWindowPlacement({
-    window,
-    saved: allocation,
-    minimum: { width: 1, height: 1 },
-    monitors,
-    isTransient: () => previewFullscreenApplied || previewFullscreenTransitions > 0,
-    persist: async (record) => {
-      sessionPlacement = { ...record, screen: sessionPlacement?.screen ?? allocation.screen };
-    },
-    report: (operation, error) => reportWindowCall(`preview ${operation}`)(error),
-  });
-}
-
-async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void> {
+async function ensurePreviewWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing !== null) {
     previewWindowOpen = true;
-    await preparePreviewPlacement(existing, state);
     return;
   }
   // Prepare while hidden and unfocused. Raising must not activate Main over
@@ -178,8 +122,6 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
     await window.once("tauri://destroyed", () => {
       previewWindowOpen = false;
       previewFullscreenApplied = false;
-      previewPlacementController?.dispose();
-      previewPlacementController = null;
       const store = usePreviewStore.getState();
       if (store.placement === "window") {
         // The placement PREFERENCE survives — closing the window means "not
@@ -193,9 +135,7 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
     await window.close().catch(reportWindowCall("preview cleanup after listener failure"));
     throw error;
   }
-  previewWindowOpen = true;
   try {
-    await preparePreviewPlacement(window, state);
     let closing = false;
     await window.onCloseRequested(async (event) => {
       event.preventDefault();
@@ -209,8 +149,10 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
       }
     });
   } catch (error) {
-    log.warn("preview window placement failed", toErrorFields(error));
+    await window.destroy().catch(reportWindowCall("preview cleanup after close listener failure"));
+    throw error;
   }
+  previewWindowOpen = true;
 }
 
 export async function restorePreviewAfterComparison(): Promise<void> {
@@ -245,28 +187,14 @@ async function frontPreviewWindow(): Promise<void> {
   if (existing === null) throw new Error("The Preview window is unavailable.");
   await existing.show();
   await raisePulse(existing);
-  await previewPlacementController?.activate();
-}
-
-export async function flushPreviewWindowPlacement(): Promise<void> {
-  await previewPlacementController?.flush();
 }
 
 async function closePreviewWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
-  const controller = previewPlacementController;
-  if (existing === null) {
-    controller?.dispose();
-    if (previewPlacementController === controller) previewPlacementController = null;
-    return;
-  }
-  await controller?.flush();
-  await rememberPreviewScreen(existing).catch(reportWindowCall("preview capture screen"));
+  if (existing === null) return;
   await invoke("set_window_fullscreen", { label: "preview", enable: false });
   previewFullscreenApplied = false;
   await existing.destroy();
-  controller?.dispose();
-  if (previewPlacementController === controller) previewPlacementController = null;
 }
 
 function publishPreviewFailure(
@@ -342,7 +270,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     if (!get().follow || get().placement !== "window") return;
     const request = surfaceRequest;
     set({ fullscreen: enabled, error: null });
-    previewFullscreenTransitions += 1;
     try {
       await enqueueSurface(async () => {
         if (request !== surfaceRequest) return;
@@ -356,12 +283,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       if (request !== surfaceRequest) return;
       set({ fullscreen: previewFullscreenApplied });
       publishPreviewFailure("preview-fullscreen-failed", "Couldn’t change Preview full screen.", error);
-    } finally {
-      previewFullscreenTransitions -= 1;
     }
   },
 
-  open: async (payload, detail, windowState = {}) => {
+  open: async (payload, detail) => {
     const request = ++surfaceRequest;
     cancelPublication();
     try {
@@ -376,7 +301,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
             recordStaleSurface(request);
             return;
           }
-          await ensurePreviewWindow(windowState);
+          await ensurePreviewWindow();
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;
@@ -419,7 +344,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     }
   },
 
-  setPlacementPreference: async (preference, windowState = {}) => {
+  setPlacementPreference: async (preference) => {
     const request = ++surfaceRequest;
     const { follow, placementPreference } = get();
     set({ placementPreference: preference });
@@ -447,7 +372,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           return;
         }
         if (next === "window" && current !== null) {
-          await ensurePreviewWindow(windowState);
+          await ensurePreviewWindow();
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;
@@ -494,8 +419,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const { follow, placement } = get();
     if (!follow) return;
     if (placement === null) {
-      // A restored follow flag is opened by the item workflow, which can
-      // supply the app-owned window geometry without a peer-store import.
+      // A restored follow flag is opened by the item workflow once an anchor
+      // is available.
       return;
     }
     set({ current: { ...payload, detail } });

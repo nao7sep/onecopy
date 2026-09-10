@@ -50,7 +50,32 @@ let pendingStateWaiters: Array<{
   reject: (error: unknown) => void;
 }> = [];
 let stateWriteTail: Promise<void> = Promise.resolve();
+let stateShutdownStarted = false;
 const STATE_FLUSH_MS = 400;
+
+function flushPendingStatePatch(): Promise<void> {
+  if (stateFlushTimer !== null) clearTimeout(stateFlushTimer);
+  const toWrite = pendingStatePatch;
+  const waiters = pendingStateWaiters;
+  pendingStatePatch = null;
+  pendingStateWaiters = [];
+  stateFlushTimer = null;
+  if (toWrite === null) return stateWriteTail;
+
+  const write = stateWriteTail.then(() =>
+    patchStateFile(toWrite).then(() => undefined),
+  );
+  stateWriteTail = write.catch(() => undefined);
+  void write.then(
+    () => {
+      for (const waiter of waiters) waiter.resolve();
+    },
+    (error) => {
+      for (const waiter of waiters) waiter.reject(error);
+    },
+  );
+  return write;
+}
 
 export function reportStatePatchFailure(error: unknown): void {
   log.error("state patch failed", toErrorFields(error));
@@ -65,6 +90,25 @@ export function reportStatePatchFailure(error: unknown): void {
  * that already have a local result await patchState directly instead. */
 export function retainStatePatch(patch: Record<string, unknown>): void {
   void useAppStore.getState().patchState(patch).catch(reportStatePatchFailure);
+}
+
+/** Turns every later mutation into an immediate write and waits until the
+ * serialized state boundary is stable. Shutdown calls this directly instead
+ * of relying on another feature's save. */
+export async function flushStatePatchesForShutdown(): Promise<void> {
+  stateShutdownStarted = true;
+  while (true) {
+    await flushPendingStatePatch();
+    const tail = stateWriteTail;
+    await tail;
+    if (pendingStatePatch === null && tail === stateWriteTail) return;
+  }
+}
+
+/** Reopens ordinary coalescing when the native exit request fails and the app
+ * remains alive. */
+export function resumeStatePatchesAfterFailedShutdown(): void {
+  stateShutdownStarted = false;
 }
 
 // Main bootstrap is single-flight because load_app_data carries one-shot
@@ -102,33 +146,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (stateFlushTimer !== null) clearTimeout(stateFlushTimer);
     return new Promise<void>((resolve, reject) => {
       pendingStateWaiters.push({ resolve, reject });
-      const flush = () => {
-        const toWrite = pendingStatePatch;
-        const waiters = pendingStateWaiters;
-        pendingStatePatch = null;
-        pendingStateWaiters = [];
-        stateFlushTimer = null;
-        if (toWrite === null) {
-          for (const waiter of waiters) waiter.resolve();
-          return;
-        }
-        const write = stateWriteTail.then(() =>
-          patchStateFile(toWrite).then(() => undefined),
-        );
-        stateWriteTail = write.catch(() => undefined);
-        void write.then(
-          () => {
-            for (const waiter of waiters) waiter.resolve();
-          },
-          (error) => {
-            for (const waiter of waiters) waiter.reject(error);
-          },
-        );
-      };
-      if (options?.immediate === true) {
-        flush();
+      if (options?.immediate === true || stateShutdownStarted) {
+        void flushPendingStatePatch().catch(() => undefined);
       } else {
-        stateFlushTimer = setTimeout(flush, STATE_FLUSH_MS);
+        stateFlushTimer = setTimeout(() => {
+          void flushPendingStatePatch().catch(() => undefined);
+        }, STATE_FLUSH_MS);
       }
     });
   },

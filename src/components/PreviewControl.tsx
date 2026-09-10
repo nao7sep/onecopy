@@ -1,8 +1,8 @@
 // The preview's show/hide and placement control.
 //
 // It lives in the app chrome rather than in Settings (the developer's call):
-// placement is something you change while looking at photos — "put it on the
-// other screen", "get it out of my way" — not a preference you go and
+// placement is something you change while looking at photos — "put it in its
+// own window", "get it out of my way" — not a preference you go and
 // configure. Before this the rule was implicit (second monitor if one exists)
 // and the only control was an undiscoverable `P`, which made running OneCopy
 // on ONE screen of several impossible to ask for.
@@ -51,7 +51,7 @@ export default function PreviewControl() {
           </button>
           <button
             aria-pressed={effective === "window"}
-            title="Show the preview on the second screen"
+            title="Show the preview in a separate window"
             className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
               effective === "window"
                 ? "bg-primary-surface text-primary"

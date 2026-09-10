@@ -2,8 +2,7 @@
 //
 // This exists because window capabilities are runtime data: a call compiles
 // even when its permission is absent. OneCopy's true fullscreen deliberately
-// uses its app command rather than Tauri's native Spaces fullscreen; durable
-// windows still inspect native fullscreen so it never becomes saved placement.
+// uses its app command rather than Tauri's native Spaces fullscreen.
 //
 // Nothing else can catch this: the call compiles, the permission is data in a
 // JSON file, and the failure is a runtime rejection on a machine nobody
@@ -23,7 +22,6 @@ const SOURCES = [
   "src/windows/ViewerWindow.tsx",
   "src/windows/ComparisonWindow.tsx",
   "src/windows/IdentifyWindow.tsx",
-  "src/utils/windowBounds.ts",
   "src/utils/windowSizing.ts",
 ].map((path) => readFileSync(path, "utf8"));
 const ALL_SOURCE = SOURCES.join("\n");
@@ -44,13 +42,7 @@ const NEEDS: Record<string, string> = {
   "setTitle(": "core:window:allow-set-title",
   "setTheme(": "core:window:allow-set-theme",
   "availableMonitors(": "core:window:allow-available-monitors",
-  "outerPosition(": "core:window:allow-outer-position",
-  "outerSize(": "core:window:allow-outer-size",
-  "innerSize(": "core:window:allow-inner-size",
-  "isMinimized(": "core:window:allow-is-minimized",
-  "isFullscreen(": "core:window:allow-is-fullscreen",
   "isMaximized(": "core:window:allow-is-maximized",
-  ".maximize(": "core:window:allow-maximize",
   "currentMonitor(": "core:window:allow-current-monitor",
   ".show(": "core:window:allow-show",
   ".hide(": "core:window:allow-hide",
@@ -76,7 +68,7 @@ describe("window calls and granted capabilities", () => {
     // App-owned setters may have the same name; webviews must not receive
     // permission to invoke Tauri's macOS Spaces setter directly.
     expect(capabilities.permissions).not.toContain("core:window:allow-set-fullscreen");
-    expect(capabilities.permissions).toContain("core:window:allow-is-fullscreen");
+    expect(capabilities.permissions).not.toContain("core:window:allow-is-fullscreen");
   });
 });
 

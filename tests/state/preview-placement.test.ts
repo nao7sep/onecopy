@@ -1,6 +1,4 @@
-// Pane versus window is an explicit user choice. Once a separate window is
-// chosen, its screen is allocated by the session-aware placement policy.
-// These tests cover the follower and pane/window choice, not screen geometry.
+// These tests cover the Preview follower and explicit pane/window choice.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {

@@ -28,7 +28,7 @@ import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureS
 import { createEventInstaller } from "../utils/eventInstallation";
 import { hasOpenModal } from "../utils/modalStack";
 import { focusComparison, installComparisonImageEvents, openComparisonImage } from "./comparison-image";
-import type { MonitorRect } from "../utils/windowBounds";
+import type { MonitorRect } from "../utils/screens";
 import {
   latestActivityOperationId,
   newActivityOperationId,

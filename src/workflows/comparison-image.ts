@@ -7,7 +7,7 @@ import type { ComparisonMember } from "../models/comparisonSession";
 import { useComparisonStore, visibleMembers } from "../state/comparison-store";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import type { EventInstallation } from "../utils/eventInstallation";
-import type { MonitorRect } from "../utils/windowBounds";
+import type { MonitorRect } from "../utils/screens";
 import { waitForWindowCreated } from "../utils/windowCreation";
 
 const LABEL = "comparison-image";

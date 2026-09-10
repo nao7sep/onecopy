@@ -460,18 +460,14 @@ export default function Grid({
     [selectedKeys],
   );
 
-  // Other-files column widths: persisted intent, applied immediately, saved
-  // debounced on change (the drag fires continuously).
+  // Other-files column widths: persisted intent, applied immediately. The
+  // app-state owner coalesces the continuous drag writes.
   const [columnWidths, setColumnWidthsRaw] = useState(() =>
     columnWidthsFrom(useAppStore.getState().appData?.state?.otherColumnWidths),
   );
-  const widthsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const setColumnWidths = (widths: Record<SizedColumn, number>) => {
     setColumnWidthsRaw(widths);
-    if (widthsSaveTimer.current !== null) clearTimeout(widthsSaveTimer.current);
-    widthsSaveTimer.current = setTimeout(() => {
-      retainStatePatch({ otherColumnWidths: widths });
-    }, 500);
+    retainStatePatch({ otherColumnWidths: widths });
   };
 
   // The grid is ONE composite control: the scroll container is the single tab

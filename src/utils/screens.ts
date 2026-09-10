@@ -1,12 +1,20 @@
-// Screen priority (the design's rule: 1 = main window, 2 = preview, 3+ join
-// the comparison spread). The persisted order is app STATE — screen
+// Comparison display priority. The persisted order is app STATE — screen
 // identifiers are machine-specific — as a list of monitor keys; monitors not
 // in the list append last in native order, so a newly attached screen simply
-// joins the tail.
+// joins the tail. Comparison excludes Main's current display at use time.
 
 export interface MonitorLike {
   name: string | null;
   position: { x: number; y: number };
+}
+
+export interface MonitorRect extends MonitorLike {
+  size: { width: number; height: number };
+  scaleFactor?: number;
+  workArea?: {
+    position: { x: number; y: number };
+    size: { width: number; height: number };
+  };
 }
 
 /** A monitor's identity for the priority list.

@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { retainStatePatch, useAppStore } from "../../src/state/app-store";
+import {
+  flushStatePatchesForShutdown,
+  retainStatePatch,
+  resumeStatePatchesAfterFailedShutdown,
+  useAppStore,
+} from "../../src/state/app-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {
@@ -26,7 +31,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  resumeStatePatchesAfterFailedShutdown();
+  vi.useRealTimers();
+});
 
 describe("app state persistence settlement", () => {
   it("coalesces writes but settles every caller only after the disk boundary", async () => {
@@ -77,5 +85,53 @@ describe("app state persistence settlement", () => {
     expect(JSON.stringify(notification?.args.request)).not.toMatch(
       /EACCES|HOSTILE-SENTINEL|TypeError|IPC|private\/tmp/,
     );
+  });
+
+  it("joins state that arrives while shutdown is flushing", async () => {
+    const firstWrite = { release: undefined as (() => void) | undefined };
+    mockCommands({
+      patch_state: ({ patch }) => {
+        if ((patch as Record<string, unknown>).sidebarWidth === 300) {
+          return new Promise((resolve) => {
+            firstWrite.release = () => resolve(patch);
+          });
+        }
+        return patch;
+      },
+    });
+    const first = useAppStore.getState().patchState({ sidebarWidth: 300 });
+    const shutdown = flushStatePatchesForShutdown();
+    await vi.waitFor(() => expect(firstWrite.release).toBeTypeOf("function"));
+
+    const late = useAppStore.getState().patchState({ previewFollow: false });
+    let settled = false;
+    void shutdown.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    firstWrite.release?.();
+    await expect(Promise.all([first, late, shutdown])).resolves.toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const writes = invokeCalls.filter((call) => call.command === "patch_state");
+    expect(writes.map((call) => call.args.patch)).toEqual([
+      { sidebarWidth: 300 },
+      { previewFollow: false },
+    ]);
+  });
+
+  it("restores coalescing when a native exit fails", async () => {
+    await flushStatePatchesForShutdown();
+    resumeStatePatchesAfterFailedShutdown();
+
+    const saving = useAppStore.getState().patchState({ zoomLevel: 1.2 });
+    await vi.advanceTimersByTimeAsync(399);
+    expect(invokeCalls.some((call) => call.command === "patch_state")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(saving).resolves.toBeUndefined();
+    expect(invokeCalls.filter((call) => call.command === "patch_state")).toHaveLength(1);
   });
 });

@@ -30,8 +30,6 @@ interface PlaybackTarget {
 
 const registrations = new Map<PlaybackSurface, PlaybackRegistration>();
 let session: PlaybackSession | null = null;
-let pendingState: Record<string, unknown> | null = null;
-let stateTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSeek: PlaybackTarget | null = null;
 
 function booleanConfig(key: string, fallback = true): boolean {
@@ -112,15 +110,7 @@ function unregister(registration: PlaybackRegistration): void {
 }
 
 function queueStatePatch(patch: Record<string, unknown>): void {
-  pendingState = { ...(pendingState ?? {}), ...patch };
-  if (stateTimer !== null) clearTimeout(stateTimer);
-  stateTimer = setTimeout(() => {
-    const next = pendingState;
-    pendingState = null;
-    stateTimer = null;
-    if (next === null) return;
-    retainStatePatch(next);
-  }, 250);
+  retainStatePatch(patch);
 }
 
 function observe(observation: PlaybackObservation): void {

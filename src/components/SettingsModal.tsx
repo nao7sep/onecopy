@@ -26,10 +26,9 @@ import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
 import TimezoneHelpLink from "./TimezoneHelpLink";
 
-/** Screen priority: the ordered monitor list (1 = main, 2 = preview, 3+ =
- * comparison). Persisted as app STATE, not part of the config draft — screen
- * identifiers are machine-specific and reordering applies immediately, like
- * a pane width. Meaningful only with two or more monitors. */
+/** Comparison display priority. Persisted as app STATE, not part of the config
+ * draft — screen identifiers are machine-specific and reordering applies
+ * immediately, like a pane width. Meaningful only with two or more monitors. */
 function ScreensSection() {
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [screenError, setScreenError] = useState<string | null>(null);
@@ -74,17 +73,14 @@ function ScreensSection() {
         recordActionFailure("screen-order-save-failed", "Couldn’t save the screen order.", error);
       });
   };
-  const role = (index: number) =>
-    index === 0 ? "main" : index === 1 ? "preview" : "comparison";
-
   return (
     <>
       <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
         Screens
       </h2>
       <p className="mb-3 text-xs text-ink-muted">
-        Order decides the role: 1 = main window, 2 = preview, the rest join the
-        comparison spread. Applies immediately.
+        Order sets auxiliary display priority for Comparison. Main&apos;s current
+        display is excluded. Applies immediately.
       </p>
       <Button
         className="mb-2"
@@ -126,7 +122,7 @@ function ScreensSection() {
             </span>
             <span className="block truncate text-xs text-ink-muted">
               {monitor.name ?? "Display"} · {monitor.size.width}×
-              {monitor.size.height} · {role(index)}
+              {monitor.size.height}
             </span>
           </span>
           <span className="flex gap-1">

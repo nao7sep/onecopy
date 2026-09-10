@@ -14,19 +14,17 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import { ReadyApp } from "../../src/App";
-import { useAppStore } from "../../src/state/app-store";
+import { retainStatePatch, useAppStore } from "../../src/state/app-store";
 import type { LoadedAppData } from "../../src/repositories";
 import { computeMinWindowHeight, HEADER_HEIGHT } from "../../src/utils/windowSizing";
 import {
   isMaximized,
   invokeCalls,
-  maximize,
   mockCommands,
   onCloseRequested,
-  onMoved,
+  onResized,
   resetTauriMocks,
   setMinSize,
-  setMonitors,
 } from "../mocks/tauri";
 
 const READY_APP_DATA: LoadedAppData = {
@@ -127,7 +125,7 @@ describe("the title band", () => {
   });
 });
 
-describe("the maximized main window (the developer's normal state)", () => {
+describe("the dynamic window minimum", () => {
   const drain = () =>
     act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -139,19 +137,25 @@ describe("the maximized main window (the developer's normal state)", () => {
     // un-maximized the developer's window. A maximized window cannot go
     // below any minimum, so the constraint must WAIT.
     isMaximized.mockResolvedValue(true);
-    setMonitors([{
-      position: { x: 0, y: 0 },
-      size: { width: 2560, height: 1440 },
-      workArea: { position: { x: 0, y: 0 }, size: { width: 2560, height: 1400 } },
-      scaleFactor: 1,
-    }]);
+    let resizedHandler: (() => void) | null = null;
+    onResized.mockImplementation(async (handler: unknown) => {
+      resizedHandler = handler as () => void;
+      return () => {};
+    });
     try {
       renderReadyApp();
       await drain();
-      expect(maximize).toHaveBeenCalled();
       expect(setMinSize).not.toHaveBeenCalled();
+      expect(resizedHandler).not.toBeNull();
+      isMaximized.mockResolvedValue(false);
+      await act(async () => {
+        resizedHandler?.();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(setMinSize).toHaveBeenCalledOnce();
     } finally {
       isMaximized.mockResolvedValue(false);
+      onResized.mockImplementation(async (_handler: unknown) => () => {});
     }
   });
 
@@ -161,51 +165,10 @@ describe("the maximized main window (the developer's normal state)", () => {
     expect(setMinSize).toHaveBeenCalled();
   });
 
-  it("saves maximized as a FLAG, never as geometry", async () => {
-    // Writing the maximized rect into windowBounds would overwrite the
-    // remembered normal size — un-maximizing would have nowhere to return.
-    let movedHandler: (() => void) | null = null;
-    onMoved.mockImplementation(async (handler: unknown) => {
-      movedHandler = handler as () => void;
-      return () => {};
-    });
-    // patchState needs a live appData; the NORMAL bounds were saved earlier.
-    const normal = { x: 0, y: 0, width: 1400, height: 900 };
-    useAppStore.setState({
-      appData: {
-        config: { sourceDirs: [], defaultTimezone: "UTC" },
-        state: { windowBounds: normal, windowMaximized: false },
-        dataRoot: "/data",
-        debugEnabled: false,
-      } as never,
-    });
-    isMaximized.mockResolvedValue(true);
-    try {
-      renderReadyApp();
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 600));
-      });
-      expect(movedHandler).not.toBeNull();
-      movedHandler!();
-      // Past the 500ms save debounce (patchState publishes optimistically,
-      // so the store state is authoritative here).
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 600));
-      });
-      const state = useAppStore.getState().appData?.state as Record<string, unknown>;
-      expect(state.windowMaximized).toBe(true);
-      // The remembered normal geometry survived the maximized save.
-      expect(state.windowBounds).toEqual(normal);
-    } finally {
-      isMaximized.mockResolvedValue(false);
-      onMoved.mockImplementation(async (_handler: unknown) => () => {});
-      useAppStore.setState({ appData: null });
-    }
-  });
 });
 
 describe("application close", () => {
-  it("flushes placement before requesting the Rust shutdown path", async () => {
+  it("flushes interface state before requesting the Rust shutdown path", async () => {
     let closeHandler: ((event: { preventDefault: () => void }) => Promise<void>) | null = null;
     onCloseRequested.mockImplementation(async (handler: unknown) => {
       closeHandler = handler as typeof closeHandler;
@@ -218,16 +181,16 @@ describe("application close", () => {
     });
 
     expect(closeHandler).not.toBeNull();
+    retainStatePatch({ zoomLevel: 1.2 });
     await act(async () => {
       await closeHandler?.({ preventDefault });
     });
 
     expect(preventDefault).toHaveBeenCalledOnce();
     const commands = invokeCalls.map((call) => call.command);
-    const patchIndex = commands.indexOf("patch_state");
-    const exitIndex = commands.indexOf("request_app_exit");
-    expect(patchIndex).toBeGreaterThanOrEqual(0);
-    expect(exitIndex).toBeGreaterThanOrEqual(0);
-    expect(patchIndex).toBeLessThan(exitIndex);
+    expect(commands.indexOf("patch_state")).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf("patch_state")).toBeLessThan(
+      commands.indexOf("request_app_exit"),
+    );
   });
 });

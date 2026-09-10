@@ -1,28 +1,27 @@
 // Native behavior of the main window. App renders the shell; this hook owns
-// the physical window/webview lifetime and the persisted geometry/zoom state.
+// the physical window/webview lifetime, content minimum, and persisted zoom.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
-  availableMonitors,
   getCurrentWindow,
   LogicalSize,
 } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { LoadedAppData } from "../repositories";
 import { reportWindowCall } from "../repositories";
-import { reportStatePatchFailure, retainStatePatch, useAppStore } from "../state/app-store";
+import {
+  flushStatePatchesForShutdown,
+  reportStatePatchFailure,
+  resumeStatePatchesAfterFailedShutdown,
+  retainStatePatch,
+} from "../state/app-store";
 import { installActivityPings } from "../state/derived-work-store";
-import { flushPreviewWindowPlacement, usePreviewStore } from "../state/preview-store";
+import { usePreviewStore } from "../state/preview-store";
 import { hasOpenModal } from "../utils/modalStack";
 import { isComposingEvent } from "./useComposing";
 import { isEditableTarget, shadowsMacTextEditing } from "../utils/shortcuts";
-import {
-  placementFromLegacyState,
-  prepareWindowPlacement,
-  type WindowPlacementController,
-} from "../utils/windowBounds";
 import { computeMinWindowHeight, computeMinWindowWidth } from "../utils/windowSizing";
 import { installDisplayZoneReconciliation } from "../workflows/display-zone";
 import {
@@ -66,9 +65,8 @@ export function useMainWindowLifecycle({
     };
   }, []);
 
-  // NEVER apply a minimum while maximized: on Windows setMinSize restores a
-  // maximized window. The deferred constraint lands on the first normal
-  // resize instead.
+  // On Windows setMinSize restores a maximized window. Remember the current
+  // content floor and apply it on the first resize after the window is normal.
   const pendingMinSize = useRef<LogicalSize | null>(null);
   useEffect(() => {
     const size = new LogicalSize(computeMinWindowWidth(splitOpen), computeMinWindowHeight());
@@ -87,61 +85,39 @@ export function useMainWindowLifecycle({
     })();
   }, [splitOpen]);
 
-  // The Tauri main window starts hidden so WebView2 cannot flash a white
-  // frame. Prepare complete usable normal geometry and the stable mode before
-  // showing; capture begins only after the resulting native events settle.
-  const placementStarting = useRef(false);
-  const placementController = useRef<WindowPlacementController | null>(null);
   useEffect(() => {
-    if (placementStarting.current) return;
-    placementStarting.current = true;
     const appWindow = getCurrentWindow();
-    const showFallback = setTimeout(() => {
-      void appWindow.show().catch(reportWindowCall("show"));
-    }, 3000);
-    void (async () => {
-      try {
-        const state = useAppStore.getState().appData?.state;
-        placementController.current = await prepareWindowPlacement({
-          window: appWindow,
-          saved: placementFromLegacyState(
-            state?.windowBounds,
-            state?.windowMaximized,
-            "maximized",
-          ),
-          minimum: {
-            width: computeMinWindowWidth(splitOpen),
-            height: computeMinWindowHeight(),
-          },
-          monitors: await availableMonitors(),
-          persist: async (record) => {
-            await useAppStore.getState().patchState({
-              windowBounds: record.normalBounds,
-              windowMaximized: record.mode === "maximized",
-            }, { immediate: true });
-          },
-          beforeNormalCapture: async () => {
-            if (pendingMinSize.current === null) return;
-            const size = pendingMinSize.current;
-            pendingMinSize.current = null;
-            await appWindow.setMinSize(size);
-          },
-          report: (operation, error) => reportWindowCall(operation)(error),
-        });
-      } catch (error) {
-        reportWindowCall("prepare window placement")(error);
-      } finally {
-        clearTimeout(showFallback);
-        await appWindow.show().catch(reportWindowCall("show"));
-        await appWindow.setFocus().catch(reportWindowCall("boot setFocus"));
-        await placementController.current?.activate();
-      }
-    })();
-  }, [appData, splitOpen]);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void appWindow.onResized(() => {
+      void (async () => {
+        const size = pendingMinSize.current;
+        if (size === null || await appWindow.isMaximized()) return;
+        pendingMinSize.current = null;
+        await appWindow.setMinSize(size);
+      })().catch(reportWindowCall("apply deferred main window minimum"));
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch(reportWindowCall("listen for main window resize"));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // The configured main window starts hidden so WebView2 cannot flash a white
+  // frame. Once the React shell owns the lifecycle, reveal it without changing
+  // the operating system's placement.
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    void appWindow.show()
+      .then(() => appWindow.setFocus())
+      .catch(reportWindowCall("show main window"));
+  }, []);
 
   // Main-window close is also the application quit edge. The Rust menu routes
-  // Cmd/Ctrl+Q here, so both durable windows flush before ordinary shutdown
-  // quiescence begins.
+  // Cmd/Ctrl+Q here so ordinary shutdown quiescence has one owner.
   const closeHandlerStarted = useRef(false);
   useEffect(() => {
     if (closeHandlerStarted.current) return;
@@ -153,10 +129,7 @@ export function useMainWindowLifecycle({
       if (closing) return;
       closing = true;
       try {
-        await Promise.all([
-          placementController.current?.flush(),
-          flushPreviewWindowPlacement(),
-        ]);
+        await flushStatePatchesForShutdown();
       } catch (error) {
         reportStatePatchFailure(error);
       }
@@ -164,6 +137,7 @@ export function useMainWindowLifecycle({
         await invoke("request_app_exit");
       } catch (error) {
         closing = false;
+        resumeStatePatchesAfterFailedShutdown();
         reportWindowCall("request application exit")(error);
       }
     }).catch(reportWindowCall("listen for main window close"));
