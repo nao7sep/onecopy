@@ -3,10 +3,14 @@ import { log, toErrorFields } from "../repositories";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { applyTheme, applyUiFont, watchSystemTheme } from "../utils/theme";
+import { useWindowPreferencesStore } from "../state/window-preferences-store";
 
 interface AppearancePreferences {
   theme: unknown;
   uiFontFamily: unknown;
+  enlargeSmallImagesInPreview?: unknown;
+  videoTranscriptionEnabled?: unknown;
+  audioTranscriptionEnabled?: unknown;
 }
 
 async function readPreferences(): Promise<AppearancePreferences> {
@@ -28,7 +32,8 @@ function reportFailure(error: unknown): void {
   recordInterfaceFailure("Couldn’t update this window’s appearance. Saved settings were not changed.");
 }
 
-// All routes share this small read model, never Main's library/bootstrap data.
+// All routes share this small auxiliary-window read model, never Main's
+// library/bootstrap data.
 // A saved-config event invalidates pending reads so a late old response cannot
 // replace a newer theme or font. Failed refreshes preserve the last good view.
 export const installWindowAppearance = createEventInstaller(async (listeners) => {
@@ -43,6 +48,7 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
       if (current !== request) return;
       applyTheme(preferences.theme);
       applyUiFont(preferences.uiFontFamily);
+      useWindowPreferencesStore.getState().apply(preferences);
     } catch (error) {
       if (current === request) reportFailure(error);
     }

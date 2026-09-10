@@ -30,6 +30,7 @@ import { ExternalLink, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import TranscriptBlock from "./TranscriptBlock";
 import { usePlaybackMedia } from "../hooks/usePlaybackMedia";
 import { useAppStore } from "../state/app-store";
+import { useWindowPreferencesStore } from "../state/window-preferences-store";
 import TextOrAttributesSurface from "./TextOrAttributesSurface";
 import { openInDefaultApp } from "../workflows/external-open";
 import Button from "./ui/Button";
@@ -561,12 +562,17 @@ export default function PreviewSurface({
   /** A transient owning layer can give its player the media keys. */
   keyboardActive?: boolean;
 }) {
-  const enlargeSmall = useAppStore((state) => {
+  const configuredEnlargeSmall = useAppStore((state) => {
     const config = state.appData?.config;
+    if (config === null || config === undefined) return null;
     return surface === "quick" || surface === "viewer"
-      ? config?.enlargeSmallImagesInQuickView !== false
-      : config?.enlargeSmallImagesInPreview !== false;
+      ? config.enlargeSmallImagesInQuickView !== false
+      : config.enlargeSmallImagesInPreview !== false;
   });
+  const auxiliaryEnlargeSmall = useWindowPreferencesStore(
+    (state) => state.enlargeSmallImagesInPreview,
+  );
+  const enlargeSmall = configuredEnlargeSmall ?? auxiliaryEnlargeSmall;
   if (detail !== null && isAudioFile(detail.fileName)) {
     const src =
       hash !== null

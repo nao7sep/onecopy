@@ -22,17 +22,23 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
         read_appearance_preferences(root.path()).unwrap(),
         serde_json::json!({
             "theme": null, "uiFontFamily": null,
+            "enlargeSmallImagesInPreview": null,
+            "videoTranscriptionEnabled": null,
+            "audioTranscriptionEnabled": null,
         })
     );
     assert!(!root.path().join(CONFIG_FILE_NAME).exists());
     let config = root.path().join(CONFIG_FILE_NAME);
-    let bytes = br#"{"theme":"dark","uiFontFamily":"Iosevka","sourceDirs":["/private"],"verifyAfterCopy":false}"#;
+    let bytes = br#"{"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImagesInPreview":false,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
     std::fs::write(&config, bytes).unwrap();
     std::fs::write(root.path().join(STATE_FILE_NAME), b"{ invalid state").unwrap();
     assert_eq!(
         read_appearance_preferences(root.path()).unwrap(),
         serde_json::json!({
             "theme": "dark", "uiFontFamily": "Iosevka",
+            "enlargeSmallImagesInPreview": false,
+            "videoTranscriptionEnabled": false,
+            "audioTranscriptionEnabled": true,
         })
     );
     assert_eq!(std::fs::read(&config).unwrap(), bytes);

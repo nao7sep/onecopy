@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useBinariesStore } from "../state/binaries-store";
+import { useWindowPreferencesStore } from "../state/window-preferences-store";
 import { useDerivedWorkStore } from "../state/derived-work-store";
 import { useTranscriptStore } from "../state/transcript-store";
 import { useAppStore } from "../state/app-store";
@@ -110,12 +111,19 @@ export default function TranscriptBlock({
     return state.snapshot?.pausedClasses.includes(`${medium}-transcripts`) === true ||
       (active?.id === `${medium}-transcripts` && active.stopping);
   });
-  const automaticEnabled = useAppStore((state) => {
+  const configuredAutomatic = useAppStore((state) => {
     const config = state.appData?.config;
+    if (config === null || config === undefined) return null;
     return medium === "video"
-      ? config?.videoTranscriptionEnabled !== false
-      : config?.audioTranscriptionEnabled !== false;
+      ? config.videoTranscriptionEnabled !== false
+      : config.audioTranscriptionEnabled !== false;
   });
+  const auxiliaryAutomatic = useWindowPreferencesStore((state) =>
+    medium === "video"
+      ? state.videoTranscriptionEnabled
+      : state.audioTranscriptionEnabled,
+  );
+  const automaticEnabled = configuredAutomatic ?? auxiliaryAutomatic;
   const transcriptOpen = useContentSessionStore(
     (state) => state.transcriptOpen[medium],
   );

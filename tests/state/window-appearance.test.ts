@@ -31,10 +31,12 @@ it("initializes theme and font without Main bootstrap, then follows saved and Sy
   let preferences = { theme: "system", uiFontFamily: "Iosevka" };
   mockCommands({ appearance_preferences: () => preferences });
   const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  const { useWindowPreferencesStore } = await import("../../src/state/window-preferences-store");
   await installWindowAppearance();
   expect(listenerCount("appearance://changed")).toBe(1);
   expect(document.documentElement.classList.contains("dark")).toBe(true);
   expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("Iosevka");
+  expect(useWindowPreferencesStore.getState().videoTranscriptionEnabled).toBe(true);
   expect(invokeCalls.some((call) => call.command === "load_app_data")).toBe(false);
 
   systemDark = false;
@@ -48,6 +50,27 @@ it("initializes theme and font without Main bootstrap, then follows saved and Sy
   expect(document.documentElement.classList.contains("dark")).toBe(true);
   await installWindowAppearance();
   expect(listenerCount("appearance://changed")).toBe(1);
+});
+
+it("projects auxiliary Preview preferences without running Main bootstrap", async () => {
+  mockCommands({
+    appearance_preferences: () => ({
+      theme: "system",
+      uiFontFamily: null,
+      enlargeSmallImagesInPreview: false,
+      videoTranscriptionEnabled: false,
+      audioTranscriptionEnabled: true,
+    }),
+  });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  const { useWindowPreferencesStore } = await import("../../src/state/window-preferences-store");
+  await installWindowAppearance();
+  expect(useWindowPreferencesStore.getState()).toMatchObject({
+    enlargeSmallImagesInPreview: false,
+    videoTranscriptionEnabled: false,
+    audioTranscriptionEnabled: true,
+  });
+  expect(invokeCalls.some((call) => call.command === "load_app_data")).toBe(false);
 });
 
 it("ignores a delayed startup response after a newer saved preference", async () => {

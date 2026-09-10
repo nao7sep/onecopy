@@ -14,6 +14,7 @@ import PreviewWindow from "../../src/windows/PreviewWindow";
 import ComparisonWindow from "../../src/windows/ComparisonWindow";
 import ComparisonImageWindow from "../../src/windows/ComparisonImageWindow";
 import type { ComparisonBroadcast } from "../../src/state/comparison-store";
+import { useWindowPreferencesStore } from "../../src/state/window-preferences-store";
 import {
   emitCalls,
   fireEvent,
@@ -41,6 +42,11 @@ const DETAIL = {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({ logging_debug_enabled: () => false, log_event: () => null });
+  useWindowPreferencesStore.setState({
+    enlargeSmallImagesInPreview: true,
+    videoTranscriptionEnabled: true,
+    audioTranscriptionEnabled: true,
+  });
 });
 
 afterEach(() => cleanup());
@@ -99,6 +105,39 @@ describe("the preview window", () => {
     const img = view.container.querySelector("img");
     expect(img).not.toBeNull();
     expect(img?.getAttribute("src")).toContain("preview-abc");
+  });
+
+  it("loads its own managed-tool state and honors Main's projected transcription preference", async () => {
+    useWindowPreferencesStore.setState({ videoTranscriptionEnabled: false });
+    mockCommands({
+      binaries_state: () => [
+        {
+          id: "ffmpeg", label: "ffmpeg", kind: "binary", status: "up-to-date",
+          installedVersion: "9.0.1", facts: { latestKnownVersion: "9.0.1", lastCheckedAtUtc: null },
+          path: "/tools/ffmpeg", requiredForCore: true, checkable: true,
+          released: null, downloadBytes: null,
+        },
+        {
+          id: "whisper-large-v3-turbo", label: "Whisper", kind: "model", status: "up-to-date",
+          installedVersion: "model-pin", facts: { latestKnownVersion: "model-pin", lastCheckedAtUtc: null },
+          path: "/models/whisper.bin", requiredForCore: false, checkable: false,
+          released: "2024-10-01", downloadBytes: 1,
+        },
+      ],
+      transcript_get: () => ({ status: "pending", text: null, message: null }),
+    });
+    const view = render(<PreviewWindow />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent("preview://show", {
+        hash: "manual-video",
+        pathId: null,
+        detail: { ...DETAIL, fileName: "manual.mp4", kind: "video", durationMs: 13_000 },
+      });
+    });
+    await act(async () => {});
+    view.getByRole("button", { name: "Expand" }).click();
+    expect(view.getByRole("button", { name: "Transcribe this file" })).toBeTruthy();
   });
 
   it("forwards navigation, keeps Space inert, and requests live Preview fullscreen with F", async () => {

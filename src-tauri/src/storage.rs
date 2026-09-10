@@ -240,8 +240,9 @@ pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
     load_from_root(&paths::data_root(app)?)
 }
 
-/// Appearance is a read-only projection, not another application bootstrap.
-/// It never materializes, repairs, or drains quarantine notices owned by Main.
+/// Preferences needed by auxiliary windows are a read-only projection, not
+/// another application bootstrap. It never materializes, repairs, or drains
+/// quarantine notices owned by Main.
 pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
     let config: JsonValue = match std::fs::read(root.join(CONFIG_FILE_NAME)) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string())?,
@@ -254,6 +255,9 @@ pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
     Ok(serde_json::json!({
         "theme": config.get("theme"),
         "uiFontFamily": config.get("uiFontFamily"),
+        "enlargeSmallImagesInPreview": config.get("enlargeSmallImagesInPreview"),
+        "videoTranscriptionEnabled": config.get("videoTranscriptionEnabled"),
+        "audioTranscriptionEnabled": config.get("audioTranscriptionEnabled"),
     }))
 }
 

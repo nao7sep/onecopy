@@ -1287,7 +1287,11 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
         let panic_handle = handle.clone();
         let panic_hash = hash.clone();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let result = (|| -> Result<(String, String), String> {
+            // The optional text distinguishes completion from cancellation.
+            // Both outcomes carry the exact hash because identity promotion
+            // may replace the provisional hash supplied by Main while the
+            // attempt is preparing its source.
+            let result = (|| -> Result<(String, Option<String>), String> {
                 let _work = derived_runtime::begin_manual_queued(&handle, class.id())?;
                 derived_runtime::active_item(&handle, class, &hash);
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
@@ -1364,12 +1368,20 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                             &hash,
                             &exact_hash,
                         );
-                        Ok((exact_hash, text))
+                        Ok((exact_hash, Some(text)))
                     }
-                    derived_work::TranscriptionAttemptOutcome::Cancelled { .. } => {
-                        // Preserve a typed cancellation after the claim resets its
-                        // process-wide flag at the end of this worker.
-                        Err(scanner::CANCELLED.to_string())
+                    derived_work::TranscriptionAttemptOutcome::Cancelled {
+                        hash: exact_hash,
+                    } => {
+                        derived_work::notify_item_update(
+                            &handle,
+                            &conn,
+                            projection,
+                            "transcripts",
+                            &hash,
+                            &exact_hash,
+                        );
+                        Ok((exact_hash, None))
                     }
                     derived_work::TranscriptionAttemptOutcome::Unavailable {
                         hash: exact_hash,
@@ -1411,15 +1423,15 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                 return Ok(());
             }
             match result {
-                Ok((event_hash, text)) => failure_runtime::emit_checked(
+                Ok((event_hash, Some(text))) => failure_runtime::emit_checked(
                     &handle,
                     "transcribe://done",
                     json!({ "hash": event_hash, "text": text }),
                 ),
-                Err(err) if err == scanner::CANCELLED => failure_runtime::emit_checked(
+                Ok((event_hash, None)) => failure_runtime::emit_checked(
                     &handle,
                     "transcribe://cancelled",
-                    json!({ "hash": hash }),
+                    json!({ "hash": event_hash }),
                 ),
                 Err(err) => {
                     logging::warn(

@@ -11,16 +11,23 @@ import type { PreviewPresentation, PreviewShowMessage } from "../state/preview-s
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
+import {
+  installBinariesEventWiring,
+  useBinariesStore,
+} from "../state/binaries-store";
+import { installTranscriptEventWiring } from "../state/transcript-store";
 
 // The separate Preview window renders the shared PreviewSurface
 // from `preview://show` messages — payload AND detail arrive together from
-// the anchor owner, so this window queries nothing and can never race a
-// stale response. The previous message keeps rendering until the next one
-// arrives (no blank flash between keystrokes). Library commands go back to
-// Main, which remains their one owner.
+// the anchor owner, so this window makes no library-selection query and can
+// never race a stale response. It does load the small tool/config projections
+// required by the shared media surface. The previous message keeps rendering
+// until the next one arrives (no blank flash between keystrokes). Library
+// commands go back to Main, which remains their one owner.
 
 export default function PreviewWindow() {
   const [message, setMessage] = useState<PreviewShowMessage | null>(null);
+  const [featuresReady, setFeaturesReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [presentationError, setPresentationError] = useState<string | null>(null);
@@ -33,6 +40,18 @@ export default function PreviewWindow() {
   };
 
   useEffect(() => {
+    let active = true;
+    // Zustand stores are isolated per webview. Preview therefore admits the
+    // two feature stores it renders instead of assuming Main's instances are
+    // visible here.
+    void Promise.all([
+      installBinariesEventWiring(),
+      installTranscriptEventWiring(),
+    ]).then(async () => {
+      await useBinariesStore.getState().load();
+      if (active) setFeaturesReady(true);
+    });
+
     // Ask the main window for the current selection — only once this window
     // can actually hear the reply (see handshake.ts).
     const unlisten = listenThenAnnounce<PreviewShowMessage>(
@@ -131,16 +150,19 @@ export default function PreviewWindow() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
+      active = false;
       unlisten();
       stopPresentation();
       window.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
 
-  if (message === null) {
+  if (message === null || !featuresReady) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
-        <p className="text-ink-muted">Select an item in the main window</p>
+        <p className="text-ink-muted">
+          {message === null ? "Select an item in the main window" : "Preparing Preview…"}
+        </p>
       </div>
     );
   }
