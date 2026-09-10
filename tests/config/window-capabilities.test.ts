@@ -43,6 +43,7 @@ const NEEDS: Record<string, string> = {
   "setTheme(": "core:window:allow-set-theme",
   "availableMonitors(": "core:window:allow-available-monitors",
   "isMaximized(": "core:window:allow-is-maximized",
+  "isMinimized(": "core:window:allow-is-minimized",
   "currentMonitor(": "core:window:allow-current-monitor",
   ".show(": "core:window:allow-show",
   ".hide(": "core:window:allow-hide",
@@ -80,5 +81,17 @@ describe("failed window calls are reported, never swallowed", () => {
     for (const source of SOURCES) {
       expect(source).not.toContain("catch(() => {})");
     }
+  });
+});
+
+describe("durable window-state boundary", () => {
+  const core = readFileSync("src-tauri/src/lib.rs", "utf8");
+
+  it("tracks only Main position and size", () => {
+    expect(core).toContain("StateFlags::POSITION | StateFlags::SIZE");
+    expect(core).toContain('.with_filter(|label| label == "main")');
+    expect(core).not.toContain("StateFlags::MAXIMIZED");
+    expect(core).not.toContain("StateFlags::FULLSCREEN");
+    expect(core).not.toContain("StateFlags::VISIBLE");
   });
 });

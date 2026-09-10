@@ -26,7 +26,7 @@ import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
 import TimezoneHelpLink from "./TimezoneHelpLink";
 
-/** Comparison display priority. Persisted as app STATE, not part of the config
+/** Auxiliary display priority. Persisted as app STATE, not part of the config
  * draft — screen identifiers are machine-specific and reordering applies
  * immediately, like a pane width. Meaningful only with two or more monitors. */
 function ScreensSection() {
@@ -79,8 +79,8 @@ function ScreensSection() {
         Screens
       </h2>
       <p className="mb-3 text-xs text-ink-muted">
-        Order sets auxiliary display priority for Comparison. Main&apos;s current
-        display is excluded. Applies immediately.
+        Order sets display priority for Preview and Comparison. Main&apos;s current
+        display is excluded when an auxiliary window opens. Applies immediately.
       </p>
       <Button
         className="mb-2"

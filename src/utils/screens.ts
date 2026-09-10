@@ -1,7 +1,8 @@
-// Comparison display priority. The persisted order is app STATE — screen
+// Auxiliary display priority. The persisted order is app STATE — screen
 // identifiers are machine-specific — as a list of monitor keys; monitors not
 // in the list append last in native order, so a newly attached screen simply
-// joins the tail. Comparison excludes Main's current display at use time.
+// joins the tail. Preview and Comparison exclude Main's current display at use
+// time.
 
 export interface MonitorLike {
   name: string | null;

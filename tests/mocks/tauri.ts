@@ -82,6 +82,8 @@ export const close = vi.fn(async () => {});
 export const destroy = vi.fn(async () => {});
 export const setPosition = vi.fn(async () => {});
 export const setSize = vi.fn(async () => {});
+export const outerPosition = vi.fn(async () => ({ x: 100, y: 50 }));
+export const outerSize = vi.fn(async () => ({ width: 1120, height: 640 }));
 export const onResized = vi.fn(async (_handler: unknown) => () => {});
 export const onCloseRequested = vi.fn(async (_handler: unknown) => () => {});
 export const isMaximized = vi.fn(async () => false);
@@ -96,6 +98,8 @@ export const getCurrentWindow = vi.fn(() => ({
   destroy,
   setPosition,
   setSize,
+  outerPosition,
+  outerSize,
   onResized,
   onCloseRequested,
   isMaximized,
@@ -180,6 +184,13 @@ export class WebviewWindow {
   setSize = vi.fn(async (_s: PhysicalSize) => {});
   setFocus = vi.fn(async () => {});
   setAlwaysOnTop = vi.fn(async (_flag: boolean) => {});
+  outerPosition = vi.fn(async () => ({ x: 0, y: 0 }));
+  outerSize = vi.fn(async () => ({ width: 1280, height: 800 }));
+  isMinimized = vi.fn(async () => false);
+  isFullscreen = vi.fn(async () => false);
+  isMaximized = vi.fn(async () => false);
+  maximize = vi.fn(async () => {});
+  unmaximize = vi.fn(async () => {});
   onCloseRequested = vi.fn(async (_handler: unknown) => () => {});
 }
 
@@ -474,6 +485,8 @@ export function resetTauriMocks(
     setZoom,
     setMinSize,
     setTheme,
+    outerPosition,
+    outerSize,
     close,
     destroy,
     isMaximized,

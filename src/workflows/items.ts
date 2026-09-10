@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { identityFromKey, itemKey } from "../models/items";
 import { log, toErrorFields } from "../repositories";
-import { retainStatePatch } from "../state/app-store";
+import { retainStatePatch, useAppStore } from "../state/app-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import { beginMainFeedback } from "../state/main-feedback-store";
@@ -24,6 +24,10 @@ type RescanSectionOutcome =
 
 let installed = false;
 
+function appWindowState(): Record<string, unknown> {
+  return useAppStore.getState().appData?.state ?? {};
+}
+
 function projectAnchor(): void {
   const state = useItemsStore.getState();
   const { selectedItem, items, detail } = state;
@@ -39,7 +43,7 @@ function projectAnchor(): void {
   };
   const preview = usePreviewStore.getState();
   if (preview.follow && preview.placement === null) {
-    void preview.open(payload, detail);
+    void preview.open(payload, detail, appWindowState());
   } else {
     preview.anchorChanged(payload, detail);
   }

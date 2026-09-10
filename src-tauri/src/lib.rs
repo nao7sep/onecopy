@@ -3,6 +3,7 @@ use tauri::menu::Menu;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_window_state::StateFlags;
 
 const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
 
@@ -2072,6 +2073,15 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Main is OneCopy's only durable top-level window. Preview placement
+        // is session-owned, while Comparison and transient viewers own their
+        // live geometry, so none of those labels may enter plugin state.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                .with_filter(|label| label == "main")
+                .build(),
+        )
         .menu(menu_with_safe_quit)
         .on_menu_event(|app, event| {
             if event.id() == SAFE_QUIT_MENU_ID {

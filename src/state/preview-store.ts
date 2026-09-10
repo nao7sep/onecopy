@@ -10,9 +10,22 @@
 
 import { create } from "zustand";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import {
+  availableMonitors,
+  getCurrentWindow,
+  PhysicalPosition,
+  PhysicalSize,
+} from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
+import {
+  allocatePreviewPlacement,
+  hostingScreen,
+  type PreviewBounds,
+  type PreviewWindowPlacement,
+} from "../models/previewPlacement";
+import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
@@ -58,12 +71,14 @@ interface PreviewState {
   open: (
     payload: PreviewPayload,
     detail: ItemDetail | null,
+    windowState?: Record<string, unknown>,
   ) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
   close: () => void;
   /** Moves the open surface to the other placement, and remembers the choice. */
   setPlacementPreference: (
     preference: PlacementPreference,
+    windowState?: Record<string, unknown>,
   ) => Promise<void>;
   /** Restores the persisted follow flag without opening anything yet. */
   restoreFollow: (on: boolean, preference: PlacementPreference) => void;
@@ -79,6 +94,7 @@ interface PreviewState {
 
 // Cached existence flag: getByLabel per keystroke is an IPC round trip.
 let previewWindowOpen = false;
+let sessionPlacement: PreviewWindowPlacement | null = null;
 let surfaceRequest = 0;
 let surfaceTail: Promise<void> = Promise.resolve();
 let previewFullscreenApplied = false;
@@ -99,7 +115,66 @@ function recordStaleSurface(generation: number): void {
   });
 }
 
-async function ensurePreviewWindow(): Promise<void> {
+async function outerBounds(window: {
+  outerPosition: () => Promise<{ x: number; y: number }>;
+  outerSize: () => Promise<{ width: number; height: number }>;
+}): Promise<PreviewBounds> {
+  const [position, size] = await Promise.all([
+    window.outerPosition(),
+    window.outerSize(),
+  ]);
+  return { ...position, ...size };
+}
+
+async function capturePreviewPlacement(window: WebviewWindow): Promise<void> {
+  if (sessionPlacement === null || previewFullscreenApplied) return;
+  const [minimized, maximized] = await Promise.all([
+    window.isMinimized(),
+    window.isMaximized(),
+  ]);
+  if (minimized || previewFullscreenApplied) return;
+  const [bounds, monitors] = await Promise.all([
+    outerBounds(window),
+    availableMonitors(),
+  ]);
+  const screen = hostingScreen(monitors, bounds);
+  if (screen === null) return;
+  sessionPlacement = {
+    screen: monitorKey(screen),
+    normalBounds: maximized ? sessionPlacement.normalBounds : bounds,
+    mode: maximized ? "maximized" : "normal",
+  };
+}
+
+async function placePreviewWindow(
+  window: WebviewWindow,
+  state: Record<string, unknown>,
+): Promise<void> {
+  const main = getCurrentWindow();
+  const [monitors, mainBounds] = await Promise.all([
+    availableMonitors(),
+    outerBounds(main),
+  ]);
+  const allocation = allocatePreviewPlacement(
+    orderMonitors(monitors, priorityFromState(state)),
+    mainBounds,
+    sessionPlacement,
+  );
+  if (allocation === null) return;
+  sessionPlacement = allocation;
+  if (await window.isMaximized()) await window.unmaximize();
+  await window.setSize(new PhysicalSize(
+    allocation.normalBounds.width,
+    allocation.normalBounds.height,
+  ));
+  await window.setPosition(new PhysicalPosition(
+    allocation.normalBounds.x,
+    allocation.normalBounds.y,
+  ));
+  if (allocation.mode === "maximized") await window.maximize();
+}
+
+async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing !== null) {
     previewWindowOpen = true;
@@ -117,6 +192,7 @@ async function ensurePreviewWindow(): Promise<void> {
   });
   try {
     await waitForWindowCreated(window, "Preview");
+    await placePreviewWindow(window, state);
     // The surface closing by any route (Escape in it, red button) clears the
     // follow flag — otherwise P looks broken afterwards.
     await window.once("tauri://destroyed", () => {
@@ -194,6 +270,7 @@ async function closePreviewWindow(): Promise<void> {
   if (existing === null) return;
   await invoke("set_window_fullscreen", { label: "preview", enable: false });
   previewFullscreenApplied = false;
+  await capturePreviewPlacement(existing);
   await existing.destroy();
 }
 
@@ -275,6 +352,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         if (request !== surfaceRequest) return;
         const window = await WebviewWindow.getByLabel("preview");
         if (window === null) throw new Error("The Preview window is unavailable.");
+        if (enabled) await capturePreviewPlacement(window);
         await invoke("set_window_fullscreen", { label: "preview", enable: enabled });
         previewFullscreenApplied = enabled;
         if (request === surfaceRequest) await window.setFocus();
@@ -286,7 +364,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     }
   },
 
-  open: async (payload, detail) => {
+  open: async (payload, detail, windowState = {}) => {
     const request = ++surfaceRequest;
     cancelPublication();
     try {
@@ -301,7 +379,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
             recordStaleSurface(request);
             return;
           }
-          await ensurePreviewWindow();
+          await ensurePreviewWindow(windowState);
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;
@@ -344,7 +422,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     }
   },
 
-  setPlacementPreference: async (preference) => {
+  setPlacementPreference: async (preference, windowState = {}) => {
     const request = ++surfaceRequest;
     const { follow, placementPreference } = get();
     set({ placementPreference: preference });
@@ -372,7 +450,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           return;
         }
         if (next === "window" && current !== null) {
-          await ensurePreviewWindow();
+          await ensurePreviewWindow(windowState);
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;

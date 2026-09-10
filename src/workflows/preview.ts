@@ -27,6 +27,10 @@ interface PreviewKeyMessage {
   altKey?: boolean;
 }
 
+function windowState(): Record<string, unknown> {
+  return useAppStore.getState().appData?.state ?? {};
+}
+
 export function installPreviewPersistence(): void {
   if (persistenceInstalled) return;
   persistenceInstalled = true;
@@ -95,7 +99,7 @@ export async function openPreview(
   payload: PreviewPayload,
   detail: ReturnType<typeof useItemsStore.getState>["detail"],
 ): Promise<void> {
-  await usePreviewStore.getState().open(payload, detail);
+  await usePreviewStore.getState().open(payload, detail, windowState());
 }
 
 export function closePreview(): void {
@@ -129,5 +133,7 @@ export async function togglePreview(): Promise<void> {
 export async function setPreviewPlacement(
   preference: PlacementPreference,
 ): Promise<void> {
-  await usePreviewStore.getState().setPlacementPreference(preference);
+  await usePreviewStore
+    .getState()
+    .setPlacementPreference(preference, windowState());
 }
