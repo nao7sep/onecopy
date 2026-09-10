@@ -20,6 +20,7 @@ import { useMutationStore } from "../../src/state/mutation-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
+import { useReleaseCheckStore } from "../../src/state/release-check-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
   close,
@@ -142,6 +143,11 @@ beforeEach(() => {
       return true;
     },
     admit_background_completion: () => null,
+    check_github_release: () => ({
+      status: "current",
+      publishedVersion: "0.1.0",
+      attemptedAtUtc: "2026-09-10T00:00:00.000Z",
+    }),
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
   useMainFeedbackStore.setState({ entries: {} });
@@ -191,6 +197,13 @@ beforeEach(() => {
     anchors: new Set(),
     anchor: null,
   });
+  useReleaseCheckStore.setState({
+    automaticStarted: false,
+    checking: false,
+    manualResult: null,
+    noticeVersion: null,
+    noticeLinkError: null,
+  });
 });
 
 afterEach(() => cleanup());
@@ -210,6 +223,9 @@ describe("the culling workflow", () => {
     expect(commands.filter((command) => command === "get_section_counts")).toHaveLength(1);
     expect(commands.filter((command) => command === "get_issues")).toHaveLength(1);
     expect(commands.filter((command) => command === "background_work_snapshot")).toHaveLength(1);
+    expect(commands.filter((command) => command === "check_github_release")).toHaveLength(1);
+    expect(commands.indexOf("check_github_release"))
+      .toBeGreaterThan(commands.indexOf("background_work_snapshot"));
   });
 
   it("shows the authored blocked-start shell without querying feature backends", async () => {

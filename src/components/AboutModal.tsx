@@ -8,6 +8,10 @@ import { recordActionFailure } from "../state/notifications-store";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import {
+  LATEST_RELEASE_PAGE,
+  useReleaseCheckStore,
+} from "../state/release-check-store";
 
 const REPO_URL = "https://github.com/nao7sep/onecopy";
 
@@ -18,11 +22,13 @@ export default function AboutModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const [linkFailures, setLinkFailures] = useState<Partial<Record<"repository" | "issues", string>>>({});
-  const linkAttempts = useRef({ repository: 0, issues: 0 });
+  const [linkFailures, setLinkFailures] = useState<Partial<Record<"repository" | "issues" | "release", string>>>({});
+  const linkAttempts = useRef({ repository: 0, issues: 0, release: 0 });
+  const checkingRelease = useReleaseCheckStore((state) => state.checking);
+  const releaseResult = useReleaseCheckStore((state) => state.manualResult);
   if (!open) return null;
 
-  const openProjectPage = async (owner: "repository" | "issues", url: string, page: string) => {
+  const openProjectPage = async (owner: "repository" | "issues" | "release", url: string, page: string) => {
     const attempt = ++linkAttempts.current[owner];
     try {
       await openUrl(url);
@@ -56,6 +62,31 @@ export default function AboutModal({
           <Button onClick={() => void openProjectPage("repository", REPO_URL, "GitHub")}>GitHub</Button>
           <Button onClick={() => void openProjectPage("issues", `${REPO_URL}/issues`, "Report an issue")}>Report an issue</Button>
         </div>
+        <div className="mt-3">
+          <Button
+            disabled={checkingRelease}
+            onClick={() => void useReleaseCheckStore.getState().checkManual()}
+          >
+            {checkingRelease ? "Checking GitHub…" : "Check GitHub for New Release"}
+          </Button>
+        </div>
+        {releaseResult !== null ? (
+          <OperationResult
+            level={releaseResult.status === "failed" ? "error" : "info"}
+            className="mt-3"
+            actions={releaseResult.status === "newer" ? (
+              <Button onClick={() => void openProjectPage("release", LATEST_RELEASE_PAGE, "the release page")}>
+                View Release on GitHub
+              </Button>
+            ) : undefined}
+          >
+            {releaseResult.status === "newer"
+              ? `OneCopy ${releaseResult.version} is available.`
+              : releaseResult.status === "current"
+                ? "This version of OneCopy is current."
+                : "OneCopy couldn’t check GitHub. Check your connection and try again."}
+          </OperationResult>
+        ) : null}
         {linkFailures.repository ? (
           <OperationResult
             level="error"
@@ -82,6 +113,20 @@ export default function AboutModal({
             dismissLabel="Close Report an issue result"
           >
             {linkFailures.issues}
+          </OperationResult>
+        ) : null}
+        {linkFailures.release ? (
+          <OperationResult
+            level="error"
+            className="mt-3"
+            onDismiss={() => setLinkFailures((current) => {
+              const next = { ...current };
+              delete next.release;
+              return next;
+            })}
+            dismissLabel="Close release page result"
+          >
+            {linkFailures.release}
           </OperationResult>
         ) : null}
         <p className="mt-5 text-xs text-ink-muted">© 2026 Yoshinao Inoguchi · GNU GPL v3 or later</p>

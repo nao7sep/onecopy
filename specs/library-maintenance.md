@@ -87,6 +87,8 @@ An enabled optional feature whose required managed tool is unavailable remains e
 
 Managed-tool installation and update checking are bounded and cancellable, do not block normal browsing, and publish terminal state only for the operation that still owns the artifact.
 
+When managed-tool launch checking is enabled, one app-wide UTC last-attempt timestamp controls its 24-hour network eligibility and is recorded immediately before every automatic or manual set-wide request sequence. Missing, invalid, future, or at-least-24-hour-old values are eligible. Failed checks preserve each tool's last-successful facts while the attempt guard still prevents repeated offline launches. This guard is independent from OneCopy's own release checker.
+
 ## Background Work controls
 
 Background Work exposes distinct rows for work with distinct completion and policy:

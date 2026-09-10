@@ -25,6 +25,7 @@ import { installIssuesEventWiring } from "./issues";
 import { installDerivedWorkEventWiring } from "../state/derived-work-store";
 import { installTranscriptEventWiring } from "../state/transcript-store";
 import type { LoadedAppData } from "../repositories";
+import { startAutomaticReleaseCheck } from "../state/release-check-store";
 
 let completedData: LoadedAppData | null = null;
 let bootstrapInFlight: Promise<void> | null = null;
@@ -93,4 +94,7 @@ async function bootstrapOnce(): Promise<void> {
     await useSectionsStore.getState().admitBackgroundCompletion();
   }
   completedData = data;
+  // Optional metadata-only work begins only after Main is fully usable and is
+  // never part of the bootstrap promise the shell waits on.
+  void startAutomaticReleaseCheck(data);
 }

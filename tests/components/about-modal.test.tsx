@@ -3,6 +3,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AboutModal from "../../src/components/AboutModal";
+import {
+  LATEST_RELEASE_PAGE,
+  useReleaseCheckStore,
+} from "../../src/state/release-check-store";
 
 const mocks = vi.hoisted(() => ({
   openUrl: vi.fn(),
@@ -21,6 +25,12 @@ vi.mock("../../src/repositories", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  useReleaseCheckStore.setState({
+    checking: false,
+    manualResult: null,
+    noticeVersion: null,
+    noticeLinkError: null,
+  });
 });
 
 describe("About link results", () => {
@@ -28,6 +38,18 @@ describe("About link results", () => {
     render(<AboutModal open onClose={() => undefined} />);
 
     expect(screen.getByText(/GNU GPL v3 or later/)).toBeTruthy();
+  });
+
+  it("presents a manual newer result and opens only the fixed release page", async () => {
+    useReleaseCheckStore.setState({
+      manualResult: { status: "newer", version: "0.2.0" },
+    });
+    render(<AboutModal open onClose={() => undefined} />);
+
+    expect(screen.getByRole("button", { name: "Check GitHub for New Release" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View Release on GitHub" }));
+
+    await waitFor(() => expect(mocks.openUrl).toHaveBeenCalledWith(LATEST_RELEASE_PAGE));
   });
 
   it("retains authored modal-local copy and diagnostics separately", async () => {

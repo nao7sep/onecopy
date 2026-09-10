@@ -89,6 +89,7 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
         }
     );
     assert_eq!(value["checkSourceFoldersAtLaunch"], serde_json::json!(true));
+    assert_eq!(value["checkGithubReleasesAtLaunch"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert!(value.get("verifyAfterCopy").is_none());
     assert_eq!(value["showFaceStars"], serde_json::json!(true));

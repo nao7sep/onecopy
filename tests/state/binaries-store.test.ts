@@ -59,6 +59,7 @@ beforeEach(() => {
     activity_record: () => null,
     publish_notification: () => ({}),
     binaries_cancel: () => true,
+    patch_state: ({ patch }) => patch,
   });
 });
 
@@ -327,6 +328,8 @@ describe("managed-tool terminal ownership", () => {
         id: "ffmpeg",
         operationId: expect.any(String),
       });
+      expect(invokeCalls.find((call) => call.command === "patch_state")?.args.patch)
+        .toMatchObject({ managedToolUpdateLastAttemptAtUtc: expect.any(String) });
     } finally {
       vi.useRealTimers();
     }

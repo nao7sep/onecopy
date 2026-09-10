@@ -71,6 +71,7 @@ pub mod file_identity;
 pub mod file_information_runtime;
 pub mod fs_publish;
 pub mod fs_recovery;
+mod github_release;
 pub mod hashing;
 pub mod index_store;
 pub mod visibility;
@@ -2056,6 +2057,18 @@ fn request_app_exit(app: AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command(async)]
+async fn check_github_release(app: AppHandle) -> Result<github_release::ReleaseCheckOutcome, String> {
+    let result = github_release::check(&app).await;
+    if let Err(error) = &result {
+        logging::error(
+            "GitHub release check could not start",
+            json!({ "error": { "message": error } }),
+        );
+    }
+    result
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Developer-only `debug` logging: on for a dev build, or when explicitly
@@ -2185,7 +2198,8 @@ pub fn run() {
             activity_record,
             activity_page,
             activity_events,
-            request_app_exit
+            request_app_exit,
+            check_github_release
         ])
         .build(tauri::generate_context!());
 

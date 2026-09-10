@@ -120,6 +120,17 @@ describe("playback preferences", () => {
   });
 });
 
+describe("GitHub release preference", () => {
+  it("defaults on and preserves an explicit false value", () => {
+    expect(useSettingsStore.getState().draft?.checkGithubReleasesAtLaunch).toBe(true);
+    useSettingsStore.getState().beginEditing({
+      ...config,
+      checkGithubReleasesAtLaunch: false,
+    });
+    expect(useSettingsStore.getState().draft?.checkGithubReleasesAtLaunch).toBe(false);
+  });
+});
+
 describe("UI font preference", () => {
   it("presents the historical seeded CSS stack as the blank system default", () => {
     useSettingsStore.getState().beginEditing({

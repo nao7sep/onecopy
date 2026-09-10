@@ -103,6 +103,9 @@ pub struct DefaultConfig {
     /// The managed-runtime-dependencies conventions' one update switch:
     /// check installed tools for updates at launch (throttled to ~daily).
     pub check_updates_at_launch: bool,
+    /// Check OneCopy's own public GitHub releases after launch (throttled by
+    /// its distinct app-release attempt timestamp).
+    pub check_github_releases_at_launch: bool,
     /// Run the stat-only configured-source reconciliation after launch.
     pub check_source_folders_at_launch: bool,
     pub keep_awake_during_indexing: bool,
@@ -169,6 +172,7 @@ impl Default for DefaultConfig {
             // only a real user override here, never CSS implementation detail.
             ui_font_family: String::new(),
             check_updates_at_launch: false,
+            check_github_releases_at_launch: true,
             check_source_folders_at_launch: true,
             keep_awake_during_indexing: true,
             score_faces: true,
@@ -265,6 +269,19 @@ pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
             .push(record);
         materialize_config_if_missing(root)?;
         return Ok(read_config_optional(&root.join(CONFIG_FILE_NAME))?.value);
+    }
+    Ok(read.value)
+}
+
+/// Reads volatile state for a pre-frontend runtime decision while preserving
+/// the ordinary load path's duty to report any quarantine to Main.
+pub fn read_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
+    let read = read_json_optional(&root.join(STATE_FILE_NAME))?;
+    if let Some(record) = read.quarantined {
+        PENDING_QUARANTINES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record);
     }
     Ok(read.value)
 }

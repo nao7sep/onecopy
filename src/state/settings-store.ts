@@ -46,6 +46,7 @@ export interface SettingsDraft {
   theme: "system" | "light" | "dark";
   uiFontFamily: string;
   keepAwakeDuringIndexing: boolean;
+  checkGithubReleasesAtLaunch: boolean;
   checkSourceFoldersAtLaunch: boolean;
   confirmTrashDelete: boolean;
   scoreFaces: boolean;
@@ -160,6 +161,7 @@ function draftFrom(
         : "system",
     uiFontFamily: normalizeUiFontPreference(config?.uiFontFamily),
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
+    checkGithubReleasesAtLaunch: config?.checkGithubReleasesAtLaunch !== false,
     checkSourceFoldersAtLaunch: config?.checkSourceFoldersAtLaunch !== false,
     // Opt-in, so absence means OFF — the opposite polarity of the two above.
     confirmTrashDelete: config?.confirmTrashDelete === true,

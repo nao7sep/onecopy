@@ -11,6 +11,45 @@ import {
   recordInterfaceFailure,
 } from "../utils/failureSurface";
 import { log, toErrorFields } from "../repositories";
+import { useReleaseCheckStore } from "../state/release-check-store";
+import Button from "./ui/Button";
+import OperationResult from "./ui/OperationResult";
+
+function ReleaseNotice() {
+  const version = useReleaseCheckStore((state) => state.noticeVersion);
+  const linkError = useReleaseCheckStore((state) => state.noticeLinkError);
+  const dismiss = useReleaseCheckStore((state) => state.dismissNotice);
+  const openRelease = useReleaseCheckStore((state) => state.openNoticeRelease);
+  if (version === null) return null;
+  return (
+    <section
+      role="status"
+      className="pointer-events-auto w-[min(420px,calc(100vw-2rem))] rounded-lg border border-border bg-surface p-3 text-ink shadow-xl"
+    >
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="select-text break-words text-sm">OneCopy {version} is available.</p>
+          <Button className="mt-2" onClick={() => void openRelease()}>
+            View Release on GitHub
+          </Button>
+        </div>
+        <button
+          aria-label="Dismiss release notification"
+          title="Dismiss"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
+          onClick={dismiss}
+        >
+          <X size={14} />
+        </button>
+      </div>
+      {linkError !== null ? (
+        <OperationResult level="error" className="mt-2">
+          {linkError}
+        </OperationResult>
+      ) : null}
+    </section>
+  );
+}
 
 function Toast({
   record,
@@ -99,6 +138,7 @@ function Toast({
 
 export default function NotificationHost() {
   const active = useNotificationsStore((state) => state.active);
+  const releaseVersion = useReleaseCheckStore((state) => state.noticeVersion);
   const configuredSeconds = useAppStore((state) => {
     const value = state.appData?.config?.notificationDisplaySeconds;
     return typeof value === "number" && Number.isFinite(value) ? value : 6;
@@ -114,9 +154,10 @@ export default function NotificationHost() {
     });
   }, []);
 
-  if (active.length === 0) return null;
+  if (active.length === 0 && releaseVersion === null) return null;
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-[25] flex flex-col items-end gap-2">
+      <ReleaseNotice />
       {active.map((record) => (
         <Toast key={record.id} record={record} durationMs={durationMs} />
       ))}

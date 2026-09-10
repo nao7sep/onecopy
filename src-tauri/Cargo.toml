@@ -72,6 +72,7 @@ tauri-plugin-window-state = "2.4.1"
 rfd = { version = "0.17", features = ["common-controls-v6"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+semver = "1.0"
 # System IANA timezone name, used once to seed config.json's defaultTimezone on
 # first run (the wizard then owns the value).
 iana-time-zone = "0.1"
@@ -101,7 +102,7 @@ keepawake = "0.6.0"
 # size-scaled whole-operation deadline; the previous ureq path exposed only a
 # whole-body timeout.
 reqwest = { version = "0.13.4", default-features = false, features = ["native-tls"] }
-tokio = { version = "1.53.1", features = ["rt", "time", "net", "macros", "fs", "io-util"] }
+tokio = { version = "1.53.1", features = ["rt", "time", "net", "macros", "fs", "io-util", "sync"] }
 zip = "8.6.0"
 notify = "8.2.0"
 # The production large-v3-turbo fixture is 3.9x faster in a release build on

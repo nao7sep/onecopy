@@ -17,6 +17,7 @@ import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActionFailure } from "./notifications-store";
+import { useAppStore } from "./app-store";
 import {
   finishActivityOperation,
   newActivityOperationId,
@@ -433,6 +434,20 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         entry.status !== "not-installed" &&
         installing[entry.id] === undefined,
     );
+    if (installed.length > 0) {
+      try {
+        await useAppStore.getState().patchState(
+          { managedToolUpdateLastAttemptAtUtc: new Date().toISOString() },
+          { immediate: true },
+        );
+      } catch (error) {
+        const message = "OneCopy couldn’t record this managed-tool check. Try again.";
+        log.error("managed-tool check attempt save failed", toErrorFields(error));
+        recordActionFailure("managed-tool-check-attempt-save-failed", message, error);
+        set({ checking: false, checkError: message });
+        return;
+      }
+    }
     recordActivity({
       kind: "started",
       owner: "managedTools",

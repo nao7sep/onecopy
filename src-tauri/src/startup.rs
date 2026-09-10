@@ -273,26 +273,36 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                 if !check_at_launch {
                     return Ok(());
                 }
+                let state = crate::storage::read_state_for_setup(&root)?;
+                let last_attempt = state
+                    .as_ref()
+                    .and_then(|value| value.get("managedToolUpdateLastAttemptAtUtc"))
+                    .and_then(Value::as_str);
+                let now = chrono::Utc::now();
+                if !managed_update_attempt_eligible(last_attempt, now) {
+                    return Ok(());
+                }
                 let stale_ids: Vec<String> = crate::binaries_manager::states(&root)
                     .into_iter()
                     .filter(|entry| {
                         entry.checkable
                             && entry.status != crate::binaries::BinaryStatus::NotInstalled
-                            && entry
-                                .facts
-                                .last_checked_at_utc
-                                .as_deref()
-                                .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
-                                .map(|checked| {
-                                    chrono::Utc::now().signed_duration_since(checked)
-                                        > chrono::Duration::hours(24)
-                                })
-                                .unwrap_or(true)
                     })
                     .map(|entry| entry.id)
                     .collect();
                 if stale_ids.is_empty() {
                     return Ok(());
+                }
+                let attempt = crate::storage::patch_state(
+                    &handle,
+                    &json!({ "managedToolUpdateLastAttemptAtUtc": crate::logging::now_iso_millis() }),
+                )?;
+                if let Some(record) = attempt.quarantined {
+                    crate::failure_runtime::emit_or_record(
+                        &handle,
+                        "storage://quarantined",
+                        json!({ "quarantines": [record] }),
+                    );
                 }
                 let report_handle = handle.clone();
                 spawn_launch_worker(
@@ -386,6 +396,19 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         }),
     );
     crate::activity::record_app_admitted();
+}
+
+fn managed_update_attempt_eligible(
+    value: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let Some(attempt) = value
+        .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
+        .map(|stamp| stamp.with_timezone(&chrono::Utc))
+    else {
+        return true;
+    };
+    attempt > now || now.signed_duration_since(attempt) >= chrono::Duration::hours(24)
 }
 
 /// Own the entire fallible launch boundary while keeping Tauri's setup hook
@@ -547,5 +570,17 @@ mod tests {
         );
 
         assert!(later_started.get());
+    }
+
+    #[test]
+    fn managed_update_attempt_guard_uses_app_wide_attempt_freshness() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-10T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(managed_update_attempt_eligible(None, now));
+        assert!(managed_update_attempt_eligible(Some("invalid"), now));
+        assert!(managed_update_attempt_eligible(Some("2026-09-10T00:00:01Z"), now));
+        assert!(managed_update_attempt_eligible(Some("2026-09-09T00:00:00Z"), now));
+        assert!(!managed_update_attempt_eligible(Some("2026-09-09T00:00:01Z"), now));
     }
 }

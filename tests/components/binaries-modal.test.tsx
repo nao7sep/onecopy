@@ -93,6 +93,7 @@ beforeEach(() => {
       states: useBinariesStore.getState().entries,
     }),
     binaries_state: () => [],
+    patch_state: ({ patch }) => patch,
   });
   seed([
     entry("ffmpeg", "not-installed"),
