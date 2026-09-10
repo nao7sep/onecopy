@@ -43,6 +43,8 @@ const NEEDS: Record<string, string> = {
   "setTheme(": "core:window:allow-set-theme",
   "availableMonitors(": "core:window:allow-available-monitors",
   "isMaximized(": "core:window:allow-is-maximized",
+  ".maximize(": "core:window:allow-maximize",
+  ".unmaximize(": "core:window:allow-unmaximize",
   "isMinimized(": "core:window:allow-is-minimized",
   "currentMonitor(": "core:window:allow-current-monitor",
   ".show(": "core:window:allow-show",
