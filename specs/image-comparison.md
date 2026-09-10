@@ -20,6 +20,8 @@ A similar-image group has no size limit. Comparison divides any group into pages
 
 Comparison uses as many eligible displays as needed to reach the current page size and leaves unnecessary displays uncovered. There is no four-display limit. A typical landscape display shows up to four landscape images in a 2x2 grid or three portrait images from left to right. Other display shapes use a layout suited to that display. The dominant orientation of the current page selects the ordinary layout; a tie uses the landscape layout.
 
+Every display participating in Comparison is a temporary display-filling presentation. Main fills its hosting display for the Comparison session, and each auxiliary Comparison window fills its assigned display. When OneCopy hides the operating-system menu bar, Dock, or taskbar, no participating surface retains the former system-chrome strip as unused space. Exiting or failing Comparison restores Main's exact prior normal geometry; Comparison geometry never becomes Main's durable placement state.
+
 Only the current page's viewing content is prepared ahead. Original pixels are obtained on demand for inspection. If a display window becomes unavailable, Comparison preserves the session and keep marks, recomputes capacity from the surviving displays, and moves excess images to later pages.
 
 ## Order and presentation

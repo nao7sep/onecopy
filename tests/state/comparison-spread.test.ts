@@ -147,13 +147,9 @@ describe("opening Comparison across displays", () => {
     ).toHaveLength(1);
   });
 
-  it("gives one window ownership of process-global system chrome", async () => {
+  it("fills Main while it owns process-global system chrome", async () => {
     setMonitors(THREE_SCREENS);
     mockCommands({ get_similar_group: () => members(10) });
-    // A real newly created webview announces tauri://created asynchronously;
-    // the lightweight window double deliberately does not synthesize that
-    // lifecycle event, so exercise the equivalent reused-window path here.
-    new WebviewWindow("comparison-1");
 
     await useComparisonStore.getState().openGroup("m0");
 
@@ -161,7 +157,45 @@ describe("opening Comparison across displays", () => {
       invokeCalls
         .filter((call) => call.command === "set_window_fullscreen")
         .map((call) => call.args),
-    ).toEqual([{ label: "comparison-1", enable: true }]);
+    ).toEqual([{ label: "main", enable: true }]);
+  });
+
+  it("fills and restores Main even when Comparison uses one display", async () => {
+    setMonitors(THREE_SCREENS.slice(0, 1));
+    mockCommands({ get_similar_group: () => members(2) });
+
+    await useComparisonStore.getState().openGroup("m0");
+    await useComparisonStore.getState().close();
+
+    expect(
+      invokeCalls
+        .filter((call) => call.command === "set_window_fullscreen")
+        .map((call) => call.args),
+    ).toEqual([
+      { label: "main", enable: true },
+      { label: "main", enable: false },
+    ]);
+  });
+
+  it("closes cleanly when Main cannot enter Comparison fullscreen", async () => {
+    setMonitors(THREE_SCREENS.slice(0, 1));
+    mockCommands({
+      get_similar_group: () => members(2),
+      record_interface_failure: () => null,
+      set_window_fullscreen: (args) => {
+        if (args.enable === true) throw new Error("fullscreen unavailable");
+        return null;
+      },
+    });
+
+    expect(await useComparisonStore.getState().openGroup("m0")).toBe("failed");
+
+    expect(useComparisonStore.getState().open).toBe(false);
+    expect(
+      invokeCalls
+        .filter((call) => call.command === "set_window_fullscreen")
+        .map((call) => call.args.enable),
+    ).toEqual([true, false]);
   });
 
   it("uses portrait capacity from the current page", async () => {
@@ -238,7 +272,7 @@ describe("opening Comparison across displays", () => {
       invokeCalls
         .filter((call) => call.command === "set_window_fullscreen")
         .map((call) => call.args.enable),
-    ).toEqual([false, true]);
+    ).toEqual([true, false, true]);
   });
 
   it("repaginates on the other surviving displays after one fails", async () => {

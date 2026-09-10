@@ -308,7 +308,7 @@ async function resolveMonitors(
   }
 }
 
-const COMPARISON_PRESENTATION_OWNER = "comparison-1";
+const COMPARISON_PRESENTATION_OWNER = "main";
 let comparisonFullscreenTransition: Promise<void> = Promise.resolve();
 
 function setComparisonFullscreen(
@@ -340,9 +340,6 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           new PhysicalSize(monitor.size.width, monitor.size.height),
         );
         await existing.show();
-        if (label === COMPARISON_PRESENTATION_OWNER) {
-          await setComparisonFullscreen(true);
-        }
         continue;
       }
       const scale = monitor.scaleFactor || 1;
@@ -371,9 +368,6 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           }
           try {
             await created.show();
-            if (label === COMPARISON_PRESENTATION_OWNER) {
-              await setComparisonFullscreen(true);
-            }
           } catch (error) {
             log.warn("comparison display became unavailable", {
               label,
@@ -415,11 +409,6 @@ async function showSpread(monitors: MonitorList): Promise<void> {
 }
 
 async function hideSpread(first: number, last: number): Promise<void> {
-  if (first <= 1 && last >= 1) {
-    await setComparisonFullscreen(false).catch(
-      reportWindowCall("comparison leave fullscreen"),
-    );
-  }
   for (let index = first; index <= last; index += 1) {
     const label = `comparison-${index}`;
     const window = await WebviewWindow.getByLabel(label).catch((error) => {
@@ -432,11 +421,6 @@ async function hideSpread(first: number, last: number): Promise<void> {
 }
 
 async function closeSpread(first: number, last: number): Promise<void> {
-  if (first <= 1 && last >= 1) {
-    await setComparisonFullscreen(false).catch(
-      reportWindowCall("comparison leave fullscreen"),
-    );
-  }
   for (let index = first; index <= last; index += 1) {
     const label = `comparison-${index}`;
     const window = await WebviewWindow.getByLabel(label).catch((error) => {
@@ -531,6 +515,9 @@ export function closeComparisonAfterMainRendererFailure(): void {
 
 async function teardownComparison(spreadCount: number): Promise<void> {
   await hideSpread(1, spreadCount);
+  await setComparisonFullscreen(false).catch(
+    reportWindowCall("comparison leave fullscreen"),
+  );
   await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
 }
 
@@ -627,6 +614,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         });
         broadcastComparison();
         await hidePreviewWindowForComparison();
+        await setComparisonFullscreen(true);
         await showSpread(sessionOtherMonitors.slice(0, get().spreadCount));
         await getCurrentWindow()
           .setFocus()
@@ -635,8 +623,14 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       return "opened";
     } catch (error) {
       if (!fresh()) return "opened";
-      log.error("similar group load failed", toErrorFields(error));
-      recordInterfaceFailure("Couldn’t open the similar-image group.");
+      const state = get();
+      if (state.open) {
+        const spreadCount = state.spreadCount;
+        set(closedComparisonState());
+        await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+      }
+      log.error("comparison open failed", toErrorFields(error));
+      recordInterfaceFailure("Couldn’t open Comparison.");
       return "failed";
     }
   },
