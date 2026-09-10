@@ -20,8 +20,8 @@ fn byte_ranges_cover_the_forms_and_the_edges() {
     assert_eq!(parse_byte_range("bytes=-0", 1000), None);
     assert_eq!(parse_byte_range("items=0-5", 1000), None);
     assert_eq!(parse_byte_range("bytes=abc-def", 1000), None);
-    // Multi-range: only the first is honored (single-range protocol).
-    assert_eq!(parse_byte_range("bytes=0-1,5-9", 1000), Some((0, 1)));
+    // Multi-range is unsupported and must not be partially interpreted.
+    assert_eq!(parse_byte_range("bytes=0-1,5-9", 1000), None);
     // A single byte at each edge.
     assert_eq!(parse_byte_range("bytes=0-0", 1000), Some((0, 0)));
     assert_eq!(parse_byte_range("bytes=999-999", 1000), Some((999, 999)));
@@ -90,6 +90,27 @@ fn a_rangeless_image_is_served_whole_however_big() {
 fn a_small_rangeless_file_is_served_whole() {
     let (start, end, status) = resolve_range(None, 1234, true);
     assert_eq!((start, end, status), (0, 1233, 200));
+}
+
+#[test]
+fn an_unsatisfiable_single_range_is_rejected() {
+    assert_eq!(resolve_range(Some("bytes=1000-"), 1000, true).2, 416);
+    assert_eq!(resolve_range(Some("bytes=9-5"), 1000, true).2, 416);
+    assert_eq!(resolve_range(Some("bytes=-0"), 1000, true).2, 416);
+    assert_eq!(resolve_range(Some("bytes=0-"), 0, true).2, 416);
+}
+
+#[test]
+fn malformed_or_unsupported_range_syntax_is_ignored() {
+    assert_eq!(resolve_range(Some("items=0-5"), 1000, true), (0, 999, 200));
+    assert_eq!(
+        resolve_range(Some("bytes=abc-def"), 1000, true),
+        (0, 999, 200)
+    );
+    assert_eq!(
+        resolve_range(Some("bytes=0-1,5-9"), 1000, true),
+        (0, 999, 200)
+    );
 }
 
 #[test]

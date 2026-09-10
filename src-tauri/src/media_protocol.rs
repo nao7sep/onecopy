@@ -63,11 +63,31 @@ pub(crate) fn serve_original(
         Err(error) => return warn_404("metadata failed", format!("{path}: {error}")),
     };
     let content_type = content_type_for(&path);
+    if request.method() == tauri::http::Method::HEAD {
+        return tauri::http::Response::builder()
+            .status(200)
+            .header("Content-Type", content_type)
+            .header("Accept-Ranges", "bytes")
+            .header("Content-Length", total.to_string())
+            .body(Vec::new())
+            .unwrap_or_else(|_| not_found());
+    }
     let range_header = request
         .headers()
         .get("Range")
         .and_then(|value| value.to_str().ok());
     let (start, end, status) = resolve_range(range_header, total, is_streamable(content_type));
+
+    if status == 416 {
+        return tauri::http::Response::builder()
+            .status(status)
+            .header("Content-Type", content_type)
+            .header("Accept-Ranges", "bytes")
+            .header("Content-Range", format!("bytes */{total}"))
+            .header("Content-Length", "0")
+            .body(Vec::new())
+            .unwrap_or_else(|_| not_found());
+    }
 
     // `resolve_range` represents an empty 200 as (0, 0, 200). It is a span
     // sentinel, not one byte to read.
@@ -136,7 +156,10 @@ pub(crate) fn serve_cache(
 
 /// `bytes=start-end` / `bytes=start-` / `bytes=-suffix`, single range only.
 pub fn parse_byte_range(header: &str, total: u64) -> Option<(u64, u64)> {
-    let spec = header.strip_prefix("bytes=")?.split(',').next()?.trim();
+    let spec = header.strip_prefix("bytes=")?.trim();
+    if spec.contains(',') {
+        return None;
+    }
     let (start_text, end_text) = spec.split_once('-')?;
     if start_text.is_empty() {
         // Suffix form: the last N bytes.
@@ -233,28 +256,55 @@ pub fn is_streamable(content_type: &str) -> bool {
 
 /// The byte span to serve and the status to serve it with.
 ///
-/// Returns `(start, end_inclusive, status)`. `total == 0` yields an empty
-/// 200 rather than an underflowed span.
+/// Returns `(start, end_inclusive, status)`. A rangeless `total == 0` yields
+/// an empty 200 rather than an underflowed span; a valid Range against it is
+/// unsatisfiable.
 pub fn resolve_range(
     range_header: Option<&str>,
     total: u64,
     streamable: bool,
 ) -> (u64, u64, u16) {
-    if total == 0 {
-        return (0, 0, 200);
-    }
-    match range_header.and_then(|header| parse_byte_range(header, total)) {
-        Some((start, end)) => {
-            let capped = end.min(start.saturating_add(MAX_SPAN - 1)).min(total - 1);
-            (start, capped, 206)
+    if let Some(header) = range_header {
+        if !is_valid_single_range_syntax(header) {
+            // A malformed or unsupported Range field is ignored, as if it
+            // were absent. In particular, OneCopy does not pretend to serve
+            // one member of a multi-range request.
+            return resolve_range(None, total, streamable);
         }
+        return match parse_byte_range(header, total) {
+            Some((start, end)) => {
+                let capped = end.min(start.saturating_add(MAX_SPAN - 1)).min(total - 1);
+                (start, capped, 206)
+            }
+            None => (0, 0, 416),
+        };
+    }
+    if total == 0 {
+        (0, 0, 200)
+    } else if streamable && total > WHOLE_FILE_LIMIT {
         // Only streamable resources get the head-chunk treatment; an image
         // asked for without a Range must arrive whole or it cannot render.
-        None if streamable && total > WHOLE_FILE_LIMIT => {
-            (0, HEAD_CHUNK.min(total) - 1, 206)
-        }
-        None => (0, total - 1, 200),
+        (0, HEAD_CHUNK.min(total) - 1, 206)
+    } else {
+        (0, total - 1, 200)
     }
+}
+
+fn is_valid_single_range_syntax(header: &str) -> bool {
+    let Some(spec) = header.strip_prefix("bytes=") else {
+        return false;
+    };
+    if spec.contains(',') {
+        return false;
+    }
+    let Some((start, end)) = spec.trim().split_once('-') else {
+        return false;
+    };
+    if start.is_empty() {
+        return !end.is_empty() && end.bytes().all(|byte| byte.is_ascii_digit());
+    }
+    start.bytes().all(|byte| byte.is_ascii_digit())
+        && (end.is_empty() || end.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// Length of the resolved response span. `resolve_range` uses `(0, 0)` as the
