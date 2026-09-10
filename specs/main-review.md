@@ -18,7 +18,7 @@ The anchor is always a selected item when a selection exists. Details and persis
 
 ## Section entry and restoration
 
-Main opens at its useful designed initial size and keeps its content-derived minimum. OneCopy does not save or restore Main position, size, maximized state, minimized state, or native fullscreen state; ordinary top-level placement belongs to the operating system.
+Main remembers its last normal position and size across a clean close and relaunch. A new Main window, missing placement state, or placement that cannot be restored safely uses its useful designed initial size and the operating system's normal placement. Main keeps its content-derived minimum and never restores visibility, minimized, maximized, or native fullscreen state.
 
 The first visit to a nonempty section selects its first displayed item. Returning to a section during the same app run restores that section's remembered anchor as an exclusive selection; an earlier multi-selection does not remain active while the user works elsewhere.
 

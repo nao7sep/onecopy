@@ -1,5 +1,4 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect } from "react";
 import type { StartupFailure } from "../repositories";
 import { reportWindowCall } from "../repositories";
 
@@ -10,14 +9,6 @@ interface StartupFailureScreenProps {
 /** The application-owned terminal bootstrap state. The webview is healthy,
  * but backend work is gated off because required application data is not. */
 export default function StartupFailureScreen({ failure }: StartupFailureScreenProps) {
-  useEffect(() => {
-    const appWindow = getCurrentWindow();
-    void appWindow
-      .show()
-      .then(() => appWindow.setFocus())
-      .catch(reportWindowCall("show blocked startup"));
-  }, []);
-
   const quit = () => {
     void getCurrentWindow().close().catch(reportWindowCall("startup quit"));
   };

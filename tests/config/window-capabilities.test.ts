@@ -88,6 +88,9 @@ describe("failed window calls are reported, never swallowed", () => {
 
 describe("durable window-state boundary", () => {
   const core = readFileSync("src-tauri/src/lib.rs", "utf8");
+  const tauriConfig = JSON.parse(
+    readFileSync("src-tauri/tauri.conf.json", "utf8"),
+  ) as { app: { windows: Array<{ visible?: boolean }> } };
 
   it("tracks only Main position and size", () => {
     expect(core).toContain("StateFlags::POSITION | StateFlags::SIZE");
@@ -95,5 +98,9 @@ describe("durable window-state boundary", () => {
     expect(core).not.toContain("StateFlags::MAXIMIZED");
     expect(core).not.toContain("StateFlags::FULLSCREEN");
     expect(core).not.toContain("StateFlags::VISIBLE");
+  });
+
+  it("creates Main normally visible instead of depending on frontend bootstrap", () => {
+    expect(tauriConfig.app.windows[0]?.visible).not.toBe(false);
   });
 });

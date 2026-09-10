@@ -106,16 +106,6 @@ export function useMainWindowLifecycle({
     };
   }, []);
 
-  // The configured main window starts hidden so WebView2 cannot flash a white
-  // frame. Once the React shell owns the lifecycle, reveal it without changing
-  // the operating system's placement.
-  useEffect(() => {
-    const appWindow = getCurrentWindow();
-    void appWindow.show()
-      .then(() => appWindow.setFocus())
-      .catch(reportWindowCall("show main window"));
-  }, []);
-
   // Main-window close is also the application quit edge. The Rust menu routes
   // Cmd/Ctrl+Q here so ordinary shutdown quiescence has one owner.
   const closeHandlerStarted = useRef(false);
