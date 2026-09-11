@@ -16,6 +16,18 @@ cd "$REPO"
 APP_NAME="OneCopy"
 VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
 TAURI_CLI="node_modules/.bin/tauri"
+DMG_DIR="src-tauri/target/release/bundle/dmg"
+
+cleanup_dmg_scratch() {
+  if [[ -d "$DMG_DIR" ]]; then
+    find "$DMG_DIR" -maxdepth 1 -type f -name 'rw.*.dmg' -delete
+  fi
+}
+
+# create-dmg uses rw.*.dmg as bounded scratch space. Remove leftovers from an
+# interrupted prior package, and clean the same scratch files on every exit.
+cleanup_dmg_scratch
+trap cleanup_dmg_scratch EXIT
 
 if [[ ! -x "$TAURI_CLI" ]]; then
   echo "Missing local Tauri CLI. Run npm install before packaging." >&2
@@ -29,7 +41,7 @@ mkdir -p artifacts
 # the .dmg. --bundles overrides tauri.conf.json's targets so macOS emits app + dmg.
 "$TAURI_CLI" build --bundles app,dmg
 
-DMG="$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)"
+DMG="$(ls "$DMG_DIR"/*.dmg | head -1)"
 APP="$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)"
 [ -f "$DMG" ] && [ -d "$APP" ] || { echo "tauri build did not produce the expected .dmg/.app" >&2; exit 1; }
 

@@ -38,8 +38,6 @@ cleanup() {
   trap - EXIT
   if node "$RUNTIME_HELPER" is-owner "$RUNTIME_TOKEN" >/dev/null 2>&1; then
     node "$RUNTIME_HELPER" stop-if-owner "$RUNTIME_TOKEN" tauri "OneCopy" "onecopy" >/dev/null 2>&1 || true
-  else
-    status=0
   fi
   pause_on_failure "$status"
   exit "$status"

@@ -92,10 +92,14 @@ describe("durable window-state boundary", () => {
     readFileSync("src-tauri/tauri.conf.json", "utf8"),
   ) as { app: { windows: Array<{ visible?: boolean }> } };
 
-  it("tracks only Main position and size", () => {
+  it("tracks Main's transient maximize event but restores only normal geometry", () => {
     expect(core).toContain("StateFlags::POSITION | StateFlags::SIZE");
     expect(core).toContain('.with_filter(|label| label == "main")');
-    expect(core).not.toContain("StateFlags::MAXIMIZED");
+    expect(core).toContain("StateFlags::MAXIMIZED");
+    expect(core).toContain('.skip_initial_state("main")');
+    expect(core).toContain(
+      "window.restore_state(StateFlags::POSITION | StateFlags::SIZE)",
+    );
     expect(core).not.toContain("StateFlags::FULLSCREEN");
     expect(core).not.toContain("StateFlags::VISIBLE");
   });

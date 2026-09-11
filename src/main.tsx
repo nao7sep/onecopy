@@ -1,11 +1,5 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import PreviewWindow from "./windows/PreviewWindow";
-import ComparisonWindow from "./windows/ComparisonWindow";
-import ComparisonImageWindow from "./windows/ComparisonImageWindow";
-import IdentifyWindow from "./windows/IdentifyWindow";
-import ViewerWindow from "./windows/ViewerWindow";
 import RootErrorBoundary from "./components/RootErrorBoundary";
 import "./App.css";
 import { emit } from "@tauri-apps/api/event";
@@ -15,7 +9,15 @@ import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
 
-// One bundle serves every window; the `view` query parameter routes.
+const App = lazy(() => import("./App"));
+const PreviewWindow = lazy(() => import("./windows/PreviewWindow"));
+const ComparisonWindow = lazy(() => import("./windows/ComparisonWindow"));
+const ComparisonImageWindow = lazy(() => import("./windows/ComparisonImageWindow"));
+const IdentifyWindow = lazy(() => import("./windows/IdentifyWindow"));
+const ViewerWindow = lazy(() => import("./windows/ViewerWindow"));
+
+// One entry serves every window; lazy routes keep unrelated window code out of
+// each renderer's initial load.
 const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
 const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
@@ -75,19 +77,21 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
         <RootErrorBoundary onFailure={recoverComparisonPresentation}>
-          {view === "preview" ? (
-            <PreviewWindow />
-          ) : view === "comparison" ? (
-            <ComparisonWindow slice={slice} />
-          ) : view === "comparison-image" ? (
-            <ComparisonImageWindow />
-          ) : view === "identify" ? (
-            <IdentifyWindow number={slice} />
-          ) : view === "viewer" ? (
-            <ViewerWindow />
-          ) : (
-            <App />
-          )}
+          <Suspense fallback={null}>
+            {view === "preview" ? (
+              <PreviewWindow />
+            ) : view === "comparison" ? (
+              <ComparisonWindow slice={slice} />
+            ) : view === "comparison-image" ? (
+              <ComparisonImageWindow />
+            ) : view === "identify" ? (
+              <IdentifyWindow number={slice} />
+            ) : view === "viewer" ? (
+              <ViewerWindow />
+            ) : (
+              <App />
+            )}
+          </Suspense>
         </RootErrorBoundary>
       </React.StrictMode>,
     );

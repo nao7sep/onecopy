@@ -3,7 +3,7 @@ use tauri::menu::Menu;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_window_state::StateFlags;
+use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
 
@@ -2103,7 +2103,14 @@ pub fn run() {
         // live geometry, so none of those labels may enter plugin state.
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                // Windows emits a transient move while maximizing. Track that
+                // mode so the plugin preserves Main's prior coordinates, but
+                // restore only normal geometry during setup below. Preview
+                // remains excluded by the label filter.
+                .with_state_flags(
+                    StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED,
+                )
+                .skip_initial_state("main")
                 .with_filter(|label| label == "main")
                 .build(),
         )
@@ -2134,6 +2141,14 @@ pub fn run() {
             // application bootstrap therefore records Ready/Blocked state and
             // the hook itself is deliberately infallible.
             app.manage(startup::initialize(app, debug_enabled));
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) = window.restore_state(StateFlags::POSITION | StateFlags::SIZE) {
+                    logging::warn(
+                        "normal window state could not be restored",
+                        json!({ "error": { "message": error.to_string() } }),
+                    );
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
