@@ -40,11 +40,14 @@ export function ownsProcess(processInfo, identity) {
   }
 
   const executableName = identity.executable.toLowerCase();
+  const macBundleExecutable = `/${identity.label.toLowerCase()}.app/contents/macos/${executableName}`;
+  const windowsExecutable = `/${executableName}.exe`;
   if (identity.kind === "electron") {
     return combined.includes("/node_modules/.bin/electron-vite")
       || combined.includes("/node_modules/electron-vite/")
       || combined.includes("/node_modules/electron/dist/")
-      || (combined.includes("/dist/") && combined.includes(executableName));
+      || combined.includes(macBundleExecutable)
+      || combined.includes(windowsExecutable);
   }
   if (identity.kind === "tauri") {
     return combined.includes("/node_modules/.bin/tauri")
@@ -52,7 +55,8 @@ export function ownsProcess(processInfo, identity) {
       || combined.includes("/node_modules/.bin/vite")
       || combined.includes("/node_modules/vite/")
       || combined.includes(`/target/debug/${executableName}`)
-      || combined.includes(`/target/release/${executableName}`);
+      || combined.includes(`/target/release/${executableName}`)
+      || combined.includes(macBundleExecutable);
   }
   if (identity.kind === "web") {
     return combined.includes("/node_modules/.bin/vite")
