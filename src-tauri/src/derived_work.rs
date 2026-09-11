@@ -1869,7 +1869,7 @@ fn transcribe_next(
             crate::failure_runtime::emit_or_record(
                 context.app,
                 "transcribe://progress",
-                json!({ "hash": hash, "percent": 0 }),
+                json!({ "hash": hash, "percent": 0, "replacement": false }),
             );
         },
         {
@@ -1880,7 +1880,11 @@ fn transcribe_next(
                 crate::failure_runtime::emit_or_record(
                     &progress_handle,
                     "transcribe://progress",
-                    json!({ "hash": progress_hash, "percent": percent }),
+                    json!({
+                        "hash": progress_hash,
+                        "percent": percent,
+                        "replacement": false
+                    }),
                 );
             }
         },
@@ -1904,7 +1908,7 @@ fn transcribe_next(
             crate::failure_runtime::emit_or_record(
                 context.app,
                 "transcribe://done",
-                json!({ "hash": hash, "text": text }),
+                json!({ "hash": hash, "text": text, "replacement": false }),
             );
             Ok(TranscriptStep {
                 attempted_hash: Some(hash),
@@ -1919,7 +1923,7 @@ fn transcribe_next(
             crate::failure_runtime::emit_or_record(
                 context.app,
                 "transcribe://cancelled",
-                json!({ "hash": hash }),
+                json!({ "hash": hash, "replacement": false }),
             );
             Ok(TranscriptStep::default())
         }
@@ -1950,7 +1954,11 @@ fn transcribe_next(
             crate::failure_runtime::emit_or_record(
                 context.app,
                 "transcribe://error",
-                json!({ "hash": hash, "message": message }),
+                json!({
+                    "hash": hash,
+                    "message": message,
+                    "replacement": false
+                }),
             );
             Ok(TranscriptStep {
                 attempted_hash: Some(hash),

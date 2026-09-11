@@ -1263,6 +1263,7 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
     let config = storage::read_config_for_setup(&data_root)?;
     let transcription_acceleration =
         ai_acceleration::selection_from_config(config.as_ref())?.transcription;
+    let replacement = replace.unwrap_or(false);
     let class = {
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
         let kind: String = conn
@@ -1320,7 +1321,7 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                         temp_dir: data_root.join(binaries_manager::TEMP_DIR_NAME),
                         source_hash: &hash,
                         source_path: &source_path,
-                        replace_existing: replace.unwrap_or(false),
+                        replace_existing: replacement,
                         acceleration: transcription_acceleration,
                         cancel_when: Some(Box::new(derived_runtime::cancelled)),
                     },
@@ -1351,7 +1352,11 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                         failure_runtime::emit_or_record(
                             &progress_handle,
                             "transcribe://progress",
-                            json!({ "hash": progress_hash, "percent": percent }),
+                            json!({
+                                "hash": progress_hash,
+                                "percent": percent,
+                                "replacement": replacement
+                            }),
                         );
                     },
                 )?;
@@ -1426,12 +1431,16 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                 Ok((event_hash, Some(text))) => failure_runtime::emit_checked(
                     &handle,
                     "transcribe://done",
-                    json!({ "hash": event_hash, "text": text }),
+                    json!({
+                        "hash": event_hash,
+                        "text": text,
+                        "replacement": replacement
+                    }),
                 ),
                 Ok((event_hash, None)) => failure_runtime::emit_checked(
                     &handle,
                     "transcribe://cancelled",
-                    json!({ "hash": event_hash }),
+                    json!({ "hash": event_hash, "replacement": replacement }),
                 ),
                 Err(err) => {
                     logging::warn(
@@ -1441,7 +1450,11 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                     failure_runtime::emit_checked(
                         &handle,
                         "transcribe://error",
-                        json!({ "hash": hash, "message": err }),
+                        json!({
+                            "hash": hash,
+                            "message": err,
+                            "replacement": replacement
+                        }),
                     )
                 }
             }
@@ -1483,7 +1496,11 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
                 if let Err(emit_error) = failure_runtime::emit_checked(
                     &panic_handle,
                     "transcribe://error",
-                    json!({ "hash": panic_hash, "message": error }),
+                    json!({
+                        "hash": panic_hash,
+                        "message": error,
+                        "replacement": replacement
+                    }),
                 ) {
                     let _ = failure_runtime::report(
                         &panic_handle,

@@ -16,7 +16,10 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  fireEvent("transcribe://cancelled", { hash: "background-video" });
+  fireEvent("transcribe://cancelled", {
+    hash: "background-video",
+    replacement: false,
+  });
   useTranscriptStore.setState({ rows: {} });
   mockCommands({
     transcript_get: () => ({ status: "pending", text: null, message: null }),
@@ -34,7 +37,11 @@ describe("transcript projection", () => {
     });
 
     const loading = useTranscriptStore.getState().load("video");
-    fireEvent("transcribe://done", { hash: "video", text: "finished" });
+    fireEvent("transcribe://done", {
+      hash: "video",
+      text: "finished",
+      replacement: false,
+    });
     rejectLoad?.(new Error("older receipt unavailable"));
     await loading;
 
@@ -55,7 +62,11 @@ describe("transcript projection", () => {
     });
 
     const starting = useTranscriptStore.getState().start("video");
-    fireEvent("transcribe://done", { hash: "video", text: "finished" });
+    fireEvent("transcribe://done", {
+      hash: "video",
+      text: "finished",
+      replacement: false,
+    });
     rejectStart?.(new Error("older start reply lost"));
     await starting;
 
@@ -70,6 +81,7 @@ describe("transcript projection", () => {
     fireEvent("transcribe://progress", {
       hash: "background-video",
       percent: 23,
+      replacement: false,
     });
     expect(useTranscriptStore.getState().rows).toEqual({});
 
@@ -81,7 +93,11 @@ describe("transcript projection", () => {
       percent: 23,
     });
 
-    fireEvent("transcribe://done", { hash: "background-video", text: "hello" });
+    fireEvent("transcribe://done", {
+      hash: "background-video",
+      text: "hello",
+      replacement: false,
+    });
     expect(
       useTranscriptStore.getState().rows["background-video"],
     ).toMatchObject({
@@ -102,7 +118,11 @@ describe("transcript projection", () => {
     expect(useTranscriptStore.getState().rows.first?.status).toBe("queued");
     expect(useTranscriptStore.getState().rows.second?.status).toBe("queued");
 
-    fireEvent("transcribe://progress", { hash: "first", percent: 0 });
+    fireEvent("transcribe://progress", {
+      hash: "first",
+      percent: 0,
+      replacement: false,
+    });
     expect(useTranscriptStore.getState().rows.first?.status).toBe("running");
     expect(useTranscriptStore.getState().rows.second?.status).toBe("queued");
   });
@@ -132,7 +152,11 @@ describe("transcript projection", () => {
       replacement: { status: "queued" },
     });
 
-    fireEvent("transcribe://progress", { hash: "video", percent: 40 });
+    fireEvent("transcribe://progress", {
+      hash: "video",
+      percent: 40,
+      replacement: true,
+    });
     expect(useTranscriptStore.getState().rows.video).toMatchObject({
       status: "ready",
       text: "previous words",
@@ -142,6 +166,7 @@ describe("transcript projection", () => {
     fireEvent("transcribe://error", {
       hash: "video",
       message: "model stopped",
+      replacement: true,
     });
     expect(useTranscriptStore.getState().rows.video).toMatchObject({
       status: "ready",
@@ -151,6 +176,78 @@ describe("transcript projection", () => {
         message:
           "Transcription could not finish. Check the media file and managed tools, then try again.",
       },
+    });
+  });
+
+  it("classifies replacement events from another window without hiding the completed transcript", async () => {
+    useTranscriptStore.setState({
+      rows: {
+        video: {
+          status: "ready",
+          text: "previous words",
+          message: null,
+          percent: null,
+          replacement: null,
+        },
+      },
+    });
+
+    fireEvent("transcribe://progress", {
+      hash: "video",
+      percent: 25,
+      replacement: true,
+    });
+    expect(useTranscriptStore.getState().rows.video).toMatchObject({
+      status: "ready",
+      text: "previous words",
+      replacement: { status: "running", percent: 25 },
+    });
+
+    fireEvent("transcribe://error", {
+      hash: "video",
+      message: "model stopped",
+      replacement: true,
+    });
+    expect(useTranscriptStore.getState().rows.video).toMatchObject({
+      status: "ready",
+      text: "previous words",
+      replacement: { status: "failed" },
+    });
+
+    fireEvent("transcribe://progress", {
+      hash: "video",
+      percent: 50,
+      replacement: true,
+    });
+
+    fireEvent("transcribe://cancelled", { hash: "video", replacement: true });
+    expect(useTranscriptStore.getState().rows.video).toMatchObject({
+      status: "ready",
+      text: "previous words",
+      replacement: null,
+    });
+  });
+
+  it("loads the completed receipt as replacement work when progress arrived first", async () => {
+    mockCommands({
+      transcript_get: () => ({
+        status: "ready",
+        text: "previous words",
+        message: null,
+      }),
+    });
+    fireEvent("transcribe://progress", {
+      hash: "video",
+      percent: 40,
+      replacement: true,
+    });
+
+    await useTranscriptStore.getState().load("video");
+
+    expect(useTranscriptStore.getState().rows.video).toMatchObject({
+      status: "ready",
+      text: "previous words",
+      replacement: { status: "running", percent: 40 },
     });
   });
 });

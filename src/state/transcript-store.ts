@@ -43,7 +43,7 @@ const loading = new Set<string>();
 const revisions = new Map<string, number>();
 const recency = new Map<string, true>();
 const MAX_CACHED_ROWS = 128;
-let active: { hash: string; percent: number } | null = null;
+let active: { hash: string; percent: number; replacement: boolean } | null = null;
 
 const EMPTY: TranscriptView = {
   status: "loading",
@@ -110,7 +110,23 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         });
         return;
       }
-      if (result.status === "pending" && active?.hash === hash) {
+      if (
+        result.status === "ready" &&
+        active?.hash === hash &&
+        active.replacement
+      ) {
+        patch(hash, {
+          status: "ready",
+          text: result.text,
+          message: result.message,
+          percent: null,
+          replacement: {
+            status: "running",
+            message: null,
+            percent: active.percent,
+          },
+        });
+      } else if (result.status === "pending" && active?.hash === hash) {
         patch(hash, {
           status: "running",
           text: null,
@@ -213,14 +229,23 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
 
 const installEvents = createEventInstaller(
   async (listeners) => {
-    await listeners.listen<{ hash: string; percent: number }>(
+    await listeners.listen<{
+      hash: string;
+      percent: number;
+      replacement: boolean;
+    }>(
       "transcribe://progress",
       (event) => {
-        active = event.payload;
+        active = {
+          hash: event.payload.hash,
+          percent: event.payload.percent,
+          replacement: event.payload.replacement,
+        };
         const current = useTranscriptStore.getState().rows[event.payload.hash];
         if (
-          current?.replacement !== null &&
-          current?.replacement !== undefined
+          event.payload.replacement ||
+          (current?.replacement !== null &&
+            current?.replacement !== undefined)
         ) {
           publishIfLoaded(event.payload.hash, {
             replacement: {
@@ -251,7 +276,11 @@ const installEvents = createEventInstaller(
         });
       },
     );
-    await listeners.listen<{ hash: string; message: string }>(
+    await listeners.listen<{
+      hash: string;
+      message: string;
+      replacement: boolean;
+    }>(
       "transcribe://error",
       (event) => {
         log.error("transcription event reported failure", {
@@ -261,8 +290,9 @@ const installEvents = createEventInstaller(
         if (active?.hash === event.payload.hash) active = null;
         const current = useTranscriptStore.getState().rows[event.payload.hash];
         if (
-          current?.replacement !== null &&
-          current?.replacement !== undefined
+          event.payload.replacement ||
+          (current?.replacement !== null &&
+            current?.replacement !== undefined)
         ) {
           publishIfLoaded(event.payload.hash, {
             replacement: {
@@ -282,19 +312,26 @@ const installEvents = createEventInstaller(
         }
       },
     );
-    await listeners.listen<{ hash: string }>("transcribe://cancelled", (event) => {
-      if (active?.hash === event.payload.hash) active = null;
-      const current = useTranscriptStore.getState().rows[event.payload.hash];
-      if (current?.replacement !== null && current?.replacement !== undefined) {
-        publishIfLoaded(event.payload.hash, { replacement: null });
-      } else {
-        publishIfLoaded(event.payload.hash, {
-          status: "pending",
-          message: null,
-          percent: null,
-        });
-      }
-    });
+    await listeners.listen<{ hash: string; replacement: boolean }>(
+      "transcribe://cancelled",
+      (event) => {
+        if (active?.hash === event.payload.hash) active = null;
+        const current = useTranscriptStore.getState().rows[event.payload.hash];
+        if (
+          event.payload.replacement ||
+          (current?.replacement !== null &&
+            current?.replacement !== undefined)
+        ) {
+          publishIfLoaded(event.payload.hash, { replacement: null });
+        } else {
+          publishIfLoaded(event.payload.hash, {
+            status: "pending",
+            message: null,
+            percent: null,
+          });
+        }
+      },
+    );
   },
   (error) => {
     log.warn("transcript event wiring failed", toErrorFields(error));
