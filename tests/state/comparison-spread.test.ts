@@ -72,7 +72,10 @@ beforeEach(() => {
     failure: null,
     spreadCount: 0,
   });
-  mockCommands({ set_window_fullscreen: () => null });
+  mockCommands({
+    set_window_fullscreen: () => null,
+    refresh_presentation_chrome: () => null,
+  });
 });
 
 describe("opening Comparison across displays", () => {
@@ -145,6 +148,40 @@ describe("opening Comparison across displays", () => {
     expect(
       createdWindows.filter((window) => window.label.startsWith("comparison-")),
     ).toHaveLength(1);
+  });
+
+  it("keeps the final wide-image slice on a four-slot wide-display grid", async () => {
+    setMonitors(THREE_SCREENS.slice(0, 2));
+    mockCommands({ get_similar_group: () => members(5) });
+
+    await useComparisonStore.getState().openGroup("m0");
+
+    expect(useComparisonStore.getState().capacities).toEqual([4, 4]);
+    expect(
+      (
+        emitCalls.filter((call) => call.event === "comparison://state").at(-1)
+          ?.payload as { chunks: unknown[][] }
+      ).chunks.map((chunk) => chunk.length),
+    ).toEqual([4, 1]);
+  });
+
+  it("uses different capacities for wide and portrait displays", async () => {
+    const mixedScreens = [
+      THREE_SCREENS[0],
+      {
+        ...THREE_SCREENS[1],
+        size: { width: 1440, height: 2560 },
+      },
+    ];
+    setMonitors(mixedScreens);
+    mockCommands({ get_similar_group: () => members(7) });
+    await useComparisonStore.getState().openGroup("m0");
+    expect(useComparisonStore.getState().capacities).toEqual([4, 3]);
+    await useComparisonStore.getState().close();
+
+    mockCommands({ get_similar_group: () => members(7, true) });
+    await useComparisonStore.getState().openGroup("m0");
+    expect(useComparisonStore.getState().capacities).toEqual([3, 4]);
   });
 
   it("fills Main while it owns process-global system chrome", async () => {

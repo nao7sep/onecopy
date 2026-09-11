@@ -200,6 +200,7 @@ describe("the preview window", () => {
 describe("a comparison window", () => {
   const broadcast: ComparisonBroadcast = {
     displayAspects: [16 / 9, 16 / 9],
+    capacities: [4, 4],
     chunks: [
       [],
       [
@@ -242,6 +243,9 @@ describe("a comparison window", () => {
     expect(view.container.textContent).toContain("0");
     // The facts that make the keep decision possible.
     expect(view.container.textContent).toContain("4000×3000");
+    expect(view.getByRole("listbox").style.gridTemplateColumns).toBe(
+      "repeat(2, minmax(0, 1fr))",
+    );
   });
 
   it("forwards only assigned comparison commands", async () => {

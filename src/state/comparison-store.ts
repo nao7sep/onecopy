@@ -47,6 +47,7 @@ export interface ComparisonSlotState {
 
 export interface ComparisonBroadcast {
   chunks: ComparisonSlotState[][];
+  capacities: number[];
   page: number;
   pageCount: number;
   remainingCount: number;
@@ -138,14 +139,14 @@ function decisionDraftFrom(state: ComparisonState): ComparisonDecisionDraft {
 export function visibleMembers(
   state: Pick<
     ComparisonState,
-    "members" | "page" | "maximumImages" | "displayCount"
+    "members" | "page" | "maximumImages" | "displayAspects"
   >,
 ): GroupMember[] {
   return activePage(
     state.members,
     state.page,
     state.maximumImages,
-    state.displayCount,
+    state.displayAspects,
   ).members;
 }
 
@@ -170,7 +171,7 @@ function viewPatch(
   const pages = comparisonPages(
     members,
     state.maximumImages,
-    state.displayCount,
+    state.displayAspects,
   );
   const page = Math.min(
     Math.max(0, requestedPage),
@@ -179,7 +180,7 @@ function viewPatch(
   const active = pages[page] ?? {
     members: [],
     portraitDominant: false,
-    perDisplay: 4,
+    capacities: [4],
   };
   let recoveredAnchor = preferredAnchor;
   if (
@@ -214,8 +215,7 @@ function viewPatch(
   );
   const capacities = displayCapacities(
     active.members.length,
-    active.perDisplay,
-    state.displayCount,
+    active.capacities,
   );
   return {
     members,
@@ -248,10 +248,11 @@ export function broadcastComparison(): void {
   const pages = comparisonPages(
     state.members,
     state.maximumImages,
-    state.displayCount,
+    state.displayAspects,
   );
   const payload: ComparisonBroadcast = {
     chunks: comparisonChunks(state),
+    capacities: state.capacities,
     page: state.page,
     pageCount: pages.length,
     remainingCount: state.members.length,
@@ -265,9 +266,9 @@ function pageForAnchor(
   members: GroupMember[],
   hash: string,
   maximumImages: number,
-  displayCount: number,
+  displayAspects: number[],
 ): number {
-  const pages = comparisonPages(members, maximumImages, displayCount);
+  const pages = comparisonPages(members, maximumImages, displayAspects);
   const found = pages.findIndex((page) =>
     page.members.some((member) => member.hash === hash),
   );
@@ -326,6 +327,10 @@ function setComparisonFullscreen(
   return next;
 }
 
+function refreshPresentationChrome(): Promise<void> {
+  return invoke<void>("refresh_presentation_chrome");
+}
+
 async function showSpread(monitors: MonitorList): Promise<void> {
   for (let index = 0; index < monitors.length; index += 1) {
     const label = `comparison-${index + 1}`;
@@ -340,6 +345,9 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           new PhysicalSize(monitor.size.width, monitor.size.height),
         );
         await existing.show();
+        await refreshPresentationChrome().catch(
+          reportWindowCall("comparison chrome refresh"),
+        );
         continue;
       }
       const scale = monitor.scaleFactor || 1;
@@ -368,6 +376,9 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           }
           try {
             await created.show();
+            await refreshPresentationChrome().catch(
+              reportWindowCall("comparison chrome refresh"),
+            );
           } catch (error) {
             log.warn("comparison display became unavailable", {
               label,
@@ -418,6 +429,9 @@ async function hideSpread(first: number, last: number): Promise<void> {
     if (window === null) continue;
     await window.hide().catch(reportWindowCall("comparison hide"));
   }
+  await refreshPresentationChrome().catch(
+    reportWindowCall("comparison chrome refresh"),
+  );
 }
 
 async function closeSpread(first: number, last: number): Promise<void> {
@@ -577,7 +591,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         members,
         entryAnchor ?? hash,
         boundedMaximum,
-        displayCount,
+        displayAspects,
       );
       const base = {
         ...get(),
@@ -641,8 +655,10 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       || !Number.isFinite(aspect) || aspect <= 0 || state.displayAspects[slice] === aspect) return;
     const displayAspects = [...state.displayAspects];
     displayAspects[slice] = aspect;
-    set({ displayAspects });
-    broadcastComparison();
+    const previousSpreadCount = state.spreadCount;
+    const provisional = { ...state, displayAspects };
+    set({ displayAspects, ...viewPatch(provisional) });
+    synchronizeSpread(previousSpreadCount);
   },
 
   selectSlot: (slotIndex, mode) => {
@@ -670,6 +686,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       comparisonChunks(state).map((chunk) => chunk.length),
       state.portraitDominant,
       state.displayAspects,
+      state.capacities,
     );
     if (target === current) return;
     set({
@@ -825,7 +842,7 @@ function movePage(
   const pages = comparisonPages(
     state.members,
     state.maximumImages,
-    state.displayCount,
+    state.displayAspects,
   );
   const page = Math.min(pages.length - 1, Math.max(0, state.page + delta));
   if (page === state.page) return;

@@ -1530,6 +1530,11 @@ fn set_window_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<
     presentation_runtime::set_desired(&app, &label, enable)
 }
 
+#[tauri::command]
+fn refresh_presentation_chrome() {
+    presentation_runtime::note_focus_transition();
+}
+
 // The frontend's throttled input ping — the coordinator's whole view
 // of the user. Atomic store; keeping it plain (main-thread) is deliberate,
 // it must never queue behind async work.
@@ -2195,6 +2200,7 @@ pub fn run() {
             background_work_set_paused,
             prioritize_derived_work,
             set_window_fullscreen,
+            refresh_presentation_chrome,
             ensure_preview,
             apply_library_settings,
             visibility_capabilities,

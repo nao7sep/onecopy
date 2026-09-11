@@ -64,6 +64,7 @@ beforeEach(() => {
         items as Array<{ hash: string | null; pathId: number | null }>,
       ),
     set_window_fullscreen: () => null,
+    refresh_presentation_chrome: () => null,
   });
   openSession(8);
 });

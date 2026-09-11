@@ -27,7 +27,7 @@ export const COMPARISON_DIRECT_KEYS = [
 export interface ComparisonPage {
   members: ComparisonMember[];
   portraitDominant: boolean;
-  perDisplay: number;
+  capacities: number[];
 }
 
 export interface ComparisonDecisionDraft {
@@ -40,6 +40,12 @@ export interface ComparisonDecisionDraft {
 
 export interface ComparisonGrid {
   count: number;
+  columns: number;
+  rows: number;
+}
+
+export interface ComparisonDisplayLayout {
+  capacity: number;
   columns: number;
   rows: number;
 }
@@ -86,30 +92,35 @@ export function dominantPortrait(members: ComparisonMember[]): boolean {
 
 /**
  * Builds variable-size pages without limiting the group itself. A page first
- * considers everything the displays could show in landscape layout; its own
- * dominant orientation then chooses the ordinary three- or four-card display
- * capacity. This makes every boundary deterministic without a circular
+ * considers everything the displays could show at their largest capacity;
+ * its own dominant orientation then chooses each display's three- or four-card
+ * capacity from that display's shape. This makes every boundary deterministic without a circular
  * "page shape decides page size decides page shape" dependency.
  */
 export function comparisonPages(
   members: ComparisonMember[],
   configuredMaximum: number,
-  displayCount: number,
+  displayAspects: number[],
 ): ComparisonPage[] {
   const maximum = Math.max(2, Math.floor(configuredMaximum));
-  const displays = Math.max(1, Math.floor(displayCount));
-  const landscapeCapacity = Math.min(maximum, displays * 4);
+  const aspects = normalizedDisplayAspects(displayAspects);
+  const maximumCandidateCount = Math.min(maximum, aspects.length * 4);
   const pages: ComparisonPage[] = [];
   let offset = 0;
   while (offset < members.length) {
-    const candidates = members.slice(offset, offset + landscapeCapacity);
+    const candidates = members.slice(offset, offset + maximumCandidateCount);
     const portraitDominant = dominantPortrait(candidates);
-    const perDisplay = portraitDominant ? 3 : 4;
-    const pageSize = Math.min(maximum, displays * perDisplay);
+    const capacities = aspects.map(
+      (aspect) => comparisonDisplayLayout(portraitDominant, aspect).capacity,
+    );
+    const pageSize = Math.min(
+      maximum,
+      capacities.reduce((sum, capacity) => sum + capacity, 0),
+    );
     pages.push({
       members: members.slice(offset, offset + pageSize),
       portraitDominant,
-      perDisplay,
+      capacities,
     });
     offset += pageSize;
   }
@@ -120,14 +131,14 @@ export function activePage(
   members: ComparisonMember[],
   page: number,
   configuredMaximum: number,
-  displayCount: number,
+  displayAspects: number[],
 ): ComparisonPage {
-  const pages = comparisonPages(members, configuredMaximum, displayCount);
+  const pages = comparisonPages(members, configuredMaximum, displayAspects);
   return (
     pages[Math.min(Math.max(0, page), Math.max(0, pages.length - 1))] ?? {
       members: [],
       portraitDominant: false,
-      perDisplay: 4,
+      capacities: [4],
     }
   );
 }
@@ -236,15 +247,19 @@ export function updateComparisonDraft(
 
 export function displayCapacities(
   memberCount: number,
-  perDisplay: number,
-  displayCount: number,
+  availableCapacities: number[],
 ): number[] {
-  if (memberCount <= 0) return [perDisplay];
-  const used = Math.min(
-    Math.max(1, displayCount),
-    Math.ceil(memberCount / Math.max(1, perDisplay)),
-  );
-  return Array.from({ length: used }, () => perDisplay);
+  const capacities = availableCapacities.length > 0
+    ? availableCapacities.map((capacity) => Math.max(1, Math.floor(capacity)))
+    : [4];
+  if (memberCount <= 0) return [capacities[0]];
+  let covered = 0;
+  let used = 0;
+  while (used < capacities.length && covered < memberCount) {
+    covered += capacities[used];
+    used += 1;
+  }
+  return capacities.slice(0, Math.max(1, used));
 }
 
 export function chunkMembers<T>(members: T[], capacities: number[]): T[][] {
@@ -257,12 +272,48 @@ export function chunkMembers<T>(members: T[], capacities: number[]): T[][] {
   return chunks;
 }
 
+function normalizedDisplayAspects(displayAspects: number[]): number[] {
+  const aspects = displayAspects.filter(
+    (aspect) => Number.isFinite(aspect) && aspect > 0,
+  );
+  return aspects.length > 0 ? aspects : [16 / 9];
+}
+
+export function comparisonDisplayLayout(
+  portraitDominant: boolean,
+  containerAspect = 16 / 9,
+): ComparisonDisplayLayout {
+  const safeAspect =
+    Number.isFinite(containerAspect) && containerAspect > 0
+      ? containerAspect
+      : 16 / 9;
+  const displayPortrait = safeAspect < 1;
+  if (displayPortrait === portraitDominant) {
+    return { capacity: 4, columns: 2, rows: 2 };
+  }
+  return portraitDominant
+    ? { capacity: 3, columns: 3, rows: 1 }
+    : { capacity: 3, columns: 1, rows: 3 };
+}
+
 /** Row-major grid shared by rendering and spatial navigation. */
 export function gridFor(
   count: number,
   portraitDominant: boolean,
   containerAspect = 16 / 9,
+  reservedCapacity: number | null = null,
 ): ComparisonGrid {
+  if (reservedCapacity !== null) {
+    const layout = comparisonDisplayLayout(
+      portraitDominant,
+      containerAspect,
+    );
+    return {
+      count,
+      columns: layout.columns,
+      rows: layout.rows,
+    };
+  }
   if (count <= 1) return { count, columns: 1, rows: 1 };
   const safeAspect =
     Number.isFinite(containerAspect) && containerAspect > 0
@@ -286,11 +337,17 @@ export function spatialTarget(
   chunkSizes: number[],
   portraitDominant: boolean,
   containerAspects: number[] = [],
+  displaySlotCapacities: number[] = chunkSizes,
 ): number {
   if (currentIndex < 0) return -1;
   let offset = 0;
   const grids = chunkSizes.map((count, index) => {
-    const grid = gridFor(count, portraitDominant, containerAspects[index]);
+    const grid = gridFor(
+      count,
+      portraitDominant,
+      containerAspects[index],
+      displaySlotCapacities[index] ?? count,
+    );
     const start = offset;
     offset += count;
     return { ...grid, start };

@@ -46,7 +46,7 @@ export default function ComparisonView({
   // snapshot. An imperative read here can silently omit a render dependency.
   const state = useComparisonStore();
   const {
-    open, members, page, maximumImages, displayCount, spreadCount,
+    open, members, page, maximumImages, spreadCount,
     portraitDominant, pendingAction, failure, message, busy,
   } = state;
   const mutationProgress = useMutationStore((state) => state.progress);
@@ -81,13 +81,14 @@ export default function ComparisonView({
 
   if (!open) return null;
 
-  const pages = comparisonPages(members, maximumImages, displayCount);
+  const pages = comparisonPages(members, maximumImages, state.displayAspects);
   const chunks = comparisonChunks(state);
   const localChunk = chunks[0] ?? [];
   const grid = gridFor(
     localChunk.length,
     portraitDominant,
     state.displayAspects[0],
+    state.capacities[0],
   );
   const markedCount = chunks
     .flat()

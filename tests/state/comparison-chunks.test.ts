@@ -3,6 +3,7 @@ import {
   COMPARISON_DIRECT_KEYS,
   chunkMembers,
   comparisonPages,
+  comparisonDisplayLayout,
   directKeyIndex,
   displayCapacities,
   gridFor,
@@ -29,27 +30,51 @@ describe("comparison capacity", () => {
     const pages = comparisonPages(
       Array.from({ length: 41 }, (_, index) => member(index)),
       16,
-      10,
+      Array.from({ length: 10 }, () => 16 / 9),
     );
     expect(pages.map((page) => page.members.length)).toEqual([16, 16, 9]);
     expect(pages.flatMap((page) => page.members)).toHaveLength(41);
   });
 
-  it("uses three portrait cards or four landscape cards per display", () => {
-    expect(comparisonPages([member(0), member(1)], 16, 1)[0]?.perDisplay).toBe(
-      4,
+  it("derives each display capacity from image and display orientation", () => {
+    expect(comparisonDisplayLayout(false, 16 / 9)).toEqual({
+      capacity: 4, columns: 2, rows: 2,
+    });
+    expect(comparisonDisplayLayout(false, 9 / 16)).toEqual({
+      capacity: 3, columns: 1, rows: 3,
+    });
+    expect(comparisonDisplayLayout(true, 16 / 9)).toEqual({
+      capacity: 3, columns: 3, rows: 1,
+    });
+    expect(comparisonDisplayLayout(true, 9 / 16)).toEqual({
+      capacity: 4, columns: 2, rows: 2,
+    });
+    expect(displayCapacities(10, [4, 3, 4, 3])).toEqual([4, 3, 4]);
+  });
+
+  it("uses heterogeneous capacities to choose page boundaries", () => {
+    const wide = comparisonPages(
+      Array.from({ length: 15 }, (_, index) => member(index)),
+      16,
+      [16 / 9, 9 / 16],
     );
-    expect(
-      comparisonPages([member(0, true), member(1, true)], 16, 1)[0]?.perDisplay,
-    ).toBe(3);
-    expect(displayCapacities(10, 4, 8)).toEqual([4, 4, 4]);
+    expect(wide.map((page) => page.members.length)).toEqual([7, 7, 1]);
+    expect(wide[0]?.capacities).toEqual([4, 3]);
+
+    const tall = comparisonPages(
+      Array.from({ length: 15 }, (_, index) => member(index, true)),
+      16,
+      [16 / 9, 9 / 16],
+    );
+    expect(tall.map((page) => page.members.length)).toEqual([7, 7, 1]);
+    expect(tall[0]?.capacities).toEqual([3, 4]);
   });
 
   it("does not count unknown dimensions as landscape votes", () => {
     const unknown = { ...member(2), width: null, height: null };
     expect(
-      comparisonPages([member(0, true), unknown], 16, 1)[0]?.perDisplay,
-    ).toBe(3);
+      comparisonPages([member(0, true), unknown], 16, [16 / 9])[0]?.capacities,
+    ).toEqual([3]);
   });
 
   it("chunks in configured display order", () => {
@@ -68,15 +93,28 @@ describe("comparison card order and navigation", () => {
   });
 
   it("adapts the grid to a portrait display", () => {
-    expect(gridFor(4, false, 9 / 16)).toEqual({
-      count: 4,
-      columns: 1,
-      rows: 4,
-    });
-    expect(gridFor(3, true, 9 / 16)).toEqual({
+    expect(gridFor(3, false, 9 / 16, 3)).toEqual({
       count: 3,
+      columns: 1,
+      rows: 3,
+    });
+    expect(gridFor(4, true, 9 / 16, 4)).toEqual({
+      count: 4,
       columns: 2,
       rows: 2,
+    });
+  });
+
+  it("keeps a partial final display on the full capacity grid", () => {
+    expect(gridFor(1, false, 16 / 9, 4)).toEqual({
+      count: 1,
+      columns: 2,
+      rows: 2,
+    });
+    expect(gridFor(1, true, 16 / 9, 3)).toEqual({
+      count: 1,
+      columns: 3,
+      rows: 1,
     });
   });
 
@@ -88,9 +126,13 @@ describe("comparison card order and navigation", () => {
   });
 
   it("matches partial rows and differently shaped neighboring displays", () => {
-    expect(spatialTarget(3, "right", [4, 3], false, [16 / 9, 9 / 16])).toBe(5);
-    expect(spatialTarget(6, "left", [4, 3], false, [16 / 9, 9 / 16])).toBe(3);
-    expect(spatialTarget(2, "down", [3], false)).toBe(2);
+    expect(
+      spatialTarget(3, "right", [4, 3], false, [16 / 9, 9 / 16], [4, 3]),
+    ).toBe(5);
+    expect(
+      spatialTarget(6, "left", [4, 3], false, [16 / 9, 9 / 16], [4, 3]),
+    ).toBe(3);
+    expect(spatialTarget(2, "down", [3], false, [9 / 16], [3])).toBe(2);
   });
 });
 
