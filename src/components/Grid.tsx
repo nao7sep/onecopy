@@ -666,46 +666,49 @@ export default function Grid({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-ink-muted">
-        <PreviewControl />
-        {selectedSection?.kind === "image" ? (
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs text-ink-muted">
+        <div className="flex items-center gap-2">
+          <PreviewControl />
+          {selectedSection?.kind === "image" ? (
+            <button
+              className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+              onClick={() => void requestComparisonFromMain()}
+            >
+              Compare
+            </button>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2 whitespace-nowrap">
           <button
             className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-            onClick={() => void requestComparisonFromMain()}
+            title="Re-check only the directories this section's files came from"
+            disabled={sourceChecking}
+            onClick={() => void rescanCurrentSection()}
           >
-            Compare
+            {sourceChecking ? "Unavailable while checking source folders" : "Recheck this section"}
           </button>
-        ) : null}
-        <span className="flex-1" />
-        <button
-          className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-          title="Re-check only the directories this section's files came from"
-          disabled={sourceChecking}
-          onClick={() => void rescanCurrentSection()}
-        >
-          {sourceChecking ? "Unavailable while checking source folders" : "Recheck this section"}
-        </button>
-        <label htmlFor="grid-sort">Sort</label>
-        <select
-          id="grid-sort"
-          className="h-7 rounded-md border border-border bg-surface px-2 text-ink"
-          value={sortChoice.order}
-          onChange={(e) => setSortOrder(e.target.value as SortOrder)}
-        >
-          {(Object.keys(sortCatalogue.orders) as SortOrder[]).map((order) => (
-            <option key={order} value={order}>
-              {sortCatalogue.orders[order]}
-            </option>
-          ))}
-        </select>
-        <button
-          className="h-7 rounded-md px-1.5 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-          title={sortChoice.desc ? "Descending — click for ascending" : "Ascending — click for descending"}
-          // Re-picking the active order toggles direction (the store's rule).
-          onClick={() => setSortOrder(sortChoice.order)}
-        >
-          {sortChoice.desc ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-        </button>
+          <label htmlFor="grid-sort">Sort</label>
+          <select
+            id="grid-sort"
+            className="h-7 rounded-md border border-border bg-surface px-2 text-ink"
+            value={sortChoice.order}
+            onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+          >
+            {(Object.keys(sortCatalogue.orders) as SortOrder[]).map((order) => (
+              <option key={order} value={order}>
+                {sortCatalogue.orders[order]}
+              </option>
+            ))}
+          </select>
+          <button
+            className="h-7 rounded-md px-1.5 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+            title={sortChoice.desc ? "Descending — click for ascending" : "Ascending — click for descending"}
+            // Re-picking the active order toggles direction (the store's rule).
+            onClick={() => setSortOrder(sortChoice.order)}
+          >
+            {sortChoice.desc ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </button>
+        </div>
       </div>
       {previewError !== null ? (
         <OperationResult
