@@ -51,6 +51,7 @@ $runtimeHelper = Join-Path $scriptDir "launcher-runtime.mjs"
 $runtimeToken = [guid]::NewGuid().ToString("N")
 $devHost = if ($env:TAURI_DEV_HOST) { $env:TAURI_DEV_HOST } else { "127.0.0.1" }
 $devUrl = "http://${devHost}:28867"
+$sourceReadyTimeoutMs = 900000
 
 try {
     Set-Utf8Console
@@ -75,7 +76,7 @@ try {
     Write-Step "Starting OneCopy in development mode"
     $devProcess = Start-Process -FilePath (Get-Command "npm.cmd").Source -ArgumentList @("run", "tauri", "dev") -NoNewWindow -PassThru
     Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "wait-http", $devUrl, "60000")
-    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "wait-process", (Join-Path $repoDir "src-tauri/target/debug/onecopy.exe"), "180000")
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "wait-process", (Join-Path $repoDir "src-tauri/target/debug/onecopy.exe"), $sourceReadyTimeoutMs)
     Write-Step "OneCopy is ready at $devUrl"
     $devProcess.WaitForExit()
     if ($devProcess.ExitCode -notin @(0, 130, -1073741510)) {

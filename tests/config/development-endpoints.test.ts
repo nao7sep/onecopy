@@ -23,4 +23,10 @@ describe("development endpoints", () => {
       expect(read(path)).not.toMatch(/stop[_-]port|Stop-Port/);
     }
   });
+
+  it("gives a cold Windows native build a bounded readiness interval", () => {
+    const launcher = read("scripts/run-dev.ps1");
+    expect(launcher).toContain("$sourceReadyTimeoutMs = 900000");
+    expect(launcher).toContain('"wait-process", (Join-Path $repoDir "src-tauri/target/debug/onecopy.exe"), $sourceReadyTimeoutMs');
+  });
 });
