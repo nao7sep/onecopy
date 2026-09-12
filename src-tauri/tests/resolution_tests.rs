@@ -141,6 +141,30 @@ fn nonexistent_local_metadata_falls_through_to_the_filename() {
 }
 
 #[test]
+fn ambiguous_local_time_uses_the_earlier_instant() {
+    let cfg = ResolutionConfig {
+        default_timezone: chrono_tz::America::New_York,
+        ..config()
+    };
+    let got = resolve(
+        Some(MetadataTimestamp::Naive {
+            year: 2016,
+            month: 11,
+            day: 6,
+            hour: 1,
+            minute: 30,
+            second: 0,
+        }),
+        None,
+        None,
+        None,
+        &cfg,
+    )
+    .unwrap();
+    assert_eq!(got.unix_ms, utc_ms(2016, 11, 6, 5, 30, 0));
+}
+
+#[test]
 fn filesystem_takes_the_earliest_plausible_of_the_two() {
     let birth = utc_ms(2016, 3, 5, 0, 0, 0);
     let modified = utc_ms(2020, 1, 1, 0, 0, 0);
@@ -155,6 +179,31 @@ fn epoch_zero_mtime_is_rejected_as_implausible() {
     let modified = utc_ms(2020, 1, 1, 0, 0, 0);
     let got = resolve(None, None, Some(modified), Some(0), &config()).unwrap();
     assert_eq!(got.unix_ms, modified);
+}
+
+#[test]
+fn good_range_start_year_begins_in_the_configured_timezone() {
+    let cfg = config();
+    let local_start = utc_ms(1994, 12, 31, 15, 0, 0);
+    let accepted = resolve(
+        Some(MetadataTimestamp::Absolute { unix_ms: local_start }),
+        None,
+        None,
+        None,
+        &cfg,
+    )
+    .unwrap();
+    assert_eq!(accepted.unix_ms, local_start);
+    assert!(resolve(
+        Some(MetadataTimestamp::Absolute {
+            unix_ms: local_start - 1,
+        }),
+        None,
+        None,
+        None,
+        &cfg,
+    )
+    .is_none());
 }
 
 #[test]

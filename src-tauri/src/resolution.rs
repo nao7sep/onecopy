@@ -66,7 +66,13 @@ impl ResolutionConfig {
         let start = chrono::NaiveDate::from_ymd_opt(self.good_range_start_year, 1, 1)
             .unwrap_or(chrono::NaiveDate::MIN)
             .and_hms_opt(0, 0, 0)
-            .map(|ndt| ndt.and_utc().timestamp_millis())
+            .and_then(|local| {
+                self.default_timezone
+                    .from_local_datetime(&local)
+                    .earliest()
+                    .or_else(|| chrono_tz::GapInfo::new(&local, &self.default_timezone)?.end)
+            })
+            .map(|instant| instant.timestamp_millis())
             .unwrap_or(i64::MIN);
         (start, self.now_ms + DAY_MS)
     }
