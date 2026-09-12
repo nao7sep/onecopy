@@ -76,7 +76,9 @@ Because cancellation is bounded, a batch and even one logical item's physical co
 
 ## Recoverable storage and manual recovery
 
-Recoverable deletion keeps each file under the configured root whose existing permissions protected it. Source deletion and Move cleanup use the most-specific configured source root containing that file. Overwrite displacement uses the selected configured destination root. The accepted operation plan freezes that root before filesystem work begins; the storage layer receives the frozen root and never guesses from the drive or application home.
+Recoverable deletion keeps each file under the most-specific configured root containing it. Source deletion and Move cleanup use the most-specific configured source root; overwrite displacement uses the selected configured destination root. The accepted operation plan freezes that root before filesystem work begins; the storage layer receives the frozen root and never guesses from the drive or application home.
+
+The configured root is OneCopy's access boundary. Choosing a root authorizes discovery and file operations throughout its descendants, including descendants with narrower access than the configured root. OneCopy preserves the file's own access metadata as the filesystem permits, but does not infer separate user-access intent from nested directories, reproduce permissions inherited only from those directories, or make deleted files private to the current account. Configuring a broader root when users require exclusive access to its separate descendants is a configuration error rather than an access policy OneCopy can reconstruct.
 
 Each configured root stores its deleted files beneath its own hidden `.onecopy-trash` directory. Before moving a file, OneCopy proves that the file is contained by the frozen root and that the move remains on the same filesystem; failed validation leaves the source untouched. The directory is created lazily beneath that root so its access remains constrained by the root's traversal and permission boundary. Source discovery, watchers, and destination browsing exclude these directories everywhere they occur.
 

@@ -22,6 +22,8 @@ Date work has distinct incomplete and completed states:
 
 Changing the date-selection policy recomputes logical-item dates from saved evidence without reopening unchanged files. New or apparently changed copies may supply new evidence when maintenance processes them, including evidence that moves a completed Undated item into a dated section.
 
+Timestamp evidence with an explicit timezone or offset identifies an absolute instant. Evidence without one is interpreted as local wall-clock time in the configured default timezone; a filename containing only a date supplies `00:00:00` under that same rule rather than introducing a separate calendar-date type. A nonexistent local time is unusable and resolution continues to the next evidence source. An ambiguous repeated local time uses its earlier instant.
+
 ## Representative copy
 
 Every logical item has one deterministic representative among its currently available physical copies. Copies are ranked by the following rules, in order:

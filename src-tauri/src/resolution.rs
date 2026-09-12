@@ -159,9 +159,8 @@ pub fn resolve(
 }
 
 /// Interprets naive wall-clock fields in `tz`. A DST-ambiguous local time takes
-/// the earlier instant; a nonexistent one (spring-forward gap) falls back to a
-/// UTC interpretation rather than being dropped — a photo timestamp landing in
-/// the gap is clock skew, not a reason to lose the source.
+/// the earlier instant; a nonexistent one (spring-forward gap) is not usable
+/// evidence, so the caller can continue to the next source.
 fn naive_to_utc_ms(
     tz: Tz,
     year: i32,
@@ -174,8 +173,7 @@ fn naive_to_utc_ms(
     let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
     let time = chrono::NaiveTime::from_hms_opt(hour, minute, second)?;
     let ndt = chrono::NaiveDateTime::new(date, time);
-    match tz.from_local_datetime(&ndt).earliest() {
-        Some(zoned) => Some(zoned.timestamp_millis()),
-        None => Some(ndt.and_utc().timestamp_millis()),
-    }
+    tz.from_local_datetime(&ndt)
+        .earliest()
+        .map(|zoned| zoned.timestamp_millis())
 }

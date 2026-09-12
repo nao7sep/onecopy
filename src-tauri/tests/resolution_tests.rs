@@ -109,6 +109,35 @@ fn date_only_flag_survives_resolution() {
     .unwrap();
     assert!(got.date_only);
     assert_eq!(got.source, ResolvedSource::Filename);
+    // A filename-only date is ordinary midnight in the configured timezone.
+    assert_eq!(got.unix_ms, utc_ms(2016, 3, 4, 15, 0, 0));
+}
+
+#[test]
+fn nonexistent_local_metadata_falls_through_to_the_filename() {
+    let cfg = ResolutionConfig {
+        default_timezone: chrono_tz::America::New_York,
+        ..config()
+    };
+    let filename_instant = utc_ms(2016, 3, 5, 3, 0, 0);
+    let got = resolve(
+        Some(MetadataTimestamp::Naive {
+            // Clocks jump from 01:59:59 to 03:00:00 on this date.
+            year: 2016,
+            month: 3,
+            day: 13,
+            hour: 2,
+            minute: 30,
+            second: 0,
+        }),
+        Some(FilenameTimestamp::EpochMillis(filename_instant)),
+        None,
+        None,
+        &cfg,
+    )
+    .unwrap();
+    assert_eq!(got.source, ResolvedSource::Filename);
+    assert_eq!(got.unix_ms, filename_instant);
 }
 
 #[test]
