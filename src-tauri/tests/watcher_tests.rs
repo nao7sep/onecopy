@@ -58,10 +58,11 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
     let root = dir.path().join("watched");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("known.jpg"), b"known").unwrap();
-    restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap();
+    let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
+    restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]).unwrap();
 
     std::fs::remove_dir_all(&root).unwrap();
-    assert!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).is_err());
+    assert!(restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]).is_err());
     let missing: i64 = conn
         .query_row("SELECT missing FROM paths", [], |row| row.get(0))
         .unwrap();
@@ -76,7 +77,7 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
     assert_eq!(issues, 1, "the failure must remain visible and recheckable");
 
     std::fs::create_dir_all(&root).unwrap();
-    assert_eq!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()]).unwrap(), 1);
+    assert_eq!(restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]).unwrap(), 1);
     let state: (i64, i64) = conn
         .query_row(
             "SELECT (SELECT missing FROM paths), (SELECT COUNT(*) FROM active_issues)",

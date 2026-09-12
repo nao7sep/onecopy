@@ -255,7 +255,7 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
     let changed_bytes = b"readable bytes after the failed attempt";
     std::fs::write(&readable, changed_bytes).unwrap();
 
-    let readable_path = readable.to_string_lossy().to_string();
+    let readable_path = stored_path(&readable);
     index_store::upsert_issue(&f.conn, Some(&readable_path), READ_ERROR, "read failed").unwrap();
     onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[f.root.to_string_lossy().into_owned()]).unwrap();
     assert_eq!(
@@ -271,16 +271,16 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
     );
 
     let missing = f.root.join("vanished.jpg");
-    let missing_path = missing.to_string_lossy().to_string();
+    let missing_path = stored_path(&missing);
     f.conn
         .execute(
             "INSERT INTO paths (abs_path, dir_path, file_name, kind, missing) \
              VALUES (?1, ?2, 'vanished.jpg', 'image', 0)",
-            rusqlite::params![missing_path, f.root.to_string_lossy().as_ref()],
+            rusqlite::params![missing_path, stored_path(&f.root)],
         )
         .unwrap();
     index_store::upsert_issue(&f.conn, Some(&missing_path), STAT_ERROR, "stat failed").unwrap();
-    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[f.root.to_string_lossy().into_owned()]).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[stored_path(&f.root)]).unwrap();
     assert_eq!(
         f.conn
             .query_row(

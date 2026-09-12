@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { cargoSuiteTargets } from "./support/cargo-manifest";
 
 const crateRoot = "src-tauri";
 const testsRoot = join(crateRoot, "tests");
@@ -37,12 +38,10 @@ describe("the Rust integration harness inventory", () => {
   });
 
   it("keeps suite target names aligned with their files", () => {
-    const targets = [...manifest.matchAll(
-      /^\[\[test\]\]\nname = "([^\"]+)"\npath = "(tests\/suites\/[^\"]+\.rs)"$/gm,
-    )];
+    const targets = cargoSuiteTargets(manifest);
     expect(targets.length).toBeGreaterThan(0);
-    for (const [, name, path] of targets) {
-      expect(name).toBe(`${basename(path!, ".rs")}_test_suite`);
+    for (const { name, path } of targets) {
+      expect(name).toBe(`${basename(path, ".rs")}_test_suite`);
     }
   });
 });

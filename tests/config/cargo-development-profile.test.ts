@@ -1,15 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { cargoTableBody } from "./support/cargo-manifest";
 
 const manifest = readFileSync("src-tauri/Cargo.toml", "utf8");
 
 function profileSection(name: string): string {
-  const heading = `[${name}]\n`;
-  const start = manifest.indexOf(heading);
-  expect(start, `Cargo profile section [${name}]`).toBeGreaterThanOrEqual(0);
-  const body = manifest.slice(start + heading.length);
-  const next = body.search(/^\[/m);
-  return next < 0 ? body : body.slice(0, next);
+  return cargoTableBody(manifest, name);
 }
 
 describe("the Cargo development build policy", () => {

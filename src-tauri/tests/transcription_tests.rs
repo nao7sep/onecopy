@@ -1,6 +1,7 @@
 // Transcription's deterministic contracts. The real app owns acceptance of the
 // installed production model, so ordinary tests never load it.
 
+#[cfg(unix)]
 use std::path::Path;
 
 use onecopy_lib::transcription::*;
