@@ -3,7 +3,6 @@ use tauri::menu::Menu;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
 
@@ -113,6 +112,7 @@ pub mod viewer_sequence;
 pub mod volume;
 pub mod watcher;
 pub mod winpath;
+pub mod window_placement;
 
 // Records the panic payload, location, and (when RUST_BACKTRACE is set) the
 // backtrace, flushes, then defers to the previous hook so the process still
@@ -2112,6 +2112,9 @@ pub fn run() {
             .map(|v| v == "1")
             .unwrap_or(false);
 
+    let placement_state = window_placement::new_state();
+    let event_placement_state = placement_state.clone();
+    let setup_placement_state = placement_state.clone();
     let builder = tauri::Builder::default()
         // Process ownership is the FIRST plugin setup. Its OS file lock is the
         // atomic authority; a secondary routes activation to the owner and exits
@@ -2120,22 +2123,9 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        // Main is OneCopy's only durable top-level window. Preview placement
-        // is session-owned, while Comparison and transient viewers own their
-        // live geometry, so none of those labels may enter plugin state.
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                // Windows emits a transient move while maximizing. Track that
-                // mode so the plugin preserves Main's prior coordinates, but
-                // restore only normal geometry during setup below. Preview
-                // remains excluded by the label filter.
-                .with_state_flags(
-                    StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED,
-                )
-                .skip_initial_state("main")
-                .with_filter(|label| label == "main")
-                .build(),
-        )
+        .on_window_event(move |window, event| {
+            window_placement::on_window_event(window, event, &event_placement_state);
+        })
         .menu(menu_with_safe_quit)
         .on_menu_event(|app, event| {
             if event.id() == SAFE_QUIT_MENU_ID {
@@ -2164,9 +2154,14 @@ pub fn run() {
             // the hook itself is deliberately infallible.
             app.manage(startup::initialize(app, debug_enabled));
             if let Some(window) = app.get_webview_window("main") {
-                if let Err(error) = window.restore_state(StateFlags::POSITION | StateFlags::SIZE) {
+                window_placement::restore(
+                    app.handle(),
+                    &window.as_ref().window(),
+                    &setup_placement_state,
+                );
+                if let Err(error) = window.show() {
                     logging::warn(
-                        "normal window state could not be restored",
+                        "Main window could not be shown",
                         json!({ "error": { "message": error.to_string() } }),
                     );
                 }
@@ -2258,7 +2253,7 @@ pub fn run() {
         Err(error) => startup::halt_before_runtime(&error.to_string()),
     };
 
-    app.run(|app_handle, event| match event {
+    app.run(move |app_handle, event| match event {
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Focused(_),
             ..
@@ -2280,6 +2275,9 @@ pub fn run() {
         // the worker starts winding down, then join it at Exit — bounded by
         // the per-item cancel checks — so no SQLite write is killed halfway.
         tauri::RunEvent::ExitRequested { api, .. } => {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                window_placement::capture(&window.as_ref().window(), &placement_state);
+            }
             if EXIT_QUIESCING.load(std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
@@ -2370,6 +2368,7 @@ pub fn run() {
             }
         }
         tauri::RunEvent::Exit => {
+            window_placement::save(app_handle, &placement_state);
             activity::record_shutdown();
             app_lifecycle::begin_shutdown();
             source_check_runtime::shutdown();

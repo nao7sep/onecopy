@@ -14,7 +14,8 @@
    {
     "title": "OneCopy",
     "width": 1120,
-    "height": 640
+    "height": 640,
+    "visible": false
    }
   ],
   "security": {

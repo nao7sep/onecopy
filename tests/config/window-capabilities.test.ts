@@ -88,23 +88,21 @@ describe("failed window calls are reported, never swallowed", () => {
 
 describe("durable window-state boundary", () => {
   const core = readFileSync("src-tauri/src/lib.rs", "utf8");
+  const placement = readFileSync("src-tauri/src/window_placement.rs", "utf8");
+  const cargoManifest = readFileSync("src-tauri/Cargo.toml", "utf8");
   const tauriConfig = JSON.parse(
     readFileSync("src-tauri/tauri.conf.json", "utf8"),
   ) as { app: { windows: Array<{ visible?: boolean }> } };
 
-  it("tracks Main's transient maximize event but restores only normal geometry", () => {
-    expect(core).toContain("StateFlags::POSITION | StateFlags::SIZE");
-    expect(core).toContain('.with_filter(|label| label == "main")');
-    expect(core).toContain("StateFlags::MAXIMIZED");
-    expect(core).toContain('.skip_initial_state("main")');
-    expect(core).toContain(
-      "window.restore_state(StateFlags::POSITION | StateFlags::SIZE)",
-    );
-    expect(core).not.toContain("StateFlags::FULLSCREEN");
-    expect(core).not.toContain("StateFlags::VISIBLE");
+  it("restores Main's atomic native record before showing it", () => {
+    expect(core).toContain("window_placement::restore(");
+    expect(core.indexOf("window_placement::restore(")).toBeLessThan(core.indexOf("window.show()"));
+    expect(placement).toContain('window.label() == "main"');
+    expect(placement).not.toMatch(/Moved|Resized|debounce|prev_[xy]/i);
+    expect(cargoManifest).not.toContain("tauri-plugin-window-state");
   });
 
-  it("creates Main normally visible instead of depending on frontend bootstrap", () => {
-    expect(tauriConfig.app.windows[0]?.visible).not.toBe(false);
+  it("creates Main hidden only for native setup", () => {
+    expect(tauriConfig.app.windows[0]?.visible).toBe(false);
   });
 });

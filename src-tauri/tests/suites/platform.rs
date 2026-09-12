@@ -18,5 +18,7 @@ mod storage_file_names;
 mod storage_tests;
 #[path = "../volume_tests.rs"]
 mod volume_tests;
+#[path = "../window_placement_tests.rs"]
+mod window_placement_tests;
 #[path = "../winpath_tests.rs"]
 mod winpath_tests;
