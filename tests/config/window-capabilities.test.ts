@@ -97,7 +97,8 @@ describe("durable window-state boundary", () => {
   it("restores Main's atomic native record before showing it", () => {
     expect(core).toContain("window_placement::restore(");
     expect(core.indexOf("window_placement::restore(")).toBeLessThan(core.indexOf("window.show()"));
-    expect(placement).toContain('window.label() == "main"');
+    expect(placement).toContain('"main" => capture(window, main_state)');
+    expect(placement).toContain('"preview" => capture_preview(window, preview_state)');
     expect(placement).not.toMatch(/Moved|Resized|debounce|prev_[xy]/i);
     expect(cargoManifest).not.toContain("tauri-plugin-window-state");
   });

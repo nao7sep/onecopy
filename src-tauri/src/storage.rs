@@ -7,6 +7,7 @@
 //! - `config.json`       — durable user settings.               RECORDED (managed text)
 //! - `state.json`        — volatile UI/session state.           RECORDED (managed text)
 //! - `window.json`       — volatile Main placement state.       RECORDED (managed text)
+//! - `preview-window.json` — volatile Preview placement state.  RECORDED (managed text)
 //! - `index.sqlite3`     — the scan index (facts/cache).        not recorded (binary, reconstructible)
 //! - `source-volumes.json` — destructive-operation trust baselines. RECORDED (managed safety text)
 //! - `backups.sqlite3`   — the write-through backup store.      not recorded (the store itself)
@@ -36,6 +37,7 @@ use crate::{backup_store, logging, nanoid, paths};
 pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const STATE_FILE_NAME: &str = "state.json";
 pub const WINDOW_FILE_NAME: &str = "window.json";
+pub const PREVIEW_WINDOW_FILE_NAME: &str = "preview-window.json";
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite3";
 pub const CACHE_DIR_NAME: &str = "cache";
 
@@ -306,6 +308,22 @@ pub fn read_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, Str
 pub fn save_window_state(app: &AppHandle, state: &JsonValue) -> Result<(), String> {
     let root = paths::data_root(app)?;
     atomic_write_json(&root.join(WINDOW_FILE_NAME), state)
+}
+
+pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
+    let read = read_json_optional(&root.join(PREVIEW_WINDOW_FILE_NAME))?;
+    if let Some(record) = read.quarantined {
+        PENDING_QUARANTINES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record);
+    }
+    Ok(read.value)
+}
+
+pub fn save_preview_window_state(app: &AppHandle, state: &JsonValue) -> Result<(), String> {
+    let root = paths::data_root(app)?;
+    atomic_write_json(&root.join(PREVIEW_WINDOW_FILE_NAME), state)
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {

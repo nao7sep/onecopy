@@ -1548,6 +1548,36 @@ fn set_window_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<
 }
 
 #[tauri::command]
+fn place_preview_window(
+    app: AppHandle,
+    normal: window_placement::NormalRectangle,
+    maximized: bool,
+    state: tauri::State<'_, window_placement::PreviewPlacementState>,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("preview")
+        .ok_or("Preview window is unavailable")?;
+    window_placement::place_preview(
+        &window.as_ref().window(),
+        normal,
+        maximized,
+        &state.0,
+    )
+}
+
+#[tauri::command]
+fn capture_preview_window_placement(
+    app: AppHandle,
+    state: tauri::State<'_, window_placement::PreviewPlacementState>,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("preview")
+        .ok_or("Preview window is unavailable")?;
+    window_placement::capture_preview(&window.as_ref().window(), &state.0);
+    Ok(())
+}
+
+#[tauri::command]
 fn refresh_presentation_chrome() {
     presentation_runtime::note_focus_transition();
 }
@@ -2113,8 +2143,11 @@ pub fn run() {
             .unwrap_or(false);
 
     let placement_state = window_placement::new_state();
+    let preview_placement_state = window_placement::new_state();
     let event_placement_state = placement_state.clone();
+    let event_preview_placement_state = preview_placement_state.clone();
     let setup_placement_state = placement_state.clone();
+    let setup_preview_placement_state = preview_placement_state.clone();
     let builder = tauri::Builder::default()
         // Process ownership is the FIRST plugin setup. Its OS file lock is the
         // atomic authority; a secondary routes activation to the owner and exits
@@ -2123,8 +2156,16 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(window_placement::PreviewPlacementState(
+            preview_placement_state.clone(),
+        ))
         .on_window_event(move |window, event| {
-            window_placement::on_window_event(window, event, &event_placement_state);
+            window_placement::on_window_event(
+                window,
+                event,
+                &event_placement_state,
+                &event_preview_placement_state,
+            );
         })
         .menu(menu_with_safe_quit)
         .on_menu_event(|app, event| {
@@ -2153,6 +2194,7 @@ pub fn run() {
             // application bootstrap therefore records Ready/Blocked state and
             // the hook itself is deliberately infallible.
             app.manage(startup::initialize(app, debug_enabled));
+            window_placement::load_preview(app.handle(), &setup_preview_placement_state);
             if let Some(window) = app.get_webview_window("main") {
                 window_placement::restore(
                     app.handle(),
@@ -2212,6 +2254,8 @@ pub fn run() {
             background_work_set_paused,
             prioritize_derived_work,
             set_window_fullscreen,
+            place_preview_window,
+            capture_preview_window_placement,
             refresh_presentation_chrome,
             ensure_preview,
             apply_library_settings,
@@ -2277,6 +2321,12 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { api, .. } => {
             if let Some(window) = app_handle.get_webview_window("main") {
                 window_placement::capture(&window.as_ref().window(), &placement_state);
+            }
+            if let Some(window) = app_handle.get_webview_window("preview") {
+                window_placement::capture_preview(
+                    &window.as_ref().window(),
+                    &preview_placement_state,
+                );
             }
             if EXIT_QUIESCING.load(std::sync::atomic::Ordering::SeqCst) {
                 return;
@@ -2369,6 +2419,7 @@ pub fn run() {
         }
         tauri::RunEvent::Exit => {
             window_placement::save(app_handle, &placement_state);
+            window_placement::save_preview(app_handle, &preview_placement_state);
             activity::record_shutdown();
             app_lifecycle::begin_shutdown();
             source_check_runtime::shutdown();

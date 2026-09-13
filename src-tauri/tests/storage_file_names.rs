@@ -12,7 +12,8 @@ use onecopy_lib::paths::{
     TEMP_DIR_NAME,
 };
 use onecopy_lib::storage::{
-    CACHE_DIR_NAME, CONFIG_FILE_NAME, INDEX_DB_FILE_NAME, STATE_FILE_NAME, WINDOW_FILE_NAME,
+    CACHE_DIR_NAME, CONFIG_FILE_NAME, INDEX_DB_FILE_NAME, PREVIEW_WINDOW_FILE_NAME,
+    STATE_FILE_NAME, WINDOW_FILE_NAME,
 };
 
 #[test]
@@ -28,6 +29,11 @@ fn volatile_state_resolves_to_state_json() {
 #[test]
 fn main_window_state_resolves_to_window_json() {
     assert_eq!(WINDOW_FILE_NAME, "window.json");
+}
+
+#[test]
+fn preview_window_state_resolves_to_its_own_file() {
+    assert_eq!(PREVIEW_WINDOW_FILE_NAME, "preview-window.json");
 }
 
 #[test]
@@ -72,6 +78,7 @@ fn every_store_has_its_own_file() {
         CONFIG_FILE_NAME,
         STATE_FILE_NAME,
         WINDOW_FILE_NAME,
+        PREVIEW_WINDOW_FILE_NAME,
         INDEX_DB_FILE_NAME,
         BACKUPS_DB_FILE_NAME,
         ACTIVITY_DB_FILE_NAME,

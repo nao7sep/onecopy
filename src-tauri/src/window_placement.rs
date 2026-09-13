@@ -48,8 +48,20 @@ pub fn placement_after_close(
 
 pub(crate) type PlacementState = Arc<Mutex<Option<Placement>>>;
 
+pub(crate) struct PreviewPlacementState(pub PlacementState);
+
 pub(crate) fn new_state() -> PlacementState {
     Arc::new(Mutex::new(None))
+}
+
+pub(crate) fn load_preview(app: &AppHandle, state: &PlacementState) {
+    let saved = paths::data_root(app)
+        .and_then(|root| storage::read_preview_window_state_for_setup(&root))
+        .map(|value| value.and_then(|value| serde_json::from_value(value).ok()));
+    match saved {
+        Ok(saved) => set_state(state, saved),
+        Err(error) => warn("Preview window placement could not be loaded", error),
+    }
 }
 
 fn current_rectangle(window: &Window<Wry>) -> tauri::Result<NormalRectangle> {
@@ -162,7 +174,62 @@ pub(crate) fn restore(app: &AppHandle, window: &Window<Wry>, state: &PlacementSt
     set_state(state, restored);
 }
 
+pub(crate) fn place_preview(
+    window: &Window<Wry>,
+    fallback: NormalRectangle,
+    maximize_fallback: bool,
+    state: &PlacementState,
+) -> Result<(), String> {
+    let saved = state_value(state).and_then(|placement| {
+        match usable(window, placement.normal) {
+            Ok(true) => Some(placement),
+            Ok(false) => None,
+            Err(error) => {
+                warn("Preview window placement could not be validated", error);
+                None
+            }
+        }
+    });
+    let placement = saved.unwrap_or(Placement {
+        normal: fallback,
+        maximized: maximize_fallback,
+    });
+    window
+        .set_position(PhysicalPosition::new(
+            placement.normal.x,
+            placement.normal.y,
+        ))
+        .and_then(|()| {
+            window.set_size(PhysicalSize::new(
+                placement.normal.width,
+                placement.normal.height,
+            ))
+        })
+        .and_then(|()| {
+            if placement.maximized {
+                window.maximize()
+            } else {
+                Ok(())
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    set_state(state, Some(placement));
+    Ok(())
+}
+
 pub(crate) fn capture(window: &Window<Wry>, state: &PlacementState) {
+    capture_with_mode(window, state, cfg!(target_os = "windows"));
+}
+
+pub(crate) fn capture_preview(window: &Window<Wry>, state: &PlacementState) {
+    capture_with_mode(window, state, true);
+}
+
+fn capture_with_mode(
+    window: &Window<Wry>,
+    state: &PlacementState,
+    remember_maximized: bool,
+) {
     let closing = (|| -> tauri::Result<ClosingState> {
         if window.is_minimized()? || window.is_fullscreen()? {
             return Ok(ClosingState::Transient);
@@ -176,16 +243,25 @@ pub(crate) fn capture(window: &Window<Wry>, state: &PlacementState) {
         Ok(closing) => {
             set_state(
                 state,
-                placement_after_close(state_value(state), closing, cfg!(target_os = "windows")),
+                placement_after_close(state_value(state), closing, remember_maximized),
             );
         }
         Err(error) => warn("window placement could not be captured", error),
     }
 }
 
-pub(crate) fn on_window_event(window: &Window<Wry>, event: &WindowEvent, state: &PlacementState) {
-    if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
-        capture(window, state);
+pub(crate) fn on_window_event(
+    window: &Window<Wry>,
+    event: &WindowEvent,
+    main_state: &PlacementState,
+    preview_state: &PlacementState,
+) {
+    if matches!(event, WindowEvent::CloseRequested { .. }) {
+        match window.label() {
+            "main" => capture(window, main_state),
+            "preview" => capture_preview(window, preview_state),
+            _ => {}
+        }
     }
 }
 
@@ -198,5 +274,17 @@ pub(crate) fn save(app: &AppHandle, state: &PlacementState) {
         .and_then(|value| storage::save_window_state(app, &value));
     if let Err(error) = result {
         warn("window placement could not be saved", error);
+    }
+}
+
+pub(crate) fn save_preview(app: &AppHandle, state: &PlacementState) {
+    let Some(placement) = state_value(state) else {
+        return;
+    };
+    let result = serde_json::to_value(placement)
+        .map_err(|error| error.to_string())
+        .and_then(|value| storage::save_preview_window_state(app, &value));
+    if let Err(error) = result {
+        warn("Preview window placement could not be saved", error);
     }
 }

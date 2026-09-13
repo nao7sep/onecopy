@@ -56,6 +56,8 @@ beforeEach(() => {
     log_event: () => null,
     record_recent_notification: () => ({}),
     set_window_fullscreen: () => null,
+    capture_preview_window_placement: () => null,
+    place_preview_window: () => null,
   });
   usePreviewStore.setState({
     follow: false,

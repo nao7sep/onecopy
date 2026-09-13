@@ -13,26 +13,19 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   availableMonitors,
   getCurrentWindow,
-  PhysicalPosition,
-  PhysicalSize,
 } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields, reportWindowCall } from "../repositories";
 import {
   allocatePreviewPlacement,
-  hostingScreen,
-  isMaximizedPreviewBounds,
-  previewWindowPlacementFromState,
   type PreviewBounds,
-  type PreviewWindowPlacement,
 } from "../models/previewPlacement";
-import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
+import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
 import { waitForWindowCreated } from "../utils/windowCreation";
-import { retainStatePatch } from "./app-store";
 
 export interface PreviewPayload {
   hash: string | null;
@@ -95,11 +88,8 @@ interface PreviewState {
 
 // ---- Separate-window lifecycle --------------------------------------------
 
-// Cached existence flag: getByLabel per keystroke is an IPC round trip. The
-// live placement cache is seeded once from durable state and updated whenever
-// the separate window closes or the app shuts down.
+// Cached existence flag: getByLabel per keystroke is an IPC round trip.
 let previewWindowOpen = false;
-let rememberedPlacement: PreviewWindowPlacement | null = null;
 let surfaceRequest = 0;
 let surfaceTail: Promise<void> = Promise.resolve();
 let previewFullscreenApplied = false;
@@ -128,8 +118,6 @@ async function outerBounds(window: {
     window.outerPosition(),
     window.outerSize(),
   ]);
-  // Tauri's runtime classes also expose an enumerable `type: "Physical"`.
-  // Copy only the rectangle fields so persisted geometry remains plain data.
   return {
     x: position.x,
     y: position.y,
@@ -138,64 +126,21 @@ async function outerBounds(window: {
   };
 }
 
-async function capturePreviewPlacement(window: WebviewWindow): Promise<void> {
-  if (rememberedPlacement === null || previewFullscreenApplied) return;
-  const [minimized, nativeMaximized, bounds, monitors] = await Promise.all([
-    window.isMinimized(),
-    window.isMaximized(),
-    outerBounds(window),
-    availableMonitors(),
-  ]);
-  if (minimized || previewFullscreenApplied) return;
-  const screen = hostingScreen(monitors, bounds);
-  if (screen === null) return;
-  const maximized = nativeMaximized || isMaximizedPreviewBounds(bounds, screen);
-  rememberedPlacement = {
-    screen: monitorKey(screen),
-    normalBounds: maximized ? rememberedPlacement.normalBounds : bounds,
-    mode: maximized ? "maximized" : "normal",
-  };
-  retainStatePatch({ previewWindowPlacement: rememberedPlacement });
-}
-
-/** Main's close edge captures an open Preview before app-state flush. */
-export async function capturePreviewPlacementForShutdown(): Promise<void> {
-  const window = await WebviewWindow.getByLabel("preview");
-  if (window !== null) await capturePreviewPlacement(window);
-}
-
-async function placePreviewWindow(
-  window: WebviewWindow,
-  state: Record<string, unknown>,
-): Promise<void> {
+async function placePreviewWindow(state: Record<string, unknown>): Promise<void> {
   const main = getCurrentWindow();
   const [monitors, mainBounds] = await Promise.all([
     availableMonitors(),
     outerBounds(main),
   ]);
-  if (rememberedPlacement === null) {
-    rememberedPlacement = previewWindowPlacementFromState(
-      state.previewWindowPlacement,
-    );
-  }
   const allocation = allocatePreviewPlacement(
     orderMonitors(monitors, priorityFromState(state)),
     mainBounds,
-    rememberedPlacement,
   );
   if (allocation === null) return;
-  rememberedPlacement = allocation;
-  retainStatePatch({ previewWindowPlacement: allocation });
-  if (await window.isMaximized()) await window.unmaximize();
-  await window.setSize(new PhysicalSize(
-    allocation.normalBounds.width,
-    allocation.normalBounds.height,
-  ));
-  await window.setPosition(new PhysicalPosition(
-    allocation.normalBounds.x,
-    allocation.normalBounds.y,
-  ));
-  if (allocation.mode === "maximized") await window.maximize();
+  await invoke("place_preview_window", {
+    normal: allocation.normalBounds,
+    maximized: allocation.maximized,
+  });
 }
 
 async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void> {
@@ -216,7 +161,7 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
   });
   try {
     await waitForWindowCreated(window, "Preview");
-    await placePreviewWindow(window, state);
+    await placePreviewWindow(state);
     // The surface closing by any route (Escape in it, red button) clears the
     // follow flag — otherwise P looks broken afterwards.
     await window.once("tauri://destroyed", () => {
@@ -292,9 +237,9 @@ async function frontPreviewWindow(): Promise<void> {
 async function closePreviewWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing === null) return;
+  await invoke("capture_preview_window_placement");
   await invoke("set_window_fullscreen", { label: "preview", enable: false });
   previewFullscreenApplied = false;
-  await capturePreviewPlacement(existing);
   await existing.destroy();
 }
 
@@ -376,7 +321,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         if (request !== surfaceRequest) return;
         const window = await WebviewWindow.getByLabel("preview");
         if (window === null) throw new Error("The Preview window is unavailable.");
-        if (enabled) await capturePreviewPlacement(window);
+        if (enabled) await invoke("capture_preview_window_placement");
         await invoke("set_window_fullscreen", { label: "preview", enable: enabled });
         previewFullscreenApplied = enabled;
         if (request === surfaceRequest) await window.setFocus();
