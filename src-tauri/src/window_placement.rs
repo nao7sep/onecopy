@@ -46,6 +46,13 @@ pub fn placement_after_close(
     }
 }
 
+pub fn frame_fills_work_area(frame: NormalRectangle, work_area: NormalRectangle) -> bool {
+    frame.x.abs_diff(work_area.x) <= 2
+        && frame.y.abs_diff(work_area.y) <= 2
+        && frame.width.abs_diff(work_area.width) <= 2
+        && frame.height.abs_diff(work_area.height) <= 2
+}
+
 pub(crate) type PlacementState = Arc<Mutex<Option<Placement>>>;
 
 pub(crate) struct PreviewPlacementState(pub PlacementState);
@@ -73,6 +80,34 @@ fn current_rectangle(window: &Window<Wry>) -> tauri::Result<NormalRectangle> {
         width: size.width,
         height: size.height,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn is_maximized(window: &Window<Wry>) -> tauri::Result<bool> {
+    let position = window.outer_position()?;
+    let size = window.outer_size()?;
+    Ok(window.available_monitors()?.iter().any(|monitor| {
+        let area = monitor.work_area();
+        frame_fills_work_area(
+            NormalRectangle {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            },
+            NormalRectangle {
+                x: area.position.x,
+                y: area.position.y,
+                width: area.size.width,
+                height: area.size.height,
+            },
+        )
+    }))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_maximized(window: &Window<Wry>) -> tauri::Result<bool> {
+    window.is_maximized()
 }
 
 fn usable(window: &Window<Wry>, rectangle: NormalRectangle) -> tauri::Result<bool> {
@@ -234,7 +269,7 @@ fn capture_with_mode(
         if window.is_minimized()? || window.is_fullscreen()? {
             return Ok(ClosingState::Transient);
         }
-        if window.is_maximized()? {
+        if is_maximized(window)? {
             return Ok(ClosingState::Maximized);
         }
         Ok(ClosingState::Normal(current_rectangle(window)?))
