@@ -16,7 +16,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("hands first-use placement to the native owner before showing", async () => {
+it.each([1, 3])("places Preview before showing with %i available screens", async (screenCount) => {
   vi.useFakeTimers();
   resetTauriMocks();
   let nativePlacementApplied = false;
@@ -27,7 +27,7 @@ it("hands first-use placement to the native owner before showing", async () => {
     log_event: () => null,
     record_recent_notification: () => null,
   });
-  const monitors = [0, 1, 2].map((index) => ({
+  const monitors = Array.from({ length: screenCount }, (_, index) => ({
     name: `Screen ${index}`,
     position: { x: index * 1920, y: 0 },
     size: { width: 1920, height: 1080 },
@@ -45,6 +45,7 @@ it("hands first-use placement to the native owner before showing", async () => {
     fullscreen: false,
   });
   setWindowCreatedHook((label) => {
+    nativePlacementApplied = false;
     void WebviewWindow.getByLabel(label).then((window) => {
       if (!window) throw new Error("Missing constructed window");
       window.show.mockImplementation(async () => {
@@ -70,14 +71,17 @@ it("hands first-use placement to the native owner before showing", async () => {
   const first = (await WebviewWindow.getByLabel("preview"))!;
   expect(invokeCalls.find(({ command }) => command === "place_preview_window")?.args)
     .toEqual({
-      normal: { x: 2240, y: 155, width: 1280, height: 800 },
-      maximized: true,
+      normal: { x: screenCount === 1 ? 320 : 2240, y: 155, width: 1280, height: 800 },
+      maximized: screenCount > 1,
     });
   expect(first.setPosition).not.toHaveBeenCalled();
   expect(first.setSize).not.toHaveBeenCalled();
   expect(first.maximize).not.toHaveBeenCalled();
   expect(createdWindows[0].options).toMatchObject({ visible: false, focus: false });
   expect(setFocus).not.toHaveBeenCalled();
+  expect(first.setAlwaysOnTop.mock.calls).toEqual([[true], [false]]);
+  expect(first.show.mock.invocationCallOrder[0])
+    .toBeLessThan(first.setAlwaysOnTop.mock.invocationCallOrder[0]);
 
   usePreviewStore.getState().close();
   await settle(open());
