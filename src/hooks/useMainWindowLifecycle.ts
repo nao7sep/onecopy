@@ -18,7 +18,10 @@ import {
   retainStatePatch,
 } from "../state/app-store";
 import { installActivityPings } from "../state/derived-work-store";
-import { usePreviewStore } from "../state/preview-store";
+import {
+  capturePreviewPlacementForShutdown,
+  usePreviewStore,
+} from "../state/preview-store";
 import { hasOpenModal } from "../utils/modalStack";
 import { isComposingEvent } from "./useComposing";
 import { isEditableTarget, shadowsMacTextEditing } from "../utils/shortcuts";
@@ -118,6 +121,11 @@ export function useMainWindowLifecycle({
       event.preventDefault();
       if (closing) return;
       closing = true;
+      try {
+        await capturePreviewPlacementForShutdown();
+      } catch (error) {
+        reportWindowCall("capture Preview placement")(error);
+      }
       try {
         await flushStatePatchesForShutdown();
       } catch (error) {

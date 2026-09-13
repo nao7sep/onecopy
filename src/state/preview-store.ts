@@ -22,6 +22,8 @@ import { log, toErrorFields, reportWindowCall } from "../repositories";
 import {
   allocatePreviewPlacement,
   hostingScreen,
+  isMaximizedPreviewBounds,
+  previewWindowPlacementFromState,
   type PreviewBounds,
   type PreviewWindowPlacement,
 } from "../models/previewPlacement";
@@ -30,6 +32,7 @@ import type { ItemDetail } from "../models/items";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
 import { waitForWindowCreated } from "../utils/windowCreation";
+import { retainStatePatch } from "./app-store";
 
 export interface PreviewPayload {
   hash: string | null;
@@ -92,9 +95,11 @@ interface PreviewState {
 
 // ---- Separate-window lifecycle --------------------------------------------
 
-// Cached existence flag: getByLabel per keystroke is an IPC round trip.
+// Cached existence flag: getByLabel per keystroke is an IPC round trip. The
+// live placement cache is seeded once from durable state and updated whenever
+// the separate window closes or the app shuts down.
 let previewWindowOpen = false;
-let sessionPlacement: PreviewWindowPlacement | null = null;
+let rememberedPlacement: PreviewWindowPlacement | null = null;
 let surfaceRequest = 0;
 let surfaceTail: Promise<void> = Promise.resolve();
 let previewFullscreenApplied = false;
@@ -127,23 +132,29 @@ async function outerBounds(window: {
 }
 
 async function capturePreviewPlacement(window: WebviewWindow): Promise<void> {
-  if (sessionPlacement === null || previewFullscreenApplied) return;
-  const [minimized, maximized] = await Promise.all([
+  if (rememberedPlacement === null || previewFullscreenApplied) return;
+  const [minimized, nativeMaximized, bounds, monitors] = await Promise.all([
     window.isMinimized(),
     window.isMaximized(),
-  ]);
-  if (minimized || previewFullscreenApplied) return;
-  const [bounds, monitors] = await Promise.all([
     outerBounds(window),
     availableMonitors(),
   ]);
+  if (minimized || previewFullscreenApplied) return;
   const screen = hostingScreen(monitors, bounds);
   if (screen === null) return;
-  sessionPlacement = {
+  const maximized = nativeMaximized || isMaximizedPreviewBounds(bounds, screen);
+  rememberedPlacement = {
     screen: monitorKey(screen),
-    normalBounds: maximized ? sessionPlacement.normalBounds : bounds,
+    normalBounds: maximized ? rememberedPlacement.normalBounds : bounds,
     mode: maximized ? "maximized" : "normal",
   };
+  retainStatePatch({ previewWindowPlacement: rememberedPlacement });
+}
+
+/** Main's close edge captures an open Preview before app-state flush. */
+export async function capturePreviewPlacementForShutdown(): Promise<void> {
+  const window = await WebviewWindow.getByLabel("preview");
+  if (window !== null) await capturePreviewPlacement(window);
 }
 
 async function placePreviewWindow(
@@ -155,13 +166,19 @@ async function placePreviewWindow(
     availableMonitors(),
     outerBounds(main),
   ]);
+  if (rememberedPlacement === null) {
+    rememberedPlacement = previewWindowPlacementFromState(
+      state.previewWindowPlacement,
+    );
+  }
   const allocation = allocatePreviewPlacement(
     orderMonitors(monitors, priorityFromState(state)),
     mainBounds,
-    sessionPlacement,
+    rememberedPlacement,
   );
   if (allocation === null) return;
-  sessionPlacement = allocation;
+  rememberedPlacement = allocation;
+  retainStatePatch({ previewWindowPlacement: allocation });
   if (await window.isMaximized()) await window.unmaximize();
   await window.setSize(new PhysicalSize(
     allocation.normalBounds.width,

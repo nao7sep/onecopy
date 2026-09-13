@@ -17,13 +17,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("allocates before showing, retains session placement, and never persists Preview geometry", async () => {
+it("allocates before showing and persists Preview placement across openings", async () => {
   vi.useFakeTimers();
   resetTauriMocks();
   mockCommands({
     set_window_fullscreen: () => null,
     log_event: () => null,
     record_recent_notification: () => null,
+    patch_state: ({ patch }) => patch,
   });
   const monitors = [0, 1, 2].map((index) => ({
     name: `Screen ${index}`,
@@ -92,27 +93,52 @@ it("allocates before showing, retains session placement, and never persists Prev
   expect(createdWindows[0].options).toMatchObject({ visible: false, focus: false });
   expect(setFocus).not.toHaveBeenCalled();
 
-  // A user's ordinary move to the third screen survives later openings in this session.
-  Object.assign(firstGeometry, { x: 4000, y: 100, width: 900, height: 700, maximized: false });
-  await settle(usePreviewStore.getState().setPlacementPreference("split"));
-  await settle(usePreviewStore.getState().setPlacementPreference("window"));
+  // A Mac edge-tiled outer frame survives Preview off/on, fitted to the work area.
+  Object.assign(firstGeometry, { x: 1919, y: 0, width: 961, height: 1080, maximized: false });
+  usePreviewStore.getState().close();
+  await settle(open());
   const second = (await WebviewWindow.getByLabel("preview"))!;
   expect(geometries.get(second)).toEqual({
-    x: 4000,
-    y: 100,
-    width: 900,
-    height: 700,
+    x: 1920,
+    y: 30,
+    width: 961,
+    height: 1050,
     maximized: false,
   });
 
-  // Moving Main onto that screen forces a new allocation on the next opening.
-  outerPosition.mockResolvedValue({ x: 4000, y: 100 });
+  // Work-area-sized geometry is maximized even when the Mac backend reports false;
+  // reopening restores that mode while retaining the normal half-screen rectangle.
+  Object.assign(geometries.get(second)!, {
+    x: 1920, y: 30, width: 1920, height: 1050, maximized: false,
+  });
+  usePreviewStore.getState().close();
+  await settle(open());
+  const maximized = (await WebviewWindow.getByLabel("preview"))!;
+  expect(geometries.get(maximized)).toEqual({
+    x: 1920,
+    y: 30,
+    width: 961,
+    height: 1050,
+    maximized: true,
+  });
+
+  // Moving Main onto that screen does not override the user's Preview choice.
+  outerPosition.mockResolvedValue({ x: 2000, y: 100 });
   await settle(usePreviewStore.getState().setPlacementPreference("split"));
   await settle(usePreviewStore.getState().setPlacementPreference("window"));
   const third = (await WebviewWindow.getByLabel("preview"))!;
-  expect(geometries.get(third)!.x).toBeLessThan(1920);
+  expect(geometries.get(third)!.x).toBeGreaterThanOrEqual(1920);
   expect(geometries.get(third)!.maximized).toBe(true);
 
-  expect(invokeCalls.some(({ command }) => command === "patch_state")).toBe(false);
+  await vi.advanceTimersByTimeAsync(1_000);
+  const writes = invokeCalls.filter(({ command }) => command === "patch_state");
+  expect(writes.length).toBeGreaterThan(0);
+  expect(writes.at(-1)?.args.patch).toMatchObject({
+    previewWindowPlacement: {
+      screen: `Screen 1@1920,0`,
+      normalBounds: { x: 1920, y: 30, width: 961, height: 1050 },
+      mode: "maximized",
+    },
+  });
   await settle(usePreviewStore.getState().setPlacementPreference("split"));
 });

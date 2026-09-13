@@ -15,6 +15,36 @@ export interface PreviewWindowPlacement {
   mode: "normal" | "maximized";
 }
 
+/** Treat state.json as untrusted input at the feature boundary. */
+export function previewWindowPlacementFromState(
+  value: unknown,
+): PreviewWindowPlacement | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const bounds = record.normalBounds;
+  if (typeof bounds !== "object" || bounds === null) return null;
+  const rectangle = bounds as Record<string, unknown>;
+  if (
+    typeof record.screen !== "string"
+    || record.screen.length === 0
+    || (record.mode !== "normal" && record.mode !== "maximized")
+    || ![rectangle.x, rectangle.y, rectangle.width, rectangle.height]
+      .every((part) => typeof part === "number" && Number.isFinite(part))
+    || (rectangle.width as number) <= 0
+    || (rectangle.height as number) <= 0
+  ) return null;
+  return {
+    screen: record.screen,
+    mode: record.mode,
+    normalBounds: {
+      x: rectangle.x as number,
+      y: rectangle.y as number,
+      width: rectangle.width as number,
+      height: rectangle.height as number,
+    },
+  };
+}
+
 /** Physical outer rectangles; configured priority is also the overlap tie-breaker. */
 export function hostingScreen<T extends PreviewMonitor>(
   monitors: readonly T[],
@@ -54,33 +84,67 @@ function designedBounds(monitor: PreviewMonitor): PreviewBounds {
   };
 }
 
-function usableOn(bounds: PreviewBounds, monitor: PreviewMonitor): boolean {
+function fittedBoundsOn(
+  bounds: PreviewBounds,
+  monitor: PreviewMonitor,
+): PreviewBounds | null {
   const area = monitor.workArea ?? monitor;
-  return bounds.width > 0
-    && bounds.height > 0
-    && bounds.x >= area.position.x
-    && bounds.y >= area.position.y
-    && bounds.x + bounds.width <= area.position.x + area.size.width
-    && bounds.y + bounds.height <= area.position.y + area.size.height;
+  if (
+    !Object.values(bounds).every(Number.isFinite)
+    || bounds.width <= 0
+    || bounds.height <= 0
+    || bounds.width > monitor.size.width
+    || bounds.height > monitor.size.height
+  ) return null;
+  const width = Math.min(bounds.width, area.size.width);
+  const height = Math.min(bounds.height, area.size.height);
+  return {
+    x: Math.min(
+      Math.max(bounds.x, area.position.x),
+      area.position.x + area.size.width - width,
+    ),
+    y: Math.min(
+      Math.max(bounds.y, area.position.y),
+      area.position.y + area.size.height - height,
+    ),
+    width,
+    height,
+  };
 }
 
-/** Session state is the only remembered input; durable legacy Preview bounds are never read. */
+/** Native macOS zoom is not reliably exposed as WindowMaximized by every backend. */
+export function isMaximizedPreviewBounds(
+  bounds: PreviewBounds,
+  monitor: PreviewMonitor,
+): boolean {
+  const area = monitor.workArea ?? monitor;
+  const tolerance = 8 * (monitor.scaleFactor ?? 1);
+  return bounds.x <= area.position.x + tolerance
+    && bounds.y <= area.position.y + tolerance
+    && bounds.x + bounds.width >= area.position.x + area.size.width - tolerance
+    && bounds.y + bounds.height >= area.position.y + area.size.height - tolerance;
+}
+
+/** A saved user placement wins while its display exists; otherwise allocate afresh. */
 export function allocatePreviewPlacement(
   orderedMonitors: readonly PreviewMonitor[],
   mainBounds: PreviewBounds,
-  session: PreviewWindowPlacement | null,
+  remembered: PreviewWindowPlacement | null,
 ): PreviewWindowPlacement | null {
   const main = hostingScreen(orderedMonitors, mainBounds) ?? orderedMonitors[0];
   if (!main) return null;
   const retained = orderedMonitors.find(
-    (monitor) => monitorKey(monitor) === session?.screen && monitor !== main,
+    (monitor) => monitorKey(monitor) === remembered?.screen,
   );
   const target = retained ?? orderedMonitors.find((monitor) => monitor !== main) ?? main;
+  const retainedBounds = retained === undefined || remembered === null
+    ? null
+    : fittedBoundsOn(remembered.normalBounds, retained);
   return {
     screen: monitorKey(target),
-    normalBounds: retained && usableOn(session!.normalBounds, target)
-      ? { ...session!.normalBounds }
+    normalBounds: retainedBounds
+      ? retainedBounds
       : designedBounds(target),
-    mode: retained ? session!.mode : target === main ? "normal" : "maximized",
+    mode: retained ? remembered!.mode : target === main ? "normal" : "maximized",
   };
 }
