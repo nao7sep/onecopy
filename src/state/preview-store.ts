@@ -128,7 +128,14 @@ async function outerBounds(window: {
     window.outerPosition(),
     window.outerSize(),
   ]);
-  return { ...position, ...size };
+  // Tauri's runtime classes also expose an enumerable `type: "Physical"`.
+  // Copy only the rectangle fields so persisted geometry remains plain data.
+  return {
+    x: position.x,
+    y: position.y,
+    width: size.width,
+    height: size.height,
+  };
 }
 
 async function capturePreviewPlacement(window: WebviewWindow): Promise<void> {

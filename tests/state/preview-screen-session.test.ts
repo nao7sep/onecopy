@@ -52,8 +52,17 @@ it("allocates before showing and persists Preview placement across openings", as
       if (!window) throw new Error("Missing constructed window");
       const geometry = { x: 0, y: 30, width: 1280, height: 800, maximized: false };
       geometries.set(window, geometry);
-      window.outerPosition.mockImplementation(async () => ({ x: geometry.x, y: geometry.y }));
-      window.outerSize.mockImplementation(async () => ({ width: geometry.width, height: geometry.height }));
+      // Real Tauri geometry instances carry this enumerable discriminator.
+      window.outerPosition.mockImplementation(async () => ({
+        x: geometry.x,
+        y: geometry.y,
+        type: "Physical",
+      }));
+      window.outerSize.mockImplementation(async () => ({
+        width: geometry.width,
+        height: geometry.height,
+        type: "Physical",
+      }));
       window.setPosition.mockImplementation(async (position) => {
         geometry.x = position.x;
         geometry.y = position.y;
@@ -140,5 +149,7 @@ it("allocates before showing and persists Preview placement across openings", as
       mode: "maximized",
     },
   });
+  expect(writes.at(-1)?.args.patch)
+    .not.toHaveProperty("previewWindowPlacement.normalBounds.type");
   await settle(usePreviewStore.getState().setPlacementPreference("split"));
 });
