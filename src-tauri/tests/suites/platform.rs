@@ -16,6 +16,8 @@ mod presentation_tests;
 mod storage_file_names;
 #[path = "../storage_tests.rs"]
 mod storage_tests;
+#[path = "../theme_tests.rs"]
+mod theme_tests;
 #[path = "../volume_tests.rs"]
 mod volume_tests;
 #[path = "../window_placement_tests.rs"]

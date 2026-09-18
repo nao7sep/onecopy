@@ -8,54 +8,46 @@ import "@tauri-apps/api/event";
 import "@tauri-apps/api/window";
 import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks, setTheme } from "../mocks/tauri";
 
-let systemDark = true;
-let systemChanges: Set<() => void>;
-
 beforeEach(() => {
   vi.resetModules();
   resetTauriMocks();
-  systemDark = true;
-  systemChanges = new Set();
-  vi.spyOn(window, "matchMedia").mockImplementation(() => ({
-    get matches() { return systemDark; },
-    addEventListener: (_: string, handler: () => void) => systemChanges.add(handler),
-    removeEventListener: (_: string, handler: () => void) => systemChanges.delete(handler),
-  }) as unknown as MediaQueryList);
   Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
   mockCommands({ record_interface_failure: () => null, log_event: () => null });
 });
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-it("initializes theme and font without Main bootstrap, then follows saved and System changes", async () => {
-  let preferences = { theme: "system", uiFontFamily: "Iosevka" };
+it("initializes the font without Main bootstrap, then follows saved changes", async () => {
+  let preferences = { uiFontFamily: "Iosevka" };
   mockCommands({ appearance_preferences: () => preferences });
   const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
   const { useWindowPreferencesStore } = await import("../../src/state/window-preferences-store");
   await installWindowAppearance();
   expect(listenerCount("appearance://changed")).toBe(1);
-  expect(document.documentElement.classList.contains("dark")).toBe(true);
   expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("Iosevka");
   expect(useWindowPreferencesStore.getState().videoTranscriptionEnabled).toBe(true);
   expect(invokeCalls.some((call) => call.command === "load_app_data")).toBe(false);
 
-  systemDark = false;
-  systemChanges.forEach((handler) => handler());
-  expect(document.documentElement.classList.contains("dark")).toBe(false);
-  preferences = { theme: "dark", uiFontFamily: "" };
+  preferences = { uiFontFamily: "" };
   fireEvent("appearance://changed");
-  await vi.waitFor(() => expect(setTheme).toHaveBeenLastCalledWith("dark"));
-  expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("");
-  systemChanges.forEach((handler) => handler());
-  expect(document.documentElement.classList.contains("dark")).toBe(true);
+  await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe(""));
   await installWindowAppearance();
   expect(listenerCount("appearance://changed")).toBe(1);
+});
+
+it("leaves the theme to the native window", async () => {
+  mockCommands({ appearance_preferences: () => ({ uiFontFamily: null }) });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  await installWindowAppearance();
+  fireEvent("appearance://changed");
+  await vi.waitFor(() => expect(invokeCalls.filter((call) => call.command === "appearance_preferences")).toHaveLength(2));
+  expect(setTheme).not.toHaveBeenCalled();
+  expect(document.documentElement.classList.contains("dark")).toBe(false);
 });
 
 it("projects auxiliary Preview preferences without running Main bootstrap", async () => {
   mockCommands({
     appearance_preferences: () => ({
-      theme: "system",
       uiFontFamily: null,
       enlargeSmallImagesInPreview: false,
       videoTranscriptionEnabled: false,
@@ -79,12 +71,11 @@ it("ignores a delayed startup response after a newer saved preference", async ()
   const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
   const installing = installWindowAppearance();
   await vi.waitFor(() => expect(resolveFirst).toBeDefined());
-  mockCommands({ appearance_preferences: () => ({ theme: "light", uiFontFamily: "New font" }) });
+  mockCommands({ appearance_preferences: () => ({ uiFontFamily: "New font" }) });
   fireEvent("appearance://changed");
   await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("New font"));
-  resolveFirst({ theme: "dark", uiFontFamily: "Old font" });
+  resolveFirst({ uiFontFamily: "Old font" });
   await installing;
-  expect(document.documentElement.classList.contains("dark")).toBe(false);
   expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("New font");
 });
 
@@ -94,7 +85,7 @@ it("contains read failure and leaves the listener ready for a repaired configura
   await installWindowAppearance();
   expect(invokeCalls.some((call) => call.command === "record_interface_failure")).toBe(true);
   expect(listenerCount("appearance://changed")).toBe(1);
-  mockCommands({ appearance_preferences: () => ({ theme: "light", uiFontFamily: "Recovered font" }) });
+  mockCommands({ appearance_preferences: () => ({ uiFontFamily: "Recovered font" }) });
   fireEvent("appearance://changed");
   await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("Recovered font"));
 });

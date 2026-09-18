@@ -50,10 +50,15 @@ body.row-resizing * {
 
 /* ── Semantic color tokens ────────────────────────────────────────────────
    Single source of truth for every color in the app. Light values alias
-   Tailwind's default palette; the `.dark` block overrides the same variables,
-   so components never reference raw palette shades. Utilities are generated
-   via `@theme inline` (bg-surface, text-ink-muted, …) and reference var(--…)
-   directly, so the `.dark` overrides take effect at runtime. */
+   Tailwind's default palette; the prefers-color-scheme dark block overrides the
+   same variables, so components never reference raw palette shades. Utilities
+   are generated via `@theme inline` (bg-surface, text-ink-muted, …) and
+   reference var(--…) directly, so the dark overrides take effect at runtime.
+   prefers-color-scheme follows the native window theme, which the Rust core
+   sets from the saved choice before each window is shown and again on Save, so
+   the stylesheet — not page script — decides the palette from the first frame
+   (app-chrome conventions, Theme). Every pair a component draws meets WCAG AA
+   in both themes (tests/styles/palette.test.ts). */
 :root {
   color-scheme: light;
 
@@ -62,7 +67,7 @@ body.row-resizing * {
      default is a system-ui-led stack). Without it the webview picked its own
      face at its own weight, which is much of what made the app look
      undesigned. One variable, so a future font setting has one knob to turn.
-     Not themed, so it stays out of the `.dark` block below. */
+     Not themed, so it stays out of the dark block below. */
   --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 
@@ -72,6 +77,9 @@ body.row-resizing * {
   --surface-muted: var(--color-slate-100);
   --border: var(--color-slate-200);
   --border-strong: var(--color-slate-300);
+  /* A form field's outline is its only boundary, so it holds 3:1 against the
+     surfaces it sits on; the other borders are decorative dividers. */
+  --input-border: #838da0;
 
   /* Neutral chrome — text ("ink") scale, strongest → faintest */
   --ink-strong: var(--color-slate-900);
@@ -80,19 +88,19 @@ body.row-resizing * {
   --ink-inverted: var(--color-white);
 
   /* Primary — actions, focus, selection */
-  --primary: var(--color-sky-600);
-  --primary-hover: var(--color-sky-700);
-  --primary-ring: var(--color-sky-400);
+  --primary: var(--color-sky-700);
+  --primary-hover: var(--color-sky-800);
+  --primary-ring: var(--color-sky-600);
   --primary-surface: var(--color-sky-100);
 
   /* Danger — this is a destructive app; the delete surfaces lean on these */
-  --danger: var(--color-red-600);
+  --danger: var(--color-red-700);
   --danger-solid: var(--color-red-600);
   --danger-solid-hover: var(--color-red-700);
   --danger-surface: var(--color-red-50);
 
   /* Warning — attention without alarm (an available update, a stale check) */
-  --warning: var(--color-amber-600);
+  --warning: var(--color-amber-700);
   --warning-surface: var(--color-amber-50);
 
   /* Scrollbar thumb, themed per mode and brightened on hover */
@@ -100,35 +108,38 @@ body.row-resizing * {
   --scrollbar-thumb-hover: var(--color-slate-600);
 }
 
-.dark {
-  color-scheme: dark;
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
 
-  --background: var(--color-slate-950);
-  --surface: var(--color-slate-900);
-  --surface-muted: var(--color-slate-800);
-  --border: var(--color-slate-700);
-  --border-strong: var(--color-slate-600);
+    --background: var(--color-slate-950);
+    --surface: var(--color-slate-900);
+    --surface-muted: var(--color-slate-800);
+    --border: var(--color-slate-700);
+    --border-strong: var(--color-slate-600);
+    --input-border: var(--color-slate-500);
 
-  --ink-strong: var(--color-white);
-  --ink: var(--color-slate-100);
-  --ink-muted: var(--color-slate-300);
-  --ink-inverted: var(--color-slate-950);
+    --ink-strong: var(--color-white);
+    --ink: var(--color-slate-100);
+    --ink-muted: var(--color-slate-300);
+    --ink-inverted: var(--color-slate-950);
 
-  --primary: var(--color-sky-300);
-  --primary-hover: var(--color-sky-300);
-  --primary-ring: var(--color-sky-500);
-  --primary-surface: var(--color-sky-950);
+    --primary: var(--color-sky-300);
+    --primary-hover: var(--color-sky-300);
+    --primary-ring: var(--color-sky-500);
+    --primary-surface: var(--color-sky-950);
 
-  --danger: var(--color-red-300);
-  --danger-solid: var(--color-red-600);
-  --danger-solid-hover: var(--color-red-500);
-  --danger-surface: var(--color-red-900);
+    --danger: var(--color-red-300);
+    --danger-solid: var(--color-red-500);
+    --danger-solid-hover: var(--color-red-400);
+    --danger-surface: var(--color-red-900);
 
-  --warning: var(--color-amber-400);
-  --warning-surface: var(--color-amber-900);
+    --warning: var(--color-amber-400);
+    --warning-surface: var(--color-amber-900);
 
-  --scrollbar-thumb: var(--color-slate-400);
-  --scrollbar-thumb-hover: var(--color-slate-300);
+    --scrollbar-thumb: var(--color-slate-400);
+    --scrollbar-thumb-hover: var(--color-slate-300);
+  }
 }
 
 @theme inline {
@@ -137,6 +148,7 @@ body.row-resizing * {
   --color-surface-muted: var(--surface-muted);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
+  --color-input-border: var(--input-border);
   --color-ink-strong: var(--ink-strong);
   --color-ink: var(--ink);
   --color-ink-muted: var(--ink-muted);

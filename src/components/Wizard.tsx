@@ -121,7 +121,7 @@ export default function Wizard() {
             </p>
             <div className="mb-3"><TimezoneHelpLink /></div>
             <input
-              className="mb-1 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-ink outline-none transition-colors focus:border-border-strong focus-visible:ring-2 focus-visible:ring-primary-ring"
+              className="mb-1 h-9 w-full rounded-lg border border-input-border bg-background px-3 text-sm text-ink outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring"
               aria-invalid={
                 (!timezonePending && !timezoneValid) || undefined
               }

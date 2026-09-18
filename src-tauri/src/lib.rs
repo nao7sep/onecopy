@@ -104,6 +104,7 @@ mod startup;
 pub mod storage;
 pub mod subprocess;
 pub mod text_preview;
+pub mod theme;
 pub mod timestamps;
 pub mod transcription;
 pub mod trash;
@@ -268,6 +269,18 @@ fn patch_config(
             visibility::Policy::from_config(&patch)?;
             let outcome = storage::patch_config(&app, &patch)?;
             report_quarantine(&app, outcome.quarantined);
+            // The theme is applied natively to every window as part of the
+            // save; pages follow it through prefers-color-scheme.
+            if patch.get("theme").is_some() {
+                if let Err(error) =
+                    theme::apply_everywhere(&app, theme::config_window_theme(&outcome.merged))
+                {
+                    logging::warn(
+                        "saved theme could not be applied to every window",
+                        json!({ "error": { "message": error } }),
+                    );
+                }
+            }
             // Invalidation, not a potentially stale snapshot from a racing save.
             failure_runtime::emit_or_record(&app, "appearance://changed", json!({}));
             let current_source_dirs = outcome
@@ -2159,6 +2172,7 @@ pub fn run() {
         .manage(window_placement::PreviewPlacementState(
             preview_placement_state.clone(),
         ))
+        .manage(theme::ThemeState::default())
         .on_window_event(move |window, event| {
             window_placement::on_window_event(
                 window,
@@ -2166,6 +2180,32 @@ pub fn run() {
                 &event_placement_state,
                 &event_preview_placement_state,
             );
+            // Under System the OS appearance can change while the app runs; keep
+            // the backing behind each page in step. (macOS reports only OS
+            // changes here, which is why theme::apply_to_webview sets it too.)
+            if let tauri::WindowEvent::ThemeChanged(changed) = event {
+                if let Err(error) =
+                    window.set_background_color(Some(theme::window_background(*changed)))
+                {
+                    logging::warn(
+                        "window background update failed",
+                        json!({ "error": { "message": error.to_string() } }),
+                    );
+                }
+            }
+        })
+        // Every window opened after launch — Preview, Comparison, viewers —
+        // takes the recorded theme as its page starts loading, before it paints.
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                let current = webview.state::<theme::ThemeState>().current();
+                if let Err(error) = theme::apply_to_webview(webview, current) {
+                    logging::warn(
+                        "window theme could not be applied",
+                        json!({ "window": webview.label(), "error": { "message": error } }),
+                    );
+                }
+            }
         })
         .menu(menu_with_safe_quit)
         .on_menu_event(|app, event| {
@@ -2195,7 +2235,19 @@ pub fn run() {
             // the hook itself is deliberately infallible.
             app.manage(startup::initialize(app, debug_enabled));
             window_placement::load_preview(app.handle(), &setup_preview_placement_state);
+            let saved_theme = paths::data_root(app.handle())
+                .ok()
+                .and_then(|root| theme::read_saved_window_theme(&root));
+            app.state::<theme::ThemeState>().set(saved_theme);
             if let Some(window) = app.get_webview_window("main") {
+                // Before Main is shown, so its first frame and title bar already
+                // match the saved choice.
+                if let Err(error) = theme::apply_to_webview(window.as_ref(), saved_theme) {
+                    logging::warn(
+                        "saved theme could not be applied to Main",
+                        json!({ "error": { "message": error } }),
+                    );
+                }
                 window_placement::restore(
                     app.handle(),
                     &window.as_ref().window(),

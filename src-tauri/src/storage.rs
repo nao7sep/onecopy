@@ -257,7 +257,6 @@ pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
         return Err("Appearance requires a configuration object".to_string());
     }
     Ok(serde_json::json!({
-        "theme": config.get("theme"),
         "uiFontFamily": config.get("uiFontFamily"),
         "enlargeSmallImagesInPreview": config.get("enlargeSmallImagesInPreview"),
         "videoTranscriptionEnabled": config.get("videoTranscriptionEnabled"),

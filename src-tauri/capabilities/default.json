@@ -18,7 +18,6 @@
     "dialog:allow-save",
     "core:window:allow-destroy",
     "core:window:allow-close",
-    "core:window:allow-set-theme",
     "core:window:allow-set-min-size",
     "core:window:allow-set-position",
     "core:window:allow-set-focus",

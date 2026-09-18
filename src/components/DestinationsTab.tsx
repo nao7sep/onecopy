@@ -313,7 +313,7 @@ function ActionBar() {
         {creating ? (
           <input
             autoFocus
-            className="h-7 w-32 rounded-md border border-border bg-background px-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
+            className="h-7 w-32 rounded-md border border-input-border bg-background px-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
             value={name}
             placeholder="folder name"
             onChange={(e) => setName(e.target.value)}

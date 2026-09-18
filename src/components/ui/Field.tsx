@@ -13,7 +13,7 @@
 import type { InputHTMLAttributes, SelectHTMLAttributes, ReactNode } from "react";
 
 const CONTROL =
-  "h-8 max-w-full rounded-lg border border-border bg-background px-2.5 text-sm text-ink outline-none transition-colors focus:border-border-strong focus-visible:ring-2 focus-visible:ring-primary-ring disabled:text-ink-muted";
+  "h-8 max-w-full rounded-lg border bg-background px-2.5 text-sm text-ink outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring disabled:text-ink-muted";
 
 export function Row({
   label,
@@ -55,7 +55,7 @@ export function TextInput({
     <input
       {...props}
       aria-invalid={invalid || undefined}
-      className={`${CONTROL} ${invalid ? "border-danger" : ""} ${className}`}
+      className={`${CONTROL} ${invalid ? "border-danger" : "border-input-border"} ${className}`}
     />
   );
 }
@@ -64,7 +64,7 @@ export function Select({
   className = "",
   ...props
 }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...props} className={`${CONTROL} pr-1 ${className}`} />;
+  return <select {...props} className={`${CONTROL} border-input-border pr-1 ${className}`} />;
 }
 
 /** A real switch rather than a bare checkbox. The native control is kept as

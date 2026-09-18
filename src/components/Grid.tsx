@@ -690,7 +690,7 @@ export default function Grid({
           <label htmlFor="grid-sort">Sort</label>
           <select
             id="grid-sort"
-            className="h-7 rounded-md border border-border bg-surface px-2 text-ink"
+            className="h-7 rounded-md border border-input-border bg-surface px-2 text-ink"
             value={sortChoice.order}
             onChange={(e) => setSortOrder(e.target.value as SortOrder)}
           >

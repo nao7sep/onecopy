@@ -2,11 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordInterfaceFailure } from "../utils/failureSurface";
-import { applyTheme, applyUiFont, watchSystemTheme } from "../utils/theme";
+import { applyUiFont } from "../utils/uiFont";
 import { useWindowPreferencesStore } from "../state/window-preferences-store";
 
 interface AppearancePreferences {
-  theme: unknown;
   uiFontFamily: unknown;
   enlargeSmallImagesInPreview?: unknown;
   videoTranscriptionEnabled?: unknown;
@@ -33,20 +32,18 @@ function reportFailure(error: unknown): void {
 }
 
 // All routes share this small auxiliary-window read model, never Main's
-// library/bootstrap data.
+// library/bootstrap data. The theme is not part of it: the Rust core sets each
+// window's theme natively and App.css follows through prefers-color-scheme.
 // A saved-config event invalidates pending reads so a late old response cannot
-// replace a newer theme or font. Failed refreshes preserve the last good view.
+// replace a newer font. Failed refreshes preserve the last good view.
 export const installWindowAppearance = createEventInstaller(async (listeners) => {
-  applyTheme("system");
   applyUiFont(undefined);
-  listeners.retain(watchSystemTheme());
   let request = 0;
   const refresh = async () => {
     const current = ++request;
     try {
       const preferences = await readPreferences();
       if (current !== request) return;
-      applyTheme(preferences.theme);
       applyUiFont(preferences.uiFontFamily);
       useWindowPreferencesStore.getState().apply(preferences);
     } catch (error) {

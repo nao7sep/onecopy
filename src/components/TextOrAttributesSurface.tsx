@@ -189,7 +189,7 @@ export default function TextOrAttributesSurface({
           <label className="flex items-center gap-1 text-xs text-ink-muted">
             Encoding
             <select
-              className="h-7 rounded border border-border bg-background px-1.5 text-xs text-ink"
+              className="h-7 rounded border border-input-border bg-background px-1.5 text-xs text-ink"
               value={selectedEncoding}
               onChange={(event) => {
                 const attempt = ++sessionAttempts.current.encoding;

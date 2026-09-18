@@ -45,7 +45,7 @@ describe("scrollbar styling", () => {
     // Counting occurrences proved nothing: two definitions in the same block
     // with the same value passed. What matters is that the dark-mode value
     // lives in a DIFFERENT block and actually differs.
-    // Anchored to the start of a line: ".dark" also occurs in prose comments,
+    // Anchored to the start of a line: selectors also occur in prose comments,
     // and a bare indexOf found one of those and then walked forward into the
     // :root block, comparing it against itself.
     const blockAfter = (selector: string): string => {
@@ -60,7 +60,11 @@ describe("scrollbar styling", () => {
       expect(match, "the block must define --scrollbar-thumb").toBeTruthy();
       return match![1]!.trim();
     };
-    expect(valueIn(blockAfter(":root"))).not.toBe(valueIn(blockAfter(".dark")));
+    const media = css.indexOf("@media (prefers-color-scheme: dark) {");
+    expect(media, "the dark theme must be a prefers-color-scheme block").toBeGreaterThanOrEqual(0);
+    const darkOpen = css.indexOf("{", css.indexOf("  :root {", media));
+    const dark = css.slice(darkOpen, css.indexOf("\n  }", darkOpen));
+    expect(valueIn(blockAfter(":root"))).not.toBe(valueIn(dark));
   });
 
   it("gives the passive owner one app-controlled proximity indicator", () => {

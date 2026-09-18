@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
-import { normalizeUiFontPreference } from "../utils/theme";
+import { normalizeUiFontPreference } from "../utils/uiFont";
 import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
 import type { AiAccelerationCapability } from "../repositories";

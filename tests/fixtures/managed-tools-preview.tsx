@@ -18,7 +18,8 @@ if (!isTauri()) {
 const params = new URLSearchParams(location.search);
 const platform = params.get("platform") === "windows" ? "windows" : "macos";
 const identity = params.get("identity");
-document.documentElement.classList.toggle("dark", params.get("theme") === "dark");
+// The palette follows the browser's prefers-color-scheme, as the app follows
+// its window theme: preview dark with the OS appearance or DevTools emulation.
 document.body.className = "bg-background text-ink";
 useBinariesStore.setState({
   entries: managedToolsFixture(platform, identity === "unreadable" || identity === "long" ? identity : "known"),

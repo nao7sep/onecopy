@@ -21,7 +21,7 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
     assert_eq!(
         read_appearance_preferences(root.path()).unwrap(),
         serde_json::json!({
-            "theme": null, "uiFontFamily": null,
+            "uiFontFamily": null,
             "enlargeSmallImagesInPreview": null,
             "videoTranscriptionEnabled": null,
             "audioTranscriptionEnabled": null,
@@ -35,7 +35,7 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
     assert_eq!(
         read_appearance_preferences(root.path()).unwrap(),
         serde_json::json!({
-            "theme": "dark", "uiFontFamily": "Iosevka",
+            "uiFontFamily": "Iosevka",
             "enlargeSmallImagesInPreview": false,
             "videoTranscriptionEnabled": false,
             "audioTranscriptionEnabled": true,
