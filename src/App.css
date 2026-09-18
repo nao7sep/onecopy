@@ -57,8 +57,8 @@ body.row-resizing * {
    prefers-color-scheme follows the native window theme, which the Rust core
    sets from the saved choice before each window is shown and again on Save, so
    the stylesheet — not page script — decides the palette from the first frame
-   (app-chrome conventions, Theme). Every pair a component draws meets WCAG AA
-   in both themes (tests/styles/palette.test.ts). */
+   (app-chrome conventions, Theme). Every pair a component draws keeps high
+   contrast in both themes (tests/styles/palette.test.ts). */
 :root {
   color-scheme: light;
 
