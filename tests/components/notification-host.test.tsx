@@ -128,6 +128,18 @@ describe("the app-frame notification host", () => {
     expect(region.querySelectorAll("[data-notification]")).toHaveLength(12);
   });
 
+  it("draws notice shadows from the host so the scroll region cannot clip them", () => {
+    useReleaseCheckStore.setState({ noticeVersion: "9.9.9" });
+    render(<NotificationHost />);
+    act(() => useNotificationsStore.setState({ active: [notice()] }));
+
+    const host = document.querySelector("[data-notification-host]") as HTMLElement;
+    expect(host.className).toContain("[filter:drop-shadow(");
+    for (const card of document.querySelectorAll("[data-notification], [data-release-notice]")) {
+      expect(card.className).not.toMatch(/\bshadow-/);
+    }
+  });
+
   it("keeps the release notice outside the active-notification scroll owner", () => {
     useReleaseCheckStore.setState({ noticeVersion: "9.9.9" });
     render(<NotificationHost />);

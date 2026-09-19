@@ -25,7 +25,7 @@ function ReleaseNotice() {
     <section
       data-release-notice
       role="status"
-      className="pointer-events-auto w-full rounded-lg border border-border bg-surface p-3 text-ink shadow-xl"
+      className="pointer-events-auto w-full rounded-lg border border-border bg-surface p-3 text-ink"
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
@@ -105,7 +105,7 @@ function Toast({
     <section
       data-notification
       role={record.level === "error" ? "alert" : "status"}
-      className={`pointer-events-auto w-full rounded-lg border p-3 shadow-xl ${tone}`}
+      className={`pointer-events-auto w-full rounded-lg border p-3 ${tone}`}
       onMouseEnter={stopTimer}
       onMouseLeave={startTimer}
       onFocusCapture={stopTimer}
@@ -156,10 +156,14 @@ export default function NotificationHost() {
   }, []);
 
   if (active.length === 0 && releaseVersion === null) return null;
+  // The active notices scroll inside a region that clips its children, which would cut
+  // off each card's own shadow. The host draws the shadow from what it renders instead:
+  // the shadow-xl elevation as drop-shadows, whose blur is a standard deviation (half a
+  // box-shadow radius). A filter neither clips nor widens the host's hit area.
   return (
     <div
       data-notification-host
-      className="pointer-events-none fixed right-4 top-4 z-[25] flex max-h-[calc(100vh-2rem)] w-[min(420px,calc(100vw-2rem))] flex-col items-stretch gap-2"
+      className="pointer-events-none fixed right-4 top-4 z-[25] flex max-h-[calc(100vh-2rem)] w-[min(420px,calc(100vw-2rem))] flex-col items-stretch gap-2 [filter:drop-shadow(0_20px_12.5px_rgb(0_0_0/0.1))_drop-shadow(0_8px_5px_rgb(0_0_0/0.1))]"
     >
       <ReleaseNotice />
       {active.length > 0 ? (
