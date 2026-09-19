@@ -65,6 +65,7 @@ export function planChecks({ changed, full, platform, suiteModules, repositoryRe
       vitest: "all",
       bundle: true,
       rust: "all",
+      heavy: true,
       windowsPackaging: onWindows,
     };
   }
@@ -94,6 +95,9 @@ export function planChecks({ changed, full, platform, suiteModules, repositoryRe
     vitest: related.length > 0 ? related : null,
     bundle: false,
     rust,
+    // The heavy suite's ignored tests are slow and need managed downloads; the
+    // ordinary Rust run still compiles them whenever Rust code changes.
+    heavy: false,
     windowsPackaging:
       onWindows &&
       code.some((path) => path === "scripts/package.ps1" || path.startsWith("tests/windows/")),

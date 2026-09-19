@@ -24,6 +24,7 @@ describe("the default check plan", () => {
       vitest: null,
       bundle: false,
       rust: null,
+      heavy: false,
       windowsPackaging: false,
     });
   });
@@ -72,6 +73,10 @@ describe("the default check plan", () => {
     });
   });
 
+  it("never runs the heavy suite, whatever changes", () => {
+    expect(plan(["src-tauri/tests/face_heavy_tests.rs", "src-tauri/src/face.rs"]).heavy).toBe(false);
+  });
+
   it("runs every Rust test for any other Rust change", () => {
     expect(plan(["src-tauri/tests/trash_tests.rs", "src-tauri/src/trash.rs"]).rust).toBe("all");
     expect(plan(["src-tauri/tests/suites/operations.rs"]).rust).toBe("all");
@@ -98,6 +103,7 @@ describe("the full check plan", () => {
       vitest: "all",
       bundle: true,
       rust: "all",
+      heavy: true,
       windowsPackaging: false,
     });
     expect(

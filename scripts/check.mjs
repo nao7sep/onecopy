@@ -107,6 +107,16 @@ if (plan.rust === "all") {
     ...plan.rust.filters,
   ]);
 }
+if (plan.heavy) {
+  run("heavy suite: managed tools, models and the shared corpus", "cargo", [
+    "test",
+    ...MANIFEST,
+    "--test",
+    "heavy_test_suite",
+    "--",
+    "--ignored",
+  ]);
+}
 if (plan.windowsPackaging) {
   run("Windows package failure handling", "pwsh", ["tests/windows/package-fail-closed.ps1"]);
 }

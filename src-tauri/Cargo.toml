@@ -58,6 +58,12 @@ path = "tests/suites/operations.rs"
 name = "platform_test_suite"
 path = "tests/suites/platform.rs"
 
+# Real managed tools and models over the shared corpus: slow real work and a
+# one-time download, so its tests are ignored except in the full gate.
+[[test]]
+name = "heavy_test_suite"
+path = "tests/suites/heavy.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
 
