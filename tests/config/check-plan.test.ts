@@ -118,6 +118,10 @@ describe("repository readers", () => {
     expect(readsRepository('import { readFileSync } from "node:fs";')).toBe(true);
     expect(readsRepository('import { readFile } from "node:fs/promises";')).toBe(true);
     expect(readsRepository('import { spawnSync } from "node:child_process";')).toBe(true);
+    expect(readsRepository("import { readFileSync } from 'node:fs';")).toBe(true);
+    expect(readsRepository('import { existsSync } from "fs";')).toBe(true);
+    expect(readsRepository('const fs = await import("node:fs");')).toBe(true);
     expect(readsRepository('import path from "node:path";')).toBe(false);
+    expect(readsRepository('import { fsync } from "./fsync";')).toBe(false);
   });
 });
