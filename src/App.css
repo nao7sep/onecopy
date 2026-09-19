@@ -68,8 +68,7 @@ body.row-resizing * {
      face at its own weight, which is much of what made the app look
      undesigned. One variable, so a future font setting has one knob to turn.
      Not themed, so it stays out of the dark block below. */
-  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  --font-ui: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
   /* Neutral chrome — surfaces & borders */
   --background: var(--color-slate-50);
@@ -143,6 +142,8 @@ body.row-resizing * {
 }
 
 @theme inline {
+  /* The fixed-width face behind `font-mono` (app-chrome-conventions), instead of Tailwind's own stack. */
+  --font-mono: ui-monospace, "Menlo", "Consolas", monospace;
   --color-background: var(--background);
   --color-surface: var(--surface);
   --color-surface-muted: var(--surface-muted);
