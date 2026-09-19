@@ -35,7 +35,7 @@ By hand, install the locked packages with `npm ci`, run checks with `npm run che
 
 ## Tests
 
-`npm run check` runs OneCopy's unit and integration tests, type-checks the application and test code, builds the production frontend, and checks the specs and source text. App-level acceptance is performed by using the real built application with a disposable app home and a disposable copy of the shared test fixtures; destructive testing never targets the shared fixture directory itself.
+`npm run check` runs only what the changes since the last commit can affect: the source-text check, the spec check when specs change, the type check and the frontend tests related to the changed code, and the Rust tests when Rust code changes. Documentation-only changes need nothing beyond the source-text check. `npm run check:full` runs every unit and integration test, type-checks the application and test code, builds the production frontend, and checks the specs and source text; run it at the end of a batch of changes and before a release. App-level acceptance is performed by using the real built application with a disposable app home and a disposable copy of the shared test fixtures; destructive testing never targets the shared fixture directory itself.
 
 ## License
 

@@ -5,10 +5,15 @@ import {
   SORT_ORDERS,
   extLabel,
   extOf,
+  formatDuration,
+  originalUrl,
+  previewUrl,
   replaceDerivedItem,
   factsLine,
   sortItems,
   stripTimestampMs,
+  stripUrl,
+  thumbUrl,
   timestampLabel,
   type SectionItem,
   type SortOrder,
@@ -196,5 +201,60 @@ describe("directions and tie-break chains (Phase 33)", () => {
     const asc = sortItems(items, { order: "time", desc: false }).map((i) => i.pathId);
     const desc = sortItems(items, { order: "time", desc: true }).map((i) => i.pathId);
     expect(desc).toEqual([...asc].reverse());
+  });
+});
+
+describe("duration formatting", () => {
+  it("reads m:ss under an hour and h:mm:ss above it", () => {
+    expect(formatDuration(5000)).toBe("0:05");
+    expect(formatDuration(65000)).toBe("1:05");
+    expect(formatDuration(3725000)).toBe("1:02:05");
+  });
+
+  it("pads seconds and minutes so badges do not jump width", () => {
+    expect(formatDuration(9000)).toBe("0:09");
+    expect(formatDuration(3600000)).toBe("1:00:00");
+  });
+});
+
+// The URL builders are one half of a round trip whose other half is a Rust
+// parse — a change to either that is not matched in the other shows up as a
+// missing image, not as a type error.
+describe("cache and file URLs", () => {
+  it("builds the strip key the Rust handler parses back", () => {
+    // lib.rs splits on the LAST '-' to recover the index, so the shape here
+    // and the parse there are one contract. A hash containing '-' would break
+    // it, which is why the index must be the final segment.
+    const url = stripUrl("abc123", 2);
+    expect(url).toContain("strip-abc123-2");
+    expect(url.split("/").pop()!.split("-").pop()).toBe("2");
+  });
+
+  it("prefixes thumb and preview keys distinctly", () => {
+    expect(thumbUrl("abc123")).toContain("thumb-abc123");
+    expect(previewUrl("abc123")).toContain("preview-abc123");
+    expect(thumbUrl("abc123")).not.toBe(previewUrl("abc123"));
+  });
+
+  it("serves originals by bare hash on the mediafile protocol", () => {
+    const url = originalUrl("abc123");
+    expect(url).toContain("abc123");
+    expect(url).toContain("mediafile");
+    // No cache prefix: the original is keyed by the hash alone.
+    expect(url).not.toContain("thumb-");
+    expect(url).not.toContain("preview-");
+  });
+});
+
+describe("the placeholder label", () => {
+  it("uppercases the extension", () => {
+    expect(extLabel("holiday.heic")).toBe("HEIC");
+    expect(extLabel("A.tar.gz")).toBe("GZ");
+  });
+
+  it("falls back for names with no usable extension", () => {
+    expect(extLabel("README")).toBe("FILE");
+    expect(extLabel(".gitignore")).toBe("FILE");
+    expect(extLabel("trailing.")).toBe("FILE");
   });
 });

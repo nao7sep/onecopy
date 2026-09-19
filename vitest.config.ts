@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // vitest bypasses vite.config.ts, so the __APP_VERSION__ define is duplicated
 // here from the same single source (src-tauri/tauri.conf.json).
@@ -22,6 +22,11 @@ export default defineConfig({
     // .tsx is included because component specs render real React; without it
     // every *.test.tsx is silently skipped rather than reported as failing.
     include: ["tests/**/*.test.{ts,tsx}"],
+    // Related-test selection follows imports, but tests/setup.ts hands the
+    // Tauri doubles to every spec through vi.mock, which imports cannot show.
+    // A change to a double therefore reruns the whole suite, as a change to
+    // the setup file already does.
+    forceRerunTriggers: [...configDefaults.forceRerunTriggers, "**/tests/mocks/**"],
     coverage: {
       // V8's native coverage for the frontend (the Rust backend has its own
       // cargo-llvm-cov pass). `include` spans src so the report flags logic no
