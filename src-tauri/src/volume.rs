@@ -203,23 +203,9 @@ pub fn prune_identities(root: &Path, configured: &[String]) -> Result<u64, Strin
 }
 
 #[cfg(test)]
-mod tests {
-    // EXCEPTION to the tests-live-in-tests/ rule (tests-folder conventions,
-    // Rust form): the plist string extractor is a private parsing detail —
-    // promoting it would widen the surface just to test through it. The
-    // public volume_identity is exercised from tests/volume_tests.rs.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn plist_extraction_finds_the_keyed_string() {
-        let plist = r#"<dict>
-            <key>VolumeName</key><string>Macintosh HD</string>
-            <key>VolumeUUID</key>
-            <string>  AAAA-BBBB  </string>
-        </dict>"#;
-        assert_eq!(
-            super::extract_plist_string(plist, "VolumeUUID").as_deref(),
-            Some("AAAA-BBBB")
-        );
-        assert_eq!(super::extract_plist_string(plist, "Missing"), None);
-    }
-}
+// EXCEPTION to the tests-live-in-tests/ rule (tests-folder conventions,
+// Rust form): the plist string extractor is a private parsing detail —
+// promoting it would widen the surface just to test through it. The
+// public volume_identity is exercised from tests/volume_tests.rs.
+#[path = "../tests/unit/volume.rs"]
+mod tests;

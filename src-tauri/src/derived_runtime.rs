@@ -650,33 +650,8 @@ pub fn changed_pause_classes(current: u8, class: Option<&str>, paused: bool) -> 
 }
 
 #[cfg(test)]
-mod tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `RuntimeState` and its wait and cancellation internals; promoting them
-    // would widen the crate's API only for this test.
-    use super::*;
-
-    #[test]
-    fn shutdown_releases_every_manual_ticket_from_its_queue_wait() {
-        let runtime = RuntimeState {
-            exclusive: true,
-            active: Some(ActiveWorkSnapshot {
-                class: WorkClass::Previews,
-                manual: true,
-                done: None,
-                total: None,
-            }),
-            serving_manual_ticket: 2,
-            ..RuntimeState::default()
-        };
-        assert!(manual_waits(&runtime, 7, false));
-        assert!(!manual_waits(&runtime, 7, true));
-    }
-
-    #[test]
-    fn shutdown_is_a_cancellation_condition_for_active_derived_work() {
-        let runtime = RuntimeState::default();
-        assert!(!runtime_cancelled(&runtime, false));
-        assert!(runtime_cancelled(&runtime, true));
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `RuntimeState` and its wait and cancellation internals; promoting them
+// would widen the crate's API only for this test.
+#[path = "../tests/unit/derived_runtime.rs"]
+mod tests;

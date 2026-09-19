@@ -282,46 +282,11 @@ pub(crate) fn work_debts(
 // owned here, so the shipped projection and its structural assertion cannot
 // drift into different queries.
 #[cfg(test)]
-mod debt_query_tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `work_debt_sql` query builder; promoting it would widen the crate's API
-    // only for this test.
-    use super::*;
-
-    #[test]
-    fn debt_snapshot_scans_one_logical_projection_and_never_probes_paths() {
-        let dir = tempfile::Builder::new()
-            .prefix("onecopy-debt-plan-")
-            .tempdir()
-            .unwrap();
-        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-        let mut statement = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", work_debt_sql(true)))
-            .unwrap();
-        let details: Vec<String> = statement
-            .query_map([], |row| row.get(3))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-
-        assert_eq!(
-            details
-                .iter()
-                .filter(|line| line.starts_with("SCAN "))
-                .count(),
-            1,
-            "debt projection must aggregate one source scan: {details:?}"
-        );
-        assert!(
-            details.iter().any(|line| line.contains("logical_contents")),
-            "debt projection lost the maintained live-item truth: {details:?}"
-        );
-        assert!(
-            details.iter().all(|line| !line.contains("paths")),
-            "debt projection regressed to physical-path probes: {details:?}"
-        );
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `work_debt_sql` query builder; promoting it would widen the crate's API
+// only for this test.
+#[path = "../tests/unit/derived_state/debt_query_tests.rs"]
+mod debt_query_tests;
 
 pub const FACE_ERROR: &str = "face-score-error";
 pub const PREVIEW_ERROR: &str = "decode-error";
@@ -1331,51 +1296,11 @@ pub fn record_transcript_replacement_failure(
 // EXCEPTION (tests-folder convention): this pins a private database-state
 // transition without widening the production storage surface for a test.
 #[cfg(test)]
-mod transcript_replacement_tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `derived_issue_presentation`; promoting it would widen the crate's API
-    // only for this test.
-    use super::*;
-
-    #[test]
-    fn replacement_failure_preserves_completed_receipt_and_records_the_attempt() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-        conn.execute_batch(
-            "INSERT INTO contents (hash, byte_size, kind) VALUES ('media', 10, 'video');
-             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
-             VALUES ('/media.mov', '/', 'media.mov', 'video', 'media');
-             INSERT INTO analysis_receipts (content_hash, transcript_state)
-             VALUES ('media', 'ready-text');",
-        )
-        .unwrap();
-
-        record_transcript_replacement_failure(&conn, "/media.mov", "replacement failed").unwrap();
-
-        let receipt: String = conn
-            .query_row(
-                "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'media'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let issue: (String, String) = conn
-            .query_row(
-                "SELECT kind, message FROM issues WHERE path = '/media.mov'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(receipt, READY_TEXT);
-        assert_eq!(
-            issue,
-            (
-                TRANSCRIPT_ERROR.to_string(),
-                derived_issue_presentation(TRANSCRIPT_ERROR).to_string()
-            )
-        );
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `derived_issue_presentation`; promoting it would widen the crate's API
+// only for this test.
+#[path = "../tests/unit/derived_state/transcript_replacement_tests.rs"]
+mod transcript_replacement_tests;
 
 /// An explicit attempt boundary, not a query side effect or an Issues action.
 pub enum FailedOutputScope<'a> {

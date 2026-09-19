@@ -327,25 +327,8 @@ pub(crate) fn publish_transcript(target: &Path, text: &str) -> Result<(), String
 // EXCEPTION to tests-folder conventions: this test pins the private lock that
 // linearizes one process-wide native-engine claim with its publication.
 #[cfg(test)]
-mod publication_tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `publish_if_active`; promoting it would widen the crate's API only for
-    // this test.
-    use super::*;
-
-    #[test]
-    fn cancellation_that_owns_the_claim_boundary_prevents_publication() {
-        let claim = claim().unwrap();
-        assert!(request_cancel());
-        let published = std::cell::Cell::new(false);
-
-        let result = publish_if_active(&claim, || {
-            published.set(true);
-            Ok(())
-        })
-        .unwrap();
-
-        assert!(result.is_none());
-        assert!(!published.get());
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `publish_if_active`; promoting it would widen the crate's API only for
+// this test.
+#[path = "../tests/unit/transcription.rs"]
+mod publication_tests;

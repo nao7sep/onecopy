@@ -211,26 +211,11 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `presentation_for`; promoting it would widen the crate's API only for
-    // this test.
-    use super::presentation_for;
-
-    #[test]
-    fn runtime_diagnostics_are_not_user_presentation() {
-        let hostile =
-            "Error invoking remote method: EACCES /private/tmp/HOSTILE-SENTINEL";
-        let presentation = presentation_for("file-operation-state-failed");
-
-        assert!(!presentation.contains(hostile));
-        assert!(!presentation.contains("EACCES"));
-        assert!(!presentation.contains("/private/tmp"));
-        assert!(!presentation.contains("Error invoking remote method"));
-        assert!(presentation.contains("file operation"));
-        assert!(presentation_for("derived-worker-failed").contains("Resume a row in Background work"));
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `presentation_for`; promoting it would widen the crate's API only for
+// this test.
+#[path = "../tests/unit/failure_runtime.rs"]
+mod tests;
 
 pub fn spawn_reported(
     app: AppHandle,

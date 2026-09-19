@@ -409,19 +409,11 @@ fn record_activity(
 }
 
 #[cfg(test)]
-mod lifecycle_tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `generation_is_live`; promoting it would widen the crate's API only for
-    // this test.
-    use super::generation_is_live;
-
-    #[test]
-    fn replacement_and_shutdown_each_retire_an_owned_generation() {
-        assert!(generation_is_live(4, 4, false));
-        assert!(!generation_is_live(5, 4, false));
-        assert!(!generation_is_live(4, 4, true));
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `generation_is_live`; promoting it would widen the crate's API only for
+// this test.
+#[path = "../tests/unit/watcher.rs"]
+mod lifecycle_tests;
 
 fn record_root_condition(
     app: &tauri::AppHandle,

@@ -69,21 +69,7 @@ pub(crate) fn publish_if_running<T>(publish: impl FnOnce() -> T) -> Option<T> {
 // separate Lifecycle proves its transition without poisoning the shared test
 // process or widening the shipped crate's public API solely for a test.
 #[cfg(test)]
-mod tests {
-    // EXCEPTION to tests-folder conventions: exercises the `Lifecycle` state
-    // machine of a module that is private to the crate.
-    use super::Lifecycle;
-
-    #[test]
-    fn final_shutdown_closes_admission_once_and_never_reopens_it() {
-        let lifecycle = Lifecycle::new();
-
-        assert!(!lifecycle.shutting_down());
-        assert_eq!(lifecycle.publish_if_running(|| 7), Some(7));
-        assert!(lifecycle.begin_shutdown());
-        assert!(lifecycle.shutting_down());
-        assert!(!lifecycle.begin_shutdown());
-        assert!(lifecycle.shutting_down());
-        assert_eq!(lifecycle.publish_if_running(|| 7), None);
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the `Lifecycle` state
+// machine of a module that is private to the crate.
+#[path = "../tests/unit/app_lifecycle.rs"]
+mod tests;

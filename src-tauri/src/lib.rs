@@ -811,41 +811,11 @@ fn child_directory_facts(path: &std::path::Path, policy: &visibility::Policy) ->
 // EXCEPTION (tests-folder convention): destination listing is a private Tauri
 // command, so its filesystem projection is pinned beside the helper it calls.
 #[cfg(test)]
-mod destination_listing_tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `list_subdirs_at` behind a Tauri command; promoting it would widen the
-    // crate's API only for this test.
-    use super::*;
-
-    #[test]
-    fn one_listing_projects_children_and_emptiness_together() {
-        let root = tempfile::Builder::new()
-            .prefix("onecopy-destinations-")
-            .tempdir()
-            .unwrap();
-        std::fs::create_dir(root.path().join("empty")).unwrap();
-        std::fs::create_dir(root.path().join("files-only")).unwrap();
-        std::fs::write(root.path().join("files-only/item.txt"), b"item").unwrap();
-        std::fs::create_dir_all(root.path().join("nested/child")).unwrap();
-        std::fs::create_dir(root.path().join(".hidden")).unwrap();
-        std::fs::create_dir_all(root.path().join("hidden-only/.hidden")).unwrap();
-        std::fs::create_dir_all(root.path().join("trash-only/.onecopy-trash/day")).unwrap();
-
-        let rows = list_subdirs_at(root.path(), &visibility::Policy::from_config(&json!({})).unwrap()).unwrap();
-        let facts = |name: &str| {
-            let row = rows.iter().find(|row| row.name == name).unwrap();
-            (row.has_children, row.is_empty)
-        };
-        assert_eq!(facts("empty"), (false, true));
-        assert_eq!(facts("files-only"), (false, false));
-        assert_eq!(facts("nested"), (true, false));
-        assert_eq!(facts("hidden-only"), (false, false));
-        assert_eq!(facts("trash-only"), (false, false));
-        assert!(rows.iter().all(|row| row.name != ".hidden"));
-        assert!(list_subdirs_at(&root.path().join("trash-only/.onecopy-trash"), &visibility::Policy::from_config(&json!({})).unwrap())
-            .unwrap().is_empty());
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `list_subdirs_at` behind a Tauri command; promoting it would widen the
+// crate's API only for this test.
+#[path = "../tests/unit/lib/destination_listing_tests.rs"]
+mod destination_listing_tests;
 
 // Creates a subfolder under a tree node. The name must be case-insensitively
 // unique within its directory (storage-path conventions' hard invariant).
@@ -933,27 +903,11 @@ fn ensure_revealable_data_subdir(
 // EXCEPTION (tests-folder convention): this private Tauri-command path guard
 // is pinned beside the helper that the command calls.
 #[cfg(test)]
-mod reveal_data_subdir_tests {
-    // EXCEPTION to tests-folder conventions: exercises the private
-    // `ensure_revealable_data_subdir` behind a Tauri command; promoting it
-    // would widen the crate's API only for this test.
-    use super::ensure_revealable_data_subdir;
-
-    #[test]
-    fn revealable_folder_is_created_lazily() {
-        let root = tempfile::tempdir().unwrap();
-        let target = ensure_revealable_data_subdir(root.path(), "logs").unwrap();
-        assert!(target.is_dir());
-        assert_eq!(target, root.path().join("logs"));
-    }
-
-    #[test]
-    fn arbitrary_subdirectories_remain_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(ensure_revealable_data_subdir(root.path(), "../private").is_err());
-        assert!(!root.path().join("private").exists());
-    }
-}
+// EXCEPTION to tests-folder conventions: exercises the private
+// `ensure_revealable_data_subdir` behind a Tauri command; promoting it
+// would widen the crate's API only for this test.
+#[path = "../tests/unit/lib/reveal_data_subdir_tests.rs"]
+mod reveal_data_subdir_tests;
 
 // Opens an indexed item in its OS default app (the preview's "Open in player"
 // codec-fallback). The path comes from the INDEX, never from the webview — a
