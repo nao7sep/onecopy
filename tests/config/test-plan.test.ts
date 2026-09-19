@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 // @ts-expect-error The directly executed .mjs helper intentionally has no declaration file.
-import { planTests, readsRepository, rustSuiteModules } from "../../scripts/test-plan.mjs";
+import { planTests, readsRepository, rustEmbeddedFiles, rustSuiteModules } from "../../scripts/test-plan.mjs";
 
 const suiteModules = rustSuiteModules([
   {
@@ -39,15 +39,15 @@ describe("the default test plan", () => {
     });
   });
 
-  it("typechecks and runs related tests for a TypeScript change, without Rust", () => {
+  it("typechecks and runs related and repository-reading tests for a TypeScript change, without Rust", () => {
     expect(plan(["src/utils/zoom.ts"])).toMatchObject({
       typecheck: true,
-      vitest: ["src/utils/zoom.ts"],
+      vitest: ["src/utils/zoom.ts", ...repositoryReaders],
       rust: null,
     });
   });
 
-  it("adds every repository-reading test when a file outside the module graph changes", () => {
+  it("runs the related and repository-reading tests without the type check for a stylesheet change", () => {
     expect(plan(["src/App.css"])).toMatchObject({
       typecheck: false,
       vitest: ["src/App.css", ...repositoryReaders],
@@ -56,6 +56,10 @@ describe("the default test plan", () => {
       specs: true,
       vitest: ["specs/index.md", ...repositoryReaders],
     });
+  });
+
+  it("typechecks for a JSON change, since modules import JSON", () => {
+    expect(plan(["src/strings.json"])).toMatchObject({ typecheck: true, vitest: ["src/strings.json", ...repositoryReaders] });
   });
 
   it("typechecks when the TypeScript configuration or dependencies change", () => {
@@ -84,6 +88,21 @@ describe("the default test plan", () => {
       rust: "all",
       vitest: ["src-tauri/Cargo.toml", ...repositoryReaders],
     });
+  });
+
+  it("counts a file Rust embeds as a Rust change, wherever it lives", () => {
+    const rustInputs = rustEmbeddedFiles([
+      { file: "src-tauri/src/menu.rs", source: 'const EN: &str = include_str!("../../src/locales/en.json");' },
+      {
+        file: "src-tauri/src/icons.rs",
+        source: 'static ICON: &[u8] = include_bytes!( "../icons/app.png" );\nconst BUILT: &str = include_str!(concat!(env!("OUT_DIR"), "/x"));',
+      },
+    ]);
+    expect(rustInputs).toEqual(["src/locales/en.json", "src-tauri/icons/app.png"]);
+    expect(
+      planTests({ changed: ["src/locales/en.json"], full: false, platform: "darwin", suiteModules, repositoryReaders, rustInputs }),
+    ).toMatchObject({ typecheck: true, rust: "all", vitest: ["src/locales/en.json", ...repositoryReaders] });
+    expect(plan(["src/locales/en.json"]).rust).toBeNull();
   });
 
   it("runs the Windows packaging test only on Windows, when packaging changes", () => {

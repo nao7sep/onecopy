@@ -3,8 +3,11 @@
 // selection rules are tested directly; scripts/test.mjs gathers the inputs
 // and runs the lanes.
 
-const TYPESCRIPT = /\.(ts|tsx)$/;
-const TYPESCRIPT_CONFIG = /^(tsconfig[^/]*\.json|package(-lock)?\.json)$/;
+import path from "node:path";
+
+// What the type check reads: modules, including the JSON they import, and its
+// own configuration (tsconfig*.json, package.json and its lock file).
+const TYPE_CHECKED = /\.(?:[cm]?[jt]s|[jt]sx|json)$/;
 const RUST_ROOT = "src-tauri/";
 
 /** Markdown outside specs/ is documentation: no test or build reads it. */
@@ -39,9 +42,27 @@ export function rustSuiteModules(suites) {
 }
 
 /**
- * A test that reads repository files through Node instead of importing them.
- * Import-based selection cannot see what such a test depends on, so any change
- * to a file outside the TypeScript module graph runs every one of them.
+ * The files Rust compiles into the crate through `include_str!`,
+ * `include_bytes!`, or `include!`, repository-relative. A change to one is a
+ * Rust change wherever it lives, such as a catalogue both halves read.
+ *
+ * @param {Array<{ file: string, source: string }>} sources repository-relative .rs files
+ * @returns {string[]}
+ */
+export function rustEmbeddedFiles(sources) {
+  const files = [];
+  for (const { file, source } of sources) {
+    for (const match of source.matchAll(/\binclude(?:_str|_bytes)?!\s*\(\s*"([^"]+)"/g)) {
+      files.push(path.posix.normalize(path.posix.join(path.posix.dirname(file), match[1])));
+    }
+  }
+  return unique(files);
+}
+
+/**
+ * A test that reads files through Node instead of importing them. Import-based
+ * selection cannot see what such a test depends on, and many read source files
+ * as text, so every change but documentation runs every one of them.
  */
 export function readsRepository(testSource) {
   return /(?:from\s+|import\s*\(\s*)["'](?:node:)?(?:fs|child_process)(?:\/promises)?["']/.test(testSource);
@@ -54,8 +75,9 @@ export function readsRepository(testSource) {
  * @param {string} input.platform a `process.platform` value
  * @param {Map<string, { target: string, module: string }>} input.suiteModules
  * @param {string[]} input.repositoryReaders test files for which readsRepository holds
+ * @param {string[]} [input.rustInputs] files outside src-tauri/ that Rust embeds, from rustEmbeddedFiles
  */
-export function planTests({ changed, full, platform, suiteModules, repositoryReaders }) {
+export function planTests({ changed, full, platform, suiteModules, repositoryReaders, rustInputs = [] }) {
   const onWindows = platform === "win32";
   if (full) {
     return {
@@ -71,10 +93,9 @@ export function planTests({ changed, full, platform, suiteModules, repositoryRea
   }
 
   const code = changed.filter((path) => !isDocumentation(path));
-  const outsideModuleGraph = code.some((path) => !TYPESCRIPT.test(path));
-  const related = unique([...code, ...(outsideModuleGraph ? repositoryReaders : [])]);
+  const related = unique([...code, ...(code.length > 0 ? repositoryReaders : [])]);
 
-  const rustPaths = code.filter((path) => path.startsWith(RUST_ROOT));
+  const rustPaths = code.filter((path) => path.startsWith(RUST_ROOT) || rustInputs.includes(path));
   const testModules = rustPaths.map((path) => suiteModules.get(path));
   let rust = null;
   if (rustPaths.length > 0) {
@@ -91,7 +112,7 @@ export function planTests({ changed, full, platform, suiteModules, repositoryRea
   return {
     hidden: changed.length > 0,
     specs: code.some((path) => path.startsWith("specs/")),
-    typecheck: code.some((path) => TYPESCRIPT.test(path) || TYPESCRIPT_CONFIG.test(path)),
+    typecheck: code.some((path) => TYPE_CHECKED.test(path)),
     vitest: related.length > 0 ? related : null,
     bundle: false,
     rust,

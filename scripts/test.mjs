@@ -4,10 +4,10 @@
 // order, stopping at the first failure.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { planTests, readsRepository, rustSuiteModules } from "./test-plan.mjs";
+import { planTests, readsRepository, rustEmbeddedFiles, rustSuiteModules } from "./test-plan.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SUITES = path.join(ROOT, "src-tauri", "tests", "suites");
@@ -36,6 +36,14 @@ function testFiles(directory) {
     const absolute = path.join(directory, entry.name);
     if (entry.isDirectory()) return testFiles(absolute);
     return /\.test\.tsx?$/.test(entry.name) ? [absolute] : [];
+  });
+}
+
+function rustSources(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) return rustSources(absolute);
+    return entry.name.endsWith(".rs") ? [absolute] : [];
   });
 }
 
@@ -71,6 +79,11 @@ const plan = planTests({
   repositoryReaders: testFiles(path.join(ROOT, "tests"))
     .filter((file) => readsRepository(readFileSync(file, "utf8")))
     .map(repositoryPath),
+  rustInputs: rustEmbeddedFiles(
+    [...rustSources(path.join(ROOT, "src-tauri", "src")), path.join(ROOT, "src-tauri", "build.rs")]
+      .filter((file) => existsSync(file))
+      .map((file) => ({ file: repositoryPath(file), source: readFileSync(file, "utf8") })),
+  ),
 });
 
 if (!full) {
