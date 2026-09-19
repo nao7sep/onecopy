@@ -328,6 +328,9 @@ pub(crate) fn publish_transcript(target: &Path, text: &str) -> Result<(), String
 // linearizes one process-wide native-engine claim with its publication.
 #[cfg(test)]
 mod publication_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `publish_if_active`; promoting it would widen the crate's API only for
+    // this test.
     use super::*;
 
     #[test]

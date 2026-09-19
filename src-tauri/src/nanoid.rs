@@ -28,6 +28,8 @@ pub fn generate() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: checks the identifier length of a
+    // module that is private to the crate.
     use super::*;
 
     #[test]

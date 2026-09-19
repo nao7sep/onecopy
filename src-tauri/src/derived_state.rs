@@ -283,6 +283,9 @@ pub(crate) fn work_debts(
 // drift into different queries.
 #[cfg(test)]
 mod debt_query_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `work_debt_sql` query builder; promoting it would widen the crate's API
+    // only for this test.
     use super::*;
 
     #[test]
@@ -1329,6 +1332,9 @@ pub fn record_transcript_replacement_failure(
 // transition without widening the production storage surface for a test.
 #[cfg(test)]
 mod transcript_replacement_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `derived_issue_presentation`; promoting it would widen the crate's API
+    // only for this test.
     use super::*;
 
     #[test]

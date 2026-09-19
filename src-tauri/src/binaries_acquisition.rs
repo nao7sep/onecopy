@@ -688,6 +688,9 @@ pub(crate) fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises deadlines, byte
+    // ceilings, extraction and staged publication inside a module that is
+    // private to the crate and fronted by `binaries_manager`.
     use super::*;
     use std::sync::Arc;
 

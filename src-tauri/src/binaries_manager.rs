@@ -1055,6 +1055,9 @@ pub fn states(root: &Path) -> Vec<DependencyState> {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // model-identity sidecar (`ModelIdentity`, `write_model_identity`);
+    // promoting it would widen the crate's API only for this test.
     use super::*;
 
     #[test]

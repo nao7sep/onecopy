@@ -291,6 +291,9 @@ pub fn parse_utc_offset_minutes(text: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `absolute_from_fields`; promoting it would widen the crate's API only for
+    // this test.
     use super::*;
 
     #[test]

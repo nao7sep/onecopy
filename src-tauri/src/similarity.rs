@@ -764,6 +764,9 @@ pub fn group_members(conn: &Connection, group_id: i64) -> Result<Vec<String>, St
 // test that could silently diverge.
 #[cfg(test)]
 mod candidate_query_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `DATED_CANDIDATES_SQL` and `cluster_by_appearance_cancellable`; promoting
+    // them would widen the crate's API only for this test.
     use std::cell::Cell;
 
     use super::*;

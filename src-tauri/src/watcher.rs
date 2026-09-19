@@ -410,6 +410,9 @@ fn record_activity(
 
 #[cfg(test)]
 mod lifecycle_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `generation_is_live`; promoting it would widen the crate's API only for
+    // this test.
     use super::generation_is_live;
 
     #[test]

@@ -184,6 +184,8 @@ pub async fn check(app: &AppHandle) -> SharedResult {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises tag parsing, comparison
+    // and request constants of a module that is private to the crate.
     use super::*;
 
     #[test]

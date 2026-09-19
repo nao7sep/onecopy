@@ -70,6 +70,8 @@ pub(crate) fn publish_if_running<T>(publish: impl FnOnce() -> T) -> Option<T> {
 // process or widening the shipped crate's public API solely for a test.
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the `Lifecycle` state
+    // machine of a module that is private to the crate.
     use super::Lifecycle;
 
     #[test]

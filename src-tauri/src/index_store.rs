@@ -667,6 +667,9 @@ pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
 // query instead of a SELECT the test wrote itself.
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: reads the private
+    // `SCHEMA_REVISION`; promoting it would widen the crate's API only for this
+    // test.
     use super::*;
 
     #[test]

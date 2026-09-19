@@ -481,6 +481,8 @@ pub(crate) fn halt_before_runtime(diagnostic: &str) -> ! {
 // required data failures cannot yield the state that admits app-lifetime workers.
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the startup gate and
+    // runtime services of a module that is private to the crate.
     use super::*;
     use std::cell::{Cell, RefCell};
 

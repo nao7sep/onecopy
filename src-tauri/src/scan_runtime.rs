@@ -227,6 +227,9 @@ pub fn running() -> bool {
 // admission primitive without widening the app crate's API for a test.
 #[cfg(test)]
 mod admission_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private scan owner
+    // (`ACTIVE_OWNER`, `with_owner`); promoting it would widen the crate's API
+    // only for this test.
     use super::*;
 
     #[test]

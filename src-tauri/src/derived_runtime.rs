@@ -651,6 +651,9 @@ pub fn changed_pause_classes(current: u8, class: Option<&str>, paused: bool) -> 
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `RuntimeState` and its wait and cancellation internals; promoting them
+    // would widen the crate's API only for this test.
     use super::*;
 
     #[test]

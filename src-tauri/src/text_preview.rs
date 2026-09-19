@@ -255,6 +255,9 @@ fn convincingly_textual(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private encoding
+    // decoders and label canonicalization; promoting them would widen the
+    // crate's API only for this test.
     use super::*;
 
     #[test]

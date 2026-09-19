@@ -146,6 +146,9 @@ fn absolutize(home: &Path, path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `resolve_root`; promoting it would widen the crate's API only for this
+    // test.
     use super::*;
 
     #[test]

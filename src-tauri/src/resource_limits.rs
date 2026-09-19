@@ -223,6 +223,9 @@ fn available_memory_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private image-worker
+    // capacity calculation and its constants; promoting them would widen the
+    // crate's API only for this test.
     use super::{
         image_worker_capacity_for, IMAGE_CONCURRENCY_HEADROOM, IMAGE_JOB_RESERVATION,
     };

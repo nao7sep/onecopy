@@ -36,5 +36,7 @@ impl JournalSetup {
 }
 
 #[cfg(test)]
+// EXCEPTION to tests-folder conventions: exercises journal configuration of a
+// module that is private to the crate.
 #[path = "../tests/unit/sqlite.rs"]
 mod tests;

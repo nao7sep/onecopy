@@ -1915,6 +1915,9 @@ pub(crate) fn month_bounds(month: &str, display_tz: Tz) -> Result<Option<(i64, i
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private section and
+    // Issues SQL builders; promoting them would widen the crate's API only for
+    // this test.
     use super::*;
     use crate::index_store;
 

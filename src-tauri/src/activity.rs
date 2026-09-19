@@ -694,5 +694,8 @@ pub fn record_shutdown() {
 }
 
 #[cfg(test)]
+// EXCEPTION to tests-folder conventions: exercises the private
+// `record_with_visibility`; promoting it would widen the crate's API only for
+// this test.
 #[path = "../tests/unit/activity.rs"]
 mod tests;

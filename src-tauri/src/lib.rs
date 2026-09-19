@@ -812,6 +812,9 @@ fn child_directory_facts(path: &std::path::Path, policy: &visibility::Policy) ->
 // command, so its filesystem projection is pinned beside the helper it calls.
 #[cfg(test)]
 mod destination_listing_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `list_subdirs_at` behind a Tauri command; promoting it would widen the
+    // crate's API only for this test.
     use super::*;
 
     #[test]
@@ -931,6 +934,9 @@ fn ensure_revealable_data_subdir(
 // is pinned beside the helper that the command calls.
 #[cfg(test)]
 mod reveal_data_subdir_tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `ensure_revealable_data_subdir` behind a Tauri command; promoting it
+    // would widen the crate's API only for this test.
     use super::ensure_revealable_data_subdir;
 
     #[test]

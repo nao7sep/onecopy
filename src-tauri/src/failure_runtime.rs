@@ -212,6 +212,9 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
+    // EXCEPTION to tests-folder conventions: exercises the private
+    // `presentation_for`; promoting it would widen the crate's API only for
+    // this test.
     use super::presentation_for;
 
     #[test]
