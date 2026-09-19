@@ -7,6 +7,7 @@ import {
   type NotificationRecord,
   useNotificationsStore,
 } from "../../src/state/notifications-store";
+import { useReleaseCheckStore } from "../../src/state/release-check-store";
 import {
   fireEvent as fireBackendEvent,
   invokeCalls,
@@ -36,6 +37,7 @@ beforeEach(() => {
     dismiss_notification: () => true,
   });
   useNotificationsStore.setState({ active: [], dismissing: new Set() });
+  useReleaseCheckStore.setState({ noticeVersion: null, noticeLinkError: null });
 });
 
 afterEach(() => {
@@ -104,6 +106,40 @@ describe("the app-frame notification host", () => {
     render(<NotificationHost />);
     act(() => useNotificationsStore.setState({ active: [notice({ occurrenceCount: 4 })] }));
     expect(document.body.textContent).toContain("Occurred 4 times");
+  });
+
+  it("keeps every active notice in a viewport-bounded local scroll region", () => {
+    render(<NotificationHost />);
+    act(() => useNotificationsStore.setState({
+      active: Array.from({ length: 12 }, (_, index) => notice({
+        id: index + 1,
+        kind: `failure-${index + 1}`,
+        message: `Failure ${index + 1}`,
+      })),
+    }));
+
+    const host = document.querySelector("[data-notification-host]") as HTMLElement;
+    const region = document.querySelector(
+      "[data-notification-scroll-region]",
+    ) as HTMLElement;
+    expect(host.className).toContain("max-h-[calc(100vh-2rem)]");
+    expect(region.className).toContain("overflow-y-auto");
+    expect(region.className).toContain("overscroll-contain");
+    expect(region.querySelectorAll("[data-notification]")).toHaveLength(12);
+  });
+
+  it("keeps the release notice outside the active-notification scroll owner", () => {
+    useReleaseCheckStore.setState({ noticeVersion: "9.9.9" });
+    render(<NotificationHost />);
+    act(() => useNotificationsStore.setState({ active: [notice()] }));
+
+    const release = document.querySelector("[data-release-notice]") as HTMLElement;
+    const region = document.querySelector(
+      "[data-notification-scroll-region]",
+    ) as HTMLElement;
+    expect(release.textContent).toContain("OneCopy 9.9.9 is available.");
+    expect(region.contains(release)).toBe(false);
+    expect(region.textContent).toContain("Couldn’t open the selected file.");
   });
 
   it("clears live notices when the reconstructible library index is rebuilt", async () => {

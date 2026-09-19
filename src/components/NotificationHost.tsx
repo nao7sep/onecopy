@@ -23,8 +23,9 @@ function ReleaseNotice() {
   if (version === null) return null;
   return (
     <section
+      data-release-notice
       role="status"
-      className="pointer-events-auto w-[min(420px,calc(100vw-2rem))] rounded-lg border border-border bg-surface p-3 text-ink shadow-xl"
+      className="pointer-events-auto w-full rounded-lg border border-border bg-surface p-3 text-ink shadow-xl"
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
@@ -104,7 +105,7 @@ function Toast({
     <section
       data-notification
       role={record.level === "error" ? "alert" : "status"}
-      className={`pointer-events-auto w-[min(420px,calc(100vw-2rem))] rounded-lg border p-3 shadow-xl ${tone}`}
+      className={`pointer-events-auto w-full rounded-lg border p-3 shadow-xl ${tone}`}
       onMouseEnter={stopTimer}
       onMouseLeave={startTimer}
       onFocusCapture={stopTimer}
@@ -156,11 +157,25 @@ export default function NotificationHost() {
 
   if (active.length === 0 && releaseVersion === null) return null;
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-[25] flex flex-col items-end gap-2">
+    <div
+      data-notification-host
+      className="pointer-events-none fixed right-4 top-4 z-[25] flex max-h-[calc(100vh-2rem)] w-[min(420px,calc(100vw-2rem))] flex-col items-stretch gap-2"
+    >
       <ReleaseNotice />
-      {active.map((record) => (
-        <Toast key={record.id} record={record} durationMs={durationMs} />
-      ))}
+      {active.length > 0 ? (
+        <div
+          data-notification-scroll-region
+          role="region"
+          aria-label="Active notifications"
+          className="pointer-events-auto min-h-0 overflow-y-auto overscroll-contain"
+        >
+          <div className="flex flex-col items-stretch gap-2 pr-1">
+            {active.map((record) => (
+              <Toast key={record.id} record={record} durationMs={durationMs} />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
