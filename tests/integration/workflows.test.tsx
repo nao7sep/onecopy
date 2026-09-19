@@ -496,7 +496,7 @@ describe("the culling workflow", () => {
       "h4",
     ]);
     expect(document.activeElement?.id).toBe("main-item-area");
-  }, 30_000);
+  });
 });
 
 describe("the failure workflow", () => {
