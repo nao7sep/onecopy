@@ -8,6 +8,10 @@ mod backup_account_tests;
 mod binaries_tests;
 #[path = "../dependencies_tests.rs"]
 mod dependencies_tests;
+#[path = "../file_identity_tests.rs"]
+mod file_identity_tests;
+#[path = "../fs_publish_tests.rs"]
+mod fs_publish_tests;
 #[path = "../presence_tests.rs"]
 mod presence_tests;
 #[path = "../presentation_tests.rs"]
