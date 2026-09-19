@@ -8,7 +8,7 @@ use super::heavy_support::{corpus_file, corpus_json, library};
 const FACELESS: &str = "jpeg-baseline.jpg";
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn production_models_score_every_fictional_face_and_no_faceless_scene() {
     let identities = corpus_json("photos/faces/identities.json");

@@ -33,7 +33,7 @@ fn derive(library: &Library, ffmpeg: Option<&Path>) -> preview::DeriveStats {
 }
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn every_accepted_still_format_derives_at_its_recorded_size() {
     let stills: Vec<serde_json::Value> = manifest()
@@ -67,7 +67,7 @@ fn every_accepted_still_format_derives_at_its_recorded_size() {
 }
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn a_heic_display_orientation_is_applied_exactly_once() {
     // A HEIC stored upright, and one whose display orientation is a quarter

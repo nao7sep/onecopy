@@ -13,7 +13,7 @@ autotests = false
 
 # Warnings are errors, on EVERY platform the app ships to — the gate this table exists for.
 # It lives in the manifest rather than in CI or a RUSTFLAGS export so that one declaration
-# covers `cargo check`, `cargo test`, `cargo build`, the local `npm run check`, and CI alike;
+# covers `cargo check`, `cargo test`, `cargo build`, the local `npm test`, and CI alike;
 # a gate only CI enforces is one every developer meets late, and a `cfg(windows)` warning is
 # invisible to a macOS-only gate because that code is never compiled there.
 [lints.rust]

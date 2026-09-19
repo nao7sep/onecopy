@@ -1,6 +1,6 @@
 // Real managed tools and models over the shared test-fixture corpus. Every
 // such test is #[ignore]d, so the ordinary run compiles them without running
-// them; npm run check:full runs them with --ignored.
+// them; npm run test:full runs them with --ignored.
 #[path = "../heavy_support.rs"]
 mod heavy_support;
 #[path = "../binaries_manager_heavy_tests.rs"]

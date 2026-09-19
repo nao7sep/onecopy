@@ -132,7 +132,7 @@ fn judge(file_name: &str, mode: Mode, transcript: &str, expected: &[String]) {
 }
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn every_selectable_acceleration_transcribes_english_dialogue() {
     let name = "dialogue-english-with-noise.flac";
@@ -149,7 +149,7 @@ fn every_selectable_acceleration_transcribes_english_dialogue() {
 }
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn video_dialogue_transcribes_through_its_audio_track() {
     let name = "dialogue-english-with-noise.mp4";

@@ -7,7 +7,7 @@ use onecopy_lib::live_photo::{quicktime_content_identifier, CONTENT_IDENTIFIER_K
 use super::heavy_support::app_home;
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn an_identifier_written_by_ffmpeg_reads_back() {
     let home = app_home("live-photo");

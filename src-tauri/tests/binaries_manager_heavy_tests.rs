@@ -7,7 +7,7 @@ use onecopy_lib::binaries_manager::{self, DEPENDENCIES};
 use super::heavy_support::artifacts;
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn every_managed_tool_and_model_is_installed_verified_and_current() {
     let cache = artifacts();

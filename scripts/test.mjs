@@ -1,5 +1,5 @@
-// `npm run check` runs only the checks that the working-tree changes against
-// HEAD can affect; `npm run check:full` runs every check. check-plan.mjs owns
+// `npm test` runs only the lanes that the working-tree changes against
+// HEAD can affect; `npm run test:full` runs every lane. test-plan.mjs owns
 // the selection; this file gathers its inputs and runs the chosen lanes in
 // order, stopping at the first failure.
 
@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { planChecks, readsRepository, rustSuiteModules } from "./check-plan.mjs";
+import { planTests, readsRepository, rustSuiteModules } from "./test-plan.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SUITES = path.join(ROOT, "src-tauri", "tests", "suites");
@@ -56,7 +56,7 @@ function runNode(label, script, args = []) {
 
 const full = process.argv.includes("--full");
 const changed = full ? [] : changedPaths();
-const plan = planChecks({
+const plan = planTests({
   changed,
   full,
   platform: process.platform,
@@ -76,8 +76,8 @@ const plan = planChecks({
 if (!full) {
   process.stdout.write(
     changed.length === 0
-      ? "Nothing differs from HEAD; no checks to run.\n"
-      : `Checking ${changed.length} changed path(s) against HEAD.\n`,
+      ? "Nothing differs from HEAD; no tests to run.\n"
+      : `Testing what ${changed.length} changed path(s) against HEAD can affect.\n`,
   );
 }
 

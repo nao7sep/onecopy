@@ -35,7 +35,7 @@ fn displayed_aspect(stream: &serde_json::Value) -> f64 {
 }
 
 #[test]
-#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run check:full"]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
 #[serial_test::serial(heavy)]
 fn every_accepted_video_format_yields_an_upright_poster_duration_and_strip() {
     let videos: Vec<serde_json::Value> = manifest()

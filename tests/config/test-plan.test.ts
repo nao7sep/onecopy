@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 // @ts-expect-error The directly executed .mjs helper intentionally has no declaration file.
-import { planChecks, readsRepository, rustSuiteModules } from "../../scripts/check-plan.mjs";
+import { planTests, readsRepository, rustSuiteModules } from "../../scripts/test-plan.mjs";
 
 const suiteModules = rustSuiteModules([
   {
@@ -12,10 +12,10 @@ const suiteModules = rustSuiteModules([
 const repositoryReaders = ["tests/version.test.ts", "tests/config/tauri-csp.test.ts"];
 
 function plan(changed: string[], platform = "darwin") {
-  return planChecks({ changed, full: false, platform, suiteModules, repositoryReaders });
+  return planTests({ changed, full: false, platform, suiteModules, repositoryReaders });
 }
 
-describe("the default check plan", () => {
+describe("the default test plan", () => {
   it("runs nothing when nothing differs from HEAD", () => {
     expect(plan([])).toEqual({
       hidden: false,
@@ -93,9 +93,9 @@ describe("the default check plan", () => {
   });
 });
 
-describe("the full check plan", () => {
+describe("the full run plan", () => {
   it("runs every lane regardless of changes", () => {
-    const full = planChecks({ changed: [], full: true, platform: "darwin", suiteModules, repositoryReaders });
+    const full = planTests({ changed: [], full: true, platform: "darwin", suiteModules, repositoryReaders });
     expect(full).toEqual({
       hidden: true,
       specs: true,
@@ -107,7 +107,7 @@ describe("the full check plan", () => {
       windowsPackaging: false,
     });
     expect(
-      planChecks({ changed: [], full: true, platform: "win32", suiteModules, repositoryReaders })
+      planTests({ changed: [], full: true, platform: "win32", suiteModules, repositoryReaders })
         .windowsPackaging,
     ).toBe(true);
   });
