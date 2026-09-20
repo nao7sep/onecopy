@@ -293,6 +293,44 @@ fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
 }
 
 #[test]
+fn strip_frames_leave_with_their_video_and_survive_while_it_stays() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-strips-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('live01', 1, 'video')",
+        [],
+    )
+    .unwrap();
+
+    for hash in ["live01", "orphan"] {
+        for index in 0..3u32 {
+            let path = onecopy_lib::video::strip_path(&cache, hash, index);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"webp-bytes").unwrap();
+        }
+    }
+
+    // A frame's name carries its number, so reading it as a whole hash would find no content
+    // and condemn a frame whose video is still here.
+    let removed = startup_sweep(&conn, &cache, &|| false).unwrap();
+    assert_eq!(removed, 3); // the orphan's three frames, and only those
+    for index in 0..3u32 {
+        assert!(onecopy_lib::video::strip_path(&cache, "live01", index).exists());
+        assert!(!onecopy_lib::video::strip_path(&cache, "orphan", index).exists());
+    }
+
+    // Leaving the library takes the frames now, rather than at the next launch.
+    remove_entries(&cache, "live01");
+    for index in 0..3u32 {
+        assert!(!onecopy_lib::video::strip_path(&cache, "live01", index).exists());
+    }
+}
+
+#[test]
 fn sweep_preserves_unvisited_cache_entries_after_shutdown_cancellation() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-sweep-cancel-")

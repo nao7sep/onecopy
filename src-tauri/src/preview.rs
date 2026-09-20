@@ -905,6 +905,49 @@ fn derive_candidate_rows(
 pub fn remove_entries(cache: &CachePaths, hash: &str) {
     crate::fs_recovery::remove_file(&cache.thumb(hash), "thumbnail cache cleanup");
     crate::fs_recovery::remove_file(&cache.preview(hash), "preview cache cleanup");
+    // A video's strip frames are one file each and their number lives in the row that is
+    // leaving, so they are found on disk rather than counted.
+    for frame in strip_frames_on_disk(cache, hash) {
+        crate::fs_recovery::remove_file(&frame, "strip cache cleanup");
+    }
+}
+
+/// Every strip frame written for one hash, read from the shard it shares with its siblings.
+fn strip_frames_on_disk(cache: &CachePaths, hash: &str) -> Vec<std::path::PathBuf> {
+    let Some(shard) = crate::video::strip_path(cache, hash, 0).parent().map(|p| p.to_path_buf()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&shard) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            cache_entry_hash("strips", &entry.file_name().to_string_lossy()).as_deref() == Some(hash)
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// The content hash a cache file belongs to, or `None` when the name is not one this app
+/// writes. Every tree names its file for the hash alone; a strip frame adds its frame number
+/// after it, so reading a strip's name as a whole hash would find no content and condemn a
+/// frame whose video is still in the library.
+pub(crate) fn cache_entry_hash(tree: &str, name: &str) -> Option<String> {
+    let stem = name
+        .strip_suffix(".webp")
+        .or_else(|| name.strip_suffix(".png"))
+        .or_else(|| name.strip_suffix(".txt"))?;
+    if tree != "strips" {
+        return Some(stem.to_string());
+    }
+
+    let (hash, index) = stem.rsplit_once('-')?;
+    if hash.is_empty() || index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+
+    Some(hash.to_string())
 }
 
 /// Moves one identity's cache entries to a new key (provisional→real
@@ -949,7 +992,7 @@ pub fn startup_sweep(
         .prepare("SELECT 1 FROM contents WHERE hash = ?1")
         .map_err(|e| e.to_string())?;
 
-    for sub in ["thumbs", "previews", "fullres", "transcripts"] {
+    for sub in ["thumbs", "previews", "fullres", "transcripts", "strips"] {
         if cancel_when() {
             return Ok(removed);
         }
@@ -991,13 +1034,7 @@ pub fn startup_sweep(
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let hash_of = |n: &str| {
-                n.strip_suffix(".webp")
-                    .or_else(|| n.strip_suffix(".png"))
-                    .or_else(|| n.strip_suffix(".txt"))
-                    .map(str::to_string)
-            };
-            let orphan = if let Some(hash) = hash_of(&name) {
+            let orphan = if let Some(hash) = cache_entry_hash(sub, &name) {
                 !exists
                     .exists([hash])
                     .map_err(|e| e.to_string())?
