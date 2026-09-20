@@ -20,19 +20,23 @@ type Size = "sm" | "md";
 // separate feedback reads as "the button did nothing" until whatever it
 // triggered finishes — which is exactly how a fast-but-silent action gets
 // reported as laggy (developer, 2026-08-17).
+//
+// Off, a variant is its resting self faded — same fill, outline, ink, padding and
+// footprint — so it stays recognisably the control that will come back and the
+// variants stay told apart while they are off. Primary and danger used to swap
+// their surfaces for neutral greys instead, which landed both on the SAME fill
+// and the SAME ink: a disabled Copy and a disabled Delete became one control,
+// the destructive one having lost its red and its outline at once. Ghost already
+// faded, because it has no surface to swap; that is now the app's one answer.
 const VARIANTS: Record<Variant, string> = {
   primary:
-    "bg-primary text-ink-inverted shadow-sm hover:brightness-110 active:brightness-90 disabled:bg-surface-muted disabled:text-ink-muted disabled:shadow-none",
+    "bg-primary text-ink-inverted shadow-sm hover:brightness-110 active:brightness-90 disabled:opacity-40",
   secondary:
-    "border border-border bg-surface text-ink hover:bg-surface-muted hover:border-border-strong active:bg-border active:border-border-strong disabled:text-ink-muted",
-  // Ghost rests at the ink scale's faintest step and has no surface to drop,
-  // so it is the one variant that cannot fade by colour alone — a disabled
-  // `text-ink-muted` is the colour it already wears. It fades by opacity, like
-  // the app's other surfaceless quiet controls.
+    "border border-border bg-surface text-ink hover:bg-surface-muted hover:border-border-strong active:bg-border active:border-border-strong disabled:opacity-40",
   ghost:
     "text-ink-muted hover:bg-surface-muted hover:text-ink active:bg-border active:text-ink disabled:opacity-40",
   danger:
-    "border border-danger/50 bg-danger-surface text-danger hover:border-danger hover:brightness-95 active:brightness-90 disabled:border-border disabled:bg-surface-muted disabled:text-ink-muted",
+    "border border-danger/50 bg-danger-surface text-danger hover:border-danger hover:brightness-95 active:brightness-90 disabled:opacity-40",
 };
 
 const SIZES: Record<Size, string> = {

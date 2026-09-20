@@ -618,7 +618,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           ) : null}
           {mutationProgress !== null && !exitQuiescing ? (
             <button
-              className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
+              className="text-ink-muted enabled:hover:text-ink enabled:hover:underline disabled:opacity-40"
               disabled={mutationCancelling}
               title={t("app.cancelOperationHint")}
               onClick={() => void cancelMutation()}
@@ -628,7 +628,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           ) : null}
           {sourceCheck.running ? (
             <button
-              className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
+              className="text-ink-muted enabled:hover:text-ink enabled:hover:underline disabled:opacity-40"
               disabled={sourceCheck.stopping}
               title={t("app.stopCheckHint")}
               onClick={() => void stopSourceCheck()}

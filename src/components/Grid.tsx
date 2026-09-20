@@ -694,7 +694,11 @@ export default function Grid({
         </div>
         <div className="flex items-center gap-2 whitespace-nowrap">
           <button
-            className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+            // A disabled button still matches :hover, so an unqualified hover
+            // utility lights a dead control up under the pointer — and this one
+            // had no disabled treatment at all, so it was the live button's twin
+            // either way.
+            className="h-7 rounded-md px-2 text-ink-muted transition-colors enabled:hover:bg-surface-muted enabled:hover:text-ink disabled:opacity-40"
             title={t("grid.recheckHint")}
             disabled={sourceChecking}
             onClick={() => void rescanCurrentSection()}

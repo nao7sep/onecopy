@@ -42,4 +42,34 @@ describe("Button variants", () => {
     // moves on screen.
     expect(disabled.filter((utility) => resting.has(utility))).toEqual([]);
   });
+
+  // The opposite failure, and the one that reached the screen: a disabled
+  // utility that changes too much. Primary and danger each replaced their
+  // surface with the same neutral fill and the same neutral ink, so off they
+  // were one control rather than two, and the destructive one had dropped its
+  // red and its outline. A disabled variant may only recede — never restate the
+  // fill, outline or ink that make it the variant it is.
+  it.each([...variants])("lets %s recede when disabled rather than reskinning it", (_name, classes) => {
+    const disabled = classes
+      .split(/\s+/)
+      .filter((utility) => utility.startsWith("disabled:"))
+      .map((utility) => utility.slice("disabled:".length));
+
+    expect(disabled.filter((utility) => /^(bg|text|border)-/.test(utility))).toEqual([]);
+  });
+
+  // Off, no variant may be mistaken for another: they recede by one answer, so
+  // what tells them apart at rest still tells them apart while they are off.
+  it("gives every variant the same disabled answer", () => {
+    const answers = new Set(
+      [...variants.values()].map((classes) =>
+        classes
+          .split(/\s+/)
+          .filter((utility) => utility.startsWith("disabled:"))
+          .sort()
+          .join(" "),
+      ),
+    );
+    expect([...answers]).toHaveLength(1);
+  });
 });
