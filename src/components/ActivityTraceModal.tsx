@@ -239,7 +239,7 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
                 ].filter(Boolean).join(" · ")}</span>
               </button>
               {row.targetHash && <div className="px-3 pb-2 text-xs">
-                {row.target ? <button type="button" className="break-all text-link hover:underline" onClick={() => {
+                {row.target ? <button type="button" className="break-all text-primary hover:underline" onClick={() => {
                   setRevealError(null);
                   void revealInMain(row.target!.path, () => alive.current, onClose, row.targetHash!).then((result) => {
                     if (alive.current && result !== "revealed" && result !== "superseded") setRevealError(result === "blocked"
