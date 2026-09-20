@@ -25,8 +25,12 @@ const VARIANTS: Record<Variant, string> = {
     "bg-primary text-ink-inverted shadow-sm hover:brightness-110 active:brightness-90 disabled:bg-surface-muted disabled:text-ink-muted disabled:shadow-none",
   secondary:
     "border border-border bg-surface text-ink hover:bg-surface-muted hover:border-border-strong active:bg-border active:border-border-strong disabled:text-ink-muted",
+  // Ghost rests at the ink scale's faintest step and has no surface to drop,
+  // so it is the one variant that cannot fade by colour alone — a disabled
+  // `text-ink-muted` is the colour it already wears. It fades by opacity, like
+  // the app's other surfaceless quiet controls.
   ghost:
-    "text-ink-muted hover:bg-surface-muted hover:text-ink active:bg-border active:text-ink disabled:text-ink-muted",
+    "text-ink-muted hover:bg-surface-muted hover:text-ink active:bg-border active:text-ink disabled:opacity-40",
   danger:
     "border border-danger/50 bg-danger-surface text-danger hover:border-danger hover:brightness-95 active:brightness-90 disabled:border-border disabled:bg-surface-muted disabled:text-ink-muted",
 };
