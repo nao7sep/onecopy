@@ -2,12 +2,14 @@
 // store; persistence and the resulting scan are coordinated at this edge.
 
 import { log, toErrorFields } from "../repositories";
+import type { LanguagePreference } from "../i18n/languages";
 import { useAppStore } from "../state/app-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useWizardStore } from "../state/wizard-store";
 
 interface WizardSubmission {
   dirs: { path: string }[];
+  language: LanguagePreference;
   timezone: string;
   optionalFeatures: ReturnType<typeof useWizardStore.getState>["optionalFeatures"];
 }
@@ -31,6 +33,7 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
   try {
     await useAppStore.getState().patchConfig({
       sourceDirs: submission.dirs.map((dir) => dir.path),
+      language: submission.language,
       defaultTimezone: submission.timezone,
       ...submission.optionalFeatures,
     });
@@ -61,13 +64,14 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
 
 export function finishWizard(): Promise<void> {
   if (finishInFlight !== null) return finishInFlight;
-  const { dirs, timezone, timezoneValid, timezonePending, optionalFeatures } =
+  const { dirs, language, timezone, timezoneValid, timezonePending, optionalFeatures } =
     useWizardStore.getState();
   if (!timezoneValid || timezonePending || timezone.trim() === "") {
     return Promise.resolve();
   }
   const submission: WizardSubmission = {
     dirs: dirs.map((dir) => ({ path: dir.path })),
+    language,
     timezone,
     optionalFeatures: { ...optionalFeatures },
   };

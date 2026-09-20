@@ -100,6 +100,10 @@ pub struct DefaultConfig {
     pub pairing_enabled: bool,
     /// UI theme: "system" (follow the OS), "light", or "dark".
     pub theme: String,
+    /// Interface language: "system" (follow the computer at every launch) or a
+    /// supported tag such as "ja" (see i18n::LANGUAGES). An unrecognized value
+    /// means "system", the same rule the frontend applies.
+    pub language: String,
     /// UI font family: a free-text CSS family string, stored verbatim (the
     /// app-chrome conventions' family-only rule — CSS resolves the stack, and
     /// there is deliberately no size knob; zoom is the size remedy).
@@ -172,6 +176,7 @@ impl Default for DefaultConfig {
             text_fallback_encoding: crate::text_preview::DEFAULT_FALLBACK_ENCODING.to_string(),
             pairing_enabled: true,
             theme: "system".to_string(),
+            language: "system".to_string(),
             // Blank means the stylesheet's explicit system stack. Persist
             // only a real user override here, never CSS implementation detail.
             ui_font_family: String::new(),

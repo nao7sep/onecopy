@@ -5,6 +5,7 @@ import "./App.css";
 import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, initLogging } from "./repositories";
 import { installWindowAppearance } from "./workflows/window-appearance";
+import { InterfaceLanguage } from "./i18n/InterfaceLanguage";
 import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
@@ -77,21 +78,23 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
         <RootErrorBoundary onFailure={recoverComparisonPresentation}>
-          <Suspense fallback={null}>
-            {view === "preview" ? (
-              <PreviewWindow />
-            ) : view === "comparison" ? (
-              <ComparisonWindow slice={slice} />
-            ) : view === "comparison-image" ? (
-              <ComparisonImageWindow />
-            ) : view === "identify" ? (
-              <IdentifyWindow number={slice} />
-            ) : view === "viewer" ? (
-              <ViewerWindow />
-            ) : (
-              <App />
-            )}
-          </Suspense>
+          <InterfaceLanguage>
+            <Suspense fallback={null}>
+              {view === "preview" ? (
+                <PreviewWindow />
+              ) : view === "comparison" ? (
+                <ComparisonWindow slice={slice} />
+              ) : view === "comparison-image" ? (
+                <ComparisonImageWindow />
+              ) : view === "identify" ? (
+                <IdentifyWindow number={slice} />
+              ) : view === "viewer" ? (
+                <ViewerWindow />
+              ) : (
+                <App />
+              )}
+            </Suspense>
+          </InterfaceLanguage>
         </RootErrorBoundary>
       </React.StrictMode>,
     );

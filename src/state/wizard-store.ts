@@ -10,6 +10,13 @@ import { stringArrayField } from "../utils/configProjection";
 import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
 import {
+  effectiveLanguage,
+  normalizeLanguagePreference,
+  type Language,
+  type LanguagePreference,
+} from "../i18n/languages";
+import { useLanguageStore } from "./language-store";
+import {
   optionalFeatureSetup,
   type OptionalFeatureChoices,
   type OptionalFeatureId,
@@ -23,6 +30,13 @@ interface WizardState {
   open: boolean;
   step: 1 | 2 | 3;
   dirs: WizardDir[];
+  /** The staged interface language. Like every other wizard answer it is
+   * written only by Finish, but the wizard shows it at once so the reader sees
+   * the language they picked while answering. */
+  language: LanguagePreference;
+  /** The language in effect when the wizard opened, so abandoning a re-run
+   * puts the preview back. */
+  languageBefore: Language;
   timezone: string;
   timezoneValid: boolean;
   timezonePending: boolean;
@@ -43,6 +57,7 @@ interface WizardState {
   setStep: (step: 1 | 2 | 3) => void;
   setOptionalFeature: (id: OptionalFeatureId, enabled: boolean) => void;
   setTimezone: (name: string) => Promise<void>;
+  setLanguage: (preference: LanguagePreference) => void;
   /** Abandons a re-run, changing nothing. Never available on a first run. */
   cancel: () => void;
   recheckPresence: () => Promise<void>;
@@ -55,6 +70,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   open: false,
   step: 1,
   dirs: [],
+  language: "system",
+  languageBefore: "en",
   timezone: "",
   timezoneValid: true,
   timezonePending: false,
@@ -70,12 +87,15 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
+    const language = normalizeLanguagePreference(config?.language);
     if (sourceDirs.length === 0) {
       presenceCheck.begin();
       set({
         open: true,
         step: 1,
         dirs: [],
+        language,
+        languageBefore: useLanguageStore.getState().language,
         timezone,
         timezoneValid: true,
         timezonePending: false,
@@ -89,6 +109,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     } else {
       set({
         open: false,
+        language,
         timezone,
         timezoneValid: true,
         timezonePending: false,
@@ -110,6 +131,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     set({
       open: true,
       step: 1,
+      language: normalizeLanguagePreference(config?.language),
+      languageBefore: useLanguageStore.getState().language,
       timezone,
       timezoneValid: true,
       timezonePending: false,
@@ -171,10 +194,17 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     }
   },
 
+  setLanguage: (preference) => {
+    set({ language: preference });
+    const { systemLanguage } = useLanguageStore.getState();
+    useLanguageStore.setState({ language: effectiveLanguage(preference, systemLanguage) });
+  },
+
   cancel: () => {
     // Nothing was written on the way through — every step edits store state
     // only, and the Finish workflow is the sole writer — so abandoning is
-    // just a close.
+    // just a close. The previewed language goes back with it.
+    useLanguageStore.setState({ language: get().languageBefore });
     set({ open: false, reconfigure: false });
   },
 

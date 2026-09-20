@@ -1,51 +1,7 @@
 use serde_json::{json, Value};
-use tauri::menu::Menu;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager};
 
-const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
-
-fn menu_with_safe_quit(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let menu = Menu::default(app)?;
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        let target_title = if cfg!(target_os = "macos") {
-            app.package_info().name.as_str()
-        } else {
-            "File"
-        };
-        let submenu = menu
-            .items()?
-            .into_iter()
-            .filter_map(|item| item.as_submenu().cloned())
-            .find(|item| item.text().is_ok_and(|text| text == target_title))
-            .expect("Tauri default app/file menu must exist");
-        let items = submenu.items()?;
-        let quit_index = items
-            .len()
-            .checked_sub(1)
-            .expect("Tauri default app/file menu must not be empty");
-        assert!(
-            items[quit_index].as_predefined_menuitem().is_some(),
-            "Tauri default app/file menu must end with Quit"
-        );
-        submenu.remove_at(quit_index)?;
-        let quit_text = if cfg!(target_os = "macos") {
-            format!("Quit {}", app.package_info().name)
-        } else {
-            "Exit".to_string()
-        };
-        submenu.append(&MenuItem::with_id(
-            app,
-            SAFE_QUIT_MENU_ID,
-            quit_text,
-            true,
-            Some("CmdOrCtrl+Q"),
-        )?)?;
-    }
-    Ok(menu)
-}
+use crate::menu::SAFE_QUIT_MENU_ID;
 
 pub mod activity;
 pub mod activity_history;
@@ -67,6 +23,8 @@ pub mod extensions;
 pub mod face;
 pub mod failure_runtime;
 pub mod file_identity;
+pub mod i18n;
+pub mod menu;
 pub mod file_information_runtime;
 pub mod fs_publish;
 pub mod fs_recovery;
@@ -234,7 +192,19 @@ fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
     logging::boundary(
         "appearance_preferences",
         json!({}),
-        || storage::read_appearance_preferences(&paths::data_root(&app)?),
+        || {
+            let mut preferences = storage::read_appearance_preferences(&paths::data_root(&app)?)?;
+            // The language the core settled on at launch, plus what the computer
+            // asked for, so a window paints its first text in the right language
+            // and formats dates the computer's way when they share a language.
+            let state = app.state::<i18n::LanguageState>();
+            if let Some(object) = preferences.as_object_mut() {
+                object.insert("language".into(), json!(state.current()));
+                object.insert("systemLanguage".into(), json!(state.system_language));
+                object.insert("systemLocale".into(), json!(state.system_locale));
+            }
+            Ok(preferences)
+        },
         |_| json!({}),
     )
 }
@@ -278,6 +248,23 @@ fn patch_config(
                     logging::warn(
                         "saved theme could not be applied to every window",
                         json!({ "error": { "message": error } }),
+                    );
+                }
+            }
+            // A saved language reaches the native menu here; the windows follow
+            // through the appearance invalidation below. The items macOS draws
+            // itself keep the language AppKit settled on at launch.
+            if patch.get("language").is_some() {
+                let state = app.state::<i18n::LanguageState>();
+                let resolved = i18n::normalize_preference(
+                    outcome.merged.get("language").and_then(Value::as_str),
+                )
+                .unwrap_or(state.system_language);
+                state.set_current(resolved);
+                if let Err(error) = menu::build(&app, resolved).and_then(|menu| app.set_menu(menu)) {
+                    logging::warn(
+                        "saved language could not be applied to the native menu",
+                        json!({ "error": { "message": error.to_string() } }),
                     );
                 }
             }
@@ -2117,6 +2104,13 @@ pub fn run() {
             .map(|v| v == "1")
             .unwrap_or(false);
 
+    // The interface language is resolved before Tauri builds the app: AppKit
+    // settles its own language when the application object is created, and the
+    // native menu is built from this reading.
+    let language = i18n::LanguageState::detect(paths::data_root_before_launch().as_deref());
+    #[cfg(target_os = "macos")]
+    i18n::align_appkit(language.current());
+
     let placement_state = window_placement::new_state();
     let preview_placement_state = window_placement::new_state();
     let event_placement_state = placement_state.clone();
@@ -2135,6 +2129,7 @@ pub fn run() {
             preview_placement_state.clone(),
         ))
         .manage(theme::ThemeState::default())
+        .manage(language)
         .on_window_event(move |window, event| {
             window_placement::on_window_event(
                 window,
@@ -2169,7 +2164,10 @@ pub fn run() {
                 }
             }
         })
-        .menu(menu_with_safe_quit)
+        .menu(|app| {
+            let language = app.state::<i18n::LanguageState>().current();
+            menu::build(app, language)
+        })
         .on_menu_event(|app, event| {
             if event.id() == SAFE_QUIT_MENU_ID {
                 if let Some(window) = app.get_webview_window("main") {

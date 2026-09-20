@@ -3,10 +3,14 @@ import { log, toErrorFields } from "../repositories";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { applyUiFont } from "../utils/uiFont";
+import { useLanguageStore } from "../state/language-store";
 import { useWindowPreferencesStore } from "../state/window-preferences-store";
 
 interface AppearancePreferences {
   uiFontFamily: unknown;
+  language?: unknown;
+  systemLanguage?: unknown;
+  systemLocale?: unknown;
   enlargeSmallImagesInPreview?: unknown;
   videoTranscriptionEnabled?: unknown;
   audioTranscriptionEnabled?: unknown;
@@ -45,6 +49,7 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
       const preferences = await readPreferences();
       if (current !== request) return;
       applyUiFont(preferences.uiFontFamily);
+      useLanguageStore.getState().apply(preferences);
       useWindowPreferencesStore.getState().apply(preferences);
     } catch (error) {
       if (current === request) reportFailure(error);

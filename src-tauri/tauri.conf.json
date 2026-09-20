@@ -47,7 +47,19 @@
   },
   "windows": {
    "nsis": {
-    "installMode": "both"
+    "installMode": "both",
+    "languages": [
+     "English",
+     "German",
+     "Spanish",
+     "French",
+     "Italian",
+     "PortugueseBR",
+     "Russian",
+     "Japanese",
+     "Korean",
+     "SimpChinese"
+    ]
    }
   }
  }

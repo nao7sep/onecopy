@@ -9,6 +9,9 @@ import { Row, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
 import { useId } from "react";
 import OperationResult from "./ui/OperationResult";
+import { CATALOGUES } from "../i18n/catalogues";
+import { useI18n } from "../i18n/I18nContext";
+import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
 
 const WIZARD_STEPS = 3;
 
@@ -26,7 +29,10 @@ const WIZARD_STEPS = 3;
 
 export default function Wizard() {
   const timezoneErrorId = useId();
+  const { t } = useI18n();
   const step = useWizardStore((s) => s.step);
+  const language = useWizardStore((s) => s.language);
+  const setLanguage = useWizardStore((s) => s.setLanguage);
   const dirs = useWizardStore((s) => s.dirs);
   const timezone = useWizardStore((s) => s.timezone);
   const timezoneValid = useWizardStore((s) => s.timezoneValid);
@@ -80,6 +86,21 @@ export default function Wizard() {
 
         {step === 1 ? (
           <section>
+            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
+              {t("wizard.language")}
+            </h2>
+            <select
+              className="mb-6 rounded-md border border-input-border bg-surface px-2 py-1 text-sm text-ink"
+              value={language}
+              onChange={(e) => setLanguage(normalizeLanguagePreference(e.target.value))}
+            >
+              <option value="system">{t("settings.languageSystem")}</option>
+              {LANGUAGES.map((tag) => (
+                <option key={tag} value={tag} lang={tag}>
+                  {CATALOGUES[tag]["language.name"] as string}
+                </option>
+              ))}
+            </select>
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">
               Directories to handle
             </h2>

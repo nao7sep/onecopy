@@ -25,6 +25,9 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
 import TimezoneHelpLink from "./TimezoneHelpLink";
+import { CATALOGUES } from "../i18n/catalogues";
+import { useI18n } from "../i18n/I18nContext";
+import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
 
 /** Auxiliary display priority. Persisted as app STATE, not part of the config
  * draft — screen identifiers are machine-specific and reordering applies
@@ -288,6 +291,7 @@ export default function SettingsModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const timezoneErrorId = useId();
   const [activeTab, setActiveTab] = useState<SettingsTab>("library");
   const draft = useSettingsStore((s) => s.draft);
@@ -826,6 +830,21 @@ export default function SettingsModal({
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             Appearance
           </h2>
+          <Row label={t("settings.language")}>
+            <Select
+              value={draft.language}
+              onChange={(e) =>
+                update({ language: normalizeLanguagePreference(e.target.value) })
+              }
+            >
+              <option value="system">{t("settings.languageSystem")}</option>
+              {LANGUAGES.map((language) => (
+                <option key={language} value={language} lang={language}>
+                  {CATALOGUES[language]["language.name"] as string}
+                </option>
+              ))}
+            </Select>
+          </Row>
           <Row
             label="UI font"
             hint="Blank uses the system font; custom values accept a CSS font-family list"

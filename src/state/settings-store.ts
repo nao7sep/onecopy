@@ -4,6 +4,10 @@
 // publication.
 
 import { create } from "zustand";
+import {
+  normalizeLanguagePreference,
+  type LanguagePreference,
+} from "../i18n/languages";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
@@ -44,6 +48,7 @@ export interface SettingsDraft {
   textFallbackEncoding: string;
   pairingEnabled: boolean;
   theme: "system" | "light" | "dark";
+  language: LanguagePreference;
   uiFontFamily: string;
   keepAwakeDuringIndexing: boolean;
   checkGithubReleasesAtLaunch: boolean;
@@ -159,6 +164,7 @@ function draftFrom(
       config?.theme === "light" || config?.theme === "dark"
         ? config.theme
         : "system",
+    language: normalizeLanguagePreference(config?.language),
     uiFontFamily: normalizeUiFontPreference(config?.uiFontFamily),
     keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
     checkGithubReleasesAtLaunch: config?.checkGithubReleasesAtLaunch !== false,

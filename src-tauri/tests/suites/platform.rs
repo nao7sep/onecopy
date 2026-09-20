@@ -12,6 +12,8 @@ mod dependencies_tests;
 mod file_identity_tests;
 #[path = "../fs_publish_tests.rs"]
 mod fs_publish_tests;
+#[path = "../i18n_tests.rs"]
+mod i18n_tests;
 #[path = "../presence_tests.rs"]
 mod presence_tests;
 #[path = "../presentation_tests.rs"]
