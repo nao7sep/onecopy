@@ -27,7 +27,12 @@ export default function ShortcutsModal({
       <p className="mb-5 text-xs text-ink-muted">
         {t("shortcuts.intro")}
       </p>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,19rem),1fr))] gap-8">
+      {/* The track minimum decides how many columns FIT, not how wide they end
+          up — the 1fr share does that — so it is set low enough that all three
+          stand up inside the surface the shell actually grants at the window's
+          own opening width, gutter and 16px scrollbar included. At 19rem they
+          did not, and the third column wrapped under the first two. */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,17rem),1fr))] gap-8">
         {shortcutColumns().map((column) => (
           <div key={column[0].title} className="min-w-0 space-y-7" data-shortcut-column>
           {column.map((group) => (
