@@ -64,7 +64,7 @@ export async function saveSettings(): Promise<void> {
   try {
     await useAppStore.getState().patchState(
       { soundEnabled, playbackVolume },
-      { immediate: true },
+      { immediate: true, reportFailure: false },
     );
     // Index projection is durable follow-up work: once both authored
     // documents publish, close the draft rather than holding Settings open

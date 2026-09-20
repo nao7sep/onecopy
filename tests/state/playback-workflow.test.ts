@@ -4,7 +4,8 @@ import { useAppStore } from "../../src/state/app-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { installPlaybackWorkflow } from "../../src/workflows/playback";
-import { emitCalls, fireEvent, resetTauriMocks } from "../mocks/tauri";
+import { setSoundEnabled } from "../../src/workflows/playback";
+import { emitCalls, fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function latestState(): PlaybackSession | null {
   const call = [...emitCalls]
@@ -33,6 +34,30 @@ beforeEach(async () => {
   usePreviewStore.setState({ follow: true });
   useQuickViewStore.setState({ session: null });
   await installPlaybackWorkflow();
+});
+
+describe("sound setting", () => {
+  it("takes Sound back from the players when its write never reached disk", async () => {
+    fireEvent("playback://register", { surface: "preview-split", key: "clip", medium: "video" });
+    mockCommands({
+      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+    });
+
+    await expect(setSoundEnabled(false)).rejects.toBeInstanceOf(TypeError);
+
+    expect(latestState()).toMatchObject({ soundEnabled: true });
+    expect(useAppStore.getState().appData?.state).toMatchObject({ soundEnabled: true });
+  });
+
+  it("keeps a saved Sound change", async () => {
+    fireEvent("playback://register", { surface: "preview-split", key: "clip", medium: "video" });
+    mockCommands({ patch_state: ({ patch }) => patch });
+
+    await setSoundEnabled(false);
+
+    expect(latestState()).toMatchObject({ soundEnabled: false });
+    expect(useAppStore.getState().appData?.state).toMatchObject({ soundEnabled: false });
+  });
 });
 
 describe("playback workflow", () => {

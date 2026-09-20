@@ -247,21 +247,35 @@ export function requestPlaybackSeek(key: string, position: number): void {
 }
 
 export async function setSoundEnabled(enabled: boolean): Promise<void> {
+  const previous = session?.soundEnabled;
   if (session !== null) {
     session = { ...session, soundEnabled: enabled };
     broadcast();
   }
-  await useAppStore.getState().patchState(
-    { soundEnabled: enabled },
-    { immediate: true },
-  );
+  try {
+    // The caller shows the failure, so the core stays quiet: one failed write
+    // is one record.
+    await useAppStore.getState().patchState(
+      { soundEnabled: enabled },
+      { immediate: true, reportFailure: false },
+    );
+  } catch (error) {
+    // Players and the status bar must not keep claiming a setting that was
+    // never saved.
+    if (session !== null && previous !== undefined) {
+      session = { ...session, soundEnabled: previous };
+      broadcast();
+    }
+    throw error;
+  }
 }
 
 export async function setMediumAutoplay(
   medium: PlaybackMedium,
   enabled: boolean,
 ): Promise<void> {
-  await useAppStore.getState().patchConfig({
-    [medium === "video" ? "videoAutoplay" : "audioAutoplay"]: enabled,
-  });
+  await useAppStore.getState().patchConfig(
+    { [medium === "video" ? "videoAutoplay" : "audioAutoplay"]: enabled },
+    { reportFailure: false },
+  );
 }

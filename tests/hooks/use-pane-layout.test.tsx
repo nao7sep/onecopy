@@ -92,7 +92,10 @@ describe("usePaneLayout", () => {
     fireEvent.mouseUp(document, { clientX: 1100 });
 
     expect(patchState).toHaveBeenCalledOnce();
-    expect(patchState).toHaveBeenCalledWith({ previewPaneRatio: expect.any(Number) });
+    expect(patchState).toHaveBeenCalledWith(
+      { previewPaneRatio: expect.any(Number) },
+      { reportFailure: false },
+    );
     const ratio = patchState.mock.calls[0][0].previewPaneRatio as number;
     expect(ratio).toBeGreaterThan(0);
     expect(ratio).toBeLessThan(0.5);
@@ -114,6 +117,6 @@ describe("usePaneLayout", () => {
     // coordinate; persistence must not sample a render ref.
     fireEvent.mouseUp(document, { clientX: 300 });
 
-    expect(patchState).toHaveBeenCalledWith({ sidebarWidth: 306 });
+    expect(patchState).toHaveBeenCalledWith({ sidebarWidth: 306 }, { reportFailure: false });
   });
 });

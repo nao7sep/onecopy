@@ -63,6 +63,7 @@ export function patchConfigFile(
 
 export function patchStateFile(
   patch: Record<string, unknown>,
+  reportFailure = true,
 ): Promise<Record<string, unknown>> {
-  return invoke<Record<string, unknown>>("patch_state", { patch });
+  return invoke<Record<string, unknown>>("patch_state", { patch, reportFailure });
 }

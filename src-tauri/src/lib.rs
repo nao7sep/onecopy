@@ -315,7 +315,7 @@ fn patch_config(
 }
 
 #[tauri::command(async)]
-fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
+fn patch_state(app: AppHandle, patch: Value, report_failure: Option<bool>) -> Result<Value, String> {
     let result = logging::boundary(
         "patch_state",
         json!({}),
@@ -326,8 +326,10 @@ fn patch_state(app: AppHandle, patch: Value) -> Result<Value, String> {
         },
         |_| json!({}),
     );
-    if let Err(error) = &result {
-        let _ = failure_runtime::report(&app, "state-save-failed", None, error);
+    if report_failure.unwrap_or(true) {
+        if let Err(error) = &result {
+            let _ = failure_runtime::report(&app, "state-save-failed", None, error);
+        }
     }
     result
 }

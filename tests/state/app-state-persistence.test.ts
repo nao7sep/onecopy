@@ -87,6 +87,76 @@ describe("app state persistence settlement", () => {
     );
   });
 
+  it("puts a published setting back when its write never reached disk", async () => {
+    useAppStore.setState((current) => ({
+      appData: { ...current.appData!, state: { soundEnabled: true } },
+    }));
+    mockCommands({
+      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+    });
+
+    const saving = useAppStore.getState().patchState(
+      { soundEnabled: false },
+      { reportFailure: false },
+    );
+    expect(useAppStore.getState().appData?.state).toEqual({ soundEnabled: false });
+    const rejected = expect(saving).rejects.toBeInstanceOf(TypeError);
+
+    await vi.advanceTimersByTimeAsync(400);
+    await rejected;
+
+    expect(useAppStore.getState().appData?.state).toEqual({ soundEnabled: true });
+  });
+
+  it("keeps a newer published value after an older write fails", async () => {
+    useAppStore.setState((current) => ({
+      appData: { ...current.appData!, state: { zoomLevel: 1 } },
+    }));
+    mockCommands({
+      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+    });
+
+    const saving = useAppStore.getState().patchState(
+      { zoomLevel: 1.2 },
+      { immediate: true, reportFailure: false },
+    );
+    const rejected = expect(saving).rejects.toBeInstanceOf(TypeError);
+    useAppStore.setState((current) => ({
+      appData: { ...current.appData!, state: { zoomLevel: 1.5 } },
+    }));
+
+    await vi.advanceTimersByTimeAsync(400);
+    await rejected;
+
+    expect(useAppStore.getState().appData?.state).toEqual({ zoomLevel: 1.5 });
+  });
+
+  it("leaves the core quiet when the caller reports the failure itself", async () => {
+    mockCommands({
+      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+    });
+
+    const saving = useAppStore.getState().patchState(
+      { soundEnabled: false },
+      { immediate: true, reportFailure: false },
+    );
+    const rejected = expect(saving).rejects.toBeInstanceOf(TypeError);
+    await vi.advanceTimersByTimeAsync(400);
+    await rejected;
+
+    const write = invokeCalls.find((call) => call.command === "patch_state");
+    expect(write?.args.reportFailure).toBe(false);
+  });
+
+  it("asks the core to report a passive write it does not own", async () => {
+    mockCommands({ patch_state: ({ patch }) => patch });
+
+    await useAppStore.getState().patchState({ sidebarWidth: 300 }, { immediate: true });
+
+    const write = invokeCalls.find((call) => call.command === "patch_state");
+    expect(write?.args.reportFailure).toBe(true);
+  });
+
   it("joins state that arrives while shutdown is flushing", async () => {
     const firstWrite = { release: undefined as (() => void) | undefined };
     mockCommands({

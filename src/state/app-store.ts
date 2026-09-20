@@ -36,7 +36,7 @@ interface AppState {
   ) => Promise<void>;
   patchState: (
     patch: Record<string, unknown>,
-    options?: { immediate?: boolean },
+    options?: { immediate?: boolean; reportFailure?: boolean },
   ) => Promise<void>;
 }
 
@@ -44,6 +44,12 @@ interface AppState {
 // change per keystroke, and one write per pause is plenty (the backup store
 // dedups identical content, but churn is churn).
 let pendingStatePatch: Record<string, unknown> | null = null;
+// A coalesced write reports through the core only when every caller in it
+// wants that; a caller with its own notice opts out so one failure is one
+// record. The snapshot is what the published state held before the patch, so a
+// rejected write can put the interface back to the truth on disk.
+let pendingStateReportFailure = false;
+let pendingStateRollback: Record<string, unknown> | null = null;
 let stateFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingStateWaiters: Array<{
   resolve: () => void;
@@ -57,14 +63,21 @@ function flushPendingStatePatch(): Promise<void> {
   if (stateFlushTimer !== null) clearTimeout(stateFlushTimer);
   const toWrite = pendingStatePatch;
   const waiters = pendingStateWaiters;
+  const reportFailure = pendingStateReportFailure;
+  const rollback = pendingStateRollback;
   pendingStatePatch = null;
   pendingStateWaiters = [];
+  pendingStateReportFailure = false;
+  pendingStateRollback = null;
   stateFlushTimer = null;
   if (toWrite === null) return stateWriteTail;
 
   const write = stateWriteTail.then(() =>
-    patchStateFile(toWrite).then(() => undefined),
+    patchStateFile(toWrite, reportFailure).then(() => undefined),
   );
+  void write.catch(() => {
+    if (rollback !== null) revertPublishedState(rollback, toWrite);
+  });
   stateWriteTail = write.catch(() => undefined);
   void write.then(
     () => {
@@ -75,6 +88,27 @@ function flushPendingStatePatch(): Promise<void> {
     },
   );
   return write;
+}
+
+// A write that never reached disk must not leave the interface claiming the new
+// value: each key goes back unless something published a newer value meanwhile.
+function revertPublishedState(
+  previous: Record<string, unknown>,
+  attempted: Record<string, unknown>,
+): void {
+  useAppStore.setState((s) => {
+    if (s.appData === null) return s;
+    const current = s.appData.state ?? {};
+    const restored: Record<string, unknown> = { ...current };
+    let changed = false;
+    for (const [key, value] of Object.entries(attempted)) {
+      if (current[key] !== value) continue;
+      if (key in previous) restored[key] = previous[key];
+      else delete restored[key];
+      changed = true;
+    }
+    return changed ? { appData: { ...s.appData, state: restored } } : s;
+  });
 }
 
 export function reportStatePatchFailure(error: unknown): void {
@@ -89,7 +123,10 @@ export function reportStatePatchFailure(error: unknown): void {
 /** Settles a passive view-state write at the app-state owner. Explicit actions
  * that already have a local result await patchState directly instead. */
 export function retainStatePatch(patch: Record<string, unknown>): void {
-  void useAppStore.getState().patchState(patch).catch(reportStatePatchFailure);
+  void useAppStore
+    .getState()
+    .patchState(patch, { reportFailure: false })
+    .catch(reportStatePatchFailure);
 }
 
 /** Turns every later mutation into an immediate write and waits until the
@@ -135,6 +172,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   patchState: async (patch, options) => {
+    const published = get().appData?.state ?? {};
+    const snapshot = pendingStateRollback ?? {};
+    for (const key of Object.keys(patch)) {
+      if (!(key in snapshot) && key in published) snapshot[key] = published[key];
+    }
+    pendingStateRollback = snapshot;
+    pendingStateReportFailure =
+      pendingStateReportFailure || (options?.reportFailure ?? true);
     // Publish optimistically so readers see the new state immediately; the
     // disk write coalesces on a short timer.
     set((s) =>
