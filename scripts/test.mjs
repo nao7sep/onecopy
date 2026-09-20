@@ -8,7 +8,6 @@
 //
 // Neither run reads the working tree, Git, or a file's timestamp: the same
 // lanes run on every invocation, so two runs at one commit are comparable.
-// tests/README.md records which areas of OneCopy the default set stands for.
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
