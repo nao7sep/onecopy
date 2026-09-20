@@ -300,6 +300,33 @@ describe("managed-tool terminal ownership", () => {
     ).toBe(true));
   });
 
+  // One occurrence, one report: Managed Tools shows the failure on its own
+  // surface, so the core's generic storage notice must not appear beside it and
+  // the status bar must not count one failed write as two Issues.
+  it("reports a failed check-attempt write once, on the Managed Tools surface", async () => {
+    seed([
+      entry("ffmpeg", "installed-unchecked", "9.5"),
+      entry("whisper-large-v3-turbo", "not-installed"),
+    ]);
+    mockCommands({
+      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+      record_recent_notification: () => ({ id: 1 }),
+    });
+
+    await useBinariesStore.getState().checkAll();
+
+    expect(inEnglish(useBinariesStore.getState().checkError))
+      .toBe("OneCopy couldn’t record this managed-tool check. Try again.");
+    expect(useBinariesStore.getState().checking).toBe(false);
+    const write = invokeCalls.find((call) => call.command === "patch_state");
+    expect(write?.args.reportFailure).toBe(false);
+    await vi.waitFor(() =>
+      expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1),
+    );
+    expect(invokeCalls.some((call) => call.command === "publish_notification")).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "binaries_check")).toBe(false);
+  });
+
   it("applies an authoritative check response without a second status request", async () => {
     vi.useFakeTimers();
     try {

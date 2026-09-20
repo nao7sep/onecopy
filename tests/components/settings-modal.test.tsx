@@ -136,6 +136,33 @@ describe("Settings categories", () => {
     expect(screen.getAllByRole("button", { name: "Move up" })[0].textContent).toBe("Move up");
   });
 
+  // One occurrence, one report: the row that asked shows the failure, so the
+  // core must not raise its generic storage notice beside it and the status bar
+  // must not count the one failed write as two Issues.
+  it("reports a failed screen-order write once, at the rows that asked", async () => {
+    setMonitors([0, 1].map((index) => ({
+      name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },
+      size: { width: 1920, height: 1080 }, scaleFactor: 1,
+    })));
+    mockCommands({
+      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+      record_recent_notification: () => ({ id: 1 }),
+    });
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    const move = (await screen.findAllByRole("button", { name: "Move down" }))[0];
+
+    await act(async () => move.click());
+
+    expect(await screen.findByText("Couldn’t save the screen order.")).toBeTruthy();
+    const write = invokeCalls.find((call) => call.command === "patch_state");
+    expect(write?.args.reportFailure).toBe(false);
+    await waitFor(() =>
+      expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1),
+    );
+    expect(invokeCalls.some((call) => call.command === "publish_notification")).toBe(false);
+  });
+
   it("keeps screen controls reachable after identification failure and clears the result on retry", async () => {
     setMonitors([0, 1].map((index) => ({
       name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },

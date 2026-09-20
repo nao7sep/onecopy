@@ -76,7 +76,9 @@ function ScreensSection() {
     [keys[index], keys[target]] = [keys[target], keys[index]];
     void useAppStore
       .getState()
-      .patchState({ screenPriority: keys }, { immediate: true })
+      // This row shows the failure itself, so the core stays quiet: one failed
+      // write is one notice and one Issue.
+      .patchState({ screenPriority: keys }, { immediate: true, reportFailure: false })
       .catch((error) => {
         log.error("screen priority save failed", toErrorFields(error));
         setScreenError("settings.screenOrderSaveFailed");

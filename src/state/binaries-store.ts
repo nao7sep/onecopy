@@ -431,9 +431,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     );
     if (installed.length > 0) {
       try {
+        // Managed Tools shows the failure on its own surface, so the core stays
+        // quiet: one failed write is one notice and one Issue.
         await useAppStore.getState().patchState(
           { managedToolUpdateLastAttemptAtUtc: new Date().toISOString() },
-          { immediate: true },
+          { immediate: true, reportFailure: false },
         );
       } catch (error) {
         const failure = message("binaries.checkAttemptSaveFailed");

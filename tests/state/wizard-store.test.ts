@@ -69,6 +69,28 @@ describe("finish", () => {
     expect(patchConfigPayloads()).toEqual([]);
   });
 
+  // One occurrence, one report: the open form shows the failure, so the core's
+  // generic storage notice must not appear over it, and the Issue that keeps the
+  // failure for later comes from the form rather than from a second notice.
+  it("reports a failed setup save once, in the form, and keeps one Issue", async () => {
+    mockCommands({
+      patch_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
+    });
+
+    await finishWizard();
+
+    expect(useWizardStore.getState()).toMatchObject({ open: true, finishing: false });
+    expect(inEnglish(useWizardStore.getState().error)).toBe(
+      "Setup could not be saved. Your changes are still here; try again.",
+    );
+    const write = invokeCalls.find((call) => call.command === "patch_config");
+    expect(write?.args.reportFailure).toBe(false);
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1);
+    expect(invokeCalls.some((call) => call.command === "publish_notification")).toBe(false);
+    // The commit point failed, so nothing downstream of it ran.
+    expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(false);
+  });
+
   it("admits one Finish submission and keeps newer draft state open", async () => {
     let finishSave: (() => void) | undefined;
     mockCommands({
