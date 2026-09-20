@@ -22,9 +22,10 @@ permissions:
   contents: read
 
 jobs:
-  # Gate on both supported platforms: `npm run typecheck`, the frontend test
-  # suite (vitest — including tests/version.test.ts), and `cargo test` for the
-  # Rust core. Both build jobs depend on every matrix leg.
+  # Gate on both supported platforms with `npm test`, the fixed default set:
+  # the source-text and spec checks, the type check, the frontend bundle, the
+  # Vitest suite and `cargo test`. The heavy Rust suite stays out of CI, in the
+  # local full gate. Both build jobs depend on every matrix leg.
   test:
     strategy:
       fail-fast: false
@@ -42,14 +43,10 @@ jobs:
           workspaces: src-tauri -> target
       - run: npm ci
       - run: npm run check:release-version
-      - run: npm run typecheck
-      - run: npx vitest run
+      - run: npm test
       - name: Test Windows package failure handling
         if: runner.os == 'Windows'
         run: pwsh tests/windows/package-fail-closed.ps1
-      - name: cargo test
-        working-directory: src-tauri
-        run: cargo test
 
   build:
     needs: test

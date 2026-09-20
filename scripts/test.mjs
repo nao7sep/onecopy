@@ -1,55 +1,22 @@
-// `npm test` runs only the lanes that the working-tree changes against
-// HEAD can affect; `npm run test:full` runs every lane. test-plan.mjs owns
-// the selection; this file gathers its inputs and runs the chosen lanes in
-// order, stopping at the first failure.
+// The two test entry points, as a fixed list of lanes.
+//
+// `npm test` runs the default set: the hidden-character and spec-structure
+// checks, the type check, the frontend bundle, every Vitest test, and every
+// Cargo test. `npm run test:full` adds the lanes held out for cost — the heavy
+// Rust suite, which downloads and runs the managed tools and models, and on
+// Windows the packaging failure script.
+//
+// Neither run reads the working tree, Git, or a file's timestamp: the same
+// lanes run on every invocation, so two runs at one commit are comparable.
+// tests/README.md records which areas of OneCopy the default set stands for.
 
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { planTests, readsRepository, rustEmbeddedFiles, rustSuiteModules } from "./test-plan.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SUITES = path.join(ROOT, "src-tauri", "tests", "suites");
 const MANIFEST = ["--manifest-path", "src-tauri/Cargo.toml"];
 const onWindows = process.platform === "win32";
-
-function changedPaths() {
-  const status = execFileSync(
-    "git",
-    ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    { cwd: ROOT, encoding: "utf8" },
-  );
-  const entries = status.split("\0").filter(Boolean);
-  const paths = [];
-  for (let index = 0; index < entries.length; index += 1) {
-    const state = entries[index].slice(0, 2);
-    paths.push(entries[index].slice(3));
-    // With -z, a rename or copy is followed by its source path.
-    if (state[0] === "R" || state[0] === "C") paths.push(entries[(index += 1)]);
-  }
-  return paths;
-}
-
-function testFiles(directory) {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) return testFiles(absolute);
-    return /\.test\.tsx?$/.test(entry.name) ? [absolute] : [];
-  });
-}
-
-function rustSources(directory) {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) return rustSources(absolute);
-    return entry.name.endsWith(".rs") ? [absolute] : [];
-  });
-}
-
-function repositoryPath(absolute) {
-  return path.relative(ROOT, absolute).split(path.sep).join("/");
-}
 
 function run(label, command, args, shell = false) {
   process.stdout.write(`\n› ${label}\n`);
@@ -63,64 +30,16 @@ function runNode(label, script, args = []) {
 }
 
 const full = process.argv.includes("--full");
-const changed = full ? [] : changedPaths();
-const plan = planTests({
-  changed,
-  full,
-  platform: process.platform,
-  suiteModules: rustSuiteModules(
-    readdirSync(SUITES)
-      .filter((name) => name.endsWith(".rs"))
-      .map((name) => ({
-        suite: path.basename(name, ".rs"),
-        source: readFileSync(path.join(SUITES, name), "utf8"),
-      })),
-  ),
-  repositoryReaders: testFiles(path.join(ROOT, "tests"))
-    .filter((file) => readsRepository(readFileSync(file, "utf8")))
-    .map(repositoryPath),
-  rustInputs: rustEmbeddedFiles(
-    [...rustSources(path.join(ROOT, "src-tauri", "src")), path.join(ROOT, "src-tauri", "build.rs")]
-      .filter((file) => existsSync(file))
-      .map((file) => ({ file: repositoryPath(file), source: readFileSync(file, "utf8") })),
-  ),
-});
 
-if (!full) {
-  process.stdout.write(
-    changed.length === 0
-      ? "Nothing differs from HEAD; no tests to run.\n"
-      : `Testing what ${changed.length} changed path(s) against HEAD can affect.\n`,
-  );
-}
-
-if (plan.hidden) runNode("hidden characters", "scripts/check-hidden-characters.mjs");
-if (plan.specs) runNode("spec structure", "scripts/check-spec-structure.mjs");
+runNode("hidden characters", "scripts/check-hidden-characters.mjs");
+runNode("spec structure", "scripts/check-spec-structure.mjs");
 // npm is a .cmd shim on Windows, which Node starts only through a shell.
-if (plan.typecheck) run("typecheck", "npm", ["run", "typecheck"], onWindows);
-if (plan.vitest === "all") {
-  runNode("vitest", "node_modules/vitest/vitest.mjs", ["run"]);
-} else if (plan.vitest) {
-  runNode("vitest related", "node_modules/vitest/vitest.mjs", [
-    "related",
-    "--run",
-    "--passWithNoTests",
-    ...plan.vitest,
-  ]);
-}
-if (plan.bundle) runNode("frontend bundle", "node_modules/vite/bin/vite.js", ["build"]);
-if (plan.rust === "all") {
-  run("cargo test", "cargo", ["test", ...MANIFEST]);
-} else if (plan.rust) {
-  run(`cargo test ${plan.rust.filters.join(" ")}`, "cargo", [
-    "test",
-    ...MANIFEST,
-    ...plan.rust.targets.flatMap((target) => ["--test", target]),
-    "--",
-    ...plan.rust.filters,
-  ]);
-}
-if (plan.heavy) {
+run("typecheck", "npm", ["run", "typecheck"], onWindows);
+runNode("frontend bundle", "node_modules/vite/bin/vite.js", ["build"]);
+runNode("vitest", "node_modules/vitest/vitest.mjs", ["run"]);
+run("cargo test", "cargo", ["test", ...MANIFEST]);
+
+if (full) {
   run("heavy suite: managed tools, models and the shared corpus", "cargo", [
     "test",
     ...MANIFEST,
@@ -129,7 +48,5 @@ if (plan.heavy) {
     "--",
     "--ignored",
   ]);
-}
-if (plan.windowsPackaging) {
-  run("Windows package failure handling", "pwsh", ["tests/windows/package-fail-closed.ps1"]);
+  if (onWindows) run("Windows package failure handling", "pwsh", ["tests/windows/package-fail-closed.ps1"]);
 }
