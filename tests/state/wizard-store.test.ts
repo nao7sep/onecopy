@@ -2,6 +2,7 @@
 // The wizard's Finish step.
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { useSectionsStore } from "../../src/state/sections-store";
 import { useWizardStore } from "../../src/state/wizard-store";
 import { finishWizard } from "../../src/workflows/wizard";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -89,6 +90,26 @@ describe("finish", () => {
     expect(invokeCalls.some((call) => call.command === "publish_notification")).toBe(false);
     // The commit point failed, so nothing downstream of it ran.
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(false);
+  });
+
+  // Once the setup is saved, nothing may tell the form it was not. The automatic check
+  // reports at the source check, which is where its recovery lives.
+  it("leaves a failed automatic check to the source check that owns it", async () => {
+    mockCommands({
+      start_source_check: () => Promise.reject(new TypeError("source check unavailable")),
+    });
+
+    await finishWizard();
+
+    expect(useWizardStore.getState().open).toBe(false);
+    expect(useWizardStore.getState().error).toBeNull();
+    expect(inEnglish(useSectionsStore.getState().error)).toBe(
+      "Couldn’t start checking source folders.",
+    );
+    const recorded = invokeCalls
+      .filter((call) => call.command === "record_recent_notification")
+      .map((call) => (call.args.request as { kind: string }).kind);
+    expect(recorded).toEqual(["source-check-start-failed"]);
   });
 
   it("admits one Finish submission and keeps newer draft state open", async () => {

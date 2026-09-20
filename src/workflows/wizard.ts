@@ -56,29 +56,20 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
     }
     return;
   }
-  try {
-    // Rechecking after persistence prunes trust for removed roots; a later
-    // re-add is first sight rather than a false substitution.
-    await useWizardStore.getState().recheckPresence();
-    if (stillOwnsSubmission(submission)) {
-      useWizardStore.setState({ open: false, finishing: false });
-    } else if (useWizardStore.getState().open) {
-      useWizardStore.setState({
-        finishing: false,
-        error: message("wizard.savedButStale"),
-      });
-    }
-    log.info("wizard finished", { sourceDirs: submission.dirs.length });
-    await useSectionsStore.getState().startSourceCheck("automatic");
-  } catch (error) {
-    log.error("wizard follow-up after save failed", toErrorFields(error));
-    if (useWizardStore.getState().finishing) {
-      useWizardStore.setState({
-        finishing: false,
-        error: message("wizard.saveFailed"),
-      });
-    }
+  // Past the commit point, each step owns its own failure and reports it where that step
+  // belongs: the presence recheck at the source list, the automatic check at the source
+  // check. Neither throws, so nothing here may claim the setup failed once it is saved.
+  await useWizardStore.getState().recheckPresence();
+  if (stillOwnsSubmission(submission)) {
+    useWizardStore.setState({ open: false, finishing: false });
+  } else if (useWizardStore.getState().open) {
+    useWizardStore.setState({
+      finishing: false,
+      error: message("wizard.savedButStale"),
+    });
   }
+  log.info("wizard finished", { sourceDirs: submission.dirs.length });
+  await useSectionsStore.getState().startSourceCheck("automatic");
 }
 
 export function finishWizard(): Promise<void> {
