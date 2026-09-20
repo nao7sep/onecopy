@@ -115,6 +115,27 @@ describe("Settings categories", () => {
     expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("");
   });
 
+  // The ends of the list are the whole point: a screen already first cannot
+  // move up and one already last cannot move down, and those two controls are
+  // the ones a user is most likely to reach for first.
+  it("inerts only the moves that would run off the ends of the screen order", async () => {
+    setMonitors([0, 1, 2].map((index) => ({
+      name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },
+      size: { width: 1920, height: 1080 }, scaleFactor: 1,
+    })));
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+
+    const disabled = (name: string) =>
+      screen.getAllByRole("button", { name }).map((button) => (button as HTMLButtonElement).disabled);
+
+    // The name comes from the button's own words, not an aria-label: a screen
+    // reader and the eye are told the same thing.
+    await waitFor(() => expect(disabled("Move up")).toEqual([true, false, false]));
+    expect(disabled("Move down")).toEqual([false, false, true]);
+    expect(screen.getAllByRole("button", { name: "Move up" })[0].textContent).toBe("Move up");
+  });
+
   it("keeps screen controls reachable after identification failure and clears the result on retry", async () => {
     setMonitors([0, 1].map((index) => ({
       name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },

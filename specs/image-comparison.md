@@ -28,7 +28,7 @@ Only the current page's viewing content is prepared ahead. Original pixels are o
 
 Comparison uses a deterministic suggested-quality order: enabled face-quality result, then sharpness, then stable Main or path order for ties. Quality facts are visibly advisory. They never select an image or create a keep or deletion decision.
 
-Configured display order determines cross-display order. Within a display, order is left to right and then top to bottom. This stable order also governs range selection and direct image keys.
+Configured display order (`screen-priority.md`) determines cross-display order. Within a display, order is left to right and then top to bottom. This stable order also governs range selection and direct image keys.
 
 Each card uses the fitted and hold-inspection behavior owned by `content-presentation.md`. The card shows its filename, dimensions, file size, exact-copy count, and enabled advisory quality hints. An outer card border may communicate selection and decision state; the image remains cleanly contained within the card.
 

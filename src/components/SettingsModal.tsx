@@ -22,7 +22,6 @@ import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
 import { Plus } from "lucide-react";
-import { ChevronDown, ChevronUp } from "lucide-react";
 import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
@@ -148,22 +147,20 @@ function ScreensSection() {
               })}
             </span>
           </span>
+          {/* The words, not a chevron: OneCopy spends that glyph on sort
+              direction in the grid and on disclosure in Destinations, so on a
+              row it would read as one of those rather than as a move. The
+              words are also the accessible name, so nothing has to be kept in
+              step with a label nobody can see. */}
           <span className="flex gap-1">
-            <Button
-              variant="ghost"
-              aria-label={t("settings.moveUp")}
-              disabled={index === 0}
-              onClick={() => move(index, -1)}
-            >
-              <ChevronUp size={14} />
+            <Button disabled={index === 0} onClick={() => move(index, -1)}>
+              {t("settings.moveUp")}
             </Button>
             <Button
-              variant="ghost"
-              aria-label={t("settings.moveDown")}
               disabled={index === ordered.length - 1}
               onClick={() => move(index, 1)}
             >
-              <ChevronDown size={14} />
+              {t("settings.moveDown")}
             </Button>
           </span>
         </div>
