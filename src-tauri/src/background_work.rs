@@ -57,9 +57,9 @@ pub fn snapshot(
         } else if debt.unavailable || (debt.runnable == 0 && debt.blocked > 0) {
             ("unavailable", debt.reason)
         } else if debt.runnable == 0 && debt.failed > 0 {
-            ("failed", Some("Recheck the affected section to reattempt failed work"))
+            ("failed", Some("recheck-section"))
         } else if debt.runnable > 0 && runtime.busy {
-            ("waiting", Some("Waiting for indexing or a file operation"))
+            ("waiting", Some("waiting-for-indexing"))
         } else if debt.runnable > 0 {
             ("queued", debt.reason)
         } else {

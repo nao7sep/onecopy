@@ -20,6 +20,7 @@ import {
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import { beginMainFeedback } from "../state/main-feedback-store";
+import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
 import { useMutationStore } from "../state/mutation-store";
 import { restorePreviewAfterComparison } from "../state/preview-store";
@@ -116,7 +117,7 @@ export async function openComparison(
       } catch (error) {
         log.error("comparison return position failed", toErrorFields(error));
         await useComparisonStore.getState().close();
-        recordInterfaceFailure("Couldn’t prepare Comparison.");
+        recordInterfaceFailure(message("comparison.prepareFailed"));
         return "failed";
       }
     }
@@ -134,7 +135,7 @@ export async function requestComparisonFromMain(): Promise<void> {
     hash === null ||
     hashes.length !== selectedKeys.size
   ) {
-    feedback.finish({ tone: "normal", text: "Comparison requires images from one similar group." });
+    feedback.finish({ tone: "normal", text: message("comparison.needsOneGroup") });
     return;
   }
   const operationId = newActivityOperationId("comparison");
@@ -156,7 +157,7 @@ export async function requestComparisonFromMain(): Promise<void> {
       return;
     }
     if (!valid) {
-      feedback.finish({ tone: "normal", text: "Comparison requires images from one similar group." });
+      feedback.finish({ tone: "normal", text: message("comparison.needsOneGroup") });
       recordActivity({
         kind: "completed",
         owner: "comparison",
@@ -169,8 +170,9 @@ export async function requestComparisonFromMain(): Promise<void> {
     }
   } catch (error) {
     log.error("comparison admission failed", toErrorFields(error));
-    feedback.finish({ tone: "danger", text: "Couldn’t check the selected images." });
-    recordActionFailure("comparison-admission-failed", "Couldn’t check the selected images.", error);
+    const failure = message("comparison.admissionFailed");
+    feedback.finish({ tone: "danger", text: failure });
+    recordActionFailure("comparison-admission-failed", failure, error);
     recordActivity({
       kind: "failed",
       owner: "comparison",
@@ -183,7 +185,7 @@ export async function requestComparisonFromMain(): Promise<void> {
   }
   const result = await openComparison(hash, selectedItem);
   if (result === "unavailable") {
-    feedback.finish({ tone: "normal", text: "There are no similar images left to compare." });
+    feedback.finish({ tone: "normal", text: message("comparison.nothingLeft") });
     recordActivity({
       kind: "completed",
       owner: "comparison",
@@ -193,7 +195,7 @@ export async function requestComparisonFromMain(): Promise<void> {
       reason: "dependency",
     });
   } else if (result === "failed") {
-    feedback.finish({ tone: "danger", text: "Couldn’t open Comparison. See Issues for details." });
+    feedback.finish({ tone: "danger", text: message("comparison.openFailedSeeIssues") });
     recordActivity({
       kind: "failed",
       owner: "comparison",
@@ -293,9 +295,9 @@ export async function reconcileComparisonMembership(): Promise<void> {
     }
   } catch (error) {
     log.warn("comparison membership refresh failed", toErrorFields(error));
-    recordInterfaceFailure("Couldn’t check recent file changes in Comparison.");
+    recordInterfaceFailure(message("comparison.membershipRefreshFailed"));
     useComparisonStore.setState({
-      message: "Couldn’t check recent file changes in Comparison.",
+      message: message("comparison.membershipRefreshFailed"),
     });
   }
 }
@@ -467,10 +469,8 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("comparison display wiring failed", toErrorFields(error));
-    recordInterfaceFailure(
-      "Comparison-display controls are unavailable. Restart OneCopy to repair them.",
-    );
-    presentEscapedFailure("Comparison-display controls are unavailable. Reload OneCopy to repair them.");
+    recordInterfaceFailure(message("comparison.displayControlsUnavailable"));
+    presentEscapedFailure(message("comparison.displayControlsUnavailableReload"));
   },
 );
 

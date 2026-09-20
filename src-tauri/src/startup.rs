@@ -455,19 +455,30 @@ pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
     StartupGate::ready()
 }
 
-pub(crate) fn halt_before_runtime(diagnostic: &str) -> ! {
+/// Every catalogue key this dialog reads; the tests check each one exists in
+/// every language.
+pub const LAUNCH_FAILURE_KEYS: [&str; 3] =
+    ["launch.failedTitle", "launch.failedBody", "launch.quit"];
+
+/// The last-resort dialog for a failure before any window exists. It speaks the
+/// language the core resolved at launch, which is the computer's language when
+/// nothing is saved yet.
+pub(crate) fn halt_before_runtime(diagnostic: &str, language: &str) -> ! {
     crate::logging::error(
         "startup failed",
         json!({ "error": { "message": diagnostic } }),
     );
-    if std::panic::catch_unwind(|| {
+    let text = crate::i18n::catalogue(language);
+    let name = "OneCopy";
+    let title = text.text("launch.failedTitle", name);
+    let body = text.text("launch.failedBody", name);
+    let quit = text.text("launch.quit", name);
+    if std::panic::catch_unwind(move || {
         rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
-            .set_title("OneCopy could not launch")
-            .set_description(
-                "OneCopy could not create its application window. Restart the computer, then try again.",
-            )
-            .set_buttons(rfd::MessageButtons::OkCustom("Quit".to_string()))
+            .set_title(&title)
+            .set_description(&body)
+            .set_buttons(rfd::MessageButtons::OkCustom(quit))
             .show();
     })
     .is_err()

@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { accelerationModeLabel, featureLabel } from "../models/coreLabels";
 import { invoke } from "@tauri-apps/api/core";
 import { availableMonitors, type Monitor } from "@tauri-apps/api/window";
 import { identifyScreens } from "../workflows/identify-screens";
@@ -22,10 +23,11 @@ import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
 import { Plus } from "lucide-react";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
-import TimezoneHelpLink from "./TimezoneHelpLink";
-import { CATALOGUES } from "../i18n/catalogues";
+import { timeZoneOptions } from "../utils/timezones";
+import { CATALOGUES, type MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
 import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
 
@@ -33,8 +35,10 @@ import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
  * draft — screen identifiers are machine-specific and reordering applies
  * immediately, like a pane width. Meaningful only with two or more monitors. */
 function ScreensSection() {
+  const { t } = useI18n();
   const [monitors, setMonitors] = useState<Monitor[]>([]);
-  const [screenError, setScreenError] = useState<string | null>(null);
+  // The key, not a finished sentence, so the message follows a language change.
+  const [screenError, setScreenError] = useState<MessageKey | null>(null);
   const [identifying, setIdentifying] = useState(false);
   const mounted = useRef(false);
   const priority = priorityFromState(
@@ -52,13 +56,17 @@ function ScreensSection() {
       .catch((error) => {
         if (!current) return;
         log.warn("settings monitor query failed", toErrorFields(error));
-        setScreenError("Couldn’t read the connected screens.");
-        recordActionFailure("screen-list-failed", "Couldn’t read the connected screens.", error);
+        setScreenError("settings.screensReadFailed");
+        recordActionFailure(
+          "screen-list-failed",
+          message("settings.screensReadFailed"),
+          error,
+        );
       });
     return () => { current = false; mounted.current = false; };
   }, []);
   if (monitors.length < 2) return screenError === null ? null : (
-    <OperationResult level="error" className="mt-6">{screenError}</OperationResult>
+    <OperationResult level="error" className="mt-6">{t(screenError)}</OperationResult>
   );
 
   const ordered = orderMonitors(monitors, priority);
@@ -72,18 +80,21 @@ function ScreensSection() {
       .patchState({ screenPriority: keys }, { immediate: true })
       .catch((error) => {
         log.error("screen priority save failed", toErrorFields(error));
-        setScreenError("Couldn’t save the screen order.");
-        recordActionFailure("screen-order-save-failed", "Couldn’t save the screen order.", error);
+        setScreenError("settings.screenOrderSaveFailed");
+        recordActionFailure(
+          "screen-order-save-failed",
+          message("settings.screenOrderSaveFailed"),
+          error,
+        );
       });
   };
   return (
     <>
       <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-        Screens
+        {t("settings.screens")}
       </h2>
       <p className="mb-3 text-xs text-ink-muted">
-        Order sets display priority for Preview and Comparison. Main&apos;s current
-        display is excluded when an auxiliary window opens. Applies immediately.
+        {t("settings.screensHint")}
       </p>
       <Button
         className="mb-2"
@@ -95,10 +106,10 @@ function ScreensSection() {
             await identifyScreens(ordered);
           } catch (error) {
             log.warn("screen identification failed", toErrorFields(error));
-            if (mounted.current) setScreenError("Couldn’t identify all connected screens. Try again.");
+            if (mounted.current) setScreenError("settings.screenIdentifyFailed");
             recordActionFailure(
               "screen-identify-failed",
-              "Couldn’t identify all connected screens. Try again.",
+              message("settings.screenIdentifyFailed"),
               error,
             );
           } finally {
@@ -106,10 +117,10 @@ function ScreensSection() {
           }
         }}
       >
-        {identifying ? "Identifying screens…" : "Identify screens"}
+        {identifying ? t("settings.identifyingScreens") : t("settings.identifyScreens")}
       </Button>
       {screenError !== null && (
-        <OperationResult level="error" className="mb-3">{screenError}</OperationResult>
+        <OperationResult level="error" className="mb-3">{t(screenError)}</OperationResult>
       )}
       {ordered.map((monitor, index) => (
         <div
@@ -121,17 +132,26 @@ function ScreensSection() {
                 name and the same resolution — where it sits is the only fact
                 that maps onto the desk. */}
             <span className="text-ink">
-              {index + 1}. {describePosition(monitor, ordered) || "Display"}
+              {t("settings.screenRank", {
+                rank: index + 1,
+                position:
+                  describePosition(monitor, ordered) ?? t("settings.display"),
+              })}
             </span>
             <span className="block truncate text-xs text-ink-muted">
-              {monitor.name ?? "Display"} · {monitor.size.width}×
-              {monitor.size.height}
+              {/* The pixel counts are passed as text: a resolution carries no
+                  thousands separator. */}
+              {t("settings.screenDetail", {
+                name: monitor.name ?? t("settings.display"),
+                width: String(monitor.size.width),
+                height: String(monitor.size.height),
+              })}
             </span>
           </span>
           <span className="flex gap-1">
             <Button
               variant="ghost"
-              aria-label="Move up"
+              aria-label={t("settings.moveUp")}
               disabled={index === 0}
               onClick={() => move(index, -1)}
             >
@@ -139,7 +159,7 @@ function ScreensSection() {
             </Button>
             <Button
               variant="ghost"
-              aria-label="Move down"
+              aria-label={t("settings.moveDown")}
               disabled={index === ordered.length - 1}
               onClick={() => move(index, 1)}
             >
@@ -220,10 +240,10 @@ function CheckField({
 }
 
 const SETTINGS_TABS = [
-  { id: "library", label: "Library" },
-  { id: "media", label: "Media" },
-  { id: "appearance", label: "Appearance" },
-  { id: "behavior", label: "Behavior" },
+  { id: "library", label: "settings.library" },
+  { id: "media", label: "settings.media" },
+  { id: "appearance", label: "settings.appearance" },
+  { id: "behavior", label: "settings.behavior" },
 ] as const;
 
 type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
@@ -235,6 +255,7 @@ function SettingsTabList({
   active: SettingsTab;
   onChange: (tab: SettingsTab) => void;
 }) {
+  const { t } = useI18n();
   const moveFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
     const tabs = Array.from(
       event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
@@ -258,7 +279,7 @@ function SettingsTabList({
   return (
     <div
       role="tablist"
-      aria-label="Settings categories"
+      aria-label={t("settings.categories")}
       className="sticky top-0 z-10 mb-3 flex gap-1 border-b border-border bg-surface pb-2"
     >
       {SETTINGS_TABS.map((tab) => (
@@ -277,7 +298,7 @@ function SettingsTabList({
           onClick={() => onChange(tab.id)}
           onKeyDown={moveFocus}
         >
-          {tab.label}
+          {t(tab.label)}
         </button>
       ))}
     </div>
@@ -291,22 +312,18 @@ export default function SettingsModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const { t } = useI18n();
-  const timezoneErrorId = useId();
+  const { t, text } = useI18n();
   const [activeTab, setActiveTab] = useState<SettingsTab>("library");
   const draft = useSettingsStore((s) => s.draft);
   const opened = useSettingsStore((s) => s.opened);
-  const timezoneValid = useSettingsStore((s) => s.timezoneValid);
-  const timezonePending = useSettingsStore((s) => s.timezonePending);
   const saving = useSettingsStore((s) => s.saving);
-  const message = useSettingsStore((s) => s.message);
+  const storeMessage = useSettingsStore((s) => s.message);
   const messageLevel = useSettingsStore((s) => s.messageLevel);
   const discardDraft = useSettingsStore((s) => s.discardDraft);
   const update = useSettingsStore((s) => s.update);
   const resetSimilarPhotoSettings = useSettingsStore(
     (s) => s.resetSimilarPhotoSettings,
   );
-  const validateTimezone = useSettingsStore((s) => s.validateTimezone);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
   const accelerationCapabilities = useSettingsStore(
@@ -326,7 +343,13 @@ export default function SettingsModal({
     void invoke<{ hiddenAttributes: boolean; systemAttributes: boolean }>("visibility_capabilities")
       .then((capabilities) => { if (current) setVisibilityCapabilities(capabilities); })
       .catch((error) => {
-        if (current) recordActionFailure("visibility-capabilities-failed", "Couldn’t read this platform’s visibility options.", error);
+        if (current) {
+          recordActionFailure(
+            "visibility-capabilities-failed",
+            message("settings.visibilityOptionsReadFailed"),
+            error,
+          );
+        }
       });
     return () => { current = false; };
   }, [open]);
@@ -337,15 +360,9 @@ export default function SettingsModal({
       .then(setTextEncodings)
       .catch((error) => {
         log.warn("text encoding list failed", toErrorFields(error));
-        useSettingsStore.setState({
-          message: "Couldn’t read the supported text encodings.",
-          messageLevel: "error",
-        });
-        recordActionFailure(
-          "text-encodings-load-failed",
-          "Couldn’t read the supported text encodings.",
-          error,
-        );
+        const failure = message("settings.textEncodingsReadFailed");
+        useSettingsStore.setState({ message: failure, messageLevel: "error" });
+        recordActionFailure("text-encodings-load-failed", failure, error);
       });
   }, [open, textEncodings.length]);
 
@@ -362,32 +379,34 @@ export default function SettingsModal({
 
   return (
     <ModalShell
-      title="Settings"
+      title={t("settings.title")}
       onClose={requestClose}
-      closeLabel="Cancel"
+      closeLabel={t("common.cancel")}
       closeDisabled={saving}
       widthClass="w-[min(760px,calc(100vw-3rem))]"
       footerResult={
-        message === "" ? undefined : (
-          <OperationResult level={messageLevel ?? "info"}>{message}</OperationResult>
+        storeMessage === null ? undefined : (
+          <OperationResult level={messageLevel ?? "info"}>
+            {text(storeMessage)}
+          </OperationResult>
         )
       }
       primaryAction={
         <Button
           variant="primary"
-          disabled={saving || !dirty || timezonePending || !timezoneValid}
+          disabled={saving || !dirty}
           onClick={() => void saveSettings()}
         >
-          {saving ? "Saving…" : "Save"}
+          {saving ? t("common.saving") : t("settings.save")}
         </Button>
       }
     >
       {confirmDiscard ? (
         <ConfirmDialog
-          title="Discard changes?"
-          message="Settings has unsaved edits. Discard them?"
-          confirmLabel="Discard"
-          cancelLabel="Keep editing"
+          title={t("settings.discardTitle")}
+          message={t("settings.discardMessage")}
+          confirmLabel={t("settings.discard")}
+          cancelLabel={t("settings.keepEditing")}
           onConfirm={() => {
             setConfirmDiscard(false);
             discardDraft();
@@ -398,14 +417,14 @@ export default function SettingsModal({
       ) : null}
       {confirmRebuild ? (
         <ConfirmDialog
-          title="Rebuild library index?"
-          message="OneCopy will clear rebuildable library information and retained Issue and notification history, then check your source folders again. Your files, settings, managed tools, and choices will not change."
-          confirmLabel="Rebuild"
+          title={t("settings.rebuildTitle")}
+          message={t("settings.rebuildMessage")}
+          confirmLabel={t("settings.rebuildConfirm")}
           onConfirm={() => {
             setConfirmRebuild(false);
             setRebuilding(true);
             useSettingsStore.setState({
-              message: "Rebuilding library index…",
+              message: message("settings.rebuildingIndex"),
               messageLevel: "info",
             });
             void invoke("rebuild_library_index")
@@ -417,20 +436,19 @@ export default function SettingsModal({
                   useSectionsStore.getState().loadIndexWork(),
                 ]);
                 useSettingsStore.setState({
-                  message: "Library index cleared. Checking source folders…",
+                  message: message("settings.rebuildCleared"),
                   messageLevel: "info",
                 });
               })
               .catch((error) => {
                 useSettingsStore.setState({
-                  message:
-                    "The library index could not be rebuilt. Check the source folders, then try again.",
+                  message: message("settings.rebuildFailed"),
                   messageLevel: "error",
                 });
                 log.error("library index rebuild failed", toErrorFields(error));
                 recordActionFailure(
                   "library-rebuild-failed",
-                  "Couldn’t rebuild the library index.",
+                  message("settings.rebuildFailedNotice"),
                   error,
                 );
               })
@@ -447,15 +465,14 @@ export default function SettingsModal({
           aria-labelledby="settings-tab-library"
         >
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Directories
+            {t("settings.directories")}
           </h2>
           {/* The same rows the wizard shows — one shared component, so the two
               lists cannot drift apart. */}
           <ul className="mb-3 space-y-1.5">
             {draft.sourceDirs.length === 0 ? (
               <li className="text-sm text-ink-muted">
-                No source directories. Add one to make files available to
-                OneCopy.
+                {t("settings.noSourceDirectories")}
               </li>
             ) : null}
             {draft.sourceDirs.map((dir) => (
@@ -469,116 +486,104 @@ export default function SettingsModal({
           </ul>
           <Button onClick={() => void addSourceDir()}>
             <Plus size={14} />
-            Add directory
+            {t("settings.addDirectory")}
           </Button>
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Companion files
+            {t("settings.companionFiles")}
           </h2>
           <CheckField
-            label="Pair companion files (Live Photos, RAW, sidecars)"
+            label={t("settings.pairCompanionFiles")}
             checked={draft.pairingEnabled}
             onChange={(v) => update({ pairingEnabled: v })}
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Visibility
+            {t("settings.visibility")}
           </h2>
           <p className="mb-3 text-xs text-ink-muted">
-            Applies to source files and destination folders. Hidden copies of a visible item still count as copies and are included when you move or delete it.
+            {t("settings.visibilityHint")}
           </p>
-          <CheckField label="Hide names beginning with a dot" checked={draft.hideDotNames}
+          <CheckField label={t("settings.hideDotNames")} checked={draft.hideDotNames}
             onChange={(value) => update({ hideDotNames: value })} />
           {visibilityCapabilities?.hiddenAttributes ? (
-            <CheckField label="Hide files and folders marked hidden" checked={draft.hideHiddenAttributes}
+            <CheckField label={t("settings.hideHiddenAttributes")} checked={draft.hideHiddenAttributes}
               onChange={(value) => update({ hideHiddenAttributes: value })} />
           ) : null}
           {visibilityCapabilities?.systemAttributes ? (
-            <CheckField label="Hide files and folders marked system" checked={draft.hideSystemAttributes}
+            <CheckField label={t("settings.hideSystemAttributes")} checked={draft.hideSystemAttributes}
               onChange={(value) => update({ hideSystemAttributes: value })} />
           ) : null}
-          <p className="mb-2 mt-3 text-sm">Ignored file names</p>
-          <p className="mb-2 text-xs text-ink-muted">Complete file names, ignoring case. Files only; no wildcard syntax.</p>
+          <p className="mb-2 mt-3 text-sm">{t("settings.ignoredFileNames")}</p>
+          <p className="mb-2 text-xs text-ink-muted">{t("settings.ignoredFileNamesHint")}</p>
           <ul className="mb-2 space-y-2">
             {draft.ignoredFileNames.map((name, index) => (
               <li key={index} className="flex items-center gap-2">
-                <TextInput className="min-w-0 flex-1" aria-label={`Ignored file name ${index + 1}`} value={name}
+                <TextInput className="min-w-0 flex-1" aria-label={t("settings.ignoredFileNameField", { number: index + 1 })} value={name}
                   onChange={(event) => update({ ignoredFileNames: draft.ignoredFileNames.map((entry, position) => position === index ? event.target.value : entry) })} />
-                <Button aria-label={`Remove ignored file name ${index + 1}`}
-                  onClick={() => update({ ignoredFileNames: draft.ignoredFileNames.filter((_, position) => position !== index) })}>Remove</Button>
+                <Button aria-label={t("settings.removeIgnoredFileName", { number: index + 1 })}
+                  onClick={() => update({ ignoredFileNames: draft.ignoredFileNames.filter((_, position) => position !== index) })}>{t("common.remove")}</Button>
               </li>
             ))}
           </ul>
-          <Button onClick={() => update({ ignoredFileNames: [...draft.ignoredFileNames, ""] })}>Add file name</Button>
+          <Button onClick={() => update({ ignoredFileNames: [...draft.ignoredFileNames, ""] })}>{t("settings.addFileName")}</Button>
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Timestamps
+            {t("settings.timestamps")}
           </h2>
-          <Row label="Default timezone" hint="Used when metadata has no timezone">
-            <TextInput
-              className="w-48"
-              invalid={!timezonePending && !timezoneValid}
-              aria-describedby={
-                !timezonePending && !timezoneValid ? timezoneErrorId : undefined
-              }
+          <Row label={t("settings.defaultTimezone")} hint={t("settings.defaultTimezoneHint")}>
+            <Select
+              className="w-64"
               value={draft.defaultTimezone}
-              onChange={(e) => void validateTimezone(e.target.value)}
-            />
-          </Row>
-          <div className="mb-2 text-xs">
-            <div
-              id={timezoneErrorId}
-              role={!timezonePending && !timezoneValid ? "alert" : undefined}
-              className="text-danger"
+              onChange={(e) => update({ defaultTimezone: e.target.value })}
             >
-              {timezonePending
-                ? "Checking timezone…"
-                : timezoneValid
-                  ? ""
-                  : "Not a recognized timezone name"}
-            </div>
-            <TimezoneHelpLink />
-          </div>
+              {timeZoneOptions(draft.defaultTimezone).map((zone) => (
+                <option key={zone} value={zone}>
+                  {zone}
+                </option>
+              ))}
+            </Select>
+          </Row>
           <NumberField
-            label="Good range starts (year)"
+            label={t("settings.goodRangeStartYear")}
             value={draft.goodRangeStartYear}
             min={1900}
             onChange={(v) => update({ goodRangeStartYear: v })}
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Application updates
+            {t("settings.applicationUpdates")}
           </h2>
           <CheckField
-            label="Check GitHub for new releases at launch"
+            label={t("settings.checkGithubReleases")}
             checked={draft.checkGithubReleasesAtLaunch}
             onChange={(v) => update({ checkGithubReleasesAtLaunch: v })}
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Library maintenance
+            {t("settings.libraryMaintenance")}
           </h2>
           <CheckField
-            label="Check source folders after OneCopy opens"
+            label={t("settings.checkSourceFolders")}
             checked={draft.checkSourceFoldersAtLaunch}
             onChange={(v) => update({ checkSourceFoldersAtLaunch: v })}
           />
 
           <CheckField
-            label="Keep the system awake during background work"
+            label={t("settings.keepAwake")}
             checked={draft.keepAwakeDuringIndexing}
             onChange={(v) => update({ keepAwakeDuringIndexing: v })}
           />
 
           <Row
-            label="Rebuild library index"
-            hint="Clears rebuildable library information and retained Issue and notification history, then checks every source folder again. Your files and choices are preserved."
+            label={t("settings.rebuildIndex")}
+            hint={t("settings.rebuildIndexHint")}
           >
             <Button
               disabled={dirty || saving || rebuilding}
               onClick={() => setConfirmRebuild(true)}
             >
-              {rebuilding ? "Rebuilding…" : "Rebuild…"}
+              {rebuilding ? t("settings.rebuilding") : t("settings.rebuildRequest")}
             </Button>
           </Row>
         </div>
@@ -591,38 +596,38 @@ export default function SettingsModal({
           aria-labelledby="settings-tab-media"
         >
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Previews
+            {t("settings.previews")}
           </h2>
           <NumberField
-            label="Preview long edge (px)"
+            label={t("settings.previewLongEdge")}
             value={draft.previewLongEdgePx}
             min={480}
             onChange={(v) => update({ previewLongEdgePx: v })}
           />
           <NumberField
-            label="Thumbnail edge (px)"
+            label={t("settings.thumbnailEdge")}
             value={draft.thumbnailEdgePx}
             min={96}
             onChange={(v) => update({ thumbnailEdgePx: v })}
           />
           <CheckField
-            label="Enlarge small images in Preview"
+            label={t("settings.enlargeInPreview")}
             checked={draft.enlargeSmallImagesInPreview}
             onChange={(v) => update({ enlargeSmallImagesInPreview: v })}
           />
           <CheckField
-            label="Enlarge small images in Quick View"
+            label={t("settings.enlargeInQuickView")}
             checked={draft.enlargeSmallImagesInQuickView}
             onChange={(v) => update({ enlargeSmallImagesInQuickView: v })}
           />
           <NumberField
-            label="Text preview limit (KiB)"
-            hint="Files above this whole-file limit show attributes instead of partial text."
+            label={t("settings.textPreviewLimit")}
+            hint={t("settings.textPreviewLimitHint")}
             value={Math.max(1, Math.round(draft.textPreviewMaxBytes / 1024))}
             min={1}
             onChange={(v) => update({ textPreviewMaxBytes: v * 1024 })}
           />
-          <Row label="Fallback text encoding">
+          <Row label={t("settings.fallbackTextEncoding")}>
             <Select
               value={draft.textFallbackEncoding}
               onChange={(event) =>
@@ -640,36 +645,36 @@ export default function SettingsModal({
             </Select>
           </Row>
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Photos and Comparison
+            {t("settings.photosAndComparison")}
           </h2>
           <CheckField
-            label="Find similar photos automatically"
+            label={t("settings.findSimilarPhotos")}
             checked={draft.similarPhotoAnalysisEnabled}
             onChange={(v) => update({ similarPhotoAnalysisEnabled: v })}
           />
           <NumberField
-            label="Max gap between spares (seconds)"
+            label={t("settings.similarityMaxGap")}
             value={draft.similarityMaxGapSeconds}
             min={1}
             onChange={(v) => update({ similarityMaxGapSeconds: v })}
           />
           <NumberField
-            label="Visual distance limit (0–64)"
-            hint="How different two photos may look and still pair. Lower is stricter; flat graphics crowd together, so a corpus of icons wants a lower number than photos do."
+            label={t("settings.visualDistanceLimit")}
+            hint={t("settings.visualDistanceLimitHint")}
             value={draft.similarityPhashMaxDistance}
             min={0}
             onChange={(v) => update({ similarityPhashMaxDistance: v })}
           />
           <NumberField
-            label="Burst visual distance (0–64)"
-            hint="The relaxed limit for photos taken within the burst gap of each other. Real bursts differ more than the strict limit tolerates — a hand shifts, a child turns — and close capture times vouch for them."
+            label={t("settings.burstVisualDistance")}
+            hint={t("settings.burstVisualDistanceHint")}
             value={draft.similarityPhashMaxDistanceBurst}
             min={0}
             onChange={(v) => update({ similarityPhashMaxDistanceBurst: v })}
           />
           <NumberField
-            label="Family width (× the limits above)"
-            hint="How far one family may spread. 1 means every photo must resemble the family's first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family."
+            label={t("settings.familyWidth")}
+            hint={t("settings.familyWidthHint")}
             value={draft.similarityDiameterMultiplier}
             min={1}
             onChange={(v) =>
@@ -678,103 +683,102 @@ export default function SettingsModal({
           />
           <div className="mt-3 flex justify-end">
             <Button onClick={resetSimilarPhotoSettings}>
-              Reset similar photo settings
+              {t("settings.resetSimilarPhotoSettings")}
             </Button>
           </div>
           <CheckField
-            label="Score faces for photo ordering (background, needs the face models)"
+            label={t("settings.scoreFaces")}
             checked={draft.scoreFaces}
             onChange={(v) => update({ scoreFaces: v })}
           />
 
           <CheckField
-            label="Show face-score stars on photos"
+            label={t("settings.showFaceStars")}
             checked={draft.showFaceStars}
             onChange={(v) => update({ showFaceStars: v })}
           />
 
           <NumberField
-            label="Maximum images in Comparison"
-            hint="Connected displays and image shape may reduce the number shown at once"
+            label={t("settings.maximumImagesInComparison")}
+            hint={t("settings.maximumImagesInComparisonHint")}
             value={draft.maximumImagesInComparison}
             min={2}
             onChange={(v) => update({ maximumImagesInComparison: v })}
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Playback
+            {t("settings.playback")}
           </h2>
           <CheckField
-            label="Sound"
+            label={t("settings.sound")}
             checked={draft.soundEnabled}
             onChange={(v) => update({ soundEnabled: v })}
           />
 
           <NumberField
-            label="Playback volume (%)"
+            label={t("settings.playbackVolume")}
             value={Math.round(draft.playbackVolume * 100)}
             min={1}
             onChange={(v) => update({ playbackVolume: Math.min(100, v) / 100 })}
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Videos
+            {t("settings.videos")}
           </h2>
           <CheckField
-            label="Play videos automatically when shown"
+            label={t("settings.videoAutoplay")}
             checked={draft.videoAutoplay}
             onChange={(v) => update({ videoAutoplay: v })}
           />
           <CheckField
-            label="Generate scene snapshots"
+            label={t("settings.generateSceneSnapshots")}
             checked={draft.videoSnapshotsEnabled}
             onChange={(v) => update({ videoSnapshotsEnabled: v })}
           />
           <NumberField
-            label="Seconds per snapshot frame"
+            label={t("settings.secondsPerSnapshotFrame")}
             value={draft.videoStripSecondsPerFrame}
             min={1}
             onChange={(v) => update({ videoStripSecondsPerFrame: v })}
           />
           <NumberField
-            label="Snapshot frames (min)"
+            label={t("settings.snapshotFramesMin")}
             value={draft.videoStripMinFrames}
             min={1}
             onChange={(v) => update({ videoStripMinFrames: v })}
           />
           <NumberField
-            label="Snapshot frames (max)"
+            label={t("settings.snapshotFramesMax")}
             value={draft.videoStripMaxFrames}
             min={1}
             onChange={(v) => update({ videoStripMaxFrames: v })}
           />
           <CheckField
-            label="Transcribe videos automatically"
+            label={t("settings.transcribeVideos")}
             checked={draft.videoTranscriptionEnabled}
             onChange={(v) => update({ videoTranscriptionEnabled: v })}
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Audio
+            {t("settings.audio")}
           </h2>
           <CheckField
-            label="Play audio automatically when shown"
+            label={t("settings.audioAutoplay")}
             checked={draft.audioAutoplay}
             onChange={(v) => update({ audioAutoplay: v })}
           />
           <CheckField
-            label="Transcribe audio automatically"
+            label={t("settings.transcribeAudio")}
             checked={draft.audioTranscriptionEnabled}
             onChange={(v) => update({ audioTranscriptionEnabled: v })}
           />
           {accelerationCapabilities.length > 0 ? (
             <>
               <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                AI acceleration
+                {t("settings.aiAcceleration")}
               </h2>
               <p className="mb-2 text-xs text-ink-muted">
-                Choices are limited to backends available in this application on this computer.
-                CPU-only keeps every AI feature available without special acceleration.
+                {t("settings.aiAccelerationHint")}
               </p>
               {accelerationCapabilities.map((capability) => {
                 const selected =
@@ -783,15 +787,18 @@ export default function SettingsModal({
                   (option) => option.id === selected,
                 );
                 return (
-                  <Row key={capability.feature} label={`${capability.label} acceleration`}>
+                  <Row
+                    key={capability.feature}
+                    label={t("settings.featureAcceleration", { feature: featureLabel(capability.feature, capability.label, t) })}
+                  >
                     {capability.options.length === 1 && supported ? (
                       <span className="text-sm text-ink-muted">
-                        {capability.options[0].label}
+                        {accelerationModeLabel(capability.options[0].id, capability.options[0].label, t)}
                       </span>
                     ) : (
                       <Select
                         value={selected}
-                        aria-label={`${capability.label} acceleration`}
+                        aria-label={t("settings.featureAcceleration", { feature: featureLabel(capability.feature, capability.label, t) })}
                         onChange={(event) =>
                           update({
                             aiAcceleration: {
@@ -803,12 +810,12 @@ export default function SettingsModal({
                       >
                         {!supported ? (
                           <option value={selected} disabled>
-                            Unavailable: {selected}
+                            {t("settings.accelerationUnavailable", { option: selected })}
                           </option>
                         ) : null}
                         {capability.options.map((option) => (
                           <option key={option.id} value={option.id}>
-                            {option.label}
+                            {accelerationModeLabel(option.id, option.label, t)}
                           </option>
                         ))}
                       </Select>
@@ -828,7 +835,7 @@ export default function SettingsModal({
           aria-labelledby="settings-tab-appearance"
         >
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Appearance
+            {t("settings.appearance")}
           </h2>
           <Row label={t("settings.language")}>
             <Select
@@ -846,26 +853,26 @@ export default function SettingsModal({
             </Select>
           </Row>
           <Row
-            label="UI font"
-            hint="Blank uses the system font; custom values accept a CSS font-family list"
+            label={t("settings.uiFont")}
+            hint={t("settings.uiFontHint")}
           >
             <TextInput
               className="w-64"
               value={draft.uiFontFamily}
-              placeholder="System font"
+              placeholder={t("settings.systemFont")}
               onChange={(e) => update({ uiFontFamily: e.target.value })}
             />
           </Row>
-          <Row label="Theme">
+          <Row label={t("settings.theme")}>
             <Select
               value={draft.theme}
               onChange={(e) =>
                 update({ theme: e.target.value as "system" | "light" | "dark" })
               }
             >
-              <option value="system">Follow the system</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
+              <option value="system">{t("settings.themeSystem")}</option>
+              <option value="light">{t("settings.themeLight")}</option>
+              <option value="dark">{t("settings.themeDark")}</option>
             </Select>
           </Row>
 
@@ -880,21 +887,21 @@ export default function SettingsModal({
           aria-labelledby="settings-tab-behavior"
         >
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Notifications
+            {t("settings.notifications")}
           </h2>
           <NumberField
-            label="Minor notification display time (seconds)"
+            label={t("settings.notificationDisplayTime")}
             value={draft.notificationDisplaySeconds}
             min={1}
             max={60}
             onChange={(v) => update({ notificationDisplaySeconds: v })}
           />
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            File operations
+            {t("settings.fileOperations")}
           </h2>
           <Row
-            label="Destination conflict names"
-            hint="Used when Rename and Copy/Move resolves an existing filename"
+            label={t("settings.destinationConflictNames")}
+            hint={t("settings.destinationConflictNamesHint")}
           >
             <Select
               value={draft.destinationConflictRenameStyle}
@@ -907,12 +914,12 @@ export default function SettingsModal({
                 })
               }
             >
-              <option value="space-number">name 2.ext (macOS style)</option>
-              <option value="parenthesized-number">name (2).ext (Windows style)</option>
+              <option value="space-number">{t("settings.conflictSpaceNumber")}</option>
+              <option value="parenthesized-number">{t("settings.conflictParenthesizedNumber")}</option>
             </Select>
           </Row>
           <CheckField
-            label="Confirm direct single-item deletion"
+            label={t("settings.confirmTrashDelete")}
             checked={draft.confirmTrashDelete}
             onChange={(v) => update({ confirmTrashDelete: v })}
           />

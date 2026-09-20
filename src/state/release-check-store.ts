@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { create } from "zustand";
 import { log, toErrorFields, type LoadedAppData } from "../repositories";
+import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 
 export const LATEST_RELEASE_PAGE =
@@ -24,7 +25,7 @@ interface ReleaseCheckState {
   checking: boolean;
   manualResult: ManualReleaseResult | null;
   noticeVersion: string | null;
-  noticeLinkError: string | null;
+  noticeLinkError: Message | null;
   checkManual: () => Promise<void>;
   dismissNotice: () => void;
   openNoticeRelease: () => Promise<void>;
@@ -112,10 +113,10 @@ export const useReleaseCheckStore = create<ReleaseCheckState>((set) => ({
     try {
       await openLatestReleasePage();
     } catch (error) {
-      const message = "Couldn’t open the release page. Try again or open it in your browser.";
+      const failure = message("about.releaseOpenFailed");
       log.warn("release notice link open failed", toErrorFields(error));
-      recordActionFailure("release-link-open-failed", message, error);
-      set({ noticeLinkError: message });
+      recordActionFailure("release-link-open-failed", failure, error);
+      set({ noticeLinkError: failure });
     }
   },
 }));

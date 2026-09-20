@@ -4,6 +4,7 @@
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import type {
@@ -23,7 +24,10 @@ export interface DirEntry {
 
 export interface DestinationResult {
   severity: "info" | "warning" | "error";
-  message: string;
+  /** The facts this outcome reports, each a whole translated unit. The receiver
+   * joins and terminates them at render, so the sentence follows a language
+   * change after the operation has finished. */
+  facts: Message[];
   /** Identifies the receiver action whose committed outcome this describes.
    * A successful retry clears only a result with the same operation key. */
   operationKey: string;
@@ -39,13 +43,13 @@ interface DestinationsState {
   listing: Record<string, "loading" | "error">;
   expanded: Set<string>;
   emptiness: Record<string, boolean>;
-  message: string;
+  message: Message | null;
   result: DestinationResult | null;
   dismissResult: () => void;
   /** A clean Copy needs local confirmation because its source row remains and
    * destination files are not rendered in this tree.  It is independent from
    * an older unresolved result, which an unrelated success must not erase. */
-  confirmation: string | null;
+  confirmation: Message | null;
   dismissConfirmation: () => void;
   /** A Move awaiting its source-cleanup confirmation. The
    * backend identities freeze exactly what the dialog counted, independent of
@@ -86,7 +90,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   listing: {},
   expanded: new Set<string>(),
   emptiness: {},
-  message: "",
+  message: null,
   result: null,
   dismissResult: () => set({ result: null }),
   confirmation: null,
@@ -165,7 +169,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       set({ listing: { ...get().listing, [path]: "error" } });
       recordActionFailure(
         "destination-list-failed",
-        "Couldn’t read this destination folder.",
+        message("destinations.listFailed"),
         error,
       );
     }
@@ -213,14 +217,14 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       set({
         expanded: new Set(get().expanded).add(parent),
         activePath: created,
-        message: "",
+        message: null,
       });
     } catch (error) {
       log.error("destination folder creation failed", toErrorFields(error));
-      set({ message: "The destination folder could not be created. Check the destination and try again." });
+      set({ message: message("destinations.folderCreateFailed") });
       recordActionFailure(
         "destination-folder-create-failed",
-        "Couldn’t create the destination folder.",
+        message("destinations.folderCreateFailedNotice"),
         error,
       );
     }
@@ -230,13 +234,13 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     try {
       await invoke("delete_empty_dir", { path });
       await get().refreshNode(parent);
-      set({ message: "" });
+      set({ message: null });
     } catch (error) {
       log.error("destination folder deletion failed", toErrorFields(error));
-      set({ message: "The destination folder could not be deleted. Check that it is empty and try again." });
+      set({ message: message("destinations.folderDeleteFailed") });
       recordActionFailure(
         "destination-folder-delete-failed",
-        "Couldn’t delete the destination folder.",
+        message("destinations.folderDeleteFailedNotice"),
         error,
       );
     }

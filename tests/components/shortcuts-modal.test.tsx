@@ -3,6 +3,7 @@ import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import ShortcutsModal from "../../src/components/ShortcutsModal";
 import { shortcutColumns } from "../../src/models/shortcuts";
+import { t } from "../helpers/i18n";
 
 afterEach(cleanup);
 
@@ -12,7 +13,7 @@ it("renders semantic columns in reading order with independently wrappable chord
   expect(columns).toHaveLength(3);
   for (const [index, column] of Array.from(columns).entries()) {
     expect(Array.from(column.querySelectorAll("section")).map((s) => s.getAttribute("aria-label")))
-      .toEqual(shortcutColumns()[index].map((g) => g.title));
+      .toEqual(shortcutColumns()[index].map((g) => t(g.title)));
     for (const key of column.querySelectorAll("kbd")) {
       expect(key.className).toContain("[overflow-wrap:anywhere]");
       expect(key.parentElement?.className).toContain("max-w-[48%]");

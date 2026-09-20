@@ -8,6 +8,7 @@ import {
   progressTitle,
   type ScanProgress,
 } from "../../src/models/scan";
+import { percent, t } from "../helpers/i18n";
 
 function progress(overrides: Partial<ScanProgress> = {}): ScanProgress {
   return {
@@ -31,22 +32,24 @@ describe("scan phase labels", () => {
     // list is the reminder to choose real words.
     const tokens = ["walk", "hash", "extract", "resolve", "pair", "indexed"];
     for (const token of tokens) {
-      const label = phaseLabel(token);
+      const label = phaseLabel(token, t);
       expect(label).not.toBe(token);
       expect(label[0]).toBe(label[0].toUpperCase());
     }
-    expect(phaseLabel("extract")).toBe("Reading metadata");
-    expect(phaseLabel("indexed")).toBe("Indexed");
+    expect(phaseLabel("extract", t)).toBe("Reading metadata");
+    expect(phaseLabel("indexed", t)).toBe("Indexed");
   });
 
   it("degrades an unknown token to a capitalized word", () => {
-    expect(phaseLabel("transmogrify")).toBe("Transmogrify");
+    expect(phaseLabel("transmogrify", t)).toBe("Transmogrify");
   });
 
   it("formats stable source progress without inventing a file total", () => {
     expect(
       progressLine(
         progress({ total: 2, currentPath: "/photos", discovered: 812 }),
+        t,
+        percent,
       ),
     ).toBe("Checking source folders \u2014 source 1/2 · 812 files found · /photos");
   });
@@ -64,20 +67,24 @@ describe("scan phase labels", () => {
           failures: 2,
           nextPhase: "extract",
         }),
+        t,
+        percent,
       ),
     ).toBe("Reading files — 12/40 · large.mov · 55%");
     expect(
       progressLine(
         progress({ phase: "pair", done: 3, total: 3, nextPhase: "indexed" }),
+        t,
+        percent,
       ),
     ).toBe("Pairing companions — 3/3 · Next: Indexed");
   });
 
   it("explains metadata scope and keeps derived work outside indexing", () => {
-    expect(progressTitle(progress({ phase: "extract", nextPhase: "resolve" }))).toContain(
+    expect(progressTitle(progress({ phase: "extract", nextPhase: "resolve" }), t)).toContain(
       "without decoding image pixels or video frames",
     );
-    expect(progressTitle(progress({ phase: "indexed", nextPhase: null }))).toContain(
+    expect(progressTitle(progress({ phase: "indexed", nextPhase: null }), t)).toContain(
       "Background work",
     );
   });
@@ -86,6 +93,8 @@ describe("scan phase labels", () => {
     expect(
       progressLine(
         progress({ phase: "indexed", done: 1, total: 1, nextPhase: null }),
+        t,
+        percent,
       ),
     ).toBe("No work running");
     expect(
@@ -97,14 +106,16 @@ describe("scan phase labels", () => {
           failures: 2,
           nextPhase: null,
         }),
+        t,
+        percent,
       ),
     ).toBe("No work running");
   });
 
   it("separates Background Work progress from failure reporting without claiming completion", () => {
     const running = progress({ phase: "hash", done: 2, total: 4, failures: 2, nextPhase: null });
-    expect(progressLine(running)).toBe("Reading files — 2/4");
+    expect(progressLine(running, t, percent)).toBe("Reading files — 2/4");
     expect(running.failures).toBe(2);
-    expect(progressLine({ ...running, phase: "indexed" })).toBe("No work running");
+    expect(progressLine({ ...running, phase: "indexed" }, t, percent)).toBe("No work running");
   });
 });

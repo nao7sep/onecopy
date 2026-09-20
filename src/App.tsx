@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { useI18n } from "./i18n/I18nContext";
+import { message } from "./i18n/translate";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { useAppStore } from "./state/app-store";
@@ -77,6 +79,7 @@ function ZoomInIcon() {
 // Loading, Blocked, and Ready are mutually exclusive roots. Feature hooks do
 // not exist until the backend has admitted the Ready state.
 export default function App() {
+  const { t } = useI18n();
   const appData = useAppStore((state) => state.appData);
   const startupFailure = useAppStore((state) => state.startupFailure);
   const bootstrapStarted = useRef(false);
@@ -88,16 +91,16 @@ export default function App() {
   }, []);
 
   if (startupFailure !== null) {
-    return <StartupFailureScreen failure={startupFailure} />;
+    return <StartupFailureScreen />;
   }
   if (appData === null) {
     return (
       <div
         role="status"
-        aria-label="Starting OneCopy"
+        aria-label={t("app.starting")}
         className="flex h-screen items-center justify-center bg-background text-ink-muted"
       >
-        Starting OneCopy…
+        {t("app.startingBody")}
       </div>
     );
   }
@@ -108,6 +111,7 @@ export default function App() {
 // The admitted main-window shell: the sidebar listbox, thumbnail grid, right
 // pane, and scan lifecycle in the status bar.
 export function ReadyApp({ appData }: { appData: LoadedAppData }) {
+  const { t, text, number, percent } = useI18n();
   useDestinationDragBoundary();
   const soundEnabled = appData?.state?.soundEnabled !== false;
   const videoAutoplay = appData?.config?.videoAutoplay !== false;
@@ -146,7 +150,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
   const issuesTotal = useIssuesStore((s) => s.total);
   const derivedWorkSnapshot = useDerivedWorkStore((s) => s.snapshot);
-  const derivedWorkLine = backgroundWorkLine(derivedWorkSnapshot);
+  const derivedWorkLine = backgroundWorkLine(derivedWorkSnapshot, t);
   const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
   // is the modal's story.
@@ -184,17 +188,22 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
     splitOpen,
   });
 
-  const status = statusLine({
-    feedback,
-    mutation: mutationProgress === null
-      ? null
-      : { progress: mutationProgress, cancelling: mutationCancelling },
-    mutationResult,
-    exiting: exitQuiescing,
-    ...maintenanceStatus,
-    rescanNeeded,
-    counts,
-  });
+  const status = statusLine(
+    {
+      feedback,
+      mutation: mutationProgress === null
+        ? null
+        : { progress: mutationProgress, cancelling: mutationCancelling },
+      mutationResult,
+      exiting: exitQuiescing,
+      ...maintenanceStatus,
+      rescanNeeded,
+      counts,
+    },
+    t,
+    number,
+    percent,
+  );
 
   const allEmpty =
     counts !== null &&
@@ -247,22 +256,18 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       {quickViewOpen ? <QuickView /> : null}
       {confirmPermanent !== null ? (
         <ConfirmDialog
-          title="Delete permanently?"
-          message={`Permanently delete ${confirmPermanent} item${
-            confirmPermanent === 1 ? "" : "s"
-          } and every copy? This bypasses recoverable deletion and cannot be undone.`}
-          confirmLabel="Delete permanently"
+          title={t("common.deletePermanentlyTitle")}
+          message={t("app.deletePermanentlyBody", { count: confirmPermanent })}
+          confirmLabel={t("common.deletePermanently")}
           onConfirm={confirmPermanentDelete}
           onCancel={cancelPermanentDelete}
         />
       ) : null}
       {confirmTrash !== null ? (
         <ConfirmDialog
-          title="Delete these items?"
-          message={`Delete ${confirmTrash} item${
-            confirmTrash === 1 ? "" : "s"
-          } and every copy? They remain recoverable from Menu → Deleted files.`}
-          confirmLabel="Delete"
+          title={t("app.deleteTitle")}
+          message={t("app.deleteBody", { count: confirmTrash })}
+          confirmLabel={t("common.delete")}
           onConfirm={confirmTrashDelete}
           onCancel={cancelTrashDelete}
         />
@@ -298,11 +303,11 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               OneCopy
             </h1>
             <Menu
-              ariaLabel="Application menu"
+              ariaLabel={t("app.menu")}
               trigger={(props) => (
                 <button
                   {...props}
-                  aria-label="Open menu"
+                  aria-label={t("app.openMenu")}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
                 >
                   <MenuIcon size={18} />
@@ -313,33 +318,33 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 disabled={sourceCheck.running}
                 onSelect={() => void startSourceCheck()}
               >
-                {sourceCheck.running ? "Checking source folders…" : "Check source folders"}
+                {sourceCheck.running ? t("app.checkingSources") : t("app.checkSources")}
               </MenuItem>
-              <MenuItem onSelect={() => openUtility("backgroundWork")}>Background work…</MenuItem>
+              <MenuItem onSelect={() => openUtility("backgroundWork")}>{t("app.backgroundWork")}</MenuItem>
               <MenuSeparator />
-              <MenuItem onSelect={() => openUtility("deletedFiles")}>Deleted files…</MenuItem>
+              <MenuItem onSelect={() => openUtility("deletedFiles")}>{t("app.deletedFiles")}</MenuItem>
               <MenuSeparator />
-              <MenuItem onSelect={openSettings}>Settings…</MenuItem>
-              <MenuItem onSelect={() => openUtility("managedTools")}>Managed tools…</MenuItem>
+              <MenuItem onSelect={openSettings}>{t("app.settings")}</MenuItem>
+              <MenuItem onSelect={() => openUtility("managedTools")}>{t("app.managedTools")}</MenuItem>
               <MenuItem
                 onSelect={() =>
                   reopenSetup()
                 }
               >
-                Re-run setup wizard…
+                {t("app.rerunSetup")}
               </MenuItem>
               <MenuSeparator />
-              <MenuItem onSelect={() => openUtility("issues")}>Issues…</MenuItem>
-              <MenuItem onSelect={() => openUtility("activityTrace")}>Activity trace…</MenuItem>
+              <MenuItem onSelect={() => openUtility("issues")}>{t("app.issues")}</MenuItem>
+              <MenuItem onSelect={() => openUtility("activityTrace")}>{t("app.activityTrace")}</MenuItem>
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}
               <div className="flex items-center justify-between gap-2 px-3 py-1 text-sm text-ink">
-                <span>Zoom</span>
+                <span>{t("app.zoom")}</span>
                 <span className="flex items-center gap-1">
                   <button
                     className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
-                    aria-label="Zoom out"
+                    aria-label={t("app.zoomOut")}
                     onClick={zoomOut}
                   >
                     <ZoomOutIcon />
@@ -349,7 +354,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                   </span>
                   <button
                     className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
-                    aria-label="Zoom in"
+                    aria-label={t("app.zoomIn")}
                     onClick={zoomIn}
                   >
                     <ZoomInIcon />
@@ -366,15 +371,19 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                   // machine-managed and no fleet app reveals its own innards.
                   void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
                     log.warn("reveal logs failed", toErrorFields(error));
-                    reportActionFailure("reveal-logs-failed", "Couldn’t reveal the logs folder.", error);
+                    reportActionFailure(
+                      "reveal-logs-failed",
+                      message("app.revealLogsFailed"),
+                      error,
+                    );
                   });
                 }}
               >
-                Reveal logs folder
+                {t("app.revealLogs")}
               </MenuItem>
               <MenuSeparator />
-              <MenuItem onSelect={openHelp}>Keyboard shortcuts…</MenuItem>
-              <MenuItem onSelect={() => openUtility("about")}>About OneCopy…</MenuItem>
+              <MenuItem onSelect={openHelp}>{t("app.shortcuts")}</MenuItem>
+              <MenuItem onSelect={() => openUtility("about")}>{t("app.about")}</MenuItem>
             </Menu>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -384,7 +393,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize sidebar"
+          aria-label={t("app.resizeSidebar")}
           // The element IS the hit area; the 1px child is the visible line. At
           // 4px the target was too small to catch, which reads as "the panes
           // do not resize" rather than as a near miss.
@@ -409,10 +418,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             // While library work is active, empty counts do not yet prove the
             // configured sources have nothing to handle.
             <p className="m-auto text-ink-muted">
-              {scanning ? "Updating library…" : "Nothing to handle"}
+              {scanning ? t("app.updatingLibrary") : t("app.nothingToHandle")}
             </p>
           ) : (
-            <p className="m-auto text-ink-muted">Select a month</p>
+            <p className="m-auto text-ink-muted">{t("app.selectMonth")}</p>
           )}
         </main>
         {splitOpen ? (
@@ -420,7 +429,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             <div
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize preview"
+              aria-label={t("app.resizePreview")}
               style={{ width: SPLITTER_WIDTH }}
               className="group flex shrink-0 cursor-col-resize justify-center"
               onMouseDown={beginPaneDrag("preview")}
@@ -442,8 +451,8 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 pathId={previewCurrent?.pathId ?? null}
               />
               <button
-                aria-label="Close preview"
-                title="Close preview"
+                aria-label={t("app.closePreview")}
+                title={t("app.closePreview")}
                 className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md bg-surface/80 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
                 onClick={closePreview}
               >
@@ -455,7 +464,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize details pane"
+          aria-label={t("app.resizeDetails")}
           style={{ width: SPLITTER_WIDTH }}
           className="group flex shrink-0 cursor-col-resize justify-center"
           onMouseDown={beginPaneDrag("right")}
@@ -471,7 +480,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               conventions. */}
           <div
             role="tablist"
-            aria-label="Right pane"
+            aria-label={t("app.rightPane")}
             className="flex shrink-0 border-b border-border"
           >
             {(["details", "destinations"] as const).map((tab, index, tabs) => (
@@ -509,7 +518,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                     | undefined)?.focus();
                 }}
               >
-                {tab === "details" ? "Details" : "Destinations"}
+                {tab === "details" ? t("app.detailsTab") : t("app.destinationsTab")}
               </button>
             ))}
           </div>
@@ -544,49 +553,61 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 : "text-ink-muted"
           }`}
           title={status.title ?? status.text}
-          role={status === feedback ? status.tone === "danger" ? "alert" : "status" : undefined}
+          role={status.announce === true ? (status.tone === "danger" ? "alert" : "status") : undefined}
         >
           {status.text}
         </span>
-        <span className="flex shrink-0 items-center gap-3">
+        <span className="flex min-w-0 shrink items-center gap-3 [&>button]:min-w-0 [&>button]:truncate">
           <button
             className={soundEnabled ? "text-ink" : "text-ink-muted"}
             aria-pressed={soundEnabled}
-            title="Toggle sound for every OneCopy player"
+            title={t("app.soundToggle")}
             onClick={() => {
               void setSoundEnabled(!soundEnabled).catch((error) => {
                 log.error("sound setting failed", toErrorFields(error));
-                reportActionFailure("sound-setting-failed", "Couldn’t change Sound.", error);
+                reportActionFailure(
+                  "sound-setting-failed",
+                  message("app.soundChangeFailed"),
+                  error,
+                );
               });
             }}
           >
-            Sound {soundEnabled ? "on" : "off"}
+            {soundEnabled ? t("app.soundOn") : t("app.soundOff")}
           </button>
           <button
             className={videoAutoplay ? "text-ink" : "text-ink-muted"}
             aria-pressed={videoAutoplay}
-            title="Toggle automatic video playback"
+            title={t("app.videoAutoplayToggle")}
             onClick={() => {
               void setMediumAutoplay("video", !videoAutoplay).catch((error) => {
                 log.error("video autoplay setting failed", toErrorFields(error));
-                reportActionFailure("video-autoplay-setting-failed", "Couldn’t change video autoplay.", error);
+                reportActionFailure(
+                  "video-autoplay-setting-failed",
+                  message("app.videoAutoplayChangeFailed"),
+                  error,
+                );
               });
             }}
           >
-            Video autoplay {videoAutoplay ? "on" : "off"}
+            {videoAutoplay ? t("app.videoAutoplayOn") : t("app.videoAutoplayOff")}
           </button>
           <button
             className={audioAutoplay ? "text-ink" : "text-ink-muted"}
             aria-pressed={audioAutoplay}
-            title="Toggle automatic audio playback"
+            title={t("app.audioAutoplayToggle")}
             onClick={() => {
               void setMediumAutoplay("audio", !audioAutoplay).catch((error) => {
                 log.error("audio autoplay setting failed", toErrorFields(error));
-                reportActionFailure("audio-autoplay-setting-failed", "Couldn’t change audio autoplay.", error);
+                reportActionFailure(
+                  "audio-autoplay-setting-failed",
+                  message("app.audioAutoplayChangeFailed"),
+                  error,
+                );
               });
             }}
           >
-            Audio autoplay {audioAutoplay ? "on" : "off"}
+            {audioAutoplay ? t("app.audioAutoplayOn") : t("app.audioAutoplayOff")}
           </button>
           {mutationProgress === null && mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
@@ -599,26 +620,26 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             <button
               className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
               disabled={mutationCancelling}
-              title="Cancel safely after the current file"
+              title={t("app.cancelOperationHint")}
               onClick={() => void cancelMutation()}
             >
-              {mutationCancelling ? "Cancelling…" : "Cancel file operation"}
+              {mutationCancelling ? t("common.cancelling") : t("app.cancelOperation")}
             </button>
           ) : null}
           {sourceCheck.running ? (
             <button
               className="text-ink-muted hover:text-ink hover:underline disabled:no-underline"
               disabled={sourceCheck.stopping}
-              title="Stop safely after the current cancellable read, file, or durable step"
+              title={t("app.stopCheckHint")}
               onClick={() => void stopSourceCheck()}
             >
-              {sourceCheck.stopping ? "Stopping…" : "Stop checking source folders"}
+              {sourceCheck.stopping ? t("app.stopping") : t("app.stopCheck")}
             </button>
           ) : null}
           {/* Why the fans spin while work runs in the background. */}
           <button
             className="text-ink-muted hover:text-ink hover:underline"
-            title="Open Background work"
+            title={t("app.openBackgroundWork")}
             onClick={() => {
               openUtility("backgroundWork");
               void useDerivedWorkStore.getState().load();
@@ -631,20 +652,19 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           {issuesTotal > 0 ? (
             <button
               className="text-danger hover:underline"
-              title="Open the issues list"
+              title={t("app.openIssues")}
               onClick={() => openUtility("issues")}
             >
-              {issuesTotal} issue{issuesTotal === 1 ? "" : "s"}
+              {t("app.issueCount", { count: issuesTotal })}
             </button>
           ) : null}
           {/* The managed-tools chip (toolsChip owns the words and the
               loudness — see its rules); clicking always opens the modal. */}
           {(() => {
             const chip = toolsChip(
-              ffmpegProgress !== undefined,
               ffmpegProgress === undefined
-                ? ""
-                : managedInstallActivityLine(ffmpegProgress),
+                ? null
+                : managedInstallActivityLine(ffmpegProgress, number, percent),
               binariesEntries,
             );
             return chip !== null ? (
@@ -654,10 +674,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                     ? "text-warning hover:underline"
                     : "text-ink-muted hover:text-ink"
                 }
-                title="Managed tools"
+                title={t("app.openManagedTools")}
                 onClick={() => openUtility("managedTools")}
               >
-                {chip.text}
+                {text(chip.text)}
               </button>
             ) : null;
           })()}

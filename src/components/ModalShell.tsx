@@ -15,6 +15,7 @@
 //   header ✕ is the supplementary affordance.
 
 import { useId, useRef } from "react";
+import { useI18n } from "../i18n/I18nContext";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { X } from "lucide-react";
 import Button from "./ui/Button";
@@ -23,7 +24,7 @@ export default function ModalShell({
   title,
   onClose,
   widthClass = "w-[480px]",
-  closeLabel = "Close",
+  closeLabel,
   closeDisabled = false,
   initialFocus = "auto",
   footerArrowNavigation = false,
@@ -36,6 +37,7 @@ export default function ModalShell({
   title: string;
   onClose: () => void;
   widthClass?: string;
+  /** Defaults to the shared "Close" wording of the current language. */
   closeLabel?: string;
   /** True only while leaving would interrupt an operation at an unsafe edge. */
   closeDisabled?: boolean;
@@ -51,6 +53,7 @@ export default function ModalShell({
   primaryAction?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
   const titleId = useId();
   const surfaceRef = useRef<HTMLDivElement>(null);
   useModalLayer(surfaceRef, onClose, closeDisabled, footerArrowNavigation, returnFocus);
@@ -72,7 +75,7 @@ export default function ModalShell({
           </h1>
           <button
             data-modal-close
-            aria-label="Close"
+            aria-label={t("common.close")}
             disabled={closeDisabled}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink disabled:cursor-default disabled:opacity-40"
             onClick={onClose}
@@ -91,7 +94,7 @@ export default function ModalShell({
               <Button data-modal-close data-modal-initial-focus={initialFocus === "close" ? true : undefined}
                 className={footerArrowNavigation ? "focus:ring-2 focus:ring-primary-ring" : ""}
                 disabled={closeDisabled} onClick={onClose}>
-                {closeLabel}
+                {closeLabel ?? t("common.close")}
               </Button>
               {primaryAction}
             </div>

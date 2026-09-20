@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
 import { createEventInstaller } from "../utils/eventInstallation";
+import { message } from "../i18n/translate";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { applyUiFont } from "../utils/uiFont";
 import { useLanguageStore } from "../state/language-store";
@@ -32,7 +33,7 @@ async function readPreferences(): Promise<AppearancePreferences> {
 
 function reportFailure(error: unknown): void {
   log.warn("window appearance update failed", toErrorFields(error));
-  recordInterfaceFailure("Couldn’t update this window’s appearance. Saved settings were not changed.");
+  recordInterfaceFailure(message("app.appearanceUpdateFailed"));
 }
 
 // All routes share this small auxiliary-window read model, never Main's

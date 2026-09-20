@@ -9,6 +9,7 @@
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { message, type Message } from "../i18n/translate";
 import type {
   ManagedInstallActivity,
   ManagedInstallProgress,
@@ -109,12 +110,12 @@ let loadSequence = 0;
 interface BinariesState {
   entries: DependencyState[];
   loading: boolean;
-  loadError: string | null;
+  loadError: Message | null;
   /** Typed activity per entry currently installing — several at once is
    * normal (the whole point of per-id claims). */
   installing: Record<string, ManagedInstallOperation>;
   /** The last failure per entry, shown in its row until the next attempt. */
-  errors: Record<string, string>;
+  errors: Record<string, Message>;
   /** True while the registry-wide check runs (the button narrates it). */
   checking: boolean;
   checkingId: string | null;
@@ -123,7 +124,7 @@ interface BinariesState {
   /** Brief acknowledgement owned by the button after a successful check. */
   checkFeedback: "checked" | null;
   /** Registry-check failures that are not owned by a particular entry. */
-  checkError: string | null;
+  checkError: Message | null;
   load: () => Promise<void>;
   install: (id: string) => Promise<void>;
   cancel: (id: string) => Promise<void>;
@@ -179,7 +180,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         return;
       }
       log.error("binaries state load failed", toErrorFields(error));
-      set({ loading: false, loadError: "Managed tools are unavailable." });
+      set({ loading: false, loadError: message("binaries.unavailable") });
     }
   },
 
@@ -229,7 +230,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         finishActivityOperation("managedTools", currentOperationId);
         return;
       }
-      let failedMessage: string | null = null;
+      let failedDetail: string | null = null;
       let applied = false;
       set((s) => {
         if (s.installing[id]?.operationId !== currentOperationId) return s;
@@ -238,8 +239,8 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         const errors = { ...s.errors };
         delete installing[id];
         if (result.outcome === "failed") {
-          errors[id] = "The managed-tool installation could not finish. Try again.";
-          failedMessage = result.error;
+          errors[id] = message("binaries.installNotFinished");
+          failedDetail = result.error;
         } else {
           delete errors[id];
         }
@@ -287,11 +288,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         itemCount: 1,
       });
       finishActivityOperation("managedTools", currentOperationId);
-      if (failedMessage !== null) {
+      if (failedDetail !== null) {
         recordActionFailure(
           "managed-tool-install-failed",
-          "The managed-tool installation failed.",
-          failedMessage,
+          message("binaries.installFailedNotice"),
+          failedDetail,
         );
       }
     } catch (error) {
@@ -305,7 +306,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           installing,
           errors: {
             ...s.errors,
-            [id]: "The managed-tool installation could not start. Try again.",
+            [id]: message("binaries.installNotStarted"),
           },
         };
       });
@@ -335,7 +336,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       log.error("binaries install start failed", { id, ...toErrorFields(error) });
       recordActionFailure(
         "managed-tool-install-failed",
-        "Couldn’t start installing this managed tool.",
+        message("binaries.installStartFailedNotice"),
         error,
       );
     }
@@ -381,17 +382,11 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         return;
       }
       log.error("binaries install cancellation failed", { id, ...toErrorFields(error) });
+      const cancelFailure = message("binaries.installCancelFailed");
       set((state) => ({
-        errors: {
-          ...state.errors,
-          [id]: "Couldn’t cancel this managed-tool installation.",
-        },
+        errors: { ...state.errors, [id]: cancelFailure },
       }));
-      recordActionFailure(
-        "managed-tool-cancel-failed",
-        "Couldn’t cancel this managed-tool installation.",
-        error,
-      );
+      recordActionFailure("managed-tool-cancel-failed", cancelFailure, error);
       set((s) => {
         if (
           s.installing[id]?.operationId !== previous.operationId ||
@@ -441,10 +436,10 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           { immediate: true },
         );
       } catch (error) {
-        const message = "OneCopy couldn’t record this managed-tool check. Try again.";
+        const failure = message("binaries.checkAttemptSaveFailed");
         log.error("managed-tool check attempt save failed", toErrorFields(error));
-        recordActionFailure("managed-tool-check-attempt-save-failed", message, error);
-        set({ checking: false, checkError: message });
+        recordActionFailure("managed-tool-check-attempt-save-failed", failure, error);
+        set({ checking: false, checkError: failure });
         return;
       }
     }
@@ -490,7 +485,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         set((s) => ({
           errors: {
             ...s.errors,
-            [entry.id]: "This managed tool could not be checked. Try again.",
+            [entry.id]: message("binaries.entryCheckFailed"),
           },
         }));
         log.error("binaries check failed", { id: entry.id, ...toErrorFields(error) });
@@ -514,9 +509,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       checkCancelling: false,
       checkFeedback: !cancelled && failures === 0 ? "checked" : null,
       checkError:
-        failures > 0
-          ? `${failures} managed-tool check${failures === 1 ? "" : "s"} failed.`
-          : null,
+        failures > 0 ? message("binaries.checksFailed", { count: failures }) : null,
     });
     recordActivity({
       kind: cancelled ? "cancelled" : failures > 0 ? "failed" : "completed",
@@ -531,7 +524,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     if (failures > 0) {
       recordActionFailure(
         "managed-tool-check-failed",
-        `${failures} managed-tool check${failures === 1 ? "" : "s"} failed.`,
+        message("binaries.checksFailed", { count: failures }),
       );
     }
     if (!cancelled && failures === 0) setTimeout(() => {
@@ -558,16 +551,10 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       });
       if (!active) set({ checkCancelling: false });
     } catch (error) {
-      set({
-        checkCancelling: false,
-        checkError: "Couldn’t cancel the managed-tool check.",
-      });
+      const failure = message("binaries.checkCancelFailed");
+      set({ checkCancelling: false, checkError: failure });
       log.error("binaries check cancellation failed", { id, ...toErrorFields(error) });
-      recordActionFailure(
-        "managed-tool-check-cancel-failed",
-        "Couldn’t cancel the managed-tool check.",
-        error,
-      );
+      recordActionFailure("managed-tool-check-cancel-failed", failure, error);
     }
   },
 
@@ -635,11 +622,9 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("binaries event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(
-      "Live managed-tool status is unavailable. Restart OneCopy to repair it.",
-    );
+    recordInterfaceFailure(message("binaries.liveStatusUnavailable"));
     useBinariesStore.setState({
-      loadError: "Live managed-tool status is unavailable. Restart OneCopy to repair it.",
+      loadError: message("binaries.liveStatusUnavailable"),
     });
   },
 );
@@ -665,23 +650,24 @@ export function installBinariesEventWiring(): Promise<void> {
  *   conventions (no permanent benign FYIs).
  */
 export interface ToolsChip {
-  text: string;
+  text: Message;
   role: "neutral" | "warning";
 }
 
+/** A live install line is itself the signal that one is running, so it is the
+ * only thing this needs to be told about one. */
 export function toolsChip(
-  installing: boolean,
-  progress: string,
+  progress: Message | null,
   entries: DependencyState[],
 ): ToolsChip | null {
-  if (installing) return { text: progress, role: "neutral" };
+  if (progress !== null) return { text: progress, role: "neutral" };
   if (ffmpegEntry(entries)?.status === "not-installed") {
-    return { text: "Install video & HEIC support", role: "warning" };
+    return { text: message("binaries.installSupport"), role: "warning" };
   }
   const updates = entries.filter((e) => e.status === "update-available").length;
   if (updates > 0) {
     return {
-      text: updates === 1 ? "Tool update available" : "Tool updates available",
+      text: message("binaries.toolUpdates", { count: updates }),
       role: "warning",
     };
   }
@@ -694,7 +680,11 @@ export function toolsChip(
   const ffmpeg = ffmpegEntry(entries);
   if (ffmpeg?.status === "installed-unchecked") {
     return {
-      text: ffmpeg.installedVersion === null ? "Tool version unreadable" : "Tools not checked",
+      text: message(
+        ffmpeg.installedVersion === null
+          ? "binaries.versionUnreadableChip"
+          : "binaries.notChecked",
+      ),
       role: "neutral",
     };
   }

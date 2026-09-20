@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../i18n/I18nContext";
+import type { Message } from "../i18n/translate";
+import type { MessageKey } from "../i18n/catalogues";
 import {
   SORT_ORDERS,
   extLabel,
-  extOf,
   factsLine,
   formatBytes,
   itemKey,
@@ -60,10 +62,11 @@ const LIST_ROW_ESTIMATE = 34;
 // Shift makes it permanent — the keydown lives in App.
 
 function Thumb({ item }: { item: SectionItem }) {
+  const { t } = useI18n();
   const [thumbFailed, setThumbFailed] = useState(false);
   if (item.hash === null || !item.hasThumb || thumbFailed) {
     return (
-      <span className="text-sm font-semibold text-ink-muted">{extLabel(item.fileName)}</span>
+      <span className="text-sm font-semibold text-ink-muted">{extLabel(item.fileName, t)}</span>
     );
   }
   return (
@@ -100,7 +103,8 @@ function Tile({
   onSelect: (event: React.MouseEvent) => void;
   presentation: ItemPresentation;
 }) {
-  const facts = factsLine(item);
+  const { number } = useI18n();
+  const facts = factsLine(item, number);
   const drag = useDestinationItemDrag({
     key: itemKey(item),
     label: item.fileName,
@@ -210,7 +214,9 @@ export const DEFAULT_COLUMN_WIDTHS: Record<SizedColumn, number> = {
   kind: 56,
   name: 300,
   size: 84,
-  date: 148,
+  // Wide enough for a date and time in the languages that write them out, such
+  // as English's "Sep 16, 2026, 6:02 PM"; a saved width still wins.
+  date: 190,
 };
 const MIN_COLUMN_WIDTH = 40;
 
@@ -232,13 +238,16 @@ export function columnWidthsFrom(value: unknown): Record<SizedColumn, number> {
 const OTHER_COLUMNS: {
   key: SizedColumn | "folders";
   order: SortOrder | null;
-  label: string;
+  labelKey: MessageKey;
+  /** The sort tooltip names the column in its own sentence rather than
+   * lowercasing the heading, which only reads as English. */
+  sortHintKey: MessageKey | null;
 }[] = [
-  { key: "kind", order: "ext", label: "Kind" },
-  { key: "name", order: "name", label: "Name" },
-  { key: "size", order: "size", label: "Size" },
-  { key: "date", order: "time", label: "Date" },
-  { key: "folders", order: null, label: "Folders" },
+  { key: "kind", order: "ext", labelKey: "common.kind", sortHintKey: "grid.sortByKind" },
+  { key: "name", order: "name", labelKey: "common.name", sortHintKey: "grid.sortByName" },
+  { key: "size", order: "size", labelKey: "common.size", sortHintKey: "grid.sortBySize" },
+  { key: "date", order: "time", labelKey: "common.date", sortHintKey: "grid.sortByDate" },
+  { key: "folders", order: null, labelKey: "grid.columnFolders", sortHintKey: null },
 ];
 
 function columnStyle(
@@ -261,6 +270,7 @@ function ListHeader({
   widths: Record<SizedColumn, number>;
   onWidths: (widths: Record<SizedColumn, number>) => void;
 }) {
+  const { t } = useI18n();
   const beginResize = (key: SizedColumn) => (event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
@@ -295,21 +305,21 @@ function ListHeader({
                 sort.order === column.order ? "text-ink" : ""
               } ${column.key === "size" ? "text-right" : ""}`}
               onClick={() => onSort(column.order!)}
-              title={`Sort by ${column.label.toLowerCase()} (again to reverse)`}
+              title={column.sortHintKey !== null ? t(column.sortHintKey) : undefined}
             >
-              {column.label}
+              {t(column.labelKey)}
               {sort.order === column.order ? (
                 sort.desc ? <ChevronDown size={12} className="ml-0.5 inline-block" /> : <ChevronUp size={12} className="ml-0.5 inline-block" />
               ) : null}
             </button>
           ) : (
-            <span className="min-w-0 flex-1 truncate text-left">{column.label}</span>
+            <span className="min-w-0 flex-1 truncate text-left">{t(column.labelKey)}</span>
           )}
           {column.key !== "folders" ? (
             <span
               className="absolute -right-2 top-0 h-full w-3 cursor-col-resize"
               onMouseDown={beginResize(column.key as SizedColumn)}
-              title="Drag to resize"
+              title={t("grid.dragToResize")}
             />
           ) : null}
         </span>
@@ -331,6 +341,7 @@ function ListRow({
   onSelect: (event: React.MouseEvent) => void;
   widths: Record<SizedColumn, number>;
 }) {
+  const { t, dateTime, number } = useI18n();
   const drag = useDestinationItemDrag({
     key: itemKey(item),
     label: item.fileName,
@@ -357,7 +368,7 @@ function ListRow({
         className="shrink-0 truncate text-[11px] font-semibold text-ink-muted"
         style={columnStyle("kind", widths)}
       >
-        {extOf(item.fileName).toUpperCase() || extLabel(item.fileName)}
+        {extLabel(item.fileName, t)}
       </span>
       <span
         className="truncate text-ink"
@@ -368,14 +379,14 @@ function ListRow({
         {item.hasCompanions ? (
           <span
             className="ml-2 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink-muted"
-            title="Has a paired companion file (RAW/sidecar) — every action includes it"
+            title={t("grid.companionHint")}
           >
-            pair
+            {t("grid.companionBadge")}
           </span>
         ) : null}
         {item.copyCount > 1 ? (
           <span className="ml-2 rounded-md bg-primary-surface px-1.5 py-0.5 text-[11px] font-medium text-primary">
-            ×{item.copyCount}
+            {t("grid.copyCount", { count: item.copyCount })}
           </span>
         ) : null}
       </span>
@@ -383,13 +394,13 @@ function ListRow({
         className="shrink-0 text-right tabular-nums text-xs text-ink-muted"
         style={columnStyle("size", widths)}
       >
-        {item.byteSize !== null ? formatBytes(item.byteSize) : ""}
+        {item.byteSize !== null ? formatBytes(item.byteSize, number) : ""}
       </span>
       <span
         className="shrink-0 truncate tabular-nums text-xs text-ink-muted"
         style={columnStyle("date", widths)}
       >
-        {item.resolvedUtcMs !== null ? formatLocalMinute(item.resolvedUtcMs) : "—"}
+        {item.resolvedUtcMs !== null ? formatLocalMinute(item.resolvedUtcMs, dateTime) : "—"}
       </span>
       {/* EVERY copy's folder, sorted (Phase 33) — one row per merged binary,
           so a single folder was an arbitrary pick. dir="rtl" keeps the deep
@@ -415,11 +426,12 @@ export default function Grid({
 }: {
   items: SectionItem[];
   loading: boolean;
-  loadError: string | null;
+  loadError: Message | null;
   /** Thumbnails for images and videos; rows for other-files, which have
    * nothing to show in a tile. */
   layout: "tiles" | "list";
 }) {
+  const { t, text } = useI18n();
   useDisplayZone();
   const selectedKeys = useItemsStore((s) => s.selectedKeys);
   const selectedPositions = useItemsStore((s) => s.selectedPositions);
@@ -551,8 +563,10 @@ export default function Grid({
   const emptyState =
     effectiveTotalItems === 0
       ? loading
-        ? "Loading…"
-        : loadError ?? "Nothing in this section"
+        ? t("common.loading")
+        : loadError === null
+          ? t("grid.empty")
+          : text(loadError)
       : null;
   // The backend already returns this bounded window in the active total
   // order. Re-sorting a partial window would corrupt its absolute positions.
@@ -674,35 +688,37 @@ export default function Grid({
               className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
               onClick={() => void requestComparisonFromMain()}
             >
-              Compare
+              {t("grid.compare")}
             </button>
           ) : null}
         </div>
         <div className="flex items-center gap-2 whitespace-nowrap">
           <button
             className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-            title="Re-check only the directories this section's files came from"
+            title={t("grid.recheckHint")}
             disabled={sourceChecking}
             onClick={() => void rescanCurrentSection()}
           >
-            {sourceChecking ? "Unavailable while checking source folders" : "Recheck this section"}
+            {sourceChecking ? t("grid.recheckUnavailable") : t("grid.recheck")}
           </button>
-          <label htmlFor="grid-sort">Sort</label>
+          <label htmlFor="grid-sort">{t("grid.sort")}</label>
           <select
             id="grid-sort"
             className="h-7 rounded-md border border-input-border bg-surface px-2 text-ink"
             value={sortChoice.order}
             onChange={(e) => setSortOrder(e.target.value as SortOrder)}
           >
-            {(Object.keys(sortCatalogue.orders) as SortOrder[]).map((order) => (
-              <option key={order} value={order}>
-                {sortCatalogue.orders[order]}
-              </option>
-            ))}
+            {(Object.entries(sortCatalogue.orders) as [SortOrder, MessageKey][]).map(
+              ([order, key]) => (
+                <option key={order} value={order}>
+                  {t(key)}
+                </option>
+              ),
+            )}
           </select>
           <button
             className="h-7 rounded-md px-1.5 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-            title={sortChoice.desc ? "Descending — click for ascending" : "Ascending — click for descending"}
+            title={sortChoice.desc ? t("grid.sortDescending") : t("grid.sortAscending")}
             // Re-picking the active order toggles direction (the store's rule).
             onClick={() => setSortOrder(sortChoice.order)}
           >
@@ -715,17 +731,17 @@ export default function Grid({
           level="error"
           className="mx-2 mt-2 shrink-0"
           onDismiss={clearPreviewError}
-          dismissLabel="Dismiss preview result"
+          dismissLabel={t("preview.dismissResult")}
           actions={
               <button
                 className="font-medium underline"
                 onClick={() => void setPreviewPlacement("split")}
               >
-                Show in this window
+                {t("grid.showInThisWindow")}
               </button>
           }
         >
-          {previewError}
+          {text(previewError)}
         </OperationResult>
       ) : null}
       {layout === "list" ? (
@@ -743,7 +759,7 @@ export default function Grid({
         id="main-item-area"
         tabIndex={0}
         role="listbox"
-        aria-label="Section items"
+        aria-label={t("grid.items")}
         aria-activedescendant={selectedItem !== null ? `grid-opt-${selectedItem}` : undefined}
         aria-multiselectable
         className={`min-h-0 flex-1 overflow-y-auto outline-none ${
@@ -764,7 +780,7 @@ export default function Grid({
             level="error"
             className="mx-auto w-[min(520px,calc(100%-1rem))] shrink-0 basis-full"
           >
-            {loadError}
+            {text(loadError)}
           </OperationResult>
         ) : null}
         {emptyState !== null ? (
@@ -805,7 +821,7 @@ export default function Grid({
           const isAnchor = selectedItem === key;
           const projectedItem = {
             ...item,
-            derivedWork: mergeActiveItemWork(item.derivedWork, item.hash, activeWork),
+            derivedWork: mergeActiveItemWork(item.derivedWork, item.hash, activeWork, t),
           };
           const presentation = itemPresentation(projectedItem, {
             similarCount:
@@ -816,7 +832,7 @@ export default function Grid({
             selectionOrdinal: selectionOrdinals.get(key) ?? null,
             selectedCount: selectedKeys.size,
             showFaceStars,
-          });
+          }, t);
           const onSelect = (event: React.MouseEvent) => {
             containerRef.current?.focus();
             // Browser double-click dispatch is click, click, dblclick. Acting

@@ -2,6 +2,7 @@ import {
   useBinariesStore,
   type DependencyState,
 } from "../state/binaries-store";
+import { toolLabel } from "../models/coreLabels";
 import { managedInstallActivityLine } from "../models/dependencyProgress";
 import { useAppStore } from "../state/app-store";
 import ModalShell from "./ModalShell";
@@ -11,6 +12,8 @@ import { formatLocalMinute } from "../utils/displayTime";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import OperationResult from "./ui/OperationResult";
 import { formatBytes } from "../models/items";
+import { useI18n } from "../i18n/I18nContext";
+import type { Translator } from "../i18n/translate";
 
 // "Managed tools" — grouped by the two genuinely different LIFECYCLES the
 // registry holds (developer, 2026-08-17; one flat list forced an update
@@ -34,13 +37,13 @@ import { formatBytes } from "../models/items";
 
 /** What a row's state is called, which depends on whether "latest" is a
  * thing this entry can even have. */
-function statusLabel(entry: DependencyState): string {
-  if (entry.status === "not-installed") return "Not installed";
-  if (entry.status === "update-available") return "Update available";
+function statusLabel(entry: DependencyState, t: Translator["t"]): string {
+  if (entry.status === "not-installed") return t("binaries.notInstalled");
+  if (entry.status === "update-available") return t("binaries.updateAvailable");
   // Only a live-resolved entry may claim up-to-date: it was actually
   // compared against its upstream. A pinned artifact has nothing to compare with.
-  if (!entry.checkable) return "Installed";
-  return entry.status === "up-to-date" ? "Up to date" : "Installed";
+  if (!entry.checkable) return t("binaries.installed");
+  return entry.status === "up-to-date" ? t("binaries.upToDate") : t("binaries.installed");
 }
 
 function displayArtifactIdentity(identity: string): string {
@@ -50,23 +53,30 @@ function displayArtifactIdentity(identity: string): string {
 /** The one line of version fact a row shows. A present entry whose version could
  * not be read says so — silence would leave an "Installed" row with an Update
  * button and no explanation of why it is offered. */
-function factLine(entry: DependencyState): string | null {
-  const released = entry.released !== null ? `Released ${entry.released}` : null;
+function factLine(entry: DependencyState, t: Translator["t"]): string | null {
+  const released =
+    entry.released !== null ? t("binaries.released", { date: entry.released }) : null;
   if (entry.status === "not-installed") return released;
   if (!entry.checkable) return released;
   const installed = entry.installedVersion;
   const latest = entry.facts.latestKnownVersion;
+  const build = (identity: string) =>
+    t("binaries.build", { version: displayArtifactIdentity(identity) });
   const version =
     entry.status === "update-available" && installed !== null && latest !== null
-      ? `Build ${displayArtifactIdentity(installed)} · ${displayArtifactIdentity(latest)} available`
+      ? [
+          build(installed),
+          t("binaries.latestAvailable", { version: displayArtifactIdentity(latest) }),
+        ].join(" · ")
       : installed !== null
-        ? `Build ${displayArtifactIdentity(installed)}`
-        : "Version unreadable";
+        ? build(installed)
+        : t("binaries.versionUnreadable");
   return [version, released].filter((part) => part !== null).join(" · ") || null;
 }
 
 function EntryRow({ entry }: { entry: DependencyState }) {
   useDisplayZone();
+  const { t, text, dateTime, number, percent } = useI18n();
   const progress = useBinariesStore((s) => s.installing[entry.id]);
   const error = useBinariesStore((s) => s.errors[entry.id]);
   const checking = useBinariesStore((s) => s.checking);
@@ -79,7 +89,7 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   const checkAll = useBinariesStore((s) => s.checkAll);
   const cancelCheck = useBinariesStore((s) => s.cancelCheck);
   const installing = progress !== undefined;
-  const progressLine = progress === undefined ? null : managedInstallActivityLine(progress);
+  const progressLine = progress === undefined ? null : text(managedInstallActivityLine(progress, number, percent));
 
   // Install when missing, Update when a newer version is known — and Update
   // again when a present entry's own version could not be read, which is the
@@ -88,19 +98,19 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   // the copy that would not answer.
   const action =
     entry.status === "not-installed"
-      ? "Install"
+      ? "binaries.install"
       : entry.status === "update-available" ||
           (entry.status === "installed-unchecked" && entry.installedVersion === null)
-        ? "Update"
+        ? "binaries.update"
         : null;
-  const fact = factLine(entry);
+  const fact = factLine(entry, t);
   // Only a checkable, installed entry offers a check — and ffmpeg is the only
   // checkable entry, so this IS the single check button, standing where its
   // scope is obvious rather than floating above a list it cannot cover.
   const offersCheck = entry.checkable && entry.status !== "not-installed";
   const checked =
     entry.facts.lastCheckedAtUtc !== null
-      ? `Checked ${formatLocalMinute(entry.facts.lastCheckedAtUtc)}`
+      ? t("binaries.lastChecked", { time: formatLocalMinute(entry.facts.lastCheckedAtUtc, dateTime) })
       : null;
   const missingCoreTool =
     entry.status === "not-installed" && entry.requiredForCore;
@@ -109,20 +119,24 @@ function EntryRow({ entry }: { entry: DependencyState }) {
     <div className="rounded-xl border border-border p-3 text-sm">
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0 break-words font-semibold leading-snug text-ink-strong">
-          {entry.label}
+          {toolLabel(entry.id, entry.label, t)}
         </span>
         <span
           className={`shrink-0 text-xs ${
             missingCoreTool ? "font-semibold text-warning" : "text-ink-muted"
           }`}
         >
-          {statusLabel(entry)}
+          {statusLabel(entry, t)}
         </span>
       </div>
       {fact !== null || entry.downloadBytes !== null ? (
         <p className="mt-1 break-words text-xs text-ink-muted">
-          {[fact, entry.downloadBytes !== null ? `Download ${formatBytes(entry.downloadBytes)}` : null]
-            .filter((part) => part !== null).join(" · ")}
+          {[
+            fact,
+            entry.downloadBytes !== null
+              ? t("binaries.downloadSize", { size: formatBytes(entry.downloadBytes, number) })
+              : null,
+          ].filter((part) => part !== null).join(" · ")}
         </p>
       ) : null}
       {progressLine !== null ? (
@@ -130,14 +144,14 @@ function EntryRow({ entry }: { entry: DependencyState }) {
           className="mt-2 text-xs text-primary"
           aria-live="polite"
           aria-atomic="true"
-          aria-label={`${entry.label} install progress`}
+          aria-label={t("binaries.installProgress", { name: entry.label })}
         >
           {progressLine}
         </p>
       ) : null}
       {error !== undefined ? (
         <OperationResult level="error" className="mt-2">
-          {error}
+          {text(error)}
         </OperationResult>
       ) : null}
       {installing ? (
@@ -146,14 +160,14 @@ function EntryRow({ entry }: { entry: DependencyState }) {
             disabled={progress?.cancelling === true}
             onClick={() => void cancel(entry.id)}
           >
-            {progress?.cancelling === true ? "Cancelling…" : "Cancel"}
+            {progress?.cancelling === true ? t("common.cancelling") : t("common.cancel")}
           </Button>
         </div>
       ) : action !== null || offersCheck ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {action !== null ? (
             <Button variant="primary" onClick={() => void install(entry.id)}>
-              {action}
+              {t(action)}
             </Button>
           ) : null}
           {offersCheck ? (
@@ -161,18 +175,18 @@ function EntryRow({ entry }: { entry: DependencyState }) {
               <Button disabled={checking} onClick={() => void checkAll()}>
                 {checking
                   ? checkCancelling
-                    ? "Cancelling…"
-                    : "Checking…"
+                    ? t("common.cancelling")
+                    : t("binaries.checking")
                   : checkFeedback === "checked"
-                    ? "Checked"
-                    : "Check for updates"}
+                    ? t("binaries.checkDone")
+                    : t("binaries.checkForUpdates")}
               </Button>
               {checkingId === entry.id ? (
                   <Button
                     disabled={checkCancelling}
                     onClick={() => void cancelCheck(entry.id)}
                   >
-                    Cancel check
+                    {t("binaries.cancelCheck")}
                   </Button>
               ) : checked !== null ? (
                 <span className="text-xs text-ink-muted">{checked}</span>
@@ -183,7 +197,7 @@ function EntryRow({ entry }: { entry: DependencyState }) {
       ) : null}
       {offersCheck && checkError !== null ? (
         <OperationResult level="error" className="mt-2">
-          {checkError}
+          {text(checkError)}
         </OperationResult>
       ) : null}
     </div>
@@ -197,6 +211,7 @@ export default function BinariesModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const { t, text } = useI18n();
   const entries = useBinariesStore((s) => s.entries);
   const loading = useBinariesStore((s) => s.loading);
   const loadError = useBinariesStore((s) => s.loadError);
@@ -217,19 +232,19 @@ export default function BinariesModal({
 
   return (
     <ModalShell
-      title="Managed tools"
+      title={t("binaries.title")}
       onClose={onClose}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
       footerResult={
         entries.length > 0 && loadError !== null ? (
-          <OperationResult level="error">{loadError}</OperationResult>
+          <OperationResult level="error">{text(loadError)}</OperationResult>
         ) : undefined
       }
     >
       {actionable > 1 ? (
         <div className="mb-3">
           <Button variant="primary" onClick={() => void installAll()}>
-            Install all
+            {t("binaries.installAll")}
           </Button>
         </div>
       ) : null}
@@ -237,11 +252,11 @@ export default function BinariesModal({
       {entries.length === 0 ? (
         loadError !== null ? (
           <OperationResult level="error" className="my-4">
-            {loadError}
+            {text(loadError)}
           </OperationResult>
         ) : (
           <p className="py-4 text-center text-sm text-ink-muted">
-            {loading ? "Loading managed tools…" : "No managed tools are configured."}
+            {loading ? t("binaries.loading") : t("binaries.none")}
           </p>
         )
       ) : null}
@@ -254,11 +269,9 @@ export default function BinariesModal({
 
       {appSelected.length > 0 ? (
         <section className="mt-5">
-          <h3 className="text-sm font-semibold text-ink-strong">Selected by OneCopy</h3>
+          <h3 className="text-sm font-semibold text-ink-strong">{t("binaries.appSelected")}</h3>
           <p className="mb-2 text-xs text-ink-muted">
-            These files are downloaded only when you install them here.
-            OneCopy selects the versions, so they change only when the app
-            updates — there is nothing to check for.
+            {t("binaries.appSelectedNote")}
           </p>
           <div className="space-y-2">
             {appSelected.map((entry) => (
@@ -273,8 +286,8 @@ export default function BinariesModal({
           today — at most about once a day. Default off. */}
       <div className="mt-5">
         <Row
-          label="Check for ffmpeg updates at launch"
-          hint="About once a day. Nothing is ever installed without asking."
+          label={t("binaries.checkAtLaunch")}
+          hint={t("binaries.checkAtLaunchHint")}
         >
           <Toggle
             checked={checkAtLaunch}
@@ -285,10 +298,7 @@ export default function BinariesModal({
         </Row>
       </div>
       <p className="mt-2 text-xs text-ink-muted">
-        ffmpeg is required for video preparation and HEIC photos; transcription
-        also uses it. The transcription and face models add only optional
-        transcription and comparison scoring. Files that do not need these
-        tools remain usable.
+        {t("binaries.toolsNote")}
       </p>
     </ModalShell>
   );

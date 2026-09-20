@@ -1,3 +1,9 @@
+// @vitest-environment happy-dom
+//
+// The workflows under test record failures through the notifications store,
+// which renders the sentence in the language the document declares, so these
+// specs need a document even though the subject is pure workflow logic.
+
 import { beforeEach, describe, expect, it } from "vitest";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
@@ -18,6 +24,7 @@ import {
   resetTauriMocks,
   setCurrentMonitor,
 } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 let sequence: Array<SectionItem> = [];
 let sequenceIndex = 0;
@@ -252,7 +259,9 @@ describe("viewer workflow", () => {
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(viewerBroadcast().item?.fileName).toBe("c.jpg");
-    expect(useQuickViewStore.getState().failure).toBe("Couldn’t locate this item in Main.");
+    expect(inEnglish(useQuickViewStore.getState().failure)).toBe(
+      "Couldn’t locate this item in Main.",
+    );
     expect(useItemsStore.getState().selected?.kind).toBe("other");
   });
 
@@ -263,7 +272,9 @@ describe("viewer workflow", () => {
     mockCommand("get_item_section", () => null);
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().failure).toBe("This item is no longer available in Main.");
+    expect(inEnglish(useQuickViewStore.getState().failure)).toBe(
+      "This item is no longer available in Main.",
+    );
     expect(useItemsStore.getState().selected?.kind).toBe("other");
   });
 
@@ -310,7 +321,7 @@ describe("viewer workflow", () => {
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(useQuickViewStore.getState().failure).toBe(
+    expect(inEnglish(useQuickViewStore.getState().failure)).toBe(
       "Couldn’t move in the viewer.",
     );
     expect(

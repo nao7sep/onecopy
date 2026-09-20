@@ -1,3 +1,9 @@
+// @vitest-environment happy-dom
+//
+// The wiring records its failures through the notifications store, which
+// renders the sentence in the language the document declares, so this spec
+// needs a document even though the subject is the event channels.
+//
 // The backend event channels. Long-lived library work still settles through
 // terminal events; managed-tool progress alone is event-driven and is
 // correlated to the authoritative command-owned terminal boundary.

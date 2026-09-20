@@ -158,7 +158,6 @@ beforeEach(() => {
     open: false,
     dirs: [],
     timezone: "UTC",
-    timezoneValid: true,
     error: null,
   });
   useAppStore.setState({ appData: null, startupFailure: null, quarantines: [] });
@@ -350,7 +349,6 @@ describe("the culling workflow", () => {
         open: true,
         dirs: [{ path: "/photos" }],
         timezone: "UTC",
-        timezoneValid: true,
       });
       await finishWizard();
     });

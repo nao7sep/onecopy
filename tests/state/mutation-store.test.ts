@@ -1,3 +1,9 @@
+// @vitest-environment happy-dom
+//
+// Failures are recorded through the notifications store, which renders the
+// sentence in the language the document declares, so this spec needs a document
+// even though the subject is not the interface.
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MutationProgress } from "../../src/models/mutation";
 import { useMutationStore } from "../../src/state/mutation-store";

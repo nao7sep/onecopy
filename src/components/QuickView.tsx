@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, Maximize2, X } from "lucide-react";
+import { useI18n } from "../i18n/I18nContext";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useQuickViewStore } from "../state/quick-view-store";
 import {
@@ -16,6 +17,7 @@ import { viewerOwnsKey } from "../utils/viewerKeys";
 import OperationResult from "./ui/OperationResult";
 
 export default function QuickView() {
+  const { t, text } = useI18n();
   const session = useQuickViewStore((state) => state.session);
   const pendingDelete = useQuickViewStore((state) => state.pendingDelete);
   const failure = useQuickViewStore((state) => state.failure);
@@ -51,7 +53,7 @@ export default function QuickView() {
       className="fixed inset-0 z-20 flex flex-col bg-background outline-none"
       role="dialog"
       aria-modal="true"
-      aria-label="Quick View"
+      aria-label={t("quickView.window")}
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-3 py-2">
         <span className="min-w-0 flex-1 truncate text-sm text-ink" title={item.fileName}>
@@ -61,7 +63,7 @@ export default function QuickView() {
           {session.index + 1} / {session.length}
         </span>
         <button
-          aria-label="Previous item"
+          aria-label={t("viewer.previous")}
           disabled={atStart}
           className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted hover:bg-surface-muted hover:text-ink disabled:opacity-30"
           onClick={() => moveViewer("previous")}
@@ -69,7 +71,7 @@ export default function QuickView() {
           <ChevronLeft size={16} />
         </button>
         <button
-          aria-label="Next item"
+          aria-label={t("viewer.next")}
           disabled={atEnd}
           className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted hover:bg-surface-muted hover:text-ink disabled:opacity-30"
           onClick={() => moveViewer("next")}
@@ -77,7 +79,7 @@ export default function QuickView() {
           <ChevronRight size={16} />
         </button>
         <button
-          aria-label="Open full screen"
+          aria-label={t("quickView.openFullScreen")}
           className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted hover:bg-surface-muted hover:text-ink"
           onClick={() => void setViewerPresentation("fullscreen")}
         >
@@ -85,7 +87,7 @@ export default function QuickView() {
         </button>
         <button
           data-modal-close
-          aria-label="Close Quick View"
+          aria-label={t("quickView.close")}
           className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted hover:bg-surface-muted hover:text-ink"
           onClick={() => void closeViewer()}
         >
@@ -97,9 +99,9 @@ export default function QuickView() {
           level="error"
           className="mx-3 mt-2 shrink-0"
           onDismiss={() => useQuickViewStore.getState().setFailure(null)}
-          dismissLabel="Dismiss Quick View result"
+          dismissLabel={t("quickView.dismissResult")}
         >
-          {failure}
+          {text(failure)}
         </OperationResult>
       ) : null}
       <div className="min-h-0 flex-1">
@@ -112,17 +114,26 @@ export default function QuickView() {
         />
       </div>
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        Left/Right: navigate · F: full screen · Space or Escape: back to the grid
+        {t("quickView.hint")}
       </footer>
       {pendingDelete !== null ? (
         <ConfirmDialog
-          title={pendingDelete === "permanent" ? "Delete permanently?" : "Delete this item?"}
-          message={`${pendingDelete === "permanent" ? "Permanently delete" : "Delete"} ${item.fileName}${
+          title={t(
             pendingDelete === "permanent"
-              ? " and every copy? This cannot be undone."
-              : " and every copy? They remain recoverable from Deleted files."
-          }`}
-          confirmLabel={pendingDelete === "permanent" ? "Delete permanently" : "Delete"}
+              ? "common.deletePermanentlyTitle"
+              : "viewer.deleteTitle",
+          )}
+          message={t(
+            pendingDelete === "permanent"
+              ? "viewer.deletePermanentlyBody"
+              : "viewer.deleteBody",
+            { name: item.fileName },
+          )}
+          confirmLabel={t(
+            pendingDelete === "permanent"
+              ? "common.deletePermanently"
+              : "common.delete",
+          )}
           onConfirm={() => void confirmViewerDelete()}
           onCancel={() => useQuickViewStore.getState().cancelDelete()}
         />

@@ -4,6 +4,8 @@ import {
   type GroupMember,
 } from "../../src/state/comparison-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { message } from "../../src/i18n/translate";
+import { inEnglish } from "../helpers/i18n";
 
 function member(index: number): GroupMember {
   return {
@@ -152,7 +154,7 @@ describe("page-local decisions", () => {
     expect(
       await useComparisonStore.getState().requestPageDecision(false),
     ).toBeNull();
-    expect(useComparisonStore.getState().message).toBe(
+    expect(inEnglish(useComparisonStore.getState().message)).toBe(
       "Select at least one image to keep.",
     );
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
@@ -239,7 +241,7 @@ describe("partial deletion", () => {
         permanent: false,
         keepHashes: [],
         targetHashes: ["h1"],
-        message: "failed",
+        message: message("comparison.deleteStartFailedRetry"),
       },
     });
     await useComparisonStore.getState().retryFailure(true);

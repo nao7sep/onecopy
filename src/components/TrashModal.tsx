@@ -8,6 +8,8 @@ import ConfirmDialog from "./ConfirmDialog";
 import Button from "./ui/Button";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
+import { useI18n } from "../i18n/I18nContext";
+import { message, type Message } from "../i18n/translate";
 
 // Deleted files: one permission-preserving location below each configured
 // source or destination root, with per-root sizes, Reveal, and the deliberately
@@ -42,6 +44,7 @@ export default function TrashModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const { t, text, number } = useI18n();
   const [rows, setRows] = useState<TrashRootInfo[] | null>(null);
   const [confirm, setConfirm] = useState<TrashRootInfo | null>(null);
   const [busy, setBusy] = useState(false);
@@ -49,7 +52,8 @@ export default function TrashModal({
   const [activeRoot, setActiveRoot] = useState<string | null>(null);
   const [progress, setProgress] = useState<TrashEmptyProgress | null>(null);
   const [cancelling, setCancelling] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // The message, not a finished sentence, so it follows a language change.
+  const [error, setError] = useState<Message | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -63,8 +67,12 @@ export default function TrashModal({
       .catch((error) => {
         if (!current) return;
         log.error("trash overview failed", toErrorFields(error));
-        setError("Deleted-file locations are unavailable.");
-        recordActionFailure("trash-overview-failed", "Deleted-file locations are unavailable.", error);
+        setError(message("trash.locationsUnavailable"));
+        recordActionFailure(
+          "trash-overview-failed",
+          message("trash.locationsUnavailable"),
+          error,
+        );
       });
     return () => {
       current = false;
@@ -86,8 +94,12 @@ export default function TrashModal({
       else stop();
     }).catch((error) => {
       log.warn("trash progress wiring failed", toErrorFields(error));
-      if (alive) setError("Live deletion progress is unavailable.");
-      recordActionFailure("trash-progress-unavailable", "Live deletion progress is unavailable.", error);
+      if (alive) setError(message("trash.progressUnavailable"));
+      recordActionFailure(
+        "trash-progress-unavailable",
+        message("trash.progressUnavailable"),
+        error,
+      );
     });
     return () => {
       alive = false;
@@ -106,8 +118,8 @@ export default function TrashModal({
     setError(null);
     try {
       const outcome = await invoke<TrashEmptyOutcome>("trash_empty", { root: row.root });
-      let outcomeError = outcome.failures > 0
-        ? `${outcome.failures.toLocaleString()} entr${outcome.failures === 1 ? "y" : "ies"} could not be removed.`
+      let outcomeError: Message | null = outcome.failures > 0
+        ? message("trash.entriesNotRemoved", { count: outcome.failures })
         : null;
       try {
         setRows(await invoke<TrashRootInfo[]>("trash_overview"));
@@ -115,8 +127,8 @@ export default function TrashModal({
         log.error("trash remeasurement failed", toErrorFields(error));
         setRows(null);
         outcomeError = outcomeError === null
-          ? "Deleted files were processed, but their totals couldn’t be refreshed."
-          : `${outcomeError} Totals couldn’t be refreshed.`;
+          ? message("trash.totalsNotRefreshed")
+          : message("trash.partialTotalsNotRefreshed", { reason: outcomeError });
       }
       setError(outcomeError);
       if (outcomeError !== null) {
@@ -124,8 +136,8 @@ export default function TrashModal({
       }
     } catch (error) {
       log.error("trash empty failed", toErrorFields(error));
-      setError("Couldn’t empty these deleted files.");
-      recordActionFailure("trash-empty-failed", "Couldn’t empty these deleted files.", error);
+      setError(message("trash.emptyFailed"));
+      recordActionFailure("trash-empty-failed", message("trash.emptyFailed"), error);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -144,30 +156,36 @@ export default function TrashModal({
     } catch (error) {
       setCancelling(false);
       log.error("trash empty cancellation failed", toErrorFields(error));
-      setError("Couldn’t cancel emptying deleted files.");
-      recordActionFailure("trash-empty-cancel-failed", "Couldn’t cancel emptying deleted files.", error);
+      setError(message("trash.cancelFailed"));
+      recordActionFailure(
+        "trash-empty-cancel-failed",
+        message("trash.cancelFailed"),
+        error,
+      );
     }
   };
 
   return (
     <ModalShell
-      title="Deleted files"
+      title={t("trash.title")}
       onClose={onClose}
       closeDisabled={busy}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
       footerResult={
         rows !== null && error !== null ? (
-          <OperationResult level="error">{error}</OperationResult>
+          <OperationResult level="error">{text(error)}</OperationResult>
         ) : undefined
       }
     >
       {confirm !== null ? (
         <ConfirmDialog
-          title="Empty deleted files?"
-          message={`Permanently delete ${confirm.files.toLocaleString()} file${
-            confirm.files === 1 ? "" : "s"
-          } (${formatBytes(confirm.bytes)}) from ${confirm.root}? Emptied files cannot be recovered.`}
-          confirmLabel="Empty deleted files"
+          title={t("trash.confirmTitle")}
+          message={t("trash.confirmMessage", {
+            count: confirm.files,
+            size: formatBytes(confirm.bytes, number),
+            root: confirm.root,
+          })}
+          confirmLabel={t("trash.confirmAction")}
           widthClass="w-[min(820px,calc(100vw-3rem))]"
           onConfirm={() => {
             const row = confirm;
@@ -178,20 +196,18 @@ export default function TrashModal({
         />
       ) : null}
       <p className="mb-3 text-sm text-ink-muted">
-        Each configured root keeps its deleted files beneath its own permission
-        boundary. OneCopy never empties these folders automatically. Emptying
-        is permanent; removing their contents in the file manager is also safe.
+        {t("trash.intro")}
       </p>
       {rows === null ? (
         error !== null ? (
           <OperationResult level="error" className="my-4">
-            {error}
+            {text(error)}
           </OperationResult>
         ) : (
-          <p className="py-4 text-center text-sm text-ink-muted">Measuring…</p>
+          <p className="py-4 text-center text-sm text-ink-muted">{t("trash.measuring")}</p>
         )
       ) : rows.length === 0 ? (
-        <p className="py-4 text-center text-sm text-ink-muted">No deleted-file locations</p>
+        <p className="py-4 text-center text-sm text-ink-muted">{t("trash.noLocations")}</p>
       ) : (
         <ul className="space-y-1.5">
           {rows.map((row) => (
@@ -202,16 +218,28 @@ export default function TrashModal({
               <div className="min-w-0 flex-1">
                 <p className="select-text break-all text-sm text-ink">{row.root}</p>
                 <p className="text-xs tabular-nums text-ink-muted">
-                  {row.files.toLocaleString()} file{row.files === 1 ? "" : "s"} ·{" "}
-                  {formatBytes(row.bytes)}
+                  {t("trash.rootSummary", {
+                    count: row.files,
+                    size: formatBytes(row.bytes, number),
+                  })}
                 </p>
                 {activeRoot === row.root ? (
                   <p className="mt-1 text-xs tabular-nums text-primary">
                     {cancelling
-                      ? "Cancelling…"
+                      ? t("common.cancelling")
                       : progress === null
-                        ? "Starting…"
-                        : `Removing — ${progress.done.toLocaleString()}/${progress.total.toLocaleString()} · ${formatBytes(progress.bytesDone)}/${formatBytes(progress.bytesTotal)}${progress.failures > 0 ? ` · ${progress.failures.toLocaleString()} failed` : ""}`}
+                        ? t("common.starting")
+                        : [
+                            t("trash.removingProgress", {
+                              done: progress.done,
+                              total: progress.total,
+                              doneSize: formatBytes(progress.bytesDone, number),
+                              totalSize: formatBytes(progress.bytesTotal, number),
+                            }),
+                            progress.failures > 0
+                              ? t("trash.failedCount", { count: progress.failures })
+                              : null,
+                          ].filter((part) => part !== null).join(" · ")}
                   </p>
                 ) : null}
               </div>
@@ -219,15 +247,15 @@ export default function TrashModal({
                 onClick={() => {
                   void invoke("trash_reveal", { root: row.root }).catch((error) => {
                     log.warn("trash reveal failed", { root: row.root, ...toErrorFields(error) });
-                    setError("Couldn’t reveal this deleted-files location.");
+                    setError(message("trash.revealFailed"));
                   });
                 }}
               >
-                Reveal
+                {t("trash.reveal")}
               </Button>
               {activeRoot === row.root ? (
                 <Button disabled={cancelling} onClick={() => void cancelEmpty()}>
-                  {cancelling ? "Cancelling…" : "Cancel"}
+                  {cancelling ? t("common.cancelling") : t("common.cancel")}
                 </Button>
               ) : (
                 <Button
@@ -235,7 +263,7 @@ export default function TrashModal({
                   disabled={busy || row.files === 0}
                   onClick={() => setConfirm(row)}
                 >
-                  Empty
+                  {t("trash.empty")}
                 </Button>
               )}
             </li>

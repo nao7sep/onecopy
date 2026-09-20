@@ -15,6 +15,8 @@ import { useBinariesStore, type DependencyState } from "../../src/state/binaries
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { managedToolsFixture } from "../fixtures/managed-tools";
 import { formatBytes } from "../../src/models/items";
+import { message } from "../../src/i18n/translate";
+import { number, t } from "../helpers/i18n";
 
 const downloading = {
   operationId: "download-operation",
@@ -189,7 +191,7 @@ describe("registry state", () => {
     expect(document.body.textContent).toContain("Loading managed tools…");
     loading.unmount();
 
-    useBinariesStore.setState({ loading: false, loadError: "Managed tools are unavailable." });
+    useBinariesStore.setState({ loading: false, loadError: message("binaries.unavailable") });
     const failed = render(<BinariesModal open onClose={() => {}} />);
     expect(document.body.textContent).toContain("Managed tools are unavailable.");
     expect(document.body.textContent).not.toContain("No managed tools are configured.");
@@ -201,8 +203,10 @@ describe("registry state", () => {
   });
 
   it("keeps long managed-model identities readable instead of ellipsizing them", () => {
-    const label = "Transcription model (Whisper large-v3-turbo)";
-    seed([entry("ultraface-rfb640", "not-installed", { label })]);
+    // The catalogue names a known tool, so the row shows this identity whatever
+    // label the core sent with it.
+    const label = t("tool.whisperLargeV3Turbo");
+    seed([entry("whisper-large-v3-turbo", "not-installed", { label })]);
     render(<BinariesModal open onClose={() => {}} />);
 
     const renderedLabel = [...document.querySelectorAll("span")].find(
@@ -282,7 +286,7 @@ describe("the two lifecycles", () => {
     for (const entry of entries.filter((entry) => entry.kind !== "binary")) {
       const row = [...document.querySelectorAll("div.rounded-xl")]
         .find((row) => row.textContent?.includes(entry.label));
-      expect(row?.textContent).toContain(`Download ${formatBytes(entry.downloadBytes!)}`);
+      expect(row?.textContent).toContain(`Download ${formatBytes(entry.downloadBytes!, number)}`);
       expect(row?.textContent).toContain(`Released ${entry.released}`);
       expect(row?.textContent).toContain("Install");
     }

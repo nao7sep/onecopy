@@ -6,6 +6,7 @@ import { emit } from "@tauri-apps/api/event";
 import { log, toErrorFields, initLogging } from "./repositories";
 import { installWindowAppearance } from "./workflows/window-appearance";
 import { InterfaceLanguage } from "./i18n/InterfaceLanguage";
+import { message } from "./i18n/translate";
 import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
@@ -59,7 +60,7 @@ window.addEventListener("error", (event) => {
     line: event.lineno,
     column: event.colno,
   });
-  const presentation = "This window stopped unexpectedly. Reload it before continuing.";
+  const presentation = message("crash.windowStopped");
   recordInterfaceFailure(presentation);
   recoverComparisonPresentation();
   presentEscapedFailure(presentation);
@@ -67,7 +68,7 @@ window.addEventListener("error", (event) => {
 
 window.addEventListener("unhandledrejection", (event) => {
   log.error("unhandled promise rejection", toErrorFields(event.reason));
-  const presentation = "This window could not finish an action. Reload it before continuing.";
+  const presentation = message("crash.actionUnfinished");
   recordInterfaceFailure(presentation);
   recoverComparisonPresentation();
   presentEscapedFailure(presentation);
@@ -101,7 +102,7 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
   })
   .catch((error) => {
     log.error("media ownership bootstrap failed", toErrorFields(error));
-    const presentation = "This window could not start safely. Reload it before continuing.";
+    const presentation = message("crash.startUnsafe");
     recordInterfaceFailure(presentation);
     presentEscapedFailure(presentation);
   });

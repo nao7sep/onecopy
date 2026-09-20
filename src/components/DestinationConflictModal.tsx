@@ -2,6 +2,7 @@ import type { PendingDestinationConflicts } from "../models/destinationTransfer"
 import { formatBytes } from "../models/items";
 import { useDestinationsStore } from "../state/destinations-store";
 import { resolveDestinationConflicts } from "../workflows/destinations";
+import { useI18n } from "../i18n/I18nContext";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 
@@ -16,13 +17,14 @@ export default function DestinationConflictModal({
 }: {
   pending: PendingDestinationConflicts;
 }) {
+  const { t, number } = useI18n();
   const close = () => useDestinationsStore.getState().setPendingConflicts(null);
-  const operation = pending.mode === "copy" ? "Copy" : "Move";
+  const copying = pending.mode === "copy";
   return (
     <ModalShell
-      title={`${operation} name conflicts`}
+      title={copying ? t("conflict.copyTitle") : t("conflict.moveTitle")}
       onClose={close}
-      closeLabel="Cancel"
+      closeLabel={t("common.cancel")}
       initialFocus="close"
       footerArrowNavigation
       widthClass="w-[min(760px,calc(100vw-3rem))]"
@@ -32,27 +34,24 @@ export default function DestinationConflictModal({
             variant="primary"
             onClick={() => void resolveDestinationConflicts("rename")}
           >
-            Rename and {operation.toLowerCase()}
+            {copying ? t("conflict.renameAndCopy") : t("conflict.renameAndMove")}
           </Button>
           <Button
             variant="danger"
             disabled={!pending.overwriteAllowed}
             title={
               pending.overwriteAllowed
-                ? "Preserve existing destination files in Deleted files, then replace them"
-                : "Overwrite cannot preserve two selected files that need the same destination name"
+                ? t("conflict.overwriteHint")
+                : t("conflict.overwriteBlockedHint")
             }
             onClick={() => void resolveDestinationConflicts("overwrite")}
           >
-            Overwrite
+            {t("conflict.overwrite")}
           </Button>
         </>
       }
     >
-      <p className="text-sm text-ink">
-        All selected files will use one choice. Nothing has been copied, moved,
-        overwritten, or skipped yet.
-      </p>
+      <p className="text-sm text-ink">{t("conflict.intro")}</p>
       <div className="mt-3 overflow-hidden border border-border">
         {pending.conflicts.map((conflict, index) => (
           <div
@@ -64,16 +63,22 @@ export default function DestinationConflictModal({
             </p>
             <p className="break-all text-xs text-ink-muted">{conflict.path}</p>
             <p className="mt-1 text-xs text-ink-muted">
-              Incoming {formatBytes(conflict.incomingBytes)}
               {conflict.withinSelection
-                ? " · More than one selected file needs this name"
+                ? t("conflict.incomingWithinSelection", {
+                    size: formatBytes(conflict.incomingBytes, number),
+                  })
                 : conflict.existingBytes === null
-                  ? " · Existing entry is not a replaceable regular file"
-                  : ` · Existing ${formatBytes(conflict.existingBytes)}`}
+                  ? t("conflict.incomingExistingNotRegular", {
+                      size: formatBytes(conflict.incomingBytes, number),
+                    })
+                  : t("conflict.incomingExisting", {
+                      size: formatBytes(conflict.incomingBytes, number),
+                      existingSize: formatBytes(conflict.existingBytes, number),
+                    })}
             </p>
             {conflict.preservedPaths.length > 1 ? (
               <div className="mt-2 text-xs text-ink-muted">
-                <p>Overwrite would preserve this companion family in Deleted files:</p>
+                <p>{t("conflict.preservedFamily")}</p>
                 <ul className="mt-1 list-inside list-disc">
                   {conflict.preservedPaths.map((path) => (
                     <li key={path} className="break-all">
@@ -87,15 +92,9 @@ export default function DestinationConflictModal({
         ))}
       </div>
       {!pending.overwriteAllowed ? (
-        <p className="mt-3 text-xs text-warning">
-          Rename is required because overwriting would leave out part of the
-          selected set or replace an entry that is not a regular file.
-        </p>
+        <p className="mt-3 text-xs text-warning">{t("conflict.renameRequired")}</p>
       ) : (
-        <p className="mt-3 text-xs text-ink-muted">
-          Overwrite first preserves the existing destination files and their
-          companion family in Deleted files.
-        </p>
+        <p className="mt-3 text-xs text-ink-muted">{t("conflict.overwriteNote")}</p>
       )}
     </ModalShell>
   );

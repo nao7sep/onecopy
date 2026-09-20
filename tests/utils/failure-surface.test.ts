@@ -6,6 +6,7 @@ import {
   recordInterfaceFailure,
 } from "../../src/utils/failureSurface";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { message } from "../../src/i18n/translate";
 
 beforeEach(() => {
   resetTauriMocks();
@@ -18,21 +19,21 @@ afterEach(() => {
 
 describe("escaped interface failures", () => {
   it("keeps one visible reload surface and updates its explanation", () => {
-    presentEscapedFailure("first failure");
-    presentEscapedFailure("latest failure");
+    presentEscapedFailure(message("crash.windowStopped"));
+    presentEscapedFailure(message("crash.actionUnfinished"));
 
     expect(document.querySelectorAll("#onecopy-escaped-failure")).toHaveLength(1);
     expect(document.body.textContent).toContain("OneCopy needs to reload");
-    expect(document.body.textContent).toContain("latest failure");
-    expect(document.body.textContent).not.toContain("first failure");
+    expect(document.body.textContent).toContain("could not finish an action");
+    expect(document.body.textContent).not.toContain("stopped unexpectedly");
   });
 
   it("asks the core to persist the current webview failure", () => {
-    recordInterfaceFailure("drawing failed");
+    recordInterfaceFailure(message("crash.drawingUnfinished"));
 
     expect(invokeCalls).toContainEqual({
       command: "record_interface_failure",
-      args: { message: "drawing failed" },
+      args: { message: "This window could not finish drawing. Reload it before continuing." },
     });
   });
 
@@ -41,12 +42,12 @@ describe("escaped interface failures", () => {
       record_interface_failure: () => Promise.reject(new Error("index unavailable")),
     });
 
-    recordInterfaceFailure("drawing failed");
+    recordInterfaceFailure(message("crash.drawingUnfinished"));
     await Promise.resolve();
     await Promise.resolve();
 
     expect(document.body.textContent).toContain("OneCopy needs to reload");
-    expect(document.body.textContent).toContain("drawing failed");
+    expect(document.body.textContent).toContain("could not finish drawing");
     expect(document.body.textContent).toContain("could not save this failure");
   });
 });

@@ -22,7 +22,7 @@ beforeEach(() => {
     listing: {},
     expanded: new Set(),
     emptiness: {},
-    message: "",
+    message: null,
     result: null,
     confirmation: null,
     activePath: null,

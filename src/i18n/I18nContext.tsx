@@ -32,7 +32,9 @@ export function useI18n(): Translator {
 }
 
 // For surfaces outside the provider: the language the document last declared.
+// Without a document — a store under test, or a worker — English, so reporting
+// a failure never depends on having one.
 export function documentTranslator(): Translator {
-  const declared = document.documentElement.lang;
+  const declared = typeof document === "undefined" ? "" : document.documentElement.lang;
   return createTranslator(isLanguage(declared) ? declared : "en");
 }

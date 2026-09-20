@@ -19,6 +19,7 @@ import { useDestinationReceiver } from "./DestinationDragProvider";
 import Button from "./ui/Button";
 import DestinationConflictModal from "./DestinationConflictModal";
 import { useItemsStore } from "../state/items-store";
+import { useI18n } from "../i18n/I18nContext";
 import { hasOpenModal } from "../utils/modalStack";
 import { useComparisonStore } from "../state/comparison-store";
 import { useQuickViewStore } from "../state/quick-view-store";
@@ -73,6 +74,7 @@ function DirNode({
   const setActive = useDestinationsStore((s) => s.setActive);
   const isActive = activePath === entry.path;
   const receiver = useDestinationReceiver(entry.path);
+  const { t } = useI18n();
 
   return (
     <li
@@ -107,7 +109,7 @@ function DirNode({
               void toggleExpand(entry.path);
             }}
             onDoubleClick={(event) => event.stopPropagation()}
-            title={isOpen ? "Collapse" : "Expand"}
+            title={isOpen ? t("common.collapse") : t("common.expand")}
           >
             {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           </button>
@@ -133,19 +135,22 @@ function DirNode({
 function ChildNodes({ path, depth }: { path: string; depth: number }) {
   const entries = useDestinationsStore((s) => s.children[path]) ?? EMPTY_DIR_ENTRIES;
   const status = useDestinationsStore((s) => s.listing[path]);
+  const { t } = useI18n();
   return (
     <ul role="group">
       {status === "loading" ? (
         <li role="none" className="py-1 text-xs text-ink-muted" style={{ paddingLeft: `${depth * 12 + 6}px` }}>
-          {entries.length > 0 ? "Refreshing folders…" : "Reading folders…"}
+          {entries.length > 0
+            ? t("destinations.refreshingFolders")
+            : t("destinations.readingFolders")}
         </li>
       ) : status === "error" ? (
         <li role="none" className="py-1 text-xs text-danger" style={{ paddingLeft: `${depth * 12 + 6}px` }}>
-          Couldn’t read this folder.
+          {t("destinations.folderReadFailed")}
         </li>
       ) : entries.length === 0 ? (
         <li role="none" className="py-1 text-xs text-ink-muted" style={{ paddingLeft: `${depth * 12 + 6}px` }}>
-          No subfolders
+          {t("destinations.noSubfolders")}
         </li>
       ) : null}
       {entries.map((child) => (
@@ -261,11 +266,12 @@ function ActionBar() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const { composingRef, handlers: composingHandlers } = useComposing();
+  const { t } = useI18n();
 
   if (activePath === null) {
     return (
       <p className="mt-2 shrink-0 text-xs text-ink-muted">
-        Select a folder to move or copy into it.
+        {t("destinations.selectFolderHint")}
       </p>
     );
   }
@@ -279,7 +285,7 @@ function ActionBar() {
 
   const button =
     "h-7 px-2 text-xs";
-  const countLabel = selectedCount > 0 ? ` ${selectedCount}` : "";
+  const counted = selectedCount > 0;
 
   return (
     <div className="-mx-3 mt-3 shrink-0 border-t border-border px-3 pt-3">
@@ -290,32 +296,38 @@ function ActionBar() {
         <Button
           variant="primary"
           className={button}
-          title="Review moving the selection here and recoverably deleting its covered source copies"
+          title={t("destinations.moveHereHint")}
           onClick={() => void moveSelectionTo(activePath, "move-trash-rest")}
         >
-          Move{countLabel} here…
+          {counted
+            ? t("destinations.moveCountHere", { count: selectedCount })
+            : t("destinations.moveHere")}
         </Button>
         <Button
           className={button}
-          title="Copy the selection here; nothing else is touched"
+          title={t("destinations.copyHereHint")}
           onClick={() => void moveSelectionTo(activePath, "copy")}
         >
-          Copy{countLabel} here
+          {counted
+            ? t("destinations.copyCountHere", { count: selectedCount })
+            : t("destinations.copyHere")}
         </Button>
         <Button
           variant="danger"
           className={button}
-          title="Move the selection here and permanently delete its covered source copies"
+          title={t("destinations.movePermanentlyHint")}
           onClick={() => void moveSelectionTo(activePath, "move-delete-rest")}
         >
-          Move{countLabel} permanently…
+          {counted
+            ? t("destinations.moveCountPermanently", { count: selectedCount })
+            : t("destinations.movePermanently")}
         </Button>
         {creating ? (
           <input
             autoFocus
             className="h-7 w-32 rounded-md border border-input-border bg-background px-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
             value={name}
-            placeholder="folder name"
+            placeholder={t("destinations.folderNamePlaceholder")}
             onChange={(e) => setName(e.target.value)}
             {...composingHandlers}
             onKeyDown={(e) => {
@@ -340,30 +352,30 @@ function ActionBar() {
         ) : (
           <Button
             className={button}
-            title="Create a subfolder inside this folder"
+            title={t("destinations.newSubfolderHint")}
             onClick={() => setCreating(true)}
           >
-            New subfolder
+            {t("destinations.newSubfolder")}
           </Button>
         )}
         {!isRoot && emptiness[activePath] === true && parent !== null ? (
           <Button
             variant="danger"
             className={button}
-            title="Delete this empty folder"
+            title={t("destinations.deleteEmptyHint")}
             onClick={() => void deleteFolder(activePath, parent)}
           >
-            Delete empty
+            {t("destinations.deleteEmpty")}
           </Button>
         ) : null}
         {isRoot ? (
           <Button
             variant="ghost"
             className={button}
-            title="Remove this root from the list (the folder itself is untouched)"
+            title={t("destinations.removeRootHint")}
             onClick={() => void removeDestinationRoot(activePath)}
           >
-            Remove root
+            {t("destinations.removeRoot")}
           </Button>
         ) : null}
       </div>
@@ -383,6 +395,7 @@ export default function DestinationsTab() {
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
+  const { t, text } = useI18n();
 
   // Folders created OUTSIDE the app (Finder, Explorer) appear when the pane
   // mounts and whenever the app window regains focus — the exact moment a
@@ -475,39 +488,38 @@ export default function DestinationsTab() {
         <ConfirmDialog
           title={
             pendingMove.mode === "move-delete-rest"
-              ? "Move permanently?"
-              : "Move these items?"
+              ? t("destinations.movePermanentlyTitle")
+              : t("destinations.moveItemsTitle")
           }
-          message={`Move ${pendingMove.count} item${
-            pendingMove.count === 1 ? "" : "s"
-          } to ${pendingMove.destDir}? ${
+          message={t(
             pendingMove.mode === "move-delete-rest"
-              ? "All covered source copies and companions will be permanently deleted after delivery. They cannot be recovered."
-              : "All covered source copies and companions will go to Deleted files after delivery."
-          }`}
+              ? "destinations.movePermanentlyConfirm"
+              : "destinations.moveConfirm",
+            { count: pendingMove.count, dest: pendingMove.destDir },
+          )}
           confirmLabel={
             pendingMove.mode === "move-delete-rest"
-              ? "Move permanently"
-              : "Move"
+              ? t("destinations.movePermanentlyAction")
+              : t("destinations.move")
           }
           onConfirm={() => void confirmDestinationMove()}
           onCancel={() => useDestinationsStore.getState().cancelPendingMove()}
         />
       ) : null}
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-ink-strong">Destinations</h2>
+        <h2 className="text-sm font-semibold text-ink-strong">{t("destinations.title")}</h2>
         <button
           className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
           onClick={() => void addDestinationRoot()}
         >
-          Add root…
+          {t("destinations.addRoot")}
         </button>
       </div>
       {/* The container renders (and stays Tab-reachable) even with no
           roots — an empty composite is still a landing place. */}
       <ul
         role="tree"
-        aria-label="Destination folders"
+        aria-label={t("destinations.treeLabel")}
         aria-activedescendant={
           activePath !== null ? `tree-${encodeURIComponent(activePath)}` : undefined
         }
@@ -517,8 +529,7 @@ export default function DestinationsTab() {
       >
         {roots.length === 0 ? (
           <li role="none" className="text-sm text-ink-muted">
-            Add a destination root — the place cleaned-up files move to. It
-            must lie outside every scanned directory.
+            {t("destinations.emptyHint")}
           </li>
         ) : (
           roots.map((root) => {
@@ -534,12 +545,12 @@ export default function DestinationsTab() {
           className="mt-2 flex shrink-0 items-start gap-2 rounded-md border border-border-strong bg-surface-muted px-2.5 py-2 text-xs text-ink"
         >
           <span className="min-w-0 flex-1 break-words">
-            {confirmation}
+            {text(confirmation)}
           </span>
           <button
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
             onClick={dismissConfirmation}
-            aria-label="Dismiss confirmation"
+            aria-label={t("destinations.dismissConfirmation")}
           >
             <X aria-hidden="true" size={14} />
           </button>
@@ -556,18 +567,24 @@ export default function DestinationsTab() {
                 : "border-border-strong bg-surface-muted text-ink"
           }`}
         >
-          <span className="min-w-0 flex-1 break-words">{result.message}</span>
+          <span className="min-w-0 flex-1 break-words">
+            {t("destinations.resultLine", {
+              facts: result.facts.map(text).join(" · "),
+            })}
+          </span>
           <button
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
             onClick={dismissResult}
-            aria-label="Dismiss result"
+            aria-label={t("destinations.dismissResult")}
           >
             <X aria-hidden="true" size={14} />
           </button>
         </div>
       ) : null}
-      {message !== "" ? (
-        <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">{message}</p>
+      {message !== null ? (
+        <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">
+          {text(message)}
+        </p>
       ) : null}
     </div>
   );
@@ -586,12 +603,13 @@ function DropChoiceModal({
 }) {
   const { path, selection } = drop;
   const count = selection.items.length;
+  const { t } = useI18n();
   return (
     <ModalShell
-      title={`Drop into ${leafName(path)}`}
+      title={t("destinations.dropTitle", { folder: leafName(path) })}
       onClose={onClose}
       widthClass="w-[min(720px,calc(100vw-3rem))]"
-      closeLabel="Cancel"
+      closeLabel={t("common.cancel")}
       initialFocus="close"
       footerArrowNavigation
       primaryAction={
@@ -602,14 +620,14 @@ function DropChoiceModal({
               void acceptDestinationDropChoice("move-trash-rest");
             }}
           >
-            Move {count}
+            {t("destinations.dropMove", { count })}
           </Button>
           <Button
             onClick={() => {
               void acceptDestinationDropChoice("copy");
             }}
           >
-            Copy {count}
+            {t("destinations.dropCopy", { count })}
           </Button>
         </>
       }
@@ -618,8 +636,7 @@ function DropChoiceModal({
         {path}
       </p>
       <p className="mt-1 text-xs text-ink-muted">
-        {count} item{count === 1 ? "" : "s"}, including known copies and companions.
-        {" "}Move sends covered sources to Deleted files after delivery; Copy leaves them in place.
+        {t("destinations.dropSummary", { count })}
       </p>
     </ModalShell>
   );

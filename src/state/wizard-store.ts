@@ -8,6 +8,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { requestSeq } from "./request-seq";
+import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import {
   effectiveLanguage,
@@ -38,9 +39,7 @@ interface WizardState {
    * puts the preview back. */
   languageBefore: Language;
   timezone: string;
-  timezoneValid: boolean;
-  timezonePending: boolean;
-  error: string | null;
+  error: Message | null;
   finishing: boolean;
   /** True when the wizard was RE-RUN over an existing setup. A first run has
    * nothing to return to, so only a re-run offers Cancel. */
@@ -56,14 +55,13 @@ interface WizardState {
   removeDir: (path: string) => void;
   setStep: (step: 1 | 2 | 3) => void;
   setOptionalFeature: (id: OptionalFeatureId, enabled: boolean) => void;
-  setTimezone: (name: string) => Promise<void>;
+  setTimezone: (name: string) => void;
   setLanguage: (preference: LanguagePreference) => void;
   /** Abandons a re-run, changing nothing. Never available on a first run. */
   cancel: () => void;
   recheckPresence: () => Promise<void>;
 }
 
-const timezoneValidation = requestSeq();
 const presenceCheck = requestSeq();
 
 export const useWizardStore = create<WizardState>((set, get) => ({
@@ -73,8 +71,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   language: "system",
   languageBefore: "en",
   timezone: "",
-  timezoneValid: true,
-  timezonePending: false,
   error: null,
   finishing: false,
   reconfigure: false,
@@ -83,7 +79,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   substitutedDirs: [],
 
   init: async (config) => {
-    timezoneValidation.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
@@ -97,8 +92,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         language,
         languageBefore: useLanguageStore.getState().language,
         timezone,
-        timezoneValid: true,
-        timezonePending: false,
         error: null,
         finishing: false,
         reconfigure: false,
@@ -111,8 +104,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         open: false,
         language,
         timezone,
-        timezoneValid: true,
-        timezonePending: false,
         error: null,
         finishing: false,
         reconfigure: false,
@@ -124,7 +115,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   },
 
   reopen: (config) => {
-    timezoneValidation.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone =
       typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
@@ -134,8 +124,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       language: normalizeLanguagePreference(config?.language),
       languageBefore: useLanguageStore.getState().language,
       timezone,
-      timezoneValid: true,
-      timezonePending: false,
       error: null,
       finishing: false,
       reconfigure: true,
@@ -157,8 +145,9 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       set({ dirs: [...get().dirs, ...fresh.map((path) => ({ path }))] });
     } catch (error) {
       log.error("directory picker failed", toErrorFields(error));
-      set({ error: "Couldn’t open the directory picker." });
-      recordActionFailure("setup-source-picker-failed", "Couldn’t open the directory picker.", error);
+      const failure = message("settings.directoryPickerFailed");
+      set({ error: failure });
+      recordActionFailure("setup-source-picker-failed", failure, error);
     }
   },
 
@@ -172,26 +161,10 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     set({ optionalFeatures: { ...get().optionalFeatures, [id]: enabled } });
   },
 
-  setTimezone: async (name) => {
-    const fresh = timezoneValidation.begin();
-    set({ timezone: name, timezoneValid: false, timezonePending: true, error: null });
-    if (name.trim() === "") {
-      if (fresh()) set({ timezonePending: false });
-      return;
-    }
-    try {
-      const valid = await invoke<boolean>("validate_timezone", { name });
-      if (fresh()) set({ timezoneValid: valid, timezonePending: false });
-    } catch (error) {
-      if (!fresh()) return;
-      log.error("wizard timezone validation failed", toErrorFields(error));
-      set({
-        timezoneValid: false,
-        timezonePending: false,
-        error: "Couldn’t check this timezone.",
-      });
-      recordActionFailure("setup-timezone-check-failed", "Couldn’t check this timezone.", error);
-    }
+  setTimezone: (name) => {
+    // The zone comes from the list, so there is nothing to validate; it is
+    // still staged like every other wizard answer and written only by Finish.
+    set({ timezone: name, error: null });
   },
 
   setLanguage: (preference) => {
@@ -220,12 +193,9 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return;
       log.error("presence check failed", toErrorFields(error));
-      set({ error: "Couldn’t check the configured source folders." });
-      recordActionFailure(
-        "configured-source-check-failed",
-        "Couldn’t check the configured source folders.",
-        error,
-      );
+      const failure = message("wizard.sourceCheckFailed");
+      set({ error: failure });
+      recordActionFailure("configured-source-check-failed", failure, error);
     }
   },
 }));

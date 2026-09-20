@@ -1,5 +1,7 @@
 // Mirrors queries::SectionCounts / MonthSection on the Rust side.
 
+import type { MessageKey } from "../i18n/catalogues";
+
 export interface MonthSection {
   /** `"2016-03"`, or `"undated"` for the trailing section. */
   month: string;
@@ -12,7 +14,8 @@ export interface SectionCounts {
   others: MonthSection[];
 }
 
-/** The Undated section's display label (the design's wording). */
-export function monthLabel(month: string): string {
-  return month === "undated" ? "Undated" : month;
+/** The Undated section's display label (the design's wording), or null for a
+ * dated section, whose `"2016-03"` already names itself in every language. */
+export function monthLabel(month: string): MessageKey | null {
+  return month === "undated" ? "section.undated" : null;
 }

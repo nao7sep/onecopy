@@ -8,6 +8,8 @@ import {
   type MutationProgress,
   type MutationResultSummary,
 } from "../models/mutation";
+import { documentTranslator } from "../i18n/I18nContext";
+import { message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { useMutationStore } from "../state/mutation-store";
 import { recordRecentNotification } from "../state/notifications-store";
@@ -23,10 +25,12 @@ const install = createEventInstaller(
         kind: `${result.kind}-failed`,
         level: result.summary.error === null ? "warning" : "error",
         presentation: "persistent",
-        message: mutationResultLine(result),
+        // The notification record crosses IPC as text, so the receipt is
+        // rendered here in the language this window is showing.
+        message: mutationResultLine(result, documentTranslator().t),
       }).catch((error) => {
         log.error("file-operation result recording failed", toErrorFields(error));
-        recordInterfaceFailure("OneCopy could not save the file-operation result.");
+        recordInterfaceFailure(message("mutation.resultNotSaved"));
       });
     };
     await listeners.listen<MutationProgress>("mutation://progress", (event) => {
@@ -112,9 +116,9 @@ const install = createEventInstaller(
   },
   (error) => {
     log.warn("file operation event wiring failed", toErrorFields(error));
-    recordInterfaceFailure("Live file-operation status is unavailable. Restart OneCopy before changing more files.");
+    recordInterfaceFailure(message("mutation.liveStatusUnavailable"));
     useMutationStore.setState({ progress: null, cancelling: false });
-    presentEscapedFailure("Live file-operation status is unavailable. Reload OneCopy before changing more files.");
+    presentEscapedFailure(message("mutation.liveStatusUnavailableReload"));
   },
 );
 

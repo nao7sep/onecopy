@@ -5,6 +5,7 @@ import {
   orderMonitors,
   priorityFromState,
 } from "../../src/utils/screens";
+import { inEnglish } from "../helpers/i18n";
 
 const m = (name: string | null, x: number, y = 0) => ({ name, position: { x, y } });
 
@@ -43,24 +44,24 @@ describe("screen priority ordering", () => {
 describe("describing where a monitor sits", () => {
   it("names the sides of a side-by-side pair", () => {
     const all = [m("#1287", 0), m("#1287", 2560)];
-    expect(describePosition(all[0], all)).toBe("left");
-    expect(describePosition(all[1], all)).toBe("right");
+    expect(inEnglish(describePosition(all[0], all))).toBe("left");
+    expect(inEnglish(describePosition(all[1], all))).toBe("right");
   });
 
   it("names rows when displays are stacked", () => {
     const all = [m("#1287", 0, 0), m("#1287", 0, 1440)];
-    expect(describePosition(all[0], all)).toBe("top");
-    expect(describePosition(all[1], all)).toBe("bottom");
+    expect(inEnglish(describePosition(all[0], all))).toBe("top");
+    expect(inEnglish(describePosition(all[1], all))).toBe("bottom");
   });
 
   it("combines both axes on a grid", () => {
     const all = [m("a", 0, 0), m("b", 2560, 0), m("c", 0, 1440)];
-    expect(describePosition(all[1], all)).toBe("top right");
-    expect(describePosition(all[2], all)).toBe("bottom left");
+    expect(inEnglish(describePosition(all[1], all))).toBe("top right");
+    expect(inEnglish(describePosition(all[2], all))).toBe("bottom left");
   });
 
   it("says nothing when there is only one screen", () => {
     const all = [m("#1287", 0)];
-    expect(describePosition(all[0], all)).toBe("");
+    expect(describePosition(all[0], all)).toBeNull();
   });
 });

@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
+import { useI18n } from "../i18n/I18nContext";
+import type { Translator } from "../i18n/translate";
 import { monthLabel, type SectionCounts } from "../models/sections";
 import {
   branchesFor,
@@ -29,14 +31,17 @@ import { useQuickViewStore } from "../state/quick-view-store";
 // (issues are diagnostics, not something to handle), so nothing here competes
 // with the months.
 
-function rowLabel(row: Row): string {
+function rowLabel(row: Row, t: Translator["t"]): string {
   switch (row.type) {
     case "kind":
-      return row.node.title;
+      return t(row.node.title);
     case "year":
       return row.node.year;
-    case "month":
-      return monthLabel(row.month);
+    case "month": {
+      // A dated month names itself; only Undated has a word to translate.
+      const key = monthLabel(row.month);
+      return key === null ? row.month : t(key);
+    }
   }
 }
 
@@ -52,6 +57,7 @@ function rowCount(row: Row): number {
 }
 
 export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
+  const { t, text, number } = useI18n();
   const selected = useItemsStore((s) => s.selected);
   const select = useItemsStore((s) => s.select);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -220,7 +226,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
       ref={containerRef}
       tabIndex={0}
       role="tree"
-      aria-label="Sections"
+      aria-label={t("sidebar.sections")}
       aria-activedescendant={activeIndex >= 0 ? `section-row-${activeIndex}` : undefined}
       className="group/sections outline-none"
       onKeyDown={onKeyDown}
@@ -259,9 +265,9 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
                 isBranch ? (isOpen ? "rotate-90 text-ink-muted" : "text-ink-muted") : "invisible"
               }`}
             />
-            <span className="min-w-0 flex-1 truncate">{rowLabel(row)}</span>
+            <span className="min-w-0 flex-1 truncate">{rowLabel(row, t)}</span>
             <span className="shrink-0 text-xs tabular-nums text-ink-muted">
-              {empty ? "" : rowCount(row)}
+              {empty ? "" : number(rowCount(row))}
             </span>
           </div>,
           // The design's per-kind empty states, shown where the branch would
@@ -272,7 +278,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
               className="py-1 pr-2 text-sm text-ink-muted"
               style={{ paddingLeft: 6 + 14 + 17 }}
             >
-              {row.node.emptyLabel}
+              {t(row.node.emptyLabel)}
             </p>
           ) : null,
         ];
@@ -280,7 +286,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
 
       {error !== null ? (
         <OperationResult level="error" className="mx-2 mt-2">
-          {error}
+          {text(error)}
         </OperationResult>
       ) : allEmpty ? (
         // Background reconciliation and a settled empty library look
@@ -291,7 +297,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
         // status bar carries the detailed progress, so this only has to stop
         // asserting a verdict the app does not have yet.
         <p className="mt-2 px-2 text-sm text-ink-muted">
-          {libraryWorking ? "Updating library…" : "Nothing to handle"}
+          {libraryWorking ? t("app.updatingLibrary") : t("app.nothingToHandle")}
         </p>
       ) : null}
 

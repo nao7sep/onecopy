@@ -70,6 +70,12 @@ pub enum PreviewBody {
     },
     Attributes {
         reason: String,
+        /// The condition, when OneCopy authored the reason itself, so the
+        /// interface can say it in the reader's language. A decode or I/O
+        /// diagnostic has none and shows as recorded.
+        reason_code: Option<&'static str>,
+        /// The limit the condition names, when it names one.
+        reason_bytes: Option<u64>,
         byte_size: u64,
     },
     DecodeError {
@@ -97,6 +103,8 @@ pub fn preview_file(
     if byte_size > max_bytes {
         return Ok(PreviewBody::Attributes {
             reason: format!("Text preview is limited to {max_bytes} bytes."),
+            reason_code: Some("preview-too-large"),
+            reason_bytes: Some(max_bytes),
             byte_size,
         });
     }
@@ -116,6 +124,8 @@ pub fn preview_file(
             Ok(None) => {
                 return Ok(PreviewBody::Attributes {
                     reason: "The file looks binary rather than textual.".to_string(),
+                    reason_code: Some("preview-binary"),
+                    reason_bytes: None,
                     byte_size,
                 });
             }

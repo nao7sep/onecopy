@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { activeMaintenanceStatus, libraryLine, statusLine } from "../../src/models/status";
 import type { SectionCounts } from "../../src/models/sections";
 import type { ScanProgress } from "../../src/models/scan";
+import { message } from "../../src/i18n/translate";
+import { number, percent, t } from "../helpers/i18n";
 
 const COUNTS: SectionCounts = {
   images: [
@@ -38,16 +40,16 @@ const HASH_PROGRESS: ScanProgress = {
 
 describe("the library line", () => {
   it("totals every month of each kind, undated included", () => {
-    expect(libraryLine(COUNTS)).toBe("1,204 images · 87 videos");
+    expect(libraryLine(COUNTS, t)).toBe("1,204 images · 87 videos");
   });
 
   it("omits a kind that has nothing rather than printing a zero", () => {
-    expect(libraryLine(COUNTS)).not.toContain("other");
+    expect(libraryLine(COUNTS, t)).not.toContain("other");
   });
 
   it("says one image, not 1 images", () => {
     expect(
-      libraryLine({ images: [{ month: "2016-01", count: 1 }], videos: [], others: [] }),
+      libraryLine({ images: [{ month: "2016-01", count: 1 }], videos: [], others: [] }, t),
     ).toBe("1 image");
   });
 });
@@ -74,15 +76,15 @@ describe("what the status bar shows", () => {
       { ...IDLE, counts: { images: [], videos: [], others: [] } },
       { ...IDLE, scanning: true },
       { ...IDLE, rescanNeeded: true },
-      { ...IDLE, feedback: { tone: "normal" as const, text: "Select an item." } },
+      { ...IDLE, feedback: { tone: "normal" as const, text: message("preview.selectItem") } },
     ];
     for (const input of cases) {
-      expect(statusLine(input).text).not.toBe("");
+      expect(statusLine(input, t, number, percent).text).not.toBe("");
     }
   });
 
   it("shows the standing library totals when nothing is happening", () => {
-    expect(statusLine(IDLE)).toMatchObject({
+    expect(statusLine(IDLE, t, number, percent)).toMatchObject({
       tone: "normal",
       text: "1,204 images · 87 videos",
     });
@@ -91,11 +93,11 @@ describe("what the status bar shows", () => {
   it("keeps owner-authored command guidance informational above background progress", () => {
     const status = statusLine({
       ...IDLE,
-      feedback: { tone: "normal", text: "Comparison requires images from one similar group." },
+      feedback: { tone: "normal", text: message("comparison.needsOneGroup") },
       scanning: true,
       progress: HASH_PROGRESS,
       rescanNeeded: true,
-    });
+    }, t, number, percent);
     expect(status.tone).toBe("normal");
     expect(status.text).toContain("Comparison requires");
   });
@@ -103,7 +105,7 @@ describe("what the status bar shows", () => {
   it("shows an explicit mutation above background indexing", () => {
     const status = statusLine({
       ...IDLE,
-      feedback: { tone: "normal", text: "Older command guidance" },
+      feedback: { tone: "normal", text: message("preview.selectItem") },
       mutation: {
         cancelling: false,
         progress: {
@@ -124,7 +126,7 @@ describe("what the status bar shows", () => {
       },
       scanning: true,
       progress: HASH_PROGRESS,
-    });
+    }, t, number, percent);
     expect(status.text).toBe("Deleting — 2/8 items · 3/10 files · 1 KB/2 KB");
   });
 
@@ -146,7 +148,7 @@ describe("what the status bar shows", () => {
           error: null,
         },
       },
-    });
+    }, t, number, percent);
     expect(status.tone).toBe("warning");
     expect(status.text).toBe(
       "Move cancelled — 2 completed · 1 partially processed · 5 file steps completed · 1 failed · 4 unstarted",
@@ -157,19 +159,19 @@ describe("what the status bar shows", () => {
     const status = statusLine({
       ...IDLE,
       exiting: true,
-      feedback: { tone: "danger", text: "an older message" },
-    });
+      feedback: { tone: "danger", text: message("preview.selectItem") },
+    }, t, number, percent);
     expect(status.text).toBe("Finishing current file before exit…");
   });
 
   it("prefers live scan progress over the totals it is busy changing", () => {
-    const status = statusLine({ ...IDLE, scanning: true, progress: HASH_PROGRESS });
+    const status = statusLine({ ...IDLE, scanning: true, progress: HASH_PROGRESS }, t, number, percent);
     expect(status.text).toBe("Reading files — 30/900 · large.mov · 50%");
     expect(status.title).toContain("Cloud placeholders");
   });
 
   it("names file-information work before it reports a phase", () => {
-    expect(statusLine({ ...IDLE, scanning: true, progress: null }).text).toBe(
+    expect(statusLine({ ...IDLE, scanning: true, progress: null }, t, number, percent).text).toBe(
       "Completing file information…",
     );
   });
@@ -180,7 +182,7 @@ describe("what the status bar shows", () => {
       scanning: true,
       stopping: true,
       progress: HASH_PROGRESS,
-    });
+    }, t, number, percent);
     expect(status.text).toBe("Pausing file-information work…");
     expect(status.title).toContain("current safe step");
   });
@@ -196,7 +198,7 @@ describe("what the status bar shows", () => {
       bytesTotal: null,
       nextPhase: null,
     };
-    expect(statusLine({ ...IDLE, progress })).toMatchObject({
+    expect(statusLine({ ...IDLE, progress }, t, number, percent)).toMatchObject({
       text: "1,204 images · 87 videos",
     });
   });
@@ -213,28 +215,28 @@ describe("what the status bar shows", () => {
       failures: 2,
       nextPhase: null,
     };
-    expect(statusLine({ ...IDLE, progress })).toMatchObject({
+    expect(statusLine({ ...IDLE, progress }, t, number, percent)).toMatchObject({
       tone: "normal",
       text: "1,204 images · 87 videos",
     });
   });
 
   it("warns that the index is knowingly incomplete", () => {
-    const status = statusLine({ ...IDLE, rescanNeeded: true });
+    const status = statusLine({ ...IDLE, rescanNeeded: true }, t, number, percent);
     expect(status.tone).toBe("warning");
     expect(status.title).toContain("Check source folders");
   });
 
   it("distinguishes an empty library from one that has not loaded", () => {
-    expect(statusLine({ ...IDLE, counts: null }).text).toBe("Starting…");
+    expect(statusLine({ ...IDLE, counts: null }, t, number, percent).text).toBe("Starting…");
     expect(
-      statusLine({ ...IDLE, counts: { images: [], videos: [], others: [] } }).text,
+      statusLine({ ...IDLE, counts: { images: [], videos: [], others: [] } }, t, number, percent).text,
     ).toBe("Nothing to handle");
   });
 
   it("never shows a version number", () => {
     // Both versions left the main window deliberately: the app's belongs to
     // About, ffmpeg's to the tools modal.
-    expect(statusLine(IDLE).text).not.toMatch(/\d+\.\d+\.\d+/);
+    expect(statusLine(IDLE, t, number, percent).text).not.toMatch(/\d+\.\d+\.\d+/);
   });
 });

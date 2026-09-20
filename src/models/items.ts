@@ -1,6 +1,8 @@
 // Mirrors queries::SectionItem on the Rust side.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
+import type { MessageKey } from "../i18n/catalogues";
+import type { Translator } from "../i18n/translate";
 
 export type ItemWorkStatus =
   | "disabled"
@@ -192,14 +194,24 @@ export function extOf(fileName: string): string {
  * row with many folders, so any single sort key was an arbitrary pick. */
 export const SORT_ORDERS: Record<
   "media" | "other",
-  { orders: Partial<Record<SortOrder, string>>; defaultChoice: SortChoice }
+  { orders: Partial<Record<SortOrder, MessageKey>>; defaultChoice: SortChoice }
 > = {
   media: {
-    orders: { time: "Time taken", name: "Name", size: "Size", resolution: "Resolution" },
+    orders: {
+      time: "item.sortTimeTaken",
+      name: "common.name",
+      size: "common.size",
+      resolution: "item.sortResolution",
+    },
     defaultChoice: { order: "time", desc: false },
   },
   other: {
-    orders: { name: "Name", ext: "Kind", size: "Size", time: "Date" },
+    orders: {
+      name: "common.name",
+      ext: "common.kind",
+      size: "common.size",
+      time: "common.date",
+    },
     defaultChoice: { order: "name", desc: false },
   },
 };
@@ -326,7 +338,7 @@ export function formatDuration(durationMs: number): string {
 /** Compact byte size for tiles and list rows — one decimal below 10 units so
  * "1.4 MB" and "940 KB" both stay short. Binary units, as every file manager
  * on both platforms reports them. */
-export function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number, number: Translator["number"]): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;
   let unit = 0;
@@ -335,7 +347,9 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   const rounded = unit === 0 || value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
-  return `${rounded} ${units[unit]}`;
+  // The unit symbols are the same everywhere; the number is not — a German
+  // reader expects "1,4 MB", not "1.4 MB".
+  return `${number(rounded)} ${units[unit]}`;
 }
 
 /** `4032×3024`, or null when the item carries no dimensions (an other-file, or
@@ -350,26 +364,32 @@ export function formatDimensions(
 
 /** The one line of hard facts a tile or row shows beneath the name: pixels,
  * video duration, then bytes, whichever are known. */
-export function factsLine(item: {
-  width: number | null;
-  height: number | null;
-  durationMs?: number | null;
-  byteSize: number | null;
-}): string {
+export function factsLine(
+  item: {
+    width: number | null;
+    height: number | null;
+    durationMs?: number | null;
+    byteSize: number | null;
+  },
+  number: Translator["number"],
+): string {
   return [
     formatDimensions(item.width, item.height),
     item.durationMs !== null && item.durationMs !== undefined
       ? formatDuration(item.durationMs)
       : null,
-    item.byteSize !== null ? formatBytes(item.byteSize) : null,
+    item.byteSize !== null ? formatBytes(item.byteSize, number) : null,
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
 }
 
-/** Uppercased extension for the no-thumbnail placeholder tile. */
-export function extLabel(fileName: string): string {
+/** Uppercased extension for the no-thumbnail placeholder tile. The extension
+ * is the file's own token; only the word standing in for a name that has none
+ * is interface text, which is why this resolves it rather than returning a key
+ * a caller would have to tell apart from an extension. */
+export function extLabel(fileName: string, t: Translator["t"]): string {
   const dot = fileName.lastIndexOf(".");
-  if (dot <= 0 || dot === fileName.length - 1) return "FILE";
+  if (dot <= 0 || dot === fileName.length - 1) return t("item.file");
   return fileName.slice(dot + 1).toUpperCase();
 }

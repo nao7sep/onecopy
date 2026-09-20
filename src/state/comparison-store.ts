@@ -27,6 +27,7 @@ import {
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
 import { requestSeq } from "./request-seq";
+import { message, type Message } from "../i18n/translate";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 
 export type GroupMember = ComparisonMember;
@@ -65,7 +66,7 @@ interface ComparisonAction {
 }
 
 interface ComparisonFailure extends ComparisonAction {
-  message: string;
+  message: Message;
 }
 
 interface ComparisonState extends ComparisonDecisionDraft {
@@ -81,7 +82,7 @@ interface ComparisonState extends ComparisonDecisionDraft {
   portraitDominant: boolean;
   spreadCount: number;
   busy: boolean;
-  message: string | null;
+  message: Message | null;
   pendingAction: ComparisonAction | null;
   failure: ComparisonFailure | null;
   openGroup: (
@@ -304,7 +305,7 @@ async function resolveMonitors(
       "monitor query failed; staying on the main display",
       toErrorFields(error),
     );
-    recordInterfaceFailure("Couldn’t read the connected displays for Comparison.");
+    recordInterfaceFailure(message("comparison.displaysReadFailed"));
     return { hostAspect: 16 / 9, others: [] };
   }
 }
@@ -384,9 +385,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
               label,
               ...toErrorFields(error),
             });
-            recordInterfaceFailure(
-              "A Comparison display became unavailable. The session was rearranged.",
-            );
+            recordInterfaceFailure(message("comparison.displayUnavailable"));
             void recoverDisplays(index + 1);
             return;
           }
@@ -400,9 +399,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           label,
           error: { message: String(event.payload) },
         });
-        recordInterfaceFailure(
-          "A Comparison display could not open. The session was rearranged.",
-        );
+        recordInterfaceFailure(message("comparison.displayOpenFailed"));
         recoverDisplays(index + 1);
       });
     } catch (error) {
@@ -410,9 +407,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
         label,
         ...toErrorFields(error),
       });
-      recordInterfaceFailure(
-        "A Comparison display became unavailable. The session was rearranged.",
-      );
+      recordInterfaceFailure(message("comparison.displayUnavailable"));
       recoverDisplays(index + 1);
       return;
     }
@@ -499,8 +494,7 @@ function recoverDisplays(failedSpreadIndex: number): Promise<void> {
     displayCount: provisional.displayCount,
     displayAspects: provisional.displayAspects,
     ...viewPatch(provisional),
-    message:
-      "A comparison display became unavailable. The remaining images were rearranged.",
+    message: message("comparison.displayLostRearranged"),
   });
   broadcastComparison();
   const needed = useComparisonStore.getState().spreadCount;
@@ -644,7 +638,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         await queueComparisonLifecycle(() => teardownComparison(spreadCount));
       }
       log.error("comparison open failed", toErrorFields(error));
-      recordInterfaceFailure("Couldn’t open Comparison.");
+      recordInterfaceFailure(message("comparison.openFailed"));
       return "failed";
     }
   },
@@ -754,7 +748,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       ? new Set<string>()
       : visibleKeepMarks(state.selected, visible);
     if (!trashAll && selected.size === 0) {
-      set({ message: "Select at least one image to keep." });
+      set({ message: message("comparison.selectKeeperFirst") });
       return null;
     }
     const action: ComparisonAction = {
@@ -906,13 +900,12 @@ async function executeAction(
     });
   } catch (error) {
     log.error("comparison delete failed", toErrorFields(error));
-    recordInterfaceFailure("The Comparison delete operation could not start.");
+    recordInterfaceFailure(message("comparison.deleteStartFailed"));
     const failure: ComparisonFailure = {
       ...action,
       keepHashes: [],
       targetHashes: targets,
-      message:
-        "The delete operation could not start. Retry targets only these images.",
+      message: message("comparison.deleteStartFailedRetry"),
     };
     set({
       busy: false,
@@ -932,17 +925,17 @@ async function executeAction(
   if (remaining.length > 0 || outcome.error !== null) {
     const detail =
       outcome.failedFiles > 0
-        ? `${outcome.failedFiles} file${outcome.failedFiles === 1 ? "" : "s"} could not be deleted.`
+        ? message("comparison.filesNotDeleted", { count: outcome.failedFiles })
         : outcome.cancelled
-          ? "Deletion stopped safely."
+          ? message("comparison.deletionStoppedSafely")
           : outcome.error !== null
-            ? "Deletion stopped before it could finish."
-            : `${remaining.length} image${remaining.length === 1 ? "" : "s"} remain.`;
+            ? message("comparison.deletionStoppedEarly")
+            : message("comparison.imagesRemain", { count: remaining.length });
     const failure: ComparisonFailure = {
       ...action,
       keepHashes: [],
       targetHashes: remaining,
-      message: `${detail} Retry targets only the remaining images.`,
+      message: message("comparison.retryRemainingNotice", { detail }),
     };
     set({
       busy: false,

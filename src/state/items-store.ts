@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { requestSeq } from "./request-seq";
 import { log, toErrorFields } from "../repositories";
+import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import { beginMainFeedback, invalidateMainFeedback } from "./main-feedback-store";
 import {
@@ -55,7 +56,7 @@ interface ItemsState {
   itemPositions: Map<string, number>;
   reconciliationId: number;
   loading: boolean;
-  loadError: string | null;
+  loadError: Message | null;
   selectedItem: string | null;
   selectedKeys: Set<string>;
   selectedPositions: Map<string, number>;
@@ -203,7 +204,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return "superseded";
       log.error("in-app reveal failed", toErrorFields(error));
-      recordActionFailure("in-app-reveal-failed", "Couldn’t reveal this file in Main.", error);
+      recordActionFailure("in-app-reveal-failed", message("reveal.inMainFailed"), error);
       return "failed";
     }
   },
@@ -316,8 +317,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return;
       log.error("section window load failed", toErrorFields(error));
-      set({ loadError: "Couldn’t load this part of the section." });
-      recordActionFailure("section-window-load-failed", "Couldn’t load this part of the section.", error);
+      const failure = message("section.windowLoadFailed");
+      set({ loadError: failure });
+      recordActionFailure("section-window-load-failed", failure, error);
     }
   },
 
@@ -550,8 +552,9 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return;
       log.error("section range selection failed", toErrorFields(error));
-      feedback.finish({ tone: "danger", text: "Couldn’t extend the selection." });
-      recordActionFailure("section-range-load-failed", "Couldn’t extend the selection.", error);
+      const failure = message("section.extendSelectionFailed");
+      feedback.finish({ tone: "danger", text: failure });
+      recordActionFailure("section-range-load-failed", failure, error);
     }
   },
 
@@ -676,8 +679,9 @@ async function reconcileCurrent(
       return;
     }
     log.error("section reconciliation failed", toErrorFields(error));
-    set({ loading: false, loadError: "Couldn’t load this section." });
-    recordActionFailure("section-items-load-failed", "Couldn’t load this section.", error);
+    const failure = message("section.loadFailed");
+    set({ loading: false, loadError: failure });
+    recordActionFailure("section-items-load-failed", failure, error);
   }
 }
 
@@ -712,8 +716,9 @@ function loadAnchorDetail(key: string | null): void {
     .catch((error) => {
       if (!fresh() || useItemsStore.getState().selectedItem !== key) return;
       log.error("item detail load failed", toErrorFields(error));
-      feedback.finish({ tone: "danger", text: "Couldn’t load details for this item." });
-      recordActionFailure("item-detail-load-failed", "Couldn’t load details for this item.", error);
+      const failure = message("item.detailLoadFailed");
+      feedback.finish({ tone: "danger", text: failure });
+      recordActionFailure("item-detail-load-failed", failure, error);
     });
 }
 

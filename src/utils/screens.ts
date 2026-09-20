@@ -4,6 +4,9 @@
 // joins the tail. Preview and Comparison exclude Main's current display at use
 // time.
 
+import type { MessageKey } from "../i18n/catalogues";
+import { message, type Message } from "../i18n/translate";
+
 export interface MonitorLike {
   name: string | null;
   position: { x: number; y: number };
@@ -35,34 +38,44 @@ export function monitorKey(monitor: MonitorLike): string {
 }
 
 /** Where each monitor sits, in words, so a matched pair can be told apart.
+ * Null when there is nothing to tell apart.
  *
  * Two "#1287"s are indistinguishable by name and by resolution; their
  * arrangement is the only thing the user can map onto the desk in front of
- * them. Ordered left-to-right, then top-to-bottom for stacked displays. */
+ * them. Ordered left-to-right, then top-to-bottom for stacked displays.
+ *
+ * Row and column are two independent facts, so a language that names them in
+ * the other order, or joins them differently, reorders the wrapper's
+ * placeholders instead of being handed a pre-joined English phrase. */
 export function describePosition(
   monitor: MonitorLike,
   all: MonitorLike[],
-): string {
-  if (all.length < 2) return "";
+): Message | null {
+  if (all.length < 2) return null;
   const xs = [...new Set(all.map((m) => m.position.x))].sort((a, b) => a - b);
   const ys = [...new Set(all.map((m) => m.position.y))].sort((a, b) => a - b);
-  const column =
+  const column: MessageKey | null =
     xs.length < 2
-      ? ""
+      ? null
       : monitor.position.x === xs[0]
-        ? "left"
+        ? "settings.screenLeft"
         : monitor.position.x === xs[xs.length - 1]
-          ? "right"
-          : "middle";
-  const row =
+          ? "settings.screenRight"
+          : "settings.screenCentre";
+  const row: MessageKey | null =
     ys.length < 2
-      ? ""
+      ? null
       : monitor.position.y === ys[0]
-        ? "top"
+        ? "settings.screenTop"
         : monitor.position.y === ys[ys.length - 1]
-          ? "bottom"
-          : "centre";
-  return [row, column].filter(Boolean).join(" ");
+          ? "settings.screenBottom"
+          : "settings.screenMiddle";
+  if (row === null) return column === null ? null : message(column);
+  if (column === null) return message(row);
+  return message("settings.screenRowColumn", {
+    row: message(row),
+    column: message(column),
+  });
 }
 
 /** Stable-sorts monitors by their key's position in `priority`; unlisted

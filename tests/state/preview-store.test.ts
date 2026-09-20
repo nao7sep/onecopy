@@ -1,3 +1,9 @@
+// @vitest-environment happy-dom
+//
+// Preview records its failures through the notifications store, which renders
+// the sentence in the language the document declares, so this spec needs a
+// document even though the subject is store logic.
+//
 // Preview owns one current identity/detail package. Cross-window delivery
 // coalesces rapid changes without losing matching details or reviving closed
 // and cleared selections.
@@ -12,6 +18,7 @@ import {
   rejectNextWindowListener,
   WebviewWindow,
 } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 const ITEM_A = { hash: "ha", pathId: null };
 const ITEM_B = { hash: "hb", pathId: null };
@@ -261,10 +268,10 @@ describe("preview window failures", () => {
 
     await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
 
-    expect(usePreviewStore.getState().error).toBe(
+    expect(inEnglish(usePreviewStore.getState().error)).toBe(
       "Couldn’t open the Preview window.",
     );
-    expect(usePreviewStore.getState().error).not.toContain("EACCES");
+    expect(inEnglish(usePreviewStore.getState().error)).not.toContain("EACCES");
     expect(
       invokeCalls.some((call) => call.command === "record_recent_notification"),
     ).toBe(true);
@@ -314,7 +321,7 @@ describe("preview window failures", () => {
 
     await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
 
-    expect(usePreviewStore.getState().error).toBe(
+    expect(inEnglish(usePreviewStore.getState().error)).toBe(
       "Couldn’t open the Preview window.",
     );
     expect(

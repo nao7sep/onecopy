@@ -10,6 +10,7 @@
 // drift apart.
 
 import { X } from "lucide-react";
+import { useI18n } from "../i18n/I18nContext";
 
 export default function DirectoryRow({
   path,
@@ -18,12 +19,13 @@ export default function DirectoryRow({
   path: string;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="group flex items-start gap-2 rounded-lg border border-border bg-surface-muted/40 px-3 py-2 transition-colors hover:border-border-strong">
       <p className="min-w-0 flex-1 break-all text-sm leading-relaxed text-ink">{path}</p>
       <button
-        aria-label={`Remove ${path}`}
-        title="Remove"
+        aria-label={t("destinations.removeDirectory", { path })}
+        title={t("common.remove")}
         className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-danger-surface hover:text-danger"
         onClick={onRemove}
       >

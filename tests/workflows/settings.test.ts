@@ -7,6 +7,7 @@ import { useItemsStore } from "../../src/state/items-store";
 import { useSettingsStore } from "../../src/state/settings-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 async function settleUntil(predicate: () => boolean): Promise<void> {
   for (let index = 0; index < 50 && !predicate(); index += 1) {
@@ -59,7 +60,7 @@ describe("Settings save boundary", () => {
     await saveSettings();
 
     expect(useAppShellStore.getState().utilitySurface).toBe("settings");
-    expect(useSettingsStore.getState().message).toBe(
+    expect(inEnglish(useSettingsStore.getState().message)).toBe(
       "Settings could not be saved. Your changes are still here; try again.",
     );
     expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(false);
@@ -148,10 +149,11 @@ describe("Settings save boundary", () => {
     expect(useSettingsStore.getState()).toMatchObject({
       draft,
       saving: false,
-      message:
-        "Settings were saved, but Sound and volume could not be saved. Your changes are still here; try again.",
       messageLevel: "error",
     });
+    expect(inEnglish(useSettingsStore.getState().message)).toBe(
+      "Settings were saved, but Sound and volume could not be saved. Your changes are still here; try again.",
+    );
     expect(useAppShellStore.getState().utilitySurface).toBe("settings");
     expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(true);
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);

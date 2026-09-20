@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Status } from "../models/status";
+import type { MainFeedback } from "../models/status";
 
 const scopes = {
   comparison: "selection",
@@ -10,7 +10,7 @@ const scopes = {
   recheck: "section",
 } as const;
 type Owner = keyof typeof scopes;
-interface Entry { request: number; result: Status | null }
+interface Entry { request: number; result: MainFeedback | null }
 interface FeedbackState { entries: Partial<Record<Owner, Entry>> }
 
 /** Only Main's bounded command feedback lives here. Durable errors and file
@@ -26,7 +26,7 @@ export function beginMainFeedback(owner: Owner) {
   const current = () => useMainFeedbackStore.getState().entries[owner]?.request === request;
   return {
     current,
-    finish(result: Status | null = null) {
+    finish(result: MainFeedback | null = null) {
       if (!current()) return;
       useMainFeedbackStore.setState(({ entries }) => ({
         entries: { ...entries, [owner]: { request, result } },
@@ -45,7 +45,7 @@ export function invalidateMainFeedback(scope: "selection" | "section"): void {
   }));
 }
 
-export function currentMainFeedback(state: FeedbackState): Status | null {
+export function currentMainFeedback(state: FeedbackState): MainFeedback | null {
   const rank = { danger: 2, warning: 1, normal: 0 };
   const entries = Object.values(state.entries).filter((entry) => entry.result !== null);
   entries.sort((left, right) =>

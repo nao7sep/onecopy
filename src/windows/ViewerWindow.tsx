@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, Minimize2, X } from "lucide-react";
 import { listenThenAnnounce } from "../utils/handshake";
 import type { ViewerBroadcast } from "../workflows/quick-view";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PreviewSurface from "../components/PreviewSurface";
+import { message, type Message } from "../i18n/translate";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { viewerOwnsKey } from "../utils/viewerKeys";
 import { hasOpenModal } from "../utils/modalStack";
@@ -13,8 +15,9 @@ import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
 
 export default function ViewerWindow() {
+  const { t, text } = useI18n();
   const [state, setState] = useState<ViewerBroadcast | null>(null);
-  const [commandFailure, setCommandFailure] = useState<string | null>(null);
+  const [commandFailure, setCommandFailure] = useState<Message | null>(null);
   const surface = useRef<HTMLDivElement>(null);
   const pendingDeleteRef = useRef<ViewerBroadcast["pendingDelete"]>(null);
   const sectionKindRef = useRef<ViewerBroadcast["sectionKind"]>(null);
@@ -32,9 +35,9 @@ export default function ViewerWindow() {
       .then(() => setCommandFailure(null))
       .catch((error) => {
         log.error("viewer key forward failed", toErrorFields(error));
-        const message = "Couldn’t send this viewer command.";
-        setCommandFailure(message);
-        recordActionFailure("viewer-command-failed", message, error);
+        const failure = message("viewer.commandFailed");
+        setCommandFailure(failure);
+        recordActionFailure("viewer-command-failed", failure, error);
       });
   };
 
@@ -60,9 +63,9 @@ export default function ViewerWindow() {
         .then(() => setCommandFailure(null))
         .catch((error) => {
           log.error("viewer key forward failed", toErrorFields(error));
-          const message = "Couldn’t send this viewer command.";
-          setCommandFailure(message);
-          recordActionFailure("viewer-command-failed", message, error);
+          const failure = message("viewer.commandFailed");
+          setCommandFailure(failure);
+          recordActionFailure("viewer-command-failed", failure, error);
         });
     };
     const onFocus = () => {
@@ -82,8 +85,9 @@ export default function ViewerWindow() {
   }
 
   const item = state.item;
+  const failure = commandFailure ?? state.failure;
   return (
-    <div ref={surface} tabIndex={-1} aria-label="Fullscreen viewer" className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white">
+    <div ref={surface} tabIndex={-1} aria-label={t("viewer.window")} className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white">
       <NotificationHost />
       <header className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-black/65 px-3 py-2 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         <span className="min-w-0 flex-1 truncate text-sm" title={item.fileName}>
@@ -92,22 +96,22 @@ export default function ViewerWindow() {
         <span className="text-xs tabular-nums text-white/70">
           {state.index + 1} / {state.length}
         </span>
-        <button aria-label="Previous item" disabled={state.index === 0} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowLeft")}>
+        <button aria-label={t("viewer.previous")} disabled={state.index === 0} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowLeft")}>
           <ChevronLeft size={16} />
         </button>
-        <button aria-label="Next item" disabled={state.index === state.length - 1} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowRight")}>
+        <button aria-label={t("viewer.next")} disabled={state.index === state.length - 1} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowRight")}>
           <ChevronRight size={16} />
         </button>
-        <button aria-label="Switch to Quick View" className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey(" ")}>
+        <button aria-label={t("viewer.quickView")} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey(" ")}>
           <Minimize2 size={16} />
         </button>
-        <button aria-label="Close full screen" className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey("Escape")}>
+        <button aria-label={t("viewer.closeFullScreen")} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey("Escape")}>
           <X size={16} />
         </button>
       </header>
       <div className="min-h-0 flex-1">
         {state.detail === null ? (
-          <div className="flex h-full items-center justify-center text-sm text-white/60">Loading…</div>
+          <div className="flex h-full items-center justify-center text-sm text-white/60">{t("common.loading")}</div>
         ) : (
           <PreviewSurface
             surface="viewer"
@@ -118,7 +122,7 @@ export default function ViewerWindow() {
           />
         )}
       </div>
-      {state.failure !== null || commandFailure !== null ? (
+      {failure !== null ? (
         <OperationResult
           level="error"
           className="absolute bottom-4 left-1/2 z-20 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 shadow-xl"
@@ -130,30 +134,38 @@ export default function ViewerWindow() {
                       "viewer failure dismissal failed",
                       toErrorFields(error),
                     );
-                    const message = "Couldn’t dismiss this viewer result.";
-                    setCommandFailure(message);
+                    const failure = message("viewer.dismissFailed");
+                    setCommandFailure(failure);
                     recordActionFailure(
                       "viewer-result-dismiss-failed",
-                      message,
+                      failure,
                       error,
                     );
                   });
                 }
               }}
-          dismissLabel="Dismiss viewer result"
+          dismissLabel={t("viewer.dismissResult")}
         >
-          {commandFailure ?? state.failure}
+          {text(failure)}
         </OperationResult>
       ) : null}
       {state.pendingDelete !== null ? (
         <ConfirmDialog
-          title={state.pendingDelete === "permanent" ? "Delete permanently?" : "Delete this item?"}
-          message={`${state.pendingDelete === "permanent" ? "Permanently delete" : "Delete"} ${item.fileName}${
+          title={
             state.pendingDelete === "permanent"
-              ? " and every copy? This cannot be undone."
-              : " and every copy? They remain recoverable from Deleted files."
-          }`}
-          confirmLabel={state.pendingDelete === "permanent" ? "Delete permanently" : "Delete"}
+              ? t("common.deletePermanentlyTitle")
+              : t("viewer.deleteTitle")
+          }
+          message={
+            state.pendingDelete === "permanent"
+              ? t("viewer.deletePermanentlyBody", { name: item.fileName })
+              : t("viewer.deleteBody", { name: item.fileName })
+          }
+          confirmLabel={
+            state.pendingDelete === "permanent"
+              ? t("common.deletePermanently")
+              : t("common.delete")
+          }
           onConfirm={() => {
             void emit("viewer://confirm-delete", {}).catch(
               reportWindowCall("viewer delete confirmation"),

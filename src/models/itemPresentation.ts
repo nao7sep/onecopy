@@ -1,8 +1,14 @@
+import type { MessageKey } from "../i18n/catalogues";
+import { reasonText } from "./workReasons";
+import type { Translator } from "../i18n/translate";
 import { formatLocalMinute } from "../utils/displayTime";
 import type { ItemDetail, ItemWorkState, ItemWorkStates, SectionItem } from "./items";
 
 export type PresentationTone = "muted" | "primary" | "warning" | "danger";
 
+// Every value here is resolved words, not a descriptor: a badge is a variable
+// join of independently translated facts, and each of these runs on the render
+// that shows it, so a language change re-composes it.
 export interface PresentationBadge {
   text: string;
   label: string;
@@ -34,20 +40,20 @@ export interface ItemPresentation {
   analysis: PresentationBadge | FaceRatingPresentation | null;
 }
 
-const WORK_LABELS: Record<keyof ItemWorkStates, string> = {
-  preview: "Preview",
-  snapshots: "Video snapshots",
-  similarity: "Similar photos",
-  faces: "Face scoring",
-  transcripts: "Transcription",
+const WORK_LABELS: Record<keyof ItemWorkStates, MessageKey> = {
+  preview: "preview.label",
+  snapshots: "wizard.videoSnapshots",
+  similarity: "work.classSimilarity",
+  faces: "wizard.faceScoring",
+  transcripts: "activity.actionTranscript",
 };
 
-const WORK_SHORT_LABELS: Record<keyof ItemWorkStates, string> = {
-  preview: "Preview",
-  snapshots: "Snapshots",
-  similarity: "Similarity",
-  faces: "Faces",
-  transcripts: "Transcript",
+const WORK_SHORT_LABELS: Record<keyof ItemWorkStates, MessageKey> = {
+  preview: "preview.label",
+  snapshots: "metadata.snapshots",
+  similarity: "item.workSimilarityShort",
+  faces: "item.workFacesShort",
+  transcripts: "transcript.title",
 };
 
 const WORK_ORDER = [
@@ -58,58 +64,100 @@ const WORK_ORDER = [
   "transcripts",
 ] as const satisfies readonly (keyof ItemWorkStates)[];
 
-export function takenPresentation(detail: ItemDetail): string {
-  if (detail.dateState === "pending") return "Date pending";
-  if (detail.resolvedUtcMs === null) return "Undated";
-  const suffix = detail.dateOnly ? " (date only)" : "";
-  const source = detail.resolvedSource ? ` · ${detail.resolvedSource}` : "";
-  return `${formatLocalMinute(detail.resolvedUtcMs)}${suffix}${source}`;
+/** What a class says when it has finished and found nothing to show. */
+const READY_WITHOUT_VALUE: Partial<Record<keyof ItemWorkStates, MessageKey>> = {
+  faces: "item.workNoFaceDetected",
+  transcripts: "item.workNoSpeech",
+  similarity: "item.workNoSimilarPhotos",
+  snapshots: "item.workNoSnapshots",
+};
+
+const WORK_HELD: Record<"disabled" | "unavailable" | "blocked" | "waiting", MessageKey> = {
+  disabled: "item.workOff",
+  unavailable: "item.workUnavailable",
+  blocked: "item.workBlocked",
+  waiting: "activity.stateWaiting",
+};
+
+const SOURCE_KEYS: Record<string, MessageKey> = {
+  metadata: "item.sourceMetadata",
+  filename: "item.sourceFilename",
+  filesystem: "item.sourceFilesystem",
+};
+
+export function takenPresentation(
+  detail: ItemDetail,
+  t: Translator["t"],
+  dateTime: Translator["dateTime"],
+): string {
+  if (detail.dateState === "pending") return t("item.datePending");
+  if (detail.resolvedUtcMs === null) return t("section.undated");
+  const time = formatLocalMinute(detail.resolvedUtcMs, dateTime);
+  const taken = detail.dateOnly ? t("item.takenDateOnly", { time }) : time;
+  // The core reports where the date came from as a code; an unknown one shows
+  // as recorded rather than as nothing.
+  const source = SOURCE_KEYS[detail.resolvedSource ?? ""];
+  if (detail.resolvedSource === null || detail.resolvedSource === "") return taken;
+  return t("item.takenWithSource", {
+    taken,
+    source: source === undefined ? detail.resolvedSource : t(source),
+  });
 }
 
-function progressSuffix(state: ItemWorkState): string {
-  if (state.done === null || state.total === null || state.total <= 0) return "";
-  if (state.total === 100) return ` ${Math.min(100, Math.round(state.done))}%`;
-  return ` ${state.done}/${state.total}`;
+/** Wraps `headline` in the class's live progress, when the backend reports any.
+ * The headline is a whole translated unit interpolated into the sentence, never
+ * a fragment glued onto a number. */
+function withProgress(
+  headline: string,
+  state: ItemWorkState,
+  t: Translator["t"],
+): string {
+  if (state.done === null || state.total === null || state.total <= 0) return headline;
+  return state.total === 100
+    ? t("item.workProgressPercent", {
+        headline,
+        percent: Math.min(100, Math.round(state.done)),
+      })
+    : t("item.workProgressCount", {
+        headline,
+        done: state.done,
+        total: state.total,
+      });
 }
 
-function readyWithoutValue(id: keyof ItemWorkStates): string {
-  if (id === "faces") return "Checked — no face detected";
-  if (id === "transcripts") return "Checked — no speech found";
-  if (id === "similarity") return "Checked — no similar photos";
-  if (id === "snapshots") return "Ready — no snapshots";
-  return "Ready";
-}
-
-export function workPresentationRows(states: ItemWorkStates): WorkPresentationRow[] {
+export function workPresentationRows(
+  states: ItemWorkStates,
+  t: Translator["t"],
+): WorkPresentationRow[] {
   return WORK_ORDER.flatMap((id) => {
     const state = states[id];
     if (state === null) return [];
     let value: string;
     let tone: PresentationTone = "muted";
     if (state.state === "ready") {
-      value = state.hasValue ? "Ready" : readyWithoutValue(id);
+      value = state.hasValue
+        ? t("item.workReady")
+        : t(READY_WITHOUT_VALUE[id] ?? "item.workReady");
     } else if (state.state === "running") {
-      value = `${state.reason ?? "Running"}${progressSuffix(state)}`;
+      value = withProgress(reasonText(state.reason, t) ?? t("item.workRunning"), state, t);
       tone = "primary";
     } else if (state.state === "failed") {
-      value = state.reason ?? "Failed";
+      value = reasonText(state.reason, t) ?? t("activity.stateFailed");
       tone = "danger";
     } else if (state.state === "pending") {
-      value = "Queued";
+      value = t("work.queued");
     } else {
-      value = state.reason ?? {
-        disabled: "Off",
-        unavailable: "Unavailable",
-        blocked: "Blocked",
-        waiting: "Waiting",
-      }[state.state];
+      value = reasonText(state.reason, t) ?? t(WORK_HELD[state.state]);
       tone = state.state === "disabled" ? "muted" : "warning";
     }
-    return [{ id, label: WORK_LABELS[id], value, tone }];
+    return [{ id, label: t(WORK_LABELS[id]), value, tone }];
   });
 }
 
-function workStatus(states: ItemWorkStates): PresentationBadge | null {
+function workStatus(
+  states: ItemWorkStates,
+  t: Translator["t"],
+): PresentationBadge | null {
   const rows = WORK_ORDER.flatMap((id) => {
     const state = states[id];
     return state === null ? [] : [{ id, state }];
@@ -128,21 +176,37 @@ function workStatus(states: ItemWorkStates): PresentationBadge | null {
     );
   if (chosen === undefined) return null;
   const { id, state } = chosen;
-  const short = WORK_SHORT_LABELS[id];
+  const short = t(WORK_SHORT_LABELS[id]);
+  const full = t(WORK_LABELS[id]);
   if (state.state === "failed") {
-    return { text: `${short} failed`, label: `${WORK_LABELS[id]} failed`, tone: "danger" };
+    return {
+      text: t("item.workFailed", { name: short }),
+      label: t("item.workFailed", { name: full }),
+      tone: "danger",
+    };
   }
   if (state.state === "running") {
-    const suffix = progressSuffix(state);
+    const hasProgress =
+      state.done !== null && state.total !== null && state.total > 0;
     return {
-      text: `${short}${suffix || "…"}`,
-      label: `${WORK_LABELS[id]} running${suffix}`,
+      text: hasProgress
+        ? withProgress(short, state, t)
+        : t("work.classRunning", { name: short }),
+      label: withProgress(t("item.workRunningLabel", { name: full }), state, t),
       tone: "primary",
     };
   }
   return {
-    text: state.state === "pending" ? `${short} queued` : `${short} waiting`,
-    label: `${WORK_LABELS[id]}: ${state.reason ?? (state.state === "pending" ? "Queued" : "Waiting")}`,
+    text:
+      state.state === "pending"
+        ? t("item.workQueuedShort", { name: short })
+        : t("item.workWaitingShort", { name: short }),
+    label: t("item.workLabelDetail", {
+      name: full,
+      detail:
+        reasonText(state.reason, t) ??
+        t(state.state === "pending" ? "work.queued" : "activity.stateWaiting"),
+    }),
     tone: state.state === "pending" ? "muted" : "warning",
   };
 }
@@ -156,10 +220,6 @@ export function faceStarRating(score: number | null): 0 | 1 | 2 | 3 {
   return 3;
 }
 
-export function faceStarLabel(stars: number): string {
-  return `Advisory: ${stars} face ${stars === 1 ? "star" : "stars"} — best-face confidence and smile hint`;
-}
-
 export function itemPresentation(
   item: SectionItem,
   options: {
@@ -168,6 +228,7 @@ export function itemPresentation(
     selectedCount: number;
     showFaceStars: boolean;
   },
+  t: Translator["t"],
 ): ItemPresentation {
   const selection =
     options.selectionOrdinal === null
@@ -176,25 +237,30 @@ export function itemPresentation(
           ordinal: options.selectedCount > 1 ? options.selectionOrdinal : null,
           label:
             options.selectedCount > 1
-              ? `Selected ${options.selectionOrdinal} of ${options.selectedCount}`
-              : "Selected",
+              ? t("item.selectedOfCount", {
+                  ordinal: options.selectionOrdinal,
+                  count: options.selectedCount,
+                })
+              : t("item.selected"),
         };
 
-  const status = workStatus(item.derivedWork);
+  const status = workStatus(item.derivedWork, t);
 
   const relationshipText: string[] = [];
   const relationshipLabels: string[] = [];
   if (item.copyCount > 1) {
-    relationshipText.push(`×${item.copyCount}`);
-    relationshipLabels.push(`${item.copyCount} exact copies`);
+    relationshipText.push(t("grid.copyCount", { count: item.copyCount }));
+    relationshipLabels.push(t("textPreview.exactCopies", { count: item.copyCount }));
   }
   if (options.similarCount > 1) {
-    relationshipText.push(`≈${options.similarCount}`);
-    relationshipLabels.push(`${options.similarCount} similar photos`);
+    relationshipText.push(t("item.similarCount", { count: options.similarCount }));
+    relationshipLabels.push(
+      t("item.similarPhotosCount", { count: options.similarCount }),
+    );
   }
   if (item.hasCompanions) {
-    relationshipText.push("pair");
-    relationshipLabels.push("has paired companion files; every action includes them");
+    relationshipText.push(t("grid.companionBadge"));
+    relationshipLabels.push(t("item.companionLabel"));
   }
   const relationships =
     relationshipText.length === 0
@@ -210,12 +276,20 @@ export function itemPresentation(
   const faceRating =
     stars === 0
       ? null
-      : { stars, label: faceStarLabel(stars), tone: "primary" as const };
+      : {
+          stars,
+          label: t("face.starsAdvisory", { count: stars }),
+          tone: "primary" as const,
+        };
   const analysis =
     faceRating !== null
       ? faceRating
       : transcript?.state === "ready" && transcript.hasValue
-        ? { text: "CC", label: "Transcript available", tone: "primary" as const }
+        ? {
+            text: t("item.transcriptBadge"),
+            label: t("item.transcriptAvailable"),
+            tone: "primary" as const,
+          }
         : null;
 
   return { selection, status, relationships, analysis };

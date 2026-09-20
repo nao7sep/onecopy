@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useSettingsStore } from "../../src/state/settings-store";
-import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { resetTauriMocks } from "../mocks/tauri";
 
 const config = {
   sourceDirs: ["/photos"],
@@ -10,66 +10,6 @@ const config = {
 beforeEach(() => {
   resetTauriMocks();
   useSettingsStore.getState().beginEditing(config);
-});
-
-describe("settings timezone validation", () => {
-  it("settles blank input as invalid without invoking the backend", async () => {
-    await useSettingsStore.getState().validateTimezone("   ");
-
-    expect(useSettingsStore.getState()).toMatchObject({
-      timezoneValid: false,
-      timezonePending: false,
-    });
-    expect(invokeCalls).toEqual([]);
-  });
-
-  it("does not let a reply from an earlier modal session overwrite a reopened draft", async () => {
-    let settle: ((valid: boolean) => void) | undefined;
-    mockCommands({
-      validate_timezone: () =>
-        new Promise<boolean>((resolve) => {
-          settle = resolve;
-        }),
-    });
-
-    const validation = useSettingsStore.getState().validateTimezone("Tokyo");
-    useSettingsStore.getState().beginEditing(config);
-    settle?.(false);
-    await validation;
-
-    expect(useSettingsStore.getState()).toMatchObject({
-      timezoneValid: true,
-      timezonePending: false,
-    });
-    expect(useSettingsStore.getState().draft?.defaultTimezone).toBe(
-      "Asia/Tokyo",
-    );
-  });
-
-  it("does not publish a failure from an earlier modal session", async () => {
-    let reject: ((error: Error) => void) | undefined;
-    mockCommands({
-      validate_timezone: () =>
-        new Promise<boolean>((_resolve, rejectPromise) => {
-          reject = rejectPromise;
-        }),
-      record_recent_notification: () => ({}),
-    });
-
-    const validation = useSettingsStore.getState().validateTimezone("Tokyo");
-    useSettingsStore.getState().beginEditing(config);
-    reject?.(new Error("obsolete validation failure"));
-    await validation;
-
-    expect(useSettingsStore.getState()).toMatchObject({
-      timezoneValid: true,
-      timezonePending: false,
-      message: "",
-    });
-    expect(
-      invokeCalls.filter((call) => call.command === "record_recent_notification"),
-    ).toEqual([]);
-  });
 });
 
 describe("playback preferences", () => {

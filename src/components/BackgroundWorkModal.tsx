@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { reasonText } from "../models/workReasons";
 import { Pause, Play, Square } from "lucide-react";
 import {
   backgroundClassLabel,
@@ -12,39 +13,42 @@ import Button from "./ui/Button";
 import { useSectionsStore } from "../state/sections-store";
 import OperationResult from "./ui/OperationResult";
 import { progressLine } from "../models/scan";
+import { useI18n } from "../i18n/I18nContext";
+import type { Translator } from "../i18n/translate";
 
-function stateText(row: BackgroundClassSnapshot): string {
+function stateText(row: BackgroundClassSnapshot, t: Translator["t"]): string {
   switch (row.state) {
     case "disabled":
-      return row.reason ?? "Off in Settings";
+      return reasonText(row.reason, t) ?? t("work.offInSettings");
     case "unavailable":
-      return row.reason ?? "Required tool unavailable";
+      return reasonText(row.reason, t) ?? t("work.toolUnavailable");
     case "queued":
-      return `${row.queued.toLocaleString()} queued`;
+      return t("work.queuedCount", { count: row.queued });
     case "waiting":
-      return row.reason ?? `${row.queued.toLocaleString()} waiting`;
+      return reasonText(row.reason, t) ?? t("work.waitingCount", { count: row.queued });
     case "running":
       return row.done !== null && row.total !== null
-        ? `Running — ${row.done.toLocaleString()}/${row.total.toLocaleString()}`
-        : "Running…";
+        ? t("work.runningProgress", { done: row.done, total: row.total })
+        : t("work.running");
     case "stopping":
-      return "Stopping and releasing resources…";
+      return t("work.stopping");
     case "paused":
-      return `${row.queued.toLocaleString()} queued — paused`;
+      return t("work.queuedCountPaused", { count: row.queued });
     case "failed":
     case "up-to-date":
-      return "No work running";
+      return t("work.noWork");
   }
 }
 
-const DESCRIPTIONS: Record<BackgroundClassSnapshot["id"], string> = {
-  previews: "Screen-sized images and video posters. Visible items go first.",
-  snapshots: "Timestamped scene frames for quickly understanding a video.",
-  similarity: "Rebuilds similar-photo families after preview facts change.",
-  faces: "Optional face and expression scoring used to order comparison groups.",
-  "video-transcripts": "Optional speech-to-text for videos with audio.",
-  "audio-transcripts": "Optional speech-to-text for audio files.",
-};
+// Keyed by class id, so a new class cannot reach the list without a description.
+const DESCRIPTIONS = {
+  previews: "work.previewsDescription",
+  snapshots: "work.snapshotsDescription",
+  similarity: "work.similarityDescription",
+  faces: "work.facesDescription",
+  "video-transcripts": "work.videoTranscriptsDescription",
+  "audio-transcripts": "work.audioTranscriptsDescription",
+} as const;
 
 export default function BackgroundWorkModal({
   open,
@@ -53,6 +57,7 @@ export default function BackgroundWorkModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const { t, text, percent } = useI18n();
   const snapshot = useDerivedWorkStore((state) => state.snapshot);
   const loading = useDerivedWorkStore((state) => state.loading);
   const changing = useDerivedWorkStore((state) => state.changing);
@@ -72,18 +77,19 @@ export default function BackgroundWorkModal({
   }, [open]);
 
   if (!open) return null;
+  const failure = indexError ?? error;
   const rows = snapshot === null ? [] : backgroundRows(snapshot);
   const allPaused = fileInformation.paused && rows.every((row) =>
     row.state === "disabled" || snapshot?.pausedClasses.includes(row.id));
 
   return (
     <ModalShell
-      title="Background work"
+      title={t("work.title")}
       onClose={onClose}
       widthClass="w-[min(680px,calc(100vw-3rem))]"
       footerResult={
-        indexError !== null || error !== null ? (
-          <OperationResult level="error">{indexError ?? error}</OperationResult>
+        failure !== null ? (
+          <OperationResult level="error">{text(failure)}</OperationResult>
         ) : undefined
       }
       primaryAction={
@@ -95,40 +101,37 @@ export default function BackgroundWorkModal({
             onClick={() => void setPaused(null, true)}
           >
             <Pause size={14} />
-            Pause all
+            {t("work.pauseAll")}
           </Button>
         ) : undefined
       }
     >
       <p className="mb-4 text-sm text-ink-muted">
-        Pausing keeps completed work and never changes your files. These controls apply to this
-        app session; Settings decides which optional features are enabled.
-        {" "}Pause all pauses file information, preparation, and enrichment. Source checking has
-        its own Stop control; folder watching stays active.
+        {t("work.intro")}
       </p>
       <ul className="mb-4 space-y-2">
         <li className="flex items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3">
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold text-ink-strong">
-              Check source folders
+              {t("work.sourceCheck")}
             </span>
             <span className="mt-0.5 block text-xs text-ink-muted">
-              One pass to find added, removed, or changed files. Folder watching continues afterward.
+              {t("work.sourceCheckDescription")}
             </span>
             <span className="mt-1 block text-xs text-ink">
               {sourceCheck.stopping
-                ? "Stopping after the current safe step…"
+                ? t("work.sourceCheckStopping")
                 : sourceCheck.waiting
-                  ? "Waiting for the current file operation…"
+                  ? t("work.sourceCheckWaiting")
                 : sourceCheck.running
-                  ? sourceCheck.progress === null ? "Running…" : progressLine(sourceCheck.progress)
+                  ? sourceCheck.progress === null ? t("work.running") : progressLine(sourceCheck.progress, t, percent)
                   : sourceCheck.lastResult === "completed"
-                    ? "Completed — Start checks again"
+                    ? t("work.sourceCheckCompleted")
                     : sourceCheck.lastResult === "completed-with-issues"
-                      ? "Finished with incomplete checks"
+                      ? t("work.sourceCheckIncomplete")
                     : sourceCheck.lastResult === "failed"
-                      ? "Could not complete check"
-                      : "Stopped"}
+                      ? t("work.sourceCheckFailed")
+                      : t("work.stopped")}
             </span>
           </span>
           <Button
@@ -139,29 +142,29 @@ export default function BackgroundWorkModal({
             }
           >
             {sourceCheck.running ? <Square size={13} /> : <Play size={13} />}
-            {sourceCheck.running ? "Stop" : "Start"}
+            {sourceCheck.running ? t("work.stop") : t("work.start")}
           </Button>
         </li>
         <li className="flex items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3">
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold text-ink-strong">
-              Complete file information
+              {t("work.fileInformation")}
             </span>
             <span className="mt-0.5 block text-xs text-ink-muted">
-              Completes missing identity, metadata, dates, and companion relationships.
+              {t("work.fileInformationDescription")}
             </span>
             <span className="mt-1 block text-xs text-ink">
               {fileInformation.stopping
-                ? "Pausing after the current safe step…"
+                ? t("work.fileInformationPausing")
                 : fileInformation.paused
                   ? fileInformation.queued
-                    ? "Work queued — paused"
-                    : "Paused"
+                    ? t("work.workQueuedPaused")
+                    : t("work.paused")
                   : fileInformation.running
-                  ? fileInformation.progress === null ? "Running…" : progressLine(fileInformation.progress)
+                  ? fileInformation.progress === null ? t("work.running") : progressLine(fileInformation.progress, t, percent)
                     : fileInformation.queued
-                      ? "Queued"
-                      : "No work running"}
+                      ? t("work.queued")
+                      : t("work.noWork")}
             </span>
           </span>
           <Button
@@ -170,21 +173,21 @@ export default function BackgroundWorkModal({
             onClick={() => void setFileInformationPaused(!fileInformation.paused)}
           >
             {fileInformation.paused ? <Play size={13} /> : <Pause size={13} />}
-            {fileInformation.paused ? "Resume" : "Pause"}
+            {fileInformation.paused ? t("work.resume") : t("work.pause")}
           </Button>
         </li>
       </ul>
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-        Preparation and enrichment
+        {t("work.enrichmentHeading")}
       </h2>
       {snapshot !== null && !snapshot.workerRunning ? (
         <p className="mb-3 text-sm text-ink-muted">
-          Automatic processing is stopped. Resume a row to restart it; other unpaused rows can run too.
+          {t("work.workerStopped")}
         </p>
       ) : null}
       {snapshot === null ? (
         <p className="py-6 text-center text-sm text-ink-muted">
-          {loading ? "Reading background work…" : "Background-work status is unavailable."}
+          {loading ? t("work.loading") : t("work.unavailable")}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -198,17 +201,19 @@ export default function BackgroundWorkModal({
               >
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-semibold text-ink-strong">
-                    {backgroundClassLabel(row.id)}
+                    {t(backgroundClassLabel(row.id))}
                   </span>
                   <span className="mt-0.5 block text-xs text-ink-muted">
-                    {DESCRIPTIONS[row.id]}
+                    {t(DESCRIPTIONS[row.id])}
                   </span>
                   <span
                     className={`mt-1 block text-xs ${
                       row.state === "unavailable" ? "text-warning" : "text-ink"
                     }`}
                   >
-                    {!snapshot.workerRunning && row.state === "queued" ? "Stopped" : stateText(row)}
+                    {!snapshot.workerRunning && row.state === "queued"
+                      ? t("work.stopped")
+                      : stateText(row, t)}
                   </span>
                 </span>
                 <Button
@@ -221,7 +226,11 @@ export default function BackgroundWorkModal({
                   onClick={() => void setPaused(row.id, !canResume)}
                 >
                   {canResume ? <Play size={13} /> : <Pause size={13} />}
-                  {rowChanging ? "Saving…" : canResume ? "Resume" : "Pause"}
+                  {rowChanging
+                    ? t("common.saving")
+                    : canResume
+                      ? t("work.resume")
+                      : t("work.pause")}
                 </Button>
               </li>
             );

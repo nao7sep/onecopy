@@ -14,6 +14,7 @@
 
 import { emit, listen } from "@tauri-apps/api/event";
 import { log, toErrorFields } from "../repositories";
+import { message } from "../i18n/translate";
 import { presentEscapedFailure, recordInterfaceFailure } from "./failureSurface";
 
 /** Registers `handler` for `channel`, and only then announces on `ready`.
@@ -42,8 +43,7 @@ export function listenThenAnnounce<T>(
         ready,
         ...toErrorFields(error),
       });
-      const presentation =
-        "This window could not connect to OneCopy. Close it and try opening it again.";
+      const presentation = message("crash.windowNotConnected");
       recordInterfaceFailure(presentation);
       presentEscapedFailure(presentation);
     }

@@ -1,6 +1,7 @@
 import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useQuickViewStore } from "../state/quick-view-store";
+import { message } from "../i18n/translate";
 import { reportActionFailure } from "../state/notifications-store";
 import { closeComparison } from "./comparison";
 import { closeViewer } from "./quick-view";
@@ -20,7 +21,11 @@ export async function revealInMain(path: string, isCurrent: () => boolean, onRev
     if (useQuickViewStore.getState().session !== null) await closeViewer();
     if (useComparisonStore.getState().open) await closeComparison();
   } catch (error) {
-    reportActionFailure("reveal-view-close-failed", "The file was selected, but its viewing window could not be closed. Close it to return to Main.", error);
+    reportActionFailure(
+      "reveal-view-close-failed",
+      message("issues.revealViewCloseFailed"),
+      error,
+    );
   }
   return result;
 }

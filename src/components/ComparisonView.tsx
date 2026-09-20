@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n/I18nContext";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useComparisonLayout } from "../hooks/useComparisonLayout";
 import { comparisonPages, gridFor } from "../models/comparisonSession";
@@ -37,6 +38,7 @@ export default function ComparisonView({
 }: {
   onRevealTrash: () => void;
 }) {
+  const { t, text, number } = useI18n();
   const itemArea = useRef<HTMLDivElement>(null);
   const [revealMember, setRevealMember] = useState<{
     hash: string;
@@ -94,17 +96,33 @@ export default function ComparisonView({
     .flat()
     .reduce((count, slot) => count + (slot.marked ? 1 : 0), 0);
 
-  const confirmTitle = pendingAction?.permanent
-    ? "Delete images permanently?"
-    : pendingAction?.kind === "selection"
-      ? "Delete marked images?"
-      : "Finish this comparison page?";
+  const confirmTitle =
+    pendingAction === null
+      ? ""
+      : pendingAction.permanent
+        ? t("comparison.deletePermanentlyTitle")
+        : pendingAction.kind === "selection"
+          ? t("comparison.deleteMarkedTitle")
+          : t("comparison.finishPageTitle");
   const confirmMessage =
     pendingAction === null
       ? ""
       : pendingAction.kind === "selection"
-        ? `${pendingAction.targetHashes.length} marked image${pendingAction.targetHashes.length === 1 ? "" : "s"} will be ${pendingAction.permanent ? "deleted permanently" : "deleted recoverably"}.`
-        : `Keep ${pendingAction.keepHashes.length} and ${pendingAction.permanent ? "permanently delete" : "recoverably delete"} ${pendingAction.targetHashes.length} image${pendingAction.targetHashes.length === 1 ? "" : "s"} on this page.`;
+        ? t(
+            pendingAction.permanent
+              ? "comparison.deleteMarkedPermanentlyBody"
+              : "comparison.deleteMarkedBody",
+            { count: pendingAction.targetHashes.length },
+          )
+        : t(
+            pendingAction.permanent
+              ? "comparison.finishPagePermanentlyBody"
+              : "comparison.finishPageBody",
+            {
+              keep: pendingAction.keepHashes.length,
+              count: pendingAction.targetHashes.length,
+            },
+          );
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-background">
@@ -112,9 +130,11 @@ export default function ComparisonView({
         <ConfirmDialog
           title={confirmTitle}
           message={confirmMessage}
-          confirmLabel={
-            pendingAction.permanent ? "Delete permanently" : "Delete"
-          }
+          confirmLabel={t(
+            pendingAction.permanent
+              ? "common.deletePermanently"
+              : "common.delete",
+          )}
           onConfirm={() => void confirmComparisonAction()}
           onCancel={() => useComparisonStore.getState().cancelPendingAction()}
         />
@@ -130,12 +150,23 @@ export default function ComparisonView({
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-border bg-surface px-3 py-2">
         <div className="min-w-0">
           <h1 className="text-sm font-semibold text-ink-strong">
-            Similar images
+            {t("comparison.title")}
           </h1>
           <p className="text-xs text-ink-muted">
-            Page {page + 1}/{Math.max(1, pages.length)} · {members.length}{" "}
-            undecided · {markedCount} marked to keep
-            {spreadCount > 0 ? ` · ${spreadCount + 1} displays` : ""}
+            {spreadCount > 0
+              ? t("comparison.pageSummaryWithDisplays", {
+                  page: page + 1,
+                  pages: Math.max(1, pages.length),
+                  undecided: members.length,
+                  marked: markedCount,
+                  displays: spreadCount + 1,
+                })
+              : t("comparison.pageSummary", {
+                  page: page + 1,
+                  pages: Math.max(1, pages.length),
+                  undecided: members.length,
+                  marked: markedCount,
+                })}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-xs">
@@ -144,28 +175,28 @@ export default function ComparisonView({
             disabled={busy || page <= 0}
             onClick={() => useComparisonStore.getState().prevPage()}
           >
-            Previous Page
+            {t("comparison.previousPage")}
           </button>
           <button
             className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
             disabled={busy || page >= pages.length - 1}
             onClick={() => useComparisonStore.getState().nextPage()}
           >
-            Next Page
+            {t("comparison.nextPage")}
           </button>
           <button
             className="rounded border border-danger/50 px-2 py-1 text-danger hover:bg-danger/10 disabled:opacity-50"
             disabled={busy || localChunk.length === 0}
             onClick={() => void decideComparisonPage(false, true)}
           >
-            Delete every visible image
+            {t("comparison.deleteVisible")}
           </button>
           <button
             className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
             disabled={busy}
             onClick={() => void closeComparison()}
           >
-            Close
+            {t("common.close")}
           </button>
         </div>
       </header>
@@ -175,7 +206,7 @@ export default function ComparisonView({
         ref={itemArea}
         tabIndex={0}
         role="listbox"
-        aria-label="Images on the current comparison page"
+        aria-label={t("comparison.pageImages")}
         aria-multiselectable="true"
         className="grid min-h-0 flex-1 grid-flow-row gap-3 p-3"
         style={{
@@ -205,12 +236,9 @@ export default function ComparisonView({
       </div>
 
       <footer className="flex shrink-0 items-center justify-between gap-4 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        <span>
-          0–9, A–Z, or Keep toggle marks · Space opens the picked image · Arrows inspect · Page Up/Down browse · Enter reviews marked keepers and visible deletions ·
-          Delete reviews marked images · Escape closes
-        </span>
+        <span>{t("comparison.hint")}</span>
         {message !== null ? (
-          <span className="text-warning">{message}</span>
+          <span className="text-warning">{text(message)}</span>
         ) : null}
       </footer>
 
@@ -218,12 +246,12 @@ export default function ComparisonView({
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
           <span>
             {exitQuiescing
-              ? "Finishing current file before exit…"
+              ? t("status.exiting")
               : mutationProgress !== null
-                ? mutationProgressLine(mutationProgress, mutationCancelling)
+                ? mutationProgressLine(mutationProgress, mutationCancelling, t, number)
                 : mutationResult !== null
-                  ? mutationResultLine(mutationResult)
-                  : "Preparing file operation…"}
+                  ? mutationResultLine(mutationResult, t)
+                  : t("comparison.preparingOperation")}
           </span>
           {mutationProgress !== null && !exitQuiescing ? (
             <button
@@ -231,7 +259,9 @@ export default function ComparisonView({
               disabled={mutationCancelling}
               onClick={() => void cancelMutation()}
             >
-              {mutationCancelling ? "Cancelling…" : "Cancel file operation"}
+              {mutationCancelling
+                ? t("common.cancelling")
+                : t("app.cancelOperation")}
             </button>
           ) : mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
@@ -252,11 +282,11 @@ export default function ComparisonView({
               className="rounded border border-danger/40 px-2 py-0.5 hover:bg-danger/10"
               onClick={() => void retryComparisonFailure()}
             >
-              Retry remaining
+              {t("comparison.retryRemaining")}
             </button>
           }
         >
-          {failure.message}
+          {text(failure.message)}
         </OperationResult>
       ) : null}
     </div>

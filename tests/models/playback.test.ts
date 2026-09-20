@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { choosePlaybackSession, playbackFailureMessage, type PlaybackSession } from "../../src/models/playback";
+import { t } from "../helpers/i18n";
 
 const policy = {
   videoAutoplay: true,
@@ -14,7 +15,7 @@ describe("playback failure messages", () => {
     [4, "could not be loaded"], [null, "could not be played"], [99, "could not be played"],
   ] as const)("reports code %s without inventing an exact codec cause", (code, words) => {
     for (const medium of ["video", "audio"] as const) {
-      const message = playbackFailureMessage(medium, code);
+      const message = t(playbackFailureMessage(medium, code));
       expect(message).toContain(words);
       expect(message.toLowerCase()).toContain(medium);
       expect(message).not.toContain("This codec");

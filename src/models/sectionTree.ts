@@ -12,6 +12,7 @@
 // which rows exist, what each total is, where Undated sits — is unit-testable
 // without a running app.
 
+import type { MessageKey } from "../i18n/catalogues";
 import type { MonthSection, SectionCounts } from "./sections";
 
 export type ItemKind = "image" | "video" | "other";
@@ -24,8 +25,8 @@ export interface YearNode {
 
 export interface KindNode {
   kind: ItemKind;
-  title: string;
-  emptyLabel: string;
+  title: MessageKey;
+  emptyLabel: MessageKey;
   /** Every item of this kind, including undated ones. */
   count: number;
   years: YearNode[];
@@ -47,10 +48,10 @@ export type Row =
       count: number;
     };
 
-const KINDS: { kind: ItemKind; title: string; emptyLabel: string }[] = [
-  { kind: "image", title: "Images", emptyLabel: "No images" },
-  { kind: "video", title: "Videos", emptyLabel: "No videos" },
-  { kind: "other", title: "Other files", emptyLabel: "No other files" },
+const KINDS: { kind: ItemKind; title: MessageKey; emptyLabel: MessageKey }[] = [
+  { kind: "image", title: "section.images", emptyLabel: "section.noImages" },
+  { kind: "video", title: "section.videos", emptyLabel: "section.noVideos" },
+  { kind: "other", title: "section.otherFiles", emptyLabel: "section.noOtherFiles" },
 ];
 
 export function kindKey(kind: ItemKind): string {

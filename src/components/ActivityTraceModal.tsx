@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { loadActivityPage, loadActivityEvents, type ActivityOperation, type ActivityEvent } from "../repositories/activity";
 import { log, toErrorFields } from "../repositories/logging";
-import { activityLabel, formatActivityTime, mergeActivity, operationPresentation } from "../models/activity-history";
+import { activityLabel, formatActivityTime, mergeActivity, operationPresentation, type ActivityText } from "../models/activity-history";
 import { captureReadingPosition, restoreReadingPosition, type ReadingPosition } from "../utils/activityReadingPosition";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
@@ -9,16 +9,26 @@ import OperationResult from "./ui/OperationResult";
 import PassiveScrollRegion from "./ui/PassiveScrollRegion";
 import { revealInMain } from "../workflows/reveal-in-main";
 import { useDisplayZone } from "../hooks/useDisplayZone";
+import { useI18n } from "../i18n/I18nContext";
+import type { MessageKey } from "../i18n/catalogues";
+import type { Translator } from "../i18n/translate";
 
 export { formatActivityTime } from "../models/activity-history";
+
+/** An enum token the catalogue does not name arrives already spelled out. */
+function words(value: ActivityText, text: Translator["text"]): string {
+  return typeof value === "string" ? value : text(value);
+}
 
 function OperationDetails({ row, beforeChange, afterChange }: {
   row: ActivityOperation; beforeChange: () => void; afterChange: () => void;
 }) {
+  const { t, text } = useI18n();
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
+  // The key, not a finished sentence, so the message follows a language change.
+  const [error, setError] = useState<MessageKey | null>(null);
+  const [refreshError, setRefreshError] = useState<MessageKey | null>(null);
   const [loading, setLoading] = useState(false);
   const alive = useRef(false);
   const request = useRef(0);
@@ -43,7 +53,7 @@ function OperationDetails({ row, beforeChange, afterChange }: {
       setError(null);
     } catch (error) {
       log.warn("activity details failed", toErrorFields(error));
-      if (alive.current && ticket === request.current) setError("Details could not be loaded. Try again.");
+      if (alive.current && ticket === request.current) setError("activity.detailsFailed");
     } finally {
       if (alive.current && ticket === request.current) setLoading(false);
     }
@@ -80,7 +90,7 @@ function OperationDetails({ row, beforeChange, afterChange }: {
         setRefreshError(null);
       } catch (error) {
         log.warn("activity details refresh failed", toErrorFields(error));
-        if (active) setRefreshError("Details could not be refreshed. Retrying…");
+        if (active) setRefreshError("activity.detailsRefreshFailed");
       }
       if (active) timer = setTimeout(() => void refresh(), 1000);
     };
@@ -90,26 +100,29 @@ function OperationDetails({ row, beforeChange, afterChange }: {
   useLayoutEffect(afterChange, [events]);
   return <div className="space-y-3 border-t border-border px-3 py-3 text-xs">
     <dl data-activity-anchor={"details:" + row.id} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-ink-muted">
-      <dt>Session</dt><dd className="break-all font-mono">{row.first.sessionId}</dd>
-      {row.first.operationId && <><dt>Operation</dt><dd className="break-all font-mono">{row.first.operationId}</dd></>}
-      {row.first.causeId && <><dt>Caused by</dt><dd className="break-all font-mono">{row.first.causeId}</dd></>}
-      {row.targetHash && <><dt>Content identity</dt><dd className="break-all font-mono">{row.targetHash}</dd></>}
-      <dt>Events</dt><dd>{row.eventCount}</dd>
+      <dt>{t("activity.session")}</dt><dd className="break-all font-mono">{row.first.sessionId}</dd>
+      {row.first.operationId && <><dt>{t("activity.operation")}</dt><dd className="break-all font-mono">{row.first.operationId}</dd></>}
+      {row.first.causeId && <><dt>{t("activity.causedBy")}</dt><dd className="break-all font-mono">{row.first.causeId}</dd></>}
+      {row.targetHash && <><dt>{t("activity.contentIdentity")}</dt><dd className="break-all font-mono">{row.targetHash}</dd></>}
+      <dt>{t("activity.events")}</dt><dd>{row.eventCount}</dd>
     </dl>
     <ol className="space-y-2">
       {events.map((event) => <li key={event.eventId} data-activity-anchor={"event:" + event.eventId} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-ink-muted">
-        <span>{activityLabel(event.kind)}{event.previous || event.current ? " · " + (event.previous ?? "unknown") + " → " + (event.current ?? "unknown") : ""}
-          {event.reason ? " · " + activityLabel(event.reason) : ""}
+        <span>{words(activityLabel(event.kind), text)}{event.previous || event.current ? " · " + t("activity.change", {
+          previous: event.previous ?? t("activity.unknownValue"),
+          current: event.current ?? t("activity.unknownValue"),
+        }) : ""}
+          {event.reason ? " · " + words(activityLabel(event.reason), text) : ""}
           {event.done !== undefined && event.total !== undefined ? " · " + event.done + "/" + event.total : ""}
-          {event.generation !== undefined ? " · generation " + event.generation : ""}
-          {event.causeId && event.causeId !== row.first.causeId ? " · caused by " + event.causeId : ""}
+          {event.generation !== undefined ? " · " + t("activity.generation", { number: event.generation }) : ""}
+          {event.causeId && event.causeId !== row.first.causeId ? " · " + t("activity.eventCausedBy", { id: event.causeId }) : ""}
         </span>
         <time dateTime={event.eventTimeUtc}>{formatActivityTime(event.eventTimeUtc)}</time>
       </li>)}
     </ol>
-    {error && <OperationResult level="error">{error}</OperationResult>}
-    {refreshError && <OperationResult level="error">{refreshError}</OperationResult>}
-    {(cursor !== null || error !== null) && <Button disabled={loading} onClick={() => void load(cursor)}>{loading ? "Loading…" : "Load earlier details"}</Button>}
+    {error && <OperationResult level="error">{t(error)}</OperationResult>}
+    {refreshError && <OperationResult level="error">{t(refreshError)}</OperationResult>}
+    {(cursor !== null || error !== null) && <Button disabled={loading} onClick={() => void load(cursor)}>{loading ? t("activity.detailsLoading") : t("activity.loadEarlierDetails")}</Button>}
   </div>;
 }
 
@@ -120,13 +133,15 @@ export default function ActivityTraceModal({ open, onClose }: { open: boolean; o
 
 function ActivityHistory({ onClose }: { onClose: () => void }) {
   useDisplayZone();
+  const { t, text } = useI18n();
   const [rows, setRows] = useState<ActivityOperation[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [olderLoading, setOlderLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [olderError, setOlderError] = useState<string | null>(null);
-  const [revealError, setRevealError] = useState<string | null>(null);
+  // Keys, not finished sentences, so the messages follow a language change.
+  const [error, setError] = useState<MessageKey | null>(null);
+  const [olderError, setOlderError] = useState<MessageKey | null>(null);
+  const [revealError, setRevealError] = useState<MessageKey | null>(null);
   const [clock, setClock] = useState({ sessionId: "", monotonicNowMs: 0 });
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const viewport = useRef<HTMLDivElement>(null);
@@ -160,7 +175,7 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
         } while (more && active);
       } catch (error) {
         log.warn("activity history failed", toErrorFields(error));
-        if (active) { setLoading(false); setError("Activity history could not be loaded. Retrying…"); }
+        if (active) { setLoading(false); setError("activity.loadFailed"); }
       }
       if (active) timer = setTimeout(() => void poll(), 1000);
     };
@@ -181,23 +196,29 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
       setOlderError(null);
     } catch (error) {
       log.warn("older activity failed", toErrorFields(error));
-      if (alive.current) setOlderError("Older activity could not be loaded. Scroll down to try again.");
+      if (alive.current) setOlderError("activity.olderFailed");
     } finally {
       olderPending.current = false;
       if (alive.current) setOlderLoading(false);
     }
   };
 
-  return <ModalShell title="Activity trace" onClose={onClose} widthClass="w-[min(920px,calc(100vw-3rem))]"
-    footerResult={error || olderError || revealError ? <OperationResult level="error">{[error, olderError, revealError].filter(Boolean).join(" ")}</OperationResult> : undefined}
-    footerStart={<span className="text-xs text-ink-muted">{rows.length} operations loaded{cursor === null ? "" : " · scroll for older activity"}</span>}>
-    <p className="mb-3 text-xs text-ink-muted">Work updates here while it runs. Expand an entry for technical details.</p>
+  const problems = [error, olderError, revealError]
+    .filter((key): key is MessageKey => key !== null);
+
+  return <ModalShell title={t("activity.title")} onClose={onClose} widthClass="w-[min(920px,calc(100vw-3rem))]"
+    footerResult={problems.length > 0 ? <OperationResult level="error">{problems.map((key) => t(key)).join(" ")}</OperationResult> : undefined}
+    footerStart={<span className="text-xs text-ink-muted">{[
+      t("activity.operationsLoaded", { count: rows.length }),
+      cursor === null ? null : t("activity.scrollForOlder"),
+    ].filter((part) => part !== null).join(" · ")}</span>}>
+    <p className="mb-3 text-xs text-ink-muted">{t("activity.intro")}</p>
     <div style={{ overflowAnchor: "none" }}>
-      <PassiveScrollRegion label="Activity history" className="max-h-[58vh]" viewportRef={viewport} onScroll={(event) => {
+      <PassiveScrollRegion label={t("activity.regionLabel")} className="max-h-[58vh]" viewportRef={viewport} onScroll={(event) => {
         const target = event.currentTarget;
         if (target.scrollHeight - target.scrollTop - target.clientHeight < 120) void loadOlder();
       }}>
-        {rows.length === 0 && <p className="py-8 text-center text-sm text-ink-muted">{loading ? "Loading activity…" : error ? "Activity is unavailable." : "No activity recorded yet."}</p>}
+        {rows.length === 0 && <p className="py-8 text-center text-sm text-ink-muted">{loading ? t("activity.loading") : error ? t("activity.unavailable") : t("activity.none")}</p>}
         <ol className="space-y-2 text-sm">
           {rows.map((row) => {
             const view = operationPresentation(row, clock.sessionId, clock.monotonicNowMs);
@@ -208,29 +229,33 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
                 setExpanded((current) => { const next = new Set(current); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); return next; });
               }}>
                 <span className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                  <span className="font-medium text-ink">{view.action}</span>
+                  <span className="font-medium text-ink">{words(view.action, text)}</span>
                   <time className="text-xs text-ink-muted" dateTime={row.first.eventTimeUtc}>{formatActivityTime(row.first.eventTimeUtc)}</time>
                 </span>
-                <span className="mt-1 block text-xs text-ink-muted">{[view.state, view.progress, view.duration].filter(Boolean).join(" · ")}</span>
+                <span className="mt-1 block text-xs text-ink-muted">{[
+                  words(view.state, text),
+                  view.progress === null ? null : text(view.progress),
+                  view.duration,
+                ].filter(Boolean).join(" · ")}</span>
               </button>
               {row.targetHash && <div className="px-3 pb-2 text-xs">
                 {row.target ? <button type="button" className="break-all text-link hover:underline" onClick={() => {
                   setRevealError(null);
                   void revealInMain(row.target!.path, () => alive.current, onClose, row.targetHash!).then((result) => {
                     if (alive.current && result !== "revealed" && result !== "superseded") setRevealError(result === "blocked"
-                      ? "Finish the current review or file operation before revealing this file."
-                      : "This file is no longer available in Main.");
+                      ? "reveal.inMainBlocked"
+                      : "reveal.inMainUnavailable");
                   }).catch((error) => {
                     log.warn("activity target reveal failed", toErrorFields(error));
-                    if (alive.current) setRevealError("The file could not be revealed in Main.");
+                    if (alive.current) setRevealError("reveal.inMainFailed");
                   });
-                }}>{row.target.name}</button> : <span className="text-ink-muted">File no longer available in Main</span>}
+                }}>{row.target.name}</button> : <span className="text-ink-muted">{t("activity.targetUnavailable")}</span>}
               </div>}
               {isExpanded && <OperationDetails row={row} beforeChange={capture} afterChange={restore} />}
             </li>;
           })}
         </ol>
-        {olderLoading && <p className="py-3 text-center text-xs text-ink-muted">Loading older activity…</p>}
+        {olderLoading && <p className="py-3 text-center text-xs text-ink-muted">{t("activity.loadingOlder")}</p>}
       </PassiveScrollRegion>
     </div>
   </ModalShell>;

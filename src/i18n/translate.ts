@@ -54,6 +54,12 @@ export function createTranslator(language: Language, locale: string = language):
     if (typeof entry === "string") {
       return entry;
     }
+    // A key the catalogue does not carry shows as itself rather than taking the
+    // window down; the catalogue gate and the on-screen-key check both fail on
+    // it, so it cannot reach a release unnoticed.
+    if (entry === undefined || entry === null) {
+      return key;
+    }
     // A plural entry holds one form per CLDR category the language uses; the
     // catalogue gate guarantees the category the rules select is present.
     const count = typeof values?.count === "number" ? values.count : 0;

@@ -3,6 +3,7 @@
 
 import { useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import ModalShell from "./ModalShell";
@@ -12,6 +13,8 @@ import {
   LATEST_RELEASE_PAGE,
   useReleaseCheckStore,
 } from "../state/release-check-store";
+import { useI18n } from "../i18n/I18nContext";
+import type { MessageKey } from "../i18n/catalogues";
 
 const REPO_URL = "https://github.com/nao7sep/onecopy";
 
@@ -22,13 +25,15 @@ export default function AboutModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const [linkFailures, setLinkFailures] = useState<Partial<Record<"repository" | "issues" | "release", string>>>({});
+  const { t } = useI18n();
+  // Keys, not finished sentences, so the messages follow a language change.
+  const [linkFailures, setLinkFailures] = useState<Partial<Record<"repository" | "issues" | "release", MessageKey>>>({});
   const linkAttempts = useRef({ repository: 0, issues: 0, release: 0 });
   const checkingRelease = useReleaseCheckStore((state) => state.checking);
   const releaseResult = useReleaseCheckStore((state) => state.manualResult);
   if (!open) return null;
 
-  const openProjectPage = async (owner: "repository" | "issues" | "release", url: string, page: string) => {
+  const openProjectPage = async (owner: "repository" | "issues" | "release", url: string, failure: MessageKey) => {
     const attempt = ++linkAttempts.current[owner];
     try {
       await openUrl(url);
@@ -39,35 +44,34 @@ export default function AboutModal({
         return next;
       });
     } catch (error) {
-      const message = `Couldn’t open ${page}. Try again or open it in your browser.`;
       log.warn("about link open failed", { url, ...toErrorFields(error) });
-      recordActionFailure("about-link-open-failed", message, error);
+      recordActionFailure("about-link-open-failed", message(failure), error);
       if (linkAttempts.current[owner] !== attempt) return;
-      setLinkFailures((current) => ({ ...current, [owner]: message }));
+      setLinkFailures((current) => ({ ...current, [owner]: failure }));
     }
   };
 
   return (
-    <ModalShell title="About OneCopy" onClose={onClose} widthClass="w-[400px]">
+    <ModalShell title={t("about.title")} onClose={onClose} widthClass="w-[400px]">
       {/* Left-aligned like every other surface in the app. Centering a block
           of prose and two buttons only reads as deliberate when it is a splash
           screen; here it made the modal look unfinished. */}
       <div className="flex flex-col gap-1">
         <p className="text-base font-semibold text-ink-strong">OneCopy</p>
-        <p className="text-xs text-ink-muted">Version {__APP_VERSION__}</p>
+        <p className="text-xs text-ink-muted">{t("about.version", { version: __APP_VERSION__ })}</p>
         <p className="mt-2 text-sm text-ink">
-          An inbox-zero dedup handler for photos, videos, and other files.
+          {t("about.description")}
         </p>
         <div className="mt-4 flex gap-2">
-          <Button onClick={() => void openProjectPage("repository", REPO_URL, "GitHub")}>GitHub</Button>
-          <Button onClick={() => void openProjectPage("issues", `${REPO_URL}/issues`, "Report an issue")}>Report an issue</Button>
+          <Button onClick={() => void openProjectPage("repository", REPO_URL, "about.githubOpenFailed")}>GitHub</Button>
+          <Button onClick={() => void openProjectPage("issues", `${REPO_URL}/issues`, "about.issuesOpenFailed")}>{t("about.reportIssue")}</Button>
         </div>
         <div className="mt-3">
           <Button
             disabled={checkingRelease}
             onClick={() => void useReleaseCheckStore.getState().checkManual()}
           >
-            {checkingRelease ? "Checking GitHub…" : "Check GitHub for New Release"}
+            {checkingRelease ? t("about.checking") : t("about.checkRelease")}
           </Button>
         </div>
         {releaseResult !== null ? (
@@ -75,16 +79,16 @@ export default function AboutModal({
             level={releaseResult.status === "failed" ? "error" : "info"}
             className="mt-3"
             actions={releaseResult.status === "newer" ? (
-              <Button onClick={() => void openProjectPage("release", LATEST_RELEASE_PAGE, "the release page")}>
-                View Release on GitHub
+              <Button onClick={() => void openProjectPage("release", LATEST_RELEASE_PAGE, "about.releaseOpenFailed")}>
+                {t("about.viewRelease")}
               </Button>
             ) : undefined}
           >
             {releaseResult.status === "newer"
-              ? `OneCopy ${releaseResult.version} is available.`
+              ? t("about.newerAvailable", { version: releaseResult.version })
               : releaseResult.status === "current"
-                ? "This version of OneCopy is current."
-                : "OneCopy couldn’t check GitHub. Check your connection and try again."}
+                ? t("about.current")
+                : t("about.checkFailed")}
           </OperationResult>
         ) : null}
         {linkFailures.repository ? (
@@ -96,9 +100,9 @@ export default function AboutModal({
               delete next.repository;
               return next;
             })}
-            dismissLabel="Close GitHub result"
+            dismissLabel={t("about.closeGithubResult")}
           >
-            {linkFailures.repository}
+            {t(linkFailures.repository)}
           </OperationResult>
         ) : null}
         {linkFailures.issues ? (
@@ -110,9 +114,9 @@ export default function AboutModal({
               delete next.issues;
               return next;
             })}
-            dismissLabel="Close Report an issue result"
+            dismissLabel={t("about.closeIssuesResult")}
           >
-            {linkFailures.issues}
+            {t(linkFailures.issues)}
           </OperationResult>
         ) : null}
         {linkFailures.release ? (
@@ -124,12 +128,12 @@ export default function AboutModal({
               delete next.release;
               return next;
             })}
-            dismissLabel="Close release page result"
+            dismissLabel={t("about.closeReleaseResult")}
           >
-            {linkFailures.release}
+            {t(linkFailures.release)}
           </OperationResult>
         ) : null}
-        <p className="mt-5 text-xs text-ink-muted">© 2026 Yoshinao Inoguchi · GNU GPL v3 or later</p>
+        <p className="mt-5 text-xs text-ink-muted">{t("about.copyright")}</p>
       </div>
     </ModalShell>
   );

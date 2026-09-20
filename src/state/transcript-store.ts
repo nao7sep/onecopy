@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
@@ -16,14 +17,17 @@ export type TranscriptStatus =
 export interface TranscriptView {
   status: TranscriptStatus;
   text: string | null;
-  message: string | null;
+  /** The sentence the failed row shows. OneCopy's own words, so it follows a
+   * language change; the core's recorded reason reaches the surface through
+   * the work projection instead. */
+  message: Message | null;
   percent: number | null;
   replacement: {
     status: "queued" | "running" | "failed";
-    message: string | null;
+    message: Message | null;
     percent: number | null;
   } | null;
-  controlError?: string | null;
+  controlError?: Message | null;
 }
 
 interface TranscriptResult {
@@ -118,7 +122,7 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         patch(hash, {
           status: "ready",
           text: result.text,
-          message: result.message,
+          message: null,
           percent: null,
           replacement: {
             status: "running",
@@ -134,13 +138,13 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
           percent: active.percent,
         });
       } else {
+        // A non-failed receipt may carry a recorded reason; nothing shows it,
+        // and the core reports it as a code in its own pass.
         patch(hash, {
           status: result.status,
           text: result.text,
           message:
-            result.status === "failed"
-              ? "Transcription could not finish. Check the media file and managed tools, then try again."
-              : result.message,
+            result.status === "failed" ? message("transcript.couldNotFinish") : null,
           percent: null,
         });
       }
@@ -155,7 +159,11 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         });
         return;
       }
-      patch(hash, { status: "failed", message: "The transcript could not be loaded. Try again." , percent: null });
+      patch(hash, {
+        status: "failed",
+        message: message("transcript.loadFailed"),
+        percent: null,
+      });
       log.warn("transcript load failed", toErrorFields(error));
     } finally {
       loading.delete(hash);
@@ -189,21 +197,21 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
         publish(hash, {
           replacement: {
             status: "failed",
-            message: "The replacement transcript could not be started. The previous transcript is still shown.",
+            message: message("transcript.replacementStartFailed"),
             percent: null,
           },
         });
       } else {
         publish(hash, {
           status: "failed",
-          message: "Transcription could not be started. Try again.",
+          message: message("transcript.startFailed"),
           percent: null,
         });
       }
       log.error("transcribe start failed", toErrorFields(error));
       recordActionFailure(
         "transcription-start-failed",
-        "Couldn’t start transcription.",
+        message("transcript.startFailedNotice"),
         error,
       );
     }
@@ -216,13 +224,9 @@ export const useTranscriptStore = create<TranscriptState>(() => ({
       if (target !== null) patch(target.hash, { controlError: null });
     } catch (error) {
       log.warn("transcription cancellation failed", toErrorFields(error));
-      const message = "Couldn’t cancel transcription.";
-      if (target !== null) patch(target.hash, { controlError: message });
-      recordActionFailure(
-        "transcription-cancel-failed",
-        message,
-        error,
-      );
+      const failure = message("transcript.cancelFailed");
+      if (target !== null) patch(target.hash, { controlError: failure });
+      recordActionFailure("transcription-cancel-failed", failure, error);
     }
   },
 }));
@@ -297,16 +301,14 @@ const installEvents = createEventInstaller(
           publishIfLoaded(event.payload.hash, {
             replacement: {
               status: "failed",
-              message:
-                "Transcription could not finish. Check the media file and managed tools, then try again.",
+              message: message("transcript.couldNotFinish"),
               percent: null,
             },
           });
         } else {
           publishIfLoaded(event.payload.hash, {
             status: "failed",
-            message:
-              "Transcription could not finish. Check the media file and managed tools, then try again.",
+            message: message("transcript.couldNotFinish"),
             percent: null,
           });
         }
@@ -335,13 +337,12 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("transcript event wiring failed", toErrorFields(error));
-    recordInterfaceFailure("Live transcription updates are unavailable. Restart OneCopy to repair them.");
+    recordInterfaceFailure(message("transcript.liveUpdatesUnavailable"));
     const interrupted = active as { hash: string; percent: number } | null;
     if (interrupted !== null) {
       publishIfLoaded(interrupted.hash, {
         status: "failed",
-        message:
-          "Live transcription updates are unavailable. Restart OneCopy to repair them.",
+        message: message("transcript.liveUpdatesUnavailable"),
         percent: null,
       });
       active = null;

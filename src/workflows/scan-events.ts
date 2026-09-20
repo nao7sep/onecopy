@@ -4,7 +4,12 @@
 import type { SectionItem } from "../models/items";
 import type { ScanProgress } from "../models/scan";
 import { log, toErrorFields } from "../repositories";
-import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureSurface";
+import { message } from "../i18n/translate";
+import {
+  presentEscapedDetail,
+  presentEscapedFailure,
+  recordInterfaceFailure,
+} from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
@@ -294,16 +299,15 @@ const install = createEventInstaller(
       void useIssuesStore.getState().load();
     });
     await listeners.listen<{ message: string }>("failure://direct", (event) => {
-      presentEscapedFailure(event.payload.message);
+      // Recorded core detail: shown as it arrived, not restated.
+      presentEscapedDetail(event.payload.message);
     });
     await useSectionsStore.getState().loadIndexWork();
   },
   (error) => {
     log.warn("library event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(
-      "Live library updates are unavailable. Restart OneCopy to repair them.",
-    );
-    presentEscapedFailure("Live library updates are unavailable. Reload OneCopy to repair them.");
+    recordInterfaceFailure(message("scan.liveUpdatesUnavailable"));
+    presentEscapedFailure(message("scan.liveUpdatesUnavailableReload"));
   },
 );
 

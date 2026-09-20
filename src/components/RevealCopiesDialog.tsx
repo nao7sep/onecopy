@@ -5,6 +5,8 @@ import type { ItemDetail } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import { fileManagerWord } from "../utils/shortcuts";
 import { recordActionFailure } from "../state/notifications-store";
+import { useI18n } from "../i18n/I18nContext";
+import { message, type Message } from "../i18n/translate";
 import ModalShell from "./ModalShell";
 import OperationResult from "./ui/OperationResult";
 
@@ -18,8 +20,11 @@ export default function RevealCopiesDialog({
   onClose: () => void;
 }) {
   const [paths, setPaths] = useState<string[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // A descriptor, not a finished sentence: the dialog stays open across a
+  // language change.
+  const [error, setError] = useState<Message | null>(null);
   const manager = fileManagerWord();
+  const { t, text } = useI18n();
 
   useEffect(() => {
     let current = true;
@@ -34,10 +39,10 @@ export default function RevealCopiesDialog({
         });
         recordActionFailure(
           "comparison-copies-load-failed",
-          `Couldn’t load the physical copies for ${fileName}.`,
+          message("reveal.loadCopiesFailedFor", { name: fileName }),
           failure,
         );
-        if (current) setError("Couldn’t load the available copies.");
+        if (current) setError(message("reveal.loadCopiesFailed"));
       });
     return () => {
       current = false;
@@ -46,25 +51,25 @@ export default function RevealCopiesDialog({
 
   return (
     <ModalShell
-      title={`Show a copy of ${fileName}`}
+      title={t("reveal.title", { name: fileName })}
       onClose={onClose}
       footerResult={
         error === null ? undefined : (
-          <OperationResult level="error">{error}</OperationResult>
+          <OperationResult level="error">{text(error)}</OperationResult>
         )
       }
     >
       {paths === null && error === null ? (
-        <p className="text-sm text-ink-muted">Loading copies…</p>
+        <p className="text-sm text-ink-muted">{t("reveal.loading")}</p>
       ) : paths?.length === 0 ? (
-        <p className="text-sm text-ink-muted">No available copy was found.</p>
+        <p className="text-sm text-ink-muted">{t("reveal.noCopies")}</p>
       ) : (
         <ul className="space-y-2">
           {paths?.map((path) => (
             <li key={path}>
               <button
                 className="w-full rounded-lg border border-border px-3 py-2 text-left text-sm text-ink hover:bg-surface-muted"
-                title={`Show in ${manager}`}
+                title={t("reveal.showIn", { manager })}
                 onClick={() => {
                   setError(null);
                   void revealInFileManager(path).catch((failure) => {
@@ -72,7 +77,7 @@ export default function RevealCopiesDialog({
                       path,
                       ...toErrorFields(failure),
                     });
-                    setError(`Couldn’t show this copy in ${manager}.`);
+                    setError(message("reveal.revealFailed", { manager }));
                   });
                 }}
               >

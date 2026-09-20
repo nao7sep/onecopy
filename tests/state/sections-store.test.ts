@@ -1,3 +1,9 @@
+// @vitest-environment happy-dom
+//
+// The store records failures through the notifications store, which renders the
+// sentence in the language the document declares, so this spec needs a document
+// even though the subject is store logic.
+
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ScanProgress } from "../../src/models/scan";
 import type { SectionCounts } from "../../src/models/sections";
@@ -11,6 +17,7 @@ import {
   resetTauriMocks,
   invokeCalls,
 } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 function counts(imageCount: number): SectionCounts {
   return {
@@ -153,7 +160,9 @@ describe("independent index work", () => {
 
     await useSectionsStore.getState().startSourceCheck();
 
-    expect(useSectionsStore.getState().error).toBe("Couldn’t start checking source folders.");
+    expect(inEnglish(useSectionsStore.getState().error)).toBe(
+      "Couldn’t start checking source folders.",
+    );
   });
 
   it("coalesces rapid file-information progress into one refresh", async () => {

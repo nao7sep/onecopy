@@ -1,5 +1,7 @@
 import { useAppStore } from "../state/app-store";
 import type { QuarantineRecord } from "../repositories";
+import { useI18n } from "../i18n/I18nContext";
+import type { Translator } from "../i18n/translate";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 
@@ -15,26 +17,29 @@ import Button from "./ui/Button";
 
 /** What starting over means for each store, in the user's terms. Falls back to
  * a neutral phrasing so an unlisted store still reports honestly. */
-function startedWith(file: string): string {
+function startedWith(t: Translator["t"], file: string): string {
   switch (file) {
     case "config.json":
-      return "OneCopy started with its built-in settings, and wrote a fresh settings file.";
+      return t("quarantine.startedWithConfig");
     case "state.json":
-      return "OneCopy started with a fresh view — sort order, the last open month, and pane widths are back to their defaults.";
+      return t("quarantine.startedWithState");
     default:
-      return "OneCopy started with its built-in defaults for that file.";
+      return t("quarantine.startedWithDefaults");
   }
 }
 
 function Record({ record }: { record: QuarantineRecord }) {
+  const { t, rich } = useI18n();
   return (
     <li className="rounded-lg border border-border p-3">
       <p className="text-sm text-ink-strong">
-        <span className="font-semibold">{record.file}</span> could not be read.
+        {rich("quarantine.fileUnreadable", {
+          file: <span className="font-semibold">{record.file}</span>,
+        })}
       </p>
-      <p className="mt-1 text-sm text-ink">{startedWith(record.file)}</p>
+      <p className="mt-1 text-sm text-ink">{startedWith(t, record.file)}</p>
       <p className="mt-2 text-xs text-ink-muted">
-        Your original file was preserved. Its location is recorded in the application log.
+        {t("quarantine.originalPreserved")}
       </p>
     </li>
   );
@@ -43,12 +48,13 @@ function Record({ record }: { record: QuarantineRecord }) {
 export default function QuarantineNotice() {
   const quarantines = useAppStore((s) => s.quarantines);
   const dismiss = useAppStore((s) => s.dismissQuarantines);
+  const { t } = useI18n();
 
   if (quarantines.length === 0) return null;
 
   return (
     <ModalShell
-      title="A settings file could not be read"
+      title={t("quarantine.title")}
       onClose={dismiss}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
     >
@@ -57,13 +63,10 @@ export default function QuarantineNotice() {
           <Record key={record.quarantinedTo} record={record} />
         ))}
       </ul>
-      <p className="mt-3 text-sm text-ink-muted">
-        Nothing else was touched: your photos, your trash and the scan index are
-        exactly as they were.
-      </p>
+      <p className="mt-3 text-sm text-ink-muted">{t("quarantine.nothingElse")}</p>
       <div className="mt-4 flex justify-end">
         <Button variant="primary" onClick={dismiss}>
-          OK
+          {t("quarantine.ok")}
         </Button>
       </div>
     </ModalShell>

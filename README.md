@@ -6,6 +6,8 @@ It is built for one painful, common situation: a decade of camera rolls, camera-
 
 Similarity grouping and the best-shot ordering are deliberately best-effort — tuned for the "several spares of the same moment" pattern, good enough to be a game changer, and never a substitute for your eyes. Nothing is ever deleted automatically.
 
+The interface speaks ten languages — English, Japanese, Chinese, Korean, Spanish, Portuguese, French, German, Italian and Russian — following the computer's language unless you choose another in Settings.
+
 0.x, under active development. macOS and Windows.
 
 ## Requirements

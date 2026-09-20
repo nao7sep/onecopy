@@ -9,6 +9,8 @@ import { requestComparisonFromMain } from "../../src/workflows/comparison";
 import { openViewerFromMain } from "../../src/workflows/quick-view";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
+import { message } from "../../src/i18n/translate";
+import { inEnglish } from "../helpers/i18n";
 
 const SECTION = { kind: "image" as const, month: "2026-01" };
 const rows: SectionItem[] = [1, 2].map((pathId) => ({
@@ -39,7 +41,10 @@ afterEach(() => { vi.restoreAllMocks(); });
 describe("Main command feedback ownership", () => {
   it("clears informational Comparison refusal on another selection and on a successful same-context retry", async () => {
     await requestComparisonFromMain();
-    expect(current()).toEqual({ tone: "normal", text: "Comparison requires images from one similar group." });
+    expect(current()?.tone).toBe("normal");
+    expect(inEnglish(current()?.text)).toBe(
+      "Comparison requires images from one similar group.",
+    );
     useItemsStore.getState().selectItem("h2", "nearest", 1);
     expect(current()).toBeNull();
     await requestComparisonFromMain();
@@ -79,24 +84,33 @@ describe("Main command feedback ownership", () => {
       () => useItemsStore.getState().selectIdentity("h1"),
     ];
     for (const action of actions) {
-      beginMainFeedback("comparison").finish({ tone: "normal", text: "Old selection guidance" });
+      beginMainFeedback("comparison").finish({
+        tone: "normal",
+        text: message("comparison.needsOneGroup"),
+      });
       await action();
-      expect(current()?.text).not.toBe("Old selection guidance");
+      expect(current()?.text.key).not.toBe("comparison.needsOneGroup");
     }
   });
 
   it("does not clear an unchanged item's failure merely because the section is sorted", async () => {
-    beginMainFeedback("detail").finish({ tone: "danger", text: "Item details unavailable" });
+    beginMainFeedback("detail").finish({
+      tone: "danger",
+      text: message("item.detailLoadFailed"),
+    });
     useItemsStore.getState().setSortOrder("name");
     await useItemsStore.getState().refresh();
-    expect(current()?.text).toBe("Item details unavailable");
+    expect(current()?.text.key).toBe("item.detailLoadFailed");
   });
 
   it("keeps section failure across item navigation, but not a section transition", async () => {
-    beginMainFeedback("recheck").finish({ tone: "danger", text: "Couldn’t refresh this section." });
+    beginMainFeedback("recheck").finish({
+      tone: "danger",
+      text: message("section.rescanFailed"),
+    });
     useItemsStore.getState().selectItem("h2", "nearest", 1);
     await requestComparisonFromMain();
-    expect(current()?.text).toBe("Couldn’t refresh this section.");
+    expect(inEnglish(current()?.text)).toBe("This section could not be refreshed. Try again.");
     await useItemsStore.getState().select({ ...SECTION, month: "2026-02" });
     expect(current()).toBeNull();
   });
@@ -104,11 +118,11 @@ describe("Main command feedback ownership", () => {
   it("supersedes only the same command and rejects callbacks after context invalidation", () => {
     const old = beginMainFeedback("viewer");
     const latest = beginMainFeedback("viewer");
-    latest.finish({ tone: "normal", text: "Latest guidance" });
-    old.finish({ tone: "danger", text: "Obsolete failure" });
-    expect(current()?.text).toBe("Latest guidance");
+    latest.finish({ tone: "normal", text: message("viewer.selectItemFirst") });
+    old.finish({ tone: "danger", text: message("viewer.openFailed") });
+    expect(current()?.text.key).toBe("viewer.selectItemFirst");
     invalidateMainFeedback("selection");
-    latest.finish({ tone: "danger", text: "Late failure" });
+    latest.finish({ tone: "danger", text: message("viewer.navigationFailed") });
     expect(current()).toBeNull();
   });
 
@@ -128,7 +142,8 @@ describe("Main command feedback ownership", () => {
   it("makes no-selection viewer feedback informational and clears it on selection", () => {
     useItemsStore.getState().selectItem(null);
     expect(openViewerFromMain("quick")).toBe(false);
-    expect(current()).toEqual({ tone: "normal", text: "Select an item to open the viewer." });
+    expect(current()?.tone).toBe("normal");
+    expect(inEnglish(current()?.text)).toBe("Select an item to open the viewer.");
     useItemsStore.getState().selectItem("h1", "nearest", 0);
     expect(current()).toBeNull();
   });

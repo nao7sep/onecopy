@@ -8,12 +8,11 @@ import {
   normalizeLanguagePreference,
   type LanguagePreference,
 } from "../i18n/languages";
-import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { normalizeUiFontPreference } from "../utils/uiFont";
-import { requestSeq } from "./request-seq";
+import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import type { AiAccelerationCapability } from "../repositories";
 
@@ -196,10 +195,8 @@ interface SettingsState {
   accelerationCapabilities: AiAccelerationCapability[];
   /** The draft as it was when the modal opened — the dirty-check baseline. */
   opened: SettingsDraft | null;
-  timezoneValid: boolean;
-  timezonePending: boolean;
   saving: boolean;
-  message: string;
+  message: Message | null;
   messageLevel: "error" | "info" | null;
   beginEditing: (
     config: Record<string, unknown> | null,
@@ -209,32 +206,25 @@ interface SettingsState {
   discardDraft: () => void;
   update: (patch: Partial<SettingsDraft>) => void;
   resetSimilarPhotoSettings: () => void;
-  validateTimezone: (name: string) => Promise<void>;
   addSourceDir: () => Promise<void>;
   removeSourceDir: (path: string) => void;
 }
 
-const timezoneValidation = requestSeq();
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   draft: null,
   accelerationCapabilities: [],
   opened: null,
-  timezoneValid: true,
-  timezonePending: false,
   saving: false,
-  message: "",
+  message: null,
   messageLevel: null,
 
   beginEditing: (config, state = null, accelerationCapabilities = []) => {
-    timezoneValidation.begin();
     set({
       accelerationCapabilities,
       draft: draftFrom(config, state, accelerationCapabilities),
       opened: draftFrom(config, state, accelerationCapabilities),
-      timezoneValid: true,
-      timezonePending: false,
-      message: "",
+      message: null,
       messageLevel: null,
     });
   },
@@ -251,30 +241,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   resetSimilarPhotoSettings: () => get().update(SIMILAR_PHOTO_DEFAULTS),
 
-  validateTimezone: async (name) => {
-    const fresh = timezoneValidation.begin();
-    get().update({ defaultTimezone: name });
-    set({ timezoneValid: false, timezonePending: true, message: "", messageLevel: null });
-    if (name.trim() === "") {
-      if (fresh()) set({ timezonePending: false });
-      return;
-    }
-    try {
-      const valid = await invoke<boolean>("validate_timezone", { name });
-      if (fresh()) set({ timezoneValid: valid, timezonePending: false });
-    } catch (error) {
-      if (!fresh()) return;
-      log.error("settings timezone validation failed", toErrorFields(error));
-      set({
-        timezoneValid: false,
-        timezonePending: false,
-        message: "Couldn’t check this timezone.",
-        messageLevel: "error",
-      });
-      recordActionFailure("timezone-check-failed", "Couldn’t check this timezone.", error);
-    }
-  },
-
   addSourceDir: async () => {
     try {
       const picked = await openDialog({ directory: true, multiple: true });
@@ -288,8 +254,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       get().update({ sourceDirs: merged });
     } catch (error) {
       log.error("settings source dir picker failed", toErrorFields(error));
-      set({ message: "Couldn’t open the directory picker.", messageLevel: "error" });
-      recordActionFailure("source-picker-failed", "Couldn’t open the directory picker.", error);
+      const failure = message("settings.directoryPickerFailed");
+      set({ message: failure, messageLevel: "error" });
+      recordActionFailure("source-picker-failed", failure, error);
     }
   },
 

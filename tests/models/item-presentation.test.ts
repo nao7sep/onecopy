@@ -12,6 +12,7 @@ import {
   type ItemDetail,
   type SectionItem,
 } from "../../src/models/items";
+import { english, t } from "../helpers/i18n";
 
 function state(
   value: ItemWorkState["state"],
@@ -50,12 +51,11 @@ function item(over: Partial<SectionItem> = {}): SectionItem {
 }
 
 function presentation(over: Partial<SectionItem> = {}) {
-  return itemPresentation(item(over), {
-    similarCount: 0,
-    selectionOrdinal: null,
-    selectedCount: 0,
-    showFaceStars: true,
-  });
+  return itemPresentation(
+    item(over),
+    { similarCount: 0, selectionOrdinal: null, selectedCount: 0, showFaceStars: true },
+    t,
+  );
 }
 
 function detail(over: Partial<ItemDetail> = {}): ItemDetail {
@@ -82,11 +82,15 @@ describe("date presentation", () => {
     expect(
       takenPresentation(
         detail({ dateState: "pending", resolvedUtcMs: null, resolvedSource: null }),
+        t,
+        english.dateTime,
       ),
     ).toBe("Date pending");
     expect(
       takenPresentation(
         detail({ dateState: "undated", resolvedUtcMs: null, resolvedSource: "undated" }),
+        t,
+        english.dateTime,
       ),
     ).toBe("Undated");
   });
@@ -109,7 +113,7 @@ describe("item presentation priority", () => {
     const work: ItemWorkStates = {
       ...EMPTY_ITEM_WORK,
       preview: state("pending"),
-      snapshots: state("waiting", { reason: "Waiting for ffmpeg" }),
+      snapshots: state("waiting", { reason: "waiting-for-ffmpeg" }),
       transcripts: state("running", { done: 42, total: 100 }),
     };
     expect(presentation({ derivedWork: work }).status).toMatchObject({
@@ -121,12 +125,12 @@ describe("item presentation priority", () => {
   it("does not flood tiles with optional disabled or unavailable analysis", () => {
     const work: ItemWorkStates = {
       ...EMPTY_ITEM_WORK,
-      faces: state("disabled", { reason: "Turn on face scoring" }),
-      transcripts: state("unavailable", { reason: "Waiting for transcription model" }),
+      faces: state("disabled", { reason: "enable-face-scoring" }),
+      transcripts: state("unavailable", { reason: "waiting-for-transcription-model" }),
     };
     expect(presentation({ derivedWork: work }).status).toBeNull();
-    expect(workPresentationRows(work).map((row) => row.value)).toEqual([
-      "Turn on face scoring",
+    expect(workPresentationRows(work, t).map((row) => row.value)).toEqual([
+      "Turn on face scoring in Settings",
       "Waiting for transcription model",
     ]);
   });
@@ -142,6 +146,7 @@ describe("item presentation slots", () => {
         selectedCount: 0,
         showFaceStars: true,
       },
+      t,
     );
     expect(result.relationships?.text).toBe("×3 · ≈4 · pair");
     expect(result.relationships?.label).toContain("3 exact copies");
@@ -151,20 +156,18 @@ describe("item presentation slots", () => {
 
   it("uses a check for one selection and ordinals for several", () => {
     expect(
-      itemPresentation(item(), {
-        similarCount: 0,
-        selectionOrdinal: 1,
-        selectedCount: 1,
-        showFaceStars: true,
-      }).selection,
+      itemPresentation(
+        item(),
+        { similarCount: 0, selectionOrdinal: 1, selectedCount: 1, showFaceStars: true },
+        t,
+      ).selection,
     ).toEqual({ ordinal: null, label: "Selected" });
     expect(
-      itemPresentation(item(), {
-        similarCount: 0,
-        selectionOrdinal: 2,
-        selectedCount: 4,
-        showFaceStars: true,
-      }).selection,
+      itemPresentation(
+        item(),
+        { similarCount: 0, selectionOrdinal: 2, selectedCount: 4, showFaceStars: true },
+        t,
+      ).selection,
     ).toEqual({ ordinal: 2, label: "Selected 2 of 4" });
   });
 
@@ -175,12 +178,11 @@ describe("item presentation slots", () => {
     });
     expect(presentation({ faceScore: 0 }).analysis).toBeNull();
     expect(
-      itemPresentation(item({ faceScore: 0.66 }), {
-        similarCount: 0,
-        selectionOrdinal: null,
-        selectedCount: 0,
-        showFaceStars: false,
-      }).analysis,
+      itemPresentation(
+        item({ faceScore: 0.66 }),
+        { similarCount: 0, selectionOrdinal: null, selectedCount: 0, showFaceStars: false },
+        t,
+      ).analysis,
     ).toBeNull();
     const transcript = state("ready", { hasValue: true });
     expect(

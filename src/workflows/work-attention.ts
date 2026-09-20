@@ -6,6 +6,7 @@ import { useItemsStore } from "../state/items-store";
 import { comparisonChunks, useComparisonStore } from "../state/comparison-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import { log, toErrorFields } from "../repositories";
+import { message } from "../i18n/translate";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { latestActivityOperationId, newActivityOperationId, recordActivity } from "../repositories/activity";
 
@@ -66,7 +67,7 @@ function publish(): void {
   }).catch((error) => {
     if (last === signature) last = "";
     log.warn("work attention update failed", toErrorFields(error));
-    recordInterfaceFailure("Background work could not follow the current view. Try changing the selection.");
+    recordInterfaceFailure(message("work.attentionFailed"));
   });
 }
 

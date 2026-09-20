@@ -1,9 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
+import { documentTranslator } from "../i18n/I18nContext";
+import { message, type Message } from "../i18n/translate";
 
 const SURFACE_ID = "onecopy-escaped-failure";
 
 /** Last-resort UI for errors outside React's render boundary. */
-export function presentEscapedFailure(message: string): void {
+export function presentEscapedFailure(failure: Message): void {
+  presentEscapedDetail(documentTranslator().text(failure));
+}
+
+/** The same surface for detail OneCopy cannot restate — a condition the core
+ * reports as recorded words (`failure://direct`). It shows as it is, in
+ * whatever language it arrived in (`interface-language.md`). */
+export function presentEscapedDetail(detail: string): void {
   if (typeof document === "undefined") return;
   let surface = document.getElementById(SURFACE_ID);
   if (surface === null) {
@@ -27,27 +36,31 @@ export function presentEscapedFailure(message: string): void {
       textAlign: "center",
     });
     const heading = document.createElement("strong");
-    heading.textContent = "OneCopy needs to reload";
-    const detail = document.createElement("p");
-    detail.dataset.failureDetail = "true";
+    heading.textContent = documentTranslator().t("crash.needsReload");
+    const paragraph = document.createElement("p");
+    paragraph.dataset.failureDetail = "true";
     const reload = document.createElement("button");
     reload.type = "button";
-    reload.textContent = "Reload window";
+    reload.textContent = documentTranslator().t("crash.reloadWindow");
     reload.addEventListener("click", () => window.location.reload());
-    surface.append(heading, detail, reload);
+    surface.append(heading, paragraph, reload);
     document.body.append(surface);
   }
-  const detail = surface.querySelector<HTMLElement>("[data-failure-detail='true']");
-  if (detail) detail.textContent = message;
+  const target = surface.querySelector<HTMLElement>("[data-failure-detail='true']");
+  if (target) target.textContent = detail;
 }
 
-/** Persists one current interface condition per webview when the core remains reachable. */
-export function recordInterfaceFailure(message: string): void {
-  void invoke("record_interface_failure", { message }).catch(() => {
+/** Persists one current interface condition per webview when the core remains reachable.
+ *
+ * The recorded Issue crosses IPC as text, so the sentence is rendered here in
+ * the language this window is showing; the condition itself becomes a code the
+ * core can restate in the Rust pass. */
+export function recordInterfaceFailure(failure: Message): void {
+  void invoke("record_interface_failure", {
+    message: documentTranslator().text(failure),
+  }).catch(() => {
     // A failed IPC call means the promised durable Issue does not exist. The
     // DOM is the final independent channel in this webview; do not recurse.
-    presentEscapedFailure(
-      `${message} OneCopy could not save this failure. Reload the window before continuing.`,
-    );
+    presentEscapedFailure(message("crash.notSaved", { failure }));
   });
 }

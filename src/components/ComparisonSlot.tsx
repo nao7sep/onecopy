@@ -1,4 +1,5 @@
 import { factsLine } from "../models/items";
+import { useI18n } from "../i18n/I18nContext";
 import { faceStarRating } from "../models/itemPresentation";
 import type { GroupMember } from "../state/comparison-store";
 import { useState } from "react";
@@ -27,9 +28,11 @@ export default function ComparisonSlot({
   onSelect: (mode: "activate" | "toggle" | "range") => void;
   onReveal: () => void;
 }) {
+  const { t, number } = useI18n();
   const [externalError, setExternalError] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
-  const facts = factsLine(member);
+  // Pixel, byte and duration facts are still assembled in models/items.
+  const facts = factsLine(member, number);
   const showFaceStars = useAppStore(
     (state) => state.appData?.config?.showFaceStars !== false,
   );
@@ -38,7 +41,14 @@ export default function ComparisonSlot({
     <figure
       role="option"
       aria-selected={marked}
-      aria-label={`${slotKey === null ? "Image" : `Key ${slotKey.toUpperCase()}`}: ${member.fileName}`}
+      aria-label={
+        slotKey === null
+          ? t("comparison.slotLabel", { name: member.fileName })
+          : t("comparison.slotKeyLabel", {
+              key: slotKey.toUpperCase(),
+              name: member.fileName,
+            })
+      }
       className={`group/slot relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
         marked
           ? "border-primary bg-primary-surface"
@@ -59,7 +69,7 @@ export default function ComparisonSlot({
         );
       }}
       onDoubleClick={() => onSelect("activate")}
-      title="Click to pick, then Space to open a larger image. Use Keep or the visible key to mark this image."
+      title={t("comparison.slotHint")}
     >
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         <InspectableImage
@@ -73,7 +83,7 @@ export default function ComparisonSlot({
             level="error"
             className="absolute inset-x-3 top-1/2 -translate-y-1/2 text-sm shadow-sm"
           >
-            Preview unavailable. File actions and known details remain available.
+            {t("comparison.previewUnavailable")}
           </OperationResult>
         ) : null}
         {externalError ? (
@@ -81,7 +91,7 @@ export default function ComparisonSlot({
             level="error"
             className="absolute bottom-2 left-2 right-2 shadow-sm"
           >
-            Couldn’t open this image in its default app.
+            {t("preview.openImageFailed")}
           </OperationResult>
         ) : null}
       </div>
@@ -108,7 +118,9 @@ export default function ComparisonSlot({
             ? "border-amber-700 bg-amber-400 text-slate-950"
             : "border-amber-500 bg-surface text-ink hover:bg-amber-100 hover:text-slate-950"
         }`}
-        aria-label={`${marked ? "Remove keep mark from" : "Keep"} ${member.fileName}`}
+        aria-label={t(marked ? "comparison.unkeepLabel" : "comparison.keepLabel", {
+          name: member.fileName,
+        })}
         aria-pressed={marked}
         onClick={(event) => {
           event.stopPropagation();
@@ -117,12 +129,14 @@ export default function ComparisonSlot({
         }}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        {marked ? "Keeping" : "Keep"}
+        {marked ? t("comparison.keeping") : t("comparison.keep")}
       </button>
       <button
         className="rounded-md bg-surface-muted p-2 text-ink-muted hover:text-ink"
-        aria-label={`Open ${member.fileName} in default app`}
-        title="Open in default app"
+        aria-label={t("comparison.openInDefaultAppLabel", {
+          name: member.fileName,
+        })}
+        title={t("preview.openInDefaultApp")}
         onClick={(event) => {
           event.stopPropagation();
           onSelect("activate");
@@ -138,8 +152,8 @@ export default function ComparisonSlot({
       </button>
       <button
         className="rounded-md bg-surface-muted p-2 text-ink-muted hover:text-ink"
-        aria-label={`Choose a copy of ${member.fileName} to reveal`}
-        title="Reveal a physical copy"
+        aria-label={t("comparison.revealCopyLabel", { name: member.fileName })}
+        title={t("comparison.revealCopy")}
         onClick={(event) => {
           event.stopPropagation();
           onSelect("activate");
@@ -166,7 +180,7 @@ export default function ComparisonSlot({
             {member.sharpness !== null ? (
               <span
                 className="flex items-center gap-1"
-                title="Sharpness (advisory)"
+                title={t("comparison.sharpness")}
               >
                 <Focus size={12} aria-hidden="true" />{" "}
                 {Math.round(member.sharpness)}

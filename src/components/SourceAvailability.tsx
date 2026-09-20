@@ -1,4 +1,5 @@
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
+import { useI18n } from "../i18n/I18nContext";
 
 // Missing roots and substituted roots have different safety meanings. An
 // absent root is an availability problem: Main stays usable and the source
@@ -14,20 +15,18 @@ export function MissingSourcesNotice({
   onRecheck: () => void;
   onReconfigure: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <section
-      aria-label="Unavailable source folders"
+      aria-label={t("source.missingRegionLabel")}
       className="shrink-0 border-b border-warning/40 bg-warning-surface px-4 py-3 text-sm"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 className="font-semibold text-ink-strong">
-            Some source folders are unavailable
+            {t("source.missingTitle")}
           </h2>
-          <p className="mt-0.5 text-ink-muted">
-            OneCopy will keep working with available files. Connect the missing
-            drive and check again, or re-run setup to remove or replace a folder.
-          </p>
+          <p className="mt-0.5 text-ink-muted">{t("source.missingBody")}</p>
           <ul className="mt-2 max-h-20 overflow-y-auto text-xs text-ink">
             {missing.map((path) => (
               <li key={path} className="break-all">
@@ -41,13 +40,13 @@ export function MissingSourcesNotice({
             className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-surface px-3 font-medium text-ink hover:bg-surface-muted"
             onClick={onReconfigure}
           >
-            Re-run setup…
+            {t("source.rerunSetup")}
           </button>
           <button
             className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 font-medium text-ink-inverted hover:brightness-110"
             onClick={onRecheck}
           >
-            Check again
+            {t("source.checkAgain")}
           </button>
         </div>
       </div>
@@ -65,17 +64,14 @@ export function SubstitutedSourceGate({
   onReconfigure: () => void;
 }) {
   useBlockingSurface();
+  const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
       <div className="w-[min(820px,calc(100vw-3rem))] rounded-2xl border border-border bg-surface p-7 shadow-xl">
         <h1 className="mb-1 text-lg font-semibold text-ink-strong">
-          Different source volume detected
+          {t("source.substitutedTitle")}
         </h1>
-        <p className="mb-3 text-sm text-ink-muted">
-          A configured folder is present on a different physical volume than
-          the one OneCopy recorded. Mount the original drive, or re-run setup
-          and remove then add the folder if this change is intentional.
-        </p>
+        <p className="mb-3 text-sm text-ink-muted">{t("source.substitutedBody")}</p>
         <ul className="mb-4 max-h-64 overflow-y-auto">
           {substituted.map((path) => (
             <li
@@ -91,13 +87,13 @@ export function SubstitutedSourceGate({
             className="inline-flex h-9 items-center justify-center rounded-lg border border-border bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-muted"
             onClick={onReconfigure}
           >
-            Re-run setup…
+            {t("source.rerunSetup")}
           </button>
           <button
             className="inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-ink-inverted shadow-sm outline-none transition-all hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary-ring"
             onClick={onRecheck}
           >
-            Check again
+            {t("source.checkAgain")}
           </button>
         </div>
       </div>

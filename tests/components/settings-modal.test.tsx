@@ -93,15 +93,14 @@ describe("Settings categories", () => {
     expect((system as HTMLInputElement).checked).toBe(true);
   });
 
-  it("keeps timezone help outside the field's alignment and accessible label", () => {
+  it("offers the timezone as a list rather than a typed name", () => {
     render(<SettingsModal open onClose={() => {}} />);
-    const input = screen.getByDisplayValue("Asia/Tokyo");
-    const help = screen.getByRole("button", { name: "View timezone names" });
-    expect(input.className).toContain("w-48");
-    expect(input.className).toContain("max-w-full");
-    expect(input.parentElement?.className).toContain("max-w-full");
-    expect(input.closest("label")?.contains(help)).toBe(false);
-    expect(input.closest("label")?.className).toContain("flex-wrap");
+    const zone = screen.getByDisplayValue("Asia/Tokyo") as HTMLSelectElement;
+
+    expect(zone.tagName).toBe("SELECT");
+    expect([...zone.options].some((option) => option.value === "UTC")).toBe(true);
+    expect([...zone.options].length).toBeGreaterThan(50);
+    expect(screen.queryByRole("button", { name: /timezone names/i })).toBeNull();
   });
 
   it("shows the default font as a placeholder without writing it into the preference", () => {

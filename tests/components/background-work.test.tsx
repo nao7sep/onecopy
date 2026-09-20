@@ -17,6 +17,7 @@ import {
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
+import { t } from "../helpers/i18n";
 
 const ids: BackgroundClassSnapshot["id"][] = [
   "previews",
@@ -107,11 +108,11 @@ describe("Background work", () => {
   it("directly resumes stopped processing without unpausing other classes or enabling Settings-disabled work", async () => {
     current = snapshot({ workerRunning: false, pausedClasses: ["video-transcripts"] }, {
       previews: { state: "queued", queued: 12, failed: 2 },
-      "audio-transcripts": { state: "disabled", reason: "Off in Settings" },
+      "audio-transcripts": { state: "disabled", reason: "enable-audio-transcription" },
     });
     useDerivedWorkStore.setState({ snapshot: current });
     const view = render(<BackgroundWorkModal open onClose={() => {}} />);
-    expect(backgroundWorkLine(current)).toBe("Preparation and enrichment stopped");
+    expect(backgroundWorkLine(current, t)).toBe("Preparation and enrichment stopped");
     const previews = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Thumbnails, previews, and posters"))!;
     expect(previews.textContent).toContain("Stopped");
     expect(previews.querySelector("button")!.textContent).toBe("Resume");
@@ -130,12 +131,12 @@ describe("Background work", () => {
     const transcription = rows.find((row) => row.id === "video-transcripts")!;
     expect(backgroundRowCanResume(state, transcription)).toBe(false);
     expect(backgroundRowCanResume(state, rows[0])).toBe(true);
-    expect(backgroundWorkLine(state)).toBe("Video transcription 2/10");
+    expect(backgroundWorkLine(state, t)).toBe("Video transcription 2/10");
   });
 
 
   it("keeps the status segment meaningful for running, queued, and settled work", () => {
-    expect(backgroundWorkLine(current)).toBe("Thumbnails, previews, and posters: 12 queued");
+    expect(backgroundWorkLine(current, t)).toBe("Thumbnails, previews, and posters: 12 queued");
     expect(
       backgroundWorkLine(
         snapshot(
@@ -149,9 +150,10 @@ describe("Background work", () => {
             },
           },
         ),
+        t,
       ),
     ).toBe("Video transcription 42/100");
-    expect(backgroundWorkLine(snapshot())).toBe("Background work: no work running");
+    expect(backgroundWorkLine(snapshot(), t)).toBe("Background work: no work running");
   });
 
   it("patches runtime progress without re-reading output debt", () => {
@@ -193,12 +195,12 @@ describe("Background work", () => {
       stopping: false,
     };
 
-    expect(mergeActiveItemWork(states, "photo-hash", active).preview).toMatchObject({
+    expect(mergeActiveItemWork(states, "photo-hash", active, t).preview).toMatchObject({
       state: "running",
       done: 4,
       total: 12,
     });
-    expect(mergeActiveItemWork(states, "other-hash", active)).toBe(states);
+    expect(mergeActiveItemWork(states, "other-hash", active, t)).toBe(states);
   });
 
   it("handles live runtime events without another database snapshot command", () => {
@@ -226,7 +228,7 @@ describe("Background work", () => {
 
     for (const label of [
       "Thumbnails, previews, and posters",
-      "Video snapshots",
+      "Video scene snapshots",
       "Similar photos",
       "Face scoring",
       "Video transcription",
@@ -291,7 +293,7 @@ describe("Background work", () => {
     current = snapshot({}, { previews: { state: "failed", failed: 2 } });
     useDerivedWorkStore.setState({ snapshot: current });
     render(<BackgroundWorkModal open onClose={() => {}} />);
-    expect(backgroundWorkLine(current)).toBe("Background work: no work running");
+    expect(backgroundWorkLine(current, t)).toBe("Background work: no work running");
     expect(document.body.textContent).not.toMatch(/failed|Issues|up to date|could not be prepared/i);
     expect(document.body.textContent).toContain("No work running");
     expect(useDerivedWorkStore.getState().snapshot?.classes[0].failed).toBe(2);

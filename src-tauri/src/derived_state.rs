@@ -175,14 +175,14 @@ pub(crate) fn work_debts(
             runnable: counts.image_previews,
             blocked,
             failed: counts.preview_failures,
-            reason: (blocked > 0).then_some("Waiting for ffmpeg"),
+            reason: (blocked > 0).then_some("waiting-for-ffmpeg"),
             ..WorkDebt::default()
         }
     };
     let snapshots = if !capabilities.video_snapshots_enabled {
         WorkDebt {
             disabled: true,
-            reason: Some("Turn on video snapshots in Settings"),
+            reason: Some("enable-video-snapshots"),
             ..WorkDebt::default()
         }
     } else if capabilities.ffmpeg {
@@ -195,7 +195,7 @@ pub(crate) fn work_debts(
         WorkDebt {
             blocked: counts.snapshots,
             failed: counts.snapshot_failures,
-            reason: Some("Waiting for ffmpeg"),
+            reason: Some("waiting-for-ffmpeg"),
             unavailable: true,
             ..WorkDebt::default()
         }
@@ -208,14 +208,14 @@ pub(crate) fn work_debts(
     } else {
         WorkDebt {
             disabled: true,
-            reason: Some("Turn on similar-photo analysis in Settings"),
+            reason: Some("enable-similarity"),
             ..WorkDebt::default()
         }
     };
     let faces = if !capabilities.face_enabled {
         WorkDebt {
             disabled: true,
-            reason: Some("Turn on face scoring in Settings"),
+            reason: Some("enable-face-scoring"),
             ..WorkDebt::default()
         }
     } else if capabilities.face_models {
@@ -228,7 +228,7 @@ pub(crate) fn work_debts(
         WorkDebt {
             blocked: counts.faces,
             failed: counts.face_failures,
-            reason: Some("Waiting for face models"),
+            reason: Some("waiting-for-face-models"),
             unavailable: true,
             ..WorkDebt::default()
         }
@@ -260,13 +260,13 @@ pub(crate) fn work_debts(
         capabilities.video_transcription_enabled,
         counts.video_transcripts,
         counts.video_transcript_failures,
-        "Turn on video transcription in Settings",
+        "enable-video-transcription",
     );
     let audio_transcripts = transcript_debt(
         capabilities.audio_transcription_enabled,
         counts.audio_transcripts,
         counts.audio_transcript_failures,
-        "Turn on audio transcription in Settings",
+        "enable-audio-transcription",
     );
     Ok(WorkDebts([
         previews,
@@ -308,9 +308,9 @@ pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
 
 fn transcript_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
     if capabilities.ffmpeg && !capabilities.transcription_model {
-        "Waiting for transcription model"
+        "waiting-for-transcription-model"
     } else {
-        "Waiting for ffmpeg"
+        "waiting-for-ffmpeg"
     }
 }
 
@@ -367,10 +367,10 @@ pub(crate) fn item_work_states(
     let preview = media.then(|| match facts.derived_at {
         Some(FAILED) => item_state("failed", false, Some("Preview generation failed")),
         Some(NEEDS_FFMPEG) if !capabilities.ffmpeg => {
-            item_state("unavailable", false, Some("Waiting for ffmpeg"))
+            item_state("unavailable", false, Some("waiting-for-ffmpeg"))
         }
         None if facts.kind == "video" && !capabilities.ffmpeg => {
-            item_state("unavailable", false, Some("Waiting for ffmpeg"))
+            item_state("unavailable", false, Some("waiting-for-ffmpeg"))
         }
         None | Some(NEEDS_FFMPEG) => item_state("pending", false, None),
         Some(_) if facts.derived_version < DERIVE_VERSION => item_state("pending", true, None),
@@ -387,7 +387,7 @@ pub(crate) fn item_work_states(
         } else if !capabilities.video_snapshots_enabled {
             item_state("disabled", false, Some("Video snapshots are off"))
         } else if !capabilities.ffmpeg {
-            item_state("unavailable", false, Some("Waiting for ffmpeg"))
+            item_state("unavailable", false, Some("waiting-for-ffmpeg"))
         } else if preview_failed {
             item_state("blocked", false, Some("Preview generation failed"))
         } else if !preview_ready || facts.duration_ms.is_none() {
@@ -424,7 +424,7 @@ pub(crate) fn item_work_states(
         } else if !capabilities.face_enabled {
             item_state("disabled", false, Some("Face scoring is off"))
         } else if !capabilities.face_models {
-            item_state("unavailable", false, Some("Waiting for face models"))
+            item_state("unavailable", false, Some("waiting-for-face-models"))
         } else if preview_failed {
             item_state("blocked", false, Some("Preview generation failed"))
         } else if !preview_ready {

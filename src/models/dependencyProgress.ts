@@ -1,3 +1,6 @@
+import type { MessageKey } from "../i18n/catalogues";
+import type { Translator } from "../i18n/translate";
+import { message, type Message } from "../i18n/translate";
 import { formatBytes } from "./items";
 
 export type ManagedInstallPhase =
@@ -18,33 +21,44 @@ export interface ManagedInstallActivity {
   cancelling: boolean;
 }
 
-const PHASE_LABELS: Record<ManagedInstallPhase, string> = {
-  resolve: "Resolving",
-  download: "Downloading",
-  verify: "Verifying",
-  install: "Installing",
+// The two byte-carrying phases name their own units inside one sentence, so
+// each phase is one key rather than a label concatenated with a detail.
+const PHASE_KEYS: Record<ManagedInstallPhase, MessageKey> = {
+  resolve: "install.resolving",
+  download: "install.downloading",
+  verify: "install.verifying",
+  install: "install.installing",
 };
 
-export function managedInstallLine(progress: ManagedInstallProgress): string {
-  const label = PHASE_LABELS[progress.phase];
-  const units =
-    progress.phase === "download" || progress.phase === "verify"
-      ? ` — ${byteUnits(progress.done, progress.total)}`
-      : "";
-  return `${label}${units}`;
+export function managedInstallLine(
+  progress: ManagedInstallProgress,
+  number: Translator["number"],
+  percentOf: Translator["percent"],
+): Message {
+  const key = PHASE_KEYS[progress.phase];
+  return progress.phase === "download" || progress.phase === "verify"
+    ? message(key, { bytes: byteUnits(progress.done, progress.total, number, percentOf) })
+    : message(key);
 }
 
 export function managedInstallActivityLine(
   activity: ManagedInstallActivity,
-): string {
-  if (activity.cancelling) return "Cancelling…";
-  if (activity.progress === null) return "Starting…";
-  return managedInstallLine(activity.progress);
+  number: Translator["number"],
+  percentOf: Translator["percent"],
+): Message {
+  if (activity.cancelling) return message("common.cancelling");
+  if (activity.progress === null) return message("common.starting");
+  return managedInstallLine(activity.progress, number, percentOf);
 }
 
-function byteUnits(done: number, total: number | null): string {
-  if (total === null || total <= 0) return formatBytes(done);
+function byteUnits(
+  done: number,
+  total: number | null,
+  number: Translator["number"],
+  percentOf: Translator["percent"],
+): string {
+  if (total === null || total <= 0) return formatBytes(done, number);
   const bounded = Math.min(done, total);
   const percent = Math.min(100, Math.floor((bounded * 100) / total));
-  return `${formatBytes(bounded)} / ${formatBytes(total)} (${percent}%)`;
+  return `${formatBytes(bounded, number)} / ${formatBytes(total, number)} (${percentOf(percent / 100)})`;
 }

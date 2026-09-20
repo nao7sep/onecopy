@@ -3,6 +3,7 @@
 
 import { log, toErrorFields } from "../repositories";
 import type { LanguagePreference } from "../i18n/languages";
+import { message } from "../i18n/translate";
 import { useAppStore } from "../state/app-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useWizardStore } from "../state/wizard-store";
@@ -45,8 +46,7 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
     } else if (useWizardStore.getState().open) {
       useWizardStore.setState({
         finishing: false,
-        error:
-          "Setup was saved, but newer changes are still open. Review them, then finish again.",
+        error: message("wizard.savedButStale"),
       });
     }
     log.info("wizard finished", { sourceDirs: submission.dirs.length });
@@ -56,7 +56,7 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
     if (useWizardStore.getState().finishing) {
       useWizardStore.setState({
         finishing: false,
-        error: "Setup could not be saved. Your changes are still here; try again.",
+        error: message("wizard.saveFailed"),
       });
     }
   }
@@ -64,9 +64,9 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
 
 export function finishWizard(): Promise<void> {
   if (finishInFlight !== null) return finishInFlight;
-  const { dirs, language, timezone, timezoneValid, timezonePending, optionalFeatures } =
+  const { dirs, language, timezone, optionalFeatures } =
     useWizardStore.getState();
-  if (!timezoneValid || timezonePending || timezone.trim() === "") {
+  if (timezone.trim() === "") {
     return Promise.resolve();
   }
   const submission: WizardSubmission = {

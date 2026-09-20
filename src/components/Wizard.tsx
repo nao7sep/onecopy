@@ -3,11 +3,10 @@ import { finishWizard } from "../workflows/wizard";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
-import TimezoneHelpLink from "./TimezoneHelpLink";
+import { timeZoneOptions } from "../utils/timezones";
 import { Plus } from "lucide-react";
 import { Row, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
-import { useId } from "react";
 import OperationResult from "./ui/OperationResult";
 import { CATALOGUES } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
@@ -28,15 +27,12 @@ const WIZARD_STEPS = 3;
 // the Finish workflow is the sole writer).
 
 export default function Wizard() {
-  const timezoneErrorId = useId();
-  const { t } = useI18n();
+  const { t, text } = useI18n();
   const step = useWizardStore((s) => s.step);
   const language = useWizardStore((s) => s.language);
   const setLanguage = useWizardStore((s) => s.setLanguage);
   const dirs = useWizardStore((s) => s.dirs);
   const timezone = useWizardStore((s) => s.timezone);
-  const timezoneValid = useWizardStore((s) => s.timezoneValid);
-  const timezonePending = useWizardStore((s) => s.timezonePending);
   const error = useWizardStore((s) => s.error);
   const finishing = useWizardStore((s) => s.finishing);
   const reconfigure = useWizardStore((s) => s.reconfigure);
@@ -58,12 +54,12 @@ export default function Wizard() {
     <span className="flex items-center gap-2">
       {reconfigure ? (
         <Button variant="ghost" disabled={finishing} onClick={cancel}>
-          Cancel
+          {t("common.cancel")}
         </Button>
       ) : null}
       {step > 1 ? (
         <Button variant="ghost" disabled={finishing} onClick={() => setStep((step - 1) as 1 | 2 | 3)}>
-          Back
+          {t("wizard.back")}
         </Button>
       ) : null}
     </span>
@@ -73,14 +69,14 @@ export default function Wizard() {
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
       <div className="w-[min(860px,calc(100vw-3rem))] rounded-2xl border border-border bg-surface p-7 shadow-xl">
         <h1 className="text-xl font-semibold tracking-tight text-ink-strong">
-          {reconfigure ? "Reconfigure" : "Setup"}
+          {reconfigure ? t("wizard.reconfigureTitle") : t("wizard.setupTitle")}
         </h1>
         <p className="mt-1 mb-6 text-sm text-ink-muted">
-          {`Step ${step} of ${WIZARD_STEPS}`}
+          {t("wizard.step", { step, total: WIZARD_STEPS })}
         </p>
         {error !== null ? (
           <OperationResult level="error" className="mb-4 text-sm">
-            {error}
+            {text(error)}
           </OperationResult>
         ) : null}
 
@@ -102,16 +98,15 @@ export default function Wizard() {
               ))}
             </select>
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">
-              Directories to handle
+              {t("wizard.directories")}
             </h2>
             <p className="mb-3 text-sm text-ink-muted">
-              Everything in these folders is indexed, deduped, and offered for
-              culling. Nothing is ever changed without you asking.
+              {t("wizard.directoriesHint")}
             </p>
             <ul className="mb-4 max-h-64 space-y-1.5 overflow-y-auto">
               {dirs.length === 0 ? (
                 <li className="text-sm text-ink-muted">
-                  Add at least one directory to continue.
+                  {t("wizard.noDirectories")}
                 </li>
               ) : null}
               {dirs.map((dir) => (
@@ -122,12 +117,12 @@ export default function Wizard() {
             </ul>
             <Button className="mb-6" onClick={() => void addDirs()}>
               <Plus size={14} />
-              Add directory
+              {t("settings.addDirectory")}
             </Button>
             <div className="flex items-center justify-between">
               {leading}
               <Button variant="primary" disabled={dirs.length === 0} onClick={() => setStep(2)}>
-                Next
+                {t("wizard.next")}
               </Button>
             </div>
           </section>
@@ -135,42 +130,31 @@ export default function Wizard() {
 
         {step === 2 ? (
           <section>
-            <h2 className="mb-1 text-sm font-semibold text-ink-strong">Default timezone</h2>
+            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
+              {t("settings.defaultTimezone")}
+            </h2>
             <p className="mb-2 text-sm text-ink-muted">
-              Applied when a photo&apos;s metadata has no timezone of its own
-              (most cameras).
+              {t("wizard.timezoneHint")}
             </p>
-            <div className="mb-3"><TimezoneHelpLink /></div>
-            <input
-              className="mb-1 h-9 w-full rounded-lg border border-input-border bg-background px-3 text-sm text-ink outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring"
-              aria-invalid={
-                (!timezonePending && !timezoneValid) || undefined
-              }
-              aria-describedby={
-                !timezonePending && !timezoneValid ? timezoneErrorId : undefined
-              }
+            <select
+              className="mb-6 h-9 w-full rounded-lg border border-input-border bg-background px-3 text-sm text-ink outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring"
               value={timezone}
-              onChange={(e) => void setTimezone(e.target.value)}
-            />
-            <p
-              id={timezoneErrorId}
-              role={!timezonePending && !timezoneValid ? "alert" : undefined}
-              className="mb-6 min-h-4 text-xs text-danger"
+              onChange={(e) => setTimezone(e.target.value)}
             >
-              {timezonePending
-                ? "Checking timezone…"
-                : timezoneValid
-                  ? ""
-                  : "Not a recognized timezone name"}
-            </p>
+              {timeZoneOptions(timezone).map((zone) => (
+                <option key={zone} value={zone}>
+                  {zone}
+                </option>
+              ))}
+            </select>
             <div className="flex items-center justify-between">
               {leading}
               <Button
                 variant="primary"
-                disabled={timezonePending || !timezoneValid || timezone.trim() === ""}
+                disabled={timezone.trim() === ""}
                 onClick={() => setStep(3)}
               >
-                Next
+                {t("wizard.next")}
               </Button>
             </div>
           </section>
@@ -179,29 +163,27 @@ export default function Wizard() {
         {step === 3 ? (
           <section>
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">
-              OneCopy always prepares
+              {t("wizard.alwaysPrepares")}
             </h2>
             <p className="mb-2 text-sm text-ink-muted">
-              OneCopy checks file identity, dates, companions, and live folder changes. It
-              also prepares thumbnails, image previews, video posters, and supported file
-              presentation. These are required for the library to work and have no off switch.
+              {t("wizard.alwaysPreparesHint")}
             </p>
             <h2 className="mb-1 mt-5 text-sm font-semibold text-ink-strong">
-              Additional features
+              {t("wizard.additionalFeatures")}
             </h2>
             <p className="mb-2 text-sm text-ink-muted">
-              These can use substantial processing time. Change them now or later in Settings.
+              {t("wizard.additionalFeaturesHint")}
             </p>
             {(
               [
-                ["videoSnapshotsEnabled", "Video scene snapshots"],
-                ["similarPhotoAnalysisEnabled", "Similar-photo analysis"],
-                ["scoreFaces", "Face scoring"],
-                ["videoTranscriptionEnabled", "Video transcription"],
-                ["audioTranscriptionEnabled", "Audio transcription"],
+                ["videoSnapshotsEnabled", "wizard.videoSnapshots"],
+                ["similarPhotoAnalysisEnabled", "wizard.similarPhotoAnalysis"],
+                ["scoreFaces", "wizard.faceScoring"],
+                ["videoTranscriptionEnabled", "wizard.videoTranscription"],
+                ["audioTranscriptionEnabled", "wizard.audioTranscription"],
               ] as const satisfies readonly [OptionalFeatureId, string][]
             ).map(([id, label]) => (
-              <Row key={id} label={label}>
+              <Row key={id} label={t(label)}>
                 <Toggle
                   checked={optionalFeatures[id]}
                   disabled={finishing}
@@ -216,7 +198,7 @@ export default function Wizard() {
                 disabled={finishing}
                 onClick={() => void finishWizard()}
               >
-                {finishing ? "Finishing…" : "Finish and scan"}
+                {finishing ? t("wizard.finishing") : t("wizard.finish")}
               </Button>
             </div>
           </section>

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useWizardStore } from "../../src/state/wizard-store";
 import { finishWizard } from "../../src/workflows/wizard";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 function patchConfigPayloads(): Array<Record<string, unknown>> {
   return invokeCalls
@@ -27,8 +28,6 @@ beforeEach(() => {
     step: 2,
     dirs: [{ path: "/root", counting: false }] as never,
     timezone: "Asia/Tokyo",
-    timezoneValid: true,
-    timezonePending: false,
     error: null,
     finishing: false,
   });
@@ -63,10 +62,8 @@ describe("finish", () => {
     expect(useWizardStore.getState().open).toBe(false);
   });
 
-  it("does not save while timezone validation is pending or invalid", async () => {
-    useWizardStore.setState({ timezoneValid: false, timezonePending: true });
-    await finishWizard();
-    useWizardStore.setState({ timezonePending: false });
+  it("does not save without a timezone", async () => {
+    useWizardStore.setState({ timezone: "   " });
     await finishWizard();
 
     expect(patchConfigPayloads()).toEqual([]);
@@ -93,63 +90,20 @@ describe("finish", () => {
       open: true,
       finishing: false,
       timezone: "UTC",
-      error:
-        "Setup was saved, but newer changes are still open. Review them, then finish again.",
     });
+    expect(inEnglish(useWizardStore.getState().error)).toBe(
+      "Setup was saved, but newer changes are still open. Review them, then finish again.",
+    );
     expect(patchConfigPayloads()).toHaveLength(1);
   });
 });
 
-describe("timezone validation", () => {
-  it("ignores an older reply that arrives after the current value", async () => {
-    let settleOld: ((valid: boolean) => void) | undefined;
-    let settleCurrent: ((valid: boolean) => void) | undefined;
-    mockCommands({
-      validate_timezone: ({ name }) =>
-        new Promise<boolean>((resolve) => {
-          if (name === "Tokyo") settleOld = resolve;
-          else settleCurrent = resolve;
-        }),
-    });
+describe("the staged timezone", () => {
+  it("takes the chosen zone without asking the core to check it", () => {
+    useWizardStore.getState().setTimezone("Asia/Tokyo");
 
-    const old = useWizardStore.getState().setTimezone("Tokyo");
-    const current = useWizardStore.getState().setTimezone("Asia/Tokyo");
-    settleCurrent?.(true);
-    await current;
-    settleOld?.(false);
-    await old;
-
-    expect(useWizardStore.getState()).toMatchObject({
-      timezone: "Asia/Tokyo",
-      timezoneValid: true,
-      timezonePending: false,
-    });
-  });
-
-  it("does not publish an obsolete validation failure after a newer value succeeds", async () => {
-    let rejectOld: ((error: Error) => void) | undefined;
-    mockCommands({
-      validate_timezone: ({ name }) =>
-        name === "Tokyo"
-          ? new Promise<boolean>((_resolve, reject) => {
-              rejectOld = reject;
-            })
-          : true,
-    });
-
-    const old = useWizardStore.getState().setTimezone("Tokyo");
-    await useWizardStore.getState().setTimezone("Asia/Tokyo");
-    rejectOld?.(new Error("obsolete validation failure"));
-    await old;
-
-    expect(useWizardStore.getState()).toMatchObject({
-      timezone: "Asia/Tokyo",
-      timezoneValid: true,
-      error: null,
-    });
-    expect(
-      invokeCalls.filter((call) => call.command === "record_recent_notification"),
-    ).toEqual([]);
+    expect(useWizardStore.getState().timezone).toBe("Asia/Tokyo");
+    expect(invokeCalls.some((call) => call.command === "validate_timezone")).toBe(false);
   });
 });
 

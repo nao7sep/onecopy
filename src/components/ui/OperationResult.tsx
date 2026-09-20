@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
+import { useI18n } from "../../i18n/I18nContext";
 
 export type OperationResultLevel = "error" | "warning" | "info";
 
@@ -8,16 +9,19 @@ export default function OperationResult({
   children,
   actions,
   onDismiss,
-  dismissLabel = "Dismiss result",
+  dismissLabel,
   className = "",
 }: {
   level: OperationResultLevel;
   children: ReactNode;
   actions?: ReactNode;
   onDismiss?: () => void;
+  /** Names what is being dismissed; defaults to the shared wording of the
+   * current language. */
   dismissLabel?: string;
   className?: string;
 }) {
+  const { t } = useI18n();
   const tone =
     level === "error"
       ? "border-danger/40 bg-danger-surface text-danger"
@@ -45,8 +49,8 @@ export default function OperationResult({
       {onDismiss !== undefined ? (
         <button
           type="button"
-          aria-label={dismissLabel}
-          title="Dismiss"
+          aria-label={dismissLabel ?? t("common.dismissResult")}
+          title={t("common.dismiss")}
           className="-my-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
           onClick={onDismiss}
         >

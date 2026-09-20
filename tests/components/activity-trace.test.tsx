@@ -64,13 +64,13 @@ it("ignores older-page completion after close and reopen", async () => {
   mockCommands({ activity_page: ({ before }) => before === null ? page([operation()], { nextCursor: 12 })
     : new Promise<ActivityPage>((resolve) => { finish = resolve; }) });
   const view = render(<ActivityTraceModal open onClose={() => {}} />);
-  await screen.findByText("1 operations loaded · scroll for older activity");
+  await screen.findByText("1 operation loaded · scroll for older activity");
   fireEvent.scroll(screen.getByRole("region", { name: "Activity history" }));
   await waitFor(() => expect(finish).toBeDefined());
   view.rerender(<ActivityTraceModal open={false} onClose={() => {}} />);
   mockCommands({ activity_page: () => page([operation(99)], { revision: 99 }) });
   view.rerender(<ActivityTraceModal open onClose={() => {}} />);
-  await screen.findByText("1 operations loaded");
+  await screen.findByText("1 operation loaded");
   await act(async () => { finish(page([operation(1)])); });
   expect(screen.getAllByRole("button", { name: /Prepare thumbnails/ })).toHaveLength(1);
   expect(screen.getByRole("button", { name: /Prepare thumbnails/ }).dataset.activityAnchor).toBe("operation:99");

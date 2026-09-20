@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { requestSeq } from "./request-seq";
 import { invoke } from "@tauri-apps/api/core";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "./notifications-store";
 
@@ -19,7 +20,7 @@ interface IssuesState {
   total: number;
   rows: IssueRow[];
   loading: boolean;
-  error: string | null;
+  error: Message | null;
   load: () => Promise<void>;
   dismiss: (id: number) => Promise<void>;
   dismissAll: () => Promise<void>;
@@ -40,7 +41,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return;
       log.error("issues load failed", toErrorFields(error));
-      set({ loading: false, error: "Issues are unavailable." });
+      set({ loading: false, error: message("issues.unavailable") });
     }
   },
   dismiss: async (id) => {
@@ -50,8 +51,9 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       await get().load();
     } catch (error) {
       log.error("issue dismissal failed", toErrorFields(error));
-      set({ error: "Couldn’t dismiss the issue." });
-      recordActionFailure("issue-dismiss-failed", "Couldn’t dismiss the issue.", error);
+      const failure = message("issues.dismissFailed");
+      set({ error: failure });
+      recordActionFailure("issue-dismiss-failed", failure, error);
     }
   },
   dismissAll: async () => {
@@ -61,8 +63,9 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       await get().load();
     } catch (error) {
       log.error("dismiss all failed", toErrorFields(error));
-      set({ error: "Couldn’t dismiss the issues." });
-      recordActionFailure("issues-dismiss-failed", "Couldn’t dismiss the issues.", error);
+      const failure = message("issues.dismissAllFailed");
+      set({ error: failure });
+      recordActionFailure("issues-dismiss-failed", failure, error);
     }
   },
 }));

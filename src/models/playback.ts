@@ -1,14 +1,23 @@
+import type { MessageKey } from "../i18n/catalogues";
+
 export type PlaybackMedium = "video" | "audio";
 export type PlaybackSurface = "preview-split" | "preview-window" | "quick" | "viewer";
 
-/** Standard MediaError codes do not establish a specific codec or file defect. */
-export function playbackFailureMessage(medium: PlaybackMedium, code: number | null): string {
+/** Standard MediaError codes do not establish a specific codec or file defect.
+ *
+ * One key per medium rather than a `{medium}` placeholder: the medium word
+ * carries gender and sentence-initial case that a language decides for itself. */
+export function playbackFailureMessage(
+  medium: PlaybackMedium,
+  code: number | null,
+): MessageKey {
+  const video = medium === "video";
   switch (code) {
-    case 1: return `${medium === "video" ? "Video" : "Audio"} playback was interrupted.`;
-    case 2: return `This ${medium} could not be read. The file or its connection may be unavailable.`;
-    case 3: return `This ${medium} could not be decoded. It may be damaged or use unsupported features.`;
-    case 4: return `This ${medium} could not be loaded. Its format may be unsupported, or the file may be unavailable.`;
-    default: return `This ${medium} could not be played in the app.`;
+    case 1: return video ? "playback.videoInterrupted" : "playback.audioInterrupted";
+    case 2: return video ? "playback.videoUnreadable" : "playback.audioUnreadable";
+    case 3: return video ? "playback.videoUndecodable" : "playback.audioUndecodable";
+    case 4: return video ? "playback.videoUnloadable" : "playback.audioUnloadable";
+    default: return video ? "playback.videoUnplayable" : "playback.audioUnplayable";
   }
 }
 

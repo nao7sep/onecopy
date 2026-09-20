@@ -490,7 +490,7 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
         .unwrap();
     assert_eq!(
         unavailable.derived_work.transcripts.as_ref().unwrap().reason,
-        Some("Waiting for ffmpeg")
+        Some("waiting-for-ffmpeg")
     );
     let model_missing = queries::item_by_hash(
         &conn,
@@ -517,7 +517,7 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
             .as_ref()
             .unwrap()
             .reason,
-        Some("Waiting for transcription model")
+        Some("waiting-for-transcription-model")
     );
 }
 

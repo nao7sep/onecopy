@@ -2,6 +2,7 @@
 // dialogs stay in App, while their command semantics have one owner here.
 
 import { useCallback, useEffect, useState } from "react";
+import { message } from "../i18n/translate";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { beginMainFeedback } from "../state/main-feedback-store";
@@ -140,7 +141,10 @@ export function useGlobalCommands() {
             items.selectedItem !== null &&
             !toggleMainPlayback(items.selectedItem)
           ) {
-            feedback.finish({ tone: "normal", text: "This item is not playable in OneCopy right now." });
+            feedback.finish({
+              tone: "normal",
+              text: message("playback.notPlayable"),
+            });
           }
         }
       }

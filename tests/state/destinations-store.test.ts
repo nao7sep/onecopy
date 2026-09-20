@@ -21,6 +21,22 @@ import {
   moveSelectionTo,
   resolveDestinationConflicts,
 } from "../../src/workflows/destinations";
+import { english, inEnglish } from "../helpers/i18n";
+
+// The sentence the destination panel shows: its facts joined and terminated the
+// way DestinationsTab renders them, so a test still asserts what a person reads.
+function resultLine(): string | null {
+  const result = useDestinationsStore.getState().result;
+  return result === null
+    ? null
+    : english.t("destinations.resultLine", {
+        facts: result.facts.map((fact) => english.text(fact)).join(" · "),
+      });
+}
+
+function confirmationLine(): string | null {
+  return inEnglish(useDestinationsStore.getState().confirmation);
+}
 
 function item(pathId: number): SectionItem {
   return {
@@ -115,7 +131,7 @@ beforeEach(() => {
     pendingDrop: null,
     pendingConflicts: null,
     dragSelection: null,
-    message: "",
+    message: null,
     result: null,
     confirmation: null,
     expanded: new Set(),
@@ -364,9 +380,7 @@ describe("destination conflict review", () => {
     await resolveDestinationConflicts("overwrite");
 
     expect(useDestinationsStore.getState().result?.severity).toBe("warning");
-    expect(useDestinationsStore.getState().result?.message).toMatch(
-      /changed.*review/i,
-    );
+    expect(resultLine()).toMatch(/changed.*review/i);
   });
 });
 
@@ -385,8 +399,8 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().result?.severity).toBe("warning");
-    expect(useDestinationsStore.getState().result?.message).toMatch(/different content/);
-    expect(useDestinationsStore.getState().result?.message).toContain("IMG_1.jpg");
+    expect(resultLine()).toMatch(/different content/);
+    expect(resultLine()).toContain("IMG_1.jpg");
   });
 
   it("reports a target nothing could be written to", async () => {
@@ -403,8 +417,8 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().result?.severity).toBe("error");
-    expect(useDestinationsStore.getState().result?.message).toMatch(/Could not write/);
-    expect(useDestinationsStore.getState().result?.message).toContain("IMG_1.arw");
+    expect(resultLine()).toMatch(/Could not write/);
+    expect(resultLine()).toContain("IMG_1.arw");
   });
 
   it("keeps source post-action failures visible after progress closes", async () => {
@@ -420,10 +434,8 @@ describe("outcome reporting", () => {
     await confirmDestinationMove();
 
     expect(useDestinationsStore.getState().result?.severity).toBe("error");
-    expect(useDestinationsStore.getState().result?.message).toContain(
-      "2 originals could not be handled",
-    );
-    expect(useDestinationsStore.getState().result?.message).toContain("Issues");
+    expect(resultLine()).toContain("2 originals could not be handled");
+    expect(resultLine()).toContain("Issues");
   });
 
   it("says so plainly when nothing is selected", async () => {
@@ -433,7 +445,7 @@ describe("outcome reporting", () => {
 
     expect(movedHashes()).toHaveLength(0);
     expect(useDestinationsStore.getState().result?.severity).toBe("warning");
-    expect(useDestinationsStore.getState().result?.message).toMatch(/select an item/i);
+    expect(resultLine()).toMatch(/select an item/i);
   });
 
   it("keeps an unresolved result through an unrelated full success", async () => {
@@ -454,9 +466,7 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().result).toEqual(unresolved);
-    expect(useDestinationsStore.getState().confirmation).toBe(
-      "Copied 1 file to dest.",
-    );
+    expect(confirmationLine()).toBe("Copied 1 file to dest.");
   });
 
   it("clears a result when the same operation succeeds on retry", async () => {
@@ -477,15 +487,13 @@ describe("outcome reporting", () => {
     await moveSelectionTo("/dest", "copy");
 
     expect(useDestinationsStore.getState().result).toBeNull();
-    expect(useDestinationsStore.getState().confirmation).toBe(
-      "Copied 1 file to dest.",
-    );
+    expect(confirmationLine()).toBe("Copied 1 file to dest.");
   });
 
   it("clears the selection-required result after the requested action succeeds", async () => {
     useItemsStore.setState({ selectedKeys: new Set(), selectedItem: null });
     await moveSelectionTo("/dest", "copy");
-    expect(useDestinationsStore.getState().result?.message).toMatch(/select an item/i);
+    expect(resultLine()).toMatch(/select an item/i);
 
     selectAll(["h1"]);
     await moveSelectionTo("/dest", "copy");
@@ -509,9 +517,9 @@ describe("outcome reporting", () => {
 
     const result = useDestinationsStore.getState().result;
     expect(result?.severity).toBe("warning");
-    expect(result?.message).toContain("2 files delivered");
-    expect(result?.message).toContain("1 original handled");
-    expect(result?.message).toContain("IMG_3.jpg");
+    expect(resultLine()).toContain("2 files delivered");
+    expect(resultLine()).toContain("1 original handled");
+    expect(resultLine()).toContain("IMG_3.jpg");
   });
 
   it("recovers selection beside a source row removed by Move", async () => {

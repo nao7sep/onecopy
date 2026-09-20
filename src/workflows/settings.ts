@@ -9,6 +9,7 @@ import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
+import { message } from "../i18n/translate";
 import { recordActionFailure, reportActionFailure } from "../state/notifications-store";
 import { newActivityOperationId, recordActivity } from "../repositories/activity";
 import { useAppShellStore } from "../state/app-shell-store";
@@ -17,8 +18,8 @@ import { useDestinationsStore } from "../state/destinations-store";
 import { reconcileComparisonMembership } from "./comparison";
 
 export async function saveSettings(): Promise<void> {
-  const { draft, opened, timezoneValid, timezonePending } = useSettingsStore.getState();
-  if (!draft || !timezoneValid || timezonePending) return;
+  const { draft, opened } = useSettingsStore.getState();
+  if (!draft) return;
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
   const resolveDates = opened === null || ["defaultTimezone", "goodRangeStartYear", "pairingEnabled"]
@@ -26,7 +27,7 @@ export async function saveSettings(): Promise<void> {
   const visibilityChanged = opened === null || ["ignoredFileNames", "hideDotNames", "hideHiddenAttributes", "hideSystemAttributes"]
     .some((key) => JSON.stringify(draft[key as keyof typeof draft]) !== JSON.stringify(opened[key as keyof typeof opened]));
   const { soundEnabled, playbackVolume, ...configDraft } = draft;
-  useSettingsStore.setState({ saving: true, message: "", messageLevel: null });
+  useSettingsStore.setState({ saving: true, message: null, messageLevel: null });
   const operationId = newActivityOperationId("settings");
   recordActivity({
     kind: "started",
@@ -43,11 +44,11 @@ export async function saveSettings(): Promise<void> {
   } catch (error) {
     useSettingsStore.setState({
       saving: false,
-      message: "Settings could not be saved. Your changes are still here; try again.",
+      message: message("settings.saveFailed"),
       messageLevel: "error",
     });
     log.error("settings save failed", toErrorFields(error));
-    recordActionFailure("settings-save-failed", "Couldn’t save Settings.", error);
+    recordActionFailure("settings-save-failed", message("settings.saveFailedNotice"), error);
     recordActivity({
       kind: "failed",
       owner: "settings",
@@ -79,14 +80,13 @@ export async function saveSettings(): Promise<void> {
     stateSaveFailed = true;
     useSettingsStore.setState({
       saving: false,
-      message:
-        "Settings were saved, but Sound and volume could not be saved. Your changes are still here; try again.",
+      message: message("settings.soundSaveFailed"),
       messageLevel: "error",
     });
     log.error("settings interface-state save failed", toErrorFields(error));
     recordActionFailure(
       "settings-interface-state-save-failed",
-      "Settings were saved, but OneCopy couldn’t save Sound and volume.",
+      message("settings.soundSaveFailedNotice"),
       error,
     );
   }
@@ -99,7 +99,7 @@ export async function saveSettings(): Promise<void> {
     log.error("settings re-index failed after save", toErrorFields(error));
     reportActionFailure(
       "settings-reindex-failed",
-      "Settings were saved, but OneCopy couldn’t update the library. Try refreshing the section.",
+      message("settings.reindexFailedNotice"),
       error,
     );
   }
@@ -116,7 +116,7 @@ export async function saveSettings(): Promise<void> {
     log.error("settings projections refresh failed", toErrorFields(error));
     reportActionFailure(
       "settings-refresh-failed",
-      "Settings were saved, but OneCopy couldn’t refresh the interface.",
+      message("settings.refreshFailedNotice"),
       error,
     );
   }
@@ -128,7 +128,7 @@ export async function saveSettings(): Promise<void> {
       log.error("source-folder check failed to start after settings save", toErrorFields(error));
       recordActionFailure(
         "settings-source-check-failed",
-        "Settings were saved, but OneCopy couldn’t start checking source folders.",
+        message("settings.sourceCheckFailedNotice"),
         error,
       );
     }

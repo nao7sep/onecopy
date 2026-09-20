@@ -24,6 +24,7 @@ import { useDestinationsStore } from "../../src/state/destinations-store";
 import ComparisonView from "../../src/components/ComparisonView";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { pushModal, popModal } from "../../src/utils/modalStack";
+import { message, type Message } from "../../src/i18n/translate";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -53,7 +54,7 @@ function renderGrid(
   items = ITEMS,
   loading = false,
   layout: "tiles" | "list" = "tiles",
-  loadError: string | null = null,
+  loadError: Message | null = null,
 ) {
   useItemsStore.setState({
     items,
@@ -175,7 +176,7 @@ describe("section state", () => {
     expect(loading.view.container.textContent).toContain("Loading…");
     loading.view.unmount();
 
-    const failed = renderGrid([], false, "tiles", "Couldn’t load this section.");
+    const failed = renderGrid([], false, "tiles", message("section.loadFailed"));
     expect(failed.view.container.textContent).toContain("Couldn’t load this section.");
     expect(failed.view.container.textContent).not.toContain("Nothing in this section");
     failed.view.unmount();
@@ -185,7 +186,7 @@ describe("section state", () => {
   });
 
   it("keeps stale rows and reports a failed refresh", () => {
-    const { view } = renderGrid(ITEMS, false, "tiles", "Couldn’t load this section.");
+    const { view } = renderGrid(ITEMS, false, "tiles", message("section.loadFailed"));
     expect(view.container.querySelectorAll("[role='option']").length).toBeGreaterThan(0);
     expect(view.container.textContent).toContain("Couldn’t load this section.");
   });

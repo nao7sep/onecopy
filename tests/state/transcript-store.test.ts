@@ -9,6 +9,7 @@ import {
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 beforeAll(async () => {
   await installTranscriptEventWiring();
@@ -171,12 +172,11 @@ describe("transcript projection", () => {
     expect(useTranscriptStore.getState().rows.video).toMatchObject({
       status: "ready",
       text: "previous words",
-      replacement: {
-        status: "failed",
-        message:
-          "Transcription could not finish. Check the media file and managed tools, then try again.",
-      },
+      replacement: { status: "failed" },
     });
+    expect(inEnglish(useTranscriptStore.getState().rows.video?.replacement?.message)).toBe(
+      "Transcription could not finish. Check the media file and managed tools, then try again.",
+    );
   });
 
   it("classifies replacement events from another window without hiding the completed transcript", async () => {

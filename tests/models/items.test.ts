@@ -18,6 +18,7 @@ import {
   type SectionItem,
   type SortOrder,
 } from "../../src/models/items";
+import { number, t } from "../helpers/i18n";
 
 function item(overrides: Partial<SectionItem>): SectionItem {
   return {
@@ -106,15 +107,15 @@ describe("video scene timestamps", () => {
 describe("factsLine", () => {
   it("includes dimensions, video duration, and size in their stable order", () => {
     expect(
-      factsLine({ width: 1920, height: 1080, durationMs: 65_000, byteSize: 2_097_152 }),
+      factsLine({ width: 1920, height: 1080, durationMs: 65_000, byteSize: 2_097_152 }, number),
     ).toBe("1920×1080 · 1:05 · 2 MB");
   });
 });
 
 describe("extLabel", () => {
   it("uppercases extensions and falls back for none", () => {
-    expect(extLabel("scan.pdf")).toBe("PDF");
-    expect(extLabel("noext")).toBe("FILE");
+    expect(extLabel("scan.pdf", t)).toBe("PDF");
+    expect(extLabel("noext", t)).toBe("FILE");
   });
 });
 
@@ -149,8 +150,8 @@ describe("the per-kind sort catalogues", () => {
     // "Time taken" over files nobody took, and "Resolution" over files with
     // no pixels, is the exact mislabeling this split exists to end.
     expect(Object.keys(SORT_ORDERS.other.orders)).not.toContain("resolution");
-    expect(SORT_ORDERS.other.orders.time).toBe("Date");
-    expect(SORT_ORDERS.media.orders.time).toBe("Time taken");
+    expect(t(SORT_ORDERS.other.orders.time!)).toBe("Date");
+    expect(t(SORT_ORDERS.media.orders.time!)).toBe("Time taken");
   });
 
   it("default each kind the way its file manager would", () => {
@@ -248,13 +249,13 @@ describe("cache and file URLs", () => {
 
 describe("the placeholder label", () => {
   it("uppercases the extension", () => {
-    expect(extLabel("holiday.heic")).toBe("HEIC");
-    expect(extLabel("A.tar.gz")).toBe("GZ");
+    expect(extLabel("holiday.heic", t)).toBe("HEIC");
+    expect(extLabel("A.tar.gz", t)).toBe("GZ");
   });
 
   it("falls back for names with no usable extension", () => {
-    expect(extLabel("README")).toBe("FILE");
-    expect(extLabel(".gitignore")).toBe("FILE");
-    expect(extLabel("trailing.")).toBe("FILE");
+    expect(extLabel("README", t)).toBe("FILE");
+    expect(extLabel(".gitignore", t)).toBe("FILE");
+    expect(extLabel("trailing.", t)).toBe("FILE");
   });
 });

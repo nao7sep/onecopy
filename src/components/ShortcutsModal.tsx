@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { useI18n } from "../i18n/I18nContext";
 import { shortcutColumns } from "../models/shortcuts";
 import ModalShell from "./ModalShell";
 
@@ -14,35 +15,35 @@ export default function ShortcutsModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   if (!open) return null;
 
   return (
     <ModalShell
-      title="Keyboard shortcuts"
+      title={t("shortcuts.title")}
       onClose={onClose}
       widthClass="w-[min(1160px,calc(100vw-3rem))]"
     >
       <p className="mb-5 text-xs text-ink-muted">
-        Shortcuts pause during text composition. Focused controls keep their normal keys.
-        On macOS, Ctrl aliases yield to text editing; Cmd remains the command key.
+        {t("shortcuts.intro")}
       </p>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,19rem),1fr))] gap-8">
         {shortcutColumns().map((column) => (
           <div key={column[0].title} className="min-w-0 space-y-7" data-shortcut-column>
           {column.map((group) => (
-          <section key={group.title} aria-label={group.title}>
+          <section key={group.title} aria-label={t(group.title)}>
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            {group.title}
+            {t(group.title)}
             {/* The scope, stated: a chord pressed with the wrong surface
                 focused looks broken rather than scoped. */}
             <span className="mt-1 block font-normal normal-case tracking-normal text-ink-muted/70">
-              {group.context}
+              {t(group.context)}
             </span>
           </h2>
           <dl className="space-y-2.5">
             {group.rows.map((row) => (
               <div key={`${row.chord}-${row.action}`} className="flex items-baseline gap-3">
-                <dd className="min-w-0 flex-1 text-sm text-ink">{row.action}</dd>
+                <dd className="min-w-0 flex-1 text-sm text-ink">{t(row.action)}</dd>
                 <dt className="min-w-0 max-w-[48%] shrink-0">
                   <kbd className="inline-block max-w-full rounded-md border border-border bg-surface-muted px-2 py-1 text-center font-mono text-xs text-ink-strong [overflow-wrap:anywhere]">
                     {row.chord.split("/").map((part, index) => (

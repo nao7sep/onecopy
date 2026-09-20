@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { documentTranslator } from "../i18n/I18nContext";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import {
   presentEscapedFailure,
@@ -28,6 +30,15 @@ export interface NotificationRequest {
   level: NotificationLevel;
   presentation: NotificationPresentation;
   message: string;
+}
+
+// What this window said when it raised a notice, by record id. The record that
+// crosses IPC carries rendered text for history and for merging repeats; this
+// keeps the descriptor so the live notice follows a language change.
+const raisedHere = new Map<number, Message>();
+
+export function noticeRaisedHere(id: number): Message | undefined {
+  return raisedHere.get(id);
 }
 
 interface NotificationsState {
@@ -68,7 +79,7 @@ export const useNotificationsStore = create<NotificationsState>((set) => ({
       }));
       reportActionFailure(
         "notification-dismiss-failed",
-        "Couldn’t dismiss the notification.",
+        message("notice.dismissFailed"),
         error,
       );
     }
@@ -132,31 +143,35 @@ export async function recordRecentNotification(
   return invoke<NotificationRecord>("record_recent_notification", { request });
 }
 
-export function errorNotification(
+export async function errorNotification(
   kind: string,
-  message: string,
+  failure: Message,
   error?: unknown,
 ): Promise<NotificationRecord> {
   if (error !== undefined) {
     log.error("notification action failed", { kind, ...toErrorFields(error) });
   }
-  return publishNotification({
+  const record = await publishNotification({
     kind,
     level: "error",
     presentation: "persistent",
-    message,
+    // The record crosses IPC as text, so the sentence is rendered here in the
+    // language this window is showing; the descriptor stays beside it.
+    message: documentTranslator().text(failure),
   });
+  raisedHere.set(record.id, failure);
+  return record;
 }
 
 /** Records one failed user-requested action without making every caller own
  * notification persistence failure or invent a second visible error path. */
 export function reportActionFailure(
   kind: string,
-  message: string,
+  failure: Message,
   error?: unknown,
 ): void {
-  void errorNotification(kind, message, error).catch((recordingError) => {
-    handleActionFailureRecordingError(kind, message, error, recordingError);
+  void errorNotification(kind, failure, error).catch((recordingError) => {
+    handleActionFailureRecordingError(kind, failure, error, recordingError);
   });
 }
 
@@ -164,22 +179,22 @@ export function reportActionFailure(
  * publishing a second live persistent notice over its inline result. */
 export function recordActionFailure(
   kind: string,
-  message: string,
+  failure: Message,
   error?: unknown,
 ): void {
   void recordRecentNotification({
     kind,
     level: "error",
     presentation: "persistent",
-    message,
+    message: documentTranslator().text(failure),
   }).catch((recordingError) => {
-    handleActionFailureRecordingError(kind, message, error, recordingError);
+    handleActionFailureRecordingError(kind, failure, error, recordingError);
   });
 }
 
 function handleActionFailureRecordingError(
   kind: string,
-  message: string,
+  failure: Message,
   error: unknown,
   recordingError: unknown,
 ): void {
@@ -188,7 +203,7 @@ function handleActionFailureRecordingError(
     actionError: toErrorFields(error).error,
     recordingError: toErrorFields(recordingError).error,
   });
-  const direct = `${message} OneCopy could not save this notice. Reload the window before continuing.`;
+  const direct = message("notice.notSaved", { failure });
   presentEscapedFailure(direct);
   recordInterfaceFailure(direct);
 }

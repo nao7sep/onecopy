@@ -13,6 +13,7 @@ import {
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { message } from "../../src/i18n/translate";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
@@ -41,7 +42,7 @@ describe("notification failure containment", () => {
       record_interface_failure: () => undefined,
     });
 
-    reportActionFailure("open-failed", "Couldn’t open the selected file.");
+    reportActionFailure("open-failed", message("textPreview.openFailed"));
 
     await vi.waitFor(() => {
       expect(invokeCalls.some((call) => call.command === "record_interface_failure")).toBe(true);
@@ -63,7 +64,7 @@ describe("notification failure containment", () => {
 
     recordActionFailure(
       "settings-save-failed",
-      "Couldn’t save Settings.",
+      message("settings.saveFailedNotice"),
       new Error("TypeError EACCES /private/tmp/HOSTILE-SENTINEL IPC wrapper"),
     );
 
@@ -87,7 +88,7 @@ describe("notification failure containment", () => {
       record_interface_failure: () => undefined,
     });
 
-    recordActionFailure("settings-save-failed", "Couldn’t save Settings.");
+    recordActionFailure("settings-save-failed", message("settings.saveFailedNotice"));
 
     await vi.waitFor(() => {
       expect(invokeCalls.some((call) => call.command === "record_interface_failure")).toBe(true);

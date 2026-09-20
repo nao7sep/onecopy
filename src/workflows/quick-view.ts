@@ -34,6 +34,7 @@ import {
 } from "./viewer-window";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { useComparisonStore } from "../state/comparison-store";
+import { message, type Message } from "../i18n/translate";
 export type { ViewerMonitor } from "./viewer-window";
 
 export interface ViewerBroadcast {
@@ -43,7 +44,9 @@ export interface ViewerBroadcast {
   length: number;
   pendingDelete: "trash" | "permanent" | null;
   sectionKind: "image" | "video" | "other" | null;
-  failure: string | null;
+  /** A descriptor, not words: the fullscreen window renders it in its own
+   * language, and follows a language change while it stays on screen. */
+  failure: Message | null;
 }
 
 interface ViewerKeyMessage {
@@ -129,9 +132,9 @@ async function syncMainAnchor(): Promise<void> {
   } catch (error) {
     log.error("viewer Main location failed", toErrorFields(error));
     if (ownsViewer()) {
-      const message = "Couldn’t locate this item in Main.";
-      useQuickViewStore.getState().setFailure(message);
-      recordActionFailure("viewer-main-location-failed", message, error);
+      const failure = message("viewer.locateInMainFailed");
+      useQuickViewStore.getState().setFailure(failure);
+      recordActionFailure("viewer-main-location-failed", failure, error);
     }
     return;
   }
@@ -140,7 +143,7 @@ async function syncMainAnchor(): Promise<void> {
     current.selectedKeys !== before.selectedKeys || current.selectedItem !== before.selectedItem ||
     current.currentSort().order !== sort.order || current.currentSort().desc !== sort.desc) return;
   if (section === null) {
-    useQuickViewStore.getState().setFailure("This item is no longer available in Main.");
+    useQuickViewStore.getState().setFailure(message("viewer.notInMain"));
     return;
   }
   await current.select(section, {
@@ -192,12 +195,13 @@ function recoverFullscreenFailure(
     } else {
       void closeViewer();
     }
+    const failure = message("viewer.fullScreenOpenFailed");
     if (fallback === "quick") {
-      useQuickViewStore.getState().setFailure("Couldn’t open full screen.");
+      useQuickViewStore.getState().setFailure(failure);
     } else {
-      feedback.finish({ tone: "danger", text: "Couldn’t open full screen." });
+      feedback.finish({ tone: "danger", text: failure });
     }
-    recordActionFailure("fullscreen-open-failed", "Couldn’t open full screen.", error);
+    recordActionFailure("fullscreen-open-failed", failure, error);
   }
   if (fallback === "quick") {
     clearFullscreenSurface();
@@ -261,13 +265,9 @@ async function reconcileViewerSequence(): Promise<void> {
     } catch (error) {
       log.error("viewer sequence reconciliation failed", toErrorFields(error));
       if (useQuickViewStore.getState().session?.token !== session.token) return;
-      const message = "Couldn’t refresh the open viewer.";
-      useQuickViewStore.getState().setFailure(message);
-      recordActionFailure(
-        "viewer-reconcile-failed",
-        message,
-        error,
-      );
+      const failure = message("viewer.refreshFailed");
+      useQuickViewStore.getState().setFailure(failure);
+      recordActionFailure("viewer-reconcile-failed", failure, error);
     }
   });
 }
@@ -280,7 +280,7 @@ export function openViewerFromMain(
   const feedback = beginMainFeedback("viewer");
   const items = useItemsStore.getState();
   if (items.selectedItem === null || items.selectedKeys.size === 0) {
-    feedback.finish({ tone: "normal", text: "Select an item to open the viewer." });
+    feedback.finish({ tone: "normal", text: message("viewer.selectItemFirst") });
     return false;
   }
   const section = items.selected;
@@ -289,7 +289,7 @@ export function openViewerFromMain(
   );
   const anchorPosition = items.selectedPositions.get(items.selectedItem) ?? loadedPositions.get(items.selectedItem);
   if (section === null || anchorPosition === undefined) {
-    feedback.finish({ tone: "normal", text: "The selected item is no longer available." });
+    feedback.finish({ tone: "normal", text: message("viewer.selectionGone") });
     return false;
   }
   const request = ++viewerOpenRequest;
@@ -350,8 +350,9 @@ export function openViewerFromMain(
     .catch((error) => {
       if (request !== viewerOpenRequest) return;
       log.error("viewer sequence start failed", toErrorFields(error));
-      feedback.finish({ tone: "danger", text: "Couldn’t open the viewer." });
-      recordActionFailure("viewer-open-failed", "Couldn’t open the viewer.", error);
+      const failure = message("viewer.openFailed");
+      feedback.finish({ tone: "danger", text: failure });
+      recordActionFailure("viewer-open-failed", failure, error);
       recordActivity({
         kind: "failed",
         owner,
@@ -405,9 +406,9 @@ export function moveViewer(move: ViewerMove): void {
     } catch (error) {
       log.error("viewer navigation failed", toErrorFields(error));
       if (useQuickViewStore.getState().session?.token !== session.token) return;
-      const message = "Couldn’t move in the viewer.";
-      useQuickViewStore.getState().setFailure(message);
-      recordActionFailure("viewer-navigation-failed", message, error);
+      const failure = message("viewer.navigationFailed");
+      useQuickViewStore.getState().setFailure(failure);
+      recordActionFailure("viewer-navigation-failed", failure, error);
     }
   });
 }

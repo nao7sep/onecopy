@@ -14,6 +14,8 @@ import { useItemsStore } from "../state/items-store";
 import type { ItemDetail, ItemWorkStates, SectionItem } from "../models/items";
 import type { GroupMember } from "../state/comparison-store";
 import { fileManagerWord } from "../utils/shortcuts";
+import { useI18n } from "../i18n/I18nContext";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import Button from "./ui/Button";
 import TranscriptBlock from "./TranscriptBlock";
@@ -41,6 +43,7 @@ import OperationResult from "./ui/OperationResult";
  * each PATH, which is also the only place the user can say which copy they
  * meant. */
 function PathRow({ path }: { path: string }) {
+  const { t } = useI18n();
   const word = fileManagerWord();
   const [error, setError] = useState(false);
   return (
@@ -53,8 +56,8 @@ function PathRow({ path }: { path: string }) {
         {path}
       </span>
       <button
-        aria-label={`Show in ${word}`}
-        title={`Show in ${word}`}
+        aria-label={t("reveal.showIn", { manager: word })}
+        title={t("reveal.showIn", { manager: word })}
         className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition-opacity hover:bg-surface-muted hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
         onClick={() => {
           setError(false);
@@ -70,7 +73,7 @@ function PathRow({ path }: { path: string }) {
       </button>
       {error ? (
         <OperationResult level="error" className="max-w-44 py-1">
-          Couldn’t reveal this copy.
+          {t("metadata.revealFailed")}
         </OperationResult>
       ) : null}
     </dd>
@@ -83,8 +86,9 @@ function PathRow({ path }: { path: string }) {
  * exactly what Enter does. The group is the one fact about a photo that the
  * pane could not show at all. */
 function SimilarSection({ hash }: { hash: string }) {
+  const { t, text } = useI18n();
   const [members, setMembers] = useState<GroupMember[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Message | null>(null);
   useEffect(() => {
     let stale = false;
     void invoke<GroupMember[]>("get_similar_group", { hash })
@@ -96,7 +100,7 @@ function SimilarSection({ hash }: { hash: string }) {
       })
       .catch((failure) => {
         log.error("similar group load failed", toErrorFields(failure));
-        if (!stale) setError("Couldn’t load similar photos.");
+        if (!stale) setError(message("metadata.similarLoadFailed"));
       });
     return () => {
       stale = true;
@@ -105,16 +109,18 @@ function SimilarSection({ hash }: { hash: string }) {
   if (members.length < 2) {
     return error === null ? null : (
       <OperationResult level="error" className="mt-3">
-        {error}
+        {text(error)}
       </OperationResult>
     );
   }
   return (
     <div className="mb-1 mt-3">
       <div className="flex items-center justify-between gap-2">
-        <dt className="text-xs text-ink-muted">Similar ({members.length})</dt>
+        <dt className="text-xs text-ink-muted">
+          {t("metadata.similar", { count: members.length })}
+        </dt>
         <Button onClick={() => void requestComparisonFromMain()}>
-          Compare
+          {t("metadata.compare")}
         </Button>
       </div>
       <dd className="mt-1 flex gap-1 overflow-x-auto pb-1">
@@ -145,7 +151,7 @@ function SimilarSection({ hash }: { hash: string }) {
       </dd>
       {error !== null ? (
         <OperationResult level="error" className="mt-1">
-          {error}
+          {text(error)}
         </OperationResult>
       ) : null}
     </div>
@@ -175,13 +181,14 @@ function WorkSection({
   states: ItemWorkStates;
   transcriptHasOwnSection: boolean;
 }) {
-  const rows = workPresentationRows(states).filter(
+  const { t } = useI18n();
+  const rows = workPresentationRows(states, t).filter(
     (row) => !(transcriptHasOwnSection && row.id === "transcripts"),
   );
   if (rows.length === 0) return null;
   return (
     <div className="mb-2 mt-3">
-      <dt className="text-xs text-ink-muted">Processing</dt>
+      <dt className="text-xs text-ink-muted">{t("metadata.processing")}</dt>
       <dd className="mt-1 space-y-1">
         {rows.map((row) => (
           <div key={row.id} className="flex items-start justify-between gap-3 text-xs">
@@ -203,23 +210,26 @@ export default function MetadataPane({
   hash: string | null;
   item: SectionItem | null;
 }) {
+  const { t, dateTime, number } = useI18n();
   useDisplayZone();
   const activeWork = useDerivedWorkStore((state) => state.activeItem);
   const projectedWork =
-    item === null ? null : mergeActiveItemWork(item.derivedWork, item.hash, activeWork);
+    item === null
+      ? null
+      : mergeActiveItemWork(item.derivedWork, item.hash, activeWork, t);
   if (detail === null) {
-    return <p className="p-3 text-sm text-ink-muted">No selection</p>;
+    return <p className="p-3 text-sm text-ink-muted">{t("metadata.noSelection")}</p>;
   }
   // The parent pane is the sole scroller; a second overflow here would
   // produce a double scrollbar the moment a height constraint lands.
   return (
     <div className="p-3">
       <dl>
-        <Row label="Name" value={detail.fileName} />
-        <Row label="Date" value={takenPresentation(detail)} />
+        <Row label={t("metadata.name")} value={detail.fileName} />
+        <Row label={t("metadata.date")} value={takenPresentation(detail, t, dateTime)} />
         <Row
-          label="Size"
-          value={detail.byteSize !== null ? formatBytes(detail.byteSize) : "—"}
+          label={t("metadata.size")}
+          value={detail.byteSize !== null ? formatBytes(detail.byteSize, number) : "—"}
         />
         {projectedWork !== null ? (
           <WorkSection
@@ -231,7 +241,9 @@ export default function MetadataPane({
         ) : null}
         {detail.kind === "video" && hash !== null && (detail.stripFrames ?? 0) > 0 ? (
           <div className="mb-2">
-            <dt className="text-xs text-ink-muted">Snapshots</dt>
+            <dt className="text-xs text-ink-muted">
+              {t("metadata.snapshots")}
+            </dt>
             <dd className="mt-1 flex gap-1 overflow-x-auto pb-1">
               {Array.from({ length: detail.stripFrames ?? 0 }, (_, i) => {
                 const atMs = stripTimestampMs(
@@ -243,8 +255,12 @@ export default function MetadataPane({
                   <button
                     key={i}
                     className="relative h-20 w-20 shrink-0 overflow-hidden rounded border border-border bg-background hover:border-border-strong"
-                    title={`Show video at ${timestampLabel(atMs)}`}
-                    aria-label={`Show video at ${timestampLabel(atMs)}`}
+                    title={t("metadata.showVideoAt", {
+                      time: timestampLabel(atMs),
+                    })}
+                    aria-label={t("metadata.showVideoAt", {
+                      time: timestampLabel(atMs),
+                    })}
                     onClick={() => {
                       void openPreview({ hash, pathId: null }, detail).then(() => {
                         seekMainPlayback(hash, atMs / 1000);
@@ -253,7 +269,9 @@ export default function MetadataPane({
                   >
                     <img
                       src={stripUrl(hash, i)}
-                      alt={`snapshot at ${timestampLabel(atMs)}`}
+                      alt={t("preview.snapshotAlt", {
+                        time: timestampLabel(atMs),
+                      })}
                       loading="lazy"
                       className="h-full w-full object-contain"
                     />
@@ -267,15 +285,21 @@ export default function MetadataPane({
           </div>
         ) : null}
         {detail.width !== null && detail.height !== null ? (
-          <Row label="Dimensions" value={`${detail.width} × ${detail.height}`} />
+          <Row
+            label={t("metadata.dimensions")}
+            value={`${detail.width} × ${detail.height}`}
+          />
         ) : null}
         {detail.durationMs !== null ? (
-          <Row label="Duration" value={`${Math.round(detail.durationMs / 1000)} s`} />
+          <Row
+            label={t("metadata.duration")}
+            value={t("metadata.seconds", { count: Math.round(detail.durationMs / 1000) })}
+          />
         ) : null}
         {hash !== null && detail.kind === "image" ? <SimilarSection hash={hash} /> : null}
         <div className="mb-1 mt-3">
           <dt className="text-xs text-ink-muted">
-            Copies ({detail.copyPaths.length})
+            {t("metadata.copies", { count: detail.copyPaths.length })}
           </dt>
           {detail.copyPaths.map((path) => (
             <PathRow key={path} path={path} />
@@ -284,7 +308,7 @@ export default function MetadataPane({
         {detail.companionPaths.length > 0 ? (
           <div className="mb-1">
             <dt className="text-xs text-ink-muted">
-              Companions ({detail.companionPaths.length})
+              {t("metadata.companions", { count: detail.companionPaths.length })}
             </dt>
             {detail.companionPaths.map((path) => (
               <PathRow key={path} path={path} />

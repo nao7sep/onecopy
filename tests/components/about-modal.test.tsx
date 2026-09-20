@@ -7,6 +7,7 @@ import {
   LATEST_RELEASE_PAGE,
   useReleaseCheckStore,
 } from "../../src/state/release-check-store";
+import { message } from "../../src/i18n/translate";
 
 const mocks = vi.hoisted(() => ({
   openUrl: vi.fn(),
@@ -64,7 +65,7 @@ describe("About link results", () => {
     expect(result.textContent).not.toMatch(/EACCES|HOSTILE-SENTINEL|TypeError|IPC|private\/tmp/);
     await waitFor(() => expect(mocks.recordActionFailure).toHaveBeenCalledWith(
       "about-link-open-failed",
-      "Couldn’t open GitHub. Try again or open it in your browser.",
+      message("about.githubOpenFailed"),
       hostile,
     ));
   });

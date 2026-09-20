@@ -11,6 +11,7 @@ import {
   createdWindows, emitCalls, fireEvent, invokeCalls, resetTauriMocks,
   setCurrentMonitor, setFocus, setWindowCreatedHook, WebviewWindow,
 } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 const MONITOR = {
   name: "Fixture display", position: { x: 1920, y: 0 }, size: { width: 1920, height: 1080 }, scaleFactor: 2,
@@ -85,7 +86,9 @@ describe("Comparison-owned image window", () => {
     const window = await WebviewWindow.getByLabel("comparison-image");
     window?.destroy.mockRejectedValueOnce(new Error("Fixture native close failure"));
     await closeComparisonImage();
-    expect(useComparisonStore.getState().message).toContain("decisions are unchanged");
+    expect(inEnglish(useComparisonStore.getState().message)).toContain(
+      "decisions are unchanged",
+    );
     await closeComparisonImage();
     expect(window?.destroy).toHaveBeenCalledTimes(2);
     expect(await WebviewWindow.getByLabel("comparison-image")).toBeNull();

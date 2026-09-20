@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
 import InspectableImage from "../components/InspectableImage";
 import OperationResult from "../components/ui/OperationResult";
@@ -10,6 +11,7 @@ import { isEditableTarget } from "../utils/shortcuts";
 import type { ComparisonImage } from "../workflows/comparison-image";
 
 export default function ComparisonImageWindow() {
+  const { t } = useI18n();
   const [image, setImage] = useState<ComparisonImage | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const imageRef = useRef(image);
@@ -43,9 +45,9 @@ export default function ComparisonImageWindow() {
   }, []);
 
   return (
-    <div ref={surface} tabIndex={-1} aria-label="Comparison image" className="flex h-screen flex-col bg-background">
+    <div ref={surface} tabIndex={-1} aria-label={t("comparisonImage.window")} className="flex h-screen flex-col bg-background">
       <div className="min-h-0 flex-1">
-        {image === null ? <p className="p-4 text-ink-muted">Opening image…</p> : (
+        {image === null ? <p className="p-4 text-ink-muted">{t("comparisonImage.opening")}</p> : (
           <InspectableImage hash={image.member.hash} fileName={image.member.fileName} enlargeSmall
             onError={() => setFailure("Preview unavailable. Return to Comparison for file actions and known details.")} />
         )}
@@ -53,8 +55,8 @@ export default function ComparisonImageWindow() {
       {failure !== null ? <OperationResult className="mx-3 mb-2" level="error">{failure}</OperationResult> : null}
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-2 text-sm">
         <span className="min-w-0 truncate text-ink">{image?.member.fileName}</span>
-        <span className="text-xs text-ink-muted">Space/Escape: return · Hold: original pixels</span>
-        <button className="shrink-0 rounded border border-border px-3 py-1 text-ink hover:bg-surface-muted" onClick={close}>Close</button>
+        <span className="text-xs text-ink-muted">{t("comparisonImage.hint")}</span>
+        <button className="shrink-0 rounded border border-border px-3 py-1 text-ink hover:bg-surface-muted" onClick={close}>{t("common.close")}</button>
       </footer>
     </div>
   );

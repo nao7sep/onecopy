@@ -1,12 +1,16 @@
-// User-facing timestamp display (timestamp conventions): local time, ISO-ish,
-// English, unlocalized — never toLocaleString (format drifts by machine) and
-// never the raw serialized ISO/UTC form (wrong zone, storage grammar).
+// User-facing timestamp display (timestamp-conventions): an instant is shown as
+// a date and time in the computer's zone, formatted for the interface language —
+// the computer's regional format when it uses that language, the language's own
+// format otherwise. The translator owns that choice; this keeps the parsing and
+// the unreadable-input fallback in one place.
 
-export function formatLocalMinute(input: string | number): string {
+import type { Translator } from "../i18n/translate";
+
+export function formatLocalMinute(
+  input: string | number,
+  dateTime: Translator["dateTime"],
+): string {
   const date = new Date(input);
   if (Number.isNaN(date.getTime())) return String(input);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
-    date.getHours(),
-  )}:${pad(date.getMinutes())}`;
+  return dateTime(date);
 }

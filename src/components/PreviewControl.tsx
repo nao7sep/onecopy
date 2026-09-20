@@ -12,10 +12,12 @@
 // choice, so the pair is never gated on hardware.
 
 import { Columns2, Eye, EyeOff, Monitor } from "lucide-react";
+import { useI18n } from "../i18n/I18nContext";
 import { resolvePlacement, usePreviewStore } from "../state/preview-store";
 import { setPreviewPlacement, togglePreview } from "../workflows/preview";
 
 export default function PreviewControl() {
+  const { t } = useI18n();
   const follow = usePreviewStore((s) => s.follow);
   const preference = usePreviewStore((s) => s.placementPreference);
 
@@ -25,7 +27,7 @@ export default function PreviewControl() {
     <span className="flex items-center gap-1">
       <button
         aria-pressed={follow}
-        title={follow ? "Hide preview" : "Show preview"}
+        title={follow ? t("preview.hide") : t("preview.show")}
         className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors ${
           follow
             ? "bg-primary-surface text-primary"
@@ -34,12 +36,12 @@ export default function PreviewControl() {
         onClick={() => void togglePreview()}
       >
         {follow ? <Eye size={14} /> : <EyeOff size={14} />}
-        Preview
+        {t("preview.label")}
       </button>
       <span className="flex items-center rounded-md border border-border p-0.5">
           <button
             aria-pressed={effective === "split"}
-            title="Show the preview inside this window"
+            title={t("preview.placeInWindow")}
             className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
               effective === "split"
                 ? "bg-primary-surface text-primary"
@@ -51,7 +53,7 @@ export default function PreviewControl() {
           </button>
           <button
             aria-pressed={effective === "window"}
-            title="Show the preview in a separate window"
+            title={t("preview.placeSeparateWindow")}
             className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
               effective === "window"
                 ? "bg-primary-surface text-primary"

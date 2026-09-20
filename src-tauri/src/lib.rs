@@ -58,7 +58,7 @@ pub mod scanner;
 pub mod similarity;
 pub mod source_check_runtime;
 pub mod source_check_state;
-mod startup;
+pub mod startup;
 pub mod storage;
 pub mod subprocess;
 pub mod text_preview;
@@ -121,7 +121,7 @@ fn install_panic_hook() {
 // which is how a 40 ms check came to feel like half a second of dead button.
 // Every command below that touches the disk, the network, a subprocess or the
 // index carries `(async)` so it runs on the async runtime instead. The ones
-// left plain are pure or atomic (validate_timezone, logging_debug_enabled,
+// left plain are pure or atomic (logging_debug_enabled,
 // transcribe_cancel), or must keep strict call order (log_event). The get_*
 // reads are `(async)` as well — their responses may now arrive OUT OF ORDER,
 // which the stores absorb with request-sequence guards (`staleGuard` in
@@ -972,8 +972,19 @@ fn text_preview(
             } => {
                 json!({ "body": "text", "byteSize": byte_size, "encoding": encoding })
             }
-            text_preview::PreviewBody::Attributes { byte_size, reason } => {
-                json!({ "body": "attributes", "byteSize": byte_size, "reason": reason })
+            text_preview::PreviewBody::Attributes {
+                byte_size,
+                reason,
+                reason_code,
+                reason_bytes,
+            } => {
+                json!({
+                    "body": "attributes",
+                    "byteSize": byte_size,
+                    "reason": reason,
+                    "reasonCode": reason_code,
+                    "reasonBytes": reason_bytes,
+                })
             }
             text_preview::PreviewBody::DecodeError {
                 byte_size, reason, ..
@@ -1931,10 +1942,6 @@ async fn binaries_check(
 }
 
 // Wizard support: is this a real IANA timezone name?
-#[tauri::command]
-fn validate_timezone(name: String) -> bool {
-    resolution::parse_timezone_name(&name).is_ok()
-}
 
 // The session gate's check: configured source directories that are not
 // currently present (an unmounted volume manifests as a missing directory).
@@ -2108,6 +2115,7 @@ pub fn run() {
     // settles its own language when the application object is created, and the
     // native menu is built from this reading.
     let language = i18n::LanguageState::detect(paths::data_root_before_launch().as_deref());
+    let launch_language = language.current();
     #[cfg(target_os = "macos")]
     i18n::align_appkit(language.current());
 
@@ -2292,7 +2300,6 @@ pub fn run() {
             binaries_install,
             binaries_cancel,
             binaries_check,
-            validate_timezone,
             check_source_dirs,
             log_event,
             logging_debug_enabled,
@@ -2306,7 +2313,7 @@ pub fn run() {
 
     let app = match app {
         Ok(app) => app,
-        Err(error) => startup::halt_before_runtime(&error.to_string()),
+        Err(error) => startup::halt_before_runtime(&error.to_string(), launch_language),
     };
 
     app.run(move |app_handle, event| match event {

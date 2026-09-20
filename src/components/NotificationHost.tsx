@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
+import { conditionText } from "../models/noticeConditions";
+import { noticeRaisedHere } from "../state/notifications-store";
 import { X } from "lucide-react";
+import { useI18n } from "../i18n/I18nContext";
+import { message, type Message, type Translator } from "../i18n/translate";
 import { useAppStore } from "../state/app-store";
 import {
   installNotificationWiring,
@@ -16,6 +20,7 @@ import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 
 function ReleaseNotice() {
+  const { t, text } = useI18n();
   const version = useReleaseCheckStore((state) => state.noticeVersion);
   const linkError = useReleaseCheckStore((state) => state.noticeLinkError);
   const dismiss = useReleaseCheckStore((state) => state.dismissNotice);
@@ -29,14 +34,16 @@ function ReleaseNotice() {
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <p className="select-text break-words text-sm">OneCopy {version} is available.</p>
+          <p className="select-text break-words text-sm">
+            {t("about.newerAvailable", { version })}
+          </p>
           <Button className="mt-2" onClick={() => void openRelease()}>
-            View Release on GitHub
+            {t("about.viewRelease")}
           </Button>
         </div>
         <button
-          aria-label="Dismiss release notification"
-          title="Dismiss"
+          aria-label={t("notice.dismissRelease")}
+          title={t("common.dismiss")}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
           onClick={dismiss}
         >
@@ -45,7 +52,7 @@ function ReleaseNotice() {
       </div>
       {linkError !== null ? (
         <OperationResult level="error" className="mt-2">
-          {linkError}
+          {text(linkError)}
         </OperationResult>
       ) : null}
     </section>
@@ -59,6 +66,7 @@ function Toast({
   record: NotificationRecord;
   durationMs: number;
 }) {
+  const { t, text } = useI18n();
   const dismiss = useNotificationsStore((state) => state.dismiss);
   const dismissing = useNotificationsStore((state) => state.dismissing.has(record.id));
   const remaining = useRef(durationMs);
@@ -115,14 +123,19 @@ function Toast({
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <p className="select-text break-words text-sm">{record.message}</p>
+          {/* This window's own notice keeps its descriptor and follows a
+              language change; one the core raised is said from its condition,
+              and a path is the user's own. */}
+          <p className="select-text break-words text-sm">
+            {noticeWords(record, text, t)}
+          </p>
           {record.path ? (
             <p className="mt-1 select-text break-all text-xs opacity-70">{record.path}</p>
           ) : null}
         </div>
         <button
-          aria-label="Dismiss notification"
-          title="Dismiss"
+          aria-label={t("notice.dismissNotification")}
+          title={t("common.dismiss")}
           disabled={dismissing}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100 disabled:opacity-30"
           onClick={() => void dismiss(record.id)}
@@ -131,13 +144,25 @@ function Toast({
         </button>
       </div>
       {record.occurrenceCount > 1 ? (
-        <p className="mt-1 text-xs opacity-70">Occurred {record.occurrenceCount} times</p>
+        <p className="mt-1 text-xs opacity-70">
+          {t("notice.occurrences", { count: record.occurrenceCount })}
+        </p>
       ) : null}
     </section>
   );
 }
 
+function noticeWords(
+  record: NotificationRecord,
+  text: (message: Message) => string,
+  t: Translator["t"],
+): string {
+  const raised = noticeRaisedHere(record.id);
+  return raised === undefined ? conditionText(record.kind, record.message, t) : text(raised);
+}
+
 export default function NotificationHost() {
+  const { t } = useI18n();
   const active = useNotificationsStore((state) => state.active);
   const releaseVersion = useReleaseCheckStore((state) => state.noticeVersion);
   const configuredSeconds = useAppStore((state) => {
@@ -149,7 +174,7 @@ export default function NotificationHost() {
   useEffect(() => {
     void installNotificationWiring().catch((error) => {
       log.error("notification interface wiring failed", toErrorFields(error));
-      const direct = "Notifications are unavailable. Reload the window to restore them.";
+      const direct = message("notice.unavailable");
       presentEscapedFailure(direct);
       recordInterfaceFailure(direct);
     });
@@ -170,7 +195,7 @@ export default function NotificationHost() {
         <div
           data-notification-scroll-region
           role="region"
-          aria-label="Active notifications"
+          aria-label={t("notice.activeRegion")}
           className="pointer-events-auto min-h-0 overflow-y-auto overscroll-contain"
         >
           <div className="flex flex-col items-stretch gap-2 pr-1">

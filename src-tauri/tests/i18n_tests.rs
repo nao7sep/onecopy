@@ -10,6 +10,7 @@ use onecopy_lib::i18n::{
     LANGUAGES,
 };
 use onecopy_lib::menu::KEYS;
+use onecopy_lib::startup::LAUNCH_FAILURE_KEYS;
 use serde_json::json;
 
 #[test]
@@ -101,6 +102,16 @@ fn every_menu_key_is_in_every_language() {
     for language in LANGUAGES {
         let text = catalogue(language);
         for key in KEYS {
+            assert!(text.has(key), "{language} lacks {key}");
+        }
+    }
+}
+
+#[test]
+fn every_launch_failure_key_is_in_every_language() {
+    for language in LANGUAGES {
+        let text = catalogue(language);
+        for key in LAUNCH_FAILURE_KEYS {
             assert!(text.has(key), "{language} lacks {key}");
         }
     }

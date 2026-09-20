@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useDestinationsStore } from "../state/destinations-store";
@@ -138,12 +139,13 @@ export async function addDestinationRoot(): Promise<void> {
       await useAppStore
         .getState()
         .patchConfig({ destinationRoots: next }, { reportFailure: false });
-      useDestinationsStore.setState({ roots: next, message: "" });
+      useDestinationsStore.setState({ roots: next, message: null });
     });
   } catch (error) {
     log.error("destination root add failed", toErrorFields(error));
-    useDestinationsStore.setState({ message: "Couldn’t add that destination." });
-    recordActionFailure("destination-add-failed", "Couldn’t add that destination.", error);
+    const failure = message("destinations.addFailed");
+    useDestinationsStore.setState({ message: failure });
+    recordActionFailure("destination-add-failed", failure, error);
   }
 }
 
@@ -156,12 +158,13 @@ export async function removeDestinationRoot(root: string): Promise<void> {
       await useAppStore
         .getState()
         .patchConfig({ destinationRoots: next }, { reportFailure: false });
-      useDestinationsStore.setState({ roots: next, message: "" });
+      useDestinationsStore.setState({ roots: next, message: null });
     });
   } catch (error) {
     log.error("destination root remove failed", toErrorFields(error));
-    useDestinationsStore.setState({ message: "Couldn’t remove that destination." });
-    recordActionFailure("destination-remove-failed", "Couldn’t remove that destination.", error);
+    const failure = message("destinations.removeFailed");
+    useDestinationsStore.setState({ message: failure });
+    recordActionFailure("destination-remove-failed", failure, error);
   }
 }
 
@@ -195,7 +198,7 @@ export async function moveDestinationSelectionTo(
     useDestinationsStore.setState({
       result: {
         severity: "warning",
-        message: "Select an item in the grid first.",
+        facts: [message("destinations.selectItemFirst")],
         operationKey: receiverOperationKey(destDir, mode),
       },
     });
@@ -233,7 +236,7 @@ export async function acceptDestinationDropChoice(
     useDestinationsStore.setState({
       result: {
         severity: "warning",
-        message: "Select an item in the grid first.",
+        facts: [message("destinations.selectItemFirst")],
         operationKey: receiverOperationKey(path, mode),
       },
     });
@@ -264,8 +267,7 @@ async function executeMoveBatch(
       useDestinationsStore.setState({
         result: {
           severity: "warning",
-          message:
-            "The selected files or destination changed while the conflict question was open. Review the operation again.",
+          facts: [message("destinations.planChanged")],
           operationKey,
         },
         confirmation: null,
@@ -287,7 +289,7 @@ async function executeMoveBatch(
       return;
     }
     operationCompleted = true;
-    const parts: string[] = [];
+    const facts: Message[] = [];
     const hasCommittedNonSuccess =
       outcome.skippedIdentical > 0 ||
       outcome.postAction.failedFiles > 0 ||
@@ -298,45 +300,52 @@ async function executeMoveBatch(
     // A partial/cancelled outcome accounts for successful work as well as
     // every refusal. A clean success stays out of this result surface.
     if (hasCommittedNonSuccess && outcome.exported > 0) {
-      parts.push(
-        `${outcome.exported} file${outcome.exported === 1 ? "" : "s"} delivered`,
-      );
+      facts.push(message("destinations.factDelivered", { count: outcome.exported }));
     }
     if (hasCommittedNonSuccess && outcome.postAction.deletedFiles > 0) {
-      parts.push(
-        `${outcome.postAction.deletedFiles} original${outcome.postAction.deletedFiles === 1 ? "" : "s"} handled`,
+      facts.push(
+        message("destinations.factOriginalsHandled", {
+          count: outcome.postAction.deletedFiles,
+        }),
       );
     }
     if (outcome.skippedIdentical > 0) {
-      parts.push(
-        `${outcome.skippedIdentical} file${outcome.skippedIdentical === 1 ? " is" : "s are"} already there`,
+      facts.push(
+        message("destinations.factAlreadyThere", { count: outcome.skippedIdentical }),
       );
     }
     if (outcome.postAction.failedFiles > 0) {
-      parts.push(
-        `${outcome.postAction.failedFiles} original${outcome.postAction.failedFiles === 1 ? "" : "s"} could not be handled — see Issues`,
+      facts.push(
+        message("destinations.factOriginalsFailed", {
+          count: outcome.postAction.failedFiles,
+        }),
       );
     }
     if (outcome.conflicts.length > 0) {
-      parts.push(
-        `${outcome.conflicts.length} destination file${outcome.conflicts.length === 1 ? "" : "s"} already ${outcome.conflicts.length === 1 ? "exists" : "exist"} with different content; originals kept: ${outcome.conflicts.join(", ")}`,
+      facts.push(
+        message("destinations.factConflicts", {
+          count: outcome.conflicts.length,
+          names: outcome.conflicts.join(", "),
+        }),
       );
     }
     if (outcome.undelivered.length > 0) {
-      parts.push(
-        `Could not write ${outcome.undelivered.join(", ")}; originals kept`,
+      facts.push(
+        message("destinations.factUndelivered", {
+          names: outcome.undelivered.join(", "),
+        }),
       );
     }
-    if (outcome.cancelled) parts.push("Stopped; unstarted items are untouched");
+    if (outcome.cancelled) facts.push(message("destinations.factCancelled"));
     if (outcome.error !== null) {
-      parts.push("The operation stopped before it could finish");
+      facts.push(message("destinations.factStopped"));
     }
     if (
-      parts.length === 0 &&
+      facts.length === 0 &&
       outcome.exported === 0 &&
       outcome.postAction.deletedFiles === 0
     ) {
-      parts.push("Nothing changed");
+      facts.push(message("destinations.factNothingChanged"));
     }
     const severity =
       outcome.postAction.failedFiles > 0 ||
@@ -346,9 +355,9 @@ async function executeMoveBatch(
         : outcome.conflicts.length > 0
           ? "warning"
           : "info";
-    if (parts.length > 0) {
+    if (facts.length > 0) {
       useDestinationsStore.setState({
-        result: { severity, message: `${parts.join(" · ")}.`, operationKey },
+        result: { severity, facts, operationKey },
         confirmation: null,
       });
     } else {
@@ -360,7 +369,10 @@ async function executeMoveBatch(
         ...(corrected ? { result: null } : {}),
         confirmation:
           mode === "copy"
-            ? `Copied ${outcome.exported} file${outcome.exported === 1 ? "" : "s"} to ${destinationLabel(destDir)}.`
+            ? message("destinations.copiedToFolder", {
+                count: outcome.exported,
+                dest: destinationLabel(destDir),
+              })
             : null,
       });
     }
@@ -368,15 +380,14 @@ async function executeMoveBatch(
     useDestinationsStore.setState({
       result: {
         severity: "error",
-        message:
-          "The file operation could not finish. Check that the destination is available, then try again.",
+        facts: [message("destinations.operationFailed")],
         operationKey,
       },
       confirmation: null,
     });
     recordActionFailure(
       "destination-operation-failed",
-      "The file operation could not finish.",
+      message("destinations.operationFailedNotice"),
       error,
     );
     log.error("move out failed", toErrorFields(error));
@@ -389,18 +400,24 @@ async function executeMoveBatch(
     useDestinationsStore.setState({
       result: {
         severity: "error",
-        message: operationCompleted
-          ? "The file operation finished, but OneCopy could not refresh its view. Reopen or rescan before continuing."
-          : "OneCopy could not refresh after the failed file operation. Reopen or rescan before continuing.",
+        facts: [
+          message(
+            operationCompleted
+              ? "destinations.refreshFailedAfterSuccess"
+              : "destinations.refreshFailedAfterFailure",
+          ),
+        ],
         operationKey,
       },
       confirmation: null,
     });
     recordActionFailure(
       "destination-refresh-failed",
-      operationCompleted
-        ? "The file operation finished, but OneCopy couldn’t refresh its view."
-        : "OneCopy couldn’t refresh after the failed file operation.",
+      message(
+        operationCompleted
+          ? "destinations.refreshFailedAfterSuccessNotice"
+          : "destinations.refreshFailedAfterFailureNotice",
+      ),
       error,
     );
   }

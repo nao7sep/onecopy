@@ -23,6 +23,7 @@ import {
 } from "../models/previewPlacement";
 import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
+import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
 import { waitForWindowCreated } from "../utils/windowCreation";
@@ -38,7 +39,9 @@ export interface PreviewShowMessage extends PreviewPayload {
 
 export interface PreviewPresentation {
   fullscreen: boolean;
-  error: string | null;
+  /** A descriptor, not words: the Preview window renders it in its own
+   * language, and follows a language change while it stays on screen. */
+  error: Message | null;
 }
 
 /** Pane versus separate window remains an explicit user choice. */
@@ -61,7 +64,7 @@ interface PreviewState {
   fullscreen: boolean;
   setFullscreen: (enabled: boolean) => Promise<void>;
   /** Result owned by the Preview command surface, never the global host. */
-  error: string | null;
+  error: Message | null;
   clearError: () => void;
   /** Opens the surface for the payload and turns follow on. */
   open: (
@@ -208,7 +211,7 @@ export async function restorePreviewAfterComparison(): Promise<void> {
   } catch (error) {
     publishPreviewFailure(
       "preview-restore-failed",
-      "Couldn’t restore the Preview window.",
+      message("preview.restoreFailed"),
       error,
     );
   }
@@ -245,12 +248,12 @@ async function closePreviewWindow(): Promise<void> {
 
 function publishPreviewFailure(
   kind: string,
-  message: string,
+  failure: Message,
   error: unknown,
 ): void {
   log.error("preview action failed", { kind, ...toErrorFields(error) });
-  usePreviewStore.setState({ error: message });
-  recordActionFailure(kind, message, error);
+  usePreviewStore.setState({ error: failure });
+  recordActionFailure(kind, failure, error);
 }
 
 // ---- Cross-window publication --------------------------------------------
@@ -277,7 +280,7 @@ function publishCurrent(): void {
       .catch((error) =>
         request === surfaceRequest && publishPreviewFailure(
           "preview-update-failed",
-          "Couldn’t update the Preview window.",
+          message("preview.updateFailed"),
           error,
         ),
       );
@@ -329,7 +332,11 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     } catch (error) {
       if (request !== surfaceRequest) return;
       set({ fullscreen: previewFullscreenApplied });
-      publishPreviewFailure("preview-fullscreen-failed", "Couldn’t change Preview full screen.", error);
+      publishPreviewFailure(
+        "preview-fullscreen-failed",
+        message("preview.fullScreenChangeFailed"),
+        error,
+      );
     }
   },
 
@@ -373,7 +380,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       set({ placement: null });
       publishPreviewFailure(
         "preview-open-failed",
-        "Couldn’t open the Preview window.",
+        message("preview.openFailed"),
         error,
       );
     }
@@ -440,7 +447,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         set({ placement: placement ?? null, placementPreference });
         publishPreviewFailure(
           "preview-placement-failed",
-          "Couldn’t change the Preview placement.",
+          message("preview.placementChangeFailed"),
           error,
         );
       }

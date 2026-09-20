@@ -1,8 +1,15 @@
+// @vitest-environment happy-dom
+//
+// Failures are recorded through the notifications store, which renders the
+// sentence in the language the document declares, so this spec needs a document
+// even though the subject is not the interface.
+
 import { beforeEach, describe, expect, it } from "vitest";
 import { rescanCurrentSection } from "../../src/workflows/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
@@ -35,9 +42,9 @@ describe("section repair outcome", () => {
 
     await rescanCurrentSection();
 
-    expect(currentMainFeedback(useMainFeedbackStore.getState())).toMatchObject({
-      tone: "danger", text: "This section could not be refreshed. Try again.",
-    });
-    expect(currentMainFeedback(useMainFeedbackStore.getState())?.text).not.toContain("HOSTILE-SENTINEL");
+    const feedback = currentMainFeedback(useMainFeedbackStore.getState());
+    expect(feedback?.tone).toBe("danger");
+    expect(inEnglish(feedback?.text)).toBe("This section could not be refreshed. Try again.");
+    expect(inEnglish(feedback?.text)).not.toContain("HOSTILE-SENTINEL");
   });
 });

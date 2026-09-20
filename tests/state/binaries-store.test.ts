@@ -9,6 +9,7 @@ import {
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 function entry(
   id: string,
@@ -120,7 +121,7 @@ describe("managed-tool terminal ownership", () => {
     await useBinariesStore.getState().install("ffmpeg");
 
     expect(useBinariesStore.getState().entries[0]?.status).toBe("installed-unchecked");
-    expect(useBinariesStore.getState().errors.ffmpeg).toBe(
+    expect(inEnglish(useBinariesStore.getState().errors.ffmpeg)).toBe(
       "The managed-tool installation could not finish. Try again.",
     );
     expect(useBinariesStore.getState().installing.ffmpeg).toBeUndefined();

@@ -7,6 +7,8 @@ import {
   previewUrl,
 } from "../models/items";
 import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
+import { useI18n } from "../i18n/I18nContext";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
@@ -67,6 +69,7 @@ export default function InspectableImage({
   sourceHeight?: number | null;
   onError?: () => void;
 }) {
+  const { t, text } = useI18n();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState<InspectPosition>({
     x: 0.5,
@@ -76,7 +79,7 @@ export default function InspectableImage({
   });
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
   const [originalFailed, setOriginalFailed] = useState(false);
-  const [inspectionError, setInspectionError] = useState<string | null>(null);
+  const [inspectionError, setInspectionError] = useState<Message | null>(null);
   const converted = needsConvertedFullres(fileName);
   const [convertedSrc, setConvertedSrc] = useState<string | null>(null);
   useEffect(() => {
@@ -119,7 +122,7 @@ export default function InspectableImage({
     <div
       ref={viewportRef}
       className="relative flex h-full w-full items-center justify-center overflow-hidden"
-      title="Press and hold for original pixels"
+      title={t("inspect.holdOriginal")}
       onPointerDown={hold.onPointerDown}
       onClickCapture={hold.onClickCapture}
     >
@@ -143,16 +146,16 @@ export default function InspectableImage({
         <div className="absolute inset-0 cursor-crosshair overflow-hidden bg-background">
           {originalFailed ? (
             <p className="p-4 text-sm text-ink-muted">
-              Original pixels unavailable.
+              {t("inspect.originalUnavailable")}
             </p>
           ) : source === null ? (
             <p className="p-4 text-sm text-ink-muted">
-              Preparing original pixels…
+              {t("inspect.preparingOriginal")}
             </p>
           ) : (
             <img
               src={source}
-              alt={`${fileName} at original size`}
+              alt={t("inspect.originalSizeAlt", { name: fileName })}
               draggable={false}
               className="pointer-events-none absolute max-h-none max-w-none"
               onLoad={(event) => {
@@ -164,13 +167,12 @@ export default function InspectableImage({
               }}
               onError={() => {
                 if (!originalFailed) {
-                  const message = `Couldn’t show the original pixels for ${fileName}.`;
+                  const failure = message("inspect.originalPixelsFailed", {
+                    name: fileName,
+                  });
                   log.warn("original-pixel inspection failed", { hash, fileName });
-                  recordActionFailure(
-                    "original-pixels-failed",
-                    message,
-                  );
-                  setInspectionError(message);
+                  recordActionFailure("original-pixels-failed", failure);
+                  setInspectionError(failure);
                 }
                 setOriginalFailed(true);
               }}
@@ -184,7 +186,7 @@ export default function InspectableImage({
           level="error"
           className="absolute bottom-2 left-2 right-2 z-10 shadow-sm"
         >
-          {inspectionError}
+          {text(inspectionError)}
         </OperationResult>
       ) : null}
     </div>

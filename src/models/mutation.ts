@@ -1,3 +1,5 @@
+import type { MessageKey } from "../i18n/catalogues";
+import type { Translator } from "../i18n/translate";
 import { formatBytes } from "./items";
 
 export type MutationKind =
@@ -46,20 +48,77 @@ export interface MutationResult {
   summary: MutationResultSummary;
 }
 
-function actionName(kind: MutationKind): string {
-  if (kind === "delete") return "Deletion";
-  if (kind === "destination-copy") return "Copy";
-  if (kind === "destination-move") return "Move";
-  return "Trash emptying";
+type Outcome = "complete" | "cancelled" | "failures" | "stopped";
+
+/** One headline per operation and outcome. A headline is never assembled from
+ * an action word and a state word: which of the two leads, and how each is
+ * inflected, differs by language. */
+const OUTCOME_HEADLINES: Record<MutationKind, Record<Outcome, MessageKey>> = {
+  delete: {
+    complete: "mutation.deleteComplete",
+    cancelled: "mutation.deleteCancelled",
+    failures: "mutation.deleteWithFailures",
+    stopped: "mutation.deleteStopped",
+  },
+  "destination-copy": {
+    complete: "mutation.copyComplete",
+    cancelled: "mutation.copyCancelled",
+    failures: "mutation.copyWithFailures",
+    stopped: "mutation.copyStopped",
+  },
+  "destination-move": {
+    complete: "mutation.moveComplete",
+    cancelled: "mutation.moveCancelled",
+    failures: "mutation.moveWithFailures",
+    stopped: "mutation.moveStopped",
+  },
+  "trash-empty": {
+    complete: "mutation.emptyComplete",
+    cancelled: "mutation.emptyCancelled",
+    failures: "mutation.emptyWithFailures",
+    stopped: "mutation.emptyStopped",
+  },
+};
+
+const PLANNING_HEADLINES: Record<MutationKind, MessageKey> = {
+  delete: "mutation.planningDelete",
+  "destination-copy": "mutation.planningCopy",
+  "destination-move": "mutation.planningMove",
+  "trash-empty": "mutation.planningEmpty",
+};
+
+const RUNNING_HEADLINES: Record<MutationKind, MessageKey> = {
+  delete: "mutation.deleting",
+  "destination-copy": "mutation.copying",
+  "destination-move": "mutation.moving",
+  "trash-empty": "mutation.emptyingTrash",
+};
+
+function outcome(result: MutationResult): Outcome {
+  if (result.summary.error !== null) return "stopped";
+  if (result.cancelled) return "cancelled";
+  return result.summary.filesFailed > 0 ? "failures" : "complete";
 }
 
-export function mutationResultLine(result: MutationResult): string {
+/** Whole percent of the file being handled right now, or null when the backend
+ * reports no measurable current file. */
+function currentFilePercent(progress: MutationProgress): number | null {
+  const { currentFileBytesDone: done, currentFileBytesTotal: total } = progress;
+  if (done === null || total === null || total <= 0) return null;
+  return Math.min(100, Math.floor((done / total) * 100));
+}
+
+/** The receipt's words. The facts are a variable join of independently
+ * translated counts — which of them appear depends on the outcome — so this
+ * composes them with the translator instead of returning one descriptor. */
+export function mutationResultLine(
+  result: MutationResult,
+  t: Translator["t"],
+): string {
   const { summary } = result;
-  const parts = [
-    `${summary.itemsCompleted.toLocaleString()} completed`,
-  ];
+  const facts = [t("mutation.factCompleted", { count: summary.itemsCompleted })];
   if (summary.itemsPartial > 0) {
-    parts.push(`${summary.itemsPartial.toLocaleString()} partially processed`);
+    facts.push(t("mutation.factPartial", { count: summary.itemsPartial }));
   }
   if (
     summary.filesCompleted > 0 &&
@@ -70,68 +129,66 @@ export function mutationResultLine(result: MutationResult): string {
       summary.itemsUnstarted > 0 ||
       summary.filesUnstarted > 0)
   ) {
-    parts.push(`${summary.filesCompleted.toLocaleString()} file steps completed`);
+    facts.push(t("mutation.factFileStepsCompleted", { count: summary.filesCompleted }));
   }
   if (summary.filesFailed > 0) {
-    parts.push(`${summary.filesFailed.toLocaleString()} failed`);
+    facts.push(t("trash.failedCount", { count: summary.filesFailed }));
   }
   if (summary.itemsUnstarted > 0) {
-    parts.push(`${summary.itemsUnstarted.toLocaleString()} unstarted`);
+    facts.push(t("mutation.factUnstarted", { count: summary.itemsUnstarted }));
   }
   if (summary.filesUnstarted > 0 && summary.itemsUnstarted === 0) {
-    parts.push(`${summary.filesUnstarted.toLocaleString()} file steps unstarted`);
+    facts.push(t("mutation.factFileStepsUnstarted", { count: summary.filesUnstarted }));
   }
   if (summary.error !== null) {
-    parts.push("the operation stopped before it could finish");
+    facts.push(t("mutation.factStopped"));
   }
-  const state = summary.error !== null
-    ? "stopped"
-    : result.cancelled
-      ? "cancelled"
-      : summary.filesFailed > 0
-        ? "finished with failures"
-        : "complete";
-  return `${actionName(result.kind)} ${state} — ${parts.join(" · ")}`;
+  return t("mutation.line", {
+    headline: t(OUTCOME_HEADLINES[result.kind][outcome(result)]),
+    facts: facts.join(" · "),
+  });
 }
 
 export function mutationProgressLine(
   progress: MutationProgress,
   cancelling: boolean,
+  t: Translator["t"],
+  number: Translator["number"],
 ): string {
-  const action =
-    progress.kind === "delete"
-      ? "deletion"
-      : progress.kind === "destination-copy"
-        ? "copy"
-        : progress.kind === "destination-move"
-          ? "move"
-          : "trash emptying";
-  if (cancelling) return "Cancelling after current file…";
-  if (progress.phase === "planning") {
-    const current =
-      progress.currentFileBytesDone !== null &&
-      progress.currentFileBytesTotal !== null &&
-      progress.currentFileBytesTotal > 0
-        ? ` · current ${Math.min(100, Math.floor((progress.currentFileBytesDone / progress.currentFileBytesTotal) * 100))}%`
-        : "";
-    return `Planning ${action} — ${progress.itemsDone.toLocaleString()}/${progress.itemsTotal.toLocaleString()} items${current}`;
-  }
+  if (cancelling) return t("mutation.cancellingAfterFile");
   if (progress.phase === "complete") {
-    return `${action[0].toUpperCase()}${action.slice(1)} complete`;
+    return t(OUTCOME_HEADLINES[progress.kind].complete);
   }
-  const verb =
-    progress.kind === "delete"
-      ? "Deleting"
-      : progress.kind === "destination-copy"
-        ? "Copying"
-        : progress.kind === "destination-move"
-          ? "Moving"
-          : "Emptying Trash";
-  const current =
-    progress.currentFileBytesDone !== null &&
-    progress.currentFileBytesTotal !== null &&
-    progress.currentFileBytesTotal > 0
-      ? ` · current ${Math.min(100, Math.floor((progress.currentFileBytesDone / progress.currentFileBytesTotal) * 100))}%`
-      : "";
-  return `${verb} — ${progress.itemsDone.toLocaleString()}/${progress.itemsTotal.toLocaleString()} items · ${progress.filesDone.toLocaleString()}/${progress.filesTotal.toLocaleString()} files · ${formatBytes(progress.bytesDone)}/${formatBytes(progress.bytesTotal)}${current}${progress.failures > 0 ? ` · ${progress.failures.toLocaleString()} failed` : ""}`;
+  // `count` drives the plural form of each fact; `done`/`total` are the numbers
+  // the sentence shows.
+  const facts = [
+    t("mutation.factItems", {
+      count: progress.itemsTotal,
+      done: progress.itemsDone,
+      total: progress.itemsTotal,
+    }),
+  ];
+  if (progress.phase !== "planning") {
+    facts.push(
+      t("mutation.factFiles", {
+        count: progress.filesTotal,
+        done: progress.filesDone,
+        total: progress.filesTotal,
+      }),
+      `${formatBytes(progress.bytesDone, number)}/${formatBytes(progress.bytesTotal, number)}`,
+    );
+  }
+  const percent = currentFilePercent(progress);
+  if (percent !== null) facts.push(t("mutation.factCurrent", { percent }));
+  if (progress.phase !== "planning" && progress.failures > 0) {
+    facts.push(t("trash.failedCount", { count: progress.failures }));
+  }
+  return t("mutation.line", {
+    headline: t(
+      progress.phase === "planning"
+        ? PLANNING_HEADLINES[progress.kind]
+        : RUNNING_HEADLINES[progress.kind],
+    ),
+    facts: facts.join(" · "),
+  });
 }

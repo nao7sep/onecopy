@@ -1,6 +1,7 @@
 import { File } from "lucide-react";
 import { thumbUrl } from "../models/items";
 import { useDestinationsStore } from "../state/destinations-store";
+import { useI18n } from "../i18n/I18nContext";
 import type { DestinationDragSource } from "./DestinationDragProvider";
 
 /** Visual payload only; dnd-kit owns its position and pointer transparency. */
@@ -13,6 +14,7 @@ export default function DestinationDragPreview({
     (state) => state.dragSelection?.items.length ?? 0,
   );
   const multiple = itemCount > 1;
+  const { t } = useI18n();
 
   return (
     <div
@@ -34,11 +36,13 @@ export default function DestinationDragPreview({
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold text-ink-strong">
           {multiple
-            ? `${itemCount} selected items`
+            ? t("destinations.dragSelectedItems", { count: itemCount })
             : source.label}
         </span>
         <span className="block truncate text-xs text-ink-muted">
-          {multiple ? `Includes ${source.label}` : "Selected item"}
+          {multiple
+            ? t("destinations.dragIncludes", { name: source.label })
+            : t("destinations.dragSelectedItem")}
         </span>
       </span>
     </div>

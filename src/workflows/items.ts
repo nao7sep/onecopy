@@ -11,6 +11,7 @@ import { useItemsStore } from "../state/items-store";
 import { beginMainFeedback } from "../state/main-feedback-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
+import { message } from "../i18n/translate";
 import { recordActionFailure, reportActionFailure } from "../state/notifications-store";
 
 interface DeleteBatchOutcome {
@@ -139,7 +140,11 @@ export async function deleteItems(
     await useSectionsStore.getState().loadCounts();
   } catch (error) {
     log.error("delete failed", toErrorFields(error));
-    reportActionFailure("delete-start-failed", "The delete operation could not finish. Review Issues before retrying.", error);
+    reportActionFailure(
+      "delete-start-failed",
+      message("item.deleteFailed"),
+      error,
+    );
     // A structural error can arrive after earlier logical units committed.
     // Re-read every durable owner instead of leaving removed rows projected.
     await useItemsStore.getState().refresh();
@@ -164,8 +169,8 @@ export async function rescanCurrentSection(): Promise<void> {
     feedback.finish();
   } catch (error) {
     log.error("section rescan failed", toErrorFields(error));
-    feedback.finish({ tone: "danger", text: "This section could not be refreshed. Try again." });
-    recordActionFailure("section-refresh-failed", "Couldn’t refresh this section.", error);
+    feedback.finish({ tone: "danger", text: message("section.rescanFailed") });
+    recordActionFailure("section-refresh-failed", message("section.rescanFailedNotice"), error);
     await useIssuesStore.getState().load();
   }
 }

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { Message } from "../i18n/translate";
 import { identityKey } from "../models/items";
 import type {
   ActiveViewerSession,
@@ -11,7 +12,7 @@ import type {
 interface QuickViewState {
   session: ActiveViewerSession | null;
   pendingDelete: "trash" | "permanent" | null;
-  failure: string | null;
+  failure: Message | null;
   currentKey: () => string | null;
   start: (snapshot: ViewerSequenceSnapshot, presentation: ViewerPresentation, main: ViewerMainRelationship) => void;
   attachMainProjection: (projection: ViewerMainProjection) => void;
@@ -19,7 +20,7 @@ interface QuickViewState {
   setPresentation: (presentation: ViewerPresentation) => void;
   requestDelete: (kind: "trash" | "permanent") => void;
   cancelDelete: () => void;
-  setFailure: (failure: string | null) => void;
+  setFailure: (failure: Message | null) => void;
   close: () => void;
 }
 

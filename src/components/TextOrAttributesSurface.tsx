@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExternalLink, FolderOpen } from "lucide-react";
+import type { MessageKey } from "../i18n/catalogues";
+import { useI18n } from "../i18n/I18nContext";
+import { message, type Message, type Translator } from "../i18n/translate";
 import type { ItemDetail } from "../models/items";
 import { formatBytes } from "../models/items";
 import { takenPresentation } from "../models/itemPresentation";
@@ -30,7 +33,24 @@ interface TextBody {
 interface AttributesBody {
   body: "attributes";
   reason: string;
+  // The condition, when the core authored the reason itself; a decode or I/O
+  // diagnostic has none and shows as recorded.
+  reasonCode: string | null;
+  reasonBytes: number | null;
   byteSize: number;
+}
+
+function previewReason(
+  body: PreviewBody | null | undefined,
+  t: Translator["t"],
+): string | null {
+  if (body === null || body === undefined) return null;
+  if (body.body !== "attributes") return body.body === "decodeError" ? body.reason : null;
+  if (body.reasonCode === "preview-too-large") {
+    return t("reason.previewTooLarge", { bytes: body.reasonBytes ?? 0 });
+  }
+  if (body.reasonCode === "preview-binary") return t("reason.previewBinary");
+  return body.reason;
 }
 
 interface DecodeErrorBody {
@@ -62,6 +82,15 @@ function encodingLabel(encoding: string): string {
   return aliases === undefined ? encoding : `${encoding} — ${aliases}`;
 }
 
+type SessionOwner = "installation" | "encoding" | "wrap";
+
+// Which pending change failed; each owner names itself in its dismiss label.
+const SESSION_DISMISS_LABEL: Record<SessionOwner, MessageKey> = {
+  installation: "common.closeInstallationResult",
+  encoding: "textPreview.closeEncodingResult",
+  wrap: "textPreview.closeWrapResult",
+};
+
 function identityPayload(hash: string | null, pathId: number | null) {
   return { hash, pathId: hash === null ? pathId : null };
 }
@@ -77,6 +106,7 @@ export default function TextOrAttributesSurface({
   detail: ItemDetail;
   specializedFailure?: string | null;
 }) {
+  const { t, text } = useI18n();
   const identityKey = textEncodingKey(hash, pathId);
   const [body, setBody] = useState<PreviewBody | null>(null);
   const key =
@@ -87,9 +117,8 @@ export default function TextOrAttributesSurface({
     (state) => state.textEncodings[key] ?? "automatic",
   );
   const wrap = useContentSessionStore((state) => state.textWrap);
-  const [error, setError] = useState<string | null>(null);
-  type SessionOwner = "installation" | "encoding" | "wrap";
-  const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, string>>>({});
+  const [error, setError] = useState<Message | null>(null);
+  const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, Message>>>({});
   const sessionAttempts = useRef({ encoding: 0, wrap: 0 });
   const [encodings, setEncodings] = useState<string[]>([]);
   const loadedKey = useRef<string | null>(null);
@@ -97,12 +126,12 @@ export default function TextOrAttributesSurface({
   const reportSessionFailure = (
     owner: SessionOwner,
     kind: string,
-    message: string,
+    reason: Message,
     failure: unknown,
   ) => {
     log.warn("content session change failed", { kind, ...toErrorFields(failure) });
-    setSessionErrors((current) => ({ ...current, installation: undefined, [owner]: message }));
-    recordActionFailure(kind, message, failure);
+    setSessionErrors((current) => ({ ...current, installation: undefined, [owner]: reason }));
+    recordActionFailure(kind, reason, failure);
   };
 
   useEffect(() => {
@@ -111,7 +140,7 @@ export default function TextOrAttributesSurface({
       if (active) {
         setSessionErrors((current) => ({
           ...current,
-          installation: "Preview settings could not be synchronized. Try a preview control again.",
+          installation: message("textPreview.settingsSyncFailed"),
         }));
       }
     });
@@ -138,9 +167,7 @@ export default function TextOrAttributesSurface({
       .catch((failure) => {
         log.warn("text preview failed", toErrorFields(failure));
         if (current) {
-          setError(
-            "OneCopy couldn’t prepare this text preview. The original file was not changed.",
-          );
+          setError(message("textPreview.prepareFailed"));
         }
       });
     return () => {
@@ -152,21 +179,25 @@ export default function TextOrAttributesSurface({
     setError(null);
     void openInDefaultApp(hash, pathId).catch((failure) => {
       log.warn("external open failed", toErrorFields(failure));
-      setError("Couldn’t open this file in its default app.");
+      setError(message("textPreview.openFailed"));
     });
   };
 
   if (body === null && error === null) {
-    return <p className="text-sm text-ink-muted">Reading preview…</p>;
+    return <p className="text-sm text-ink-muted">{t("textPreview.reading")}</p>;
   }
 
   if (body?.body === "attributes" || body === null) {
     return (
       <AttributesBodyView
         detail={detail}
+        // A condition the core named is said here; a diagnostic it recorded,
+        // and a specialized surface's failure, show as they came.
         reason={[
           specializedFailure,
-          error ?? body?.reason ?? "Text preview is unavailable.",
+          error !== null
+            ? text(error)
+            : (previewReason(body, t) ?? t("textPreview.unavailable")),
         ]
           .filter((part): part is string => part !== null)
           .join(" ")}
@@ -187,7 +218,7 @@ export default function TextOrAttributesSurface({
         </span>
         <span className="flex items-center gap-2">
           <label className="flex items-center gap-1 text-xs text-ink-muted">
-            Encoding
+            {t("textPreview.encoding")}
             <select
               className="h-7 rounded border border-input-border bg-background px-1.5 text-xs text-ink"
               value={selectedEncoding}
@@ -207,15 +238,20 @@ export default function TextOrAttributesSurface({
                     reportSessionFailure(
                       "encoding",
                       "text-encoding-change-failed",
-                      "Couldn’t change the text encoding.",
+                      message("textPreview.encodingChangeFailed"),
                       failure,
                     );
                   });
               }}
             >
               <option value="automatic">
-                Automatic{body.body === "text" ? ` (${body.encoding})` : ""}
+                {body.body === "text"
+                  ? t("textPreview.automaticDetected", {
+                      encoding: body.encoding,
+                    })
+                  : t("textPreview.automatic")}
               </option>
+              {/* Encoding names and their alias spellings are identifiers. */}
               {encodings.map((encoding) => (
                 <option key={encoding} value={encoding}>
                   {encodingLabel(encoding)}
@@ -241,40 +277,41 @@ export default function TextOrAttributesSurface({
                   reportSessionFailure(
                     "wrap",
                     "text-wrap-change-failed",
-                    "Couldn’t change text wrapping.",
+                    message("textPreview.wrapChangeFailed"),
                     failure,
                   );
                 });
             }}
           >
-            Wrap {wrap ? "on" : "off"}
+            {wrap ? t("textPreview.wrapOn") : t("textPreview.wrapOff")}
           </Button>
           <Button variant="ghost" onClick={openExternal}>
-            <ExternalLink size={13} /> Open in default app
+            <ExternalLink size={13} /> {t("preview.openInDefaultApp")}
           </Button>
         </span>
       </div>
       {specializedFailure !== null ? (
         <OperationResult level="error" className="shrink-0">
+          {/* Still written by the owning preview surface. */}
           {specializedFailure}
         </OperationResult>
       ) : null}
-      {(Object.entries(sessionErrors) as Array<[SessionOwner, string | undefined]>).map(([owner, message]) =>
-        message ? (
+      {(Object.entries(sessionErrors) as Array<[SessionOwner, Message | undefined]>).map(([owner, reason]) =>
+        reason !== undefined ? (
           <OperationResult
             key={owner}
             level="error"
             className="shrink-0"
             onDismiss={() => setSessionErrors((current) => ({ ...current, [owner]: undefined }))}
-            dismissLabel={`Close ${owner} result`}
+            dismissLabel={t(SESSION_DISMISS_LABEL[owner])}
           >
-            {message}
+            {text(reason)}
           </OperationResult>
         ) : null,
       )}
       {error !== null ? (
         <OperationResult level="error" className="shrink-0">
-          {error}
+          {text(error)}
         </OperationResult>
       ) : null}
       {body.body === "text" ? (
@@ -288,6 +325,7 @@ export default function TextOrAttributesSurface({
         </pre>
       ) : (
         <OperationResult level="error" className="text-sm">
+          {/* The decode reason comes from the backend. */}
           {body.reason}
         </OperationResult>
       )}
@@ -306,8 +344,9 @@ function AttributesBodyView({
   byteSize: number | null;
   onOpen: () => void;
 }) {
+  const { t, text, dateTime, number } = useI18n();
   useDisplayZone();
-  const [revealError, setRevealError] = useState<string | null>(null);
+  const [revealError, setRevealError] = useState<Message | null>(null);
   return (
     <div className="h-full w-full overflow-auto p-5">
       <div className="mx-auto max-w-3xl">
@@ -319,28 +358,28 @@ function AttributesBodyView({
             <p className="mt-1 text-sm text-ink-muted">{reason}</p>
           </div>
           <Button onClick={onOpen}>
-            <ExternalLink size={14} /> Open in default app
+            <ExternalLink size={14} /> {t("preview.openInDefaultApp")}
           </Button>
         </div>
         {revealError !== null ? (
           <OperationResult level="error" className="mt-2">
-            {revealError}
+            {text(revealError)}
           </OperationResult>
         ) : null}
         <dl className="mt-5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
-          <dt className="text-ink-muted">Type</dt>
+          <dt className="text-ink-muted">{t("common.kind")}</dt>
+          {/* The kind word is the core's own, and becomes a code in its pass. */}
           <dd className="text-ink">{detail.kind}</dd>
-          <dt className="text-ink-muted">Size</dt>
+          <dt className="text-ink-muted">{t("common.size")}</dt>
           <dd className="text-ink">
-            {byteSize === null ? "Unknown" : formatBytes(byteSize)}
+            {byteSize === null ? t("textPreview.unknown") : formatBytes(byteSize, number)}
           </dd>
-          <dt className="text-ink-muted">Date</dt>
-          <dd className="text-ink">{takenPresentation(detail)}</dd>
-          <dt className="text-ink-muted">Copies</dt>
+          <dt className="text-ink-muted">{t("common.date")}</dt>
+          <dd className="text-ink">{takenPresentation(detail, t, dateTime)}</dd>
+          <dt className="text-ink-muted">{t("textPreview.copies")}</dt>
           <dd>
             <p className="mb-1 text-ink">
-              {detail.copyPaths.length.toLocaleString()} exact{" "}
-              {detail.copyPaths.length === 1 ? "copy" : "copies"}
+              {t("textPreview.exactCopies", { count: detail.copyPaths.length })}
             </p>
             <ul className="space-y-1">
               {detail.copyPaths.map((path) => (
@@ -350,8 +389,8 @@ function AttributesBodyView({
                   </span>
                   <button
                     className="shrink-0 rounded p-1 text-ink-muted hover:bg-surface-muted hover:text-ink"
-                    aria-label={`Reveal ${path}`}
-                    title="Reveal file"
+                    aria-label={t("textPreview.revealPath", { path })}
+                    title={t("textPreview.revealFile")}
                     onClick={() => {
                       setRevealError(null);
                       void revealInFileManager(path).catch((failure) => {
@@ -359,7 +398,7 @@ function AttributesBodyView({
                           path,
                           ...toErrorFields(failure),
                         });
-                        setRevealError("Couldn’t reveal this copy.");
+                        setRevealError(message("metadata.revealFailed"));
                       });
                     }}
                   >

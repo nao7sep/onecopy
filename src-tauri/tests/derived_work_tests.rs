@@ -565,7 +565,7 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
 
     assert_eq!(previews["queued"], 1);
     assert_eq!(previews["state"], "unavailable");
-    assert_eq!(previews["reason"], "Waiting for ffmpeg");
+    assert_eq!(previews["reason"], "waiting-for-ffmpeg");
 }
 
 #[test]

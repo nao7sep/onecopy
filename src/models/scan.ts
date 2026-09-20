@@ -1,6 +1,9 @@
 // User-facing projection of the scanner's typed durable progress. The core
 // owns phase/checkpoint facts; words and compact formatting belong here.
 
+import type { MessageKey } from "../i18n/catalogues";
+import type { Translator } from "../i18n/translate";
+
 export interface ScanProgress {
   phase: string;
   done: number;
@@ -13,33 +16,29 @@ export interface ScanProgress {
   nextPhase: string | null;
 }
 
-const PHASE_LABELS: Record<string, string> = {
-  walk: "Checking source folders",
-  hash: "Reading files",
-  extract: "Reading metadata",
-  resolve: "Working out dates",
-  pair: "Pairing companions",
-  indexed: "Indexed",
+const PHASE_LABELS: Record<string, MessageKey> = {
+  walk: "scan.phaseWalk",
+  hash: "scan.phaseHash",
+  extract: "scan.phaseExtract",
+  resolve: "scan.phaseResolve",
+  pair: "scan.phasePair",
+  indexed: "scan.phaseIndexed",
 };
 
-const PHASE_DESCRIPTIONS: Record<string, string> = {
-  walk: "Checks configured folders and records the files currently present.",
-  hash:
-    "Reads file bytes only when identity cannot be decided from existing facts. Cloud placeholders may download while read.",
-  extract:
-    "Reads EXIF and media-container structures without decoding image pixels or video frames. Cloud providers or containers may still hydrate or seek the file.",
-  resolve: "Chooses each file's display date from saved metadata, filename, and filesystem facts.",
-  pair: "Connects RAW sidecars and Live Photo companions to their primary media.",
-  indexed:
-    "The file-information pass has ended. Previews, snapshots, similarity, faces, and transcripts continue separately in Background work.",
+const PHASE_DESCRIPTIONS: Record<string, MessageKey> = {
+  walk: "scan.descriptionWalk",
+  hash: "scan.descriptionHash",
+  extract: "scan.descriptionExtract",
+  resolve: "scan.descriptionResolve",
+  pair: "scan.descriptionPair",
+  indexed: "scan.descriptionIndexed",
 };
 
-export function phaseLabel(phase: string): string {
-  return PHASE_LABELS[phase] ?? phase.charAt(0).toUpperCase() + phase.slice(1);
-}
-
-function count(value: number): string {
-  return value.toLocaleString();
+/** A phase's words. A phase the catalogue does not name falls back to its own
+ * token, which is why this resolves text instead of returning a key. */
+export function phaseLabel(phase: string, t: Translator["t"]): string {
+  const key = PHASE_LABELS[phase];
+  return key === undefined ? phase.charAt(0).toUpperCase() + phase.slice(1) : t(key);
 }
 
 function leaf(path: string): string {
@@ -48,26 +47,31 @@ function leaf(path: string): string {
 }
 
 /** Compact status-bar words. Every number comes directly from the backend
- * snapshot; phase-specific work is never inferred from a detail string. */
-export function progressLine(progress: ScanProgress): string {
+ * snapshot; phase-specific work is never inferred from a detail string.
+ *
+ * The facts are a variable join of independently translated parts, so this
+ * composes them with the translator rather than returning one descriptor. */
+export function progressLine(
+  progress: ScanProgress,
+  t: Translator["t"],
+  percentOf: Translator["percent"],
+): string {
   if (progress.phase === "indexed") {
-    return "No work running";
+    return t("work.noWork");
   }
 
   const parts: string[] = [];
   if (progress.phase === "walk") {
     const source = Math.min(progress.done + 1, progress.total);
     if (progress.total > 0) {
-      parts.push(`source ${count(source)}/${count(progress.total)}`);
+      parts.push(t("scan.sourceProgress", { done: source, total: progress.total }));
     }
     if (progress.discovered !== null) {
-      parts.push(
-        `${count(progress.discovered)} file${progress.discovered === 1 ? "" : "s"} found`,
-      );
+      parts.push(t("scan.filesFound", { count: progress.discovered }));
     }
     if (progress.currentPath !== null) parts.push(progress.currentPath);
   } else {
-    parts.push(`${count(progress.done)}/${count(progress.total)}`);
+    parts.push(t("scan.doneOfTotal", { done: progress.done, total: progress.total }));
     if (progress.currentPath !== null && progress.done < progress.total) {
       parts.push(leaf(progress.currentPath));
     }
@@ -80,18 +84,25 @@ export function progressLine(progress: ScanProgress): string {
         100,
         Math.floor((progress.bytesDone * 100) / progress.bytesTotal),
       );
-      parts.push(`${percent}%`);
+      parts.push(percentOf(percent / 100));
     }
   }
   if (progress.nextPhase !== null && progress.done === progress.total) {
-    parts.push(`Next: ${phaseLabel(progress.nextPhase)}`);
+    parts.push(t("scan.nextPhase", { phase: phaseLabel(progress.nextPhase, t) }));
   }
-  return `${phaseLabel(progress.phase)} \u2014 ${parts.join(" · ")}`;
+  return t("scan.progress", {
+    phase: phaseLabel(progress.phase, t),
+    facts: parts.join(" · "),
+  });
 }
 
-export function progressTitle(progress: ScanProgress): string {
-  const description = PHASE_DESCRIPTIONS[progress.phase] ?? phaseLabel(progress.phase);
+export function progressTitle(progress: ScanProgress, t: Translator["t"]): string {
+  const key = PHASE_DESCRIPTIONS[progress.phase];
+  const description = key === undefined ? phaseLabel(progress.phase, t) : t(key);
   return progress.nextPhase === null
     ? description
-    : `${description} Next: ${phaseLabel(progress.nextPhase)}.`;
+    : t("scan.titleWithNext", {
+        description,
+        phase: phaseLabel(progress.nextPhase, t),
+      });
 }

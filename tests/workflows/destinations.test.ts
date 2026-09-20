@@ -12,11 +12,12 @@ import {
   openDialog,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { inEnglish } from "../helpers/i18n";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({ patch_config: () => ({}) });
-  useDestinationsStore.setState({ roots: ["/existing"], message: "" });
+  useDestinationsStore.setState({ roots: ["/existing"], message: null });
 });
 
 describe("destination root failures", () => {
@@ -25,10 +26,10 @@ describe("destination root failures", () => {
 
     await addDestinationRoot();
 
-    expect(useDestinationsStore.getState()).toMatchObject({
-      roots: ["/existing"],
-      message: "Couldn’t add that destination.",
-    });
+    expect(useDestinationsStore.getState().roots).toEqual(["/existing"]);
+    expect(inEnglish(useDestinationsStore.getState().message)).toBe(
+      "Couldn’t add that destination.",
+    );
   });
 
   it("keeps a failed config update visible without changing the tree", async () => {
@@ -36,10 +37,10 @@ describe("destination root failures", () => {
 
     await removeDestinationRoot("/existing");
 
-    expect(useDestinationsStore.getState()).toMatchObject({
-      roots: ["/existing"],
-      message: "Couldn’t remove that destination.",
-    });
+    expect(useDestinationsStore.getState().roots).toEqual(["/existing"]);
+    expect(inEnglish(useDestinationsStore.getState().message)).toBe(
+      "Couldn’t remove that destination.",
+    );
     expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({
       reportFailure: false,
     });

@@ -9,6 +9,7 @@ import { log, reportWindowCall, toErrorFields } from "../repositories";
 import type { EventInstallation } from "../utils/eventInstallation";
 import type { MonitorRect } from "../utils/screens";
 import { waitForWindowCreated } from "../utils/windowCreation";
+import { message } from "../i18n/translate";
 
 const LABEL = "comparison-image";
 
@@ -32,7 +33,9 @@ function queue(action: () => Promise<void>): Promise<void> {
 
 function reportFailure(error: unknown): void {
   log.error("comparison image window failed", toErrorFields(error));
-  useComparisonStore.setState({ message: "Couldn’t open or close the larger image. Your comparison decisions are unchanged." });
+  useComparisonStore.setState({
+    message: message("comparisonImage.toggleFailed"),
+  });
 }
 
 export async function focusComparison(returnWindow = "main"): Promise<void> {

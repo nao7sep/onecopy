@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { isComposingEvent } from "../hooks/useComposing";
@@ -16,6 +17,7 @@ import { comparisonKeyIsRoutable } from "../workflows/comparison";
 // window remains the sole owner of selection and file operations.
 
 export default function ComparisonWindow({ slice }: { slice: number }) {
+  const { t } = useI18n();
   const itemArea = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<ComparisonBroadcast | null>(null);
   const [revealMember, setRevealMember] = useState<{
@@ -107,7 +109,7 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         ref={itemArea}
         tabIndex={0}
         role="listbox"
-        aria-label="Images on the current comparison display"
+        aria-label={t("comparison.displayImages")}
         aria-multiselectable="true"
         className="grid min-h-0 flex-1 grid-flow-row gap-3 p-3"
         style={{
@@ -116,7 +118,7 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         }}
       >
         {chunk.length === 0 ? (
-          <p className="m-auto text-ink-muted">Waiting for the comparison…</p>
+          <p className="m-auto text-ink-muted">{t("comparison.waiting")}</p>
         ) : (
           chunk.map((slot, index) => (
             <ComparisonSlot
@@ -143,8 +145,7 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
         )}
       </div>
       <footer className="shrink-0 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        0–9, A–Z, or Keep toggle marks · Space opens the picked image · Arrows inspect · Enter reviews
-        marked keepers and the visible Trash set · Escape closes
+        {t("comparison.spreadHint")}
       </footer>
     </div>
   );

@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { ScanProgress } from "../models/scan";
 import type { SectionCounts } from "../models/sections";
+import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
@@ -35,7 +36,7 @@ interface IndexWorkSnapshot {
 
 interface SectionsState {
   counts: SectionCounts | null;
-  error: string | null;
+  error: Message | null;
   sourceCheck: SourceCheckState;
   fileInformation: FileInformationState;
   /** Watcher overflow or a stopped source walk requires explicit discovery. */
@@ -84,12 +85,9 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return;
       log.error("section counts load failed", toErrorFields(error));
-      set({ error: "Couldn’t read the library sections." });
-      recordActionFailure(
-        "section-counts-load-failed",
-        "Couldn’t read the library sections.",
-        error,
-      );
+      const failure = message("section.countsLoadFailed");
+      set({ error: failure });
+      recordActionFailure("section-counts-load-failed", failure, error);
     }
   },
 
@@ -120,12 +118,9 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
     } catch (error) {
       if (!fresh()) return;
       log.error("library background-work status failed", toErrorFields(error));
-      set({ error: "Couldn’t read library background-work status." });
-      recordActionFailure(
-        "background-work-status-failed",
-        "Couldn’t read library background-work status.",
-        error,
-      );
+      const failure = message("work.statusLoadFailed");
+      set({ error: failure });
+      recordActionFailure("background-work-status-failed", failure, error);
     }
   },
 
@@ -157,8 +152,9 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       return started;
     } catch (error) {
       log.error("source-folder check start failed", toErrorFields(error));
-      set({ error: "Couldn’t start checking source folders." });
-      recordActionFailure("source-check-start-failed", "Couldn’t start checking source folders.", error);
+      const failure = message("work.sourceCheckStartFailed");
+      set({ error: failure });
+      recordActionFailure("source-check-start-failed", failure, error);
       recordActivity({
         kind: "failed",
         owner: "sourceCheck",
@@ -186,8 +182,9 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       }
     } catch (error) {
       log.error("source-folder stop failed", toErrorFields(error));
-      set({ error: "Couldn’t stop checking source folders." });
-      recordActionFailure("source-check-stop-failed", "Couldn’t stop checking source folders.", error);
+      const failure = message("work.sourceCheckStopFailed");
+      set({ error: failure });
+      recordActionFailure("source-check-stop-failed", failure, error);
     }
   },
 
@@ -203,12 +200,9 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       await invoke("admit_background_completion");
     } catch (error) {
       log.error("file-information startup failed", toErrorFields(error));
-      set({ error: "Couldn’t start completing file information." });
-      recordActionFailure(
-        "file-information-start-failed",
-        "Couldn’t start completing file information.",
-        error,
-      );
+      const failure = message("work.fileInformationStartFailed");
+      set({ error: failure });
+      recordActionFailure("file-information-start-failed", failure, error);
       recordActivity({
         kind: "failed",
         owner: "fileInformation",
@@ -233,12 +227,9 @@ export const useSectionsStore = create<SectionsState>((set, get) => ({
       await get().loadIndexWork();
     } catch (error) {
       log.error("file-information pause change failed", toErrorFields(error));
-      set({ error: "Couldn’t change file-information background work." });
-      recordActionFailure(
-        "file-information-control-failed",
-        "Couldn’t change file-information background work.",
-        error,
-      );
+      const failure = message("work.fileInformationControlFailed");
+      set({ error: failure });
+      recordActionFailure("file-information-control-failed", failure, error);
     }
   },
 }));

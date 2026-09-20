@@ -20,6 +20,7 @@ import {
 } from "../repositories";
 import { listen } from "@tauri-apps/api/event";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import { message } from "../i18n/translate";
 import { reportActionFailure } from "./notifications-store";
 
 interface AppState {
@@ -115,7 +116,7 @@ export function reportStatePatchFailure(error: unknown): void {
   log.error("state patch failed", toErrorFields(error));
   reportActionFailure(
     "interface-state-save-failed",
-    "OneCopy couldn’t save the current interface state. Your changes remain available in this session.",
+    message("app.stateSaveFailed"),
     error,
   );
 }
@@ -258,6 +259,6 @@ void (async () => {
     });
   } catch (error) {
     log.warn("quarantine event wiring failed", toErrorFields(error));
-    recordInterfaceFailure("OneCopy could not monitor saved-data recovery. Reload the window before continuing.");
+    recordInterfaceFailure(message("app.recoveryMonitorFailed"));
   }
 })();

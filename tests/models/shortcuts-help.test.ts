@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { shortcutColumns, shortcutGroups } from "../../src/models/shortcuts";
 import { primaryModWord } from "../../src/utils/shortcuts";
+import { t } from "../helpers/i18n";
 
 // Catalogue assertions cover authored scope and organization. Actual dispatch
 // is exercised by the grid, tree, viewer, Comparison, modal and command suites;
@@ -8,7 +9,7 @@ import { primaryModWord } from "../../src/utils/shortcuts";
 describe("shortcut catalogue", () => {
   it("keeps related contexts in three balanced reading columns", () => {
     const columns = shortcutColumns();
-    expect(columns.map((column) => column.map((group) => group.title))).toEqual([
+    expect(columns.map((column) => column.map((group) => t(group.title)))).toEqual([
       ["Main items", "Sections", "Destinations"],
       ["Quick View and fullscreen", "Preview window", "Media and text", "Confirmations"],
       ["Comparison", "App"],
@@ -20,8 +21,8 @@ describe("shortcut catalogue", () => {
 
   it("names keycaps consistently and gives every group an honest context", () => {
     for (const group of shortcutGroups()) {
-      expect(group.context).not.toContain("anywhere");
-      expect(group.context.length).toBeGreaterThan(0);
+      expect(t(group.context)).not.toContain("anywhere");
+      expect(t(group.context).length).toBeGreaterThan(0);
       for (const row of group.rows) {
         expect(row.chord).not.toMatch(/Cmd\/Ctrl|Ctrl\/Cmd|Page Up|Page Down|PgUp|PgDn|⌘/);
         expect(row.chord).not.toMatch(primaryModWord() === "Cmd" ? /Ctrl\+/ : /Cmd\+/);
@@ -31,7 +32,12 @@ describe("shortcut catalogue", () => {
 
   it("distinguishes selection scope, keep decisions, and viewer round trips", () => {
     const groups = shortcutGroups();
-    const row = (title: string, chord: string) => groups.find((g) => g.title === title)?.rows.find((r) => r.chord === chord)?.action;
+    const row = (title: string, chord: string) => {
+      const action = groups
+        .find((group) => t(group.title) === title)
+        ?.rows.find((r) => r.chord === chord)?.action;
+      return action === undefined ? undefined : t(action);
+    };
     expect(row("Main items", "Delete/Backspace")).toContain("selected items");
     expect(row("Preview window", "Delete/Backspace")).toContain("complete selection");
     expect(row("Quick View and fullscreen", "Delete/Backspace")).toContain("only the displayed item");

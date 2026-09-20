@@ -24,6 +24,9 @@ import InspectableImage, {
   type InspectPosition,
 } from "./InspectableImage";
 import { useHoldInspect, type PointerPoint } from "../hooks/useHoldInspect";
+import { useI18n } from "../i18n/I18nContext";
+import type { MessageKey } from "../i18n/catalogues";
+import { message, type Message } from "../i18n/translate";
 import type { ItemDetail } from "../models/items";
 import { playbackFailureMessage, type PlaybackSurface, type PlaybackMedium } from "../models/playback";
 import { ExternalLink, Pause, Play, Volume2, VolumeX } from "lucide-react";
@@ -37,16 +40,20 @@ import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import { recordActionFailure } from "../state/notifications-store";
 
-function capturePlaybackFailure(element: HTMLMediaElement, key: string, medium: PlaybackMedium): string {
+function capturePlaybackFailure(
+  element: HTMLMediaElement,
+  key: string,
+  medium: PlaybackMedium,
+): MessageKey {
   const code = element.error?.code ?? null;
-  const message = playbackFailureMessage(medium, code);
+  const reason = playbackFailureMessage(medium, code);
   log.warn("media playback failed", {
     key, medium, code, diagnostic: element.error?.message ?? null,
     networkState: element.networkState, readyState: element.readyState,
     position: element.currentTime,
   });
-  recordActionFailure(`${medium}-playback-failed`, message);
-  return message;
+  recordActionFailure(`${medium}-playback-failed`, message(reason));
+  return reason;
 }
 
 function VideoSurface({
@@ -60,9 +67,10 @@ function VideoSurface({
   surface: PlaybackSurface;
   keyboardActive?: boolean;
 }) {
-  const [playbackFailure, setPlaybackFailure] = useState<string | null>(null);
+  const { t, text } = useI18n();
+  const [playbackFailure, setPlaybackFailure] = useState<MessageKey | null>(null);
   const playbackFailed = playbackFailure !== null;
-  const [externalError, setExternalError] = useState<string | null>(null);
+  const [externalError, setExternalError] = useState<Message | null>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(
@@ -120,7 +128,7 @@ function VideoSurface({
       data-video-surface
       tabIndex={keyboardActive ? 0 : -1}
       role={keyboardActive ? "group" : undefined}
-      aria-label={keyboardActive ? "Video Quick View" : undefined}
+      aria-label={keyboardActive ? t("preview.videoQuickView") : undefined}
       className="flex h-full min-h-0 w-full flex-col gap-2 outline-none"
     >
       <div
@@ -128,11 +136,7 @@ function VideoSurface({
         className={`relative min-h-0 flex-1 overflow-hidden rounded-lg bg-background ${
           hold.inspecting ? "cursor-crosshair" : ""
         }`}
-        title={
-          playbackFailed
-            ? undefined
-            : "Press and hold the picture for original pixels"
-        }
+        title={playbackFailed ? undefined : t("inspect.holdOriginal")}
         onPointerDown={playbackFailed ? undefined : hold.onPointerDown}
         onClickCapture={playbackFailed ? undefined : hold.onClickCapture}
       >
@@ -198,13 +202,11 @@ function VideoSurface({
               setExternalError(null);
               void openInDefaultApp(hash, null).catch((error) => {
                 log.warn("open in player failed", toErrorFields(error));
-                setExternalError(
-                  "Couldn’t open this video in the external player.",
-                );
+                setExternalError(message("preview.openVideoFailed"));
               });
             }}
           >
-            <ExternalLink size={13} /> Open in player
+            <ExternalLink size={13} /> {t("preview.openInPlayer")}
           </button>
         ) : null}
         {!hold.inspecting && sceneCount > 0 ? (
@@ -222,13 +224,17 @@ function VideoSurface({
                 <button
                   key={index}
                   className="relative h-16 w-24 shrink-0 overflow-hidden rounded border border-border hover:border-primary-ring"
-                  title={`Play from ${timestampLabel(atMs)}`}
-                  aria-label={`Play from ${timestampLabel(atMs)}`}
+                  title={t("preview.playFrom", { time: timestampLabel(atMs) })}
+                  aria-label={t("preview.playFrom", {
+                    time: timestampLabel(atMs),
+                  })}
                   onClick={() => playback.seekAndPlay(atMs / 1000)}
                 >
                   <img
                     src={stripUrl(hash, index)}
-                    alt={`snapshot at ${timestampLabel(atMs)}`}
+                    alt={t("preview.snapshotAlt", {
+                      time: timestampLabel(atMs),
+                    })}
                     loading="lazy"
                     className="h-full w-full object-contain"
                   />
@@ -247,7 +253,7 @@ function VideoSurface({
           >
             <button
               className="rounded p-1 text-ink hover:bg-surface-muted"
-              aria-label={playing ? "Pause" : "Play"}
+              aria-label={playing ? t("preview.pause") : t("preview.play")}
               onClick={() => playback.toggle()}
             >
               {playing ? <Pause size={16} /> : <Play size={16} />}
@@ -256,7 +262,7 @@ function VideoSurface({
               {timestampLabel(position * 1000)}
             </span>
             <input
-              aria-label="Playback position"
+              aria-label={t("preview.playbackPosition")}
               type="range"
               min={0}
               max={Math.max(duration, 0.01)}
@@ -270,7 +276,9 @@ function VideoSurface({
             </span>
             <button
               className="rounded p-1 text-ink hover:bg-surface-muted"
-              aria-label={muted ? "Turn sound on" : "Turn sound off"}
+              aria-label={
+                muted ? t("preview.turnSoundOn") : t("preview.turnSoundOff")
+              }
               onClick={() => {
                 const video = videoRef.current;
                 if (video !== null) video.muted = !video.muted;
@@ -279,7 +287,7 @@ function VideoSurface({
               {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
             </button>
             <input
-              aria-label="Playback volume"
+              aria-label={t("preview.playbackVolume")}
               type="range"
               min={0.01}
               max={1}
@@ -298,21 +306,21 @@ function VideoSurface({
       </div>
       {playbackFailed ? (
         <OperationResult level="error" className="shrink-0 text-sm">
-          {playbackFailure}
+          {t(playbackFailure)}
         </OperationResult>
       ) : null}
       {externalError !== null ? (
         <OperationResult level="error" className="shrink-0">
-          {externalError}
+          {text(externalError)}
         </OperationResult>
       ) : null}
       {playback.setupFailed ? (
         <OperationResult
           level="error"
           className="shrink-0"
-          actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>Retry</Button>}
+          actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>{t("common.retry")}</Button>}
         >
-          Playback controls could not be connected. Try again.
+          {t("preview.playbackSetupFailed")}
         </OperationResult>
       ) : null}
       {playbackFailed ? (
@@ -364,7 +372,8 @@ function ImageSurface({
   detail: ItemDetail;
   enlargeSmall: boolean;
 }) {
-  const [externalError, setExternalError] = useState<string | null>(null);
+  const { t, text } = useI18n();
+  const [externalError, setExternalError] = useState<Message | null>(null);
   // A missing cache entry is USUALLY just a photo the scan's bulk pass has
   // not reached (it runs walk-order; on a slow machine the tail is hours
   // away), so the first failure asks the core to derive THIS one now and
@@ -373,10 +382,10 @@ function ImageSurface({
   const [phase, setPhase] = useState<
     | { kind: "showing"; attempt: number; cacheHash: string }
     | { kind: "converting" }
-    | { kind: "failed"; reason: string }
+    | { kind: "failed"; reason: Message }
   >({ kind: "showing", attempt: 0, cacheHash: hash });
   if (phase.kind === "converting") {
-    return <p className="text-sm text-ink-muted">Converting…</p>;
+    return <p className="text-sm text-ink-muted">{t("preview.converting")}</p>;
   }
   if (phase.kind === "failed") {
     return (
@@ -384,7 +393,9 @@ function ImageSurface({
         hash={hash}
         pathId={null}
         detail={detail}
-        specializedFailure={`Built-in image preview failed: ${phase.reason}`}
+        specializedFailure={t("preview.imagePreviewFailed", {
+          reason: phase.reason,
+        })}
       />
     );
   }
@@ -401,8 +412,7 @@ function ImageSurface({
           if (phase.attempt > 0) {
             setPhase({
               kind: "failed",
-              reason:
-                "No preview yet — not derived, or this format cannot be decoded.",
+              reason: message("preview.noPreviewYet"),
             });
             return;
           }
@@ -415,7 +425,7 @@ function ImageSurface({
               log.warn("on-demand preview derive failed", toErrorFields(error));
               setPhase({
                 kind: "failed",
-                reason: "A preview could not be prepared for this file. File actions and known details remain available.",
+                reason: message("preview.previewPrepareFailed"),
               });
             });
         }}
@@ -426,18 +436,18 @@ function ImageSurface({
           setExternalError(null);
           void openInDefaultApp(hash, null).catch((error) => {
             log.warn("external image open failed", toErrorFields(error));
-            setExternalError("Couldn’t open this image in its default app.");
+            setExternalError(message("preview.openImageFailed"));
           });
         }}
       >
-        <ExternalLink size={13} /> Open in default app
+        <ExternalLink size={13} /> {t("preview.openInDefaultApp")}
       </button>
       {externalError !== null ? (
         <OperationResult
           level="error"
           className="absolute bottom-2 left-2 right-2 shadow-sm"
         >
-          {externalError}
+          {text(externalError)}
         </OperationResult>
       ) : null}
     </div>
@@ -462,8 +472,9 @@ function AudioSurface({
   surface: PlaybackSurface;
   pathId: number | null;
 }) {
-  const [externalError, setExternalError] = useState<string | null>(null);
-  const [playbackFailure, setPlaybackFailure] = useState<string | null>(null);
+  const { t, text, number } = useI18n();
+  const [externalError, setExternalError] = useState<Message | null>(null);
+  const [playbackFailure, setPlaybackFailure] = useState<MessageKey | null>(null);
   const playbackFailed = playbackFailure !== null;
   const playback = usePlaybackMedia<HTMLAudioElement>(
     surface,
@@ -474,7 +485,7 @@ function AudioSurface({
   if (playbackFailed) {
     return (
       <div className="flex h-full min-h-0 w-full flex-col gap-3 p-3">
-        <OperationResult level="error" className="shrink-0 text-sm">{playbackFailure}</OperationResult>
+        <OperationResult level="error" className="shrink-0 text-sm">{t(playbackFailure)}</OperationResult>
         <div className="min-h-0 flex-1">
           <TextOrAttributesSurface hash={hash} pathId={pathId} detail={detail} />
         </div>
@@ -506,13 +517,15 @@ function AudioSurface({
           onError={(event) => setPlaybackFailure(capturePlaybackFailure(event.currentTarget, playbackKey, "audio"))}
         />
         <p className="text-xs text-ink-muted">
-          {detail.byteSize === null
-            ? "Unknown size"
-            : formatBytes(detail.byteSize)}
-          {detail.durationMs === null
-            ? ""
-            : ` · ${timestampLabel(detail.durationMs)}`}
-          {` · ${detail.copyPaths.length.toLocaleString()} ${detail.copyPaths.length === 1 ? "copy" : "copies"}`}
+          {[
+            detail.byteSize === null
+              ? t("preview.unknownSize")
+              : formatBytes(detail.byteSize, number),
+            ...(detail.durationMs === null
+              ? []
+              : [timestampLabel(detail.durationMs)]),
+            t("preview.copyCount", { count: detail.copyPaths.length }),
+          ].join(" · ")}
         </p>
         <Button
           variant="ghost"
@@ -520,23 +533,21 @@ function AudioSurface({
             setExternalError(null);
             void openInDefaultApp(hash, pathId).catch((error) => {
               log.warn("external audio open failed", toErrorFields(error));
-              setExternalError(
-                "Couldn’t open this audio file in its default app.",
-              );
+              setExternalError(message("preview.openAudioFailed"));
             });
           }}
         >
-          <ExternalLink size={13} /> Open in default app
+          <ExternalLink size={13} /> {t("preview.openInDefaultApp")}
         </Button>
         {externalError !== null ? (
-          <OperationResult level="error">{externalError}</OperationResult>
+          <OperationResult level="error">{text(externalError)}</OperationResult>
         ) : null}
         {playback.setupFailed ? (
           <OperationResult
             level="error"
-            actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>Retry</Button>}
+            actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>{t("common.retry")}</Button>}
           >
-            Playback controls could not be connected. Try again.
+            {t("preview.playbackSetupFailed")}
           </OperationResult>
         ) : null}
       </div>
@@ -562,6 +573,7 @@ export default function PreviewSurface({
   /** A transient owning layer can give its player the media keys. */
   keyboardActive?: boolean;
 }) {
+  const { t } = useI18n();
   const configuredEnlargeSmall = useAppStore((state) => {
     const config = state.appData?.config;
     if (config === null || config === undefined) return null;
@@ -597,14 +609,14 @@ export default function PreviewSurface({
   if (hash === null && detail === null) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-ink-muted">Select an item</p>
+        <p className="text-ink-muted">{t("preview.selectItem")}</p>
       </div>
     );
   }
   if (detail === null) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-ink-muted">Loading preview…</p>
+        <p className="text-ink-muted">{t("preview.loading")}</p>
       </div>
     );
   }

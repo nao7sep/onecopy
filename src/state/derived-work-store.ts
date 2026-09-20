@@ -3,7 +3,10 @@
 // pause/resume intent back to that single owner.
 
 import { invoke } from "@tauri-apps/api/core";
+import { workReasonKey } from "../models/workReasons";
 import { create } from "zustand";
+import type { MessageKey } from "../i18n/catalogues";
+import { message, type Message, type Translator } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { requestSeq } from "./request-seq";
 import { recordActionFailure } from "./notifications-store";
@@ -58,7 +61,7 @@ interface DerivedWorkState {
   snapshot: BackgroundWorkSnapshot | null;
   loading: boolean;
   changing: string | null;
-  error: string | null;
+  error: Message | null;
   activeItem: ActiveItemWork | null;
   load: () => Promise<void>;
   setPaused: (classId: string | null, paused: boolean) => Promise<void>;
@@ -102,10 +105,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
       }
     } catch (error) {
       if (!fresh()) return;
-      set({
-        loading: false,
-        error: "Background work could not be loaded. Try reopening this window.",
-      });
+      set({ loading: false, error: message("work.loadFailed") });
       log.warn("background-work snapshot failed", toErrorFields(error));
     }
   },
@@ -131,9 +131,13 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
       if (classId === null) await useSectionsStore.getState().loadIndexWork();
       await get().load();
     } catch (error) {
-      set({ error: "Background work could not be changed. Try again." });
+      set({ error: message("work.changeFailed") });
       log.warn("background-work pause failed", toErrorFields(error));
-      recordActionFailure("background-work-control-failed", "Couldn’t change background work.", error);
+      recordActionFailure(
+        "background-work-control-failed",
+        message("work.controlFailed"),
+        error,
+      );
     } finally {
       set((state) => ({
         changing: state.changing === changing ? null : state.changing,
@@ -142,13 +146,25 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   },
 }));
 
-const CLASS_LABELS: Record<BackgroundClassSnapshot["id"], string> = {
-  previews: "Thumbnails, previews, and posters",
-  snapshots: "Video snapshots",
-  similarity: "Similar photos",
-  faces: "Face scoring",
-  "video-transcripts": "Video transcription",
-  "audio-transcripts": "Audio transcription",
+const CLASS_LABELS: Record<BackgroundClassSnapshot["id"], MessageKey> = {
+  previews: "work.classPreviews",
+  snapshots: "wizard.videoSnapshots",
+  similarity: "work.classSimilarity",
+  faces: "wizard.faceScoring",
+  "video-transcripts": "wizard.videoTranscription",
+  "audio-transcripts": "wizard.audioTranscription",
+};
+
+/** One whole sentence per class rather than "Stopping" plus a lowercased
+ * label: a language that capitalizes its nouns, or puts the verb last, cannot
+ * be served by lowercasing a label the catalogue already holds. */
+const STOPPING_LINES: Record<BackgroundClassSnapshot["id"], MessageKey> = {
+  previews: "work.stoppingPreviews",
+  snapshots: "work.stoppingSnapshots",
+  similarity: "work.stoppingSimilarity",
+  faces: "work.stoppingFaces",
+  "video-transcripts": "work.stoppingVideoTranscripts",
+  "audio-transcripts": "work.stoppingAudioTranscripts",
 };
 
 const ACTIVITY_SUBJECTS: Record<
@@ -163,30 +179,47 @@ const ACTIVITY_SUBJECTS: Record<
   "audio-transcripts": "audioTranscription",
 };
 
-export function backgroundClassLabel(id: BackgroundClassSnapshot["id"]): string {
+export function backgroundClassLabel(id: BackgroundClassSnapshot["id"]): MessageKey {
   return CLASS_LABELS[id];
 }
 
-export function backgroundWorkLine(snapshot: BackgroundWorkSnapshot | null): string {
-  if (snapshot === null) return "Background work";
+/** The chip's one line. Which fact wins depends on the live snapshot, and a
+ * waiting row may carry a reason the core recorded, so this resolves words
+ * here rather than returning a descriptor. */
+export function backgroundWorkLine(
+  snapshot: BackgroundWorkSnapshot | null,
+  t: Translator["t"],
+): string {
+  if (snapshot === null) return t("work.title");
   const rows = backgroundRows(snapshot);
   const stopping = rows.find((row) => row.state === "stopping");
-  if (stopping) return `Stopping ${backgroundClassLabel(stopping.id).toLowerCase()}…`;
+  if (stopping) return t(STOPPING_LINES[stopping.id]);
   const running = rows.find((row) => row.state === "running");
   if (running) {
-    const progress = running.done !== null && running.total !== null ? ` ${running.done}/${running.total}` : "…";
-    return `${backgroundClassLabel(running.id)}${progress}`;
+    const name = t(backgroundClassLabel(running.id));
+    return running.done !== null && running.total !== null
+      ? t("work.classProgress", { name, done: running.done, total: running.total })
+      : t("work.classRunning", { name });
   }
-  if (!snapshot.workerRunning) return "Preparation and enrichment stopped";
+  if (!snapshot.workerRunning) return t("work.enrichmentStopped");
   if (rows.some((row) => row.state === "paused") && rows.every((row) => row.state === "paused" || row.state === "disabled")) {
-    return "Background work paused";
+    return t("work.allPaused");
   }
   const queued = rows.find((row) => row.state === "queued" && row.queued > 0);
-  if (queued) return `${backgroundClassLabel(queued.id)}: ${queued.queued} queued`;
-  if (rows.some((row) => row.state === "paused")) return "Some background work paused";
+  if (queued) {
+    return t("work.classQueued", {
+      name: t(backgroundClassLabel(queued.id)),
+      count: queued.queued,
+    });
+  }
+  if (rows.some((row) => row.state === "paused")) return t("work.somePaused");
   const waiting = rows.find((row) => row.state === "waiting" || row.state === "unavailable");
-  if (waiting) return waiting.reason ?? "Background work waiting";
-  return "Background work: no work running";
+  // A waiting row's reason is recorded by the core; it shows as it arrived.
+  if (waiting) {
+    const key = workReasonKey(waiting.reason);
+    return key === null ? (waiting.reason ?? t("work.waiting")) : t(key);
+  }
+  return t("work.noWorkRunning");
 }
 
 const ITEM_CLASS_FIELD: Record<ActiveItemWork["id"], keyof ItemWorkStates> = {
@@ -199,10 +232,14 @@ const ITEM_CLASS_FIELD: Record<ActiveItemWork["id"], keyof ItemWorkStates> = {
 };
 
 
+/** Overlays the live runtime on one item's stored work facts. The overlay's own
+ * reason is the app's word, so it arrives translated; the core's recorded
+ * reasons keep theirs. */
 export function mergeActiveItemWork(
   states: ItemWorkStates,
   hash: string | null,
   active: ActiveItemWork | null,
+  t: Translator["t"],
 ): ItemWorkStates {
   if (hash === null || active?.hash !== hash) return states;
   const field = ITEM_CLASS_FIELD[active.id];
@@ -213,7 +250,7 @@ export function mergeActiveItemWork(
     [field]: {
       ...current,
       state: "running",
-      reason: active.stopping ? "Stopping" : null,
+      reason: active.stopping ? t("activity.stateStopping") : null,
       done: active.done,
       total: active.total,
     },
@@ -299,10 +336,8 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("derived-work event wiring failed", toErrorFields(error));
-    recordInterfaceFailure("Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.");
-    useDerivedWorkStore.setState({
-      error: "Live previews-and-analysis status is unavailable. Restart OneCopy to repair it.",
-    });
+    recordInterfaceFailure(message("work.liveStatusUnavailable"));
+    useDerivedWorkStore.setState({ error: message("work.liveStatusUnavailable") });
   },
 );
 

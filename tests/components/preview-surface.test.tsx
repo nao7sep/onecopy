@@ -262,9 +262,7 @@ describe("shared video presentation", () => {
       paused = false;
       return Promise.resolve();
     });
-    const viewport = screen.getByTitle(
-      "Press and hold the picture for original pixels",
-    );
+    const viewport = screen.getByTitle("Press and hold for original pixels");
 
     fireEvent.pointerDown(viewport, {
       pointerId: 8,

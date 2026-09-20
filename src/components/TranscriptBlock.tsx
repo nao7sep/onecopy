@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { reasonText } from "../models/workReasons";
+import type { MessageKey } from "../i18n/catalogues";
+import { useI18n } from "../i18n/I18nContext";
+import { message, type Message } from "../i18n/translate";
 import { useBinariesStore } from "../state/binaries-store";
 import { useWindowPreferencesStore } from "../state/window-preferences-store";
 import { useDerivedWorkStore } from "../state/derived-work-store";
@@ -27,6 +31,15 @@ interface TranscriptSegment {
   timestamp: string;
   text: string;
 }
+
+type SessionOwner = "installation" | "position" | "visibility";
+
+// Which pending change failed; each owner names itself in its dismiss label.
+const SESSION_DISMISS_LABEL: Record<SessionOwner, MessageKey> = {
+  installation: "common.closeInstallationResult",
+  position: "transcript.closePositionResult",
+  visibility: "transcript.closeVisibilityResult",
+};
 
 function selectionOffsets(root: HTMLElement): [number, number] | null {
   const selection = window.getSelection();
@@ -100,6 +113,7 @@ export default function TranscriptBlock({
    * transcript store still owns content and manual-action lifecycle. */
   work?: ItemWorkState | null;
 }) {
+  const { t, text, percent } = useI18n();
   const inDetails = variant === "details";
   const view = useTranscriptStore((state) => state.rows[hash]);
   const load = useTranscriptStore((state) => state.load);
@@ -136,8 +150,7 @@ export default function TranscriptBlock({
   const transcriptRef = useRef<HTMLOListElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const transcriptViewRequest = useRef(0);
-  type SessionOwner = "installation" | "position" | "visibility";
-  const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, string>>>({});
+  const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, Message>>>({});
   const visibilityRequest = useRef(0);
   const state = view ?? {
     status: "loading" as const,
@@ -177,19 +190,19 @@ export default function TranscriptBlock({
     work.total !== null &&
     work.total > 0
       ? work.total === 100
-        ? `${Math.min(100, Math.round(work.done))}%`
+        ? percent(Math.min(100, Math.round(work.done)) / 100)
         : `${work.done}/${work.total}`
       : null;
 
   const reportSessionFailure = (
     owner: SessionOwner,
     kind: string,
-    message: string,
+    failure: Message,
     error: unknown,
   ) => {
     log.warn("content session change failed", { kind, ...toErrorFields(error) });
-    setSessionErrors((current) => ({ ...current, installation: undefined, [owner]: message }));
-    recordActionFailure(kind, message, error);
+    setSessionErrors((current) => ({ ...current, installation: undefined, [owner]: failure }));
+    recordActionFailure(kind, failure, error);
   };
 
   useEffect(() => {
@@ -199,7 +212,7 @@ export default function TranscriptBlock({
       if (active) {
         setSessionErrors((current) => ({
           ...current,
-          installation: "Transcript view settings could not be synchronized. Try Expand or Collapse again.",
+          installation: message("transcript.viewSyncFailed"),
         }));
       }
     });
@@ -222,37 +235,39 @@ export default function TranscriptBlock({
         reportSessionFailure(
           "position",
           "transcript-position-change-failed",
-          "Couldn’t retain the transcript position.",
+          message("transcript.positionRetainFailed"),
           error,
         );
       });
   };
 
+  // The replacement's own reason is OneCopy's sentence; the work projection's
+  // is the core's recorded words.
   const replacementNotice =
     state.replacement?.status === "failed" ? (
       <OperationResult level="error" className="mb-2">
-        The replacement failed. The previous transcript is still shown.{" "}
-        {state.replacement.message}
+        {t("transcript.replacementFailed", {
+          reason: state.replacement.message ?? "",
+        })}
       </OperationResult>
     ) : state.replacement !== null ? (
       <p className="mb-2 text-xs text-primary">
-        Updating transcript
         {state.replacement.status === "running" &&
         state.replacement.percent !== null
-          ? ` — ${state.replacement.percent}%`
-          : "…"}
-        {
-          " The previous transcript remains available until the replacement is ready."
-        }
+          ? t("transcript.updatingProgress", {
+              progress: percent(state.replacement.percent / 100),
+            })
+          : t("transcript.updating")}
       </p>
     ) : state.status === "ready" && work?.state === "failed" ? (
       <OperationResult level="error" className="mb-2">
-        The replacement failed. The previous transcript is still shown.{" "}{work.reason}
+        {t("transcript.replacementFailed", { reason: reasonText(work.reason, t) ?? "" })}
       </OperationResult>
     ) : state.status === "ready" && projectedRunning ? (
       <p className="mb-2 text-xs text-primary">
-        Updating transcript{projectedProgress === null ? "…" : ` — ${projectedProgress}`}
-        {" The previous transcript remains available until the replacement is ready."}
+        {projectedProgress === null
+          ? t("transcript.updating")
+          : t("transcript.updatingProgress", { progress: projectedProgress })}
       </p>
     ) : null;
 
@@ -262,24 +277,28 @@ export default function TranscriptBlock({
       state.status === "running" ? state.percent : projectedProgress;
     content = (
       <p className="text-xs text-primary">
-        Transcribing
-        {progress !== null
-          ? ` — ${progress}${typeof progress === "number" ? "%" : ""}`
-          : "…"}
+        {progress === null
+          ? t("transcript.transcribing")
+          : t("transcript.transcribingProgress", {
+              progress:
+                typeof progress === "number" ? percent(progress / 100) : progress,
+            })}
       </p>
     );
   } else if (state.status === "failed" || (state.status !== "ready" && work?.state === "failed")) {
     content = (
       <OperationResult level="error">
-        {state.status === "failed"
-          ? (state.message ?? "Transcription failed.")
-          : (work?.reason ?? "Transcription failed.")}
+        {(state.status === "failed"
+          ? state.message === null
+            ? null
+            : text(state.message)
+          : reasonText(work?.reason, t)) ?? t("transcript.failed")}
       </OperationResult>
     );
   } else if (state.status === "ready") {
     content =
       state.text === null || state.text.trim() === "" ? (
-        <p className="text-xs text-ink-muted">Checked — no speech found.</p>
+        <p className="text-xs text-ink-muted">{t("transcript.noSpeech")}</p>
       ) : (
         <ol
           ref={transcriptRef}
@@ -313,7 +332,7 @@ export default function TranscriptBlock({
                 {segment.timestamp !== "" ? (
                   <button
                     className="shrink-0 font-mono text-xs text-primary hover:underline"
-                    title={`Play from ${segment.timestamp}`}
+                    title={t("preview.playFrom", { time: segment.timestamp })}
                     onClick={() => requestPlaybackSeek(hash, segment.seconds)}
                   >
                     {segment.timestamp}
@@ -328,36 +347,39 @@ export default function TranscriptBlock({
   } else if (unavailable) {
     content = (
       <p className="text-xs text-ink-muted">
-        Not available —{" "}
-        {work?.reason ??
-          "install ffmpeg and the transcription model from Managed tools"}
-        .
+        {work?.reason === null || work?.reason === undefined
+          ? t("transcript.unavailable")
+          : t("transcript.unavailableReason", { reason: reasonText(work.reason, t) ?? "" })}
       </p>
     );
   } else if (state.status === "queued") {
     content = (
-      <p className="text-xs text-ink-muted">Queued for transcription.</p>
+      <p className="text-xs text-ink-muted">{t("transcript.queued")}</p>
     );
   } else if (waiting) {
     content = (
       <p className="text-xs text-ink-muted">
-        {work?.reason ?? "Queued — transcription is paused."}
+        {reasonText(work?.reason, t) ?? t("transcript.paused")}
       </p>
     );
   } else if (state.status === "loading") {
-    content = <p className="text-xs text-ink-muted">Loading transcript…</p>;
+    content = (
+      <p className="text-xs text-ink-muted">{t("transcript.loading")}</p>
+    );
   } else if (work?.state === "disabled") {
     content = (
       <p className="text-xs text-ink-muted">
-        {work.reason ?? "Automatic transcription is off."}
+        {reasonText(work.reason, t) ?? t("transcript.automaticOff")}
       </p>
     );
   } else if (automaticEnabled) {
     content = (
-      <p className="text-xs text-ink-muted">Queued for transcription.</p>
+      <p className="text-xs text-ink-muted">{t("transcript.queued")}</p>
     );
   } else {
-    content = <p className="text-xs text-ink-muted">Not transcribed yet.</p>;
+    content = (
+      <p className="text-xs text-ink-muted">{t("transcript.notTranscribed")}</p>
+    );
   }
 
   const controlError = state.controlError ?? null;
@@ -373,10 +395,10 @@ export default function TranscriptBlock({
     if (state.replacement !== null && state.replacement.status !== "failed") {
       actions.push(
         <Button key="cancel" variant="ghost" onClick={() => void cancel()}>
-          Cancel update
+          {t("transcript.cancelUpdate")}
         </Button>,
         <Button key="work" variant="ghost" onClick={openBackgroundWork}>
-          Background work
+          {t("work.title")}
         </Button>,
       );
     } else if (state.status === "ready") {
@@ -386,13 +408,13 @@ export default function TranscriptBlock({
           variant="ghost"
           onClick={() => void start(hash, true)}
         >
-          Re-transcribe
+          {t("transcript.retranscribe")}
         </Button>,
       );
       if (state.replacement?.status === "failed") {
         actions.push(
           <Button key="issues" variant="ghost" onClick={openIssues}>
-            Issues
+            {t("issues.title")}
           </Button>,
         );
       }
@@ -400,19 +422,19 @@ export default function TranscriptBlock({
       if (state.status === "running") {
         actions.push(
           <Button key="cancel" variant="ghost" onClick={() => void cancel()}>
-            Cancel
+            {t("common.cancel")}
           </Button>,
         );
       }
       actions.push(
         <Button key="work" variant="ghost" onClick={openBackgroundWork}>
-          Background work
+          {t("work.title")}
         </Button>,
       );
     } else if (waiting) {
       actions.push(
         <Button key="work" onClick={openBackgroundWork}>
-          Background work
+          {t("work.title")}
         </Button>,
       );
     } else if (unavailable) {
@@ -421,23 +443,23 @@ export default function TranscriptBlock({
           key="tools"
           onClick={() => useAppShellStore.getState().openUtility("managedTools")}
         >
-          Managed tools
+          {t("app.openManagedTools")}
         </Button>,
       );
       if (failed) {
         actions.push(
           <Button key="issues" variant="ghost" onClick={openIssues}>
-            Issues
+            {t("issues.title")}
           </Button>,
         );
       }
     } else if (failed) {
       actions.push(
         <Button key="retry" onClick={() => void start(hash)}>
-          Retry
+          {t("common.retry")}
         </Button>,
         <Button key="issues" variant="ghost" onClick={openIssues}>
-          Issues
+          {t("issues.title")}
         </Button>,
       );
     } else if (
@@ -446,7 +468,7 @@ export default function TranscriptBlock({
     ) {
       actions.push(
         <Button key="transcribe" onClick={() => void start(hash)}>
-          Transcribe this file
+          {t("transcript.transcribeThisFile")}
         </Button>,
       );
     }
@@ -458,7 +480,7 @@ export default function TranscriptBlock({
       ref={panelRef}
       data-transcript-scroll={inDetails ? undefined : true}
       tabIndex={inDetails ? undefined : 0}
-      aria-label="Transcript"
+      aria-label={t("transcript.title")}
       className={`border-t border-border pt-3 ${inDetails ? "mt-3" :
         `min-h-0 shrink-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring ${medium === "video" ? "max-h-[35%]" : "max-h-[45%]"}`}`}
       onKeyDown={inDetails ? undefined : (event) => {
@@ -479,7 +501,7 @@ export default function TranscriptBlock({
     >
       <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-          Transcript
+          {t("transcript.title")}
         </h2>
         {!inDetails ? <span className="ml-auto flex flex-wrap items-baseline justify-end gap-2">
           {actions}
@@ -501,31 +523,31 @@ export default function TranscriptBlock({
                   reportSessionFailure(
                     "visibility",
                     "transcript-visibility-change-failed",
-                    "Couldn’t change the transcript view.",
+                    message("transcript.visibilityChangeFailed"),
                     error,
                   );
                 });
             }}
           >
-            {transcriptOpen ? "Collapse" : "Expand"}
+            {transcriptOpen ? t("common.collapse") : t("common.expand")}
           </Button>
         </span> : null}
       </div>
       {controlError !== null ? (
         <OperationResult level="error" className="mb-2">
-          {controlError}
+          {text(controlError)}
         </OperationResult>
       ) : null}
-      {(Object.entries(sessionErrors) as Array<[SessionOwner, string | undefined]>).map(([owner, message]) =>
-        message ? (
+      {(Object.entries(sessionErrors) as Array<[SessionOwner, Message | undefined]>).map(([owner, failure]) =>
+        failure !== undefined ? (
           <OperationResult
             key={owner}
             level="error"
             className="mb-2"
             onDismiss={() => setSessionErrors((current) => ({ ...current, [owner]: undefined }))}
-            dismissLabel={`Close ${owner} result`}
+            dismissLabel={t(SESSION_DISMISS_LABEL[owner])}
           >
-            {message}
+            {text(failure)}
           </OperationResult>
         ) : null,
       )}

@@ -1,8 +1,9 @@
 import { Star } from "lucide-react";
-import { faceStarLabel } from "../models/itemPresentation";
+import { useI18n } from "../i18n/I18nContext";
 
 export default function FaceRating({ stars }: { stars: 1 | 2 | 3 }) {
-  const label = faceStarLabel(stars);
+  const { t } = useI18n();
+  const label = t("face.starsAdvisory", { count: stars });
   return (
     <span
       role="img"
