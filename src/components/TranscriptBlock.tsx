@@ -482,7 +482,7 @@ export default function TranscriptBlock({
       tabIndex={inDetails ? undefined : 0}
       aria-label={t("transcript.title")}
       className={`border-t border-border pt-3 ${inDetails ? "mt-3" :
-        `min-h-0 shrink-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring ${medium === "video" ? "max-h-[35%]" : "max-h-[45%]"}`}`}
+        `min-h-0 shrink-0 overflow-y-auto focus-visible:outline-none ${medium === "video" ? "max-h-[35%]" : "max-h-[45%]"}`}`}
       onKeyDown={inDetails ? undefined : (event) => {
         if (!transcriptOwnsScrollKey(event.nativeEvent)) return;
         const panel = event.currentTarget;

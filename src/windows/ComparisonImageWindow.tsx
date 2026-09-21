@@ -45,7 +45,7 @@ export default function ComparisonImageWindow() {
   }, []);
 
   return (
-    <div ref={surface} tabIndex={-1} aria-label={t("comparisonImage.window")} className="flex h-screen flex-col bg-background">
+    <div ref={surface} tabIndex={-1} aria-label={t("comparisonImage.window")} className="flex h-screen flex-col bg-background outline-none">
       <div className="min-h-0 flex-1">
         {image === null ? <p className="p-4 text-ink-muted">{t("comparisonImage.opening")}</p> : (
           <InspectableImage hash={image.member.hash} fileName={image.member.fileName} enlargeSmall

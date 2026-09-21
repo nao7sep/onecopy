@@ -317,7 +317,7 @@ export default function TextOrAttributesSurface({
       {body.body === "text" ? (
         <pre
           tabIndex={0}
-          className={`min-h-0 flex-1 select-text overflow-auto rounded border border-border bg-background p-3 font-mono text-sm leading-relaxed text-ink ${
+          className={`min-h-0 flex-1 select-text overflow-auto rounded border border-border bg-background p-3 font-mono text-sm leading-relaxed text-ink outline-none focus-visible:border-primary-ring ${
             wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
           }`}
         >

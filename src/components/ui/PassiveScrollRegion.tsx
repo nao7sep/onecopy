@@ -192,7 +192,7 @@ export default function PassiveScrollRegion({
         role="region"
         aria-label={label}
         tabIndex={0}
-        className="passive-scroll-viewport rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+        className="passive-scroll-viewport rounded-md focus-visible:outline-none"
         onScroll={(event) => {
           refreshGeometry();
           revealTemporarily();
