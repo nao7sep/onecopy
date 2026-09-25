@@ -37,7 +37,17 @@ pub(crate) const RESTART: &str = "scan cancelled: the source walk restarts after
 #[derive(Default)]
 struct IndexState {
     holder: Option<u64>,
+    /// A background owner parked in place for a foreground action. It takes
+    /// the claim back before any other background owner, so nothing else
+    /// writes between its walked prefix and the rest of its turn.
+    parked: Option<u64>,
     next_claim: u64,
+}
+
+impl IndexState {
+    fn free_for_background(&self) -> bool {
+        self.holder.is_none() && self.parked.is_none() && !foreground_pending()
+    }
 }
 
 static INDEX: LazyLock<(Mutex<IndexState>, Condvar)> =
@@ -202,15 +212,16 @@ impl Drop for YielderScope {
     }
 }
 
-/// Waits behind the current holder and every pending foreground admission.
-/// Returns `None` when the owner is retired or the app closes first.
+/// Waits behind the current holder, every pending foreground admission, and
+/// a parked owner. Returns `None` when the owner is retired or the app closes
+/// first.
 fn claim_background(cancelled: &dyn Fn() -> bool) -> Option<Claim> {
     loop {
         if crate::app_lifecycle::shutting_down() || cancelled() {
             return None;
         }
         let mut state = index_state();
-        if state.holder.is_none() && !foreground_pending() {
+        if state.free_for_background() {
             return Some(take(&mut state));
         }
         wait_slice(state, None);
@@ -325,15 +336,29 @@ pub(crate) fn yield_to_foreground() -> Result<bool, String> {
         crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
     }
     on_yield(true);
-    release(claim);
+    {
+        let mut state = index_state();
+        if state.holder == Some(claim) {
+            state.holder = None;
+            state.parked = Some(claim);
+            INDEX.1.notify_all();
+        }
+    }
     loop {
         if crate::app_lifecycle::shutting_down() || cancelled() {
+            let mut state = index_state();
+            if state.parked == Some(claim) {
+                state.parked = None;
+                INDEX.1.notify_all();
+            }
+            drop(state);
             on_yield(false);
             return Err(crate::scanner::CANCELLED.to_string());
         }
         let mut state = index_state();
         if state.holder.is_none() && !foreground_pending() {
             state.holder = Some(claim);
+            state.parked = None;
             break;
         }
         wait_slice(state, None);
@@ -365,7 +390,7 @@ pub(crate) fn try_with_derived_claim<T>(work: impl FnOnce() -> T) -> Option<T> {
     }
     let _claim = {
         let mut state = index_state();
-        if state.holder.is_some() || foreground_pending() {
+        if !state.free_for_background() {
             return None;
         }
         take(&mut state)

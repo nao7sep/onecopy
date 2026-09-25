@@ -118,3 +118,64 @@ fn a_parked_source_walk_continues_after_foreground_work_and_restarts_after_a_res
         assert!(!holder_present());
     }
 }
+
+#[test]
+fn a_parked_owner_takes_the_claim_back_before_another_background_owner() {
+    let _serial = serial_test();
+    let released = Arc::new(AtomicBool::new(false));
+    let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let walker_released = released.clone();
+    let walker_order = order.clone();
+    let walker = std::thread::spawn(move || {
+        let lingered = AtomicBool::new(false);
+        with_source_check_claim(
+            // Slow to notice that the foreground action finished, so any
+            // other waiting owner has every chance to take the claim first.
+            move || {
+                if walker_released.load(Ordering::SeqCst) && !lingered.swap(true, Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                false
+            },
+            |_| {},
+            move || {
+                entered_tx.send(()).unwrap();
+                while !yield_to_foreground()? {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                walker_order.lock().unwrap().push("walker");
+                Ok(())
+            },
+        )
+    });
+    entered_rx.recv().unwrap();
+    let foreground = admit_foreground(
+        None,
+        Some(Instant::now() + Duration::from_secs(5)),
+        &|| false,
+        &mut || {},
+    )
+    .unwrap();
+
+    let watcher_order = order.clone();
+    let watcher = std::thread::spawn(move || {
+        with_watcher_claim(
+            || false,
+            move || {
+                watcher_order.lock().unwrap().push("watcher");
+                Ok(())
+            },
+        )
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    released.store(true, Ordering::SeqCst);
+    drop(foreground);
+
+    walker.join().unwrap().unwrap();
+    watcher.join().unwrap().unwrap();
+    // Nothing writes between the parked walk's prefix and the rest of it.
+    assert_eq!(*order.lock().unwrap(), vec!["walker", "watcher"]);
+    assert!(!holder_present());
+    assert!(index_state().parked.is_none());
+}
