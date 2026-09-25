@@ -1972,10 +1972,10 @@ pub fn resolve_from_evidence(
     resolve_from_evidence_with_progress(conn, config, scope, &|_| {})
 }
 
-/// Settings changed the resolution policy. Invalidate the old projection in
-/// one durable statement first, then rebuild through the ordinary pending
-/// path so cancellation or a crash leaves explicit resumable debt instead of
-/// a library silently split between old and new rules.
+/// Settings changed the resolution policy. Invalidate the old projection
+/// first, then rebuild through the ordinary pending path so cancellation or
+/// a crash leaves explicit resumable debt instead of a library silently
+/// split between old and new rules.
 pub fn re_resolve_all_with_progress(
     conn: &Connection,
     config: &ResolutionConfig,
@@ -1983,32 +1983,73 @@ pub fn re_resolve_all_with_progress(
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ResolveStats, String> {
     check_cancel()?;
-    // A settings-wide re-resolve touches every indexed row in one statement;
-    // going through the batch publisher keeps that one UPDATE from firing
-    // the per-row logical-projection trigger library-wide and holding the
-    // write lock far beyond other writers' busy_timeout.
-    crate::index_store::publish_paths_batch(
-        conn,
-        |tx| {
-            tx.execute(
-                "INSERT OR IGNORE INTO batch_touched_hashes \
-                 SELECT DISTINCT content_hash FROM paths \
-                 WHERE indexed_at_utc IS NOT NULL AND content_hash IS NOT NULL",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(())
-        },
-        |tx| {
-            tx.execute(
-                "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0 \
-                 WHERE indexed_at_utc IS NOT NULL",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(())
-        },
-    )?;
+    // A settings-wide re-resolve touches every indexed row. One statement
+    // (or one batch covering the whole library) still fires the projection
+    // rebuild for every touched hash inside a single transaction, holding
+    // the write lock for as long as the library is large. Paging the
+    // invalidation the same way the per-file resolve phase pages its
+    // writes below keeps every transaction's hold on the write lock
+    // bounded by `RESOLVE_PAGE_SIZE`, not by library size, so a concurrent
+    // writer's busy_timeout is never outlasted by one statement.
+    let mut invalidate_stmt = conn
+        .prepare(
+            "SELECT id FROM paths \
+             WHERE indexed_at_utc IS NOT NULL AND resolved_source IS NOT NULL AND id > ?1 \
+             ORDER BY id LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut after_id = 0i64;
+    loop {
+        check_cancel()?;
+        let ids: Vec<i64> = invalidate_stmt
+            .query_map(params![after_id, RESOLVE_PAGE_SIZE as i64], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        if ids.is_empty() {
+            break;
+        }
+        after_id = *ids.last().unwrap();
+
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let hash_sql = format!(
+            "INSERT OR IGNORE INTO batch_touched_hashes \
+             SELECT DISTINCT content_hash FROM paths \
+             WHERE content_hash IS NOT NULL AND id IN ({placeholders})"
+        );
+        let update_sql = format!(
+            "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0 \
+             WHERE id IN ({placeholders})"
+        );
+        let id_params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+
+        crate::index_store::publish_paths_batch(
+            conn,
+            |tx| {
+                tx.execute(&hash_sql, id_params.as_slice())
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            },
+            |tx| {
+                tx.execute(&update_sql, id_params.as_slice())
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            },
+        )?;
+        // See the matching pause in `resolve_from_evidence_with_progress`:
+        // this loop has no other work between one page's commit and the
+        // next page's `BEGIN IMMEDIATE`, so without a deliberate pause a
+        // concurrent writer can still starve for the whole invalidation
+        // even though each page's transaction is brief.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    drop(invalidate_stmt);
     let stats = resolve_from_evidence_with_progress(
         conn,
         config,
@@ -2063,18 +2104,15 @@ fn resolve_from_evidence_with_progress(
     let mut evidence_stmt = conn
         .prepare("SELECT source, raw FROM evidence WHERE path_id = ?1")
         .map_err(|e| e.to_string())?;
-    let mut resolved_stmt = conn
-        .prepare(
-            "UPDATE paths SET resolved_utc_ms = ?2, resolved_source = ?3, \
-             date_only = ?4 WHERE id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-    let mut undated_stmt = conn
-        .prepare(
-            "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = 'undated', \
-             date_only = 0 WHERE id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
+
+    enum RowResolution {
+        Resolved {
+            unix_ms: i64,
+            source: &'static str,
+            date_only: bool,
+        },
+        Undated,
+    }
 
     loop {
         let rows: Vec<(i64, String, Option<i64>, Option<i64>)> = page_stmt
@@ -2088,6 +2126,12 @@ fn resolve_from_evidence_with_progress(
             break;
         }
 
+        // Compute this page's resolutions outside any transaction, then
+        // publish them all in one IMMEDIATE transaction (D-H2): autocommit
+        // per row fires the per-row logical-projection trigger for every
+        // row and starves concurrent writers on a large library.
+        let mut page_ids: Vec<i64> = Vec::with_capacity(rows.len());
+        let mut page_results: Vec<(i64, RowResolution)> = Vec::with_capacity(rows.len());
         for (id, abs, mtime_ms, birthtime_ms) in rows {
             check_cancel()?;
             progress(ScanProgress::at_path(
@@ -2116,25 +2160,22 @@ fn resolve_from_evidence_with_progress(
                 }
             }
 
-            match resolution::resolve(meta_ts, file_ts, mtime_ms, birthtime_ms, config) {
+            let resolution = match resolution::resolve(meta_ts, file_ts, mtime_ms, birthtime_ms, config) {
                 Some(resolved) => {
                     stats.resolved += 1;
-                    resolved_stmt
-                        .execute(params![
-                            id,
-                            resolved.unix_ms,
-                            resolved.source.as_str(),
-                            resolved.date_only as i64
-                        ])
-                        .map_err(|e| e.to_string())?;
+                    RowResolution::Resolved {
+                        unix_ms: resolved.unix_ms,
+                        source: resolved.source.as_str(),
+                        date_only: resolved.date_only,
+                    }
                 }
                 None => {
                     stats.undated += 1;
-                    undated_stmt
-                        .execute(params![id])
-                        .map_err(|e| e.to_string())?;
+                    RowResolution::Undated
                 }
-            }
+            };
+            page_ids.push(id);
+            page_results.push((id, resolution));
             after_id = id;
             done += 1;
             progress(ScanProgress::at_path(
@@ -2146,6 +2187,70 @@ fn resolve_from_evidence_with_progress(
                 ScanPhase::Pair,
             ));
         }
+
+        let placeholders = std::iter::repeat("?")
+            .take(page_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let hash_sql = format!(
+            "INSERT OR IGNORE INTO batch_touched_hashes \
+             SELECT DISTINCT content_hash FROM paths \
+             WHERE content_hash IS NOT NULL AND id IN ({placeholders})"
+        );
+        let id_params: Vec<&dyn rusqlite::ToSql> =
+            page_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+
+        crate::index_store::publish_paths_batch(
+            conn,
+            |tx| {
+                tx.execute(&hash_sql, id_params.as_slice())
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            },
+            |tx| {
+                let mut resolved_stmt = tx
+                    .prepare(
+                        "UPDATE paths SET resolved_utc_ms = ?2, resolved_source = ?3, \
+                         date_only = ?4 WHERE id = ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut undated_stmt = tx
+                    .prepare(
+                        "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = 'undated', \
+                         date_only = 0 WHERE id = ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                for (id, resolution) in &page_results {
+                    match resolution {
+                        RowResolution::Resolved {
+                            unix_ms,
+                            source,
+                            date_only,
+                        } => {
+                            resolved_stmt
+                                .execute(params![id, unix_ms, source, *date_only as i64])
+                                .map_err(|e| e.to_string())?;
+                        }
+                        RowResolution::Undated => {
+                            undated_stmt
+                                .execute(params![id])
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        // Compute alone leaves only a sub-millisecond gap between one
+        // page's commit and the next page's `BEGIN IMMEDIATE` (measured:
+        // tens to low hundreds of microseconds for a page of evidence
+        // reads) — far short of what an OS thread needs to wake from a
+        // busy-wait and actually win the reacquired lock, so a concurrent
+        // writer can still starve for the whole pass even though every
+        // individual transaction is brief. A short deliberate pause here
+        // is the difference between a brief transaction and a genuinely
+        // idle interval a competing writer can use.
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
     progress(ScanProgress::completed(

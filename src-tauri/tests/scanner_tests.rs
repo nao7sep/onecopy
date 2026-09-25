@@ -1773,6 +1773,156 @@ fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
 }
 
 #[test]
+fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
+    // D-H2 (the date-re-resolution follow-up): `re_resolve_all_with_progress`
+    // used to invalidate the whole library in one statement and then have
+    // `resolve_from_evidence_with_progress` write `resolved_stmt`/
+    // `undated_stmt` one row at a time in autocommit — both fire the
+    // per-row logical-projection trigger, or rebuild the projection for
+    // every touched hash inside a single transaction. Either way, on a
+    // library of hundreds of thousands of rows that holds the write lock
+    // for as long as the whole pass takes, far past other writers'
+    // busy_timeout. Both the invalidation and the per-file resolve phase
+    // now page their writes: each `RESOLVE_PAGE_SIZE` page is computed
+    // outside any transaction and published through
+    // `index_store::publish_paths_batch` in its own brief IMMEDIATE
+    // transaction, so a concurrent preview-success write started at any
+    // point during the whole call still succeeds within its own
+    // busy_timeout, instead of racing one lock held for the entire pass.
+    const ROWS: i64 = 6_000;
+    let f = fixture("large-date-re-resolution");
+    let now_ms = resolution_config().now_ms;
+    // Set-based generation, not ROWS round trips from Rust, under the same
+    // projection-batch guard the walk publication uses — building the
+    // fixture is not itself the O(rows) autocommit cascade this test
+    // measures. Every row already has a resolved date so `re_resolve_all`
+    // has to reset and re-resolve all of them from filesystem mtime.
+    f.conn
+        .execute_batch(&format!(
+            r#"
+            INSERT INTO logical_projection_batch (singleton) VALUES (1);
+            WITH RECURSIVE seq(i) AS (
+                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
+            )
+            INSERT INTO contents (hash, byte_size, kind)
+            SELECT printf('h%06d', i), 1, 'image' FROM seq;
+            WITH RECURSIVE seq(i) AS (
+                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
+            )
+            INSERT INTO paths
+              (abs_path, dir_path, file_name, kind, content_hash, mtime_ms,
+               indexed_at_utc, resolved_utc_ms, resolved_source, missing)
+            SELECT '/library/' || printf('h%06d', i) || '.jpg', '/library',
+                   printf('h%06d', i) || '.jpg', 'image', printf('h%06d', i),
+                   {now_ms} + i, 'ready', {now_ms} + i, 'filesystem', 0
+            FROM seq;
+            DELETE FROM logical_projection_batch;
+            "#,
+            last = ROWS - 1,
+            now_ms = now_ms,
+        ))
+        .unwrap();
+    // A distinct row for the probe's write to land on, unaffected by the
+    // re-resolve so its content never changes.
+    f.conn
+        .execute(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('probe', 1, 'image')",
+            [],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+             VALUES ('/elsewhere/probe.jpg', '/elsewhere', 'probe.jpg', 'image', 'probe')",
+            [],
+        )
+        .unwrap();
+
+    let db_path = f._dir.path().join("index.sqlite3");
+    let config = resolution_config();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_done = done.clone();
+    let worker = std::thread::spawn(move || {
+        re_resolve_all_with_progress(&f.conn, &config, false, &|_| {}).unwrap();
+        worker_done.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // Sample a small, independent write throughout the whole re-resolve.
+    // SQLite's default busy handler backs off on a fixed schedule, not a
+    // randomized one; against a worker whose page transactions run back to
+    // back at a steady cadence, that fixed schedule can stay in step with
+    // the worker's cadence and miss every gap for seconds at a time even
+    // though brief gaps keep recurring throughout the run — the
+    // "WAL-fairness flakiness" a previous attempt at this test saw. A
+    // custom handler with a randomized retry interval breaks that
+    // resonance; it gives up (returning `false`, so the call fails fast
+    // with SQLITE_BUSY) after a bounded number of retries rather than
+    // blocking for the app's full 5 s busy_timeout.
+    fn jittered_busy_handler(count: i32) -> bool {
+        if count > 150 {
+            return false;
+        }
+        let jitter_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0) as u64
+            % 3_000;
+        std::thread::sleep(std::time::Duration::from_micros(500 + jitter_ns));
+        true
+    }
+    let probe = index_store::open(&db_path).unwrap();
+    probe.busy_handler(Some(jittered_busy_handler)).unwrap();
+    let start = std::time::Instant::now();
+    let mut successes = 0u32;
+    let mut attempts = 0u32;
+    let mut last_success_at = start;
+    let mut max_gap_ms: u128 = 0;
+    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+        attempts += 1;
+        if onecopy_lib::derived_state::record_preview_success(
+            &probe, "probe", "/elsewhere/probe.jpg", 10, 10, 0.5, 42,
+        )
+        .is_ok()
+        {
+            successes += 1;
+            let now = std::time::Instant::now();
+            max_gap_ms = max_gap_ms.max(now.duration_since(last_success_at).as_millis());
+            last_success_at = now;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(500));
+    }
+    max_gap_ms = max_gap_ms.max(std::time::Instant::now().duration_since(last_success_at).as_millis());
+    worker.join().unwrap();
+
+    // Without the fix, invalidation ran as one transaction spanning the
+    // whole library and the per-file resolve phase wrote one autocommit
+    // statement per row back to back with no real idle gap: whichever
+    // connection just released the write lock is already running and
+    // reacquires it before a woken competitor can, so every short-window
+    // attempt started during either stretch fails in a row. Averaging over
+    // the whole run hides this — a short pathological stretch is diluted by
+    // a longer friendly one — so the real signal is the longest stretch
+    // with zero successful writes, not the overall success rate. With the
+    // fix, every page's transaction is followed by a real idle interval, so
+    // no such stretch approaches the length either phase used to hold the
+    // lock for.
+    assert!(
+        attempts >= 10,
+        "the probe only got {attempts} chances to run"
+    );
+    assert!(successes > 0, "the probe never got a single write through");
+    assert!(
+        max_gap_ms < 1_000,
+        "the probe went {max_gap_ms} ms without a single successful write \
+         during the re-resolve — the invalidation and per-file resolve \
+         phases must page their writes through the projection-batch \
+         publisher, with a real idle interval between pages, so no single \
+         transaction (or unbroken run of them) holds the write lock long \
+         enough to starve a concurrent writer"
+    );
+}
+
+#[test]
 fn a_concurrent_commit_does_not_fail_a_source_check() {
     // D-H3: the walk's vanished-path publication (and `apply_policy`) used
     // to open a DEFERRED transaction whose first statement is a read, so it
