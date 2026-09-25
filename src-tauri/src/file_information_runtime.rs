@@ -253,22 +253,20 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
         || PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst),
         || -> Result<Option<crate::scanner::ScanSummary>, String> {
             let conn = crate::index_store::open(&db_file)?;
-            if !crate::scanner::pending_index_work_exists(&conn)? {
-                PENDING_WORK_HINT.store(false, Ordering::SeqCst);
-                return Ok(None);
-            }
-            let mut summary = crate::scanner::ScanSummary::default();
-            let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::FileInformation, None, None);
-            let report = trace.progress_reporter();
-            let result = crate::scanner::run_index_tail(&conn, &settings, &|value| {
-                report(value.done, value.total);
-                progress(value);
-            }, &mut summary);
-            if result.is_ok() && summary.failures > 0 {
-                trace.finish(crate::activity::ActivityState::Failed, None);
-            } else { trace.result(&result); }
-            result?;
-            Ok(Some(summary))
+            complete_pending(&conn, |conn| {
+                let mut summary = crate::scanner::ScanSummary::default();
+                let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::FileInformation, None, None);
+                let report = trace.progress_reporter();
+                let result = crate::scanner::run_index_tail(conn, &settings, &|value| {
+                    report(value.done, value.total);
+                    progress(value);
+                }, &mut summary);
+                if result.is_ok() && summary.failures > 0 {
+                    trace.finish(crate::activity::ActivityState::Failed, None);
+                } else { trace.result(&result); }
+                result?;
+                Ok(summary)
+            })
         },
     )?;
     if crate::app_lifecycle::shutting_down() {
@@ -276,6 +274,26 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
     }
     crate::failure_runtime::clear(app, "file-information-failed", None)?;
     Ok(summary)
+}
+
+/// Runs `work` over the durable debt when there is any and leaves the
+/// pending-work hint matching what remains afterwards, so a completed run is
+/// not shown as still queued.
+fn complete_pending(
+    conn: &rusqlite::Connection,
+    work: impl FnOnce(&rusqlite::Connection) -> Result<crate::scanner::ScanSummary, String>,
+) -> Result<Option<crate::scanner::ScanSummary>, String> {
+    let pending = crate::scanner::pending_index_work_exists(conn)?;
+    PENDING_WORK_HINT.store(pending, Ordering::SeqCst);
+    if !pending {
+        return Ok(None);
+    }
+    let summary = work(conn)?;
+    PENDING_WORK_HINT.store(
+        crate::scanner::pending_index_work_exists(conn).unwrap_or(true),
+        Ordering::SeqCst,
+    );
+    Ok(Some(summary))
 }
 
 pub fn set_paused(app: AppHandle, paused: bool) {
@@ -363,3 +381,9 @@ fn emit_done(app: &AppHandle, mut payload: serde_json::Value) {
 fn emit<T: Clone + Serialize>(app: &AppHandle, event: &str, payload: T) {
     crate::failure_runtime::emit_or_record(app, event, payload);
 }
+
+#[cfg(test)]
+// EXCEPTION to tests-folder conventions: exercises the private pending-work
+// hint; promoting it would widen the crate's API only for this test.
+#[path = "../tests/unit/file_information_runtime.rs"]
+mod tests;
