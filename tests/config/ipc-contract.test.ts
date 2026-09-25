@@ -89,23 +89,77 @@ describe("command arguments", () => {
       .map((name) => name.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase()));
   }
 
+  /**
+   * The invoke call's object-literal argument, matched to its BALANCED
+   * closing brace rather than the first `}` — a payload built from a
+   * `.map()` callback or a nested return value has closing braces of its
+   * own before the argument's real end.
+   */
+  function objectArgOf(source: string, openBraceIndex: number): string {
+    let depth = 0;
+    let i = openBraceIndex;
+    for (; i < source.length; i++) {
+      if (source[i] === "{") depth++;
+      else if (source[i] === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    return source.slice(openBraceIndex + 1, i);
+  }
+
+  /** Reserved words that can precede a `:` without being an object key —
+   * a ternary's `cond ? null : value` reads exactly like `null:` to a
+   * text scan. */
+  const RESERVED_VALUE_WORDS = new Set(["null", "true", "false", "undefined"]);
+
+  /**
+   * Top-level (brace/bracket/paren depth 0 within the object argument) keys
+   * only — a nested `{ hash, pathId }` inside a `.map()` callback is part of
+   * one array-typed argument's element shape, not a key of the command's own
+   * argument object, and must not be flagged as one.
+   */
+  function topLevelSentKeys(body: string): string[] {
+    const keys: string[] = [];
+    let depth = 0;
+    const re = /[{}[\]()]|(?:^|[,{\s])([a-zA-Z][a-zA-Z0-9]*)\s*:/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(body))) {
+      const token = match[0];
+      if (token === "{" || token === "[" || token === "(") {
+        depth++;
+        continue;
+      }
+      if (token === "}" || token === "]" || token === ")") {
+        depth = Math.max(0, depth - 1);
+        continue;
+      }
+      const key = match[1];
+      if (depth === 0 && key && !RESERVED_VALUE_WORDS.has(key)) {
+        keys.push(key);
+      }
+    }
+    return keys;
+  }
+
   it("accepts every argument key the frontend sends", () => {
-    // Each invoke's object literal, matched non-greedily to its closing brace.
-    const calls = [
-      ...frontendSource.matchAll(
-        /invoke[^("]*\(\s*"([a-z_]+)"\s*,\s*\{([^}]*)\}/g,
-      ),
-    ];
+    const calls: { command: string; body: string }[] = [];
+    const callStart = /invoke[^("]*\(\s*"([a-z_]+)"\s*,\s*\{/g;
+    let match: RegExpExecArray | null;
+    while ((match = callStart.exec(frontendSource))) {
+      const openBrace = match.index + match[0].length - 1;
+      calls.push({
+        command: match[1]!,
+        body: objectArgOf(frontendSource, openBrace),
+      });
+    }
     expect(calls.length).toBeGreaterThan(5);
 
     const mismatches: string[] = [];
-    for (const [, command, body] of calls) {
-      const accepted = paramsOf(command!);
+    for (const { command, body } of calls) {
+      const accepted = paramsOf(command);
       if (accepted === null) continue; // registry test above owns this case
-      const sent = [...body!.matchAll(/(?:^|[,{\s])([a-zA-Z][a-zA-Z0-9]*)\s*:/g)]
-        .map((m) => m[1]!)
-        .filter((k) => k !== "");
-      for (const key of sent) {
+      for (const key of topLevelSentKeys(body)) {
         if (!accepted.includes(key)) {
           mismatches.push(`${command}: sends "${key}", accepts [${accepted}]`);
         }
