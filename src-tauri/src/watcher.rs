@@ -483,9 +483,14 @@ fn process_dirty_claimed(
 ) -> Result<u64, String> {
     let _awake = crate::sleep_prevention::begin_work();
     let data_root = crate::paths::data_root(app)?;
-    let loaded = crate::storage::load_app_data(app)?;
+    // Config only, through the same unserialized-reader path every other
+    // background worker uses. `storage::load_app_data` drains the pending
+    // quarantine list for the frontend's `load_from_root` to publish; the
+    // watcher has no reporting surface for it and would otherwise consume
+    // (and drop) a quarantine notice meant for Main.
+    let config = crate::storage::read_config_for_setup(&data_root)?;
     let settings = scanner::settings_from_config(
-        loaded.config.as_ref(),
+        config.as_ref(),
         &data_root,
         chrono::Utc::now().timestamp_millis(),
     );

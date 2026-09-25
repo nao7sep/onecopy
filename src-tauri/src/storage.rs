@@ -508,17 +508,40 @@ fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
     read_json_optional_with_envelope(path, false)
 }
 
+/// Ordinary reads never write. Earlier this removed the legacy
+/// `verifyAfterCopy` key and wrote the result straight back — a
+/// read-modify-write outside `PATCH_LOCK` that could race a concurrent
+/// `patch_json_store` call and silently drop the user's just-saved setting
+/// (a background reader observing the legacy key mid-patch would write the
+/// old document back over it). The key is stripped from the value this
+/// returns either way; only `migrate_legacy_config_keys`, which goes through
+/// `patch_json_store`, persists that removal to disk.
 fn read_config_optional(path: &Path) -> Result<JsonRead, String> {
     let mut read = read_json_optional_with_envelope(path, true)?;
     if let Some(value) = read.value.as_mut() {
-        let removed = value
-            .as_object_mut()
-            .is_some_and(|fields| fields.remove("verifyAfterCopy").is_some());
-        if removed {
-            atomic_write_json(path, value)?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.remove("verifyAfterCopy");
         }
     }
     Ok(read)
+}
+
+/// One-time migration for the retired `verifyAfterCopy` config key, run once
+/// at startup (`startup::prepare_data`) rather than from every unserialized
+/// reader. It goes through `patch_json_store` so the read-modify-write is
+/// under `PATCH_LOCK` like every other config write, and it is a no-op once
+/// the key is gone.
+pub fn migrate_legacy_config_keys(root: &Path) -> Result<(), String> {
+    let target = root.join(CONFIG_FILE_NAME);
+    let has_legacy_key = read_json_optional_with_envelope(&target, true)?
+        .value
+        .as_ref()
+        .and_then(JsonValue::as_object)
+        .is_some_and(|fields| fields.contains_key("verifyAfterCopy"));
+    if has_legacy_key {
+        patch_json_store(&target, &serde_json::json!({}))?;
+    }
+    Ok(())
 }
 
 fn read_json_optional_with_envelope(

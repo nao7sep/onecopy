@@ -137,12 +137,26 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
     )
     .unwrap();
 
+    // An ordinary unserialized read strips the retired key from what it
+    // returns, but never writes back on its own (D-L3): that
+    // read-modify-write used to run outside PATCH_LOCK and could race a
+    // concurrent patch_json_store call, dropping the user's just-saved
+    // setting. Only the explicit, once-at-startup migration persists the
+    // removal, and it goes through patch_json_store like every other write.
     let loaded = read_config_for_setup(&root).unwrap().unwrap();
     assert!(loaded.get("verifyAfterCopy").is_none());
+    let untouched: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(untouched["verifyAfterCopy"], false);
+
+    migrate_legacy_config_keys(&root).unwrap();
     let stored: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(stored.get("verifyAfterCopy").is_none());
     assert_eq!(stored["pairingEnabled"], true);
+
+    // A second migration call is a no-op: nothing to remove, nothing to write.
+    migrate_legacy_config_keys(&root).unwrap();
 }
 
 #[test]
@@ -366,4 +380,34 @@ fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
         serde_json::json!(["/photos"])
     );
     assert!(loaded.state.is_none(), "view state starts fresh");
+}
+
+// D-L4: the watcher used to read config through `load_app_data`, which
+// drains the pending quarantine list for the frontend's `load_from_root` to
+// report — and the watcher has no reporting surface, so it silently dropped
+// any quarantine that happened to land during its read. `read_config_for_setup`
+// is the unserialized-reader path every other background worker uses: it can
+// still park a quarantine record, but it does not drain the list, so the
+// record stays pending for the real `load_from_root` call to report.
+#[test]
+#[serial(quarantine_journal)]
+fn an_unserialized_config_read_leaves_its_quarantine_pending_for_load_from_root() {
+    let root = temp_dir("quarantine-watcher-read");
+    let config = root.join("config.json");
+    std::fs::write(&config, b"{ not json").unwrap();
+
+    // Simulates the watcher's own read: it must set the corrupt store aside
+    // and materialize a fresh default...
+    let watcher_read = read_config_for_setup(&root).unwrap();
+    assert!(watcher_read.is_some(), "a fresh default config must load");
+
+    // ...but the quarantine record it produced must still be waiting for
+    // the real frontend load, not silently consumed here.
+    let loaded = load_from_root(&root).unwrap();
+    assert_eq!(
+        loaded.quarantines.len(),
+        1,
+        "the watcher's read must not drain the quarantine meant for Main"
+    );
+    assert_eq!(loaded.quarantines[0].file, "config.json");
 }

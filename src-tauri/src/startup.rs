@@ -112,6 +112,7 @@ fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
 
 fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     crate::storage::materialize_config_if_missing(data_root)?;
+    crate::storage::migrate_legacy_config_keys(data_root)?;
     let conn = crate::index_store::open(
         &data_root.join(crate::storage::INDEX_DB_FILE_NAME),
     )?;
