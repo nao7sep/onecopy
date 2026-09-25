@@ -246,7 +246,14 @@ pub fn generate_for_image_teeing(
     // Hash and decode are two bounded streams. Holding the whole encoded file
     // merely to avoid the second read doubled the peak working set and made a
     // large compressed image capable of exhausting memory before decoding.
-    let real_hash = crate::hashing::full_hash(src).map_err(|e| e.to_string())?;
+    let real_hash = crate::hashing::full_hash_with_cancel(src, &crate::derived_runtime::cancelled)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                crate::scanner::CANCELLED.to_string()
+            } else {
+                error.to_string()
+            }
+        })?;
     let (decoded, orientation) = decode_for_preview(src, preview_long_edge, ffmpeg)?;
     let facts = derive_from_decoded(
         decoded,
@@ -554,6 +561,10 @@ fn record_preview_failure_or_combine(
     path: &str,
     failure: String,
 ) -> String {
+    // A stopped attempt is not a failed one; the next attempt starts fresh.
+    if failure.starts_with(crate::scanner::CANCELLED) {
+        return failure;
+    }
     match crate::derived_state::record_preview_failure(conn, hash, path, &failure) {
         Ok(()) => failure,
         Err(record_error) => {

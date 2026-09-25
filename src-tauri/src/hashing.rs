@@ -267,6 +267,11 @@ fn hash_while_copying_detailed(
             .map_err(CopyFailure::Destination)?;
         let mut read_back = blake3::Hasher::new();
         loop {
+            // The output is still private, so a cancel here abandons it like
+            // one during the copy; a large file never pins its holder.
+            if cancelled() {
+                return Err(CopyFailure::Cancelled);
+            }
             let n = writer.read(&mut buf).map_err(CopyFailure::Destination)?;
             if n == 0 {
                 break;
