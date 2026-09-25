@@ -16,6 +16,14 @@ static REQUESTED: AtomicBool = AtomicBool::new(false);
 static PREEMPTED: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+// Cached in place of a live `pending_index_work_exists` probe (up to six
+// EXISTS queries, one a correlated NOT EXISTS scan over every media row).
+// Conservatively true until `run_requested` proves otherwise, so pause/resume
+// and startup admission (all plain main-thread commands) can read it without
+// touching the index (D-M1, W-M4). `wake()` is called at every point new
+// debt might exist — scan-admission release, watcher activity, explicit
+// resume — so setting it true there keeps it a faithful hint.
+static PENDING_WORK_HINT: AtomicBool = AtomicBool::new(true);
 
 enum WorkerAdmission {
     Started,
@@ -33,10 +41,8 @@ pub struct Snapshot {
     event_sequence: u64,
 }
 
-pub fn snapshot(data_root: &std::path::Path) -> Snapshot {
-    let queued = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))
-        .and_then(|conn| crate::scanner::pending_index_work_exists(&conn))
-        .unwrap_or(true);
+pub fn snapshot() -> Snapshot {
+    let queued = PENDING_WORK_HINT.load(Ordering::SeqCst);
     Snapshot {
         running: running(),
         paused: PAUSED.load(Ordering::SeqCst),
@@ -60,6 +66,7 @@ pub fn wake(app: AppHandle) {
         return;
     }
     REQUESTED.store(true, Ordering::SeqCst);
+    PENDING_WORK_HINT.store(true, Ordering::SeqCst);
     if PAUSED.load(Ordering::SeqCst) {
         emit_state(&app);
         return;
@@ -247,6 +254,7 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
         || -> Result<Option<crate::scanner::ScanSummary>, String> {
             let conn = crate::index_store::open(&db_file)?;
             if !crate::scanner::pending_index_work_exists(&conn)? {
+                PENDING_WORK_HINT.store(false, Ordering::SeqCst);
                 return Ok(None);
             }
             let mut summary = crate::scanner::ScanSummary::default();
@@ -341,20 +349,8 @@ fn fail(app: &AppHandle, error: &str) {
 }
 
 fn emit_state(app: &AppHandle) {
-    let data_root = match crate::paths::data_root(app) {
-        Ok(data_root) => data_root,
-        Err(error) => {
-            let _ = crate::failure_runtime::report(
-                app,
-                "file-information-state-failed",
-                None,
-                &format!("File-information state is unavailable: {error}"),
-            );
-            return;
-        }
-    };
     let sequence = next_event_sequence();
-    let mut state = snapshot(&data_root);
+    let mut state = snapshot();
     state.event_sequence = sequence;
     emit(app, "file-information://state", state);
 }

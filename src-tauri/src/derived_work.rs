@@ -41,6 +41,53 @@ static PRIORITY: LazyLock<Mutex<PriorityHints>> =
     LazyLock::new(|| Mutex::new(PriorityHints::default()));
 static REQUESTED_PREVIEWS: LazyLock<Mutex<HashMap<String, Arc<RequestedPreviewFlight>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static REQUESTED_MEDIA_INFLIGHT: LazyLock<(Mutex<u64>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(0), Condvar::new()));
+
+/// Counts one requested-media command (`ensure_preview`, `ensure_fullres`)
+/// running on a `dispatch()` blocking-pool thread. Unlike `spawn_manual_transcription`
+/// these commands run their own blocking body directly rather than through a
+/// thread this module owns, so `join()` cannot simply join a `JoinHandle` for
+/// them — this guard is the equivalent counted registration: it keeps the
+/// requested-media population visible to shutdown so an owned ffmpeg process
+/// is never orphaned (W-L1). Cooperative cancellation already stops the work
+/// promptly at shutdown (`derived_runtime::begin_shutdown` + the ffmpeg poll),
+/// so this wait is bounded in practice.
+pub(crate) struct RequestedMediaGuard;
+
+impl RequestedMediaGuard {
+    pub(crate) fn begin() -> Self {
+        if let Ok(mut count) = REQUESTED_MEDIA_INFLIGHT.0.lock() {
+            *count += 1;
+        }
+        RequestedMediaGuard
+    }
+}
+
+impl Drop for RequestedMediaGuard {
+    fn drop(&mut self) {
+        if let Ok(mut count) = REQUESTED_MEDIA_INFLIGHT.0.lock() {
+            *count = count.saturating_sub(1);
+            REQUESTED_MEDIA_INFLIGHT.1.notify_all();
+        }
+    }
+}
+
+fn join_requested_media() {
+    let Ok(mut count) = REQUESTED_MEDIA_INFLIGHT.0.lock() else {
+        logging::error("requested-media in-flight state is unavailable", json!({}));
+        return;
+    };
+    while *count > 0 {
+        count = match REQUESTED_MEDIA_INFLIGHT.1.wait(count) {
+            Ok(next) => next,
+            Err(_) => {
+                logging::error("requested-media in-flight state is unavailable", json!({}));
+                return;
+            }
+        };
+    }
+}
 
 struct RequestedPreviewFlight {
     result: Mutex<Option<Result<String, String>>>,
@@ -605,6 +652,10 @@ pub fn join() {
             logging::error("derived-media worker join failed", json!({}));
         }
     }
+    // Requested previews/full-resolution images run on dispatch()'s blocking
+    // pool rather than a thread this module owns; wait for them too so their
+    // ffmpeg is never orphaned (W-L1).
+    join_requested_media();
 }
 
 fn join_finished(workers: &mut Vec<JoinHandle<()>>) {

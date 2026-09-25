@@ -192,6 +192,14 @@ fn run_listener(
                 if stop.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() {
                     return Ok(());
                 }
+                // The listener is non-blocking so this loop can poll `stop`;
+                // on macOS and Windows an accepted stream INHERITS that mode,
+                // so a read here could return WouldBlock before the client's
+                // 8 bytes arrive and silently drop the activation. Put the
+                // accepted stream into blocking mode with its own bounded
+                // read timeout instead (W-L5).
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
                 let mut request = [0u8; 8];
                 if stream.read(&mut request).is_ok() && request.starts_with(b"activate") {
                     if crate::app_lifecycle::shutting_down() {
