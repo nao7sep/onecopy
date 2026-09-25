@@ -1668,3 +1668,227 @@ fn scan_phase_tokens_serialize_to_the_frontend_contract() {
         })
     );
 }
+
+
+#[test]
+fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
+    // D-H2: removing a configured source root (a library-wide settings
+    // change) used to fire the per-row logical-projection trigger for every
+    // row under that root — once for the companion-detach UPDATE, again for
+    // the path DELETE, then again per orphan in a separate per-hash loop —
+    // each recomputing the correlated-subquery projection view. On a large
+    // fixture that holds the write lock for seconds. Going through the
+    // projection-batch publisher (`forget_unconfigured_roots`) keeps the
+    // whole removal one brief IMMEDIATE transaction, so a concurrent
+    // preview write started at the same instant still lands quickly.
+    const ROWS: i64 = 6_000;
+    let f = fixture("large-settings-change");
+    let now_ms = resolution_config().now_ms;
+    // A single set-based generator, not ROWS round trips from Rust: a
+    // recursive CTE produces the rows entirely inside SQLite, under the
+    // same projection-batch guard the walk publication uses, so building
+    // this fixture is not itself an O(rows) trigger cascade — that per-row
+    // cost is real and already sound (ordinary one-row-at-a-time indexing),
+    // but it is not what this test measures. Every row gets its own unique
+    // hash, so removing the root also orphans every one of them.
+    f.conn
+        .execute_batch(&format!(
+            r#"
+            INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES ('{root}', 'x', 0);
+            INSERT INTO logical_projection_batch (singleton) VALUES (1);
+            WITH RECURSIVE seq(i) AS (
+                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
+            )
+            INSERT INTO contents (hash, byte_size, kind)
+            SELECT printf('h%06d', i), 1, 'image' FROM seq;
+            WITH RECURSIVE seq(i) AS (
+                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
+            )
+            INSERT INTO paths
+              (abs_path, dir_path, file_name, kind, content_hash, mtime_ms,
+               indexed_at_utc, resolved_utc_ms, resolved_source, missing)
+            SELECT '{root}/' || printf('h%06d', i) || '.jpg', '{root}',
+                   printf('h%06d', i) || '.jpg', 'image', printf('h%06d', i),
+                   {now_ms} + i, 'ready', {now_ms} + i, 'filesystem', 0
+            FROM seq;
+            DELETE FROM logical_projection_batch;
+            "#,
+            root = stored_path(&f.root),
+            last = ROWS - 1,
+            now_ms = now_ms,
+        ))
+        .unwrap();
+    // A distinct row outside the removed root, so the probe's write has
+    // somewhere valid to land both before and after the removal.
+    f.conn
+        .execute(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('probe', 1, 'image')",
+            [],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+             VALUES ('/elsewhere/probe.jpg', '/elsewhere', 'probe.jpg', 'image', 'probe')",
+            [],
+        )
+        .unwrap();
+
+    let db_path = f._dir.path().join("index.sqlite3");
+    let cache = test_cache(&f);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_done = done.clone();
+    let worker = std::thread::spawn(move || {
+        forget_unconfigured_roots(&f.conn, &[], &cache).unwrap();
+        worker_done.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // Sample a small, independent write throughout the whole removal: a
+    // single well-timed attempt can simply win the race and finish before
+    // the worker's first write, proving nothing either way. Continuous
+    // sampling instead measures the worst wait any concurrent writer would
+    // actually see while the removal is in flight.
+    let probe = index_store::open(&db_path).unwrap();
+    let mut max_write_ms: u128 = 0;
+    let mut samples = 0u32;
+    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+        let started = std::time::Instant::now();
+        onecopy_lib::derived_state::record_preview_success(
+            &probe, "probe", "/elsewhere/probe.jpg", 10, 10, 0.5, 42,
+        )
+        .unwrap();
+        max_write_ms = max_write_ms.max(started.elapsed().as_millis());
+        samples += 1;
+        std::thread::sleep(std::time::Duration::from_micros(500));
+    }
+    worker.join().unwrap();
+
+    assert!(samples > 0, "the probe never got a chance to run");
+    assert!(
+        max_write_ms < 1000,
+        "a concurrent preview write took {max_write_ms} ms — removing a \
+         source root must go through the projection-batch publisher and \
+         hold the write lock only briefly"
+    );
+}
+
+#[test]
+fn a_concurrent_commit_does_not_fail_a_source_check() {
+    // D-H3: the walk's vanished-path publication (and `apply_policy`) used
+    // to open a DEFERRED transaction whose first statement is a read, so it
+    // took only a read snapshot and later upgraded to a write lock. SQLite
+    // can fail that upgrade at once with SQLITE_BUSY_SNAPSHOT the moment
+    // another connection has committed since the snapshot was taken — a
+    // real conflict, not an ordinary lock wait, so the busy handler every
+    // other writer relies on never even runs. IMMEDIATE takes the write
+    // lock up front, before any read, so no commit can land in between and
+    // no such conflict can arise.
+    //
+    // This reproduces the exact statement shape the walk publication and
+    // `apply_policy` use (SELECT/INSERT read first, UPDATE/INSERT write
+    // second) against two ordinary connections, sequenced deterministically
+    // instead of racing threads against a busy_timeout window.
+    let f = fixture("source-check-vs-concurrent-commit");
+    f.conn
+        .execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, missing) \
+             VALUES ('/a.jpg', '/', 'a.jpg', 'image', 0)",
+            [],
+        )
+        .unwrap();
+    let db_path = f._dir.path().join("index.sqlite3");
+    let other = index_store::open(&db_path).unwrap();
+
+    // DEFERRED: read first (snapshot taken), then another connection
+    // commits, then the write is attempted — SQLite must refuse it at once.
+    f.conn
+        .execute_batch("BEGIN DEFERRED; SELECT COUNT(*) FROM paths;")
+        .unwrap();
+    other
+        .execute("UPDATE paths SET missing = 1 WHERE id = 1", [])
+        .unwrap();
+    let deferred_write = f
+        .conn
+        .execute("UPDATE paths SET missing = 0 WHERE id = 1", []);
+    let _ = f.conn.execute_batch("ROLLBACK;");
+    assert!(
+        deferred_write.is_err(),
+        "a DEFERRED read-then-write transaction must be vulnerable to a \
+         stale snapshot — if this now succeeds, this test's premise needs \
+         revisiting"
+    );
+
+    // IMMEDIATE: the write lock is taken before the read runs, so the other
+    // connection's write cannot land in between at all — no snapshot, no
+    // conflict, no failure.
+    other
+        .execute("UPDATE paths SET missing = 0 WHERE id = 1", [])
+        .unwrap();
+    let immediate = rusqlite::Transaction::new_unchecked(
+        &f.conn,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    immediate
+        .query_row("SELECT COUNT(*) FROM paths", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    immediate
+        .execute("UPDATE paths SET missing = 1 WHERE id = 1", [])
+        .unwrap();
+    immediate.commit().unwrap();
+    assert_eq!(
+        count(&f.conn, "SELECT missing FROM paths WHERE id = 1"),
+        1,
+        "the IMMEDIATE transaction's write must land"
+    );
+}
+
+#[test]
+fn concurrent_provisional_promotions_never_race_the_contents_row() {
+    // D-L1: `promote_identity` used to read `already_known` in autocommit,
+    // then do the insert/repoint/delete as separate statements. Two
+    // concurrent promoters of the same provisional key could both see
+    // `already_known == false` and then both try to INSERT the same real
+    // hash into `contents`, one of them failing on the primary key. One
+    // IMMEDIATE transaction that re-reads inside the lock makes this a
+    // single owner: the second promoter's re-read sees the first's commit.
+    let f = fixture("promote-identity-race");
+    let cache = test_cache(&f);
+    f.conn
+        .execute_batch(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('p1', 1, 'image');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+               VALUES ('/a.jpg', '/', 'a.jpg', 'image', 'p1');
+             INSERT INTO contents (hash, byte_size, kind) VALUES ('p2', 1, 'image');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+               VALUES ('/b.jpg', '/', 'b.jpg', 'image', 'p2');",
+        )
+        .unwrap();
+
+    let db_path = f._dir.path().join("index.sqlite3");
+    let cache2 = onecopy_lib::preview::CachePaths::new(f._dir.path().join("cache"));
+    let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let start2 = start.clone();
+    let worker = std::thread::spawn(move || {
+        let conn = index_store::open(&db_path).unwrap();
+        start2.wait();
+        scanner::promote_identity(&conn, &cache2, "p1", "real")
+    });
+
+    start.wait();
+    let result_main = scanner::promote_identity(&f.conn, &cache, "p2", "real");
+    let result_worker = worker.join().unwrap();
+
+    assert!(result_main.is_ok(), "{result_main:?}");
+    assert!(result_worker.is_ok(), "{result_worker:?}");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM contents WHERE hash = 'real'"),
+        1,
+        "both promotions must merge into exactly one real contents row"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE content_hash = 'real'"),
+        2,
+        "both paths must end up pointing at the real hash"
+    );
+}

@@ -414,62 +414,94 @@ pub fn forget_unconfigured_roots(
         if still_configured(&root) {
             continue;
         }
-        // Hashes that had a row here, so orphans can be collected after.
-        let mut hashes_stmt = conn
-            .prepare(
-                "SELECT DISTINCT content_hash FROM paths \
-                 WHERE abs_path LIKE ?1 ESCAPE '!' AND content_hash IS NOT NULL",
-            )
-            .map_err(|e| e.to_string())?;
-        let touched: Vec<String> = hashes_stmt
-            .query_map([like_prefix(&root)], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?;
-        drop(hashes_stmt);
+        // Evidence, companions, paths, orphan contents and scan_dirs all
+        // move in one IMMEDIATE batch transaction: a crash or DB error
+        // between steps can no longer leak a `contents` row or cache file
+        // with no surviving path, and the bulk companion/path writes go
+        // through the projection-batch publisher instead of firing the
+        // per-row logical-projection trigger for the whole root.
+        let mut removed = 0usize;
+        let mut orphaned_hashes: Vec<String> = Vec::new();
+        crate::index_store::publish_paths_batch(
+            conn,
+            |tx| {
+                tx.execute(
+                    "INSERT OR IGNORE INTO batch_touched_hashes \
+                     SELECT DISTINCT content_hash FROM paths \
+                     WHERE abs_path LIKE ?1 ESCAPE '!' AND content_hash IS NOT NULL",
+                    [like_prefix(&root)],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            },
+            |tx| {
+                // Companions first: their rows hold a foreign key to the primary.
+                tx.execute(
+                    "DELETE FROM evidence WHERE path_id IN \
+                     (SELECT id FROM paths WHERE abs_path LIKE ?1 ESCAPE '!')",
+                    [like_prefix(&root)],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "UPDATE paths SET companion_of = NULL \
+                     WHERE abs_path LIKE ?1 ESCAPE '!' AND companion_of IS NOT NULL",
+                    [like_prefix(&root)],
+                )
+                .map_err(|e| e.to_string())?;
+                removed = tx
+                    .execute(
+                        "DELETE FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'",
+                        [like_prefix(&root)],
+                    )
+                    .map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM scan_dirs WHERE root = ?1", [&root])
+                    .map_err(|e| e.to_string())?;
 
-        // Companions first: their rows hold a foreign key to the primary.
-        conn.execute(
-            "DELETE FROM evidence WHERE path_id IN \
-             (SELECT id FROM paths WHERE abs_path LIKE ?1 ESCAPE '!')",
-            [like_prefix(&root)],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE paths SET companion_of = NULL WHERE abs_path LIKE ?1 ESCAPE '!'",
-            [like_prefix(&root)],
-        )
-        .map_err(|e| e.to_string())?;
-        let removed = conn
-            .execute(
-                "DELETE FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'",
-                [like_prefix(&root)],
-            )
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM scan_dirs WHERE root = ?1", [&root])
-            .map_err(|e| e.to_string())?;
+                // Orphan collection as one set-based read, then one set-based
+                // delete per table, instead of the former per-hash loop.
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT content_hash FROM batch_touched_hashes bth \
+                         WHERE NOT EXISTS (\
+                             SELECT 1 FROM paths lp \
+                             WHERE lp.content_hash = bth.content_hash AND lp.missing = 0)",
+                    )
+                    .map_err(|e| e.to_string())?;
+                orphaned_hashes = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| e.to_string())?;
+                drop(stmt);
+                if !orphaned_hashes.is_empty() {
+                    let placeholders = std::iter::repeat("?")
+                        .take(orphaned_hashes.len())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    tx.execute(
+                        &format!("DELETE FROM paths WHERE content_hash IN ({placeholders})"),
+                        rusqlite::params_from_iter(orphaned_hashes.iter()),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    tx.execute(
+                        &format!(
+                            "DELETE FROM similar_group_members WHERE content_hash IN ({placeholders})"
+                        ),
+                        rusqlite::params_from_iter(orphaned_hashes.iter()),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    tx.execute(
+                        &format!("DELETE FROM contents WHERE hash IN ({placeholders})"),
+                        rusqlite::params_from_iter(orphaned_hashes.iter()),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            },
+        )?;
         forgotten += removed as u64;
-
-        for hash in touched {
-            let live: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0",
-                    [&hash],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            if live == 0 {
-                conn.execute("DELETE FROM paths WHERE content_hash = ?1", [&hash])
-                    .map_err(|e| e.to_string())?;
-                conn.execute(
-                    "DELETE FROM similar_group_members WHERE content_hash = ?1",
-                    [&hash],
-                )
-                .map_err(|e| e.to_string())?;
-                conn.execute("DELETE FROM contents WHERE hash = ?1", [&hash])
-                    .map_err(|e| e.to_string())?;
-                crate::preview::remove_entries(cache, &hash);
-            }
+        for hash in &orphaned_hashes {
+            crate::preview::remove_entries(cache, hash);
         }
         if removed > 0 {
             logging::info(
@@ -1113,7 +1145,15 @@ fn walk_root_with_progress(
             .replace('_', "!_");
         let placeholders_root = format!("{}%", ensure_trailing_separator(&escaped_root));
         check_cancel()?;
-        let publication = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        // IMMEDIATE: the first statement below is a read (the vanished-path
+        // scan), so a DEFERRED transaction would take only a snapshot and
+        // upgrade to a write lock later, letting a concurrent commit fail at
+        // once with SQLITE_BUSY instead of waiting on the busy handler.
+        let publication = rusqlite::Transaction::new_unchecked(
+            conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| e.to_string())?;
         publication
             .execute(
                 "INSERT INTO walk_vanished_paths (abs_path, content_hash) \
@@ -1279,7 +1319,14 @@ pub fn promote_identity(
     if !is_provisional(provisional) || provisional == real_hash {
         return Ok(());
     }
-    let already_known: bool = conn
+    // One IMMEDIATE transaction is the single owner of this decision: it
+    // re-reads `already_known` after taking the write lock, so two
+    // concurrent promoters of the same provisional key never both see
+    // `false` and race the `contents` primary key. Cache files move only
+    // after commit, keyed by the outcome the committed transaction decided.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let already_known: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1)",
             [real_hash],
@@ -1287,26 +1334,26 @@ pub fn promote_identity(
         )
         .map_err(|e| e.to_string())?;
 
-    if already_known {
-        conn.execute(
+    let strip_frames_for_rename = if already_known {
+        tx.execute(
             "UPDATE paths SET content_hash = ?2 WHERE content_hash = ?1",
             params![provisional, real_hash],
         )
         .map_err(|e| e.to_string())?;
         // The logical-content triggers dirty the affected cohort; dropping
         // provisional membership avoids duplicating the real row meanwhile.
-        conn.execute(
+        tx.execute(
             "DELETE FROM similar_group_members WHERE content_hash = ?1",
             [provisional],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM contents WHERE hash = ?1", [provisional])
+        tx.execute("DELETE FROM contents WHERE hash = ?1", [provisional])
             .map_err(|e| e.to_string())?;
-        crate::preview::remove_entries(cache, provisional);
+        None
     } else {
         // The FK from paths forbids renaming the parent in place: copy the
         // row under the real key, repoint the children, drop the old row.
-        conn.execute(
+        tx.execute(
             "INSERT INTO contents (hash, byte_size, kind, phash, camera_make, camera_model, \
              width, height, duration_ms, sharpness, strip_frames, derived_at_utc) \
              SELECT ?2, byte_size, kind, phash, camera_make, camera_model, \
@@ -1315,26 +1362,33 @@ pub fn promote_identity(
             params![provisional, real_hash],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute(
+        tx.execute(
             "UPDATE paths SET content_hash = ?2 WHERE content_hash = ?1",
             params![provisional, real_hash],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute(
+        tx.execute(
             "UPDATE similar_group_members SET content_hash = ?2 WHERE content_hash = ?1",
             params![provisional, real_hash],
         )
         .map_err(|e| e.to_string())?;
-        let strip_frames: Option<i64> = conn
+        let strip_frames: Option<i64> = tx
             .query_row(
                 "SELECT strip_frames FROM contents WHERE hash = ?1",
                 [real_hash],
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM contents WHERE hash = ?1", [provisional])
+        tx.execute("DELETE FROM contents WHERE hash = ?1", [provisional])
             .map_err(|e| e.to_string())?;
-        crate::preview::rename_entries(cache, provisional, real_hash, strip_frames.unwrap_or(0));
+        Some(strip_frames.unwrap_or(0))
+    };
+    tx.commit().map_err(|e| e.to_string())?;
+
+    if let Some(strip_frames) = strip_frames_for_rename {
+        crate::preview::rename_entries(cache, provisional, real_hash, strip_frames);
+    } else {
+        crate::preview::remove_entries(cache, provisional);
     }
     let _ = crate::activity::record(crate::activity::ActivityDraft {
         kind: crate::activity::ActivityKind::Changed,
@@ -1929,12 +1983,32 @@ pub fn re_resolve_all_with_progress(
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ResolveStats, String> {
     check_cancel()?;
-    conn.execute(
-        "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0 \
-         WHERE indexed_at_utc IS NOT NULL",
-        [],
-    )
-    .map_err(|error| error.to_string())?;
+    // A settings-wide re-resolve touches every indexed row in one statement;
+    // going through the batch publisher keeps that one UPDATE from firing
+    // the per-row logical-projection trigger library-wide and holding the
+    // write lock far beyond other writers' busy_timeout.
+    crate::index_store::publish_paths_batch(
+        conn,
+        |tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO batch_touched_hashes \
+                 SELECT DISTINCT content_hash FROM paths \
+                 WHERE indexed_at_utc IS NOT NULL AND content_hash IS NOT NULL",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        },
+        |tx| {
+            tx.execute(
+                "UPDATE paths SET resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0 \
+                 WHERE indexed_at_utc IS NOT NULL",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        },
+    )?;
     let stats = resolve_from_evidence_with_progress(
         conn,
         config,

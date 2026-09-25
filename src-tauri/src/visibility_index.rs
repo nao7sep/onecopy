@@ -25,8 +25,12 @@ fn finish_projection_batch(conn: &Connection) -> Result<(), String> {
 }
 
 pub fn apply_policy(conn: &Connection, policy: &Policy) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
+    // IMMEDIATE: `apply_policy_in_transaction` reads `visibility_policy`
+    // before it writes, so a DEFERRED transaction would take a read
+    // snapshot and only later upgrade to a write lock, letting a concurrent
+    // commit fail at once with SQLITE_BUSY instead of waiting on the busy
+    // handler.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
     apply_policy_in_transaction(&tx, policy)?;
     tx.commit().map_err(|error| error.to_string())

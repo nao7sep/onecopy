@@ -633,20 +633,74 @@ pub fn begin_issue_run(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// The only way to write more than one `paths` row's projection-affecting
+/// columns in one statement. Suppresses the per-row logical-projection
+/// triggers (`paths_logical_after_*_v2`) for the duration of `write`, then
+/// republishes every hash `collect_hashes` recorded exactly once, all inside
+/// one IMMEDIATE transaction — the walk publication, `apply_policy` and the
+/// schema upgrade already run this exact shape by hand; this is their single
+/// owner.
+///
+/// `collect_hashes` runs first, against the transaction, and inserts every
+/// `content_hash` the coming write can affect into the temp table
+/// `batch_touched_hashes`; it is free to insert nothing when `write` is a
+/// full wipe with nothing left to republish (see `clear_reconstructible`).
+/// `write` then performs the bulk UPDATE/DELETE.
+pub fn publish_paths_batch(
+    conn: &Connection,
+    collect_hashes: impl FnOnce(&rusqlite::Transaction) -> Result<(), String>,
+    write: impl FnOnce(&rusqlite::Transaction) -> Result<(), String>,
+) -> Result<(), String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS batch_touched_hashes (content_hash TEXT PRIMARY KEY) WITHOUT ROWID;
+         DELETE FROM batch_touched_hashes;",
+    )
+    .map_err(|error| error.to_string())?;
+    collect_hashes(&tx)?;
+    // Drop the stale projection rows before `write` runs, not after: a
+    // touched hash's `logical_contents.representative_path_id` can point at
+    // a `paths` row `write` is about to delete, and that FK only tolerates
+    // the delete once nothing still references it.
+    tx.execute(
+        "DELETE FROM logical_contents WHERE content_hash IN (SELECT content_hash FROM batch_touched_hashes)",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.execute(
+        "INSERT INTO logical_projection_batch (singleton) VALUES (1)",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    write(&tx)?;
+    tx.execute_batch(
+        "INSERT INTO logical_contents
+           (content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count)
+           SELECT content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count
+           FROM logical_content_projection WHERE content_hash IN (SELECT content_hash FROM batch_touched_hashes);
+         DELETE FROM logical_projection_batch;
+         DELETE FROM batch_touched_hashes;",
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
 /// Clears only reconstructible library facts. Durable configuration, managed
 /// tools, and retained authored records live in separate stores and are
-/// deliberately outside this transaction.
+/// deliberately outside this transaction. Everything projection-affecting is
+/// wiped in the same pass, so the batch guard only needs to suppress the
+/// per-row triggers while it runs; there is nothing left to republish.
 pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
-    let transaction = conn
-        .unchecked_transaction()
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute_batch(
-            "DELETE FROM analysis_receipts;
+    publish_paths_batch(
+        conn,
+        |_tx| Ok(()),
+        |tx| {
+            tx.execute_batch(
+                "DELETE FROM analysis_receipts;
              DELETE FROM similar_group_members;
              DELETE FROM similar_groups;
              DELETE FROM evidence;
-             DELETE FROM logical_projection_batch;
              DELETE FROM logical_contents;
              DELETE FROM paths;
              DELETE FROM visibility_directories;
@@ -657,9 +711,10 @@ pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
              DELETE FROM issues;
              DELETE FROM recent_notifications;
              DELETE FROM volumes;",
-        )
-        .map_err(|error| error.to_string())?;
-    transaction.commit().map_err(|error| error.to_string())
+            )
+            .map_err(|error| error.to_string())
+        },
+    )
 }
 
 // which has no public seam. The copy-count semantics it used to sit beside
