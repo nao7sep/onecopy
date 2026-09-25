@@ -1787,10 +1787,12 @@ fn background_work_set_paused(
 
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output
 /// facts remain the only queue; closing the app loses nothing that must be
-/// recovered. Pure in-memory computation (`queries::month_bounds` takes no
-/// connection) plus an in-memory priority update, so this stays plain.
+/// recovered. While automatic optional work runs, `set_priority` reads the
+/// configuration and the index to decide whether visible previews preempt
+/// it, so it runs through `dispatch()`; the hint generation already discards
+/// a response that arrives after a newer one.
 #[tauri::command]
-fn prioritize_derived_work(
+async fn prioritize_derived_work(
     selected_hash: Option<String>,
     visible_hashes: Vec<String>,
     nearby_hashes: Vec<String>,
@@ -1801,22 +1803,25 @@ fn prioritize_derived_work(
     section_total: u64,
     generation: u64,
 ) -> Result<(), String> {
-    let section = match (section_kind, section_month) {
-        (Some(kind), Some(month)) if matches!(kind.as_str(), "image" | "video" | "other") => {
-            let bounds = queries::month_bounds(&month, display_timezone())?;
-            Some(derived_work::SectionPriority {
-                kind,
-                start_ms: bounds.map(|value| value.0),
-                end_ms: bounds.map(|value| value.1),
-            })
-        }
-        _ => None,
-    };
-    let traversal = section.as_ref().map(|_| derived_work::SectionTraversal {
-        sort: section_sort, anchor: section_anchor, total: section_total,
-    });
-    derived_work::set_priority(selected_hash, visible_hashes, nearby_hashes, section, traversal, generation);
-    Ok(())
+    dispatch(move || {
+        let section = match (section_kind, section_month) {
+            (Some(kind), Some(month)) if matches!(kind.as_str(), "image" | "video" | "other") => {
+                let bounds = queries::month_bounds(&month, display_timezone())?;
+                Some(derived_work::SectionPriority {
+                    kind,
+                    start_ms: bounds.map(|value| value.0),
+                    end_ms: bounds.map(|value| value.1),
+                })
+            }
+            _ => None,
+        };
+        let traversal = section.as_ref().map(|_| derived_work::SectionTraversal {
+            sort: section_sort, anchor: section_anchor, total: section_total,
+        });
+        derived_work::set_priority(selected_hash, visible_hashes, nearby_hashes, section, traversal, generation);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]

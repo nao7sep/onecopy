@@ -74,6 +74,11 @@ const FORBIDDEN_BOUNDARY = [
   /index_store::open\(/,
   /std::fs::/,
   /subprocess::/,
+  // Helpers a command calls that reach the index themselves without taking
+  // `app` or a data root, so the direct patterns above cannot see them.
+  // `set_priority` reads the configuration and the index while automatic
+  // optional work runs.
+  /derived_work::set_priority\(/,
 ];
 
 const DISPATCH_MARKERS = [/\bdispatch\(/, /spawn_blocking\(/];
