@@ -2416,12 +2416,12 @@ pub fn run() {
         // and cap policy are unchanged; only the thread it runs on moved.
         .register_asynchronous_uri_scheme_protocol("mediacache", |_ctx, request, responder| {
             tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(media_protocol::serve_cache(&request));
+                responder.respond(media_protocol::answer(|| media_protocol::serve_cache(&request)));
             });
         })
         .register_asynchronous_uri_scheme_protocol("mediafile", |_ctx, request, responder| {
             tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(media_protocol::serve_original(&request));
+                responder.respond(media_protocol::answer(|| media_protocol::serve_original(&request)));
             });
         })
         .setup(move |app| {

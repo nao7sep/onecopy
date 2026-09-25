@@ -14,6 +14,22 @@ fn not_found() -> tauri::http::Response<Vec<u8>> {
     response
 }
 
+/// Runs one protocol handler off the main thread and always answers. The
+/// responder of an asynchronous protocol is dropped unanswered when its
+/// handler panics, which leaves the webview's request pending forever; a
+/// panic answers 500 instead (the panic hook has already logged it).
+pub(crate) fn answer(
+    serve: impl FnOnce() -> tauri::http::Response<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    // The handler only reads its request; nothing it touched is observed
+    // after a panic except the process-wide state it already guards.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(serve)).unwrap_or_else(|_| {
+        let mut response = tauri::http::Response::new(Vec::new());
+        *response.status_mut() = tauri::http::StatusCode::INTERNAL_SERVER_ERROR;
+        response
+    })
+}
+
 /// Serves an original by indexed content hash or `path-<id>`. The webview
 /// never receives a filesystem path; large streamable files are range-capped
 /// so this synchronous protocol cannot read them wholesale on the UI thread.
@@ -316,3 +332,10 @@ pub fn response_length(total: u64, start: u64, end: u64) -> u64 {
         end - start + 1
     }
 }
+
+#[cfg(test)]
+// EXCEPTION to tests-folder conventions: exercises the crate-private
+// protocol answer; promoting it would widen the crate's API only for this
+// test.
+#[path = "../tests/unit/media_protocol.rs"]
+mod tests;
