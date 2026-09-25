@@ -1069,6 +1069,14 @@ fn walk_root_with_progress(
                     crate::index_store::clear_issues(conn, &abs, &[STAT_ERROR, WALK_ERROR])?;
                 }
             }
+            Err(_) if vanished(path) => {
+                // Listed, then removed before its stat: a walk parked for a
+                // foreground action resumes with entries that action may
+                // have deleted or moved. The file is absent, not failing.
+                stats.seen -= 1;
+                conn.execute("DELETE FROM walk_present_paths WHERE abs_path = ?1", [&abs])
+                    .map_err(|error| error.to_string())?;
+            }
             Err(err) => {
                 stats.seen -= 1;
                 // WalkDir proved this pathname exists even though its richer
@@ -2318,6 +2326,13 @@ fn store_media_facts(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Whether a listed path no longer exists at all, as opposed to existing
+/// but failing to stat.
+fn vanished(path: &Path) -> bool {
+    std::fs::symlink_metadata(crate::winpath::for_fs(path).as_ref())
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn record_issue(

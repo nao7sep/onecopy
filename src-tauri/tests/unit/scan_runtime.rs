@@ -179,3 +179,68 @@ fn a_parked_owner_takes_the_claim_back_before_another_background_owner() {
     assert!(!holder_present());
     assert!(index_state().parked.is_none());
 }
+
+#[test]
+fn a_file_removed_while_its_walk_was_parked_is_absent_not_a_failure() {
+    let _serial = serial_test();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index.sqlite3");
+    let sources = dir.path().join("sources");
+    std::fs::create_dir(&sources).unwrap();
+    // The walk's first entry is this file, so it parks with the entry
+    // already listed, exactly as it does mid-directory.
+    let photo = sources.join("photo.jpg");
+    std::fs::write(&photo, b"data").unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let walk_db = db.clone();
+    let walk_root = photo.clone();
+    let walker = std::thread::spawn(move || {
+        let conn = crate::index_store::open(&walk_db).unwrap();
+        let lists = crate::scanner::ScanLists {
+            images: vec!["jpg".into()],
+            videos: vec![],
+            audio: vec![],
+            companions: vec![],
+        };
+        with_source_check_claim(
+            || false,
+            |_| {},
+            || {
+                entered_tx.send(()).unwrap();
+                go_rx.recv().unwrap();
+                crate::scanner::walk_root(&conn, &walk_root, &lists)
+            },
+        )
+    });
+    entered_rx.recv().unwrap();
+    let removed = photo.clone();
+    let foreground = std::thread::spawn(move || {
+        let guard = admit_foreground(
+            None,
+            Some(Instant::now() + Duration::from_secs(5)),
+            &|| false,
+            &mut || {},
+        )
+        .unwrap();
+        // The foreground action deletes the listed file.
+        std::fs::remove_file(&removed).unwrap();
+        drop(guard);
+    });
+    wait_until(foreground_pending);
+    go_tx.send(()).unwrap();
+
+    let stats = walker.join().unwrap().unwrap();
+    foreground.join().unwrap();
+    assert_eq!(stats.errors, 0);
+    assert_eq!(stats.seen, 0);
+    let conn = crate::index_store::open(&db).unwrap();
+    let issues: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE kind = ?1 AND closed_at_utc IS NULL",
+            [crate::scanner::STAT_ERROR],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(issues, 0);
+}
