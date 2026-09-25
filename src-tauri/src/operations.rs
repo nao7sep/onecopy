@@ -161,7 +161,6 @@ fn delete_targets(
     on_attempt: &mut (impl FnMut(u64, bool) + ?Sized),
 ) -> Result<DeleteOutcome, String> {
     let mut outcome = DeleteOutcome::default();
-    let mut removed_hashes: Vec<Option<String>> = Vec::new();
 
     for target in targets {
         let file = Path::new(&target.abs_path);
@@ -176,15 +175,28 @@ fn delete_targets(
         match result {
             Ok(()) => {
                 outcome.deleted_files += 1;
+                // Row removal and orphan collection are one IMMEDIATE
+                // transaction: a crash or DB error after this point can no
+                // longer leak a `contents` row or cache file with no
+                // surviving path (`reconcile_orphan_contents` is the
+                // backstop for whatever still slips through). The physical
+                // delete/trash already happened above, so a DB failure here
+                // still reports the file as gone rather than silently
+                // losing that fact.
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|e| e.to_string())?;
                 // A partially completed Move may deliver a main file before a
                 // companion output. Detach surviving companions so the main
                 // row can leave without discarding or misrepresenting them.
-                conn.execute(
+                tx.execute(
                     "UPDATE paths SET companion_of = NULL WHERE companion_of = ?1",
                     [target.path_id],
                 )
                 .map_err(|e| e.to_string())?;
-                let current_hash = conn
+                let current_hash = tx
                     .query_row(
                         "SELECT content_hash FROM paths WHERE id = ?1",
                         [target.path_id],
@@ -194,12 +206,46 @@ fn delete_targets(
                     .map_err(|e| e.to_string())?
                     .flatten()
                     .or_else(|| target.content_hash.clone());
-                conn.execute("DELETE FROM evidence WHERE path_id = ?1", [target.path_id])
+                tx.execute("DELETE FROM evidence WHERE path_id = ?1", [target.path_id])
                     .map_err(|e| e.to_string())?;
-                conn.execute("DELETE FROM paths WHERE id = ?1", [target.path_id])
+                tx.execute("DELETE FROM paths WHERE id = ?1", [target.path_id])
                     .map_err(|e| e.to_string())?;
                 outcome.removed_rows += 1;
-                removed_hashes.push(current_hash);
+
+                // Only live main copies keep a logical content identity alive.
+                // Counting missing rows too meant one copy on an absent drive
+                // pinned the contents row and every cache entry for that hash
+                // forever.
+                let mut orphaned = false;
+                if let Some(hash) = &current_hash {
+                    let live: i64 = tx
+                        .query_row(
+                            "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0 \
+                               AND companion_of IS NULL",
+                            [hash],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if live == 0 {
+                        // Missing rows are files that are not on disk; they may
+                        // not hold a foreign key into a contents row that is
+                        // about to go.
+                        tx.execute("DELETE FROM paths WHERE content_hash = ?1", [hash])
+                            .map_err(|e| e.to_string())?;
+                        tx.execute(
+                            "DELETE FROM similar_group_members WHERE content_hash = ?1",
+                            [hash],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        tx.execute("DELETE FROM contents WHERE hash = ?1", [hash])
+                            .map_err(|e| e.to_string())?;
+                        orphaned = true;
+                    }
+                }
+                tx.commit().map_err(|e| e.to_string())?;
+                if orphaned {
+                    preview::remove_entries(cache, current_hash.as_deref().unwrap_or_default());
+                }
                 on_attempt(target.bytes, false);
             }
             Err(err) => {
@@ -219,37 +265,6 @@ fn delete_targets(
                 )?;
                 on_attempt(target.bytes, true);
             }
-        }
-    }
-
-    // Orphaned contents rows lose their cache entries synchronously.
-    for hash in removed_hashes.into_iter().flatten() {
-        // Only live main copies keep a logical content identity alive. Counting missing rows too
-        // meant one copy on an absent drive pinned the contents row and every
-        // cache entry for that hash forever — a leak that accumulates across a
-        // cull session and that no sweep reclaims, since startup_sweep only
-        // drops cache whose hash is absent from contents.
-        let live: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0 \
-                   AND companion_of IS NULL",
-                [&hash],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if live == 0 {
-            // Missing rows are files that are not on disk; they may not hold a
-            // foreign key into a contents row that is about to go.
-            conn.execute("DELETE FROM paths WHERE content_hash = ?1", [&hash])
-                .map_err(|e| e.to_string())?;
-            conn.execute(
-                "DELETE FROM similar_group_members WHERE content_hash = ?1",
-                [&hash],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM contents WHERE hash = ?1", [&hash])
-                .map_err(|e| e.to_string())?;
-            preview::remove_entries(cache, &hash);
         }
     }
 

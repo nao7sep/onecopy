@@ -989,15 +989,42 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
     }
 }
 
-/// Startup sweep — the crash-leftover half of cache GC: deletes cache entries
-/// whose hash is no longer in `contents`, plus stranded `.tmp` staging files
-/// (safe: the single-instance app has no writer running at startup, and the
-/// whole tree is reconstructible). Touches only the cache tree and the DB.
+/// Reconciles `contents` rows a crash or DB error left with no surviving
+/// `paths` row at all (`operations::delete_targets` and
+/// `scanner::forget_unconfigured_roots` collect their own orphans inline;
+/// this is the backstop for whatever a crash between statements still lets
+/// through). It never runs on its own schedule — only from `startup_sweep`,
+/// which already walks the cache tree once per launch — because a leaked
+/// `contents` row is exactly what keeps `startup_sweep`'s own cache-file
+/// check from ever firing for that hash.
+fn reconcile_orphan_contents(conn: &Connection) -> Result<u64, String> {
+    conn.execute(
+        "DELETE FROM similar_group_members WHERE content_hash NOT IN \
+         (SELECT content_hash FROM paths WHERE content_hash IS NOT NULL)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM contents WHERE hash NOT IN \
+         (SELECT content_hash FROM paths WHERE content_hash IS NOT NULL)",
+        [],
+    )
+    .map_err(|e| e.to_string())
+    .map(|removed| removed as u64)
+}
+
+/// Startup sweep — the crash-leftover half of cache GC: reconciles any
+/// leaked `contents` row (see `reconcile_orphan_contents`), then deletes
+/// cache entries whose hash is no longer in `contents`, plus stranded `.tmp`
+/// staging files (safe: the single-instance app has no writer running at
+/// startup, and the whole tree is reconstructible). Touches only the cache
+/// tree and the DB.
 pub fn startup_sweep(
     conn: &Connection,
     cache: &CachePaths,
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
+    reconcile_orphan_contents(conn)?;
     let mut removed = 0u64;
     let mut exists = conn
         .prepare("SELECT 1 FROM contents WHERE hash = ?1")

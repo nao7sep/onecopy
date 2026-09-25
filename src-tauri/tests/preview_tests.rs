@@ -269,6 +269,16 @@ fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
         [],
     )
     .unwrap();
+    // A `paths` row is what makes `live01` live rather than leaked: since
+    // `startup_sweep` now reconciles any `contents` row with no surviving
+    // `paths` row before it walks the cache tree (D-L2's reconciler), a bare
+    // `contents` row with nothing pointing at it is itself an orphan.
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+         VALUES ('/live01.jpg', '/', 'live01.jpg', 'image', 'live01')",
+        [],
+    )
+    .unwrap();
 
     for hash in ["live01", "orphan"] {
         for path in [cache.thumb(hash), cache.preview(hash)] {
@@ -302,6 +312,14 @@ fn strip_frames_leave_with_their_video_and_survive_while_it_stays() {
     let cache = CachePaths::new(dir.path().join("cache"));
     conn.execute(
         "INSERT INTO contents (hash, byte_size, kind) VALUES ('live01', 1, 'video')",
+        [],
+    )
+    .unwrap();
+    // See sweep_removes_orphans_and_temps_but_keeps_live_entries: a `paths`
+    // row is what keeps `live01` from being reconciled away as leaked.
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
+         VALUES ('/live01.mp4', '/', 'live01.mp4', 'video', 'live01')",
         [],
     )
     .unwrap();
