@@ -912,6 +912,7 @@
   "mutation.moving": "Moving",
   "mutation.emptyingTrash": "Emptying Trash",
   "mutation.cancellingAfterFile": "Cancelling after current file…",
+  "mutation.waitingForBackgroundWork": "Waiting for background work to finish its current step…",
   "mutation.cancelFailed": "Couldn’t cancel the file operation.",
   "mutation.factCompleted": { "one": "{count} completed", "other": "{count} completed" },
   "mutation.factPartial": { "one": "{count} partially processed", "other": "{count} partially processed" },

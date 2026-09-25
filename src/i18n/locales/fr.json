@@ -912,6 +912,7 @@
   "mutation.moving": "Déplacement",
   "mutation.emptyingTrash": "Vidage des fichiers supprimés",
   "mutation.cancellingAfterFile": "Annulation après le fichier en cours…",
+  "mutation.waitingForBackgroundWork": "En attente de la fin de l’étape en cours du travail en arrière-plan…",
   "mutation.cancelFailed": "Impossible d’annuler l’opération sur les fichiers.",
   "mutation.factCompleted": { "one": "{count} terminé", "many": "{count} terminés", "other": "{count} terminés" },
   "mutation.factPartial": { "one": "{count} partiellement traité", "many": "{count} partiellement traités", "other": "{count} partiellement traités" },

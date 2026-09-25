@@ -80,7 +80,7 @@ fn start_requested(app: AppHandle, request: Request) -> Result<bool, String> {
         return Err(CLOSING.to_string());
     }
     join_finished(&mut workers);
-    if !state().begin(request, crate::scan_runtime::foreground_pending()) {
+    if !state().begin(request) {
         return Ok(false);
     }
     // Discovery must not sit invisibly behind an hours-long metadata tail.
@@ -212,49 +212,54 @@ fn worker(app: AppHandle) {
             );
         }
     }
-    // A foreground action may have preempted this worker before it acquired
-    // the index claim. In that order the foreground guard finishes first, so
-    // its resume attempt sees this worker as still running. Retry here after
-    // publishing the terminal state; user-requested Stop retires the request.
-    resume_if_requested(app.clone());
     // A stopped or failed walk may still have committed discoveries before
     // its last safe boundary. Completion owns those durable rows regardless
-    // of how the source check ended. A resumed source check has priority, so
-    // wake() leaves this request queued until that check reaches its terminal.
+    // of how the source check ended.
     crate::admit_background_completion(app);
 }
 
 fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     let data_root = crate::paths::data_root(app)?;
-    let config = crate::storage::read_config_for_setup(&data_root)?;
-    let settings = crate::scanner::settings_from_config(
-        config.as_ref(),
-        &data_root,
-        chrono::Utc::now().timestamp_millis(),
-    );
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
     let progress = crate::scan_runtime::progress_emitter(
         app.clone(),
         "source-check://progress",
         next_event_sequence,
     );
-    let summary = crate::scan_runtime::with_owner(
-        crate::scan_runtime::Owner::SourceCheck,
-        || state().cancelled(),
-        || {
-            let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::SourceCheck, None, None);
-            let report = trace.progress_reporter();
-            let result = crate::index_store::open(&db_file)
-                .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &|value| {
-                    report(value.done, value.total);
-                    progress(value);
-                }));
-            if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
-                trace.finish(crate::activity::ActivityState::Failed, None);
-            } else { trace.result(&result); }
-            result
-        },
-    )?;
+    // A foreground action parks the walk in place; one that reset the index
+    // or applied Settings makes it start again with the current configuration.
+    let summary = loop {
+        let settings = crate::scanner::settings_from_config(
+            crate::storage::read_config_for_setup(&data_root)?.as_ref(),
+            &data_root,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        let parked = app.clone();
+        let result = crate::scan_runtime::with_source_check_claim(
+            || state().cancelled(),
+            move |waiting| {
+                state().set_waiting(waiting);
+                emit_state(&parked);
+            },
+            || {
+                let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::SourceCheck, None, None);
+                let report = trace.progress_reporter();
+                let result = crate::index_store::open(&db_file)
+                    .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &|value| {
+                        report(value.done, value.total);
+                        progress(value);
+                    }));
+                if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
+                    trace.finish(crate::activity::ActivityState::Failed, None);
+                } else { trace.result(&result); }
+                result
+            },
+        );
+        match result {
+            Err(error) if error == crate::scan_runtime::RESTART => continue,
+            other => break other?,
+        }
+    };
     if crate::app_lifecycle::shutting_down() {
         return Err(crate::scanner::CANCELLED.to_string());
     }
@@ -280,26 +285,6 @@ pub fn stop(app: &AppHandle) -> bool {
         crate::admit_background_completion(app.clone());
     }
     stopped
-}
-
-pub(crate) fn preempt() {
-    // Couple cancellation to its lifecycle transition so a later Start cannot
-    // be accidentally cancelled by this older foreground interruption.
-    let mut state = state();
-    state.preempt();
-    if state.running() && state.cancelled() {
-        crate::scan_runtime::request_cancel(crate::scan_runtime::Owner::SourceCheck);
-    }
-}
-
-pub(crate) fn resume_if_requested(app: AppHandle) {
-    if crate::app_lifecycle::shutting_down() {
-        return;
-    }
-    if let Err(error) = start_requested(app.clone(), Request::Resume) {
-        fail(&app, &error);
-        emit_done(&app, json!({ "error": error }));
-    }
 }
 
 pub fn shutdown() {

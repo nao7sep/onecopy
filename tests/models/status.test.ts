@@ -130,6 +130,31 @@ describe("what the status bar shows", () => {
     expect(status.text).toBe("Deleting — 2/8 items · 3/10 files · 1 KB/2 KB");
   });
 
+  it("shows a file operation waiting for background work before it plans", () => {
+    const status = statusLine({
+      ...IDLE,
+      mutation: {
+        cancelling: false,
+        progress: {
+          operationId: 5,
+          kind: "destination-move",
+          phase: "waiting",
+          itemsDone: 0,
+          itemsTotal: 3,
+          filesDone: 0,
+          filesTotal: 0,
+          bytesDone: 0,
+          bytesTotal: 0,
+          failures: 0,
+          currentFileBytesDone: null,
+          currentFileBytesTotal: null,
+          nextPhase: "planning",
+        },
+      },
+    }, t, number, percent);
+    expect(status.text).toBe("Waiting for background work to finish its current step…");
+  });
+
   it("shows the truthful final operation accounting until it is dismissed", () => {
     const status = statusLine({
       ...IDLE,

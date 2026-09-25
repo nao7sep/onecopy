@@ -81,11 +81,10 @@ pub fn snapshot(
         classes,
         active_item: runtime.active.map(|active| BackgroundActiveItemSnapshot {
             id: active.class.id(),
-            hash: runtime.active_hash,
+            hash: active.hash,
             done: active.done,
             total: active.total,
-            stopping: runtime.preempt_requested
-                || runtime.paused_classes & active.class.bit() != 0,
+            stopping: active.stopping,
         }),
     })
 }

@@ -912,6 +912,7 @@
   "mutation.moving": "Wird verschoben",
   "mutation.emptyingTrash": "Gelöschte Dateien werden geleert",
   "mutation.cancellingAfterFile": "Wird nach der aktuellen Datei abgebrochen…",
+  "mutation.waitingForBackgroundWork": "Warten, bis die Hintergrundarbeit ihren aktuellen Schritt beendet…",
   "mutation.cancelFailed": "Der Dateivorgang konnte nicht abgebrochen werden.",
   "mutation.factCompleted": { "one": "{count} abgeschlossen", "other": "{count} abgeschlossen" },
   "mutation.factPartial": { "one": "{count} teilweise verarbeitet", "other": "{count} teilweise verarbeitet" },

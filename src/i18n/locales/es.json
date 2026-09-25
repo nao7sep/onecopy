@@ -912,6 +912,7 @@
   "mutation.moving": "Moviendo",
   "mutation.emptyingTrash": "Vaciando los archivos eliminados",
   "mutation.cancellingAfterFile": "Cancelando al terminar el archivo actual…",
+  "mutation.waitingForBackgroundWork": "Esperando a que el trabajo en segundo plano termine su paso actual…",
   "mutation.cancelFailed": "No se pudo cancelar la operación de archivos.",
   "mutation.factCompleted": { "one": "{count} completado", "many": "{count} completados", "other": "{count} completados" },
   "mutation.factPartial": { "one": "{count} procesado parcialmente", "many": "{count} procesados parcialmente", "other": "{count} procesados parcialmente" },

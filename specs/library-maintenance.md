@@ -14,7 +14,7 @@ OneCopy maintains separate ownership for:
 
 These lifecycles may coordinate through shared priority and durable pending work, but stopping or failing one does not silently redefine another. Every long-lived lifecycle exposes whether it is running, stopped or paused, complete, unavailable, or failed as applicable. An unexpected terminal failure leaves an explicit retry, resume, or repair path and is reported through the failure contract.
 
-Normal browsing and file operations remain available while maintenance runs. A foreground file operation receives priority after background work reaches its next bounded safe point. Background discovery does not add later findings to an already confirmed file-operation plan.
+Normal browsing and file operations remain available while maintenance runs. A foreground file operation, section recheck, Settings apply, or index rebuild receives priority after background work reaches its next bounded safe point. Automatic work interrupted this way restarts that unit later; an interrupted automatic transcription or video snapshot unit keeps no partial progress. Work the user requested, such as a Transcribe this file request or a preview being shown, does not yield to a foreground action unless that action changes the same file or rebuilds the index. Background discovery does not add later findings to an already confirmed file-operation plan.
 
 ## Checking configured sources
 
@@ -24,7 +24,7 @@ The pass does not block the usable main window. It compares inexpensive recorded
 
 Background Work provides Start and Stop for checking source folders and shows its progress plus running, stopped, completed, or failed state. Stop takes effect at a safe checkpoint and preserves discoveries already recorded. The finite pass has no separate Pause state whose meaning duplicates Stop.
 
-An explicitly requested source-folder check acknowledges successful completion even when it finds no changes and finishes immediately. Automatic launch checks stay quiet. Foreground preemption retains the explicit request and acknowledges only its eventual completion, not a yielded attempt; stopping or failing it does not produce success. Feedback never delays the work or claims the remaining preparation is finished.
+An explicitly requested source-folder check acknowledges successful completion even when it finds no changes and finishes immediately. Automatic launch checks stay quiet. A foreground action pauses the check in place, shown as waiting, and the check continues from where it stopped rather than walking its sources again; only an index rebuild or a Settings apply made while it waits makes it start over with the current configuration. The explicit request is retained through waiting and acknowledged only at its eventual completion; stopping or failing it does not produce success. Feedback never delays the work or claims the remaining preparation is finished.
 
 A missing configured source or unavailable drive does not block the entire application. OneCopy continues with available copies, reports unavailable paths, and allows files to reappear when their source returns. It retains a reachable in-app path to recheck presence or repair the configured root without restarting.
 
@@ -34,7 +34,7 @@ Filesystem watchers remain active while OneCopy is open. Watcher discoveries ent
 
 `Recheck this section`, also available through Cmd/Ctrl+R, rechecks the filesystem locations already represented by the open section, settles changed files, and reloads that section. It does not search unrelated source directories for files that might newly qualify for the section.
 
-While all configured sources are already being checked, section recheck is unavailable with an explanation. A request that reaches the maintenance boundary despite that guard returns busy; it is never queued to run invisibly later.
+While all configured sources are already being checked, section recheck is unavailable with an explanation. A request that reaches the maintenance boundary despite that guard, or arrives while a file operation is running, returns busy with an explanation; it is never queued to run invisibly later. Section recheck, Settings apply, and index rebuild wait a bounded time for background work to reach its safe point and otherwise return busy.
 
 ## Completing known file information
 
@@ -142,13 +142,13 @@ Optional visible ordering is:
 
 Required visible preparation runs while the user is active and does not wait for a general idle timer. It may preempt automatic optional work at that work's next safe cancellation point. Preemption preserves completed results rather than presenting incomplete work as complete. A preempted transcript publishes no partial text and returns to its enabled queue. Moving among already prepared items does not by itself discard useful running work.
 
-One coordinator owns derived-work admission, priority, cancellation, and publication. Independently checkpointed image thumbnail and screen-preview jobs may run concurrently when automatic CPU, decoded-memory, and subprocess budgets admit them. Concurrency leaves interactive headroom while the user is active, may use more capacity while quiet, and falls back as far as one job for large or uncertain decodes. Transcription has an explicit CPU budget and retains memory headroom during execution. Browsing and Comparison with prepared content remain usable while transcription runs. Exact worker, neighborhood, and batch sizes are implementation tuning rather than user settings.
+One coordinator owns derived-work admission, priority, cancellation, and publication. Preview preparation (thumbnails, screen previews, posters, and requested full-resolution images) has its own capacity-gated lane beside the one lane shared by snapshots, similarity, face scoring, and transcription, so neither a running transcription nor analysis stops preview work. A preview the user is waiting for waits a bounded time for a preview slot instead of failing because other media work is running. Independently checkpointed image thumbnail and screen-preview jobs may run concurrently when automatic CPU, decoded-memory, and subprocess budgets admit them. Concurrency leaves interactive headroom while the user is active, may use more capacity while quiet, and falls back as far as one job for large or uncertain decodes. Transcription has an explicit CPU budget and retains memory headroom during execution. Browsing and Comparison with prepared content remain usable while transcription runs. Exact worker, neighborhood, and batch sizes are implementation tuning rather than user settings.
 
 Background Work refreshes durable debt when discovery, information completion, derived results, settings, or tools change it. Pending work remains visible before an executor starts, and queued, paused, waiting, failed, and complete remain distinct.
 
 Restarting OneCopy and explicitly rechecking a section make its failed generated outputs eligible for a new attempt, including transcription. Merely reopening a section, selecting an item, or opening its preview does not retry a recorded failure. Each boundary reopens existing failed receipts, not successful caches or prerequisite-waiting states, and does not enable disabled enrichment or resume paused classes. Attempt eligibility is independent of Issue dismissal or retained diagnostic history. Rechecking a section scopes this reset to its current logical members, not every item sharing their folders; a failure from the new attempt remains settled until another explicit attempt boundary.
 
-Database publication and user-visible state remain single-owned even when image conversion runs concurrently. Transcription, model-heavy analysis, ffmpeg work, and whole-library computation do not overlap another heavy class unless measured platform evidence establishes safe memory use, cancellation, and responsiveness. No user setting can disable resource-safety limits or choose a raw thread count.
+Database publication and user-visible state remain single-owned even when image conversion runs concurrently. Transcription, model-heavy analysis, snapshot extraction, and whole-library computation do not overlap one another unless measured platform evidence establishes safe memory use, cancellation, and responsiveness; the capacity-gated preview lane may run beside any one of them. No user setting can disable resource-safety limits or choose a raw thread count.
 
 ## Transcription generation
 

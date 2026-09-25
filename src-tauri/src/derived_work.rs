@@ -272,6 +272,7 @@ pub(crate) fn available() -> bool {
         && AUTOMATIC_ADMITTED.load(Ordering::SeqCst)
         && !crate::derived_runtime::exclusive()
         && !crate::scan_runtime::running()
+        && !crate::scan_runtime::foreground_pending()
 }
 
 /// Opens the automatic media queue only after the launch source decision has
@@ -294,6 +295,12 @@ pub(crate) fn admit_automatic() {
 /// source triggers own derived invalidation; this signal only schedules work.
 pub fn wake() {
     DEBT_REVISION.fetch_add(1, Ordering::SeqCst);
+    wake_priority();
+}
+
+/// Reschedules automatic work without invalidating its candidate cursors,
+/// for example after a foreground action released the index claim.
+pub(crate) fn wake_scheduler() {
     wake_priority();
 }
 
@@ -644,8 +651,7 @@ fn ensure_preview_once(
     config: Option<&serde_json::Value>,
     hash: &str,
 ) -> Result<String, String> {
-    let _active = crate::derived_runtime::begin_manual(app, WorkClass::Previews.id())?;
-    crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
+    let _active = crate::derived_runtime::begin_requested_preview(app, hash)?;
     let settings = settings_from_config(config, data_root)?;
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
@@ -1657,6 +1663,7 @@ pub fn complete_transcription_attempt(
     let watch = attempt
         .cancel_when
         .take()
+        .map(crate::derived_runtime::on_behalf_of_current_job)
         .map(|cancel_when| {
             std::thread::Builder::new()
                 .name("onecopy-transcription-cancel-watch".to_string())

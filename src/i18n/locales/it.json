@@ -912,6 +912,7 @@
   "mutation.moving": "Spostamento in corso",
   "mutation.emptyingTrash": "Svuotamento dei file eliminati in corso",
   "mutation.cancellingAfterFile": "Annullamento dopo il file corrente…",
+  "mutation.waitingForBackgroundWork": "In attesa che il lavoro in background completi il passo corrente…",
   "mutation.cancelFailed": "Impossibile annullare l’operazione sui file.",
   "mutation.factCompleted": { "one": "{count} completato", "many": "{count} completati", "other": "{count} completati" },
   "mutation.factPartial": { "one": "{count} elaborato in parte", "many": "{count} elaborati in parte", "other": "{count} elaborati in parte" },

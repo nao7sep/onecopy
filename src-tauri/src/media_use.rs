@@ -1,7 +1,7 @@
 //! One release boundary for in-app media readers and derived workers.
 //!
-//! A destructive operation first takes the derived runtime's exclusive claim,
-//! then asks every live webview to pause and clear its registered audio/video
+//! A destructive operation first takes the derived runtime's exclusive claim
+//! on its files, then asks every live webview to pause and clear its registered audio/video
 //! elements. The mutation starts only after every still-live webview
 //! acknowledges. Nothing durable is recorded: a timed-out release changes no
 //! file, and dropping the guard resumes the webviews and background owner.
@@ -88,27 +88,32 @@ impl Drop for Guard {
     }
 }
 
-/// Prevents new derived readers, stops the active one, and releases playback
-/// handles in every webview. An empty `keys` list means every displayed item
-/// (used for shutdown and Trash-root operations).
-pub fn begin(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
-    begin_with_resume_policy(app, keys, true)
+/// Prevents new derived readers of `keys`, stops every derived job on them,
+/// and releases playback handles in every webview. An empty `keys` list means
+/// every displayed item (used for shutdown and index rebuild). Waiting for a
+/// job to stop ends only when `cancelled` answers true.
+pub fn begin(app: &AppHandle, keys: &[String], cancelled: &dyn Fn() -> bool) -> Result<Guard, String> {
+    let exclusive = crate::derived_runtime::begin_exclusive(
+        app,
+        keys,
+        crate::derived_runtime::ClaimPolicy::Mutation,
+        cancelled,
+    )?;
+    begin_release(app, keys, true, Some(exclusive), false)
 }
 
 /// External applications own an independent session. Readers are released
-/// exactly as for a mutation, but an in-app player that had been running is
-/// restored paused when the launch call returns.
+/// as for a mutation, but only automatic work on the same file is stopped,
+/// and an in-app player that had been running is restored paused when the
+/// launch call returns.
 pub fn begin_external(app: &AppHandle, keys: &[String]) -> Result<Guard, String> {
-    begin_with_resume_policy(app, keys, false)
-}
-
-fn begin_with_resume_policy(
-    app: &AppHandle,
-    keys: &[String],
-    restore_playback: bool,
-) -> Result<Guard, String> {
-    let exclusive = crate::derived_runtime::begin_exclusive(app)?;
-    begin_release(app, keys, restore_playback, Some(exclusive), false)
+    let exclusive = crate::derived_runtime::begin_exclusive(
+        app,
+        keys,
+        crate::derived_runtime::ClaimPolicy::ExternalOpen,
+        &|| false,
+    )?;
+    begin_release(app, keys, false, Some(exclusive), false)
 }
 
 /// Releases every webview only after all derived-media workers have joined.

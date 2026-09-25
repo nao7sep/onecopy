@@ -912,6 +912,7 @@
   "mutation.moving": "이동 중",
   "mutation.emptyingTrash": "삭제된 파일 비우는 중",
   "mutation.cancellingAfterFile": "현재 파일을 끝낸 뒤 취소 중…",
+  "mutation.waitingForBackgroundWork": "백그라운드 작업이 현재 단계를 마치기를 기다리는 중…",
   "mutation.cancelFailed": "파일 작업을 취소할 수 없습니다.",
   "mutation.factCompleted": { "other": "{count}개 완료" },
   "mutation.factPartial": { "other": "{count}개 부분 처리" },

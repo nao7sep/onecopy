@@ -912,6 +912,7 @@
   "mutation.moving": "正在移动",
   "mutation.emptyingTrash": "正在清空已删除的文件",
   "mutation.cancellingAfterFile": "将在当前文件处理完之后取消…",
+  "mutation.waitingForBackgroundWork": "正在等待后台工作完成当前步骤…",
   "mutation.cancelFailed": "无法取消该文件操作。",
   "mutation.factCompleted": { "other": "已完成 {count} 项" },
   "mutation.factPartial": { "other": "{count} 项处理了一部分" },

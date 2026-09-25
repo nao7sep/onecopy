@@ -102,6 +102,14 @@ pub(crate) fn begin_rebuild(app: &AppHandle) -> Result<impl Drop, String> {
     begin_reported(app)
 }
 
+/// Whether a file-changing operation or rebuild currently owns the claim.
+pub(crate) fn active() -> bool {
+    match RUNTIME.active.lock() {
+        Ok(active) => active.is_some(),
+        Err(poisoned) => poisoned.into_inner().is_some(),
+    }
+}
+
 pub(crate) fn request_cancel(id: u64) -> Result<bool, String> {
     let active = match RUNTIME.active.lock() {
         Ok(active) => active,
@@ -190,6 +198,9 @@ enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum Phase {
+    /// Background work is reaching its safe point before this operation
+    /// can own the index and the media boundary.
+    Waiting,
     Planning,
     Deleting,
     Delivering,
@@ -342,6 +353,36 @@ fn result_summary(
     }
 }
 
+/// The index claim, then the media boundary on the operation's files. Both
+/// wait as long as background work needs to reach its safe point; the
+/// operation shows that it is waiting, and its Cancel ends the wait with no
+/// filesystem work. Fields drop in order: media first, then the index.
+struct Admitted {
+    _media: crate::media_use::Guard,
+    _index: crate::scan_runtime::ForegroundGuard,
+}
+
+fn admit(
+    app: &AppHandle,
+    mutation: &Claim,
+    keys: &[String],
+    on_wait: &mut dyn FnMut(),
+) -> Result<Option<Admitted>, String> {
+    let cancelled = || mutation.cancelled();
+    let Some(index) = crate::scan_runtime::begin_admitted_mutation(app, &cancelled, on_wait)?
+    else {
+        return Ok(None);
+    };
+    match crate::media_use::begin(app, keys, &cancelled) {
+        Ok(media) => Ok(Some(Admitted {
+            _media: media,
+            _index: index,
+        })),
+        Err(_) if mutation.cancelled() => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Runs the delete command under this runtime's ephemeral lifecycle. The
 /// operation module still owns planning/execution semantics; this function is
 /// the application-edge orchestration kept out of the Tauri bootstrap.
@@ -353,7 +394,6 @@ pub(crate) fn delete_items(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin_reported(app)?;
-    let _index = crate::scan_runtime::begin_admitted_mutation(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
     let mut last_progress = Progress {
@@ -371,19 +411,32 @@ pub(crate) fn delete_items(
         current_file_bytes_total: None,
         next_phase: Some(Phase::Deleting),
     };
-    publisher.progress(&last_progress);
     let result = crate::logging::boundary(
         "delete_items",
         json!({ "items": items.len(), "permanent": permanent, "operationId": operation_id }),
         || {
             if items.is_empty() {
+                publisher.progress(&last_progress);
                 return Ok(crate::operations::DeleteBatchOutcome::default());
             }
             let keys = items
                 .iter()
                 .map(crate::operations::ItemIdentity::media_key)
                 .collect::<Result<Vec<_>, _>>()?;
-            let _media = crate::media_use::begin(app, &keys)?;
+            let waiting = Progress {
+                phase: Phase::Waiting,
+                next_phase: Some(Phase::Planning),
+                ..last_progress.clone()
+            };
+            let Some(_admitted) =
+                admit(app, &mutation, &keys, &mut || publisher.progress(&waiting))?
+            else {
+                return Ok(crate::operations::DeleteBatchOutcome {
+                    cancelled: true,
+                    ..Default::default()
+                });
+            };
+            publisher.progress(&last_progress);
             let data_root = crate::paths::data_root(app)?;
             let conn =
                 crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
@@ -536,7 +589,6 @@ pub(crate) fn move_items_out(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin_reported(app)?;
-    let _index = crate::scan_runtime::begin_admitted_mutation(app);
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
     let mut last_progress = Progress {
@@ -554,7 +606,6 @@ pub(crate) fn move_items_out(
         current_file_bytes_total: None,
         next_phase: Some(Phase::Delivering),
     };
-    publisher.progress(&last_progress);
     let result = crate::logging::boundary(
         "move_items_out",
         json!({
@@ -565,13 +616,27 @@ pub(crate) fn move_items_out(
         }),
         || {
             if items.is_empty() {
+                publisher.progress(&last_progress);
                 return Ok(crate::operations::MoveBatchOutcome::default());
             }
             let keys = items
                 .iter()
                 .map(crate::operations::ItemIdentity::media_key)
                 .collect::<Result<Vec<_>, _>>()?;
-            let _media = crate::media_use::begin(app, &keys)?;
+            let waiting = Progress {
+                phase: Phase::Waiting,
+                next_phase: Some(Phase::Planning),
+                ..last_progress.clone()
+            };
+            let Some(_admitted) =
+                admit(app, &mutation, &keys, &mut || publisher.progress(&waiting))?
+            else {
+                return Ok(crate::operations::MoveBatchOutcome {
+                    cancelled: true,
+                    ..Default::default()
+                });
+            };
+            publisher.progress(&last_progress);
             let data_root = crate::paths::data_root(app)?;
             let config = crate::storage::read_config_for_setup(&data_root)?;
             let settings = crate::scanner::settings_from_config(config.as_ref(), &data_root, 0);

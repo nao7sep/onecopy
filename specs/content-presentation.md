@@ -81,6 +81,7 @@
 ## External delegation and physical copies
 
 - Open in Default App is one explicit action for images, video, audio, text, attributes, and Comparison cards. A completed logical item opens its deterministic representative copy through an app-resolved known identity. An individually known file whose content identity is not complete may open through its valid indexed path. The interface never supplies an unrestricted path.
+- Open in Default App never stops work the user requested, such as a running transcription. It stops automatic background work only when that work is using the same file, and otherwise opens at once.
 - OneCopy pauses its audio or video before delegation and remains paused when focus returns. The external application owns an independent session; OneCopy does not synchronize position, volume, Sound, edits, completion, or close state.
 - Watchers discover external edits, renames, replacements, and deletion through ordinary reconciliation. There is no external-editor transaction.
 - Failure to launch the external application is reported through the notification and Issues system without changing OneCopy selection or viewer state.

@@ -8,6 +8,7 @@ export type MutationKind =
   | "destination-move"
   | "trash-empty";
 export type MutationPhase =
+  | "waiting"
   | "planning"
   | "deleting"
   | "delivering"
@@ -156,6 +157,8 @@ export function mutationProgressLine(
   number: Translator["number"],
 ): string {
   if (cancelling) return t("mutation.cancellingAfterFile");
+  // Background work is reaching its safe point; nothing is planned yet.
+  if (progress.phase === "waiting") return t("mutation.waitingForBackgroundWork");
   if (progress.phase === "complete") {
     return t(OUTCOME_HEADLINES[progress.kind].complete);
   }

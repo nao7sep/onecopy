@@ -912,6 +912,7 @@
   "mutation.moving": "移動中",
   "mutation.emptyingTrash": "削除済みファイルを空にしています",
   "mutation.cancellingAfterFile": "現在のファイルを処理し終えたら中止します…",
+  "mutation.waitingForBackgroundWork": "バックグラウンド処理が現在の区切りまで進むのを待っています…",
   "mutation.cancelFailed": "ファイル操作を中止できませんでした。",
   "mutation.factCompleted": { "other": "完了 {count} 件" },
   "mutation.factPartial": { "other": "一部処理 {count} 件" },

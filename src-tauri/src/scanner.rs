@@ -1005,7 +1005,7 @@ fn walk_root_with_progress(
     let mut walk_incomplete = false;
     let mut current_stat_failures = std::collections::HashSet::<String>::new();
     // One probe up front so a clean index never pays a per-file DELETE.
-    let issues_present = crate::index_store::any_issues(conn)?;
+    let mut issues_present = crate::index_store::any_issues(conn)?;
     let mut visibility_directories = crate::visibility_index::DirectoryFacts::default();
 
     // The walk root carries the long-path form so every entry beneath it
@@ -1016,6 +1016,13 @@ fn walk_root_with_progress(
         .filter_entry(|entry| !crate::trash::is_trash_path(entry.path()))
     {
         check_cancel()?;
+        // A pending foreground action takes the index here and the walk
+        // continues from this entry afterwards. Rows and attributes it cached
+        // may have changed meanwhile.
+        if crate::scan_runtime::yield_to_foreground()? {
+            visibility_directories = crate::visibility_index::DirectoryFacts::default();
+            issues_present = crate::index_store::any_issues(conn)?;
+        }
         let entry = match entry {
             Ok(e) => e,
             Err(err) => {

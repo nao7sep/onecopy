@@ -912,6 +912,7 @@
   "mutation.moving": "Перемещение",
   "mutation.emptyingTrash": "Очистка удалённых файлов",
   "mutation.cancellingAfterFile": "Отмена после текущего файла…",
+  "mutation.waitingForBackgroundWork": "Ожидание завершения текущего шага фоновой работы…",
   "mutation.cancelFailed": "Не удалось отменить файловую операцию.",
   "mutation.factCompleted": { "one": "{count} завершено", "few": "{count} завершено", "many": "{count} завершено", "other": "{count} завершено" },
   "mutation.factPartial": { "one": "{count} обработано частично", "few": "{count} обработано частично", "many": "{count} обработано частично", "other": "{count} обработано частично" },

@@ -32,78 +32,66 @@ fn bulk_pause_and_individual_resume_have_one_authority() {
 }
 
 #[test]
-fn source_check_is_finite_and_early_resume_cannot_consume_restart_intent() {
+fn source_check_is_finite_and_waits_in_place_for_foreground_work() {
     let mut state = SourceCheckState::default();
-    assert!(state.begin(Request::Explicit, false));
-    assert!(!state.begin(Request::Explicit, false));
-    state.preempt();
-    assert!(state.cancelled());
-    assert!(!state.begin(Request::Resume, false)); // Foreground finishes before the worker retires.
-    state.finish(ResultState::Stopped);
+    assert!(state.begin(Request::Explicit));
+    assert!(!state.begin(Request::Explicit));
+    state.set_waiting(true);
     assert!(state.waiting());
-    assert!(!state.begin(Request::Resume, true)); // Another foreground waiter still has priority.
-    assert!(state.begin(Request::Resume, false));
+    assert!(state.running());
+    assert!(!state.cancelled()); // Waiting is not stopping: the walk continues.
+    state.set_waiting(false);
+    assert!(!state.waiting());
     state.finish(ResultState::Completed);
     assert!(!state.running());
-    assert!(!state.begin(Request::Resume, false)); // Completion does not schedule another pass.
-    assert!(state.begin(Request::Explicit, false));
+    assert!(state.begin(Request::Explicit));
 }
 
 #[test]
-fn explicit_stop_wins_before_during_and_after_foreground_preemption() {
+fn explicit_stop_wins_before_during_and_after_foreground_waiting() {
     for stop_at in 0..3 {
         let mut state = SourceCheckState::default();
-        assert!(state.begin(Request::Explicit, false));
+        assert!(state.begin(Request::Explicit));
         if stop_at == 0 {
             state.stop();
         }
-        state.preempt();
+        state.set_waiting(true);
         if stop_at == 1 {
             state.stop();
         }
-        state.finish(ResultState::Stopped);
+        state.set_waiting(false);
         if stop_at == 2 {
             state.stop();
         }
+        assert!(state.stopping());
+        assert!(state.cancelled());
+        assert!(!state.finish(ResultState::Stopped));
         assert!(!state.running());
-        assert!(!state.begin(Request::Resume, false));
     }
-}
-
-#[test]
-fn source_failure_never_silently_restarts() {
-    let mut state = SourceCheckState::default();
-    state.begin(Request::Explicit, false);
-    state.preempt();
-    state.finish(ResultState::Failed);
-    assert!(!state.begin(Request::Resume, false));
-    assert!(matches!(state.last_result, ResultState::Failed));
 }
 
 #[test]
 fn explicit_check_acknowledges_once_even_without_progress_or_changes() {
     for result in [ResultState::Completed, ResultState::CompletedWithIssues] {
         let mut state = SourceCheckState::default();
-        assert!(state.begin(Request::Explicit, false));
+        assert!(state.begin(Request::Explicit));
         assert!(state.finish(result));
         assert!(!state.finish(result));
-        assert!(state.begin(Request::Automatic, false));
+        assert!(state.begin(Request::Automatic));
         assert!(!state.finish(result));
     }
 }
 
 #[test]
-fn preemption_keeps_explicit_feedback_but_does_not_turn_an_automatic_check_into_one() {
+fn waiting_keeps_explicit_feedback_but_does_not_turn_an_automatic_check_into_one() {
     for request in [Request::Explicit, Request::Automatic] {
         let mut state = SourceCheckState::default();
-        assert!(state.begin(request, false));
+        assert!(state.begin(request));
         for _ in 0..3 {
-            state.preempt();
-            assert!(!state.finish(ResultState::Stopped));
-            assert!(!state.begin(Request::Resume, true));
-            assert!(state.begin(Request::Resume, false));
+            state.set_waiting(true);
             // A refused new request cannot replace the admitted origin.
-            assert!(!state.begin(Request::Explicit, false));
+            assert!(!state.begin(Request::Explicit));
+            state.set_waiting(false);
         }
         assert_eq!(
             state.finish(ResultState::Completed),
@@ -116,20 +104,14 @@ fn preemption_keeps_explicit_feedback_but_does_not_turn_an_automatic_check_into_
 fn stopped_or_failed_requests_never_leak_success_feedback_to_a_later_request() {
     for result in [ResultState::Stopped, ResultState::Failed] {
         let mut state = SourceCheckState::default();
-        assert!(state.begin(Request::Explicit, false));
+        assert!(state.begin(Request::Explicit));
         assert!(!state.finish(result));
-        assert!(state.begin(Request::Automatic, false));
+        assert!(state.begin(Request::Automatic));
         assert!(!state.finish(ResultState::Completed));
     }
     let mut state = SourceCheckState::default();
-    state.begin(Request::Explicit, false);
+    state.begin(Request::Explicit);
     state.stop();
     assert!(!state.finish(ResultState::Completed)); // Stop races a completed final step.
-    state.begin(Request::Explicit, false);
-    state.preempt();
-    state.finish(ResultState::Stopped);
-    state.stop(); // Queued continuation, with no worker left to finish it.
-    assert!(!state.begin(Request::Resume, false));
-    state.begin(Request::Automatic, false);
-    assert!(!state.finish(ResultState::Completed));
+    assert!(matches!(state.last_result, ResultState::Completed));
 }

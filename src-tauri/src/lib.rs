@@ -389,8 +389,19 @@ fn rebuild_library_index(app: AppHandle) -> Result<(), String> {
             // operation rejects this command, and no new one can begin while
             // the reconstructible database facts are being cleared.
             let _rebuild = mutation_runtime::begin_rebuild(&app)?;
-            let _media = media_use::begin(&app, &[])?;
             scan_runtime::run_foreground(&app, || {
+                // Rebuild answers busy like other Settings actions when
+                // derived work does not stop within the foreground deadline.
+                let deadline = std::time::Instant::now() + scan_runtime::FOREGROUND_DEADLINE;
+                let _media = media_use::begin(&app, &[], &|| std::time::Instant::now() >= deadline)
+                    .map_err(|error| {
+                        if error == scanner::CANCELLED {
+                            scan_runtime::BUSY.to_string()
+                        } else {
+                            error
+                        }
+                    })?;
+                scan_runtime::restart_source_walks();
                 let data_root = paths::data_root(&app)?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 index_store::clear_reconstructible(&conn)?;
@@ -1017,6 +1028,9 @@ fn apply_library_settings(app: AppHandle, resolve_dates: bool) -> Result<u64, St
         json!({}),
         || {
             scan_runtime::run_foreground(&app, || {
+                // A source walk parked behind this apply walks again with the
+                // saved configuration instead of finishing with the old one.
+                scan_runtime::restart_source_walks();
                 let data_root = paths::data_root(&app)?;
                 let config = storage::read_config_for_setup(&data_root)?;
                 let settings = scanner::settings_from_config(
@@ -1212,7 +1226,7 @@ fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
             let cache_root = cache_root().ok_or("data root unset")?;
             let cache = preview::CachePaths::new(cache_root);
             if cache.fullres(&hash).is_file() { return Ok(()); }
-            let _work = derived_runtime::begin_manual(&app, "previews")?;
+            let _work = derived_runtime::begin_requested_preview(&app, &hash)?;
             let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
             // Presence decides availability, same rule as the scan settings.
             let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
@@ -1266,8 +1280,7 @@ fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(),
             // may replace the provisional hash supplied by Main while the
             // attempt is preparing its source.
             let result = (|| -> Result<(String, Option<String>), String> {
-                let _work = derived_runtime::begin_manual_queued(&handle, class.id())?;
-                derived_runtime::active_item(&handle, class, &hash);
+                let _work = derived_runtime::begin_requested(&handle, class, &hash)?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let projection = queries::ItemProjectionContext {
                     capabilities: derived_work::work_capabilities(&data_root)?,

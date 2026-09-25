@@ -471,7 +471,7 @@ fn process_dirty(
     generation: u64,
 ) -> Result<u64, String> {
     crate::scan_runtime::with_watcher_claim(
-        || !owns_generation(generation),
+        move || !owns_generation(generation),
         || process_dirty_claimed(app, dirs, generation),
     )
 }
@@ -501,6 +501,8 @@ fn process_dirty_claimed(
         if !owns_generation(generation) {
             return Err(scanner::CANCELLED.to_string());
         }
+        // A pending foreground action takes the index between directories.
+        crate::scan_runtime::yield_to_foreground()?;
         changed += restat_dir(&conn, dir, &settings.lists, &settings.source_dirs)?;
     }
     if !owns_generation(generation) {

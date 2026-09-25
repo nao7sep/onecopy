@@ -1,4 +1,5 @@
-//! Pure lifecycle of a finite source-check request, including temporary yielding.
+//! Pure lifecycle of a finite source-check request, including waiting in
+//! place while a foreground action owns the index.
 
 #[derive(Clone, Copy, Default, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -15,16 +16,16 @@ enum Phase {
     #[default]
     Idle,
     Running,
+    /// Parked at a safe point while a foreground action owns the index; the
+    /// walk continues from there.
+    Waiting,
     Stopping,
-    Yielding,
-    Queued,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Request {
     Explicit,
     Automatic,
-    Resume,
 }
 
 #[derive(Default)]
@@ -42,22 +43,17 @@ impl SourceCheckState {
         self.phase == Phase::Stopping
     }
     pub fn waiting(&self) -> bool {
-        self.phase == Phase::Queued
+        self.phase == Phase::Waiting
     }
     pub fn cancelled(&self) -> bool {
-        matches!(self.phase, Phase::Stopping | Phase::Yielding | Phase::Idle)
+        matches!(self.phase, Phase::Stopping | Phase::Idle)
     }
 
-    pub fn begin(&mut self, request: Request, foreground_pending: bool) -> bool {
-        if !matches!(self.phase, Phase::Idle | Phase::Queued) {
+    pub fn begin(&mut self, request: Request) -> bool {
+        if self.phase != Phase::Idle {
             return false;
         }
-        if request == Request::Resume && (self.phase != Phase::Queued || foreground_pending) {
-            return false;
-        }
-        if request != Request::Resume {
-            self.notify_completion = request == Request::Explicit;
-        }
+        self.notify_completion = request == Request::Explicit;
         self.phase = Phase::Running;
         true
     }
@@ -65,37 +61,33 @@ impl SourceCheckState {
     pub fn stop(&mut self) -> bool {
         let requested = self.running();
         self.notify_completion = false;
-        self.phase = match self.phase {
-            Phase::Idle | Phase::Queued => Phase::Idle,
-            _ => Phase::Stopping,
-        };
+        if requested {
+            self.phase = Phase::Stopping;
+        }
         requested
     }
 
-    pub fn preempt(&mut self) {
-        // A foreground interruption must never override an explicit Stop.
-        if self.phase == Phase::Running {
-            self.phase = Phase::Yielding;
-        }
+    /// A foreground action parks or releases the walk. It never overrides an
+    /// explicit Stop.
+    pub fn set_waiting(&mut self, waiting: bool) {
+        self.phase = match (self.phase, waiting) {
+            (Phase::Running, true) => Phase::Waiting,
+            (Phase::Waiting, false) => Phase::Running,
+            (phase, _) => phase,
+        };
     }
 
     /// Claims the explicit request's one completion notice at its terminal
-    /// boundary. A yielded attempt retains that intent for its continuation.
+    /// boundary.
     pub fn finish(&mut self, result: ResultState) -> bool {
-        self.phase = if self.phase == Phase::Yielding && matches!(result, ResultState::Stopped) {
-            Phase::Queued
-        } else {
-            Phase::Idle
-        };
+        self.phase = Phase::Idle;
         self.last_result = result;
         let notify = self.notify_completion
             && matches!(
                 result,
                 ResultState::Completed | ResultState::CompletedWithIssues
             );
-        if self.phase == Phase::Idle {
-            self.notify_completion = false;
-        }
+        self.notify_completion = false;
         notify
     }
 }

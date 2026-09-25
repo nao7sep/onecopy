@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn cancellation_is_bound_to_one_claim_identity() {
+    let _serial = crate::scan_runtime::serial_test();
     let first = begin().unwrap();
     let first_id = first.id();
     assert!(begin().is_err());
@@ -33,4 +34,16 @@ fn result_accounting_separates_complete_partial_and_unstarted_work() {
             error: None,
         }
     );
+}
+
+#[test]
+fn section_recheck_answers_busy_while_a_file_operation_runs() {
+    let _serial = crate::scan_runtime::serial_test();
+    let operation = begin().unwrap();
+    assert_eq!(
+        crate::scan_runtime::section_admission().unwrap_err(),
+        "Recheck this section is unavailable while a file operation is running."
+    );
+    drop(operation);
+    assert!(crate::scan_runtime::section_admission().is_ok());
 }
