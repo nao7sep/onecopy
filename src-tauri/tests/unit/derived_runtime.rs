@@ -157,3 +157,31 @@ fn a_requested_preview_runs_beside_a_transcription() {
     drop(automatic);
     drop(transcription);
 }
+
+#[test]
+fn requested_previews_share_the_lane_but_never_derive_the_same_item_at_once() {
+    let mut running = job(WorkClass::Previews, true);
+    running.hash = Some("photo".to_string());
+    let runtime = RuntimeState {
+        previews: vec![running],
+        preview_queue: VecDeque::from([0]),
+        ..RuntimeState::default()
+    };
+    assert!(preview_admits(&runtime, 0, "other", 4));
+    assert!(!preview_admits(&runtime, 0, "photo", 4));
+}
+
+#[test]
+fn a_second_request_for_an_item_waits_for_the_first() {
+    let _serial = crate::scan_runtime::serial_test();
+    let first = requested_preview(None, "photo").unwrap();
+    let (done_tx, done_rx) = mpsc::channel();
+    let second = thread::spawn(move || {
+        let admitted = requested_preview(None, "photo").map(|_| ());
+        done_tx.send(()).unwrap();
+        admitted
+    });
+    assert!(done_rx.recv_timeout(Duration::from_millis(150)).is_err());
+    drop(first);
+    second.join().unwrap().unwrap();
+}

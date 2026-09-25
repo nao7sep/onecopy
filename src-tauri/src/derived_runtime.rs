@@ -185,13 +185,17 @@ fn manual_waits(runtime: &RuntimeState, ticket: u64, hash: Option<&str>, shuttin
 }
 
 /// Whether a queued requested preview may take a preview-lane slot now.
-/// Requested and automatic preview jobs never overlap, so two owners never
-/// derive or promote the same item at once; requested ones share the lane up
-/// to its capacity.
-fn preview_admits(runtime: &RuntimeState, ticket: u64, capacity: usize) -> bool {
+/// Requested and automatic preview jobs never overlap, and requested ones
+/// share the lane up to its capacity but never on the same item, so two
+/// owners never derive or promote the same item at once. A later request for
+/// an item finds the earlier one's output already in place.
+fn preview_admits(runtime: &RuntimeState, ticket: u64, hash: &str, capacity: usize) -> bool {
     runtime.preview_queue.front() == Some(&ticket)
         && runtime.previews.len() < capacity
-        && runtime.previews.iter().all(|job| job.manual)
+        && runtime
+            .previews
+            .iter()
+            .all(|job| job.manual && job.hash.as_deref() != Some(hash))
 }
 
 #[derive(Clone, Copy)]
@@ -416,7 +420,7 @@ fn requested_preview(app: Option<&AppHandle>, hash: &str) -> Result<ManualWorkGu
         if runtime.claim_covers(Some(hash)) {
             break FILE_IN_USE.to_string();
         }
-        if preview_admits(&runtime, ticket, capacity) {
+        if preview_admits(&runtime, ticket, hash, capacity) {
             runtime.preview_queue.pop_front();
             let id = runtime.insert(WorkClass::Previews, true, Some(hash.to_string()));
             RUNTIME.1.notify_all();
