@@ -89,6 +89,7 @@ interface ItemsState {
   toggleItem: (key: string, position?: number) => void;
   rangeSelect: (key: string, position?: number) => Promise<void>;
   refresh: () => Promise<void>;
+  refreshWindowOnly: () => Promise<void>;
   applyDerivedItem: (previousHash: string, item: SectionItem) => void;
   selectAfterFamily: (recovery: AnchorContext | null) => Promise<void>;
 }
@@ -560,6 +561,19 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
 
   refresh: async () => {
     if (get().selected !== null) await reconcileCurrent(set, get, false, "center");
+  },
+
+  // A tick that cannot remove members (source-check/file-information
+  // progress, similarity relabeling) only needs fresher item data at the
+  // window Main already shows; it must not round-trip the whole selection
+  // and range-base through `reconcile_section`, which for a 100k+ selection
+  // serialized ~200k identities each way on every scan-progress tick. This
+  // reloads exactly the currently displayed window, already anchored from
+  // the last reconcile, and leaves selection, anchor, and range state alone.
+  refreshWindowOnly: async () => {
+    const state = get();
+    if (state.selected === null) return;
+    await state.loadWindow(state.windowStart, true);
   },
 
   applyDerivedItem: (previousHash, item) => {

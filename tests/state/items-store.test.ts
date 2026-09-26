@@ -411,3 +411,33 @@ describe("request ownership", () => {
     expect(useItemsStore.getState().items.map((row) => row.hash)).toEqual(["h9"]);
   });
 });
+
+describe("refreshWindowOnly", () => {
+  it("reloads only the current window and never round-trips the selection through reconcile_section", async () => {
+    const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().toggleItem("h2", 1);
+    useItemsStore.getState().toggleItem("h5", 4);
+    const before = useItemsStore.getState();
+
+    invokeCalls.length = 0;
+    await useItemsStore.getState().refreshWindowOnly();
+
+    expect(invokeCalls.map((call) => call.command)).toEqual(["get_section_window"]);
+    const call = invokeCalls.find((candidate) => candidate.command === "get_section_window");
+    expect(call?.args).not.toHaveProperty("selected");
+    expect(call?.args).not.toHaveProperty("rangeBase");
+    // Selection, anchor, and range state are untouched by a window-only refresh.
+    expect(useItemsStore.getState().selectedItem).toBe(before.selectedItem);
+    expect([...useItemsStore.getState().selectedKeys].sort()).toEqual(
+      [...before.selectedKeys].sort(),
+    );
+  });
+
+  it("does nothing when no section is selected", async () => {
+    invokeCalls.length = 0;
+    await useItemsStore.getState().refreshWindowOnly();
+    expect(invokeCalls).toEqual([]);
+  });
+});

@@ -24,6 +24,7 @@ import {
   latestActivityOperationId,
   recordActivity,
 } from "../repositories/activity";
+import { transitionCoalescer, type CoalescerState } from "../models/refresh-coalescer";
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let derivedIssuesTimer: ReturnType<typeof setTimeout> | null = null;
@@ -47,20 +48,86 @@ interface SequencedProgress {
   progress: ScanProgress;
 }
 
-function refreshLibrarySoon(): void {
-  if (refreshTimer !== null) return;
-  refreshTimer = setTimeout(() => {
-    refreshTimer = null;
-    void useSectionsStore.getState().loadCounts();
-    void useItemsStore.getState().refresh();
-    void useIssuesStore.getState().load();
-  }, 250);
+// Single-flight counts+refresh, driven by the pure coalescer model. Scan-time
+// progress can fire 8 times a second; without single-flight gating, a round
+// slower than the event rate queued another round on top of it without bound
+// (C-H1). At most one round runs at a time, and at most one more is queued to
+// run immediately after it finishes.
+//
+// A round is either "light" (counts plus the currently displayed window only,
+// keyed by the anchor Main already resolved) or "full" (counts plus a whole
+// `reconcile_section` selection/anchor round-trip). A tick that cannot remove
+// section members -- source-check/file-information progress, similarity
+// relabeling -- only ever needs the light round: round-tripping a 100k+
+// selection through `reconcile_section` on every such tick serialized ~200k
+// identities each way for no reason (C-M2). Watcher updates and completion
+// events can remove members, so they request (and, once requested, keep) a
+// full round; if a full round is requested while a light one is pending or
+// running, the eventual round escalates to full rather than downgrading.
+let libraryRefreshState: CoalescerState = "idle";
+let libraryRefreshFull = false;
+
+function runLibraryRefreshRound(): void {
+  const full = libraryRefreshFull;
+  libraryRefreshFull = false;
+  void Promise.allSettled([
+    useSectionsStore.getState().loadCounts(),
+    full ? useItemsStore.getState().refresh() : useItemsStore.getState().refreshWindowOnly(),
+    useIssuesStore.getState().load(),
+  ]).then(() => {
+    driveLibraryRefresh({ kind: "roundCompleted" });
+  });
 }
 
+function driveLibraryRefresh(event: Parameters<typeof transitionCoalescer>[1]): void {
+  const { state, actions } = transitionCoalescer(libraryRefreshState, event);
+  libraryRefreshState = state;
+  for (const action of actions) {
+    switch (action) {
+      case "startTimer":
+        if (refreshTimer !== null) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          driveLibraryRefresh({ kind: "timerFired" });
+        }, 250);
+        break;
+      case "clearTimer":
+        if (refreshTimer !== null) {
+          clearTimeout(refreshTimer);
+          refreshTimer = null;
+        }
+        break;
+      case "startRound":
+        runLibraryRefreshRound();
+        break;
+    }
+  }
+}
+
+/** Debounced, single-flight, window-only refresh for high-frequency progress
+ * signals that cannot remove section members (source-check/file-information
+ * progress, similarity relabeling): coalesces bursts and never starts a round
+ * on top of one already in flight. */
+function refreshLibrarySoon(): void {
+  driveLibraryRefresh({ kind: "trigger" });
+}
+
+/** Debounced, single-flight, full refresh for signals that can remove section
+ * members but still arrive as a burst (watcher updates): still coalesced, but
+ * the eventual round reconciles the whole selection rather than only the
+ * window. */
+function refreshLibrarySoonFull(): void {
+  libraryRefreshFull = true;
+  driveLibraryRefresh({ kind: "trigger" });
+}
+
+/** Immediate, full refresh for low-frequency, must-be-accurate completions (an
+ * operation finished, a full source check ended). Still single-flight: if a
+ * round is already running, this queues exactly one trailing rerun rather
+ * than starting a second round concurrently. */
 function refreshLibraryNow(): void {
-  void useSectionsStore.getState().loadCounts();
-  void useItemsStore.getState().refresh();
-  void useIssuesStore.getState().load();
+  libraryRefreshFull = true;
+  driveLibraryRefresh({ kind: "triggerImmediate" });
 }
 
 function refreshDerivedIssues(): void {
@@ -263,7 +330,9 @@ const install = createEventInstaller(
     });
 
     await listeners.listen("watch://updated", () => {
-      refreshLibrarySoon();
+      // The watcher can remove section members (an external delete/move), so
+      // this needs the full reconcile, not the window-only refresh.
+      refreshLibrarySoonFull();
       void reconcileComparisonMembership();
     });
     await listeners.listen<{ previousHash: string; item: SectionItem }>(
@@ -283,7 +352,11 @@ const install = createEventInstaller(
       void useIssuesStore.getState().load();
     });
     await listeners.listen("derived://similarity-updated", () => {
-      void useItemsStore.getState().refresh();
+      // A similarity rebuild after a settings change fires once per rebuilt
+      // month bucket -- hundreds of events in a burst -- so this goes through
+      // the same single-flight coalescer as scan progress (C-H1) instead of
+      // calling refresh() unthrottled per event.
+      refreshLibrarySoon();
     });
     await listeners.listen("watch://rescan-needed", () => {
       useSectionsStore.setState({ rescanNeeded: true });
