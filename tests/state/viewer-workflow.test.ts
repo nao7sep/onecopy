@@ -414,4 +414,45 @@ describe("viewer workflow", () => {
       permanent: true,
     });
   });
+
+  it("trashes only the displayed item, never a hidden Main multi-selection (R5.2 T1)", async () => {
+    mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
+    useItemsStore.setState({
+      selectedKeys: new Set(["a", "b", "c"]),
+      selectedPositions: new Map([["a", 0], ["b", 1], ["c", 2]]),
+    });
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
+
+    await requestViewerDelete(false);
+
+    const deletes = invokeCalls.filter((call) => call.command === "delete_items");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.args).toEqual({
+      items: [{ hash: "b", pathId: null }],
+      permanent: false,
+    });
+  });
+
+  it("permanently deletes only the displayed item, never a hidden Main multi-selection (R5.2 T1)", async () => {
+    mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
+    useItemsStore.setState({
+      selectedKeys: new Set(["a", "b", "c"]),
+      selectedPositions: new Map([["a", 0], ["b", 1], ["c", 2]]),
+    });
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
+
+    await requestViewerDelete(true);
+    await confirmViewerDelete();
+
+    const deletes = invokeCalls.filter((call) => call.command === "delete_items");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.args).toEqual({
+      items: [{ hash: "b", pathId: null }],
+      permanent: true,
+    });
+  });
 });
