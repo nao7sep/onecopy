@@ -359,7 +359,7 @@ fn selected_visible_and_section_backlog_keep_their_priority_without_duplicates()
     )
     .unwrap();
 
-    let settings = settings_from_config(None, dir.path()).unwrap();
+    let settings = settings_from_config(None, dir.path());
     let section = SectionPriority {
         kind: "image".to_string(),
         start_ms: Some(100),
@@ -407,7 +407,7 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
     )
     .unwrap();
 
-    let mut settings = settings_from_config(None, dir.path()).unwrap();
+    let mut settings = settings_from_config(None, dir.path());
     settings.ffmpeg = Some(dir.path().join("ffmpeg"));
     settings.face_enabled = true;
     settings.face_models = Some(FaceAssets {
@@ -622,6 +622,8 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
                 face_enabled: true,
                 face_models: true,
                 transcription_model: true,
+                transcription_acceleration: true,
+                face_acceleration: true,
                 video_transcription_enabled: true,
                 audio_transcription_enabled: true,
             },
@@ -710,4 +712,75 @@ fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
     assert_eq!(next_strips[0].0, "video-007");
     assert_eq!(next_faces[0].0, "image-009");
     assert_eq!(next_transcripts[0].0, "video-011");
+}
+
+#[test]
+fn an_unsupported_saved_acceleration_fails_only_its_own_engine() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-unsupported-acceleration-")
+        .tempdir()
+        .unwrap();
+    // Saved on another platform: neither backend is offered by this binary
+    // for face scoring, and `cuda` by none for transcription.
+    std::fs::write(
+        dir.path().join(onecopy_lib::storage::CONFIG_FILE_NAME),
+        serde_json::json!({
+            "aiAcceleration": { "transcription": "cuda", "face-scoring": "metal" },
+            "scoreFaces": true,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('photo', 1, 'image');
+         INSERT INTO contents (hash, byte_size, kind) VALUES ('song', 1, 'audio');
+         INSERT INTO paths
+           (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+           VALUES ('/photo.jpg', '/', 'photo.jpg', 'image', 'photo', 120, 'metadata'),
+                  ('/song.m4a', '/', 'song.m4a', 'audio', 'song', 130, 'metadata');",
+    )
+    .unwrap();
+
+    // Browsing and preview preparation read the same settings and still work.
+    let capabilities = onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap();
+    let config = onecopy_lib::storage::read_config_for_setup(dir.path()).unwrap();
+    let settings = settings_from_config(config.as_ref(), dir.path());
+    assert!(settings.transcription_acceleration.is_err());
+    assert!(settings.face_acceleration.is_err());
+    assert_eq!(
+        priority_candidates(&conn, &settings, Some("photo"), &[], None).unwrap(),
+        ["photo"]
+    );
+    assert!(priority_candidates_for_class(&conn, &settings, "audio-transcripts", Some("song"), &[], None)
+        .unwrap()
+        .is_empty());
+
+    let value = serde_json::to_value(
+        snapshot(
+            dir.path(),
+            onecopy_lib::derived_runtime::snapshot(onecopy_lib::derived_runtime::RuntimeConditions {
+                busy: false,
+                worker_running: true,
+            })
+            .unwrap(),
+            capabilities,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let row = |id: &str| {
+        value["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(row("previews")["state"], "queued");
+    for id in ["audio-transcripts", "faces"] {
+        assert_eq!(row(id)["state"], "unavailable", "{id}");
+        assert_eq!(row(id)["reason"], derived_state::UNSUPPORTED_ACCELERATION, "{id}");
+    }
 }

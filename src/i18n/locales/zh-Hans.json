@@ -1032,6 +1032,7 @@
   "reason.waitingForFfmpeg": "正在等待 ffmpeg",
   "reason.waitingForFaceModels": "正在等待人脸模型",
   "reason.waitingForTranscriptionModel": "正在等待转录模型",
+  "reason.unsupportedAcceleration": "已保存的加速方式在这台电脑上不可用。请在设置中选择其他方式",
   "reason.enableVideoSnapshots": "请在“设置”中开启视频快照",
   "reason.enableSimilarity": "请在“设置”中开启相似照片分析",
   "reason.enableFaceScoring": "请在“设置”中开启人脸评分",

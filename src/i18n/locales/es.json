@@ -1032,6 +1032,7 @@
   "reason.waitingForFfmpeg": "Esperando a ffmpeg",
   "reason.waitingForFaceModels": "Esperando los modelos de caras",
   "reason.waitingForTranscriptionModel": "Esperando el modelo de transcripción",
+  "reason.unsupportedAcceleration": "La aceleración guardada no está disponible en este ordenador. Elige otra en Configuración",
   "reason.enableVideoSnapshots": "Activa las capturas de video en Configuración",
   "reason.enableSimilarity": "Activa el análisis de fotos similares en Configuración",
   "reason.enableFaceScoring": "Activa la puntuación de caras en Configuración",

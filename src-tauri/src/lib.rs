@@ -1418,7 +1418,7 @@ fn transcribe_dispatched(app: AppHandle, hash: String, replace: Option<bool>) ->
     let cache_root = cache_root().ok_or("data root unset")?;
     let config = storage::read_config_for_setup(&data_root)?;
     let transcription_acceleration =
-        ai_acceleration::selection_from_config(config.as_ref())?.transcription;
+        ai_acceleration::resolve(config.as_ref(), ai_acceleration::TRANSCRIPTION)?;
     let replacement = replace.unwrap_or(false);
     let class = {
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;

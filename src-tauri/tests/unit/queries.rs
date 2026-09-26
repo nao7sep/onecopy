@@ -19,6 +19,8 @@ fn projection() -> ItemProjectionContext {
             face_enabled: false,
             face_models: false,
             transcription_model: false,
+            transcription_acceleration: true,
+            face_acceleration: true,
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
         },

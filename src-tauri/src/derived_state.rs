@@ -69,8 +69,34 @@ pub struct WorkCapabilities {
     pub face_enabled: bool,
     pub face_models: bool,
     pub transcription_model: bool,
+    /// Whether each engine's saved acceleration is one this binary offers.
+    /// An unsupported value is a configuration failure of that engine only.
+    pub transcription_acceleration: bool,
+    pub face_acceleration: bool,
     pub video_transcription_enabled: bool,
     pub audio_transcription_enabled: bool,
+}
+
+impl WorkCapabilities {
+    fn faces_runnable(self) -> bool {
+        self.face_models && self.face_acceleration
+    }
+
+    fn transcription_runnable(self) -> bool {
+        self.ffmpeg && self.transcription_model && self.transcription_acceleration
+    }
+}
+
+pub const UNSUPPORTED_ACCELERATION: &str = "unsupported-acceleration";
+
+// A saved backend this binary does not offer is named first: installing a
+// missing tool would not make that engine runnable.
+fn face_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
+    if !capabilities.face_acceleration {
+        UNSUPPORTED_ACCELERATION
+    } else {
+        "waiting-for-face-models"
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -218,7 +244,7 @@ pub(crate) fn work_debts(
             reason: Some("enable-face-scoring"),
             ..WorkDebt::default()
         }
-    } else if capabilities.face_models {
+    } else if capabilities.faces_runnable() {
         WorkDebt {
             runnable: counts.faces,
             failed: counts.face_failures,
@@ -228,7 +254,7 @@ pub(crate) fn work_debts(
         WorkDebt {
             blocked: counts.faces,
             failed: counts.face_failures,
-            reason: Some("waiting-for-face-models"),
+            reason: Some(face_unavailable_reason(capabilities)),
             unavailable: true,
             ..WorkDebt::default()
         }
@@ -240,7 +266,7 @@ pub(crate) fn work_debts(
                 reason: Some(setting),
                 ..WorkDebt::default()
             }
-        } else if capabilities.ffmpeg && capabilities.transcription_model {
+        } else if capabilities.transcription_runnable() {
             WorkDebt {
                 runnable,
                 failed,
@@ -307,7 +333,9 @@ pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;
 pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
 
 fn transcript_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
-    if capabilities.ffmpeg && !capabilities.transcription_model {
+    if !capabilities.transcription_acceleration {
+        UNSUPPORTED_ACCELERATION
+    } else if capabilities.ffmpeg && !capabilities.transcription_model {
         "waiting-for-transcription-model"
     } else {
         "waiting-for-ffmpeg"
@@ -423,8 +451,8 @@ pub(crate) fn item_work_states(
             )
         } else if !capabilities.face_enabled {
             item_state("disabled", false, Some("Face scoring is off"))
-        } else if !capabilities.face_models {
-            item_state("unavailable", false, Some("waiting-for-face-models"))
+        } else if !capabilities.faces_runnable() {
+            item_state("unavailable", false, Some(face_unavailable_reason(capabilities)))
         } else if preview_failed {
             item_state("blocked", false, Some("Preview generation failed"))
         } else if !preview_ready {
@@ -448,7 +476,7 @@ pub(crate) fn item_work_states(
             item_state("ready", false, None)
         } else if !enabled {
             item_state("disabled", false, Some("Automatic transcription is off"))
-        } else if !capabilities.ffmpeg || !capabilities.transcription_model {
+        } else if !capabilities.transcription_runnable() {
             item_state(
                 "unavailable",
                 false,
@@ -485,21 +513,17 @@ fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> Strin
              AND {preview_ready}"
             )
         }
-        WorkClass::Faces if capabilities.face_enabled && capabilities.face_models => {
+        WorkClass::Faces if capabilities.face_enabled && capabilities.faces_runnable() => {
             format!("l.kind = 'image' AND r.face_state IS NULL AND {preview_ready}")
         }
         WorkClass::VideoTranscripts
-            if capabilities.video_transcription_enabled
-                && capabilities.ffmpeg
-                && capabilities.transcription_model =>
+            if capabilities.video_transcription_enabled && capabilities.transcription_runnable() =>
         {
             "c.kind = 'video' AND c.duration_ms IS NOT NULL AND r.transcript_state IS NULL"
                 .to_string()
         }
         WorkClass::AudioTranscripts
-            if capabilities.audio_transcription_enabled
-                && capabilities.ffmpeg
-                && capabilities.transcription_model =>
+            if capabilities.audio_transcription_enabled && capabilities.transcription_runnable() =>
         {
             "c.kind = 'audio' AND r.transcript_state IS NULL".to_string()
         }

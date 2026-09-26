@@ -24,6 +24,8 @@ fn item_projection() -> queries::ItemProjectionContext {
             face_enabled: false,
             face_models: false,
             transcription_model: false,
+            transcription_acceleration: true,
+            face_acceleration: true,
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
         },
@@ -134,7 +136,7 @@ fn scan(conn: &Connection, world: &World) -> Result<scanner::ScanSummary, String
 
 fn derive_all(conn: &Connection, world: &World) {
     let config = serde_json::json!({});
-    let settings = derived_work::settings_from_config(Some(&config), &world.home).unwrap();
+    let settings = derived_work::settings_from_config(Some(&config), &world.home);
     let cache = CachePaths::new(settings.cache_root.clone());
     let stats = preview::derive_images_pending(
         conn,

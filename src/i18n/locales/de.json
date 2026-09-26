@@ -1032,6 +1032,7 @@
   "reason.waitingForFfmpeg": "Warten auf ffmpeg",
   "reason.waitingForFaceModels": "Warten auf die Gesichtsmodelle",
   "reason.waitingForTranscriptionModel": "Warten auf das Transkriptionsmodell",
+  "reason.unsupportedAcceleration": "Die gespeicherte Beschleunigung ist auf diesem Computer nicht verfügbar. Wählen Sie in den Einstellungen eine andere",
   "reason.enableVideoSnapshots": "Szenenbilder für Videos in den Einstellungen einschalten",
   "reason.enableSimilarity": "Analyse ähnlicher Fotos in den Einstellungen einschalten",
   "reason.enableFaceScoring": "Gesichtsbewertung in den Einstellungen einschalten",

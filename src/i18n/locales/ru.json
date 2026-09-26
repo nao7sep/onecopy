@@ -1032,6 +1032,7 @@
   "reason.waitingForFfmpeg": "Ожидание ffmpeg",
   "reason.waitingForFaceModels": "Ожидание моделей лиц",
   "reason.waitingForTranscriptionModel": "Ожидание модели расшифровки",
+  "reason.unsupportedAcceleration": "Сохранённое ускорение недоступно на этом компьютере. Выберите другое в настройках",
   "reason.enableVideoSnapshots": "Включите снимки сцен видео в настройках",
   "reason.enableSimilarity": "Включите анализ похожих фотографий в настройках",
   "reason.enableFaceScoring": "Включите оценку лиц в настройках",

@@ -7,6 +7,7 @@ const REASON_KEYS: Record<string, MessageKey> = {
   "waiting-for-ffmpeg": "reason.waitingForFfmpeg",
   "waiting-for-face-models": "reason.waitingForFaceModels",
   "waiting-for-transcription-model": "reason.waitingForTranscriptionModel",
+  "unsupported-acceleration": "reason.unsupportedAcceleration",
   "enable-video-snapshots": "reason.enableVideoSnapshots",
   "enable-similarity": "reason.enableSimilarity",
   "enable-face-scoring": "reason.enableFaceScoring",
@@ -30,4 +31,13 @@ export function reasonText(
   if (reason === null || reason === undefined) return null;
   const key = workReasonKey(reason);
   return key === null ? reason : t(key);
+}
+
+// Where the user resolves a condition that makes work unavailable: a missing
+// managed tool is installed from Managed tools, and a saved acceleration this
+// computer does not offer is changed in Settings.
+export function reasonRemedy(
+  reason: string | null | undefined,
+): "managedTools" | "settings" {
+  return reason === "unsupported-acceleration" ? "settings" : "managedTools";
 }

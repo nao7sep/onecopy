@@ -1032,6 +1032,7 @@
   "reason.waitingForFfmpeg": "Aguardando o ffmpeg",
   "reason.waitingForFaceModels": "Aguardando os modelos de rosto",
   "reason.waitingForTranscriptionModel": "Aguardando o modelo de transcrição",
+  "reason.unsupportedAcceleration": "A aceleração salva não está disponível neste computador. Escolha outra em Configurações",
   "reason.enableVideoSnapshots": "Ative os instantâneos de vídeo nas Configurações",
   "reason.enableSimilarity": "Ative a análise de fotos semelhantes nas Configurações",
   "reason.enableFaceScoring": "Ative a avaliação de rostos nas Configurações",

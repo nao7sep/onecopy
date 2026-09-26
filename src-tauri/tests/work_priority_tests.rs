@@ -132,7 +132,7 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
 
     conn.execute("UPDATE contents SET derived_at_utc = 'ready', derived_version = ?1", [onecopy_lib::preview::DERIVE_VERSION]).unwrap();
     conn.execute("UPDATE contents SET derived_at_utc = NULL WHERE hash IN ('hash-010', 'hash-170')", []).unwrap();
-    let mut settings = onecopy_lib::derived_work::settings_from_config(None, root.path()).unwrap();
+    let mut settings = onecopy_lib::derived_work::settings_from_config(None, root.path());
     settings.similarity_enabled = false;
     settings.face_enabled = false;
     let sort = queries::SectionSort { order: queries::SectionSortOrder::Time, desc: false };
@@ -156,7 +156,7 @@ fn similarity_priority_does_not_consume_an_unrelated_earlier_cohort() {
         conn.execute("INSERT INTO contents(hash, byte_size, kind, phash) VALUES (?1, 1, 'image', '0000000000000001')", [hash]).unwrap();
         conn.execute("INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source) VALUES (?1, '/', ?2, 'image', ?2, ?3, 'metadata')", rusqlite::params![format!("/{hash}.jpg"), hash, timestamp]).unwrap();
     }
-    let settings = onecopy_lib::derived_work::settings_from_config(None, root.path()).unwrap();
+    let settings = onecopy_lib::derived_work::settings_from_config(None, root.path());
     similarity::ensure_config_current(&conn, &settings.similarity).unwrap();
     let stats = similarity::rebuild_priority_bucket_cancellable(
         &conn,

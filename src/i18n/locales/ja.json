@@ -1032,6 +1032,7 @@
   "reason.waitingForFfmpeg": "ffmpeg を待っています",
   "reason.waitingForFaceModels": "顔モデルを待っています",
   "reason.waitingForTranscriptionModel": "文字起こしモデルを待っています",
+  "reason.unsupportedAcceleration": "保存されたアクセラレーションはこのコンピューターでは使えません。設定で別のものを選んでください",
   "reason.enableVideoSnapshots": "設定で動画スナップショットをオンにしてください",
   "reason.enableSimilarity": "設定で似ている写真の解析をオンにしてください",
   "reason.enableFaceScoring": "設定で顔のスコア付けをオンにしてください",

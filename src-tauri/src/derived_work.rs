@@ -188,7 +188,11 @@ pub struct Settings {
     pub face_enabled: bool,
     pub face_models: Option<FaceAssets>,
     pub transcription_model: Option<PathBuf>,
-    pub transcription_acceleration: crate::ai_acceleration::Mode,
+    /// Each engine's saved acceleration, resolved per engine: an unsupported
+    /// value makes only that engine's work unavailable as a configuration
+    /// failure, never settings, browsing, or another engine.
+    pub transcription_acceleration: Result<crate::ai_acceleration::Mode, String>,
+    pub face_acceleration: Result<crate::ai_acceleration::Mode, String>,
     pub video_transcription_enabled: bool,
     pub audio_transcription_enabled: bool,
     pub temp_dir: PathBuf,
@@ -205,18 +209,16 @@ impl Settings {
             face_enabled: self.face_enabled,
             face_models: self.face_models.is_some(),
             transcription_model: self.transcription_model.is_some(),
+            transcription_acceleration: self.transcription_acceleration.is_ok(),
+            face_acceleration: self.face_acceleration.is_ok(),
             video_transcription_enabled: self.video_transcription_enabled,
             audio_transcription_enabled: self.audio_transcription_enabled,
         }
     }
 }
 
-pub fn settings_from_config(
-    config: Option<&serde_json::Value>,
-    data_root: &Path,
-) -> Result<Settings, String> {
+pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path) -> Settings {
     let defaults = crate::storage::DefaultConfig::default();
-    let acceleration = crate::ai_acceleration::selection_from_config(config)?;
     let get = |key: &str| config.and_then(|c| c.get(key));
     let u32_of = |key: &str, fallback: u32| -> u32 {
         get(key)
@@ -234,7 +236,7 @@ pub fn settings_from_config(
             .unwrap_or(fallback)
     };
 
-    Ok(Settings {
+    Settings {
         data_root: data_root.to_path_buf(),
         cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),
         similarity: crate::similarity::SimilarityConfig {
@@ -276,7 +278,14 @@ pub fn settings_from_config(
             .then(|| crate::ai_dependencies::production_face_scoring(data_root))
             .flatten(),
         transcription_model: transcription_dependencies.model,
-        transcription_acceleration: acceleration.transcription,
+        transcription_acceleration: crate::ai_acceleration::resolve(
+            config,
+            crate::ai_acceleration::TRANSCRIPTION,
+        ),
+        face_acceleration: crate::ai_acceleration::resolve(
+            config,
+            crate::ai_acceleration::FACE_SCORING,
+        ),
         video_transcription_enabled: bool_of(
             "videoTranscriptionEnabled",
             defaults.video_transcription_enabled,
@@ -286,15 +295,14 @@ pub fn settings_from_config(
             defaults.audio_transcription_enabled,
         ),
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
-    })
+    }
 }
 
 pub fn work_capabilities(
     data_root: &Path,
 ) -> Result<crate::derived_state::WorkCapabilities, String> {
     let config = crate::storage::read_config_for_setup(data_root)?;
-    let settings = settings_from_config(config.as_ref(), data_root)?;
-    Ok(settings.capabilities())
+    Ok(settings_from_config(config.as_ref(), data_root).capabilities())
 }
 
 pub fn note_activity() {
@@ -414,7 +422,7 @@ fn required_priority_pending(selected: Option<&str>, visible: &[String]) -> bool
     };
     let pending = (|| -> Result<bool, String> {
         let config = crate::storage::read_config_for_setup(data_root)?;
-        let settings = settings_from_config(config.as_ref(), data_root)?;
+        let settings = settings_from_config(config.as_ref(), data_root);
         let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
         priority_candidates_for_class(
             &conn,
@@ -703,7 +711,7 @@ fn ensure_preview_once(
     hash: &str,
 ) -> Result<String, String> {
     let _active = crate::derived_runtime::begin_requested_preview(app, hash)?;
-    let settings = settings_from_config(config, data_root)?;
+    let settings = settings_from_config(config, data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
     let result = crate::preview::derive_one(
@@ -804,7 +812,7 @@ mod requested_preview_tests;
 fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
     let data_root = crate::DATA_ROOT.get().ok_or("data root unset")?.clone();
     let config = crate::storage::read_config_for_setup(&data_root)?;
-    let settings = settings_from_config(config.as_ref(), &data_root)?;
+    let settings = settings_from_config(config.as_ref(), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     crate::similarity::ensure_config_current(&conn, &settings.similarity)?;
     let cache = CachePaths::new(settings.cache_root.clone());
@@ -1315,6 +1323,11 @@ fn run_optional_class(
             let Some(assets) = settings.face_models.as_ref() else {
                 return Ok(false);
             };
+            // Face scoring has only its CPU path; a saved backend it does not
+            // offer leaves only this engine unavailable (derived_state reason).
+            if settings.face_acceleration.is_err() {
+                return Ok(false);
+            }
             let result = with_active(app, class, || {
                 crate::face::face_scores_pending(
                     conn,
@@ -1372,11 +1385,14 @@ fn run_optional_class(
             if settings.transcription_model.is_none() || settings.ffmpeg.is_none() {
                 return Ok(false);
             }
+            let Ok(transcription_acceleration) = settings.transcription_acceleration.clone() else {
+                return Ok(false);
+            };
             let context = TranscriptContext {
                 conn,
                 cache,
                 data_root: &settings.data_root,
-                transcription_acceleration: settings.transcription_acceleration,
+                transcription_acceleration,
                 app,
                 projection,
             };

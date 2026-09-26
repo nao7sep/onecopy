@@ -98,7 +98,10 @@ fn parse_mode(feature: &str, value: &serde_json::Value) -> Result<Mode, String> 
     require_supported(feature, mode)
 }
 
-fn selected(config: Option<&serde_json::Value>, feature: &str) -> Result<Mode, String> {
+/// Resolves one engine's saved acceleration. Each engine resolves its own
+/// choice when its work is admitted, so an unsupported value fails only that
+/// engine as a configuration failure and never another engine or browsing.
+pub fn resolve(config: Option<&serde_json::Value>, feature: &str) -> Result<Mode, String> {
     let Some(value) = config
         .and_then(|value| value.get("aiAcceleration"))
         .and_then(|value| value.get(feature))
@@ -110,8 +113,8 @@ fn selected(config: Option<&serde_json::Value>, feature: &str) -> Result<Mode, S
 
 pub fn selection_from_config(config: Option<&serde_json::Value>) -> Result<Selection, String> {
     Ok(Selection {
-        transcription: selected(config, TRANSCRIPTION)?,
-        face_scoring: selected(config, FACE_SCORING)?,
+        transcription: resolve(config, TRANSCRIPTION)?,
+        face_scoring: resolve(config, FACE_SCORING)?,
     })
 }
 

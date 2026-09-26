@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { reasonText } from "../models/workReasons";
+import { reasonRemedy, reasonText } from "../models/workReasons";
 import type { MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
 import { message, type Message } from "../i18n/translate";
@@ -438,12 +438,13 @@ export default function TranscriptBlock({
         </Button>,
       );
     } else if (unavailable) {
+      const remedy = reasonRemedy(work?.reason);
       actions.push(
         <Button
           key="tools"
-          onClick={() => useAppShellStore.getState().openUtility("managedTools")}
+          onClick={() => useAppShellStore.getState().openUtility(remedy)}
         >
-          {t("app.openManagedTools")}
+          {remedy === "settings" ? t("settings.title") : t("app.openManagedTools")}
         </Button>,
       );
       if (failed) {

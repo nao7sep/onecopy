@@ -1032,6 +1032,7 @@
   "reason.waitingForFfmpeg": "Waiting for ffmpeg",
   "reason.waitingForFaceModels": "Waiting for face models",
   "reason.waitingForTranscriptionModel": "Waiting for transcription model",
+  "reason.unsupportedAcceleration": "The saved AI acceleration is not available on this computer. Choose another in Settings",
   "reason.enableVideoSnapshots": "Turn on video snapshots in Settings",
   "reason.enableSimilarity": "Turn on similar-photo analysis in Settings",
   "reason.enableFaceScoring": "Turn on face scoring in Settings",

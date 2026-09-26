@@ -7,6 +7,7 @@ import TranscriptBlock from "../../src/components/TranscriptBlock";
 import type { ItemDetail, ItemWorkState } from "../../src/models/items";
 import { useContentSessionStore } from "../../src/state/content-session-store";
 import { useTranscriptStore } from "../../src/state/transcript-store";
+import { useAppShellStore } from "../../src/state/app-shell-store";
 import { emitCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { viewerOwnsKey } from "../../src/utils/viewerKeys";
 
@@ -84,5 +85,18 @@ describe("transcript presentation owners", () => {
     render(<TranscriptBlock hash="interview" medium="video" variant="details" work={work} />);
     expect(await screen.findByText("Final line")).toBeTruthy();
     expect(screen.getByText(state === "running" ? /Updating transcript/ : /The replacement failed/)).toBeTruthy();
+  });
+
+  it.each([
+    ["waiting-for-transcription-model", "Managed tools", "managedTools"],
+    ["unsupported-acceleration", "Settings", "settings"],
+  ] as const)("offers the remedy for %s where it is resolved", async (reason, label, surface) => {
+    mockCommands({ transcript_get: () => ({ status: "pending", text: null, message: null }), log_event: () => null });
+    useAppShellStore.setState({ utilitySurface: null });
+    const work: ItemWorkState = { state: "unavailable", hasValue: false, reason, done: null, total: null };
+    useContentSessionStore.setState({ transcriptOpen: { video: true, audio: false } });
+    render(<TranscriptBlock hash="clip" medium="video" work={work} />);
+    fireEvent.click(await screen.findByRole("button", { name: label }));
+    expect(useAppShellStore.getState().utilitySurface).toBe(surface);
   });
 });

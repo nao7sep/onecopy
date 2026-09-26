@@ -152,7 +152,7 @@ pub fn library(label: &str, files: &[PathBuf], config: serde_json::Value) -> Lib
     let conn = index_store::open(&home.path().join("index.sqlite3")).unwrap();
     let scan = scanner::settings_from_config(Some(&config_json), home.path(), NOW_MS);
     scanner::run_full_scan(&conn, &scan, &|_| {}).unwrap();
-    let settings = derived_work::settings_from_config(Some(&config_json), home.path()).unwrap();
+    let settings = derived_work::settings_from_config(Some(&config_json), home.path());
     let cache = CachePaths::new(settings.cache_root.clone());
     Library {
         home,
