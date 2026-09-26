@@ -99,8 +99,20 @@ describe("durable window-state boundary", () => {
     expect(core.indexOf("window_placement::restore(")).toBeLessThan(core.indexOf("window.show()"));
     expect(placement).toContain('"main" => capture(window, main_state)');
     expect(placement).toContain('"preview" => capture_preview(window, preview_state)');
-    expect(placement).not.toMatch(/Moved|Resized|debounce|prev_[xy]/i);
+    expect(placement).not.toMatch(/debounce|prev_[xy]/i);
     expect(cargoManifest).not.toContain("tauri-plugin-window-state");
+  });
+
+  it("keeps live Moved/Resized handling in memory, not on disk", () => {
+    // Moved/Resized may keep the in-memory normal rectangle current (so a
+    // resize just before close is not lost), but only CloseRequested may
+    // write to disk. A save on every move would reintroduce the debounced
+    // polling that tauri-plugin-window-state was replaced to avoid.
+    const movedResizedArm = placement.slice(
+      placement.indexOf("WindowEvent::Moved"),
+      placement.indexOf("_ => {}", placement.indexOf("WindowEvent::Moved")),
+    );
+    expect(movedResizedArm).not.toMatch(/storage::save|\bsave\(|\bsave_preview\(/);
   });
 
   it("creates Main hidden only for native setup", () => {
