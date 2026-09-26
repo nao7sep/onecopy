@@ -976,6 +976,7 @@
   "settings.screenMiddle": "au milieu",
   "settings.screenRight": "à droite",
   "settings.screenRowColumn": "{row} {column}",
+  "settings.screenPosition": "position {index} sur {total}",
   "settings.screenTop": "en haut",
   "settings.soundSaveFailed": "Les réglages ont été enregistrés, mais le son et le volume n’ont pas pu l’être. Vos modifications sont toujours là\u00a0; réessayez.",
   "settings.soundSaveFailedNotice": "Les réglages ont été enregistrés, mais OneCopy n’a pas pu enregistrer le son et le volume.",

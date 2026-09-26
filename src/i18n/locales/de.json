@@ -976,6 +976,7 @@
   "settings.screenMiddle": "mittig",
   "settings.screenRight": "rechts",
   "settings.screenRowColumn": "{row} {column}",
+  "settings.screenPosition": "Position {index} von {total}",
   "settings.screenTop": "oben",
   "settings.soundSaveFailed": "Die Einstellungen wurden gespeichert, aber Ton und Lautstärke konnten nicht gespeichert werden. Ihre Änderungen sind noch vorhanden; versuchen Sie es erneut.",
   "settings.soundSaveFailedNotice": "Die Einstellungen wurden gespeichert, aber OneCopy konnte Ton und Lautstärke nicht speichern.",

@@ -6,7 +6,11 @@ import { toErrorFields } from "../repositories";
 let pending: Promise<void> | null = null;
 
 /** Creation is one bounded operation; each flash owns its later self-close.
- * Native identities cannot collide with a previous batch still closing. */
+ * `pending` stays open until every flash in the batch has actually closed
+ * (not merely finished being created), so a second identification cannot
+ * start while the first batch's labels are still on screen with stale ranks
+ * (D-S7). Native identities cannot collide with a previous batch still
+ * closing. */
 export function identifyScreens(monitors: readonly Monitor[]): Promise<void> {
   if (pending !== null) return pending;
   const batch = crypto.randomUUID();
@@ -26,6 +30,9 @@ export function identifyScreens(monitors: readonly Monitor[]): Promise<void> {
       focus: false,
     });
     await waitForWindowCreated(window, `Screen ${index + 1} identification`);
+    await new Promise<void>((resolve) => {
+      void window.once("tauri://destroyed", () => resolve());
+    });
   })).then((results) => {
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length > 0) {

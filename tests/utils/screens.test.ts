@@ -64,4 +64,14 @@ describe("describing where a monitor sits", () => {
     const all = [m("#1287", 0)];
     expect(describePosition(all[0], all)).toBeNull();
   });
+
+  it("gives every display in a row of four or more a distinct ordinal position (D-S9)", () => {
+    // "left/centre/right" collapses to two indistinguishable "centre" rows
+    // once there are two inner displays; an ordinal keeps every row unique.
+    const all = [m("a", 0), m("b", 1920), m("c", 3840), m("d", 5760)];
+    expect(inEnglish(describePosition(all[0], all))).toBe("position 1 of 4");
+    expect(inEnglish(describePosition(all[1], all))).toBe("position 2 of 4");
+    expect(inEnglish(describePosition(all[2], all))).toBe("position 3 of 4");
+    expect(inEnglish(describePosition(all[3], all))).toBe("position 4 of 4");
+  });
 });

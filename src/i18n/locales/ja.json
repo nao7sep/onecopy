@@ -976,6 +976,7 @@
   "settings.screenMiddle": "中段",
   "settings.screenRight": "右",
   "settings.screenRowColumn": "{column}{row}",
+  "settings.screenPosition": "{total}台中{index}番目",
   "settings.screenTop": "上",
   "settings.soundSaveFailed": "設定は保存しましたが、サウンドと音量を保存できませんでした。変更内容はそのまま残っています。もう一度お試しください。",
   "settings.soundSaveFailedNotice": "設定は保存しましたが、OneCopy はサウンドと音量を保存できませんでした。",

@@ -34,13 +34,20 @@ describe("screen identification operation", () => {
       });
       expect(window.setFocus).not.toHaveBeenCalled();
     }
+    // Creation alone does not settle the batch: a second identification must
+    // not start while the flashes are still showing (D-S7).
+    expect(identifyScreens(monitors)).toBe(first);
+    for (const label of firstLabels) await outcome(label, "tauri://destroyed");
     await expect(first).resolves.toBeUndefined();
     // Even an already-dispatched stale callback cannot change success.
     await outcome(firstLabels[0], "tauri://error", "late teardown error");
     const second = identifyScreens(monitors);
     const secondLabels = createdWindows.slice(3).map(({ label }) => label);
     expect(secondLabels.every((label) => !firstLabels.includes(label))).toBe(true);
-    for (const label of secondLabels) await outcome(label, "tauri://created");
+    for (const label of secondLabels) {
+      await outcome(label, "tauri://created");
+      await outcome(label, "tauri://destroyed");
+    }
     await expect(second).resolves.toBeUndefined();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -53,10 +60,14 @@ describe("screen identification operation", () => {
     });
     await outcome(createdWindows[0].label, "tauri://error", "native fixture failure");
     expect(identifyScreens(monitors)).toBe(failed);
-    for (const { label } of createdWindows.slice(1)) await outcome(label, "tauri://created");
+    for (const { label } of createdWindows.slice(1)) {
+      await outcome(label, "tauri://created");
+      await outcome(label, "tauri://destroyed");
+    }
     await rejection;
     const retry = identifyScreens(monitors.slice(0, 1));
     await outcome(createdWindows.at(-1)!.label, "tauri://created");
+    await outcome(createdWindows.at(-1)!.label, "tauri://destroyed");
     await expect(retry).resolves.toBeUndefined();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -68,6 +79,7 @@ describe("screen identification operation", () => {
     await rejection;
     const retry = identifyScreens(monitors.slice(0, 1));
     await outcome(createdWindows.at(-1)!.label, "tauri://created");
+    await outcome(createdWindows.at(-1)!.label, "tauri://destroyed");
     await retry;
     expect(vi.getTimerCount()).toBe(0);
   });

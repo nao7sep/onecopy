@@ -47,6 +47,31 @@ export function monitorKey(monitor: MonitorLike): string {
  * Row and column are two independent facts, so a language that names them in
  * the other order, or joins them differently, reorders the wrapper's
  * placeholders instead of being handed a pre-joined English phrase. */
+// With four or more displays on one axis, "left/centre/right" (or
+// "top/middle/bottom") stops distinguishing every inner one — two displays
+// side by side in the middle both read "centre" (D-S9). Past three distinct
+// positions, an ordinal position replaces the word for that axis.
+const ORDINAL_AXIS_THRESHOLD = 3;
+
+function axisDescriptor(
+  value: number,
+  values: number[],
+  low: MessageKey,
+  high: MessageKey,
+  mid: MessageKey,
+): Message | null {
+  if (values.length < 2) return null;
+  if (values.length > ORDINAL_AXIS_THRESHOLD) {
+    return message("settings.screenPosition", {
+      index: values.indexOf(value) + 1,
+      total: values.length,
+    });
+  }
+  const key =
+    value === values[0] ? low : value === values[values.length - 1] ? high : mid;
+  return message(key);
+}
+
 export function describePosition(
   monitor: MonitorLike,
   all: MonitorLike[],
@@ -54,28 +79,15 @@ export function describePosition(
   if (all.length < 2) return null;
   const xs = [...new Set(all.map((m) => m.position.x))].sort((a, b) => a - b);
   const ys = [...new Set(all.map((m) => m.position.y))].sort((a, b) => a - b);
-  const column: MessageKey | null =
-    xs.length < 2
-      ? null
-      : monitor.position.x === xs[0]
-        ? "settings.screenLeft"
-        : monitor.position.x === xs[xs.length - 1]
-          ? "settings.screenRight"
-          : "settings.screenCentre";
-  const row: MessageKey | null =
-    ys.length < 2
-      ? null
-      : monitor.position.y === ys[0]
-        ? "settings.screenTop"
-        : monitor.position.y === ys[ys.length - 1]
-          ? "settings.screenBottom"
-          : "settings.screenMiddle";
-  if (row === null) return column === null ? null : message(column);
-  if (column === null) return message(row);
-  return message("settings.screenRowColumn", {
-    row: message(row),
-    column: message(column),
-  });
+  const column = axisDescriptor(
+    monitor.position.x, xs, "settings.screenLeft", "settings.screenRight", "settings.screenCentre",
+  );
+  const row = axisDescriptor(
+    monitor.position.y, ys, "settings.screenTop", "settings.screenBottom", "settings.screenMiddle",
+  );
+  if (row === null) return column;
+  if (column === null) return row;
+  return message("settings.screenRowColumn", { row, column });
 }
 
 /** Stable-sorts monitors by their key's position in `priority`; unlisted

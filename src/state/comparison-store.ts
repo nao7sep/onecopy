@@ -295,9 +295,12 @@ async function resolveMonitors(
         host === null || host.size.height <= 0
           ? 16 / 9
           : host.size.width / host.size.height,
+      // An unknown host display excludes nothing (D-S11): the priority order
+      // is a preference over connected displays, not a claim that its first
+      // entry is Main's display, so dropping it here would be a guess.
       others:
         hostKey === null
-          ? monitors.slice(1)
+          ? monitors
           : monitors.filter((monitor) => monitorKey(monitor) !== hostKey),
     };
   } catch (error) {
