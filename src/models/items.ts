@@ -193,12 +193,6 @@ export interface SortChoice {
   desc: boolean;
 }
 
-/** The extension, lowercased, for sorting — "" when the name has none. */
-export function extOf(fileName: string): string {
-  const dot = fileName.lastIndexOf(".");
-  return dot > 0 ? fileName.slice(dot + 1).toLowerCase() : "";
-}
-
 /** Sort is CONTEXT-AWARE (the developer's Finder/Explorer expectation):
  * "time" means the capture time for photos and videos but is a nonsense
  * label for other-files, whose date is filesystem-derived; "resolution" only
@@ -240,47 +234,6 @@ export const DEFAULT_DESC: Record<SortOrder, boolean> = {
   resolution: true,
   ext: false,
 };
-
-/** One primary comparator per order, ASCENDING; direction is applied to the
- * primary alone. */
-const COMPARE: Record<SortOrder, (a: SectionItem, b: SectionItem) => number> = {
-  time: (a, b) =>
-    (a.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER) - (b.resolvedUtcMs ?? Number.MAX_SAFE_INTEGER),
-  name: (a, b) => a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase()),
-  size: (a, b) => (a.byteSize ?? -1) - (b.byteSize ?? -1),
-  resolution: (a, b) => (a.width ?? 0) * (a.height ?? 0) - (b.width ?? 0) * (b.height ?? 0),
-  ext: (a, b) => extOf(a.fileName).localeCompare(extOf(b.fileName)),
-};
-
-/** Tie-break chains (Phase 33): every order resolves its ties through a
- * defined sequence — same-resolution photos from one phone fall back to
- * shooting order, then name — with pathId as the immutable final key, so
- * every sort is total and stable. Chained keys stay ASCENDING even under a
- * descending primary, the way Finder reads: resolution-descending still
- * shows each resolution group in shooting order. */
-const CHAINS: Record<SortOrder, SortOrder[]> = {
-  time: ["name"],
-  name: ["time"],
-  size: ["time", "name"],
-  resolution: ["time", "name"],
-  ext: ["name"],
-};
-
-export function sortItems(items: SectionItem[], choice: SortChoice): SectionItem[] {
-  const sorted = [...items];
-  const primary = COMPARE[choice.order];
-  const chain = CHAINS[choice.order].map((order) => COMPARE[order]);
-  sorted.sort((a, b) => {
-    const head = primary(a, b);
-    if (head !== 0) return choice.desc ? -head : head;
-    for (const compare of chain) {
-      const next = compare(a, b);
-      if (next !== 0) return next;
-    }
-    return a.pathId - b.pathId;
-  });
-  return sorted;
-}
 
 // The mediacache protocol serves the hash-keyed cache; convertFileSrc builds
 // the platform-correct URL (mediacache://localhost/… on macOS,
