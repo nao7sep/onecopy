@@ -312,7 +312,7 @@ fn preview_poster_and_snapshot_transitions_retire_their_current_issue() {
         derived_state::record_preview_success(&conn, "image", "/image.jpg", 4000, 3000, 12.5, 42)
             .unwrap()
     );
-    assert!(derived_state::record_poster_success(&conn, "poster", "/poster.mov", 30_000).unwrap());
+    assert!(derived_state::record_poster_success(&conn, "poster", "/poster.mov", Some(30_000)).unwrap());
     assert!(derived_state::record_strip_success(&conn, "strip", "/strip.mov", 8).unwrap());
 
     let state: (Option<String>, i64, Option<String>, i64, i64) = conn
@@ -478,4 +478,38 @@ fn derived_failure_issues_keep_hostile_diagnostics_out_of_user_copy() {
         assert!(!message.contains("/private/tmp"));
         assert!(!message.contains("DecoderError"));
     }
+}
+
+#[test]
+fn a_poster_for_a_video_without_a_container_duration_settles_snapshots_and_admits_transcription() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('live', 1, 'video');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+           VALUES ('/live.webm', '/', 'live.webm', 'video', 'live');",
+    )
+    .unwrap();
+    assert!(derived_state::transcript_candidates(&conn, "video", None, 10)
+        .unwrap()
+        .is_empty());
+
+    derived_state::record_poster_success(&conn, "live", "/live.webm", None).unwrap();
+
+    let (duration_ms, strip_frames): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT duration_ms, strip_frames FROM contents WHERE hash = 'live'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // No snapshot can be placed on an unknown timeline; nothing failed.
+    assert_eq!((duration_ms, strip_frames), (None, Some(0)));
+    assert!(derived_state::strip_candidates(&conn, None, 10).unwrap().is_empty());
+    assert_eq!(
+        derived_state::transcript_candidates(&conn, "video", None, 10).unwrap(),
+        [("live".to_string(), "/live.webm".to_string())]
+    );
+    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    assert!(issues.is_empty());
 }

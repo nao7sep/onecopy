@@ -149,7 +149,8 @@ fn work_debt_sql(ffmpeg: bool) -> String {
            COALESCE(SUM(l.kind = 'image' AND r.face_state IS NULL
                         AND {preview_ready}), 0),
            COALESCE(SUM(r.face_state = '{FAILED}'), 0),
-           COALESCE(SUM(c.kind = 'video' AND c.duration_ms IS NOT NULL
+           COALESCE(SUM(c.kind = 'video'
+                        AND (c.duration_ms IS NOT NULL OR {preview_ready})
                         AND r.transcript_state IS NULL), 0),
            COALESCE(SUM(c.kind = 'video' AND r.transcript_state = '{FAILED}'), 0),
            COALESCE(SUM(c.kind = 'audio' AND r.transcript_state IS NULL), 0),
@@ -484,7 +485,7 @@ pub(crate) fn item_work_states(
             )
         } else if facts.kind == "video" && preview_failed {
             item_state("blocked", false, Some("Video poster generation failed"))
-        } else if facts.kind == "video" && facts.duration_ms.is_none() {
+        } else if facts.kind == "video" && facts.duration_ms.is_none() && !preview_ready {
             item_state("waiting", false, Some("Waiting for the video poster"))
         } else {
             item_state("pending", false, None)
@@ -519,8 +520,10 @@ fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> Strin
         WorkClass::VideoTranscripts
             if capabilities.video_transcription_enabled && capabilities.transcription_runnable() =>
         {
-            "c.kind = 'video' AND c.duration_ms IS NOT NULL AND r.transcript_state IS NULL"
-                .to_string()
+            format!(
+                "c.kind = 'video' AND (c.duration_ms IS NOT NULL OR {preview_ready}) \
+                 AND r.transcript_state IS NULL"
+            )
         }
         WorkClass::AudioTranscripts
             if capabilities.audio_transcription_enabled && capabilities.transcription_runnable() =>
@@ -852,6 +855,17 @@ pub fn prioritized_face_candidates(
     Ok(rows)
 }
 
+/// A video's audio is transcribed once its duration is known, from metadata
+/// or its poster pass, or once its poster is ready: a playable container
+/// that reports no duration still has a transcribable soundtrack.
+fn transcript_ready_predicate(kind: &str) -> String {
+    if kind == "audio" {
+        "1".to_string()
+    } else {
+        format!("(c.duration_ms IS NOT NULL OR {})", preview_available_predicate("c"))
+    }
+}
+
 pub fn transcript_candidates(
     conn: &Connection,
     kind: &str,
@@ -862,17 +876,18 @@ pub fn transcript_candidates(
         return Err(format!("unsupported transcription kind: {kind}"));
     }
     let mut statement = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT c.hash, p.abs_path \
              FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-             WHERE c.kind = ?1 AND (?1 = 'audio' OR c.duration_ms IS NOT NULL) \
+             WHERE c.kind = ?1 AND {} \
                AND r.transcript_state IS NULL AND p.missing = 0 \
                AND l.content_hash > ?2 \
              ORDER BY l.content_hash LIMIT ?3",
-        )
+            transcript_ready_predicate(kind)
+        ))
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(
@@ -908,9 +923,10 @@ pub fn prioritized_transcript_candidates(
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
          LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-         WHERE c.kind = '{kind}' AND ('{kind}' = 'audio' OR c.duration_ms IS NOT NULL) \
+         WHERE c.kind = '{kind}' AND {ready} \
            AND r.transcript_state IS NULL AND p.missing = 0 \
-         ORDER BY h.priority LIMIT {limit}"
+         ORDER BY h.priority LIMIT {limit}",
+        ready = transcript_ready_predicate(kind)
     );
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
     let rows = statement
@@ -1134,11 +1150,14 @@ pub fn record_preview_failure(
     record_content_failure(conn, hash, path, PREVIEW_ERROR, message)
 }
 
+/// A poster for a video whose container reports no duration still
+/// succeeds; the video simply has no scene snapshots, since none can be
+/// placed along an unknown timeline.
 pub fn record_poster_success(
     conn: &Connection,
     hash: &str,
     path: &str,
-    duration_ms: u64,
+    duration_ms: Option<u64>,
 ) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
@@ -1147,9 +1166,15 @@ pub fn record_poster_success(
         .execute(
             &format!(
                 "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
+                 strip_frames = CASE WHEN ?2 IS NULL AND duration_ms IS NULL \
+                     THEN COALESCE(strip_frames, 0) ELSE strip_frames END, \
                  derived_at_utc = ?3, derived_version = {DERIVE_VERSION} WHERE hash = ?1"
             ),
-            params![hash, duration_ms as i64, crate::logging::now_iso_millis()],
+            params![
+                hash,
+                duration_ms.map(|value| value as i64),
+                crate::logging::now_iso_millis()
+            ],
         )
         .map_err(|error| error.to_string())?;
     let issues_changed =

@@ -1367,6 +1367,7 @@ fn run_optional_class(
                         ffmpeg,
                         &settings.temp_dir,
                         &settings.strip,
+                        settings.preview_long_edge,
                         priority,
                         &|hash| crate::derived_runtime::active_item(app, class, hash),
                         &|hash| notify_item_update(app, conn, projection, "snapshots", hash, hash),

@@ -126,6 +126,13 @@ fn decode_via_ffmpeg(ffmpeg: &Path, src: &Path) -> Result<DynamicImage, String> 
     decode_via_ffmpeg_bounded(ffmpeg, src, None)
 }
 
+/// An ffmpeg scale filter bounding the longer side to `edge` without ever
+/// upscaling; the other side keeps the aspect ratio and stays even. Bounding
+/// only the width would let a portrait frame through at full height.
+pub(crate) fn long_edge_scale(edge: u32) -> String {
+    format!("scale='if(gte(iw,ih),min({edge},iw),-2)':'if(gte(iw,ih),-2,min({edge},ih))'")
+}
+
 /// `max_edge` scales INSIDE ffmpeg (after its own display-orientation pass),
 /// never upscaling. The derive path uses it (Phase 33): a 48 MP HEIC piped as
 /// full-size BMP is ~144 MB of transfer, allocation and BMP parse per photo —
@@ -150,14 +157,10 @@ fn decode_via_ffmpeg_bounded(
         .arg(src)
         .args(["-frames:v", "1"]);
     if let Some(edge) = max_edge {
-        // min() so a small image never upscales; -2 keeps dimensions even.
         // A tiled HEIC's decoder output is already a complex tile-grid graph
         // on current ffmpeg, so the scale must join that graph. A simple
         // `-vf` graph conflicts with it and rejects otherwise valid photos.
-        cmd.args([
-            "-filter_complex",
-            &format!("scale='min({edge},iw)':-2"),
-        ]);
+        cmd.args(["-filter_complex", &long_edge_scale(edge)]);
     }
     cmd.args(["-f", "image2pipe", "-c:v", "bmp", "-"]);
     let run = crate::subprocess::run_bounded_output(
@@ -429,27 +432,46 @@ pub fn ensure_fullres(
     // not recorded: full-resolution conversion is a reconstructible binary
     // cache entry, staged beside its final path.
     // ffmpeg applies the container's display transforms itself, so the
-    // decode is already upright (one decode route, Phase 33).
+    // output is already upright (one decode route, Phase 33). It writes the
+    // PNG itself: a full-resolution frame never passes through this process,
+    // whose decode ceiling protects the native image worker, not this route.
     let src = Path::new(&path);
-    let decoded = decode_via_ffmpeg(ffmpeg, src)?;
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut bytes: Vec<u8> = Vec::new();
-    decoded
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
-    let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("cache");
     let parent = target.parent().ok_or("cache path has no parent")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| crate::resource_limits::cache_write_error("full-resolution cache", e))?;
+    let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("cache");
     let tmp = parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()?));
-    std::fs::write(&tmp, &bytes).map_err(|e| {
-        crate::fs_recovery::remove_file(&tmp, "full-resolution staging write cleanup");
-        e.to_string()
-    })?;
-    std::fs::rename(&tmp, &target).map_err(|e| {
-        crate::fs_recovery::remove_file(&tmp, "full-resolution publication cleanup");
-        e.to_string()
-    })?;
+    let converted = convert_full_resolution(ffmpeg, src, &tmp).and_then(|()| {
+        std::fs::rename(&tmp, &target).map_err(|e| e.to_string())
+    });
+    if converted.is_err() {
+        crate::fs_recovery::remove_file(&tmp, "full-resolution staging cleanup");
+    }
+    converted
+}
+
+/// Writes `src`'s first frame at full resolution as a PNG at `output`, in a
+/// supervised, cancellable ffmpeg process.
+fn convert_full_resolution(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), String> {
+    logging::debug(
+        "ffmpeg invocation",
+        serde_json::json!({ "op": "convert-full-resolution", "src": src.to_string_lossy() }),
+    );
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-threads"])
+        .arg(crate::resource_limits::cpu_thread_budget().to_string())
+        .arg("-i")
+        .arg(src)
+        .args(["-frames:v", "1", "-c:v", "png", "-f", "image2", "-update", "1", "-y"])
+        .arg(output);
+    let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
+    let written = std::fs::metadata(output).is_ok_and(|meta| meta.len() > 0);
+    if !run.status_ok || !written {
+        return Err(format!(
+            "ffmpeg could not decode this format: {}",
+            run.stderr_tail()
+        ));
+    }
     Ok(())
 }
 

@@ -98,11 +98,14 @@ pub fn read_video_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
         model: text(TrackInfoTag::Model),
         width: u32_of(TrackInfoTag::Width),
         height: u32_of(TrackInfoTag::Height),
+        // A container written live, as by a browser recorder, reports zero:
+        // that is an unknown duration, not an empty video.
         duration_ms: match track.get(TrackInfoTag::DurationMs) {
             Some(EntryValue::U64(v)) => Some(*v),
             Some(EntryValue::U32(v)) => Some(u64::from(*v)),
             _ => None,
-        },
+        }
+        .filter(|duration| *duration > 0),
         live_photo_identifier,
     })
 }

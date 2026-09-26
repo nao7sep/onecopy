@@ -73,7 +73,10 @@ fn log_invocation(op: &str, src: &Path) {
     );
 }
 
-fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
+/// The container's duration, or `None` when it reports none, as WebM from a
+/// browser recorder commonly does. That is not a broken file: whether a
+/// frame can be read decides that.
+fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<Option<u64>, String> {
     log_invocation("probe-duration", src);
     // `ffmpeg -i` with no output exits non-zero by design; stderr still
     // carries the stream banner we parse.
@@ -83,14 +86,21 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
         .arg("-i")
         .arg(src);
     let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
-    parse_duration_ms(&run.stderr)
-        .ok_or_else(|| format!("no Duration in ffmpeg output for {}", src.display()))
+    Ok(parse_duration_ms(&run.stderr))
 }
 
 /// Extracts one frame at `at_ms` as a staged JPEG (real content extension —
 /// ffmpeg infers the muxer from it; the storage-path conventions' documented
-/// staging exception).
-fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Result<(), String> {
+/// staging exception), its longer side scaled within `long_edge`. The frame
+/// is decoded in process afterwards, so a 4K or larger video must never
+/// reach that decode at full size.
+fn extract_frame(
+    ffmpeg: &Path,
+    src: &Path,
+    at_ms: u64,
+    long_edge: u32,
+    staged_jpg: &Path,
+) -> Result<(), String> {
     log_invocation("extract-frame", src);
     let seconds = format!("{}.{:03}", at_ms / 1000, at_ms % 1000);
     // Decode at most one second accurately. The earlier coarse input seek
@@ -100,6 +110,13 @@ fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Re
     let precise_ms = at_ms - coarse_ms;
     let coarse_seconds = format!("{}.{:03}", coarse_ms / 1000, coarse_ms % 1000);
     let precise_seconds = format!("{}.{:03}", precise_ms / 1000, precise_ms % 1000);
+    // A container's duration can extend past its last frame PTS. Clone that
+    // final frame across this bounded seek window so the last interior strip
+    // timestamp remains a valid request.
+    let filters = format!(
+        "tpad=stop_mode=clone:stop_duration=1,{}",
+        preview::long_edge_scale(long_edge)
+    );
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-threads"])
         .arg(crate::resource_limits::cpu_thread_budget().to_string());
@@ -111,11 +128,8 @@ fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Re
         .args([
             "-ss",
             &precise_seconds,
-            // A container's duration can extend past its last frame PTS.
-            // Clone that final frame across this bounded seek window so the
-            // last interior strip timestamp remains a valid request.
             "-vf",
-            "tpad=stop_mode=clone:stop_duration=1",
+            &filters,
             "-frames:v",
             "1",
             "-q:v",
@@ -266,12 +280,14 @@ fn derive_videos_pending_limit(
             report(&hash);
         }
         let src = Path::new(&path);
-        let result = (|| -> Result<u64, String> {
+        let result = (|| -> Result<Option<u64>, String> {
             let duration_ms = probe_duration_ms(ffmpeg, src)?;
 
-            // Poster at 15% through the shared image pipeline.
+            // Poster at 15% through the shared image pipeline, or the first
+            // frame when the container reports no duration.
             let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()?));
-            let poster_result = extract_frame(ffmpeg, src, duration_ms * 15 / 100, &staged)
+            let at_ms = duration_ms.map_or(0, |duration| duration * 15 / 100);
+            let poster_result = extract_frame(ffmpeg, src, at_ms, preview_long_edge, &staged)
                 .and_then(|()| {
                     // The staged poster is a plain JPEG, so the image crate
                     // opens it directly — no ffmpeg needed for this half.
@@ -336,6 +352,7 @@ pub fn derive_strips_pending(
     ffmpeg: &Path,
     temp_dir: &Path,
     strip: &StripConfig,
+    frame_edge: u32,
     priority_hashes: &[String],
     on_item: &dyn Fn(&str),
     on_change: &dyn Fn(&str),
@@ -382,7 +399,7 @@ pub fn derive_strips_pending(
             for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
                 let staged =
                     temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()?));
-                let frame_result = extract_frame(ffmpeg, src, *at_ms, &staged).and_then(|()| {
+                let frame_result = extract_frame(ffmpeg, src, *at_ms, frame_edge, &staged).and_then(|()| {
                     let img = crate::resource_limits::decode_file(&staged)?;
                     let target = strip_path(cache, &hash, index as u32);
                     preview::write_webp(&img, &target, 76.0)

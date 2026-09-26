@@ -84,6 +84,7 @@ fn every_accepted_video_format_yields_an_upright_poster_duration_and_strip() {
             library.ffmpeg(),
             &settings.temp_dir,
             &settings.strip,
+            settings.preview_long_edge,
             &[],
             &|_| {},
             &|_| {},
@@ -158,4 +159,80 @@ fn every_accepted_video_format_yields_an_upright_poster_duration_and_strip() {
             );
         }
     }
+}
+
+/// Writes a synthetic video through `ffmpeg`, its output to `target`.
+fn synthesize(ffmpeg: &Path, args: &[&str], target: &Path) {
+    let output = std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    if args.last() == Some(&"pipe:1") {
+        std::fs::write(target, output.stdout).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "heavy: real managed tools, models and the shared corpus; run by npm run test:full"]
+#[serial_test::serial(heavy)]
+fn an_8k_video_and_one_without_a_container_duration_both_get_posters() {
+    let staging = library("synthetic-staging", &[], serde_json::json!({}));
+    let made = staging.home.path().join("made");
+    std::fs::create_dir_all(&made).unwrap();
+    // Its full frame exceeds the in-process decode ceiling on every platform.
+    let eight_k = made.join("eight-k.mov");
+    synthesize(
+        staging.ffmpeg(),
+        &["-f", "lavfi", "-i", "testsrc=size=7680x4320:rate=1:duration=2", "-c:v", "mjpeg", "-q:v", "8", "-y", eight_k.to_str().unwrap()],
+        &eight_k,
+    );
+    // Written live, as a browser recorder does, so it reports no duration.
+    let live = made.join("live.mkv");
+    synthesize(
+        staging.ffmpeg(),
+        &["-f", "lavfi", "-i", "testsrc=size=320x240:rate=5:duration=2", "-c:v", "mjpeg", "-f", "matroska", "pipe:1"],
+        &live,
+    );
+    let library = library(
+        "synthetic-videos",
+        &[eight_k, live],
+        serde_json::json!({ "videoSnapshotsEnabled": true }),
+    );
+    let settings = &library.settings;
+    let posters = video::derive_videos_pending(
+        &library.conn,
+        &library.cache,
+        Some(library.ffmpeg()),
+        &settings.temp_dir,
+        settings.thumb_edge,
+        settings.preview_long_edge,
+    )
+    .unwrap();
+    assert_eq!((posters.derived, posters.failed), (2, 0));
+
+    let eight_k = library.hash_of("eight-k.mov");
+    let (width, height) = image::ImageReader::open(library.cache.preview(&eight_k))
+        .unwrap()
+        .with_guessed_format()
+        .unwrap()
+        .into_dimensions()
+        .unwrap();
+    assert_eq!(width.max(height), settings.preview_long_edge);
+
+    let live = library.hash_of("live.mkv");
+    assert!(library.cache.preview(&live).is_file());
+    let (duration_ms, strip_frames): (Option<i64>, Option<i64>) = library
+        .conn
+        .query_row(
+            "SELECT duration_ms, strip_frames FROM contents WHERE hash = ?1",
+            [&live],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // No snapshots can be placed on an unknown timeline, and nothing failed.
+    assert_eq!((duration_ms, strip_frames), (None, Some(0)));
+    let candidates = onecopy_lib::derived_state::transcript_candidates(&library.conn, "video", None, 10).unwrap();
+    assert!(candidates.iter().any(|(hash, _)| *hash == live));
 }

@@ -104,4 +104,15 @@ fn a_heic_display_orientation_is_applied_exactly_once() {
 
     // The preview is re-encoded for the webview, never a copy of the HEIC.
     assert!(std::fs::read(&rotated).unwrap().starts_with(b"RIFF"));
+
+    // Hold-to-inspect converts to a full-resolution PNG written by ffmpeg
+    // itself, upright, so no full-size frame passes the decode ceiling.
+    for (file_name, expected) in [("upright.heic", (160, 90)), ("rotated.heic", (90, 160))] {
+        let hash = library.hash_of(file_name);
+        preview::ensure_fullres(&library.conn, &library.cache, Some(library.ffmpeg()), &hash)
+            .unwrap();
+        let full = library.cache.fullres(&hash);
+        assert!(std::fs::read(&full).unwrap().starts_with(b"\x89PNG"), "{file_name}");
+        assert_eq!(image::image_dimensions(&full).unwrap(), expected, "{file_name}");
+    }
 }
