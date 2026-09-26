@@ -46,6 +46,14 @@ path = "tests/suites/library.rs"
 name = "scan_lifecycle_test_suite"
 path = "tests/suites/scan_lifecycle.rs"
 
+# `kill_all_running` force-kills every subprocess the whole process currently
+# has registered (the real exit watchdog's own contract) — it cannot share a
+# process with any other test that legitimately runs a subprocess of its own
+# (e.g. `volume_tests`' `diskutil` probe), or a parallel one gets killed too.
+[[test]]
+name = "subprocess_lifecycle_test_suite"
+path = "tests/suites/subprocess_lifecycle.rs"
+
 [[test]]
 name = "media_test_suite"
 path = "tests/suites/media.rs"

@@ -27,8 +27,12 @@ use tauri::AppHandle;
 use crate::derived_state::WorkClass;
 
 /// How long a requested preview or an external open waits for its lane or
-/// for automatic work on the same file to stop.
-const REQUESTED_WAIT: Duration = Duration::from_secs(10);
+/// for automatic work on the same file to stop. Reused at exit (W-L2/exit
+/// joins) as the bound on how long quitting waits for derived work, mutation
+/// and requested-media joins before killing any subprocess still running and
+/// exiting anyway — the same "how long is reasonable to make the user wait"
+/// judgment already made for foreground preemption.
+pub(crate) const REQUESTED_WAIT: Duration = Duration::from_secs(10);
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 const STATE_UNAVAILABLE: &str = "background-work state is unavailable";
 const FILE_IN_USE: &str = "A file operation is using this file.";

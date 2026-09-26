@@ -40,6 +40,56 @@ pub const STDERR_BYTES: usize = 1024 * 1024;
 /// How often the watcher wakes to check liveness, idleness and cancellation.
 const POLL: Duration = Duration::from_millis(100);
 
+/// Every subprocess currently running, for the exit watchdog: if quitting's
+/// bounded wait for derived work, mutations or requested media expires
+/// before every job reaches its own cancellation point, `kill_all_running`
+/// force-kills whatever managed-tool subprocess is still alive instead of
+/// leaving it to write into `temp/` or the cache after the app has exited
+/// (W-L1, generalized to the exit-join deadline).
+static RUNNING: Mutex<Vec<Arc<Mutex<std::process::Child>>>> = Mutex::new(Vec::new());
+
+/// Registers a spawned child for the exit watchdog; dropping the guard
+/// removes it again, whichever way `run_bounded_idle_output` returns.
+struct Registration(Arc<Mutex<std::process::Child>>);
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        if let Ok(mut running) = RUNNING.lock() {
+            running.retain(|child| !Arc::ptr_eq(child, &self.0));
+        }
+    }
+}
+
+fn register_running(child: Arc<Mutex<std::process::Child>>) -> Registration {
+    if let Ok(mut running) = RUNNING.lock() {
+        running.push(Arc::clone(&child));
+    }
+    Registration(child)
+}
+
+fn lock_child(
+    child: &Arc<Mutex<std::process::Child>>,
+) -> std::sync::MutexGuard<'_, std::process::Child> {
+    child.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Kills every subprocess still running right now. Best-effort and
+/// idempotent: a child that already exited is left to its own owning thread,
+/// which reaps it on its next poll. Called only once quitting's bounded wait
+/// has expired (exit-join deadline).
+pub fn kill_all_running() {
+    let running = match RUNNING.lock() {
+        Ok(running) => running.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    for child in running {
+        let mut guard = lock_child(&child);
+        if matches!(guard.try_wait(), Ok(None)) {
+            kill_owned(&mut guard);
+        }
+    }
+}
+
 pub struct Run {
     pub status_ok: bool,
     pub stdout: Vec<u8>,
@@ -120,12 +170,20 @@ fn run_bounded_idle_output(
             }
         });
     }
-    let mut child = command
+    let mut spawned = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
+    let stdout_pipe = spawned.stdout.take();
+    let stderr_pipe = spawned.stderr.take();
+    // Shared with the global registry below so an exit watchdog can kill this
+    // child from outside this function if this function's own thread never
+    // reaches a poll iteration again (W-L2/exit joins) — the registration
+    // guard removes it once this function returns by any path.
+    let child = Arc::new(Mutex::new(spawned));
+    let _registration = register_running(Arc::clone(&child));
 
     // Both pipes are drained on their own threads. This is not just tidiness:
     // a child that fills a pipe buffer nobody reads blocks forever, which
@@ -138,7 +196,7 @@ fn run_bounded_idle_output(
     let stderr_overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let mut readers = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
+    if let Some(mut out) = stdout_pipe {
         let buf = Arc::clone(&stdout_buf);
         let seen = Arc::clone(&last_output);
         let overflow = Arc::clone(&stdout_overflow);
@@ -164,12 +222,12 @@ fn run_bounded_idle_output(
         match reader {
             Ok(reader) => readers.push(reader),
             Err(error) => {
-                kill_owned(&mut child);
+                kill_owned(&mut lock_child(&child));
                 return Err(format!("could not start subprocess stdout reader: {error}"));
             }
         }
     }
-    if let Some(mut err) = child.stderr.take() {
+    if let Some(mut err) = stderr_pipe {
         let buf = Arc::clone(&stderr_buf);
         let seen = Arc::clone(&last_output);
         let overflow = Arc::clone(&stderr_overflow);
@@ -195,7 +253,7 @@ fn run_bounded_idle_output(
         match reader {
             Ok(reader) => readers.push(reader),
             Err(error) => {
-                kill_owned(&mut child);
+                kill_owned(&mut lock_child(&child));
                 for reader in readers {
                     match reader.join() {
                         Ok(Ok(())) => {}
@@ -221,30 +279,30 @@ fn run_bounded_idle_output(
     }
 
     let outcome = loop {
-        match child.try_wait() {
+        match lock_child(&child).try_wait() {
             Ok(Some(status)) => break Ok(status.success()),
             Ok(None) => {}
             Err(e) => break Err(e.to_string()),
         }
         if cancelled() {
-            kill_owned(&mut child);
+            kill_owned(&mut lock_child(&child));
             break Err(crate::scanner::CANCELLED.to_string());
         }
         if stdout_overflow.load(Ordering::Relaxed) {
-            kill_owned(&mut child);
+            kill_owned(&mut lock_child(&child));
             break Err(format!(
                 "subprocess output exceeded the {} MiB safety limit",
                 max_stdout / 1024 / 1024
             ));
         }
         if stderr_overflow.load(Ordering::Relaxed) {
-            kill_owned(&mut child);
+            kill_owned(&mut lock_child(&child));
             break Err("subprocess stderr exceeded the 1 MiB safety limit".to_string());
         }
         let idle_ms = (started.elapsed().as_millis() as u64)
             .saturating_sub(last_output.load(Ordering::Relaxed));
         if idle_ms > idle_timeout.as_millis() as u64 {
-            kill_owned(&mut child);
+            kill_owned(&mut lock_child(&child));
             break Err(format!(
                 "no output for {}s — killed as stuck",
                 idle_timeout.as_secs()

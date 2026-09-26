@@ -153,6 +153,60 @@ where
     }
 }
 
+/// Waits up to `derived_runtime`'s existing 10 s admission bound for a
+/// quiescence signal on `rx`. If the deadline passes first, kills every
+/// managed-tool subprocess still running (W-L1) and reports the timeout, so
+/// a job that never reaches its own cancellation point cannot hang quitting
+/// forever. Returns whether quiescence actually finished in time.
+fn await_quiescence_bounded(rx: std::sync::mpsc::Receiver<()>) -> bool {
+    await_quiescence_with_deadline(rx, derived_runtime::REQUESTED_WAIT)
+}
+
+// The deadline is a parameter (rather than inlined) so a test can exercise
+// the timeout branch in milliseconds instead of the real 10 s bound.
+fn await_quiescence_with_deadline(
+    rx: std::sync::mpsc::Receiver<()>,
+    deadline: std::time::Duration,
+) -> bool {
+    if rx.recv_timeout(deadline).is_ok() {
+        return true;
+    }
+    logging::warn(
+        "exit quiescence exceeded its deadline; killing outstanding subprocesses",
+        json!({ "deadline_secs": deadline.as_secs() }),
+    );
+    subprocess::kill_all_running();
+    false
+}
+
+#[cfg(test)]
+// EXCEPTION to tests-folder conventions: exercises the private
+// `await_quiescence_with_deadline`; promoting it would widen the crate's
+// public API only for this test.
+#[path = "../tests/unit/lib/exit_quiescence_tests.rs"]
+mod exit_quiescence_tests;
+
+/// The non-blocking counterpart for the `ExitRequested` path, which already
+/// runs its quiescence sequence on its own thread and must not block the
+/// event loop: if the deadline expires, this also force-exits, since that
+/// thread's own eventual `handle.exit(0)` may itself be stuck behind the job
+/// that missed the deadline.
+fn spawn_exit_watchdog(rx: std::sync::mpsc::Receiver<()>) {
+    let started = std::thread::Builder::new()
+        .name("onecopy-exit-watchdog".to_string())
+        .spawn(move || {
+            if !await_quiescence_bounded(rx) {
+                std::process::exit(0);
+            }
+        });
+    if let Err(error) = started {
+        logging::warn(
+            "could not start exit watchdog",
+            json!({ "error": { "message": error.to_string() } }),
+        );
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 enum BootstrapData {
@@ -2617,6 +2671,12 @@ pub fn run() {
             }
             let handle = app_handle.clone();
             let exit_handle = handle.clone();
+            // Bounded exit joins (requested media, derived work, mutations):
+            // the watchdog below races this quiescence sequence against the
+            // same deadline `derived_runtime` already uses for foreground
+            // preemption. A job that cannot reach its own cancellation point
+            // must not be able to hang quitting forever.
+            let (quiesced_tx, quiesced_rx) = std::sync::mpsc::channel::<()>();
             let started = std::thread::Builder::new()
                 .name("onecopy-exit-quiescence".to_string())
                 .spawn(move || {
@@ -2657,8 +2717,10 @@ pub fn run() {
                             &error,
                         );
                     }
+                    let _ = quiesced_tx.send(());
                     handle.exit(0);
                 });
+            spawn_exit_watchdog(quiesced_rx);
             if let Err(error) = started {
                 let message = format!("could not start shutdown worker: {error}");
                 let _ =
@@ -2683,16 +2745,31 @@ pub fn run() {
             if let Err(error) = mutation_runtime::request_shutdown() {
                 let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
-            source_check_runtime::join();
-            sleep_prevention::join();
-            file_information_runtime::join();
-            watcher::join();
-            binaries_manager::wait_for_idle();
-            startup::join();
-            instance_owner::join(app_handle);
-            derived_work::join();
-            if let Err(error) = mutation_runtime::wait_for_idle() {
-                let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
+            // Reached directly by `request_app_exit` (bypassing
+            // `ExitRequested`'s own bounded quiescence thread above), so this
+            // path needs its own exit-join deadline: these joins ran
+            // unbounded on the event-loop thread before Phase 5.
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let handle = app_handle.clone();
+            let joins_started = std::thread::Builder::new()
+                .name("onecopy-exit-joins".to_string())
+                .spawn(move || {
+                    source_check_runtime::join();
+                    sleep_prevention::join();
+                    file_information_runtime::join();
+                    watcher::join();
+                    binaries_manager::wait_for_idle();
+                    startup::join();
+                    instance_owner::join(&handle);
+                    derived_work::join();
+                    if let Err(error) = mutation_runtime::wait_for_idle() {
+                        let _ =
+                            failure_runtime::report(&handle, "shutdown-worker-failed", None, &error);
+                    }
+                    let _ = done_tx.send(());
+                });
+            if joins_started.is_ok() {
+                await_quiescence_bounded(done_rx);
             }
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
