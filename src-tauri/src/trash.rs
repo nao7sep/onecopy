@@ -89,8 +89,6 @@ struct TrashPlan {
     record: TrashedRecord,
     stored: PathBuf,
     day_dir: PathBuf,
-    #[cfg(windows)]
-    trash_root: PathBuf,
 }
 
 fn prepare_trash(
@@ -148,11 +146,19 @@ fn prepare_trash(
     // existing `.onecopy-trash` or day folder must be a real directory there,
     // never a symlink or anything else that would lead elsewhere.
     ensure_real_directory_if_present(&trash_root)?;
+    // Hide the trash root on Windows exactly once, the moment this call is
+    // the one that creates it — never per trashed file (R1-12, R6-04).
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    let trash_root_is_new = !trash_root.exists();
     std::fs::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
     ensure_real_directory_if_present(&trash_root)?;
     ensure_real_directory_if_present(&day_dir)?;
     if !crate::path_identity::directory_is_within(&day_dir, owning_root)? {
         return Err("deleted-file storage escaped its configured root".to_string());
+    }
+    #[cfg(windows)]
+    if trash_root_is_new {
+        hide_windows(&trash_root);
     }
 
     let stored = available_stored_path(&target)?;
@@ -174,8 +180,6 @@ fn prepare_trash(
         record,
         stored,
         day_dir,
-        #[cfg(windows)]
-        trash_root,
     })
 }
 
@@ -196,9 +200,6 @@ fn commit_trash(
             }),
         );
     }
-
-    #[cfg(windows)]
-    hide_windows(&plan.trash_root);
 
     Ok(plan.record)
 }
@@ -756,23 +757,33 @@ fn nearest_existing(path: &Path) -> PathBuf {
 #[cfg(windows)]
 fn hide_windows(trash_root: &Path) {
     // Best-effort: mark the trash root hidden (dot-prefix means nothing to
-    // Explorer). attrib +h via cmd avoids a winapi dependency for one flag.
-    match std::process::Command::new("attrib")
-        .arg("+h")
-        .arg(trash_root)
-        .status()
-    {
-        Ok(status) if status.success() => {}
-        Ok(status) => crate::logging::warn(
-            "trash directory could not be hidden",
-            serde_json::json!({ "path": trash_root, "status": status.code() }),
-        ),
-        Err(error) => crate::logging::warn(
+    // Explorer). This calls the Win32 attribute API directly rather than
+    // spawning `attrib`, so there is no console flash, no process start, and
+    // no unbounded external wait per trashed file (R1-12, R6-04) — the call
+    // also runs at most once per trash root, when `prepare_trash` creates it.
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES,
+    };
+
+    let wide: Vec<u16> = crate::winpath::for_fs(trash_root)
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let existing = unsafe { GetFileAttributesW(wide.as_ptr()) };
+    let attrs = if existing == INVALID_FILE_ATTRIBUTES {
+        FILE_ATTRIBUTE_HIDDEN
+    } else {
+        existing | FILE_ATTRIBUTE_HIDDEN
+    };
+    if unsafe { SetFileAttributesW(wide.as_ptr(), attrs) } == 0 {
+        crate::logging::warn(
             "trash directory could not be hidden",
             serde_json::json!({
                 "path": trash_root,
-                "error": { "message": error.to_string() },
+                "error": { "message": std::io::Error::last_os_error().to_string() },
             }),
-        ),
+        );
     }
 }
