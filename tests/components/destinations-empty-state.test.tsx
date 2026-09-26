@@ -35,6 +35,28 @@ beforeEach(() => {
 afterEach(() => { cleanup(); resetModalStack(); });
 
 describe("destination folder states", () => {
+  it("exposes a subfolder's full path to keyboard/AT users and shows the active destination's full path visibly (R8-05)", () => {
+    useDestinationsStore.setState({
+      roots: ["/dest"],
+      children: {
+        "/dest": [
+          { name: "A very long descriptive album folder name", path: "/dest/A very long descriptive album folder name", hasChildren: false, isEmpty: false },
+        ],
+      },
+      expanded: new Set(["/dest"]),
+      activePath: "/dest/A very long descriptive album folder name",
+    });
+    const view = render(<DestinationsTab />);
+
+    const row = view.getByRole("treeitem", {
+      name: "/dest/A very long descriptive album folder name",
+    });
+    expect(row).toBeTruthy();
+    // The action bar acting on this exact destination shows its full path
+    // visibly, not only through a mouse-only title attribute.
+    expect(view.container.textContent).toContain("/dest/A very long descriptive album folder name");
+  });
+
   it.each(["composition", "legacy composition", "modal", "comparison", "modifier"])("does not navigate behind %s input ownership", (owner) => {
     useDestinationsStore.setState({ roots: ["/first", "/second"], activePath: "/first" });
     const view = render(<DestinationsTab />);
@@ -70,7 +92,7 @@ describe("destination folder states", () => {
     const actions = permanent.parentElement!.parentElement!;
     expect(actions.className).toContain("-mx-3");
     expect(actions.className).toContain("pt-3");
-    expect(actions.querySelector("p")?.className).toContain("mb-2");
+    expect(actions.querySelectorAll("p")[1]?.className).toContain("mb-2");
     expect(invokeCalls.some((call) => call.command === "move_items_out")).toBe(false);
   });
 

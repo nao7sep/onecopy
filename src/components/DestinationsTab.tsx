@@ -82,6 +82,12 @@ function DirNode({
       role="treeitem"
       aria-selected={isActive}
       aria-expanded={hasChildren ? isOpen : undefined}
+      // The visible label is only the leaf name, truncated when long; the
+      // accessible name is the full path, so keyboard and screen-reader users
+      // get the same identifying information a mouse hover already gives
+      // sighted users — and the ActionBar below mirrors it visibly the
+      // moment this row becomes active (R8-05).
+      aria-label={entry.path}
     >
       <div
         ref={receiver.ref}
@@ -289,8 +295,20 @@ function ActionBar() {
 
   return (
     <div className="-mx-3 mt-3 shrink-0 border-t border-border px-3 pt-3">
-      <p className="mb-2 truncate text-sm font-medium text-ink-strong" title={activePath}>
+      {/* This is the exact destination a Move/Copy button below commits
+          against, so its full identity must reach a keyboard or
+          screen-reader user, not only a mouse hover (R8-05): the second line
+          always shows the complete path, and the header's accessible name is
+          the path even where the visible leaf name alone would suffice. */}
+      <p
+        className="mb-0.5 truncate text-sm font-medium text-ink-strong"
+        aria-label={activePath}
+        title={activePath}
+      >
         {leafName(activePath)}
+      </p>
+      <p className="mb-2 truncate text-[11px] text-ink-muted" title={activePath}>
+        {activePath}
       </p>
       <div className="flex flex-wrap items-center gap-1">
         <Button
