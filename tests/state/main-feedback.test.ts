@@ -130,6 +130,7 @@ describe("Main command feedback ownership", () => {
     const failure = {
       id: 7, kind: "worker-failed", path: null, level: "error" as const,
       presentation: "persistent" as const, message: "Background worker stopped.",
+      messageKey: null, messageValues: null,
       firstSeenUtc: "2026-09-09T00:00:00Z", lastSeenUtc: "2026-09-09T00:00:00Z", occurrenceCount: 1,
     };
     useNotificationsStore.setState({ active: [failure] });

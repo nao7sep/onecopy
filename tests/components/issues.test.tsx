@@ -18,6 +18,8 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
     path: `/vol/photos/IMG_${id}.jpg`,
     kind: "decode-error",
     message: "could not decode",
+    messageKey: null,
+    messageValues: null,
     firstSeenUtc: `2026-08-0${id}T00:00:00.000Z`,
     lastSeenUtc: "2026-08-16T00:00:00.000Z",
     occurrenceCount: 1,
