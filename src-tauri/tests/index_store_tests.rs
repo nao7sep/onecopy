@@ -393,3 +393,78 @@ fn revision_fourteen_upgrade_splits_the_shared_empty_identity() {
     assert_eq!(count("SELECT COUNT(*) FROM evidence WHERE path_id = 1 AND content_hash IS NULL"), 1);
     assert_eq!(count("SELECT COUNT(*) FROM logical_projection_batch"), 0);
 }
+
+/// (R4.1 finding 3) The section a logical item lands in must follow its
+/// representative copy's own kind, never `contents.kind` — which records
+/// only whichever copy was hashed first and has no product meaning (a
+/// backup `.bak` copy hashed before its `.jpg` twin must not push the item
+/// into Other files, and the reverse must not pull an Other item into
+/// Images). Both directions are asserted against a single logical item each,
+/// with `contents.kind` deliberately set opposite to the representative.
+#[test]
+fn logical_contents_kind_follows_the_representative_copy_not_contents_kind() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 4, 'other'), ('h2', 4, 'image');
+         INSERT INTO paths (id, abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+           VALUES
+             (1, '/r/photo.jpg.bak', '/r', 'photo.jpg.bak', 'other', 'h1', 2000, 'metadata'),
+             (2, '/r/photo.jpg', '/r', 'photo.jpg', 'image', 'h1', 1000, 'metadata'),
+             (3, '/r/clip.mov', '/r', 'clip.mov', 'image', 'h2', 2000, 'metadata'),
+             (4, '/r/clip.mov.bak', '/r', 'clip.mov.bak', 'other', 'h2', 1000, 'metadata');",
+    )
+    .unwrap();
+    let kind = |hash: &str| {
+        conn.query_row(
+            "SELECT kind FROM logical_contents WHERE content_hash = ?1",
+            [hash],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    // h1: contents.kind is 'other', but the earlier-dated (representative)
+    // copy is the '.jpg' image — the section must be Images.
+    assert_eq!(kind("h1"), "image");
+    // h2: contents.kind is 'image', but the earlier-dated (representative)
+    // copy is the '.bak' — the section must be Other files.
+    assert_eq!(kind("h2"), "other");
+}
+
+/// (R4.1 finding 3) A database upgraded from a pre-fix revision recomputes
+/// every existing item's section from its representative copy rather than
+/// keeping the stale `contents.kind`-derived value.
+#[test]
+fn revision_eighteen_upgrade_recomputes_kind_from_the_representative_copy() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 4, 'other');
+         INSERT INTO paths (id, abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+           VALUES
+             (1, '/r/photo.jpg.bak', '/r', 'photo.jpg.bak', 'other', 'h1', 2000, 'metadata'),
+             (2, '/r/photo.jpg', '/r', 'photo.jpg', 'image', 'h1', 1000, 'metadata');
+         PRAGMA user_version = 17;",
+    )
+    .unwrap();
+    // Force the stale, pre-fix projection row a revision-17 database would
+    // still carry (the old view wrote 'other' here from contents.kind).
+    conn.execute(
+        "UPDATE logical_contents SET kind = 'other' WHERE content_hash = 'h1'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let conn = index_store::open(&db).unwrap();
+    let kind: String = conn
+        .query_row(
+            "SELECT kind FROM logical_contents WHERE content_hash = 'h1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind, "image");
+}

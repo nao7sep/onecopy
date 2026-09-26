@@ -20,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 17;
+const SCHEMA_REVISION: i64 = 18;
 
 /// The settings dates and companion relationships were resolved with
 /// (`library_settings`). Launch adopts the saved settings for an index that
@@ -197,9 +197,26 @@ BEGIN
   WHERE id = NEW.id;
 END;
 
+-- A section's kind follows the representative copy's own kind, not
+-- `contents.kind` (fixed by whichever copy was hashed first): byte-identical
+-- copies with different extensions must not have their section depend on
+-- indexing order (R4.1 finding 3).
 CREATE VIEW IF NOT EXISTS logical_content_projection AS
 SELECT c.hash AS content_hash,
-       CASE WHEN c.kind IN ('image', 'video') THEN c.kind ELSE 'other' END AS kind,
+       CASE WHEN (SELECT ranked.kind FROM paths ranked
+                  WHERE ranked.content_hash = c.hash
+                    AND ranked.missing = 0 AND ranked.companion_of IS NULL
+                  ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                           ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+                  LIMIT 1) IN ('image', 'video')
+         THEN (SELECT ranked.kind FROM paths ranked
+               WHERE ranked.content_hash = c.hash
+                 AND ranked.missing = 0 AND ranked.companion_of IS NULL
+               ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                        ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+               LIMIT 1)
+         ELSE 'other'
+       END AS kind,
        CASE
          WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
            THEN 'pending'
@@ -221,7 +238,7 @@ SELECT c.hash AS content_hash,
        SUM(p.review_visible) AS visible_copy_count
 FROM contents c JOIN paths p ON p.content_hash = c.hash
 WHERE p.missing = 0 AND p.companion_of IS NULL
-GROUP BY c.hash, c.kind;
+GROUP BY c.hash;
 
 -- Similarity is published as complete UTC-month cohorts. Dirty buckets are
 -- reconstructible invalidation facts, not jobs: a revision changes whenever
@@ -455,7 +472,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                13..=16 => {}
+                13..=17 => {}
                 9..=12 => {
                     if current == 9 {
                         conn.execute_batch(
@@ -619,6 +636,35 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                     conn.execute_batch("ALTER TABLE scan_dirs ADD COLUMN configured_root TEXT;")
                         .map_err(|error| error.to_string())?;
                 }
+            }
+            if current < 18 {
+                // The projection's `kind` now follows the representative
+                // copy's own kind instead of `contents.kind` (fixed by
+                // whichever copy was hashed first). The view text only
+                // changes on a fresh CREATE, so drop it and its dependent
+                // triggers before re-running SCHEMA, then republish every
+                // logical item from the corrected view.
+                conn.execute_batch(
+                    "DROP TRIGGER IF EXISTS paths_logical_after_insert_v2;
+                     DROP TRIGGER IF EXISTS paths_logical_after_update_v2;
+                     DROP TRIGGER IF EXISTS paths_logical_after_delete_v2;
+                     DROP VIEW IF EXISTS logical_content_projection;",
+                )
+                .map_err(|error| error.to_string())?;
+                conn.execute_batch(SCHEMA)
+                    .map_err(|error| error.to_string())?;
+                publish_paths_batch_in(
+                    &conn,
+                    |conn| {
+                        conn.execute(
+                            "INSERT OR IGNORE INTO batch_touched_hashes SELECT hash FROM contents",
+                            [],
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                    },
+                    |_conn| Ok(()),
+                )?;
             }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
