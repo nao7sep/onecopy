@@ -474,14 +474,18 @@ fn section_order_is_sorted_once_per_index_revision_and_reused_across_callers() {
     };
     let bounds = month_bounds("2016-03", chrono_tz::UTC).unwrap();
 
-    let first = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    let order = |conn: &Connection| {
+        let snapshot = SectionSnapshot::begin(conn).unwrap();
+        ordered_section_identities(&snapshot, "image", "2016-03", bounds, time_desc).unwrap()
+    };
+    let first = order(&conn);
     assert_eq!(first.len(), 3);
 
     // Reading again with no committed change reuses the exact same ordering
     // (same Arc allocation): the section is sorted once per revision, not
     // once per caller (reconcile_section, section windows, range reads, and
     // family-context recovery all call through this same entry point).
-    let second = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    let second = order(&conn);
     assert!(
         Arc::ptr_eq(&first, &second),
         "an unchanged index revision must reuse the cached ordering rather than re-sorting"
@@ -490,7 +494,7 @@ fn section_order_is_sorted_once_per_index_revision_and_reused_across_callers() {
     // A committed write bumps the index revision, so the next read recomputes
     // instead of serving a stale ordering.
     seed_month_image(&conn, "h4", "d.jpg", utc_ms(2016, 3, 4, 0));
-    let third = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    let third = order(&conn);
     assert!(
         !Arc::ptr_eq(&first, &third),
         "a new committed write must invalidate the cached ordering"
@@ -514,16 +518,61 @@ fn section_order_cache_does_not_serve_a_stale_order_after_this_same_connection_w
     };
     let bounds = month_bounds("2016-03", chrono_tz::UTC).unwrap();
 
-    let before = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    let order = |conn: &Connection| {
+        let snapshot = SectionSnapshot::begin(conn).unwrap();
+        ordered_section_identities(&snapshot, "image", "2016-03", bounds, time_desc).unwrap()
+    };
+    let before = order(&conn);
     assert_eq!(before.len(), 1);
 
     conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'a.jpg'", [])
         .unwrap();
 
-    let after = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    let after = order(&conn);
     assert_eq!(
         after.len(),
         0,
         "this connection's own write must be visible on the next read"
     );
+}
+
+#[test]
+fn section_order_follows_a_write_committed_by_another_connection() {
+    // Production opens a fresh connection per command: one command reads the
+    // section, another commits a Delete, and a third reads again. A fresh
+    // connection's own `data_version` never changes, so the revision must come
+    // from an observer that sees every other connection's commits.
+    let (dir, writer) = seeded();
+    let db_file = dir.path().join("index.sqlite3");
+    seed_month_image(&writer, "h1", "a.jpg", utc_ms(2016, 3, 1, 0));
+    seed_month_image(&writer, "h2", "b.jpg", utc_ms(2016, 3, 2, 0));
+    let time_desc = SectionSort {
+        order: SectionSortOrder::Time,
+        desc: true,
+    };
+    let read = || {
+        let reader = index_store::open(&db_file).unwrap();
+        section_window(
+            &reader,
+            "image",
+            "2016-03",
+            chrono_tz::UTC,
+            time_desc,
+            0,
+            10,
+            projection(),
+        )
+        .unwrap()
+    };
+
+    assert_eq!(read().total, 2);
+    writer
+        .execute("UPDATE paths SET missing = 1 WHERE file_name = 'a.jpg'", [])
+        .unwrap();
+    let after_delete = read();
+    assert_eq!(after_delete.total, 1, "a committed removal must leave the order");
+    assert_eq!(after_delete.items[0].file_name, "b.jpg");
+
+    seed_month_image(&writer, "h3", "c.jpg", utc_ms(2016, 3, 3, 0));
+    assert_eq!(read().total, 2, "a committed discovery must enter the order");
 }

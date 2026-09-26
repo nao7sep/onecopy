@@ -468,20 +468,11 @@ pub fn section_window(
     limit: u32,
     projection: ItemProjectionContext,
 ) -> Result<SectionWindow, String> {
-    let transaction =
-        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
-            .map_err(|error| error.to_string())?;
+    let snapshot = SectionSnapshot::begin(conn)?;
     let window = section_window_snapshot(
-        &transaction,
-        kind,
-        month,
-        display_tz,
-        sort,
-        start,
-        limit,
-        projection,
+        &snapshot, kind, month, display_tz, sort, start, limit, projection,
     )?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    snapshot.finish()?;
     Ok(window)
 }
 
@@ -491,43 +482,117 @@ struct SectionOrderCache {
     kind: String,
     month: String,
     sort: SectionSort,
-    revision: (i64, u64),
+    revision: i64,
     identities: Arc<Vec<SectionIdentity>>,
 }
 
 static SECTION_ORDER_CACHE: Mutex<Option<SectionOrderCache>> = Mutex::new(None);
 
-/// A cheap, monotonic stand-in for "has this connection's view of the index
-/// changed". `PRAGMA data_version` only changes when a *different* connection
-/// commits (by SQLite's own definition), so it misses a write this same
-/// connection just made -- which normal per-command dispatch never does (each
-/// command opens its own fresh connection), but a caller that reuses one
-/// connection across a write and a read otherwise would silently see a stale
-/// cached order. Pairing it with `total_changes()`, which counts this
-/// connection's own statements, covers both cases without a real query.
-fn section_index_revision(conn: &Connection) -> Result<(i64, u64), String> {
-    let data_version = conn
+struct IndexRevisionObserver {
+    db_file: String,
+    conn: Connection,
+}
+
+static INDEX_REVISION_OBSERVER: Mutex<Option<IndexRevisionObserver>> = Mutex::new(None);
+
+/// The committed index revision, comparable across every connection to
+/// `db_file`. `PRAGMA data_version` is only comparable between two reads on
+/// the same connection and only moves for commits made by *other*
+/// connections, so one long-lived observer connection that never writes owns
+/// it: every commit by any command, worker or watcher connection advances it.
+/// A fresh per-command connection's own value never changes and must not be
+/// used as a revision.
+fn observed_index_revision(db_file: &str) -> Result<i64, String> {
+    let mut slot = INDEX_REVISION_OBSERVER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.as_ref().is_none_or(|observer| observer.db_file != db_file) {
+        *slot = Some(IndexRevisionObserver {
+            db_file: db_file.to_string(),
+            conn: crate::index_store::open(Path::new(db_file))?,
+        });
+    }
+    let observer = slot.as_ref().expect("observer was just installed");
+    observer
+        .conn
         .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
-        .map_err(|error| error.to_string())?;
-    Ok((data_version, conn.total_changes()))
+        .map_err(|error| error.to_string())
+}
+
+/// One read snapshot of the index for a section query, and the index revision
+/// that snapshot holds when it is known exactly.
+///
+/// The observer revision is read immediately before and after this snapshot
+/// is pinned. Equal reads prove no commit landed in between, so the snapshot
+/// holds exactly that revision and may share the cached section order. When
+/// they differ, or when the caller already holds an open transaction whose
+/// snapshot may predate both reads, the order is computed from this snapshot
+/// and not cached; reusing an order from another snapshot could name an item
+/// this snapshot cannot load, or miss one it can.
+struct SectionSnapshot<'conn> {
+    conn: &'conn Connection,
+    transaction: Option<rusqlite::Transaction<'conn>>,
+    revision: Option<i64>,
+}
+
+impl<'conn> SectionSnapshot<'conn> {
+    fn begin(conn: &'conn Connection) -> Result<Self, String> {
+        let db_file = conn.path().filter(|path| !path.is_empty()).map(str::to_string);
+        if !conn.is_autocommit() || db_file.is_none() {
+            return Ok(Self {
+                conn,
+                transaction: None,
+                revision: None,
+            });
+        }
+        let db_file = db_file.expect("checked above");
+        let before = observed_index_revision(&db_file)?;
+        let transaction =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+                .map_err(|error| error.to_string())?;
+        transaction
+            .query_row("SELECT COUNT(*) FROM sqlite_schema", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|error| error.to_string())?;
+        let after = observed_index_revision(&db_file)?;
+        Ok(Self {
+            conn,
+            transaction: Some(transaction),
+            revision: (before == after).then_some(before),
+        })
+    }
+
+    fn finish(self) -> Result<(), String> {
+        match self.transaction {
+            Some(transaction) => transaction.commit().map_err(|error| error.to_string()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl std::ops::Deref for SectionSnapshot<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn
+    }
 }
 
 /// Returns one section's complete ordered identity sequence, sorted once per
 /// index revision instead of once per caller. `reconcile_section`, section
 /// windows, range reads, family-context recovery, and viewer-session
-/// materialization used to each run their own full-section `ORDER BY`; they
-/// now share this one ordering for a given `(db, kind, month, sort)` while the
-/// index revision stays the same.
+/// materialization share this one ordering for a given `(db, kind, month,
+/// sort)` while the index revision stays the same.
 fn ordered_section_identities(
-    conn: &Connection,
+    snapshot: &SectionSnapshot<'_>,
     kind: &str,
     month: &str,
     bounds: Option<(i64, i64)>,
     sort: SectionSort,
 ) -> Result<Arc<Vec<SectionIdentity>>, String> {
-    let db_file = conn.path().unwrap_or_default().to_string();
-    let revision = section_index_revision(conn)?;
-    {
+    let db_file = snapshot.path().unwrap_or_default().to_string();
+    if let Some(revision) = snapshot.revision {
         let cache = SECTION_ORDER_CACHE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -549,7 +614,7 @@ fn ordered_section_identities(
         "WITH candidates AS ({candidates}) SELECT hash, path_id FROM candidates ORDER BY {}",
         section_order_sql(sort)
     );
-    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut statement = snapshot.prepare(&sql).map_err(|error| error.to_string())?;
     let identities = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok(SectionIdentity {
@@ -563,17 +628,19 @@ fn ordered_section_identities(
     drop(statement);
     let identities = Arc::new(identities);
 
-    let mut cache = SECTION_ORDER_CACHE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *cache = Some(SectionOrderCache {
-        db_file,
-        kind: kind.to_string(),
-        month: month.to_string(),
-        sort,
-        revision,
-        identities: identities.clone(),
-    });
+    if let Some(revision) = snapshot.revision {
+        let mut cache = SECTION_ORDER_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *cache = Some(SectionOrderCache {
+            db_file,
+            kind: kind.to_string(),
+            month: month.to_string(),
+            sort,
+            revision,
+            identities: identities.clone(),
+        });
+    }
     Ok(identities)
 }
 
@@ -602,7 +669,7 @@ fn recovery_context_from_ordered(
 
 #[allow(clippy::too_many_arguments)]
 fn section_window_snapshot(
-    conn: &Connection,
+    snapshot: &SectionSnapshot<'_>,
     kind: &str,
     month: &str,
     display_tz: Tz,
@@ -620,7 +687,7 @@ fn section_window_snapshot(
         ));
     }
     let bounds = month_bounds(month, display_tz)?;
-    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let ordered = ordered_section_identities(snapshot, kind, month, bounds, sort)?;
     let total = ordered.len() as u64;
     let start = start.min(total);
     if start == total {
@@ -635,7 +702,7 @@ fn section_window_snapshot(
     Ok(SectionWindow {
         total,
         start,
-        items: section_items_by_identity(conn, identities, projection)?,
+        items: section_items_by_identity(snapshot, identities, projection)?,
     })
 }
 
@@ -671,7 +738,8 @@ pub fn reconcile_section(
         ));
     }
     let bounds = month_bounds(month, display_tz)?;
-    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let snapshot = SectionSnapshot::begin(conn)?;
+    let ordered = ordered_section_identities(&snapshot, kind, month, bounds, sort)?;
     let total = ordered.len() as u64;
 
     let wanted: HashSet<String> = selected
@@ -728,11 +796,12 @@ pub fn reconcile_section(
         total,
         start,
         items: section_items_by_identity(
-            conn,
+            &snapshot,
             ordered_section_slice(&ordered, start, end),
             projection,
         )?,
     };
+    snapshot.finish()?;
     let context = anchor
         .as_ref()
         .map(|member| recovery_context_from_ordered(&ordered, member.index));
@@ -830,7 +899,9 @@ pub fn section_range(
         return Err(format!("bad section kind: {kind}"));
     }
     let bounds = month_bounds(month, display_tz)?;
-    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let snapshot = SectionSnapshot::begin(conn)?;
+    let ordered = ordered_section_identities(&snapshot, kind, month, bounds, sort)?;
+    snapshot.finish()?;
     let members = ordered_section_slice(&ordered, start, end)
         .iter()
         .enumerate()
@@ -857,7 +928,9 @@ pub fn section_family_context(
     }
     let bounds = month_bounds(month, display_tz)?;
     let family: HashSet<&str> = member_hashes.iter().map(String::as_str).collect();
-    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let snapshot = SectionSnapshot::begin(conn)?;
+    let ordered = ordered_section_identities(&snapshot, kind, month, bounds, sort)?;
+    snapshot.finish()?;
     let last_member = ordered
         .iter()
         .enumerate()
@@ -887,7 +960,9 @@ pub fn visit_section_identities(
         return Err(format!("bad section kind: {kind}"));
     }
     let bounds = month_bounds(month, display_tz)?;
-    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let snapshot = SectionSnapshot::begin(conn)?;
+    let ordered = ordered_section_identities(&snapshot, kind, month, bounds, sort)?;
+    snapshot.finish()?;
     for (index, identity) in ordered.iter().enumerate() {
         visit(index as u64, identity)?;
     }
