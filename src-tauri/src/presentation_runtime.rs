@@ -242,6 +242,19 @@ pub fn set_desired(app: &AppHandle, label: &str, enable: bool) -> Result<(), Str
     Ok(())
 }
 
+/// Is `label` currently one of OneCopy's own app-owned full-display
+/// presentations (Comparison's Main-filling spread, or a fullscreen Preview)?
+/// `Window::is_fullscreen` alone under-reports this on macOS, where these
+/// presentations use simple (non-Spaces) fullscreen: tao tracks that in a
+/// separate flag `is_fullscreen` never observes, so a window mid-presentation
+/// reads back as an ordinary, whole-screen-sized window (R2-05, viewing-
+/// sessions.md D1). Callers that need "is this geometry transient" — not
+/// "did the platform's own fullscreen API engage" — must consult this
+/// registry as well.
+pub fn is_registered(label: &str) -> bool {
+    STATE.lock().is_ok_and(|state| state.contains(label))
+}
+
 pub fn window_destroyed(label: &str) {
     if let Ok(mut state) = STATE.lock() {
         state.set_fullscreen(label, false);

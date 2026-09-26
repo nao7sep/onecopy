@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, PhysicalPosition, PhysicalSize, Window, WindowEvent, Wry};
 
-use crate::{logging, paths, storage};
+use crate::{logging, paths, presentation_runtime, storage};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -287,6 +287,29 @@ pub(crate) fn capture_preview(window: &Window<Wry>, state: &PlacementState) {
     capture_with_mode(window, state, true);
 }
 
+/// The pure decision behind a placement capture: given what was observed,
+/// which `ClosingState` should be recorded? `fullscreen_reported` is the
+/// platform's own answer; `presentation_registered` is OneCopy's own
+/// full-display-presentation registry, consulted in addition because macOS
+/// simple fullscreen under-reports through the platform API alone (R2-05,
+/// viewing-sessions.md D1). Isolated from any live `Window` so the decision
+/// itself is directly testable.
+pub fn closing_state_for(
+    minimized: bool,
+    fullscreen_reported: bool,
+    presentation_registered: bool,
+    maximized: bool,
+    rectangle: NormalRectangle,
+) -> ClosingState {
+    if minimized || fullscreen_reported || presentation_registered {
+        return ClosingState::Transient;
+    }
+    if maximized {
+        return ClosingState::Maximized;
+    }
+    ClosingState::Normal(rectangle)
+}
+
 fn capture_with_mode(
     window: &Window<Wry>,
     state: &PlacementState,
@@ -294,20 +317,22 @@ fn capture_with_mode(
 ) {
     let closing = (|| -> tauri::Result<ClosingState> {
         let minimized = window.is_minimized()?;
-        let fullscreen = window.is_fullscreen()?;
+        let fullscreen_reported = window.is_fullscreen()?;
+        let presentation_registered = presentation_runtime::is_registered(window.label());
         let maximized = is_maximized(window)?;
         let rectangle = current_rectangle(window)?;
         logging::info("window placement sampled", serde_json::json!({
             "window": window.label(), "rectangle": rectangle,
-            "minimized": minimized, "fullscreen": fullscreen, "maximized": maximized,
+            "minimized": minimized, "fullscreen": fullscreen_reported,
+            "presentationRegistered": presentation_registered, "maximized": maximized,
         }));
-        if minimized || fullscreen {
-            return Ok(ClosingState::Transient);
-        }
-        if maximized {
-            return Ok(ClosingState::Maximized);
-        }
-        Ok(ClosingState::Normal(rectangle))
+        Ok(closing_state_for(
+            minimized,
+            fullscreen_reported,
+            presentation_registered,
+            maximized,
+            rectangle,
+        ))
     })();
     match closing {
         Ok(closing) => {
@@ -320,18 +345,54 @@ fn capture_with_mode(
     }
 }
 
+/// Keeps the remembered NORMAL rectangle current as the window moves or
+/// resizes, instead of only sampling it at close. Without this, un-
+/// maximizing, resizing, moving, then re-maximizing before close silently
+/// discards the resize: only `Maximized` was observed at close, and that
+/// closing state keeps whatever normal rectangle happened to be recorded
+/// before (viewing-sessions.md D8). Fullscreen, minimized, maximized, and
+/// app-owned-presentation frames are never normal bounds and are left alone.
+fn capture_normal_bounds_live(window: &Window<Wry>, state: &PlacementState) {
+    let sample = (|| -> tauri::Result<Option<NormalRectangle>> {
+        if window.is_minimized()?
+            || window.is_fullscreen()?
+            || presentation_runtime::is_registered(window.label())
+            || is_maximized(window)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(current_rectangle(window)?))
+    })();
+    match sample {
+        Ok(Some(normal)) => set_state(state, Some(Placement { normal, maximized: false })),
+        Ok(None) => {}
+        Err(error) => warn("window placement could not be sampled", error),
+    }
+}
+
 pub(crate) fn on_window_event(
     window: &Window<Wry>,
     event: &WindowEvent,
     main_state: &PlacementState,
     preview_state: &PlacementState,
 ) {
-    if matches!(event, WindowEvent::CloseRequested { .. }) {
-        match window.label() {
+    let state = match window.label() {
+        "main" => Some(main_state),
+        "preview" => Some(preview_state),
+        _ => None,
+    };
+    match event {
+        WindowEvent::CloseRequested { .. } => match window.label() {
             "main" => capture(window, main_state),
             "preview" => capture_preview(window, preview_state),
             _ => {}
+        },
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+            if let Some(state) = state {
+                capture_normal_bounds_live(window, state);
+            }
         }
+        _ => {}
     }
 }
 
