@@ -182,7 +182,7 @@ fn section_attempt_retires_only_its_preparation_failures_and_never_claims_repair
     let (_root, conn) = db();
     section_fixture(&conn);
     assert_eq!(
-        attempt_boundaries::recheck_section(&conn, "image", Some((0, 100))).unwrap(),
+        attempt_boundaries::recheck_section(&conn, onecopy_lib::queries::SectionKind::Image, Some((0, 100))).unwrap(),
         1
     );
     let live = queries::issues(&conn, 20, None).unwrap();
@@ -263,7 +263,7 @@ fn failed_attempt_admission_rolls_back_diagnostic_retirement_and_all_receipts() 
     let (_root, conn) = db();
     section_fixture(&conn);
     conn.execute_batch("CREATE TRIGGER reject_reset BEFORE UPDATE OF derived_at_utc ON contents BEGIN SELECT RAISE(ABORT, 'fixture reset failure'); END;").unwrap();
-    assert!(attempt_boundaries::recheck_section(&conn, "image", Some((0, 100))).is_err());
+    assert!(attempt_boundaries::recheck_section(&conn, onecopy_lib::queries::SectionKind::Image, Some((0, 100))).is_err());
     assert!(attempt_boundaries::begin_run(&conn).is_err());
     assert_eq!(queries::issues(&conn, 20, None).unwrap().0, 6);
     assert_eq!(

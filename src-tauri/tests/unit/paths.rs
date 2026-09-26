@@ -109,3 +109,18 @@ fn ensure_private_restricts_a_world_readable_root_to_the_owner() {
     let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700, "the data root must be readable only by its owner");
 }
+
+#[test]
+fn revealable_folder_is_created_lazily() {
+    let root = tempfile::tempdir().unwrap();
+    let target = revealable_data_subdir(root.path(), "logs").unwrap();
+    assert!(target.is_dir());
+    assert_eq!(target, root.path().join("logs"));
+}
+
+#[test]
+fn arbitrary_subdirectories_remain_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    assert!(revealable_data_subdir(root.path(), "../private").is_err());
+    assert!(!root.path().join("private").exists());
+}

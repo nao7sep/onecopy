@@ -97,6 +97,29 @@ pub enum PreviewBody {
     },
 }
 
+/// The saved text-preview limits, clamped to what the reader allows.
+pub struct Limits {
+    pub max_bytes: u64,
+    pub fallback_encoding: String,
+}
+
+impl Limits {
+    pub fn from_config(config: Option<&serde_json::Value>) -> Self {
+        Self {
+            max_bytes: config
+                .and_then(|value| value.get("textPreviewMaxBytes"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(DEFAULT_MAX_BYTES)
+                .clamp(1, MAX_ALLOWED_BYTES),
+            fallback_encoding: config
+                .and_then(|value| value.get("textFallbackEncoding"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(DEFAULT_FALLBACK_ENCODING)
+                .to_string(),
+        }
+    }
+}
+
 pub fn preview_file(
     path: &Path,
     max_bytes: u64,

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, PhysicalPosition, PhysicalSize, Window, WindowEvent, Wry};
+use tauri::{PhysicalPosition, PhysicalSize, Window, WindowEvent, Wry};
 
 use crate::{logging, paths, presentation_runtime, storage};
 
@@ -86,8 +86,8 @@ pub(crate) fn new_state() -> PlacementState {
     Arc::new(Mutex::new(None))
 }
 
-pub(crate) fn load_preview(app: &AppHandle, state: &PlacementState) {
-    let saved = paths::data_root(app)
+pub(crate) fn load_preview(state: &PlacementState) {
+    let saved = paths::data_root()
         .and_then(|root| storage::read_preview_window_state_for_setup(&root))
         .map(|value| value.and_then(|value| serde_json::from_value(value).ok()));
     match saved {
@@ -174,12 +174,12 @@ fn warn(message: &str, error: impl ToString) {
     );
 }
 
-pub(crate) fn restore(app: &AppHandle, window: &Window<Wry>, state: &PlacementState) {
+pub(crate) fn restore(window: &Window<Wry>, state: &PlacementState) {
     let fallback = current_rectangle(window).ok().map(|normal| Placement {
         normal,
         maximized: false,
     });
-    let saved = paths::data_root(app)
+    let saved = paths::data_root()
         .and_then(|root| storage::read_window_state_for_setup(&root))
         .map(|value| value.and_then(|value| serde_json::from_value(value).ok()));
     let saved = match saved {
@@ -396,13 +396,13 @@ pub(crate) fn on_window_event(
     }
 }
 
-pub(crate) fn save(app: &AppHandle, state: &PlacementState) {
+pub(crate) fn save(state: &PlacementState) {
     let Some(placement) = state_value(state) else {
         return;
     };
     let result = serde_json::to_value(placement)
         .map_err(|error| error.to_string())
-        .and_then(|value| storage::save_window_state(app, &value));
+        .and_then(|value| storage::save_window_state(&value));
     if let Err(error) = result {
         warn("window placement could not be saved", error);
     } else {
@@ -412,13 +412,13 @@ pub(crate) fn save(app: &AppHandle, state: &PlacementState) {
     }
 }
 
-pub(crate) fn save_preview(app: &AppHandle, state: &PlacementState) {
+pub(crate) fn save_preview(state: &PlacementState) {
     let Some(placement) = state_value(state) else {
         return;
     };
     let result = serde_json::to_value(placement)
         .map_err(|error| error.to_string())
-        .and_then(|value| storage::save_preview_window_state(app, &value));
+        .and_then(|value| storage::save_preview_window_state(&value));
     if let Err(error) = result {
         warn("Preview window placement could not be saved", error);
     } else {

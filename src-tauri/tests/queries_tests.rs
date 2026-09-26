@@ -64,7 +64,7 @@ fn section_items(
 ) -> Vec<queries::SectionItem> {
     queries::section_window(
         conn,
-        kind,
+        serde_json::from_value(serde_json::json!(kind)).expect("a section kind"),
         month,
         display_tz,
         sort(queries::SectionSortOrder::Time, false),
@@ -122,7 +122,7 @@ fn section_window_returns_only_the_requested_ordered_rows() {
 
     let window = queries::section_window(
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
@@ -150,7 +150,7 @@ fn section_window_rejects_unbounded_requests() {
     for limit in [0, queries::MAX_SECTION_WINDOW_ITEMS + 1] {
         let error = queries::section_window(
             &conn,
-            "image",
+            onecopy_lib::queries::SectionKind::Image,
             "undated",
             Tz::UTC,
             sort(queries::SectionSortOrder::Time, false),
@@ -187,7 +187,7 @@ fn section_window_orders_descending_primary_keys_without_reversing_ties() {
 
     let window = queries::section_window(
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Resolution, true),
@@ -234,7 +234,7 @@ fn other_section_window_combines_hashed_and_unhashed_items() {
 
     let window = queries::section_window(
         &conn,
-        "other",
+        onecopy_lib::queries::SectionKind::Other,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
@@ -286,7 +286,7 @@ fn section_reconciliation_preserves_selection_and_recovers_forward() {
 
     let result = queries::reconcile_section(
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
@@ -338,7 +338,7 @@ fn section_reconciliation_chooses_the_nearest_surviving_selection_outside_contex
 
     let result = queries::reconcile_section(
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
@@ -400,7 +400,7 @@ fn section_reconciliation_recovers_the_next_survivor_after_a_large_prior_removal
 
     let result = queries::reconcile_section(
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
@@ -453,7 +453,7 @@ fn section_reconciliation_prefers_a_selected_previous_survivor_over_an_unselecte
 
     let result = queries::reconcile_section(
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
@@ -488,7 +488,7 @@ fn explicit_section_range_returns_only_requested_positions() {
     }
     let range = queries::section_range(
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
@@ -1084,7 +1084,7 @@ fn section_dirs_matches_the_directories_of_section_items() {
         expected.sort();
         expected.dedup();
 
-        let mut dirs = queries::section_dirs(&conn, "image", month, tz).unwrap();
+        let mut dirs = queries::section_dirs(&conn, onecopy_lib::queries::SectionKind::Image, month, tz).unwrap();
         dirs.sort();
         dirs.dedup();
         assert_eq!(dirs, expected, "{month}: the rescan must walk what the section shows");
@@ -1118,7 +1118,7 @@ fn local_month_queries_agree_across_midnight_gaps_overlaps_and_fractional_offset
         for (month, expected) in [(previous, vec!["before"]), (current, vec!["start", "after"])] {
             let items = section_items(&conn, "image", month, zone);
             assert_eq!(items.iter().map(|item| item.hash.as_deref().unwrap()).collect::<Vec<_>>(), expected, "{zone} {month}");
-            let mut dirs = queries::section_dirs(&conn, "image", month, zone).unwrap();
+            let mut dirs = queries::section_dirs(&conn, onecopy_lib::queries::SectionKind::Image, month, zone).unwrap();
             dirs.sort();
             let mut expected_dirs = expected.iter().map(|hash| format!("/{hash}")).collect::<Vec<_>>();
             expected_dirs.sort();
@@ -1232,11 +1232,11 @@ fn section_dirs_cover_hashed_and_unhashed_other_files_when_dated_or_undated() {
     .unwrap();
 
     assert_eq!(
-        queries::section_dirs(&conn, "other", "2019-07", chrono_tz::UTC).unwrap(),
+        queries::section_dirs(&conn, onecopy_lib::queries::SectionKind::Other, "2019-07", chrono_tz::UTC).unwrap(),
         vec!["/hashed".to_string(), "/unhashed".to_string()]
     );
     assert_eq!(
-        queries::section_dirs(&conn, "other", "undated", chrono_tz::UTC).unwrap(),
+        queries::section_dirs(&conn, onecopy_lib::queries::SectionKind::Other, "undated", chrono_tz::UTC).unwrap(),
         vec![
             "/hashed-undated".to_string(),
             "/unhashed-undated".to_string()

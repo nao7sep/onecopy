@@ -213,12 +213,12 @@ fn remember_active(record: NotificationRecord) {
     }
 }
 
-fn record_delivery_failure(app: &AppHandle, event: &str, error: &str) -> Result<(), String> {
+fn record_delivery_failure(event: &str, error: &str) -> Result<(), String> {
     crate::logging::error(
         "notification event delivery failed",
         json!({ "event": event, "error": { "message": error } }),
     );
-    let root = crate::paths::data_root(app)?;
+    let root = crate::paths::data_root()?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let fallback = NotificationRequest {
         kind: "event-delivery-failed".to_string(),
@@ -234,23 +234,22 @@ fn record_delivery_failure(app: &AppHandle, event: &str, error: &str) -> Result<
 }
 
 pub fn publish(app: &AppHandle, request: NotificationRequest) -> Result<NotificationRecord, String> {
-    let root = crate::paths::data_root(app)?;
+    let root = crate::paths::data_root()?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let record = record_recent(&conn, &request)?;
     remember_active(record.clone());
     if let Err(message) =
         crate::failure_runtime::emit_checked(app, "notification://published", &record)
     {
-        record_delivery_failure(app, "notification://published", &message)?;
+        record_delivery_failure("notification://published", &message)?;
     }
     Ok(record)
 }
 
 pub fn record_history(
-    app: &AppHandle,
     request: NotificationRequest,
 ) -> Result<NotificationRecord, String> {
-    let root = crate::paths::data_root(app)?;
+    let root = crate::paths::data_root()?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     record_recent(&conn, &request)
 }

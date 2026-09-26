@@ -561,7 +561,7 @@ pub(crate) fn priority_candidates(
     capabilities: WorkCapabilities,
     selected: Option<&str>,
     visible: &[String],
-    section: Option<(&str, Option<i64>, Option<i64>)>,
+    section: Option<(crate::queries::SectionKind, Option<i64>, Option<i64>)>,
     limit: usize,
 ) -> Result<Vec<String>, String> {
     if limit == 0 {
@@ -604,9 +604,10 @@ pub(crate) fn priority_candidates(
     let Some((kind, start_ms, end_ms)) = section else {
         return Ok(hashes);
     };
-    if hashes.len() >= limit || !matches!(kind, "image" | "video" | "other") {
+    if hashes.len() >= limit {
         return Ok(hashes);
     }
+    let kind = kind.as_str();
     let time_clause = if start_ms.is_some() {
         "AND l.resolved_utc_ms >= ?2 AND l.resolved_utc_ms < ?3"
     } else {
@@ -1371,10 +1372,10 @@ pub fn record_transcript_replacement_failure(
 mod transcript_replacement_tests;
 
 /// An explicit attempt boundary, not a query side effect or an Issues action.
-pub enum FailedOutputScope<'a> {
+pub enum FailedOutputScope {
     Library,
     Section {
-        kind: &'a str,
+        kind: crate::queries::SectionKind,
         bounds: Option<(i64, i64)>,
     },
 }
@@ -1383,7 +1384,7 @@ pub enum FailedOutputScope<'a> {
 /// feature policy, and diagnostic records are deliberately untouched.
 pub fn reset_failed_outputs(
     conn: &Connection,
-    scope: FailedOutputScope<'_>,
+    scope: FailedOutputScope,
 ) -> Result<u64, String> {
     let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
     let count = reset_failed_outputs_in_transaction(&transaction, scope)?;
@@ -1393,15 +1394,12 @@ pub fn reset_failed_outputs(
 
 pub(crate) fn reset_failed_outputs_in_transaction(
     conn: &Connection,
-    scope: FailedOutputScope<'_>,
+    scope: FailedOutputScope,
 ) -> Result<u64, String> {
     let (membership, values) = match scope {
         FailedOutputScope::Library => (String::new(), Vec::new()),
         FailedOutputScope::Section { kind, bounds } => {
-            if !matches!(kind, "image" | "video" | "other") {
-                return Err(format!("bad section kind: {kind}"));
-            }
-            let mut values = vec![rusqlite::types::Value::Text(kind.to_string())];
+            let mut values = vec![rusqlite::types::Value::Text(kind.as_str().to_string())];
             let dates = match bounds {
                 Some((start, end)) if start < end => {
                     values.extend([start.into(), end.into()]);

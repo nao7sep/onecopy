@@ -80,7 +80,7 @@ fn section_recheck_reopens_both_stages_and_success_clears_the_condition() {
     std::fs::write(&path, b"data").unwrap();
     assert_eq!(scanner::hash_pending(&conn, &cache).unwrap().full_hashed, 0);
     assert_eq!(scanner::extract_pending(&conn).unwrap().extracted, 0);
-    assert_eq!(attempts::reset_section(&conn, "image", None).unwrap(), 1);
+    assert_eq!(attempts::reset_section(&conn, onecopy_lib::queries::SectionKind::Image, None).unwrap(), 1);
     assert!(scanner::pending_index_work_exists(&conn).unwrap());
     assert_eq!(scanner::hash_pending(&conn, &cache).unwrap().full_hashed, 1);
     assert_eq!(scanner::extract_pending(&conn).unwrap().extracted, 1);
@@ -124,7 +124,7 @@ fn recheck_scope_does_not_reset_a_neighboring_kind_or_month_in_the_same_folder()
          VALUES ('/other.jpg', '/', 'other.jpg', 'image', 200, 1, 1),
                 ('/movie.mp4', '/', 'movie.mp4', 'video', NULL, 1, 1);"
     ).unwrap();
-    assert_eq!(attempts::reset_section(&conn, "image", None).unwrap(), 1);
+    assert_eq!(attempts::reset_section(&conn, onecopy_lib::queries::SectionKind::Image, None).unwrap(), 1);
     assert_eq!(
         conn.query_row("SELECT SUM(hash_attempt_failed) FROM paths", [], |row| row
             .get::<_, i64>(
@@ -134,11 +134,11 @@ fn recheck_scope_does_not_reset_a_neighboring_kind_or_month_in_the_same_folder()
         2
     );
     assert_eq!(
-        attempts::reset_section(&conn, "image", Some((100, 200))).unwrap(),
+        attempts::reset_section(&conn, onecopy_lib::queries::SectionKind::Image, Some((100, 200))).unwrap(),
         0
     );
     assert_eq!(
-        attempts::reset_section(&conn, "image", Some((200, 300))).unwrap(),
+        attempts::reset_section(&conn, onecopy_lib::queries::SectionKind::Image, Some((200, 300))).unwrap(),
         1
     );
 }
@@ -153,9 +153,9 @@ fn a_companions_failed_metadata_follows_its_main_files_section() {
          INSERT INTO paths (abs_path, dir_path, file_name, kind, metadata_attempt_failed)
          VALUES ('/unpaired.raw', '/', 'unpaired.raw', 'companion', 1);"
     ).unwrap();
-    assert_eq!(attempts::reset_section(&conn, "image", None).unwrap(), 0);
+    assert_eq!(attempts::reset_section(&conn, onecopy_lib::queries::SectionKind::Image, None).unwrap(), 0);
     assert_eq!(
-        attempts::reset_section(&conn, "image", Some((200, 300))).unwrap(),
+        attempts::reset_section(&conn, onecopy_lib::queries::SectionKind::Image, Some((200, 300))).unwrap(),
         1
     );
     assert_eq!(

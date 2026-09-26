@@ -43,8 +43,9 @@ pub(crate) fn serve_original(
         );
         not_found()
     };
-    let Some(data_root) = crate::DATA_ROOT.get() else {
-        return warn_404("data root unset", String::new());
+    let data_root = match crate::paths::data_root() {
+        Ok(root) => root,
+        Err(error) => return warn_404(&error, String::new()),
     };
     let key = request.uri().path().trim_start_matches('/');
     if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
@@ -57,12 +58,9 @@ pub(crate) fn serve_original(
         Ok(conn) => conn,
         Err(error) => return warn_404("index open failed", error),
     };
-    let path = match key.strip_prefix("path-") {
-        Some(id) => match id.parse::<i64>() {
-            Ok(id) => crate::indexed_file::live_path(&conn, None, Some(id)),
-            Err(_) => return not_found(),
-        },
-        None => crate::indexed_file::live_path(&conn, Some(key), None),
+    let path = match crate::indexed_file::parse_item_key(key) {
+        Some((hash, path_id)) => crate::indexed_file::live_path(&conn, hash, path_id),
+        None => return not_found(),
     };
     let path = match path {
         Ok(path) => path,
@@ -145,7 +143,7 @@ pub(crate) fn cache_control(key: &str) -> &'static str {
 pub(crate) fn serve_cache(
     request: &tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
-    let Some(root) = crate::cache_root() else {
+    let Ok(root) = crate::paths::cache_root() else {
         return not_found();
     };
     let cache = crate::preview::CachePaths::new(root);

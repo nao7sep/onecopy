@@ -9,6 +9,24 @@ use std::path::PathBuf;
 
 use rusqlite::Connection;
 
+/// The one spelling of a logical item's key across the boundary: its content
+/// hash, or `path-<id>` for an item without one. Webviews match media-use
+/// release keys against their players' keys in this spelling.
+pub fn item_key(hash: Option<&str>, path_id: i64) -> String {
+    hash.map_or_else(|| format!("{PATH_KEY_PREFIX}{path_id}"), str::to_owned)
+}
+
+/// The item a key names: `(hash, path id)`, exactly one of them set; `None`
+/// when a `path-` key does not carry a number.
+pub fn parse_item_key(key: &str) -> Option<(Option<&str>, Option<i64>)> {
+    match key.strip_prefix(PATH_KEY_PREFIX) {
+        Some(id) => id.parse().ok().map(|id| (None, Some(id))),
+        None => Some((Some(key), None)),
+    }
+}
+
+const PATH_KEY_PREFIX: &str = "path-";
+
 pub fn live_path(
     conn: &Connection,
     hash: Option<&str>,

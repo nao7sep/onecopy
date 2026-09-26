@@ -707,18 +707,15 @@ pub(crate) fn progress_emitter(
     event: &'static str,
     next_sequence: fn() -> u64,
 ) -> impl Fn(crate::scanner::ScanProgress) {
-    let last_phase = Cell::new(None::<crate::scanner::ScanPhase>);
-    let last_emit = Cell::new(Instant::now() - Duration::from_secs(1));
+    let throttle = std::cell::RefCell::new(
+        crate::progress_throttle::ProgressThrottle::<crate::scanner::ScanPhase>::default(),
+    );
     move |progress: crate::scanner::ScanProgress| {
-        let now = Instant::now();
-        let phase_changed = last_phase.get() != Some(progress.phase);
-        let completed = progress.done == progress.total;
-        if phase_changed
-            || completed
-            || now.duration_since(last_emit.get()) >= Duration::from_millis(125)
-        {
-            last_phase.set(Some(progress.phase));
-            last_emit.set(now);
+        if throttle.borrow_mut().admit(
+            progress.phase,
+            progress.done == progress.total,
+            Instant::now(),
+        ) {
             crate::failure_runtime::emit_or_record(
                 &handle,
                 event,
@@ -728,6 +725,122 @@ pub(crate) fn progress_emitter(
                 }),
             );
         }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub(crate) enum LibrarySettingsOutcome {
+    Applied { resolved: u64 },
+    Owed,
+}
+
+/// Publishes Settings-owned index projections. Visibility uses saved facts;
+/// only a changed date/pairing policy recomputes those projections. The
+/// derived-work coordinator remains the sole owner of preparation and
+/// enrichment. Busy: the saved settings stay owed in the index, and releasing
+/// the admission wakes the file-information owner that applies them.
+pub(crate) fn apply_library_settings(app: &AppHandle) -> Result<LibrarySettingsOutcome, String> {
+    let applied = try_foreground(app, || {
+        // A source walk parked behind this apply walks again with the saved
+        // configuration instead of finishing with the old one.
+        restart_source_walks();
+        let data_root = crate::paths::data_root()?;
+        let config = crate::storage::read_config_for_setup(&data_root)?;
+        let settings = crate::scanner::settings_from_config(
+            config.as_ref(),
+            &data_root,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        let visibility =
+            crate::visibility::Policy::from_config(config.as_ref().unwrap_or(&serde_json::json!({})))?;
+        let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+        let resolved = crate::library_settings::apply(&conn, &settings, &visibility, &|_| {})?;
+        crate::derived_work::wake();
+        Ok(resolved)
+    })?;
+    Ok(match applied {
+        Some(resolved) => LibrarySettingsOutcome::Applied { resolved },
+        None => LibrarySettingsOutcome::Owed,
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub(crate) enum RescanSectionOutcome {
+    Completed { changed: u64 },
+    Cancelled,
+}
+
+impl RescanSectionOutcome {
+    pub(crate) fn log_fields(&self) -> serde_json::Value {
+        match self {
+            Self::Completed { changed } => {
+                serde_json::json!({ "status": "completed", "changed": changed })
+            }
+            Self::Cancelled => serde_json::json!({ "status": "cancelled" }),
+        }
+    }
+}
+
+/// Scoped rescan: re-stats exactly the directories that contributed files to
+/// one section (never the whole roots), then runs the pending pipeline tail.
+/// The full per-root walk remains the Scan button's escape hatch.
+pub(crate) fn recheck_section(
+    app: &AppHandle,
+    kind: crate::queries::SectionKind,
+    month: &str,
+    timezone: chrono_tz::Tz,
+) -> Result<RescanSectionOutcome, String> {
+    let result = run_section(app, || {
+        let data_root = crate::paths::data_root()?;
+        let config = crate::storage::read_config_for_setup(&data_root)?;
+        let settings = crate::scanner::settings_from_config(
+            config.as_ref(),
+            &data_root,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+        let dirs = crate::queries::section_dirs(&conn, kind, month, timezone)?;
+        let bounds = crate::queries::month_bounds(month, timezone)?;
+        let reopened = crate::attempt_boundaries::recheck_section(&conn, kind, bounds)?;
+        if reopened > 0 {
+            // The index claim prevents automatic execution until this
+            // admitted recheck releases it, even if later stat fails.
+            crate::derived_work::wake();
+        }
+        crate::scanner::with_scoped_index_repair(&conn, &dirs, || {
+            let mut changed = 0u64;
+            for dir in &dirs {
+                changed += crate::watcher::restat_dir(
+                    &conn,
+                    std::path::Path::new(dir),
+                    &settings.lists,
+                    &settings.source_dirs,
+                    &data_root,
+                )?;
+            }
+            // Finish any interrupted index checkpoints too. Derived media is
+            // woken after the index tail instead of being smuggled into the
+            // rescan.
+            if changed > 0 || crate::scanner::pending_index_work_exists(&conn)? {
+                let mut summary = crate::scanner::ScanSummary::default();
+                crate::scanner::run_index_tail_for_dirs(
+                    &conn,
+                    &settings,
+                    &dirs,
+                    &|_| {},
+                    &mut summary,
+                )?;
+                crate::derived_work::wake();
+            }
+            Ok(changed)
+        })
+    });
+    match result {
+        Ok(changed) => Ok(RescanSectionOutcome::Completed { changed }),
+        Err(error) if error == crate::scanner::CANCELLED => Ok(RescanSectionOutcome::Cancelled),
+        Err(error) => Err(error),
     }
 }
 

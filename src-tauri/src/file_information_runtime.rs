@@ -65,6 +65,13 @@ pub fn running() -> bool {
     RUNNING.load(Ordering::SeqCst)
 }
 
+/// The launch source decision reached its terminal boundary: file
+/// information completion may run, and the automatic media queue opens.
+pub fn admit_background_completion(app: AppHandle) {
+    wake(app);
+    crate::derived_work::admit_automatic();
+}
+
 pub fn wake(app: AppHandle) {
     if crate::app_lifecycle::shutting_down() {
         REQUESTED.store(false, Ordering::SeqCst);
@@ -240,7 +247,7 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
         return Ok(None);
     }
     REQUESTED.store(false, Ordering::SeqCst);
-    let data_root = crate::paths::data_root(app)?;
+    let data_root = crate::paths::data_root()?;
     let config = crate::storage::read_config_for_setup(&data_root)?;
     let settings = crate::scanner::settings_from_config(
         config.as_ref(),
@@ -286,7 +293,7 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
     if crate::app_lifecycle::shutting_down() {
         return Ok(None);
     }
-    crate::failure_runtime::clear(app, "file-information-failed", None)?;
+    crate::failure_runtime::clear("file-information-failed", None)?;
     Ok(summary)
 }
 

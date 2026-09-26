@@ -47,7 +47,7 @@ fn owns_generation(generation: u64) -> bool {
 }
 
 pub fn restart_from_config(app: tauri::AppHandle) -> Result<(), String> {
-    let data_root = crate::paths::data_root(&app)?;
+    let data_root = crate::paths::data_root()?;
     let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
     start(app, source_dirs).map(|_| ())
 }
@@ -251,7 +251,7 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) -> Result<bool, St
 fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Result<(), String> {
     // Resolved once: a source containing the data root must never make the
     // watcher index or churn the app's own storage (R6-02).
-    let data_root = crate::paths::data_root(&app)?;
+    let data_root = crate::paths::data_root()?;
     let (tx, rx) = mpsc::sync_channel::<notify::Result<notify::Event>>(EVENT_QUEUE_CAPACITY);
     // A full queue means ingestion cannot keep up (typically an `INDEXING`
     // holder running for a long time, W-B1). `try_send` never blocks the
@@ -290,7 +290,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     if watched == 0 {
         return Err("none of the configured source folders could be watched".to_string());
     }
-    crate::failure_runtime::clear(&app, "watcher-failed", None)?;
+    crate::failure_runtime::clear("watcher-failed", None)?;
     logging::info("watcher started", json!({ "roots": source_dirs.len() }));
 
     let mut dirty: HashSet<PathBuf> = HashSet::new();
@@ -355,7 +355,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                 // watcher failure and asks for a recheck instead of clearing it.
                 match pass.failure() {
                     Some(failure) => report_failure(&app, &failure),
-                    None => crate::failure_runtime::clear(&app, "watcher-failed", None)?,
+                    None => crate::failure_runtime::clear("watcher-failed", None)?,
                 }
                 if pass.changed == 0 {
                     continue;
@@ -486,7 +486,7 @@ fn record_root_condition(
     if let Some(message) = error {
         crate::failure_runtime::report(app, "watcher-root-failed", Some(root), message)
     } else {
-        crate::failure_runtime::clear(app, "watcher-root-failed", Some(root))
+        crate::failure_runtime::clear("watcher-root-failed", Some(root))
     }
 }
 
@@ -610,7 +610,7 @@ fn process_dirty_claimed(
     generation: u64,
 ) -> Result<WatchPass, String> {
     let _awake = crate::sleep_prevention::begin_work();
-    let data_root = crate::paths::data_root(app)?;
+    let data_root = crate::paths::data_root()?;
     // Config only, through the same unserialized-reader path every other
     // background worker uses. `storage::load_app_data` drains the pending
     // quarantine list for the frontend's `load_from_root` to publish; the

@@ -98,7 +98,7 @@ fn start_requested(app: AppHandle, request: Request) -> Result<bool, String> {
         })
         .map_err(|error| {
             finish(ResultState::Failed);
-            crate::admit_background_completion(app.clone());
+            crate::file_information_runtime::admit_background_completion(app.clone());
             format!("could not start source-folder check: {error}")
         })?;
     workers.push(worker);
@@ -107,7 +107,7 @@ fn start_requested(app: AppHandle, request: Request) -> Result<bool, String> {
     if release.send(()).is_err() {
         finish(ResultState::Failed);
         emit_state(&app);
-        crate::admit_background_completion(app);
+        crate::file_information_runtime::admit_background_completion(app);
         return Err("source-folder worker could not leave its start gate".to_string());
     }
     Ok(true)
@@ -128,7 +128,7 @@ fn worker_entry(app: AppHandle) {
         fail(&app, &error);
         emit_state(&app);
         emit_done(&app, json!({ "error": error }));
-        crate::admit_background_completion(app);
+        crate::file_information_runtime::admit_background_completion(app);
     }
 }
 
@@ -224,11 +224,11 @@ fn worker(app: AppHandle) {
     // A stopped or failed walk may still have committed discoveries before
     // its last safe boundary. Completion owns those durable rows regardless
     // of how the source check ended.
-    crate::admit_background_completion(app);
+    crate::file_information_runtime::admit_background_completion(app);
 }
 
 fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
-    let data_root = crate::paths::data_root(app)?;
+    let data_root = crate::paths::data_root()?;
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
     let progress = crate::scan_runtime::progress_emitter(
         app.clone(),
@@ -278,7 +278,7 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     if crate::app_lifecycle::shutting_down() {
         return Err(crate::scanner::CANCELLED.to_string());
     }
-    crate::failure_runtime::clear(app, "source-check-failed", None)?;
+    crate::failure_runtime::clear("source-check-failed", None)?;
     Ok(summary)
 }
 
@@ -297,7 +297,7 @@ pub fn stop(app: &AppHandle) -> bool {
     };
     if stopped {
         emit_state(app);
-        crate::admit_background_completion(app.clone());
+        crate::file_information_runtime::admit_background_completion(app.clone());
     }
     stopped
 }

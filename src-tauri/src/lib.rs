@@ -18,6 +18,7 @@ pub mod binaries_manager;
 pub mod derived_runtime;
 pub mod derived_state;
 pub mod derived_work;
+mod destinations;
 pub mod work_priority;
 pub mod extensions;
 pub mod face;
@@ -50,6 +51,7 @@ pub mod operations;
 pub mod path_identity;
 pub mod paths;
 pub mod presentation_runtime;
+pub mod progress_throttle;
 pub mod preview;
 pub mod queries;
 pub mod resolution;
@@ -61,6 +63,7 @@ pub mod source_check_runtime;
 pub mod source_check_state;
 pub mod startup;
 pub mod storage;
+mod store_patch;
 pub mod subprocess;
 pub mod text_preview;
 pub mod theme;
@@ -73,39 +76,6 @@ pub mod volume;
 pub mod watcher;
 pub mod winpath;
 pub mod window_placement;
-
-// Records the panic payload, location, and (when RUST_BACKTRACE is set) the
-// backtrace, flushes, then defers to the previous hook so the process still
-// aborts and prints as usual.
-fn install_panic_hook() {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            (*s).to_string()
-        } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "non-string panic payload".to_string()
-        };
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
-        let backtrace = std::backtrace::Backtrace::capture();
-        logging::error(
-            "panic",
-            json!({
-                "error": {
-                    "message": payload,
-                    "location": location,
-                    "backtrace": format!("{backtrace}"),
-                }
-            }),
-        );
-        // The error line is already on disk (the logger is unbuffered); defer to
-        // the previous hook so the process still aborts and prints as usual.
-        default_hook(info);
-    }));
-}
 
 // --- Commands ---
 //
@@ -164,7 +134,6 @@ enum BootstrapData {
 
 #[tauri::command]
 async fn load_app_data(
-    app: AppHandle,
     startup: tauri::State<'_, startup::StartupGate>,
 ) -> Result<BootstrapData, String> {
     if let Some(failure) = startup.failure() {
@@ -175,7 +144,7 @@ async fn load_app_data(
             "load_app_data",
             json!({}),
             || {
-                let mut data = storage::load_app_data(&app)?;
+                let mut data = storage::load_app_data()?;
                 data.debug_enabled = logging::debug_enabled();
                 Ok(BootstrapData::Ready { data })
             },
@@ -192,20 +161,6 @@ async fn load_app_data(
         )
     })
     .await
-}
-
-/// A store can also be quarantined mid-session — a patch reads the file it is
-/// about to merge into — where there is no load result to ride home on. The
-/// patch hands its own outcome here, and it is pushed to the same reporting
-/// surface, so the rule ("every quarantine reaches the user") has no hole.
-fn report_quarantine(app: &AppHandle, record: Option<storage::QuarantineRecord>) {
-    if let Some(record) = record {
-        failure_runtime::emit_or_record(
-            app,
-            "storage://quarantined",
-            json!({ "quarantines": [record] }),
-        );
-    }
 }
 
 #[tauri::command]
@@ -226,7 +181,7 @@ async fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
             json!({}),
             || {
                 let mut preferences =
-                    storage::read_appearance_preferences(&paths::data_root(&app)?)?;
+                    storage::read_appearance_preferences(&paths::data_root()?)?;
                 // The language the core settled on at launch, plus what the computer
                 // asked for, so a window paints its first text in the right language
                 // and formats dates the computer's way when they share a language.
@@ -244,131 +199,15 @@ async fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
     .await
 }
 
-// Config and state saves are PATCHES merged core-side: the core holds the
-// file, so it is the one owner of the read-modify-write, and no frontend
-// store's stale cached copy can blind-overwrite another's save. Returns the
-// merged document so the caller can publish it without a second read.
+// Config and state saves are PATCHES merged core-side; see `store_patch`.
 #[tauri::command]
-async fn patch_config(
-    app: AppHandle,
-    mut patch: Value,
-    report_failure: Option<bool>,
-) -> Result<Value, String> {
-    dispatch(move || {
-    let result = logging::boundary(
-        "patch_config",
-        json!({}),
-        || {
-            let previous_source_dirs = if patch.get("sourceDirs").is_some() {
-                let data_root = paths::data_root(&app)?;
-                Some(storage::load_config_source_dirs(&data_root)?)
-            } else {
-                None
-            };
-            if let Some(value) = patch.get_mut("defaultTimezone") {
-                let name = value
-                    .as_str()
-                    .ok_or("Default timezone must be an IANA timezone name")?;
-                *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
-            }
-            ai_acceleration::validate_patch(&patch)?;
-            visibility::Policy::from_config(&patch)?;
-            let outcome = storage::patch_config(&app, &patch)?;
-            report_quarantine(&app, outcome.quarantined);
-            // The theme is applied natively to every window as part of the
-            // save; pages follow it through prefers-color-scheme.
-            if patch.get("theme").is_some() {
-                if let Err(error) =
-                    theme::apply_everywhere(&app, theme::config_window_theme(&outcome.merged))
-                {
-                    logging::warn(
-                        "saved theme could not be applied to every window",
-                        json!({ "error": { "message": error } }),
-                    );
-                }
-            }
-            // A saved language reaches the native menu here; the windows follow
-            // through the appearance invalidation below. The items macOS draws
-            // itself keep the language AppKit settled on at launch.
-            if patch.get("language").is_some() {
-                let state = app.state::<i18n::LanguageState>();
-                let resolved = i18n::normalize_preference(
-                    outcome.merged.get("language").and_then(Value::as_str),
-                )
-                .unwrap_or(state.system_language);
-                state.set_current(resolved);
-                if let Err(error) = menu::build(&app, resolved).and_then(|menu| app.set_menu(menu)) {
-                    logging::warn(
-                        "saved language could not be applied to the native menu",
-                        json!({ "error": { "message": error.to_string() } }),
-                    );
-                }
-            }
-            // Invalidation, not a potentially stale snapshot from a racing save.
-            failure_runtime::emit_or_record(&app, "appearance://changed", json!({}));
-            let current_source_dirs = outcome
-                .merged
-                .get("sourceDirs")
-                .and_then(Value::as_array)
-                .map(|dirs| {
-                    dirs.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if previous_source_dirs
-                .as_ref()
-                .is_some_and(|previous| previous != &current_source_dirs)
-            {
-                if let Err(error) = watcher::start(app.clone(), current_source_dirs) {
-                    scan_runtime::record_runtime_failure(&app, "watcher-failed", &error);
-                }
-            }
-            Ok(outcome.merged)
-        },
-        |_| json!({}),
-    );
-    if report_failure.unwrap_or(true) {
-        if let Err(error) = &result {
-            let _ = failure_runtime::report(&app, "config-save-failed", None, error);
-        }
-    }
-    result
-    })
-    .await
+async fn patch_config(app: AppHandle, patch: Value, report_failure: Option<bool>) -> Result<Value, String> {
+    dispatch(move || store_patch::patch_config(&app, patch, report_failure.unwrap_or(true))).await
 }
 
 #[tauri::command]
 async fn patch_state(app: AppHandle, patch: Value, report_failure: Option<bool>) -> Result<Value, String> {
-    dispatch(move || {
-        let result = logging::boundary(
-            "patch_state",
-            json!({}),
-            || {
-                let outcome = storage::patch_state(&app, &patch)?;
-                report_quarantine(&app, outcome.quarantined);
-                Ok(outcome.merged)
-            },
-            |_| json!({}),
-        );
-        if report_failure.unwrap_or(true) {
-            if let Err(error) = &result {
-                let _ = failure_runtime::report(&app, "state-save-failed", None, error);
-            }
-        }
-        result
-    })
-    .await
-}
-
-// The storage root, for the mediafile protocol's hash→path lookups.
-pub(crate) static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-fn cache_root() -> Option<std::path::PathBuf> {
-    DATA_ROOT
-        .get()
-        .map(|root| root.join(storage::CACHE_DIR_NAME))
+    dispatch(move || store_patch::patch_state(&app, &patch, report_failure.unwrap_or(true))).await
 }
 
 #[tauri::command]
@@ -409,8 +248,7 @@ fn set_file_information_paused(app: AppHandle, paused: bool) {
 
 #[tauri::command]
 fn admit_background_completion(app: AppHandle) {
-    file_information_runtime::wake(app);
-    derived_work::admit_automatic();
+    file_information_runtime::admit_background_completion(app);
 }
 
 #[derive(serde::Serialize)]
@@ -436,94 +274,11 @@ async fn rebuild_library_index(app: AppHandle) -> Result<(), String> {
         logging::boundary(
             "rebuild_library_index",
             json!({}),
-            || {
-                // The mutation claim makes the contract race-free: an active file
-                // operation rejects this command, and no new one can begin while
-                // the reconstructible database facts are being cleared.
-                let _rebuild = mutation_runtime::begin_rebuild(&app)?;
-                scan_runtime::run_foreground(&app, || {
-                    // Rebuild answers busy like other Settings actions when
-                    // derived work does not stop within the foreground deadline.
-                    let deadline = std::time::Instant::now() + scan_runtime::FOREGROUND_DEADLINE;
-                    let _media =
-                        media_use::begin(&app, &[], &|| std::time::Instant::now() >= deadline)
-                            .map_err(|error| {
-                                if error == scanner::CANCELLED {
-                                    scan_runtime::BUSY.to_string()
-                                } else {
-                                    error
-                                }
-                            })?;
-                    scan_runtime::restart_source_walks();
-                    let data_root = paths::data_root(&app)?;
-                    preview::purge_for_rebuild(&preview::CachePaths::new(
-                        data_root.join(storage::CACHE_DIR_NAME),
-                    ))?;
-                    let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                    index_store::clear_reconstructible(&conn)?;
-                    notifications::clear_active(&app)
-                })?;
-                let _ = source_check_runtime::start(app.clone())?;
-                Ok(())
-            },
+            || mutation_runtime::rebuild_index(&app),
             |_| json!({}),
         )
     })
     .await
-}
-
-#[derive(serde::Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct SourceDirsStatus {
-    missing: Vec<String>,
-    substituted: Vec<String>,
-}
-
-// Presence AND identity verification over the configured source dirs: a dir
-// that is not there is missing; a dir whose volume identity differs from the
-// recorded one is substituted (the developer's backup drives share identical
-// trees, so presence alone proves nothing). First sight records the identity
-// — the "when the directory was added" moment as the core observes it. Rows
-// for since-removed dirs are pruned; a volume without a readable identity
-// degrades to presence-only, logged at debug.
-fn verify_source_dirs(app: &AppHandle) -> Result<SourceDirsStatus, String> {
-    let data_root = paths::data_root(app)?;
-    let config = storage::read_config_for_setup(&data_root)?;
-    let settings = scanner::settings_from_config(config.as_ref(), &data_root, 0);
-    let mut status = SourceDirsStatus::default();
-    for dir in &settings.source_dirs {
-        let path = std::path::Path::new(dir);
-        if !path.is_dir() {
-            status.missing.push(dir.clone());
-            continue;
-        }
-        let Some(current) = volume::volume_identity(path) else {
-            logging::debug(
-                "no volume identity readable; presence-only verification",
-                json!({ "dir": dir }),
-            );
-            continue;
-        };
-        match volume::check_identity(&data_root, dir, &current)? {
-            volume::IdentityCheck::FirstSight => logging::info(
-                "source volume identity recorded",
-                json!({ "dir": dir, "identity": current }),
-            ),
-            volume::IdentityCheck::Substituted { recorded } => {
-                logging::warn(
-                    "source volume SUBSTITUTED",
-                    json!({ "dir": dir, "recorded": recorded, "current": current }),
-                );
-                status.substituted.push(dir.clone());
-            }
-            volume::IdentityCheck::Unchanged => {}
-        }
-    }
-
-    // Identities for directories no longer configured are stale — prune.
-    volume::prune_identities(&data_root, &settings.source_dirs)?;
-
-    Ok(status)
 }
 
 // Deletes an ordered logical-item set under one mutation/media boundary. The
@@ -552,18 +307,9 @@ fn mutation_cancel(app: AppHandle, operation_id: u64) -> Result<bool, String> {
     })
 }
 
-fn item_projection_context(
-    data_root: &std::path::Path,
-) -> Result<queries::ItemProjectionContext, String> {
-    Ok(queries::ItemProjectionContext {
-        capabilities: derived_work::work_capabilities(data_root)?,
-    })
-}
-
 #[tauri::command]
 async fn get_section_window(
-    app: AppHandle,
-    kind: String,
+    kind: queries::SectionKind,
     month: String,
     sort: queries::SectionSort,
     start: u64,
@@ -574,17 +320,17 @@ async fn get_section_window(
             "get_section_window",
             json!({ "kind": kind, "month": month, "start": start, "limit": limit }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 queries::section_window(
                     &conn,
-                    &kind,
+                    kind,
                     &month,
-                    display_timezone(),
+                    queries::display_timezone(),
                     sort,
                     start,
                     limit,
-                    item_projection_context(&data_root)?,
+                    derived_work::item_projection(&data_root)?,
                 )
             },
             |window| {
@@ -598,8 +344,7 @@ async fn get_section_window(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn reconcile_section(
-    app: AppHandle,
-    kind: String,
+    kind: queries::SectionKind,
     month: String,
     sort: queries::SectionSort,
     selected: Vec<queries::PositionedSectionIdentity>,
@@ -622,13 +367,13 @@ async fn reconcile_section(
                 "limit": limit,
             }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 queries::reconcile_section(
                     &conn,
-                    &kind,
+                    kind,
                     &month,
-                    display_timezone(),
+                    queries::display_timezone(),
                     sort,
                     &selected,
                     anchor.as_ref(),
@@ -637,7 +382,7 @@ async fn reconcile_section(
                     recovery.as_ref(),
                     select_first,
                     limit,
-                    item_projection_context(&data_root)?,
+                    derived_work::item_projection(&data_root)?,
                 )
             },
             |result| {
@@ -655,8 +400,7 @@ async fn reconcile_section(
 
 #[tauri::command]
 async fn get_section_range(
-    app: AppHandle,
-    kind: String,
+    kind: queries::SectionKind,
     month: String,
     sort: queries::SectionSort,
     start: u64,
@@ -667,9 +411,9 @@ async fn get_section_range(
             "get_section_range",
             json!({ "kind": kind, "month": month, "start": start, "end": end }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                queries::section_range(&conn, &kind, &month, display_timezone(), sort, start, end)
+                queries::section_range(&conn, kind, &month, queries::display_timezone(), sort, start, end)
             },
             |items| json!({ "items": items.len() }),
         )
@@ -679,8 +423,7 @@ async fn get_section_range(
 
 #[tauri::command]
 async fn get_section_family_context(
-    app: AppHandle,
-    kind: String,
+    kind: queries::SectionKind,
     month: String,
     sort: queries::SectionSort,
     member_hashes: Vec<String>,
@@ -690,13 +433,13 @@ async fn get_section_family_context(
             "get_section_family_context",
             json!({ "kind": kind, "month": month, "members": member_hashes.len() }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 queries::section_family_context(
                     &conn,
-                    &kind,
+                    kind,
                     &month,
-                    display_timezone(),
+                    queries::display_timezone(),
                     sort,
                     &member_hashes,
                 )
@@ -710,8 +453,7 @@ async fn get_section_family_context(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn viewer_sequence_start(
-    app: AppHandle,
-    kind: String,
+    kind: queries::SectionKind,
     month: String,
     sort: queries::SectionSort,
     selected: Vec<queries::PositionedSectionIdentity>,
@@ -722,18 +464,18 @@ async fn viewer_sequence_start(
             "viewer_sequence_start",
             json!({ "kind": kind, "month": month, "selected": selected.len() }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 viewer_sequence::start(
                     &data_root,
                     &conn,
-                    &kind,
+                    kind,
                     &month,
-                    display_timezone(),
+                    queries::display_timezone(),
                     sort,
                     selected,
                     &anchor,
-                    item_projection_context(&data_root)?,
+                    derived_work::item_projection(&data_root)?,
                 )
             },
             |snapshot| json!({ "length": snapshot.length, "index": snapshot.index }),
@@ -744,28 +486,24 @@ async fn viewer_sequence_start(
 
 #[tauri::command]
 async fn viewer_sequence_move(
-    app: AppHandle,
     token: String,
     movement: viewer_sequence::Move,
 ) -> Result<viewer_sequence::Snapshot, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-        viewer_sequence::move_current(&token, movement, &conn, item_projection_context(&data_root)?)
+        viewer_sequence::move_current(&token, movement, &conn, derived_work::item_projection(&data_root)?)
     })
     .await
 }
 
 #[tauri::command]
-async fn viewer_sequence_reconcile(
-    app: AppHandle,
-    token: String,
-) -> Result<Option<viewer_sequence::Snapshot>, String> {
+async fn viewer_sequence_reconcile(token: String) -> Result<Option<viewer_sequence::Snapshot>, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         let index_db = data_root.join(storage::INDEX_DB_FILE_NAME);
         let conn = index_store::open(&index_db)?;
-        viewer_sequence::reconcile(&token, &index_db, &conn, item_projection_context(&data_root)?)
+        viewer_sequence::reconcile(&token, &index_db, &conn, derived_work::item_projection(&data_root)?)
     })
     .await
 }
@@ -778,48 +516,35 @@ fn viewer_sequence_close(token: Option<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn comparison_selection_valid(app: AppHandle, hashes: Vec<String>) -> Result<bool, String> {
+async fn comparison_selection_valid(hashes: Vec<String>) -> Result<bool, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
         queries::comparison_selection_valid(&conn, &hashes)
     })
     .await
 }
 
-fn display_timezone() -> chrono_tz::Tz {
-    iana_time_zone::get_timezone()
-        .ok()
-        .and_then(|name| name.parse().ok())
-        .unwrap_or(chrono_tz::UTC)
-}
-
 #[tauri::command]
-async fn get_item_section(
-    app: AppHandle,
-    identity: queries::SectionIdentity,
-) -> Result<Option<queries::SectionLocation>, String> {
+async fn get_item_section(identity: queries::SectionIdentity) -> Result<Option<queries::SectionLocation>, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-        queries::section_for_identity(&conn, &identity, display_timezone())
+        queries::section_for_identity(&conn, &identity, queries::display_timezone())
     })
     .await
 }
 
 #[tauri::command]
-async fn resolve_library_path(
-    app: AppHandle,
-    path: String,
-) -> Result<Option<queries::LibraryTarget>, String> {
+async fn resolve_library_path(path: String) -> Result<Option<queries::LibraryTarget>, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
         queries::resolve_library_path(
             &conn,
             &path,
             &storage::load_config_source_dirs(&data_root)?,
-            display_timezone(),
+            queries::display_timezone(),
         )
     })
     .await
@@ -834,8 +559,8 @@ async fn move_items_out(
     app: AppHandle,
     items: Vec<operations::ItemIdentity>,
     dest_dir: String,
-    mode: String,
-    conflict_policy: Option<String>,
+    mode: operations::MoveOutMode,
+    conflict_policy: Option<operations::DestinationConflictPolicy>,
     plan_token: Option<String>,
 ) -> Result<operations::MoveBatchOutcome, String> {
     dispatch(move || {
@@ -844,145 +569,32 @@ async fn move_items_out(
     .await
 }
 
-// Destination-tree support: immediate subdirectories of one directory (the
-// tree expands lazily; files are never listed — it is a destination panel, not
-// a file manager).
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DirEntry {
-    name: String,
-    path: String,
-    has_children: bool,
-    is_empty: bool,
-}
-
+// Destination-tree support: see `destinations`.
 #[tauri::command]
-async fn list_subdirs(app: AppHandle, path: String) -> Result<Vec<DirEntry>, String> {
-    dispatch(move || {
-        let data_root = paths::data_root(&app)?;
-        let config = storage::read_config_for_setup(&data_root)?;
-        let policy = visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
-        list_subdirs_at(std::path::Path::new(&path), &policy, &data_root)
-    })
-    .await
+async fn list_subdirs(path: String) -> Result<Vec<destinations::DirEntry>, String> {
+    dispatch(move || destinations::list_subdirs(&paths::data_root()?, &path)).await
 }
 
-fn list_subdirs_at(
-    path: &std::path::Path,
-    policy: &visibility::Policy,
-    data_root: &std::path::Path,
-) -> Result<Vec<DirEntry>, String> {
-    if crate::trash::is_trash_path(path) || paths::is_within_data_root(path, data_root) {
-        return Ok(Vec::new());
-    }
-    let mut entries: Vec<DirEntry> = Vec::new();
-    let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
-    for entry in read {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if !is_browsable_destination_child(&entry, policy, data_root)? {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let child_path = entry.path();
-        let (has_children, is_empty) = child_directory_facts(&child_path, policy, data_root)?;
-        entries.push(DirEntry {
-            name,
-            path: child_path.to_string_lossy().to_string(),
-            has_children,
-            is_empty,
-        });
-    }
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(entries)
-}
-
-fn is_browsable_destination_child(
-    entry: &std::fs::DirEntry,
-    policy: &visibility::Policy,
-    data_root: &std::path::Path,
-) -> Result<bool, String> {
-    if trash::is_trash_path(&entry.path())
-        || paths::is_within_data_root(&entry.path(), data_root)
-        || !entry.file_type().map_err(|error| error.to_string())?.is_dir()
-    {
-        return Ok(false);
-    }
-    let metadata = entry.metadata().map_err(|error| error.to_string())?;
-    Ok(policy.visible(&entry.file_name().to_string_lossy(), true, visibility::entry_flags(&entry.path(), &metadata)))
-}
-
-fn child_directory_facts(path: &std::path::Path, policy: &visibility::Policy, data_root: &std::path::Path) -> Result<(bool, bool), String> {
-    let children = std::fs::read_dir(path).map_err(|error| error.to_string())?;
-    let mut is_empty = true;
-    for child in children {
-        let child = child.map_err(|error| error.to_string())?;
-        is_empty = false;
-        if is_browsable_destination_child(&child, policy, data_root)? {
-            return Ok((true, false));
-        }
-    }
-    Ok((false, is_empty))
-}
-
-// EXCEPTION (tests-folder convention): destination listing is a private Tauri
-// command, so its filesystem projection is pinned beside the helper it calls.
-#[cfg(test)]
-// EXCEPTION to tests-folder conventions: exercises the private
-// `list_subdirs_at` behind a Tauri command; promoting it would widen the
-// crate's API only for this test.
-#[path = "../tests/unit/lib/destination_listing_tests.rs"]
-mod destination_listing_tests;
-
-// Creates a subfolder under a tree node. The name must be case-insensitively
-// unique within its directory (storage-path conventions' hard invariant).
 #[tauri::command]
 async fn create_subdir(parent: String, name: String) -> Result<String, String> {
     dispatch(move || {
         logging::boundary(
             "create_subdir",
             json!({ "parent": parent, "name": name }),
-            || {
-                let trimmed = name.trim();
-                // Control characters (a pasted newline is the real case) would
-                // create a directory whose name cannot be typed or read sanely.
-                if trimmed.is_empty()
-                    || trimmed.contains(['/', '\\'])
-                    || trimmed.chars().any(char::is_control)
-                {
-                    return Err(
-                        "folder names must be non-empty, slash-free, and single-line".to_string(),
-                    );
-                }
-                let parent_path = std::path::Path::new(&parent);
-                let lower = trimmed.to_lowercase();
-                let read = std::fs::read_dir(parent_path).map_err(|error| error.to_string())?;
-                for entry in read {
-                    let entry = entry.map_err(|error| error.to_string())?;
-                    if entry.file_name().to_string_lossy().to_lowercase() == lower {
-                        return Err(format!(
-                            "\"{trimmed}\" already exists here (names are case-insensitively unique)"
-                        ));
-                    }
-                }
-                let target = parent_path.join(trimmed);
-                std::fs::create_dir(&target).map_err(|e| e.to_string())?;
-                Ok(target.to_string_lossy().to_string())
-            },
+            || destinations::create_subdir(std::path::Path::new(&parent), &name),
             |path| json!({ "created": path }),
         )
     })
     .await
 }
 
-// Deletes a tree folder ONLY when empty — remove_dir refuses otherwise, which
-// is the entire safety model (empty folders render distinctly in the tree).
 #[tauri::command]
 async fn delete_empty_dir(path: String) -> Result<(), String> {
     dispatch(move || {
         logging::boundary(
             "delete_empty_dir",
             json!({ "path": path }),
-            || std::fs::remove_dir(&path).map_err(|e| e.to_string()),
+            || destinations::delete_empty_dir(std::path::Path::new(&path)),
             |_| json!({}),
         )
     })
@@ -1001,38 +613,14 @@ async fn delete_empty_dir(path: String) -> Result<(), String> {
 async fn reveal_data_subdir(app: AppHandle, name: String) -> Result<(), String> {
     dispatch(move || {
         use tauri_plugin_opener::OpenerExt;
-        let root = paths::data_root(&app)?;
-        let target = ensure_revealable_data_subdir(&root, &name)?;
+        let root = paths::data_root()?;
+        let target = paths::revealable_data_subdir(&root, &name)?;
         app.opener()
             .open_path(target.to_string_lossy(), None::<&str>)
             .map_err(|e| e.to_string())
     })
     .await
 }
-
-fn ensure_revealable_data_subdir(
-    root: &std::path::Path,
-    name: &str,
-) -> Result<std::path::PathBuf, String> {
-    // A vetted set, not a join of caller input: this command must never become
-    // "open any path the webview asks for".
-    let target = match name {
-        "logs" => root.join(paths::LOGS_DIR_NAME),
-        other => return Err(format!("not a revealable folder: {other}")),
-    };
-    std::fs::create_dir_all(&target)
-        .map_err(|error| format!("could not create {}: {error}", target.display()))?;
-    Ok(target)
-}
-
-// EXCEPTION (tests-folder convention): this private Tauri-command path guard
-// is pinned beside the helper that the command calls.
-#[cfg(test)]
-// EXCEPTION to tests-folder conventions: exercises the private
-// `ensure_revealable_data_subdir` behind a Tauri command; promoting it
-// would widen the crate's API only for this test.
-#[path = "../tests/unit/lib/reveal_data_subdir_tests.rs"]
-mod reveal_data_subdir_tests;
 
 // Opens an indexed item in its OS default app (the preview's "Open in player"
 // codec-fallback). The path comes from the INDEX, never from the webview — a
@@ -1052,14 +640,10 @@ async fn open_item_externally(
             json!({ "hash": hash, "pathId": path_id }),
             || {
                 use tauri_plugin_opener::OpenerExt;
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let path = indexed_file::live_path(&conn, hash.as_deref(), path_id)?;
-                let key = hash
-                    .as_ref()
-                    .cloned()
-                    .or_else(|| path_id.map(|id| format!("path-{id}")))
-                    .ok_or_else(|| "item needs exactly one hash or pathId".to_string())?;
+                let key = operations::ItemIdentity { hash, path_id }.key()?;
                 let _media = media_use::begin_external(&app, &[key])?;
                 app.opener()
                     .open_path(path.to_string_lossy(), None::<&str>)
@@ -1087,22 +671,13 @@ async fn text_preview(
             "text_preview",
             json!({ "hash": hash, "pathId": path_id, "encoding": encoding }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let path = indexed_file::live_path(&conn, hash.as_deref(), path_id)?;
-                let config = storage::read_config_for_setup(&data_root)?;
-                let max_bytes = config
-                    .as_ref()
-                    .and_then(|value| value.get("textPreviewMaxBytes"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(text_preview::DEFAULT_MAX_BYTES)
-                    .clamp(1, text_preview::MAX_ALLOWED_BYTES);
-                let fallback = config
-                    .as_ref()
-                    .and_then(|value| value.get("textFallbackEncoding"))
-                    .and_then(Value::as_str)
-                    .unwrap_or(text_preview::DEFAULT_FALLBACK_ENCODING);
-                text_preview::preview_file(&path, max_bytes, fallback, encoding.as_deref())
+                let limits = text_preview::Limits::from_config(
+                    storage::read_config_for_setup(&data_root)?.as_ref(),
+                );
+                text_preview::preview_file(&path, limits.max_bytes, &limits.fallback_encoding, encoding.as_deref())
             },
             |body| match body {
                 text_preview::PreviewBody::Text {
@@ -1149,133 +724,35 @@ fn visibility_capabilities() -> visibility::Capabilities {
     visibility::capabilities()
 }
 
-// Publishes Settings-owned index projections. Visibility uses saved facts;
-// only a changed date/pairing policy recomputes those projections. The
-// derived-work coordinator remains the sole owner of preparation/enrichment.
+// Publishes Settings-owned index projections; see
+// scan_runtime::apply_library_settings.
 #[tauri::command]
-async fn apply_library_settings(app: AppHandle) -> Result<LibrarySettingsOutcome, String> {
+async fn apply_library_settings(app: AppHandle) -> Result<scan_runtime::LibrarySettingsOutcome, String> {
     dispatch(move || {
-    logging::boundary(
-        "apply_library_settings",
-        json!({}),
-        || {
-            let applied = scan_runtime::try_foreground(&app, || {
-                // A source walk parked behind this apply walks again with the
-                // saved configuration instead of finishing with the old one.
-                scan_runtime::restart_source_walks();
-                let data_root = paths::data_root(&app)?;
-                let config = storage::read_config_for_setup(&data_root)?;
-                let settings = scanner::settings_from_config(
-                    config.as_ref(),
-                    &data_root,
-                    chrono::Utc::now().timestamp_millis(),
-                );
-                let visibility =
-                    visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
-                let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                let resolved = library_settings::apply(&conn, &settings, &visibility, &|_| {})?;
-                derived_work::wake();
-                Ok(resolved)
-            })?;
-            // Busy: the saved settings stay owed in the index, and releasing
-            // the admission woke the file-information owner that applies them.
-            Ok(match applied {
-                Some(resolved) => LibrarySettingsOutcome::Applied { resolved },
-                None => LibrarySettingsOutcome::Owed,
-            })
-        },
-        |outcome| json!({ "outcome": outcome }),
-    )
+        logging::boundary(
+            "apply_library_settings",
+            json!({}),
+            || scan_runtime::apply_library_settings(&app),
+            |outcome| json!({ "outcome": outcome }),
+        )
     })
     .await
 }
 
-#[derive(serde::Serialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
-enum LibrarySettingsOutcome {
-    Applied { resolved: u64 },
-    Owed,
-}
-
-// Scoped rescan: re-stats exactly the directories that contributed files to
-// one section (never the whole roots), then runs the pending pipeline tail.
-// The full per-root walk remains the Scan button's escape hatch.
-#[derive(serde::Serialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
-enum RescanSectionOutcome {
-    Completed { changed: u64 },
-    Cancelled,
-}
-
+// Scoped rescan of one section; see scan_runtime::recheck_section.
 #[tauri::command]
 async fn rescan_section(
     app: AppHandle,
-    kind: String,
+    kind: queries::SectionKind,
     month: String,
-) -> Result<RescanSectionOutcome, String> {
+) -> Result<scan_runtime::RescanSectionOutcome, String> {
     dispatch(move || {
-    logging::boundary(
-        "rescan_section",
-        json!({ "kind": kind, "month": month }),
-        || {
-            match scan_runtime::run_section(&app, || {
-                let data_root = paths::data_root(&app)?;
-                let config = storage::read_config_for_setup(&data_root)?;
-                let settings = scanner::settings_from_config(
-                    config.as_ref(),
-                    &data_root,
-                    chrono::Utc::now().timestamp_millis(),
-                );
-                let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                let dirs = queries::section_dirs(&conn, &kind, &month, display_timezone())?;
-                let bounds = queries::month_bounds(&month, display_timezone())?;
-                let reopened = attempt_boundaries::recheck_section(&conn, &kind, bounds)?;
-                if reopened > 0 {
-                    // The index claim prevents automatic execution until this
-                    // admitted recheck releases it, even if later stat fails.
-                    derived_work::wake();
-                }
-                let repair_roots = scanner::begin_scoped_index_repair(&conn, &dirs)?;
-                let mut changed = 0u64;
-                for dir in &dirs {
-                    changed += watcher::restat_dir(
-                        &conn,
-                        std::path::Path::new(dir),
-                        &settings.lists,
-                        &settings.source_dirs,
-                        &data_root,
-                    )?;
-                }
-                // Finish any interrupted index checkpoints too. Derived media is
-                // woken after the index tail instead of being smuggled into the
-                // rescan command.
-                let tail_owed = changed > 0 || scanner::pending_index_work_exists(&conn)?;
-                if tail_owed {
-                    let mut summary = scanner::ScanSummary::default();
-                    scanner::run_index_tail_for_dirs(
-                        &conn,
-                        &settings,
-                        &dirs,
-                        &|_| {},
-                        &mut summary,
-                    )?;
-                    derived_work::wake();
-                }
-                scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
-                Ok(changed)
-            }) {
-                Ok(changed) => Ok(RescanSectionOutcome::Completed { changed }),
-                Err(error) if error == scanner::CANCELLED => Ok(RescanSectionOutcome::Cancelled),
-                Err(error) => Err(error),
-            }
-        },
-        |outcome| match outcome {
-            RescanSectionOutcome::Completed { changed } => {
-                json!({ "status": "completed", "changed": changed })
-            }
-            RescanSectionOutcome::Cancelled => json!({ "status": "cancelled" }),
-        },
-    )
+        logging::boundary(
+            "rescan_section",
+            json!({ "kind": kind, "month": month }),
+            || scan_runtime::recheck_section(&app, kind, &month, queries::display_timezone()),
+            scan_runtime::RescanSectionOutcome::log_fields,
+        )
     })
     .await
 }
@@ -1284,7 +761,6 @@ async fn rescan_section(
 // copies-disagree anomalies, delete/copy errors — a silent skip never happens.
 #[tauri::command]
 async fn get_issues(
-    app: AppHandle,
     limit: Option<u32>,
     after_first_seen_utc: Option<String>,
     after_id: Option<i64>,
@@ -1294,7 +770,7 @@ async fn get_issues(
             "get_issues",
             json!({}),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let cursor = match (after_first_seen_utc, after_id) {
                     (Some(first_seen_utc), Some(id)) => {
@@ -1332,7 +808,7 @@ async fn record_recent_notification(
     request: notifications::NotificationRequest,
 ) -> Result<notifications::NotificationRecord, String> {
     dispatch(move || {
-        let record = notifications::record_history(&app, request)?;
+        let record = notifications::record_history(request)?;
         failure_runtime::emit_or_record(&app, "notification://recorded", &record);
         Ok(record)
     })
@@ -1363,7 +839,7 @@ async fn ensure_preview(
             "ensure_preview",
             json!({ "hash": hash }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let config = storage::read_config_for_setup(&data_root)?;
                 derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)
             },
@@ -1393,8 +869,8 @@ async fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
             "ensure_fullres",
             json!({ "hash": hash }),
             || {
-                let data_root = paths::data_root(&app)?;
-                let cache_root = cache_root().ok_or("data root unset")?;
+                let data_root = paths::data_root()?;
+                let cache_root = paths::cache_root()?;
                 let cache = preview::CachePaths::new(cache_root);
                 if cache.fullres(&hash).is_file() {
                     return Ok(());
@@ -1419,7 +895,7 @@ async fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
 #[tauri::command]
 async fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Result<(), String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         derived_work::request_transcription(app, data_root, hash, replace.unwrap_or(false))
     })
     .await
@@ -1429,13 +905,10 @@ async fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Resu
 // ready receipt is repaired back to pending here rather than displayed as a
 // false success.
 #[tauri::command]
-async fn transcript_get(
-    app: AppHandle,
-    hash: String,
-) -> Result<derived_state::TranscriptResult, String> {
+async fn transcript_get(hash: String) -> Result<derived_state::TranscriptResult, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
-        let cache_root = cache_root().ok_or("data root unset")?;
+        let data_root = paths::data_root()?;
+        let cache_root = paths::cache_root()?;
         let cache = preview::CachePaths::new(cache_root);
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
         derived_state::transcript_result(&conn, &cache, &hash)
@@ -1504,11 +977,9 @@ fn media_use_released(window: tauri::WebviewWindow, token: u64) -> Result<bool, 
 }
 
 #[tauri::command]
-async fn background_work_snapshot(
-    app: AppHandle,
-) -> Result<background_work::BackgroundWorkSnapshot, String> {
+async fn background_work_snapshot() -> Result<background_work::BackgroundWorkSnapshot, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         background_work::snapshot(
             &data_root,
             derived_runtime::snapshot(derived_runtime::RuntimeConditions {
@@ -1546,16 +1017,15 @@ fn background_work_set_paused(
 
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output
 /// facts remain the only queue; closing the app loses nothing that must be
-/// recovered. While automatic optional work runs, `set_priority` reads the
-/// configuration and the index to decide whether visible previews preempt
-/// it, so it runs through `dispatch()`; the hint generation already discards
-/// a response that arrives after a newer one.
+/// recovered. Resolving the section's month reads the system timezone, so it
+/// runs through `dispatch()`; the hint generation already discards a response
+/// that arrives after a newer one.
 #[tauri::command]
 async fn prioritize_derived_work(
     selected_hash: Option<String>,
     visible_hashes: Vec<String>,
     nearby_hashes: Vec<String>,
-    section_kind: Option<String>,
+    section_kind: Option<queries::SectionKind>,
     section_month: Option<String>,
     section_sort: queries::SectionSort,
     section_anchor: u64,
@@ -1564,14 +1034,11 @@ async fn prioritize_derived_work(
 ) -> Result<(), String> {
     dispatch(move || {
         let section = match (section_kind, section_month) {
-            (Some(kind), Some(month)) if matches!(kind.as_str(), "image" | "video" | "other") => {
-                let bounds = queries::month_bounds(&month, display_timezone())?;
-                Some(derived_work::SectionPriority {
-                    kind,
-                    start_ms: bounds.map(|value| value.0),
-                    end_ms: bounds.map(|value| value.1),
-                })
-            }
+            (Some(kind), Some(month)) => Some(derived_work::SectionPriority::for_month(
+                kind,
+                &month,
+                queries::display_timezone(),
+            )?),
             _ => None,
         };
         let traversal = section.as_ref().map(|_| derived_work::SectionTraversal {
@@ -1592,13 +1059,13 @@ fn transcribe_cancel() -> bool {
 // destructive convenience — emptying a root. The trash is otherwise
 // write-only; these are the only two readers the design allows.
 #[tauri::command]
-async fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, String> {
+async fn trash_overview() -> Result<Vec<trash::TrashRootInfo>, String> {
     dispatch(move || {
         logging::boundary(
             "trash_overview",
             json!({}),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let roots = storage::load_config_file_roots(&data_root)?;
                 Ok(trash::overview(&roots))
             },
@@ -1612,7 +1079,7 @@ async fn trash_overview(app: AppHandle) -> Result<Vec<trash::TrashRootInfo>, Str
 async fn trash_reveal(app: AppHandle, root: String) -> Result<(), String> {
     dispatch(move || {
         use tauri_plugin_opener::OpenerExt;
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         let roots = storage::load_config_file_roots(&data_root)?;
         let path = std::path::PathBuf::from(&root);
         let path = trash::ensure_root_for_reveal(&roots, &path)?;
@@ -1646,13 +1113,13 @@ fn trash_empty_cancel() -> Result<bool, String> {
 
 // Dismissal hides the live entry while retaining its diagnostic record.
 #[tauri::command]
-async fn dismiss_issue(app: AppHandle, id: i64) -> Result<(), String> {
+async fn dismiss_issue(id: i64) -> Result<(), String> {
     dispatch(move || {
         logging::boundary(
             "dismiss_issue",
             json!({ "id": id }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 index_store::dismiss_issues(&conn, Some(id))
             },
@@ -1663,13 +1130,13 @@ async fn dismiss_issue(app: AppHandle, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
+async fn dismiss_all_issues() -> Result<(), String> {
     dispatch(move || {
         logging::boundary(
             "dismiss_all_issues",
             json!({}),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 index_store::dismiss_issues(&conn, None)
             },
@@ -1683,175 +1150,27 @@ async fn dismiss_all_issues(app: AppHandle) -> Result<(), String> {
 // order — the Managed tools window renders one row per entry, and the ffmpeg
 // chip reads its entry out of the same list.
 #[tauri::command]
-async fn binaries_state(app: AppHandle) -> Result<Vec<binaries_manager::DependencyState>, String> {
+async fn binaries_state() -> Result<Vec<binaries_manager::DependencyState>, String> {
     dispatch(move || {
-        let data_root = paths::data_root(&app)?;
+        let data_root = paths::data_root()?;
         Ok(binaries_manager::states(&data_root))
     })
     .await
 }
 
-#[derive(serde::Serialize)]
-#[serde(tag = "outcome", rename_all = "kebab-case")]
-enum BinaryInstallResult {
-    Installed {
-        #[serde(rename = "operationId")]
-        operation_id: String,
-        state: binaries_manager::DependencyState,
-    },
-    Cancelled {
-        #[serde(rename = "operationId")]
-        operation_id: String,
-        state: binaries_manager::DependencyState,
-    },
-    Failed {
-        #[serde(rename = "operationId")]
-        operation_id: String,
-        state: binaries_manager::DependencyState,
-        error: String,
-    },
-}
-
-enum InstallWorkerOutcome {
-    Installed,
-    Cancelled,
-    Failed(String),
-}
-
-// Installs or updates one registry entry on a blocking worker. Progress is an
-// operation-correlated event; the awaited command response is the single
-// authoritative terminal boundary, including a fresh artifact-derived row.
+// Installs or updates one registry entry on a blocking worker; see
+// binaries_manager::install_reported.
 #[tauri::command]
 async fn binaries_install(
     app: AppHandle,
     id: String,
     operation_id: String,
-) -> Result<BinaryInstallResult, String> {
-    let resolve_app = app.clone();
-    let data_root = dispatch(move || paths::data_root(&resolve_app)).await?;
-    let started = binaries_manager::begin_install(&id, &operation_id)?;
-    let handle = app.clone();
-    let worker_id = id.clone();
-    let worker_operation_id = operation_id.clone();
-    let worker_root = data_root.clone();
-    let joined = tokio::task::spawn_blocking(move || {
-        let progress_id = worker_id.clone();
-        let progress_operation_id = worker_operation_id.clone();
-        let progress_handle = handle.clone();
-        let progress_event_failed = std::cell::Cell::new(false);
-        let last_phase = std::cell::Cell::new(None::<binaries_manager::InstallPhase>);
-        let last_emit =
-            std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
-        let emit = move |progress: binaries_manager::InstallProgress| {
-            if app_lifecycle::shutting_down() {
-                return;
-            }
-            let now = std::time::Instant::now();
-            let phase_changed = last_phase.get() != Some(progress.phase);
-            let completed = progress.total.is_some_and(|total| progress.done >= total);
-            if !phase_changed
-                && !completed
-                && now.duration_since(last_emit.get()) < std::time::Duration::from_millis(125)
-            {
-                return;
-            }
-            last_phase.set(Some(progress.phase));
-            last_emit.set(now);
-            if let Err(error) = failure_runtime::emit_checked(
-                &progress_handle,
-                "binaries://progress",
-                json!({
-                    "id": progress_id,
-                    "operationId": progress_operation_id,
-                    "phase": progress.phase,
-                    "done": progress.done,
-                    "total": progress.total,
-                    "nextPhase": progress.next_phase,
-                }),
-            ) {
-                if !progress_event_failed.replace(true) {
-                    let _ = failure_runtime::report(
-                        &progress_handle,
-                        "event-delivery-failed",
-                        Some(&progress_id),
-                        &error,
-                    );
-                }
-            }
-        };
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            binaries_manager::install_entry_started(&worker_root, started, emit)
-        }));
-        let outcome = match outcome {
-            Ok(Ok(_facts)) => InstallWorkerOutcome::Installed,
-            Ok(Err(error)) if binaries_manager::is_cancelled_error(&error) => {
-                InstallWorkerOutcome::Cancelled
-            }
-            Ok(Err(error)) => InstallWorkerOutcome::Failed(error),
-            Err(payload) => InstallWorkerOutcome::Failed(failure_runtime::panic_message(payload)),
-        };
-        let spec =
-            binaries_manager::spec_of(&worker_id).expect("a claimed dependency remains registered");
-        let state = binaries_manager::state_of(&worker_root, spec);
-        (outcome, state)
+) -> Result<binaries_manager::InstallResult, String> {
+    dispatch(move || {
+        let data_root = paths::data_root()?;
+        binaries_manager::install_reported(&app, &data_root, &id, &operation_id)
     })
-    .await;
-
-    let (outcome, state) = match joined {
-        Ok(result) => result,
-        Err(error) => {
-            let message = format!("dependency install worker failed: {error}");
-            let spec = binaries_manager::spec_of(&id)
-                .ok_or_else(|| format!("unknown dependency: {id}"))?;
-            (
-                InstallWorkerOutcome::Failed(message),
-                binaries_manager::state_of(&data_root, spec),
-            )
-        }
-    };
-
-    match outcome {
-        InstallWorkerOutcome::Installed => {
-            if let Err(error) = failure_runtime::clear(&app, "dependency-install-failed", Some(&id))
-            {
-                let _ = failure_runtime::report(&app, "issue-recovery-failed", Some(&id), &error);
-            }
-            derived_work::wake();
-            Ok(BinaryInstallResult::Installed {
-                operation_id,
-                state,
-            })
-        }
-        InstallWorkerOutcome::Cancelled => {
-            logging::info(
-                "dependency install cancelled",
-                json!({ "id": id, "operationId": operation_id }),
-            );
-            Ok(BinaryInstallResult::Cancelled {
-                operation_id,
-                state,
-            })
-        }
-        InstallWorkerOutcome::Failed(error) => {
-            logging::warn(
-                "dependency install failed",
-                json!({
-                    "id": id,
-                    "operationId": operation_id,
-                    "error": { "message": error.clone() }
-                }),
-            );
-            let _ = failure_runtime::report(&app, "dependency-install-failed", Some(&id), &error);
-            if state.status != binaries::BinaryStatus::NotInstalled {
-                derived_work::wake();
-            }
-            Ok(BinaryInstallResult::Failed {
-                operation_id,
-                state,
-                error,
-            })
-        }
-    }
+    .await
 }
 
 // Control command: flips an in-memory cancellation atomic in the IN_FLIGHT
@@ -1862,60 +1181,30 @@ fn binaries_cancel(id: String, operation_id: String) -> bool {
 }
 
 // Version check for one entry — never installs; a failure writes nothing.
-#[derive(serde::Serialize)]
-#[serde(tag = "outcome", rename_all = "kebab-case")]
-enum BinaryCheckOutcome {
-    Completed {
-        states: Vec<binaries_manager::DependencyState>,
-    },
-    Cancelled,
-}
-
 #[tauri::command]
 async fn binaries_check(
-    app: AppHandle,
     id: String,
     operation_id: String,
-) -> Result<BinaryCheckOutcome, String> {
-    let worker_id = id.clone();
-    let worker_operation_id = operation_id.clone();
-    let result = dispatch(move || {
-        let data_root = paths::data_root(&app)?;
-        match binaries_manager::check_entry_with_operation(
-            &data_root,
-            &worker_id,
-            &worker_operation_id,
-        ) {
-            Ok(_) => Ok(BinaryCheckOutcome::Completed {
-                states: binaries_manager::states(&data_root),
-            }),
-            Err(error) if error == binaries_acquisition::CANCELLED_ERROR => {
-                Ok(BinaryCheckOutcome::Cancelled)
-            }
-            Err(error) => Err(error),
-        }
+) -> Result<binaries_manager::CheckOutcome, String> {
+    dispatch(move || {
+        logging::boundary(
+            "binaries_check",
+            json!({ "id": id }),
+            || {
+                let data_root = paths::data_root()?;
+                binaries_manager::check_reported(&data_root, &id, &operation_id)
+            },
+            binaries_manager::CheckOutcome::log_fields,
+        )
     })
-    .await;
-    logging::boundary(
-        "binaries_check",
-        json!({ "id": id }),
-        || result,
-        |outcome| match outcome {
-            BinaryCheckOutcome::Completed { states } => {
-                json!({ "outcome": "completed", "entries": states.len() })
-            }
-            BinaryCheckOutcome::Cancelled => json!({ "outcome": "cancelled" }),
-        },
-    )
+    .await
 }
-
-// Wizard support: is this a real IANA timezone name?
 
 // The session gate's check: configured source directories that are not
 // currently present (an unmounted volume manifests as a missing directory).
 #[tauri::command]
-async fn check_source_dirs(app: AppHandle) -> Result<SourceDirsStatus, String> {
-    let result = dispatch(move || verify_source_dirs(&app)).await;
+async fn check_source_dirs() -> Result<volume::SourceDirsStatus, String> {
+    let result = dispatch(move || volume::verify_source_dirs(&paths::data_root()?)).await;
     logging::boundary(
         "check_source_dirs",
         json!({}),
@@ -1926,13 +1215,13 @@ async fn check_source_dirs(app: AppHandle) -> Result<SourceDirsStatus, String> {
 
 // The comparison view's group members for one item, best-first.
 #[tauri::command]
-async fn get_similar_group(app: AppHandle, hash: String) -> Result<Vec<queries::GroupMember>, String> {
+async fn get_similar_group(hash: String) -> Result<Vec<queries::GroupMember>, String> {
     dispatch(move || {
         logging::boundary(
             "get_similar_group",
             json!({ "hash": hash }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let config = storage::read_config_for_setup(&data_root)?;
                 let use_face_score = config
@@ -1949,13 +1238,13 @@ async fn get_similar_group(app: AppHandle, hash: String) -> Result<Vec<queries::
 }
 
 #[tauri::command]
-async fn comparison_live_hashes(app: AppHandle, hashes: Vec<String>) -> Result<Vec<String>, String> {
+async fn comparison_live_hashes(hashes: Vec<String>) -> Result<Vec<String>, String> {
     dispatch(move || {
         logging::boundary(
             "comparison_live_hashes",
             json!({ "members": hashes.len() }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 queries::live_content_hashes(&conn, &hashes)
             },
@@ -1968,7 +1257,6 @@ async fn comparison_live_hashes(app: AppHandle, hashes: Vec<String>) -> Result<V
 // The metadata pane's detail for one logical item.
 #[tauri::command]
 async fn get_item_detail(
-    app: AppHandle,
     hash: Option<String>,
     path_id: Option<i64>,
 ) -> Result<queries::ItemDetail, String> {
@@ -1977,7 +1265,7 @@ async fn get_item_detail(
             "get_item_detail",
             json!({ "hash": hash, "pathId": path_id }),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 queries::item_detail(&conn, hash.as_deref(), path_id)
             },
@@ -1990,16 +1278,16 @@ async fn get_item_detail(
 // Left-pane section counts (logical items per kind per month), bucketed in the
 // OS display timezone.
 #[tauri::command]
-async fn get_section_counts(app: AppHandle) -> Result<queries::SectionCounts, String> {
+async fn get_section_counts() -> Result<queries::SectionCounts, String> {
     dispatch(move || {
         logging::boundary(
             "get_section_counts",
             json!({}),
             || {
-                let data_root = paths::data_root(&app)?;
+                let data_root = paths::data_root()?;
                 queries::cached_section_counts(
                     &data_root.join(storage::INDEX_DB_FILE_NAME),
-                    display_timezone(),
+                    queries::display_timezone(),
                 )
             },
             |counts| {
@@ -2040,7 +1328,6 @@ async fn activity_record(
 
 #[tauri::command]
 async fn activity_page(
-    app: AppHandle,
     before: Option<i64>,
     after: Option<i64>,
     limit: Option<usize>,
@@ -2048,7 +1335,7 @@ async fn activity_page(
     dispatch(move || {
         let mut page = activity::operations(before, after, limit)?;
         if page.operations.iter().any(|row| row.target_hash.is_some()) {
-            let conn = index_store::open(&paths::data_root(&app)?.join(storage::INDEX_DB_FILE_NAME))?;
+            let conn = index_store::open(&paths::data_root()?.join(storage::INDEX_DB_FILE_NAME))?;
             activity_history::resolve_targets(&conn, &mut page.operations)?;
         }
         Ok(page)
@@ -2206,9 +1493,8 @@ pub fn run() {
             // application bootstrap therefore records Ready/Blocked state and
             // the hook itself is deliberately infallible.
             app.manage(startup::initialize(app, debug_enabled));
-            window_placement::load_preview(app.handle(), &setup_preview_placement_state);
-            let saved_theme = paths::data_root(app.handle())
-                .ok()
+            window_placement::load_preview(&setup_preview_placement_state);
+            let saved_theme = paths::data_root_before_launch()
                 .and_then(|root| theme::read_saved_window_theme(&root));
             app.state::<theme::ThemeState>().set(saved_theme);
             if let Some(window) = app.get_webview_window("main") {
@@ -2221,7 +1507,6 @@ pub fn run() {
                     );
                 }
                 window_placement::restore(
-                    app.handle(),
                     &window.as_ref().window(),
                     &setup_placement_state,
                 );
@@ -2359,8 +1644,8 @@ pub fn run() {
             app_lifecycle::quiesce(app_handle);
         }
         tauri::RunEvent::Exit => {
-            window_placement::save(app_handle, &placement_state);
-            window_placement::save_preview(app_handle, &preview_placement_state);
+            window_placement::save(&placement_state);
+            window_placement::save_preview(&preview_placement_state);
             activity::record_shutdown();
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }

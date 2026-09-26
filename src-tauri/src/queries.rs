@@ -361,6 +361,42 @@ pub struct SectionItem {
     pub derived_work: crate::derived_state::ItemWorkStates,
 }
 
+/// The OS display timezone that section months are bucketed in.
+pub fn display_timezone() -> chrono_tz::Tz {
+    iana_time_zone::get_timezone()
+        .ok()
+        .and_then(|name| name.parse().ok())
+        .unwrap_or(chrono_tz::UTC)
+}
+
+/// The three Main sections. Deserialized once at the command boundary, so
+/// every reader below works with a kind that is already valid.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum SectionKind {
+    Image,
+    Video,
+    Other,
+}
+
+impl SectionKind {
+    /// The section's `logical_contents.kind`; audio and every other
+    /// non-image, non-video kind project to Other.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Video => "video",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl rusqlite::ToSql for SectionKind {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct ItemProjectionContext {
     pub capabilities: crate::derived_state::WorkCapabilities,
@@ -464,7 +500,7 @@ pub struct SectionRecoveryContextOutput {
 /// or retains rows outside the requested window.
 pub fn section_window(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     month: &str,
     display_tz: Tz,
     sort: SectionSort,
@@ -474,7 +510,7 @@ pub fn section_window(
 ) -> Result<SectionWindow, String> {
     let snapshot = SectionSnapshot::begin(conn)?;
     let window = section_window_snapshot(
-        &snapshot, kind, month, display_tz, sort, start, limit, projection,
+        &snapshot, kind.as_str(), month, display_tz, sort, start, limit, projection,
     )?;
     snapshot.finish()?;
     Ok(window)
@@ -707,9 +743,6 @@ fn section_window_snapshot(
     limit: u32,
     projection: ItemProjectionContext,
 ) -> Result<SectionWindow, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
     if !(1..=MAX_SECTION_WINDOW_ITEMS).contains(&limit) {
         return Err(format!(
             "section window limit must be between 1 and {MAX_SECTION_WINDOW_ITEMS}"
@@ -747,7 +780,7 @@ const RECOVERY_NEIGHBOR_LIMIT: u64 = 64;
 #[allow(clippy::too_many_arguments)]
 pub fn reconcile_section(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     month: &str,
     display_tz: Tz,
     sort: SectionSort,
@@ -760,9 +793,7 @@ pub fn reconcile_section(
     limit: u32,
     projection: ItemProjectionContext,
 ) -> Result<SectionReconciliation, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
+    let kind = kind.as_str();
     if !(1..=MAX_SECTION_WINDOW_ITEMS).contains(&limit) {
         return Err(format!(
             "section window limit must be between 1 and {MAX_SECTION_WINDOW_ITEMS}"
@@ -958,16 +989,14 @@ fn choose_reconciled_anchor(
 /// while ordinary browsing and rendering remain capped.
 pub fn section_range(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     month: &str,
     display_tz: Tz,
     sort: SectionSort,
     start: u64,
     end: u64,
 ) -> Result<Vec<PositionedSectionIdentity>, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
+    let kind = kind.as_str();
     let bounds = month_bounds(month, display_tz)?;
     let snapshot = SectionSnapshot::begin(conn)?;
     let ordered = ordered_section_identities(&snapshot, kind, month, bounds, sort)?;
@@ -987,15 +1016,13 @@ pub fn section_range(
 /// changes files, so Main can return past the original family afterward.
 pub fn section_family_context(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     month: &str,
     display_tz: Tz,
     sort: SectionSort,
     member_hashes: &[String],
 ) -> Result<Option<SectionRecoveryContextOutput>, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
+    let kind = kind.as_str();
     let bounds = month_bounds(month, display_tz)?;
     let family: HashSet<&str> = member_hashes.iter().map(String::as_str).collect();
     let snapshot = SectionSnapshot::begin(conn)?;
@@ -1020,15 +1047,13 @@ pub fn section_family_context(
 /// the same section order every other reader currently sees.
 pub fn visit_section_identities(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     month: &str,
     display_tz: Tz,
     sort: SectionSort,
     mut visit: impl FnMut(u64, &SectionIdentity) -> Result<(), String>,
 ) -> Result<u64, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
+    let kind = kind.as_str();
     let bounds = month_bounds(month, display_tz)?;
     let snapshot = SectionSnapshot::begin(conn)?;
     let ordered = ordered_section_identities(&snapshot, kind, month, bounds, sort)?;
@@ -1127,18 +1152,18 @@ pub struct SectionWorkPosition {
 
 pub fn section_work_anchor(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     bounds: Option<(i64, i64)>,
     sort: SectionSort,
     index: u64,
 ) -> Result<Option<SectionWorkPosition>, String> {
-    section_work_rows(conn, kind, bounds, sort, None, false, 1, index, None)
+    section_work_rows(conn, kind.as_str(), bounds, sort, None, false, 1, index, None)
         .map(|mut rows| rows.pop())
 }
 
 pub fn section_work_page(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     bounds: Option<(i64, i64)>,
     sort: SectionSort,
     position: &SectionWorkPosition,
@@ -1146,7 +1171,7 @@ pub fn section_work_page(
 ) -> Result<Vec<SectionWorkPosition>, String> {
     section_work_rows(
         conn,
-        kind,
+        kind.as_str(),
         bounds,
         sort,
         Some(position),
@@ -1159,7 +1184,7 @@ pub fn section_work_page(
 
 pub(crate) fn section_pending_work_page(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     bounds: Option<(i64, i64)>,
     sort: SectionSort,
     position: &SectionWorkPosition,
@@ -1168,7 +1193,7 @@ pub(crate) fn section_pending_work_page(
 ) -> Result<Vec<SectionWorkPosition>, String> {
     section_work_rows(
         conn,
-        kind,
+        kind.as_str(),
         bounds,
         sort,
         Some(position),
@@ -1256,7 +1281,7 @@ fn section_work_rows(
 }
 
 fn identity_key(hash: Option<&str>, path_id: i64) -> String {
-    hash.map_or_else(|| format!("path-{path_id}"), str::to_owned)
+    crate::indexed_file::item_key(hash, path_id)
 }
 
 fn section_items_by_identity(
@@ -1863,13 +1888,11 @@ fn unhashed_other_section_dirs_sql(has_bounds: bool) -> String {
 
 pub fn section_dirs(
     conn: &Connection,
-    kind: &str,
+    kind: SectionKind,
     month: &str,
     display_tz: Tz,
 ) -> Result<Vec<String>, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
+    let kind = kind.as_str();
     let bounds = month_bounds(month, display_tz)?;
     let sql = section_dirs_sql(bounds.is_some());
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;

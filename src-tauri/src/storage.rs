@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use tauri::AppHandle;
 
 use crate::{backup_store, logging, nanoid, paths};
 
@@ -245,8 +244,8 @@ fn take_pending_quarantines() -> Vec<QuarantineRecord> {
     std::mem::take(&mut *pending)
 }
 
-pub fn load_app_data(app: &AppHandle) -> Result<LoadedAppData, String> {
-    load_from_root(&paths::data_root(app)?)
+pub fn load_app_data() -> Result<LoadedAppData, String> {
+    load_from_root(&paths::data_root()?)
 }
 
 /// Preferences needed by auxiliary windows are a read-only projection, not
@@ -310,8 +309,8 @@ pub fn read_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, Str
     Ok(read.value)
 }
 
-pub fn save_window_state(app: &AppHandle, state: &JsonValue) -> Result<(), String> {
-    let root = paths::data_root(app)?;
+pub fn save_window_state(state: &JsonValue) -> Result<(), String> {
+    let root = paths::data_root()?;
     atomic_write_json(&root.join(WINDOW_FILE_NAME), state)
 }
 
@@ -326,8 +325,8 @@ pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonVal
     Ok(read.value)
 }
 
-pub fn save_preview_window_state(app: &AppHandle, state: &JsonValue) -> Result<(), String> {
-    let root = paths::data_root(app)?;
+pub fn save_preview_window_state(state: &JsonValue) -> Result<(), String> {
+    let root = paths::data_root()?;
     atomic_write_json(&root.join(PREVIEW_WINDOW_FILE_NAME), state)
 }
 
@@ -423,18 +422,18 @@ pub fn load_configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String
 /// frontend sends only the keys it changes, and a stale cached copy in one
 /// store can never blind-overwrite another store's save (the lost-update the
 /// persisted-store-separation conventions' one-owner rule exists to prevent).
-pub fn patch_config(app: &AppHandle, patch: &JsonValue) -> Result<PatchOutcome, String> {
+pub fn patch_config(patch: &JsonValue) -> Result<PatchOutcome, String> {
     // records: config.json is durable user settings — managed text, recorded on
     // every save (data-backup conventions).
-    let root = paths::data_root(app)?;
+    let root = paths::data_root()?;
     patch_json_store(&root.join(CONFIG_FILE_NAME), patch)
 }
 
 /// Patch-merges into `state.json` (same one-owner contract as `patch_config`).
-pub fn patch_state(app: &AppHandle, patch: &JsonValue) -> Result<PatchOutcome, String> {
+pub fn patch_state(patch: &JsonValue) -> Result<PatchOutcome, String> {
     // records: state.json is volatile UI state, still managed text — recorded on
     // every save; the store's per-path content dedup absorbs the churn.
-    let root = paths::data_root(app)?;
+    let root = paths::data_root()?;
     patch_json_store(&root.join(STATE_FILE_NAME), patch)
 }
 

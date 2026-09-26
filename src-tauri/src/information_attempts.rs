@@ -82,10 +82,10 @@ pub fn reset_library(conn: &Connection) -> Result<u64, String> {
 /// their attempt without admitting other contents in the same directory.
 pub fn reset_section(
     conn: &Connection,
-    kind: &str,
+    kind: crate::queries::SectionKind,
     bounds: Option<(i64, i64)>,
 ) -> Result<u64, String> {
-    let members = section_paths(kind, bounds)?;
+    let members = section_paths(bounds)?;
     conn.execute(
         &format!(
             "UPDATE paths SET hash_attempt_failed = 0, metadata_attempt_failed = 0
@@ -102,10 +102,9 @@ pub fn reset_section(
     .map_err(|error| error.to_string())
 }
 
-pub(crate) fn section_paths(kind: &str, bounds: Option<(i64, i64)>) -> Result<String, String> {
-    if !matches!(kind, "image" | "video" | "other") {
-        return Err(format!("bad section kind: {kind}"));
-    }
+/// The live paths of one section, as SQL binding its kind at `?1` and its
+/// bounds at `?2`/`?3`.
+pub(crate) fn section_paths(bounds: Option<(i64, i64)>) -> Result<String, String> {
     if bounds.is_some_and(|(start, end)| start >= end) {
         return Err("section date range must be increasing".to_string());
     }

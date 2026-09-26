@@ -62,24 +62,21 @@ function findCommands(source: string): CommandFn[] {
   return commands;
 }
 
-// Direct crossings of the index/filesystem/subprocess boundary. Almost every
-// command in this file that needs one resolves it through `paths::data_root`
-// or `index_store::open` directly in its own body (see the many `let
-// data_root = paths::data_root(&app)?;` lines) — the pattern this codebase
-// already uses everywhere — so this short, direct list catches real crossings
-// without following every helper function's own call graph, which would
-// make the check as fragile as the code it is meant to guard.
+// Direct crossings of the index/filesystem/subprocess boundary. The command
+// bodies in this file are thin delegates to their owning modules, so the
+// async rule below is structural (every async command dispatches) and this
+// short list guards plain commands against reaching for the boundary
+// themselves.
 const FORBIDDEN_BOUNDARY = [
   /paths::data_root\(/,
   /index_store::open\(/,
   /std::fs::/,
   /subprocess::/,
-  // Helpers a command calls that reach the index themselves without taking
-  // `app` or a data root, so the direct patterns above cannot see them.
-  // `set_priority` reads the configuration and the index while automatic
-  // optional work runs.
-  /derived_work::set_priority\(/,
 ];
+
+// Async commands that await their own non-blocking work instead of running a
+// blocking body; everything else async goes through dispatch().
+const ASYNC_WITHOUT_DISPATCH = new Set(["check_github_release"]);
 
 const DISPATCH_MARKERS = [/\bdispatch\(/, /spawn_blocking\(/];
 
@@ -111,5 +108,13 @@ describe("command threading", () => {
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  it("runs every async command's body through dispatch()", () => {
+    const undispatched = commands
+      .filter((command) => command.isAsync && !ASYNC_WITHOUT_DISPATCH.has(command.name))
+      .filter((command) => !DISPATCH_MARKERS.some((pattern) => pattern.test(command.body)))
+      .map((command) => command.name);
+    expect(undispatched).toEqual([]);
   });
 });

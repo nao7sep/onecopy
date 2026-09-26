@@ -21,10 +21,10 @@ pub fn begin_run(conn: &Connection) -> Result<(), String> {
 
 pub fn recheck_section(
     conn: &Connection,
-    kind: &str,
+    kind: crate::queries::SectionKind,
     bounds: Option<(i64, i64)>,
 ) -> Result<u64, String> {
-    let members = information_attempts::section_paths(kind, bounds)?;
+    let members = information_attempts::section_paths(bounds)?;
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;

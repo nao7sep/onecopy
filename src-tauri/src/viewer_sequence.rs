@@ -77,7 +77,7 @@ static ACTIVE: LazyLock<Mutex<Option<Sequence>>> = LazyLock::new(|| Mutex::new(N
 pub fn start(
     data_root: &Path,
     index_conn: &Connection,
-    kind: &str,
+    kind: crate::queries::SectionKind,
     month: &str,
     display_tz: Tz,
     sort: SectionSort,
@@ -475,10 +475,7 @@ fn edge_ordinal(conn: &Connection, last: bool) -> Result<Option<i64>, String> {
 }
 
 fn identity_key(identity: &SectionIdentity) -> String {
-    identity
-        .hash
-        .clone()
-        .unwrap_or_else(|| format!("path-{}", identity.path_id))
+    crate::indexed_file::item_key(identity.hash.as_deref(), identity.path_id)
 }
 
 fn close_locked(active: &mut Option<Sequence>) -> Result<(), String> {

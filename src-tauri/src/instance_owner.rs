@@ -213,7 +213,6 @@ fn run_listener(
                         match activation {
                             Ok(()) => {
                                 if let Err(error) = crate::failure_runtime::clear(
-                                    app,
                                     "instance-activation-failed",
                                     Some("main"),
                                 ) {
@@ -259,7 +258,7 @@ pub fn join(app: &tauri::AppHandle) {
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::<tauri::Wry>::new("instance-owner")
         .setup(|app, _api| {
-            let root = crate::paths::data_root(app.app_handle())?;
+            let root = crate::paths::resolve_data_root(app.app_handle())?;
             match claim(&root)? {
                 Claim::Primary { lock, listener } => {
                     let stop = Arc::new(AtomicBool::new(false));

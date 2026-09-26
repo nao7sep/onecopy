@@ -202,7 +202,7 @@ pub(crate) fn start(app: tauri::AppHandle, enabled: bool) -> Result<(), String> 
                         .map_err(|error| format!("{error:#}"))
                 },
                 |error| crate::failure_runtime::report(&handle, ISSUE, None, error),
-                || crate::failure_runtime::clear(&handle, ISSUE, None),
+                || crate::failure_runtime::clear(ISSUE, None),
             )
         },
     )?);

@@ -361,7 +361,7 @@ fn selected_visible_and_section_backlog_keep_their_priority_without_duplicates()
 
     let settings = settings_from_config(None, dir.path());
     let section = SectionPriority {
-        kind: "image".to_string(),
+        kind: onecopy_lib::queries::SectionKind::Image,
         start_ms: Some(100),
         end_ms: Some(200),
     };
@@ -417,12 +417,12 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
     });
     settings.transcription_model = Some(dir.path().join("whisper"));
     let image_section = SectionPriority {
-        kind: "image".to_string(),
+        kind: onecopy_lib::queries::SectionKind::Image,
         start_ms: Some(100),
         end_ms: Some(200),
     };
     let video_section = SectionPriority {
-        kind: "video".to_string(),
+        kind: onecopy_lib::queries::SectionKind::Video,
         start_ms: Some(100),
         end_ms: Some(200),
     };
@@ -456,7 +456,7 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
     }
 
     let audio_section = SectionPriority {
-        kind: "other".to_string(),
+        kind: onecopy_lib::queries::SectionKind::Other,
         start_ms: Some(100),
         end_ms: Some(200),
     };

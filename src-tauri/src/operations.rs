@@ -67,10 +67,11 @@ impl ItemIdentity {
         }
     }
 
-    pub fn media_key(&self) -> Result<String, String> {
+    /// The item's boundary key (see `indexed_file::item_key`).
+    pub fn key(&self) -> Result<String, String> {
         match self.item_ref()? {
             ItemRef::Hash(hash) => Ok(hash.to_string()),
-            ItemRef::PathId(path_id) => Ok(format!("path-{path_id}")),
+            ItemRef::PathId(path_id) => Ok(crate::indexed_file::item_key(None, path_id)),
         }
     }
 }
@@ -594,14 +595,28 @@ fn permanently_delete_file(file: &Path) -> Result<(), String> {
     std::fs::remove_file(crate::winpath::for_fs(file).as_ref()).map_err(|error| error.to_string())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, serde::Serialize)]
 pub enum MoveOutMode {
     /// Plain drag: one copy moves out, the remaining copies go to trash.
+    #[serde(rename = "move-trash-rest")]
     MoveTrashRest,
     /// Shift: one copy moves out, the remaining copies are deleted permanently.
+    #[serde(rename = "move-delete-rest")]
     MoveDeleteRest,
     /// Cmd/Ctrl: a copy is exported; nothing else is touched.
+    #[serde(rename = "copy")]
     CopyKeepAll,
+}
+
+impl MoveOutMode {
+    /// The wire name, as the webview sends it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MoveTrashRest => "move-trash-rest",
+            Self::MoveDeleteRest => "move-delete-rest",
+            Self::CopyKeepAll => "copy",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1239,11 +1254,7 @@ fn directory_is_case_sensitive(_directory: &Path) -> bool {
 
 fn move_plan_token(plan: &MovePlan, mode: MoveOutMode, review: &DestinationReview) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(match mode {
-        MoveOutMode::MoveTrashRest => b"move-trash-rest",
-        MoveOutMode::MoveDeleteRest => b"move-delete-rest",
-        MoveOutMode::CopyKeepAll => b"copy",
-    });
+    hasher.update(mode.as_str().as_bytes());
     let mut field = |value: &[u8]| {
         hasher.update(&(value.len() as u64).to_le_bytes());
         hasher.update(value);

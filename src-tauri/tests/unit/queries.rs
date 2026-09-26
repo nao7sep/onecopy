@@ -36,7 +36,7 @@ fn section_items(
 ) -> Result<Vec<SectionItem>, String> {
     section_window(
         conn,
-        kind,
+        serde_json::from_value(serde_json::json!(kind)).expect("a section kind"),
         month,
         display_tz,
         SectionSort {
@@ -556,7 +556,7 @@ fn section_order_follows_a_write_committed_by_another_connection() {
         let reader = index_store::open(&db_file).unwrap();
         section_window(
             &reader,
-            "image",
+            SectionKind::Image,
             "2016-03",
             chrono_tz::UTC,
             time_desc,
@@ -594,7 +594,7 @@ fn section_window_order_token_changes_exactly_when_the_order_does() {
     };
     let read = |start: u64| {
         let reader = index_store::open(&db_file).unwrap();
-        section_window(&reader, "image", "2016-03", chrono_tz::UTC, time_asc, start, 1, projection())
+        section_window(&reader, SectionKind::Image, "2016-03", chrono_tz::UTC, time_asc, start, 1, projection())
             .unwrap()
     };
 

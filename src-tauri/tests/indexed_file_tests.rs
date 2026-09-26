@@ -88,3 +88,13 @@ fn an_older_companion_never_supplies_the_logical_original() {
     assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
         std::path::PathBuf::from("/main.txt"));
 }
+
+#[test]
+fn an_item_key_names_its_hash_or_its_path_and_parses_back() {
+    use onecopy_lib::indexed_file::{item_key, parse_item_key};
+    assert_eq!(item_key(Some("abc"), 7), "abc");
+    assert_eq!(item_key(None, 7), "path-7");
+    assert_eq!(parse_item_key("abc"), Some((Some("abc"), None)));
+    assert_eq!(parse_item_key(&item_key(None, 7)), Some((None, Some(7))));
+    assert_eq!(parse_item_key("path-x"), None);
+}

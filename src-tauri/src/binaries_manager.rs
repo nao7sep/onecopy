@@ -1063,3 +1063,150 @@ pub fn states(root: &Path) -> Vec<DependencyState> {
 // promoting it would widen the crate's API only for this test.
 #[path = "../tests/unit/binaries_manager.rs"]
 mod tests;
+
+/// The terminal answer of one install: the command response is the single
+/// authoritative boundary, carrying a fresh artifact-derived row.
+#[derive(serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum InstallResult {
+    Installed {
+        #[serde(rename = "operationId")]
+        operation_id: String,
+        state: DependencyState,
+    },
+    Cancelled {
+        #[serde(rename = "operationId")]
+        operation_id: String,
+        state: DependencyState,
+    },
+    Failed {
+        #[serde(rename = "operationId")]
+        operation_id: String,
+        state: DependencyState,
+        error: String,
+    },
+}
+
+/// Installs or updates one entry on the calling (blocking) thread. Progress
+/// is an operation-correlated `binaries://progress` event under the shared
+/// progress throttle; the outcome clears or raises the entry's install Issue
+/// and wakes derived work when a tool may have become usable.
+pub fn install_reported(
+    app: &tauri::AppHandle,
+    root: &Path,
+    id: &str,
+    operation_id: &str,
+) -> Result<InstallResult, String> {
+    let started = begin_install(id, operation_id)?;
+    let progress_event_failed = std::cell::Cell::new(false);
+    let mut throttle = crate::progress_throttle::ProgressThrottle::<InstallPhase>::default();
+    let emit = |progress: InstallProgress| {
+        if crate::app_lifecycle::shutting_down() {
+            return;
+        }
+        let completed = progress.total.is_some_and(|total| progress.done >= total);
+        if !throttle.admit(progress.phase, completed, std::time::Instant::now()) {
+            return;
+        }
+        if let Err(error) = crate::failure_runtime::emit_checked(
+            app,
+            "binaries://progress",
+            serde_json::json!({
+                "id": id,
+                "operationId": operation_id,
+                "phase": progress.phase,
+                "done": progress.done,
+                "total": progress.total,
+                "nextPhase": progress.next_phase,
+            }),
+        ) {
+            if !progress_event_failed.replace(true) {
+                let _ = crate::failure_runtime::report(app, "event-delivery-failed", Some(id), &error);
+            }
+        }
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        install_entry_started(root, started, emit)
+    }));
+    let spec = spec_of(id).ok_or_else(|| format!("unknown dependency: {id}"))?;
+    let state = state_of(root, spec);
+    let operation_id = operation_id.to_string();
+    Ok(match outcome {
+        Ok(Ok(_facts)) => {
+            if let Err(error) = crate::failure_runtime::clear("dependency-install-failed", Some(id)) {
+                let _ = crate::failure_runtime::report(app, "issue-recovery-failed", Some(id), &error);
+            }
+            crate::derived_work::wake();
+            InstallResult::Installed { operation_id, state }
+        }
+        Ok(Err(error)) if is_cancelled_error(&error) => {
+            logging::info(
+                "dependency install cancelled",
+                serde_json::json!({ "id": id, "operationId": operation_id }),
+            );
+            InstallResult::Cancelled { operation_id, state }
+        }
+        Ok(Err(error)) => install_failed(app, id, operation_id, state, error),
+        Err(payload) => install_failed(
+            app,
+            id,
+            operation_id,
+            state,
+            crate::failure_runtime::panic_message(payload),
+        ),
+    })
+}
+
+fn install_failed(
+    app: &tauri::AppHandle,
+    id: &str,
+    operation_id: String,
+    state: DependencyState,
+    error: String,
+) -> InstallResult {
+    logging::warn(
+        "dependency install failed",
+        serde_json::json!({
+            "id": id,
+            "operationId": operation_id,
+            "error": { "message": error.clone() }
+        }),
+    );
+    let _ = crate::failure_runtime::report(app, "dependency-install-failed", Some(id), &error);
+    if state.status != BinaryStatus::NotInstalled {
+        crate::derived_work::wake();
+    }
+    InstallResult::Failed {
+        operation_id,
+        state,
+        error,
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum CheckOutcome {
+    Completed { states: Vec<DependencyState> },
+    Cancelled,
+}
+
+impl CheckOutcome {
+    pub fn log_fields(&self) -> serde_json::Value {
+        match self {
+            Self::Completed { states } => {
+                serde_json::json!({ "outcome": "completed", "entries": states.len() })
+            }
+            Self::Cancelled => serde_json::json!({ "outcome": "cancelled" }),
+        }
+    }
+}
+
+/// A version check for one entry; never installs, and a failure writes
+/// nothing.
+pub fn check_reported(root: &Path, id: &str, operation_id: &str) -> Result<CheckOutcome, String> {
+    match check_entry_with_operation(root, id, operation_id) {
+        Ok(_) => Ok(CheckOutcome::Completed { states: states(root) }),
+        Err(error) if error == acquisition::CANCELLED_ERROR => Ok(CheckOutcome::Cancelled),
+        Err(error) => Err(error),
+    }
+}

@@ -8,9 +8,10 @@
 //! directory — never the current working directory — so the location the app
 //! reads and writes can never depend on how the process was launched.
 //!
-//! Both the log-file resolver (`run()` in `lib.rs`) and the `load_app_data`
-//! command the frontend calls route through `data_root` here, so there is one
-//! source of truth and the frontend never reconstructs `~/.onecopy` itself.
+//! Startup resolves the root once through `resolve_data_root` and settles it;
+//! every later reader (commands, workers, protocols) reads the settled root
+//! through `data_root`, so there is one source of truth and the frontend
+//! never reconstructs `~/.onecopy` itself.
 
 use std::path::{Path, PathBuf};
 
@@ -30,10 +31,36 @@ pub const TEMP_DIR_NAME: &str = "temp";
 pub const DEPENDENCIES_FILE_NAME: &str = "dependencies.json";
 pub const SOURCE_VOLUMES_FILE_NAME: &str = "source-volumes.json";
 
-// Resolves the absolute storage root and ensures it exists. Returns a clear
-// error (and the caller stops) if the home directory is unknown or the root
-// cannot be created — never a silent fallback to a different location.
-pub fn data_root(app: &AppHandle) -> Result<PathBuf, String> {
+static SETTLED_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The storage root startup settled. Every reader after startup uses this;
+/// before startup has prepared the root (or when it was blocked) there is
+/// none, and nothing may read or write app data.
+pub fn data_root() -> Result<PathBuf, String> {
+    SETTLED_ROOT
+        .get()
+        .cloned()
+        .ok_or_else(|| "data root unset".to_string())
+}
+
+/// The derived-media cache under the settled root.
+pub fn cache_root() -> Result<PathBuf, String> {
+    Ok(data_root()?.join(crate::storage::CACHE_DIR_NAME))
+}
+
+/// Records the root startup resolved and prepared; set exactly once.
+pub(crate) fn settle_data_root(root: PathBuf) -> Result<(), String> {
+    SETTLED_ROOT
+        .set(root)
+        .map_err(|_| "data root was initialized more than once".to_string())
+}
+
+// Resolves the absolute storage root and ensures it exists — for the launch
+// owners that run before the root is settled (process ownership, startup).
+// Returns a clear error (and the caller stops) if the home directory is
+// unknown or the root cannot be created — never a silent fallback to a
+// different location.
+pub fn resolve_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     let home = app
         .path()
         .home_dir()
@@ -53,9 +80,9 @@ pub fn data_root(app: &AppHandle) -> Result<PathBuf, String> {
 /// default `create_dir_all` umask left `~/.onecopy` world-readable. A
 /// directory this restrictive blocks traversal into anything beneath it
 /// regardless of that entry's own mode, so nothing further needs tightening.
-/// Runs every time this single resolver runs, exactly like the
-/// `create_dir_all` beside it — cheap, and it also tightens a root an
-/// earlier build left too open, without a separate migration step. A failure
+/// Runs every time the resolver runs, exactly like the `create_dir_all`
+/// beside it — cheap, and it also tightens a root an earlier build left too
+/// open, without a separate migration step. A failure
 /// is a logged warning, not a fatal error: the data root itself is still
 /// usable.
 #[cfg(unix)]
@@ -200,9 +227,22 @@ fn absolutize(home: &Path, path: PathBuf) -> PathBuf {
     }
 }
 
+/// A data-root subfolder the webview may ask the OS to reveal. A vetted set,
+/// not a join of caller input: the reveal command must never become "open any
+/// path the webview asks for". Created on first reveal.
+pub(crate) fn revealable_data_subdir(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let target = match name {
+        "logs" => root.join(LOGS_DIR_NAME),
+        other => return Err(format!("not a revealable folder: {other}")),
+    };
+    std::fs::create_dir_all(&target)
+        .map_err(|error| format!("could not create {}: {error}", target.display()))?;
+    Ok(target)
+}
+
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private
-// `resolve_root`; promoting it would widen the crate's API only for this
+// `resolve_root` and the crate-private `revealable_data_subdir`; promoting it would widen the crate's API only for this
 // test.
 #[path = "../tests/unit/paths.rs"]
 mod tests;

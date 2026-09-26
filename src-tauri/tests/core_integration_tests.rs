@@ -35,7 +35,7 @@ fn item_projection() -> queries::ItemProjectionContext {
 fn january_images(conn: &Connection) -> Vec<queries::SectionItem> {
     queries::section_window(
         conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         queries::SectionSort {

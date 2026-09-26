@@ -93,7 +93,7 @@ fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folder
         derived_state::reset_failed_outputs(
             &conn,
             FailedOutputScope::Section {
-                kind: "image",
+                kind: onecopy_lib::queries::SectionKind::Image,
                 bounds: Some((100, 200))
             }
         )
@@ -119,7 +119,7 @@ fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folder
         derived_state::reset_failed_outputs(
             &conn,
             FailedOutputScope::Section {
-                kind: "video",
+                kind: onecopy_lib::queries::SectionKind::Video,
                 bounds: None
             }
         )
@@ -130,7 +130,7 @@ fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folder
         derived_state::reset_failed_outputs(
             &conn,
             FailedOutputScope::Section {
-                kind: "image",
+                kind: onecopy_lib::queries::SectionKind::Image,
                 bounds: None
             }
         )
@@ -153,7 +153,7 @@ fn audio_transcription_is_reopened_by_its_other_files_section() {
         derived_state::reset_failed_outputs(
             &conn,
             FailedOutputScope::Section {
-                kind: "other",
+                kind: onecopy_lib::queries::SectionKind::Other,
                 bounds: None
             }
         )
@@ -180,7 +180,7 @@ fn opening_database_and_querying_section_do_not_repeat_a_failed_new_attempt() {
     drop(conn);
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
     for _ in 0..3 {
-        queries::section_dirs(&conn, "video", "undated", chrono_tz::UTC).unwrap();
+        queries::section_dirs(&conn, onecopy_lib::queries::SectionKind::Video, "undated", chrono_tz::UTC).unwrap();
         assert_eq!(
             conn.query_row(
                 "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech'",
@@ -195,7 +195,7 @@ fn opening_database_and_querying_section_do_not_repeat_a_failed_new_attempt() {
         derived_state::reset_failed_outputs(
             &conn,
             FailedOutputScope::Section {
-                kind: "video",
+                kind: onecopy_lib::queries::SectionKind::Video,
                 bounds: None
             }
         )

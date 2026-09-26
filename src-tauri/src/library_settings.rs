@@ -105,14 +105,14 @@ pub fn apply(
     // projection, so retain the coarse dirty-root receipt across the whole
     // rebuild; cancellation before publication makes a later index repair
     // retry it.
-    let repair_roots = crate::scanner::begin_scoped_index_repair(conn, &settings.source_dirs)?;
-    let stats = crate::scanner::re_resolve_all_with_progress(
-        conn,
-        &settings.resolution,
-        settings.pairing_enabled,
-        progress,
-    )?;
-    crate::scanner::complete_scoped_index_repair(conn, &repair_roots)?;
+    let stats = crate::scanner::with_scoped_index_repair(conn, &settings.source_dirs, || {
+        crate::scanner::re_resolve_all_with_progress(
+            conn,
+            &settings.resolution,
+            settings.pairing_enabled,
+            progress,
+        )
+    })?;
     record(conn, &wanted)?;
     Ok(stats.resolved)
 }

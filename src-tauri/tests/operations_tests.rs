@@ -75,7 +75,7 @@ fn item_projection() -> onecopy_lib::queries::ItemProjectionContext {
 fn section_items(f: &Fixture, kind: &str) -> Vec<onecopy_lib::queries::SectionItem> {
     onecopy_lib::queries::section_window(
         &f.conn,
-        kind,
+        serde_json::from_value(serde_json::json!(kind)).expect("a section kind"),
         "undated",
         chrono_tz::Tz::UTC,
         onecopy_lib::queries::SectionSort {
@@ -2128,4 +2128,18 @@ fn overwrite_displaces_nothing_until_the_complete_replacement_is_prepared() {
     assert!(f.root.join("x.jpg").exists());
     assert!(f.root.join("x.xmp").exists());
     assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+}
+
+#[test]
+fn move_out_modes_have_one_wire_name() {
+    use onecopy_lib::operations::MoveOutMode;
+    for (mode, wire) in [
+        (MoveOutMode::MoveTrashRest, "move-trash-rest"),
+        (MoveOutMode::MoveDeleteRest, "move-delete-rest"),
+        (MoveOutMode::CopyKeepAll, "copy"),
+    ] {
+        assert_eq!(mode.as_str(), wire);
+        assert_eq!(serde_json::to_value(mode).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<MoveOutMode>(serde_json::json!(wire)).unwrap(), mode);
+    }
 }

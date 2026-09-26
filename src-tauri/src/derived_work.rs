@@ -175,9 +175,24 @@ impl CandidateCursors {
 
 #[derive(Clone)]
 pub struct SectionPriority {
-    pub kind: String,
+    pub kind: crate::queries::SectionKind,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
+}
+
+impl SectionPriority {
+    pub fn for_month(
+        kind: crate::queries::SectionKind,
+        month: &str,
+        display_tz: chrono_tz::Tz,
+    ) -> Result<Self, String> {
+        let bounds = crate::queries::month_bounds(month, display_tz)?;
+        Ok(Self {
+            kind,
+            start_ms: bounds.map(|value| value.0),
+            end_ms: bounds.map(|value| value.1),
+        })
+    }
 }
 
 pub struct Settings {
@@ -308,6 +323,14 @@ pub fn work_capabilities(
 ) -> Result<crate::derived_state::WorkCapabilities, String> {
     let config = crate::storage::read_config_for_setup(data_root)?;
     Ok(settings_from_config(config.as_ref(), data_root).capabilities())
+}
+
+/// The work capabilities every item projection reads its preparation state
+/// against.
+pub fn item_projection(data_root: &Path) -> Result<crate::queries::ItemProjectionContext, String> {
+    Ok(crate::queries::ItemProjectionContext {
+        capabilities: work_capabilities(data_root)?,
+    })
 }
 
 pub fn note_activity() {
@@ -554,11 +577,7 @@ fn run_worker_loop(app: &AppHandle, lane: Lane) -> Result<(), String> {
         match pass {
             Ok(did_work) => {
                 if !cleared_previous_failure {
-                    crate::failure_runtime::clear(
-                        app,
-                        WORKER_FAILED,
-                        None,
-                    )?;
+                    crate::failure_runtime::clear(WORKER_FAILED, None)?;
                     cleared_previous_failure = true;
                 }
                 run_again = did_work;
@@ -790,7 +809,7 @@ struct Pass {
 }
 
 fn open_pass() -> Result<Pass, String> {
-    let data_root = crate::DATA_ROOT.get().ok_or("data root unset")?.clone();
+    let data_root = crate::paths::data_root()?;
     let config = crate::storage::read_config_for_setup(&data_root)?;
     let settings = settings_from_config(config.as_ref(), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
@@ -1049,7 +1068,7 @@ fn section_window_hashes(
         }
         let position = crate::queries::section_work_anchor(
             conn,
-            &section.kind,
+            section.kind,
             bounds,
             view.sort,
             view.anchor.min(view.total - 1),
@@ -1102,7 +1121,7 @@ pub fn section_pending_candidates(
         lane_classes(lane).iter().copied().filter(|class| !class_paused(*class)),
     );
     crate::queries::section_pending_work_page(
-        conn, &section.kind, section.start_ms.zip(section.end_ms), sort, position, before, &pending,
+        conn, section.kind, section.start_ms.zip(section.end_ms), sort, position, before, &pending,
     )
 }
 
@@ -1583,7 +1602,7 @@ pub fn priority_candidates_for_class(
         settings.capabilities(),
         selected,
         visible,
-        section.map(|section| (section.kind.as_str(), section.start_ms, section.end_ms)),
+        section.map(|section| (section.kind, section.start_ms, section.end_ms)),
         SECTION_HINT_LIMIT,
     )
 }
@@ -2301,7 +2320,7 @@ pub fn request_transcription(
     hash: String,
     replacement: bool,
 ) -> Result<(), String> {
-    let cache_root = crate::cache_root().ok_or("data root unset")?;
+    let cache_root = crate::paths::cache_root()?;
     let config = crate::storage::read_config_for_setup(&data_root)?;
     let acceleration =
         crate::ai_acceleration::resolve(config.as_ref(), crate::ai_acceleration::TRANSCRIPTION)?;
@@ -2334,9 +2353,7 @@ pub fn request_transcription(
                     data_root: &data_root,
                     transcription_acceleration: acceleration,
                     app: &handle,
-                    projection: crate::queries::ItemProjectionContext {
-                        capabilities: work_capabilities(&data_root)?,
-                    },
+                    projection: item_projection(&data_root)?,
                 };
                 run_transcription(
                     &context,

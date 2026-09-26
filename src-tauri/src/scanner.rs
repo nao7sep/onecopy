@@ -434,6 +434,20 @@ pub fn begin_scoped_index_repair(
     Ok(roots)
 }
 
+/// Runs `work` under the scoped repair receipt for `dirs`: the roots it marks
+/// are cleared only when `work` succeeds, so a failed or cancelled repair is
+/// retried by a later index repair.
+pub fn with_scoped_index_repair<T>(
+    conn: &Connection,
+    dirs: &[String],
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let repair_roots = begin_scoped_index_repair(conn, dirs)?;
+    let value = work()?;
+    complete_scoped_index_repair(conn, &repair_roots)?;
+    Ok(value)
+}
+
 pub fn complete_scoped_index_repair(
     conn: &Connection,
     roots_marked_by_repair: &[String],
@@ -872,9 +886,9 @@ pub fn run_index_tail_for_dirs(
     pair_dirs.extend(dirs.iter().cloned());
     pair_dirs.sort();
     pair_dirs.dedup();
-    let repair_roots = begin_scoped_index_repair(conn, &pair_dirs)?;
-    run_index_tail_scoped(conn, settings, Some(&pair_dirs), progress, summary)?;
-    complete_scoped_index_repair(conn, &repair_roots)
+    with_scoped_index_repair(conn, &pair_dirs, || {
+        run_index_tail_scoped(conn, settings, Some(&pair_dirs), progress, summary)
+    })
 }
 
 fn run_index_tail_scoped(

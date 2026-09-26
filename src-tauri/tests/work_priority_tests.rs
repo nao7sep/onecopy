@@ -65,7 +65,7 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
             let sort = queries::SectionSort { order, desc };
             let expected = queries::section_window(
                 &conn,
-                "image",
+                onecopy_lib::queries::SectionKind::Image,
                 "1970-01",
                 chrono_tz::UTC,
                 sort,
@@ -79,7 +79,7 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
             .map(|item| item.hash.unwrap())
             .collect::<Vec<_>>();
             let bounds = Some((0, 2_678_400_000));
-            let anchor = queries::section_work_anchor(&conn, "image", bounds, sort, 80)
+            let anchor = queries::section_work_anchor(&conn, onecopy_lib::queries::SectionKind::Image, bounds, sort, 80)
                 .unwrap()
                 .unwrap();
             assert_eq!(anchor.hash.as_ref(), Some(&expected[80]));
@@ -88,7 +88,7 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
                 let mut actual = Vec::new();
                 loop {
                     let page =
-                        queries::section_work_page(&conn, "image", bounds, sort, &cursor, before)
+                        queries::section_work_page(&conn, onecopy_lib::queries::SectionKind::Image, bounds, sort, &cursor, before)
                             .unwrap();
                     assert!(page.len() <= 64);
                     let Some(last) = page.last() else {
@@ -114,10 +114,10 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
         desc: false,
     };
     let bounds = Some((0, 2_678_400_000));
-    let anchor = queries::section_work_anchor(&conn, "image", bounds, sort, 80)
+    let anchor = queries::section_work_anchor(&conn, onecopy_lib::queries::SectionKind::Image, bounds, sort, 80)
         .unwrap()
         .unwrap();
-    let expected = queries::section_work_page(&conn, "image", bounds, sort, &anchor, false)
+    let expected = queries::section_work_page(&conn, onecopy_lib::queries::SectionKind::Image, bounds, sort, &anchor, false)
         .unwrap()
         .into_iter()
         .map(|row| row.hash)
@@ -128,7 +128,7 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
     )
     .unwrap();
     assert_eq!(
-        queries::section_work_page(&conn, "image", bounds, sort, &anchor, false)
+        queries::section_work_page(&conn, onecopy_lib::queries::SectionKind::Image, bounds, sort, &anchor, false)
             .unwrap()
             .into_iter()
             .map(|row| row.hash)
@@ -142,8 +142,8 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
     settings.similarity_enabled = false;
     settings.face_enabled = false;
     let sort = queries::SectionSort { order: queries::SectionSortOrder::Time, desc: false };
-    let section = onecopy_lib::derived_work::SectionPriority { kind: "image".to_string(), start_ms: Some(0), end_ms: Some(2_678_400_000) };
-    let anchor = queries::section_work_anchor(&conn, "image", bounds, sort, 80).unwrap().unwrap();
+    let section = onecopy_lib::derived_work::SectionPriority { kind: onecopy_lib::queries::SectionKind::Image, start_ms: Some(0), end_ms: Some(2_678_400_000) };
+    let anchor = queries::section_work_anchor(&conn, onecopy_lib::queries::SectionKind::Image, bounds, sort, 80).unwrap().unwrap();
     let mut pending = Vec::new();
     if anchor.hash.as_deref().is_some_and(|hash| hash == "hash-010" || hash == "hash-170") { pending.push(anchor.hash.clone().unwrap()); }
     for before in [true, false] {

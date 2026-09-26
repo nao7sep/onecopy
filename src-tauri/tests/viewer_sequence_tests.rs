@@ -56,7 +56,7 @@ fn filter_changes_prune_a_frozen_sequence_without_adding_revealed_members() {
     let policy = |names| onecopy_lib::visibility::Policy::from_config(&serde_json::json!({"ignoredFileNames": names})).unwrap();
     onecopy_lib::visibility_index::apply_policy(&conn, &policy(vec!["3.jpg"])).unwrap();
     let anchor = queries::SectionIdentity { hash: Some("h1".into()), path_id: 1 };
-    let snapshot = viewer_sequence::start(root.path(), &conn, "image", "2026-01", Tz::UTC,
+    let snapshot = viewer_sequence::start(root.path(), &conn, onecopy_lib::queries::SectionKind::Image, "2026-01", Tz::UTC,
         queries::SectionSort { order: queries::SectionSortOrder::Name, desc: false },
         vec![queries::PositionedSectionIdentity { hash: Some("h1".into()), path_id: 1, index: 0 }], &anchor, projection()).unwrap();
     assert_eq!(snapshot.length, 2);
@@ -88,7 +88,7 @@ fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
     let snapshot = viewer_sequence::start(
         root.path(),
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         queries::SectionSort {
@@ -204,7 +204,7 @@ fn concurrent_starts_never_collide_on_one_temp_sequence_file() {
             viewer_sequence::start(
                 data_root.as_path(),
                 &conn,
-                "image",
+                onecopy_lib::queries::SectionKind::Image,
                 "2026-01",
                 Tz::UTC,
                 queries::SectionSort {
@@ -272,7 +272,7 @@ fn members_keep_their_place_when_their_provisional_identity_is_promoted() {
     let snapshot = viewer_sequence::start(
         root.path(),
         &conn,
-        "image",
+        onecopy_lib::queries::SectionKind::Image,
         "2026-01",
         Tz::UTC,
         queries::SectionSort { order: queries::SectionSortOrder::Name, desc: false },

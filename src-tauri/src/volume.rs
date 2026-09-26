@@ -244,3 +244,56 @@ pub fn prune_identities(root: &Path, configured: &[String]) -> Result<u64, Strin
 // public volume_identity is exercised from tests/volume_tests.rs.
 #[path = "../tests/unit/volume.rs"]
 mod tests;
+
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceDirsStatus {
+    pub missing: Vec<String>,
+    pub substituted: Vec<String>,
+}
+
+// Presence AND identity verification over the configured source dirs: a dir
+// that is not there is missing; a dir whose volume identity differs from the
+// recorded one is substituted (the developer's backup drives share identical
+// trees, so presence alone proves nothing). First sight records the identity
+// — the "when the directory was added" moment as the core observes it. Rows
+// for since-removed dirs are pruned; a volume without a readable identity
+// degrades to presence-only, logged at debug.
+pub fn verify_source_dirs(data_root: &Path) -> Result<SourceDirsStatus, String> {
+    let config = storage::read_config_for_setup(data_root)?;
+    let settings = crate::scanner::settings_from_config(config.as_ref(), data_root, 0);
+    let mut status = SourceDirsStatus::default();
+    for dir in &settings.source_dirs {
+        let path = std::path::Path::new(dir);
+        if !path.is_dir() {
+            status.missing.push(dir.clone());
+            continue;
+        }
+        let Some(current) = volume_identity(path) else {
+            logging::debug(
+                "no volume identity readable; presence-only verification",
+                serde_json::json!({ "dir": dir }),
+            );
+            continue;
+        };
+        match check_identity(data_root, dir, &current)? {
+            IdentityCheck::FirstSight => logging::info(
+                "source volume identity recorded",
+                serde_json::json!({ "dir": dir, "identity": current }),
+            ),
+            IdentityCheck::Substituted { recorded } => {
+                logging::warn(
+                    "source volume SUBSTITUTED",
+                    serde_json::json!({ "dir": dir, "recorded": recorded, "current": current }),
+                );
+                status.substituted.push(dir.clone());
+            }
+            IdentityCheck::Unchanged => {}
+        }
+    }
+
+    // Identities for directories no longer configured are stale — prune.
+    prune_identities(data_root, &settings.source_dirs)?;
+
+    Ok(status)
+}

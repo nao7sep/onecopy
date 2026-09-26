@@ -18,6 +18,8 @@ mod i18n_tests;
 mod presence_tests;
 #[path = "../presentation_tests.rs"]
 mod presentation_tests;
+#[path = "../progress_throttle_tests.rs"]
+mod progress_throttle_tests;
 #[path = "../storage_file_names.rs"]
 mod storage_file_names;
 #[path = "../storage_tests.rs"]

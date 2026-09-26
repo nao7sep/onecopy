@@ -133,7 +133,7 @@ pub fn record_active(
             "error": { "message": message },
         }),
     );
-    let conn = crate::paths::data_root(app)
+    let conn = crate::paths::data_root()
         .and_then(|root| crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME)))
         .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
     crate::index_store::upsert_issue_with_descriptor(
@@ -146,7 +146,6 @@ pub fn record_active(
             json!({ "error": { "message": &emit_error } }),
         );
         crate::notifications::record_history(
-            app,
             crate::notifications::NotificationRequest {
                 kind: "event-delivery-failed".to_string(),
                 path: Some("failure://reported".to_string()),
@@ -202,8 +201,8 @@ fn present_unrecorded(
     direct
 }
 
-pub fn clear(app: &AppHandle, kind: &str, path: Option<&str>) -> Result<(), String> {
-    let root = crate::paths::data_root(app)?;
+pub fn clear(kind: &str, path: Option<&str>) -> Result<(), String> {
+    let root = crate::paths::data_root()?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     crate::index_store::clear_issues(&conn, path.unwrap_or(""), &[kind]).map(|_| ())
 }

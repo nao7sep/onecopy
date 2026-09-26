@@ -142,13 +142,13 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
 
 fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String> {
     let started = Instant::now();
-    let data_root = crate::paths::data_root(app.handle())?;
+    let data_root = crate::paths::resolve_data_root(app.handle())?;
     let log_path = data_root
         .join(crate::paths::LOGS_DIR_NAME)
         .join(crate::logging::session_filename());
     crate::logging::init(&log_path, debug_enabled);
     crate::activity::init(data_root.join(crate::activity::ACTIVITY_DB_FILE_NAME));
-    crate::install_panic_hook();
+    crate::logging::install_panic_hook();
 
     // The backup store is best-effort by contract and records its own failure.
     crate::backup_store::init(data_root.join(crate::backup_store::BACKUPS_DB_FILE_NAME));
@@ -157,9 +157,7 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String
         cache_root,
         setup_config,
     } = prepare_data(&data_root)?;
-    crate::DATA_ROOT
-        .set(data_root.clone())
-        .map_err(|_| "data root was initialized more than once".to_string())?;
+    crate::paths::settle_data_root(data_root.clone())?;
 
     Ok(StartupState {
         data_root,
@@ -218,7 +216,6 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         let db_path = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
         let cache = crate::preview::CachePaths::new(cache_root);
         let handle = app.handle().clone();
-        let clear_handle = handle.clone();
         RuntimeService {
             name: "cache sweep",
             issue_kind: "cache-sweep-failed",
@@ -248,7 +245,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                                 }),
                             );
                         }
-                        crate::failure_runtime::clear(&clear_handle, "cache-sweep-failed", None)?;
+                        crate::failure_runtime::clear("cache-sweep-failed", None)?;
                         Ok(())
                     },
                 )
@@ -307,7 +304,6 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                     return Ok(());
                 }
                 let attempt = crate::storage::patch_state(
-                    &handle,
                     &json!({ "managedToolUpdateLastAttemptAtUtc": crate::logging::now_iso_millis() }),
                 )?;
                 if let Some(record) = attempt.quarantined {
@@ -330,7 +326,6 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                             match crate::binaries_manager::check_entry(&root, &id) {
                                 Ok(facts) => {
                                     crate::failure_runtime::clear(
-                                        &report_handle,
                                         "update-check-failed",
                                         Some(&id),
                                     )?;
@@ -360,7 +355,6 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                             json!({}),
                         )?;
                         crate::failure_runtime::clear(
-                            &report_handle,
                             "update-check-worker-failed",
                             None,
                         )?;

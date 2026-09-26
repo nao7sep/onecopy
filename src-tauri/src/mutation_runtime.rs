@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::json;
@@ -98,8 +98,37 @@ fn begin_reported(app: &AppHandle) -> Result<Claim, String> {
     })
 }
 
-pub(crate) fn begin_rebuild(app: &AppHandle) -> Result<impl Drop, String> {
-    begin_reported(app)
+/// Rebuilds the library index. The mutation claim makes the contract
+/// race-free: an active file operation rejects the rebuild, and no new one can
+/// begin while the reconstructible database facts are cleared. Unlike a file
+/// operation's [`admit`], the index and media claims answer busy when
+/// background work does not stop within the foreground deadline, like other
+/// Settings actions, and no source file is touched, so the volume-substitution
+/// gate does not apply.
+pub(crate) fn rebuild_index(app: &AppHandle) -> Result<(), String> {
+    let _rebuild = begin_reported(app)?;
+    crate::scan_runtime::run_foreground(app, || {
+        let deadline = Instant::now() + crate::scan_runtime::FOREGROUND_DEADLINE;
+        let _media = crate::media_use::begin(app, &[], &|| Instant::now() >= deadline).map_err(
+            |error| {
+                if error == crate::scanner::CANCELLED {
+                    crate::scan_runtime::BUSY.to_string()
+                } else {
+                    error
+                }
+            },
+        )?;
+        crate::scan_runtime::restart_source_walks();
+        let data_root = crate::paths::data_root()?;
+        crate::preview::purge_for_rebuild(&crate::preview::CachePaths::new(
+            data_root.join(crate::storage::CACHE_DIR_NAME),
+        ))?;
+        let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+        crate::index_store::clear_reconstructible(&conn)?;
+        crate::notifications::clear_active(app)
+    })?;
+    let _ = crate::source_check_runtime::start(app.clone())?;
+    Ok(())
 }
 
 /// Whether a file-changing operation or rebuild currently owns the claim.
@@ -242,9 +271,7 @@ struct ResultSummary {
 struct Publisher {
     trace: Option<crate::activity::WorkTrace>,
     app: AppHandle,
-    last_emit: Instant,
-    last_phase: Option<Phase>,
-    last_failures: u64,
+    throttle: crate::progress_throttle::ProgressThrottle<(Phase, u64)>,
 }
 
 impl Publisher {
@@ -252,9 +279,7 @@ impl Publisher {
         Self {
             app: app.clone(),
             trace: None,
-            last_emit: Instant::now() - Duration::from_secs(1),
-            last_phase: None,
-            last_failures: 0,
+            throttle: Default::default(),
         }
     }
 
@@ -269,20 +294,13 @@ impl Publisher {
             }), None));
         }
         if let Some(trace) = &self.trace { trace.progress(progress.files_done, progress.files_total); }
-        let now = Instant::now();
-        let phase_changed = self.last_phase != Some(progress.phase);
-        let failure_changed = self.last_failures != progress.failures;
         let completed = progress.phase == Phase::Complete
             || (progress.items_done == progress.items_total
                 && progress.files_done == progress.files_total);
-        if phase_changed
-            || failure_changed
-            || completed
-            || now.duration_since(self.last_emit) >= Duration::from_millis(125)
+        if self
+            .throttle
+            .admit((progress.phase, progress.failures), completed, Instant::now())
         {
-            self.last_emit = now;
-            self.last_phase = Some(progress.phase);
-            self.last_failures = progress.failures;
             crate::failure_runtime::emit_or_record(&self.app, "mutation://progress", progress);
         }
     }
@@ -374,7 +392,7 @@ fn admit(
     // mutated under the original drive's rows. A failed check keeps this gate
     // closed (R3-07) — the `?` below refuses admission rather than treating
     // an unreadable check as "nothing recorded".
-    let data_root = crate::paths::data_root(app)?;
+    let data_root = crate::paths::data_root()?;
     let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
     crate::volume::enforce_no_substitution(&data_root, &source_dirs)?;
     let cancelled = || mutation.cancelled();
@@ -430,11 +448,11 @@ pub(crate) fn delete_items(
             }
             let keys = items
                 .iter()
-                .map(crate::operations::ItemIdentity::media_key)
+                .map(crate::operations::ItemIdentity::key)
                 .collect::<Result<Vec<_>, _>>()?;
             // Accepting the confirmation freezes the physical files before
             // admission may wait for background work to yield.
-            let data_root = crate::paths::data_root(app)?;
+            let data_root = crate::paths::data_root()?;
             let conn =
                 crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
             let accepted = crate::operations::AcceptedFiles::capture(&conn, &items)?;
@@ -576,29 +594,15 @@ pub(crate) fn move_items_out(
     app: &AppHandle,
     mut items: Vec<crate::operations::ItemIdentity>,
     dest_dir: String,
-    mode: String,
-    conflict_policy: Option<String>,
+    mode: crate::operations::MoveOutMode,
+    conflict_policy: Option<crate::operations::DestinationConflictPolicy>,
     plan_token: Option<String>,
 ) -> Result<crate::operations::MoveBatchOutcome, String> {
-    let mode = match mode.as_str() {
-        "move-trash-rest" => crate::operations::MoveOutMode::MoveTrashRest,
-        "move-delete-rest" => crate::operations::MoveOutMode::MoveDeleteRest,
-        "copy" => crate::operations::MoveOutMode::CopyKeepAll,
-        other => return Err(format!("unknown move-out mode: {other}")),
-    };
     let kind = if mode == crate::operations::MoveOutMode::CopyKeepAll {
         Kind::DestinationCopy
     } else {
         Kind::DestinationMove
     };
-    let conflict_policy = conflict_policy
-        .as_deref()
-        .map(|policy| match policy {
-            "rename" => Ok(crate::operations::DestinationConflictPolicy::Rename),
-            "overwrite" => Ok(crate::operations::DestinationConflictPolicy::Overwrite),
-            other => Err(format!("unknown destination conflict policy: {other}")),
-        })
-        .transpose()?;
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
     let mutation = begin_reported(app)?;
@@ -624,7 +628,7 @@ pub(crate) fn move_items_out(
         json!({
             "items": items.len(),
             "destDir": dest_dir,
-            "mode": mode_string(mode),
+            "mode": mode,
             "operationId": operation_id,
         }),
         || {
@@ -634,11 +638,11 @@ pub(crate) fn move_items_out(
             }
             let keys = items
                 .iter()
-                .map(crate::operations::ItemIdentity::media_key)
+                .map(crate::operations::ItemIdentity::key)
                 .collect::<Result<Vec<_>, _>>()?;
             // Accepting the confirmation freezes the physical files before
             // admission may wait for background work to yield.
-            let data_root = crate::paths::data_root(app)?;
+            let data_root = crate::paths::data_root()?;
             let conn =
                 crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
             let accepted = crate::operations::AcceptedFiles::capture(&conn, &items)?;
@@ -794,14 +798,6 @@ pub(crate) fn move_items_out(
     result
 }
 
-fn mode_string(mode: crate::operations::MoveOutMode) -> &'static str {
-    match mode {
-        crate::operations::MoveOutMode::MoveTrashRest => "move-trash-rest",
-        crate::operations::MoveOutMode::MoveDeleteRest => "move-delete-rest",
-        crate::operations::MoveOutMode::CopyKeepAll => "copy",
-    }
-}
-
 pub(crate) fn empty_trash(
     app: &AppHandle,
     root: String,
@@ -830,7 +826,7 @@ pub(crate) fn empty_trash(
         "trash_empty",
         json!({ "root": root, "operationId": operation_id }),
         || {
-            let data_root = crate::paths::data_root(app)?;
+            let data_root = crate::paths::data_root()?;
             let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
             crate::volume::enforce_no_substitution(&data_root, &source_dirs)?;
             let roots = crate::storage::load_config_file_roots(&data_root)?;

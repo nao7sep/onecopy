@@ -448,6 +448,39 @@ pub fn filename_stamp_now() -> String {
     filename_stamp(now_unix_millis())
 }
 
+// Records the panic payload, location, and (when RUST_BACKTRACE is set) the
+// backtrace, flushes, then defers to the previous hook so the process still
+// aborts and prints as usual.
+pub(crate) fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "non-string panic payload".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+        let backtrace = std::backtrace::Backtrace::capture();
+        error(
+            "panic",
+            serde_json::json!({
+                "error": {
+                    "message": payload,
+                    "location": location,
+                    "backtrace": format!("{backtrace}"),
+                }
+            }),
+        );
+        // The error line is already on disk (the logger is unbuffered); defer to
+        // the previous hook so the process still aborts and prints as usual.
+        default_hook(info);
+    }));
+}
+
 #[cfg(test)]
 // EXCEPTION to the tests-live-in-tests/ rule (tests-folder
 // conventions, Rust form): these tests exercise genuinely private
