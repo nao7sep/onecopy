@@ -47,6 +47,33 @@ describe("momentary original-pixel inspection", () => {
     expect(image.getAttribute("style")).toContain("max-height: 480px");
   });
 
+  // content-presentation.md D10: with enlarge off and no index dimensions,
+  // the fitted image must cap at the original's real size (learned from a
+  // background probe), not at the cached preview raster's own resolution.
+  it("caps the fitted image at the original's real size once it loads, when enlarge is off and dimensions are unknown", () => {
+    const { container } = render(
+      <InspectableImage
+        hash="photo-hash"
+        fileName="family.jpg"
+        enlargeSmall={false}
+      />,
+    );
+
+    const image = screen.getByAltText("family.jpg");
+    expect(image.className).toContain("max-h-full max-w-full");
+    expect(image.getAttribute("style")).toBeNull();
+
+    const probe = container.querySelector('[data-native-size-probe]');
+    expect(probe).not.toBeNull();
+    Object.defineProperty(probe, "naturalWidth", { value: 4000, configurable: true });
+    Object.defineProperty(probe, "naturalHeight", { value: 3000, configurable: true });
+    fireEvent.load(probe as Element);
+
+    expect(image.className).toContain("h-full w-full");
+    expect(image.getAttribute("style")).toContain("max-width: 4000px");
+    expect(image.getAttribute("style")).toContain("max-height: 3000px");
+  });
+
   it("starts only after the hold threshold and returns on release", () => {
     render(
       <InspectableImage hash="photo-hash" fileName="family.jpg" enlargeSmall />,

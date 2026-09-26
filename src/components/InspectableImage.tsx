@@ -101,8 +101,18 @@ export default function InspectableImage({
     onEnd: () => undefined,
   });
 
+  // content-presentation.md D10: with enlarge off and no source dimensions
+  // from the index, the visible <img> above only carries the cached preview
+  // bitmap (long edge capped, `previewUrl`), so without a style cap of its
+  // own it renders at that cached raster's own size — not the real original
+  // — once the container is larger. Load the original once, off-screen, to
+  // learn its true pixels via `onLoad`, exactly like the held-inspection
+  // image below already does while holding.
+  const needsNativeSize =
+    !enlargeSmall && sourceWidth === null && sourceHeight === null;
+
   useEffect(() => {
-    if (!hold.inspecting || !converted || convertedSrc !== null) return;
+    if ((!hold.inspecting && !needsNativeSize) || !converted || convertedSrc !== null) return;
     let stale = false;
     void invoke("ensure_fullres", { hash })
       .then(() => {
@@ -115,9 +125,11 @@ export default function InspectableImage({
     return () => {
       stale = true;
     };
-  }, [converted, convertedSrc, hash, hold.inspecting]);
+  }, [converted, convertedSrc, hash, hold.inspecting, needsNativeSize]);
 
   const source = converted ? convertedSrc : originalUrl(hash);
+  const knownWidth = sourceWidth ?? (sourceSize.width || null);
+  const knownHeight = sourceHeight ?? (sourceSize.height || null);
   return (
     <div
       ref={viewportRef}
@@ -130,18 +142,34 @@ export default function InspectableImage({
         src={previewUrl(hash)}
         alt={fileName}
         className={`${
-          enlargeSmall || (sourceWidth !== null && sourceHeight !== null)
+          enlargeSmall || (knownWidth !== null && knownHeight !== null)
             ? "h-full w-full"
             : "max-h-full max-w-full"
         } cursor-zoom-in object-contain`}
         style={
-          !enlargeSmall && sourceWidth !== null && sourceHeight !== null
-            ? { maxWidth: `${sourceWidth}px`, maxHeight: `${sourceHeight}px` }
+          !enlargeSmall && knownWidth !== null && knownHeight !== null
+            ? { maxWidth: `${knownWidth}px`, maxHeight: `${knownHeight}px` }
             : undefined
         }
         draggable={false}
         onError={onError}
       />
+      {needsNativeSize && !hold.inspecting && source !== null && sourceSize.width === 0 ? (
+        // Off-screen: only here to learn the original's real dimensions.
+        <img
+          src={source}
+          alt=""
+          aria-hidden="true"
+          data-native-size-probe="true"
+          className="hidden"
+          onLoad={(event) => {
+            setSourceSize({
+              width: event.currentTarget.naturalWidth,
+              height: event.currentTarget.naturalHeight,
+            });
+          }}
+        />
+      ) : null}
       {hold.inspecting ? (
         <div className="absolute inset-0 cursor-crosshair overflow-hidden bg-background">
           {originalFailed ? (
