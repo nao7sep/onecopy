@@ -70,3 +70,15 @@ fn urgent_preparation_ends_a_completion_turn_at_its_safe_point_and_requeues_it()
     assert!(PREEMPTED.swap(false, Ordering::SeqCst));
     assert!(REQUESTED.swap(false, Ordering::SeqCst));
 }
+
+#[test]
+fn a_terminal_failure_holds_queued_work_and_presents_as_failed_not_paused() {
+    let _serial = crate::scan_runtime::serial_test();
+    hold_failed();
+    let state = snapshot();
+    assert!(state.failed);
+    // The queued work stays held so it does not retry in a loop.
+    assert!(state.paused);
+    FAILED.store(false, Ordering::SeqCst);
+    PAUSED.store(false, Ordering::SeqCst);
+}

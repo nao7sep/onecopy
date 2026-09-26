@@ -14,6 +14,9 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 static PREEMPTED: AtomicBool = AtomicBool::new(false);
+/// An unexpected terminal failure holds the queued work like a pause, but is
+/// shown as failed until the user retries it.
+static FAILED: AtomicBool = AtomicBool::new(false);
 static WORKERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 // Cached in place of a live `pending_index_work_exists` probe (up to six
@@ -36,6 +39,7 @@ enum WorkerAdmission {
 pub struct Snapshot {
     running: bool,
     paused: bool,
+    failed: bool,
     stopping: bool,
     queued: bool,
     event_sequence: u64,
@@ -46,6 +50,7 @@ pub fn snapshot() -> Snapshot {
     Snapshot {
         running: running(),
         paused: PAUSED.load(Ordering::SeqCst),
+        failed: FAILED.load(Ordering::SeqCst),
         stopping: running() && (PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst)),
         queued,
         event_sequence: EVENT_SEQUENCE.load(Ordering::SeqCst),
@@ -85,7 +90,7 @@ pub fn wake(app: AppHandle) {
             REQUESTED.store(false, Ordering::SeqCst);
         }
         Err(error) => {
-            PAUSED.store(true, Ordering::SeqCst);
+            hold_failed();
             fail(&app, &error);
             emit_state(&app);
             emit_done(&app, json!({ "error": error }));
@@ -138,7 +143,7 @@ fn worker_entry(app: AppHandle) {
         RUNNING.store(false, Ordering::SeqCst);
         PREEMPTED.store(false, Ordering::SeqCst);
         REQUESTED.store(true, Ordering::SeqCst);
-        PAUSED.store(true, Ordering::SeqCst);
+        hold_failed();
         let error = crate::failure_runtime::panic_message(payload);
         if crate::app_lifecycle::shutting_down() {
             REQUESTED.store(false, Ordering::SeqCst);
@@ -193,13 +198,13 @@ fn worker(app: AppHandle) {
         }
         Ok(Err(error)) => {
             REQUESTED.store(true, Ordering::SeqCst);
-            PAUSED.store(true, Ordering::SeqCst);
+            hold_failed();
             fail(&app, &error);
             json!({ "error": error })
         }
         Err(payload) => {
             REQUESTED.store(true, Ordering::SeqCst);
-            PAUSED.store(true, Ordering::SeqCst);
+            hold_failed();
             let error = crate::failure_runtime::panic_message(payload);
             fail(&app, &error);
             json!({ "error": error })
@@ -220,7 +225,7 @@ fn worker(app: AppHandle) {
                 REQUESTED.store(false, Ordering::SeqCst);
             }
             Err(error) => {
-                PAUSED.store(true, Ordering::SeqCst);
+                hold_failed();
                 fail(&app, &error);
                 emit_state(&app);
                 emit_done(&app, json!({ "error": error }));
@@ -303,12 +308,22 @@ fn complete_pending(
     Ok(Some(summary))
 }
 
+/// Holds the queued work after an unexpected terminal failure, so it does
+/// not retry in a loop, until the user retries it with Resume.
+fn hold_failed() {
+    FAILED.store(true, Ordering::SeqCst);
+    PAUSED.store(true, Ordering::SeqCst);
+}
+
+/// Pause, Resume, or retry after a failure; every explicit choice ends the
+/// failed presentation.
 pub fn set_paused(app: AppHandle, paused: bool) {
     if crate::app_lifecycle::shutting_down() {
         PAUSED.store(true, Ordering::SeqCst);
         REQUESTED.store(false, Ordering::SeqCst);
         return;
     }
+    FAILED.store(false, Ordering::SeqCst);
     PAUSED.store(paused, Ordering::SeqCst);
     if paused {
         REQUESTED.store(true, Ordering::SeqCst);

@@ -360,6 +360,7 @@
   "work.fileInformation": "Complete file information",
   "work.fileInformationDescription": "Completes missing identity, metadata, dates, and companion relationships.",
   "work.fileInformationPausing": "Pausing after the current safe step…",
+  "work.fileInformationFailed": "Stopped by an unexpected problem",
   "work.workQueuedPaused": "Work queued — paused",
   "work.paused": "Paused",
   "work.queued": "Queued",

@@ -126,6 +126,7 @@ beforeEach(() => {
       fileInformation: {
         running: false,
         paused: false,
+        failed: false,
         stopping: false,
         queued: false,
         eventSequence: 0,
@@ -174,6 +175,7 @@ beforeEach(() => {
     fileInformation: {
       running: false,
       paused: false,
+      failed: false,
       stopping: false,
       queued: false,
       eventSequence: 0,

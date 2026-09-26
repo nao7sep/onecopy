@@ -156,6 +156,8 @@ export default function BackgroundWorkModal({
             <span className="mt-1 block text-xs text-ink">
               {fileInformation.stopping
                 ? t("work.fileInformationPausing")
+                : fileInformation.failed
+                  ? t("work.fileInformationFailed")
                 : fileInformation.paused
                   ? fileInformation.queued
                     ? t("work.workQueuedPaused")
@@ -173,7 +175,11 @@ export default function BackgroundWorkModal({
             onClick={() => void setFileInformationPaused(!fileInformation.paused)}
           >
             {fileInformation.paused ? <Play size={13} /> : <Pause size={13} />}
-            {fileInformation.paused ? t("work.resume") : t("work.pause")}
+            {fileInformation.failed
+              ? t("common.retry")
+              : fileInformation.paused
+                ? t("work.resume")
+                : t("work.pause")}
           </Button>
         </li>
       </ul>

@@ -360,6 +360,7 @@
   "work.fileInformation": "Completar la información de los archivos",
   "work.fileInformationDescription": "Completa la identidad, los metadatos, las fechas y las relaciones entre archivos asociados que falten.",
   "work.fileInformationPausing": "Poniendo en pausa al terminar el paso seguro actual…",
+  "work.fileInformationFailed": "Detenido por un problema inesperado",
   "work.workQueuedPaused": "Trabajo en cola — en pausa",
   "work.paused": "En pausa",
   "work.queued": "En cola",

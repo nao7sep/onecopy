@@ -360,6 +360,7 @@
   "work.fileInformation": "补全文件信息",
   "work.fileInformationDescription": "补全缺失的文件身份、元数据、日期和伴随文件关系。",
   "work.fileInformationPausing": "将在当前安全步骤完成后暂停…",
+  "work.fileInformationFailed": "因意外问题而停止",
   "work.workQueuedPaused": "有工作排队中，已暂停",
   "work.paused": "已暂停",
   "work.queued": "排队中",

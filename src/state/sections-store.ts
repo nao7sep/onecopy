@@ -23,6 +23,8 @@ export interface SourceCheckState {
 export interface FileInformationState {
   running: boolean;
   paused: boolean;
+  /** Held after an unexpected failure until the user retries it. */
+  failed: boolean;
   stopping: boolean;
   queued: boolean;
   eventSequence: number;
@@ -64,6 +66,7 @@ const initialSourceCheck: SourceCheckState = {
 const initialFileInformation: FileInformationState = {
   running: false,
   paused: false,
+  failed: false,
   stopping: false,
   queued: false,
   eventSequence: 0,

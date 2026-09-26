@@ -360,6 +360,7 @@
   "work.fileInformation": "파일 정보 완성",
   "work.fileInformationDescription": "빠진 동일성 정보, 메타데이터, 날짜, 동반 파일 관계를 완성합니다.",
   "work.fileInformationPausing": "현재 안전 단계를 끝낸 뒤 일시 정지합니다…",
+  "work.fileInformationFailed": "예기치 않은 문제로 중지되었습니다",
   "work.workQueuedPaused": "작업 대기 중 — 일시 정지됨",
   "work.paused": "일시 정지됨",
   "work.queued": "대기열",

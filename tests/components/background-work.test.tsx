@@ -94,6 +94,7 @@ beforeEach(async () => {
     fileInformation: {
       running: false,
       paused: false,
+      failed: false,
       stopping: false,
       queued: false,
       eventSequence: 0,
@@ -123,6 +124,20 @@ describe("Background work", () => {
     expect(current.classes[0].failed).toBe(2);
     const audio = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Audio transcription"))!;
     expect(audio.querySelector("button")!.disabled).toBe(true);
+  });
+
+  it("shows a failed file-information run as failed with a retry, not as paused", async () => {
+    useSectionsStore.setState((state) => ({
+      fileInformation: { ...state.fileInformation, paused: true, failed: true, queued: true },
+    }));
+    const view = render(<BackgroundWorkModal open onClose={() => {}} />);
+    const row = [...view.container.querySelectorAll("li")].find((item) => item.textContent?.includes("Complete file information"))!;
+    expect(row.textContent).toContain("Stopped by an unexpected problem");
+    expect(row.textContent).not.toMatch(/Paused|paused/);
+    const retry = row.querySelector("button")!;
+    expect(retry.textContent).toBe("Retry");
+    await act(async () => retry.click());
+    expect(invokeCalls).toContainEqual({ command: "set_file_information_paused", args: { paused: false } });
   });
 
   it("keeps active manual work pausable when its automatic coordinator is stopped", () => {

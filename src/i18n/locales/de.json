@@ -360,6 +360,7 @@
   "work.fileInformation": "Dateiinformationen vervollständigen",
   "work.fileInformationDescription": "Vervollständigt fehlende Identität, Metadaten, Datumsangaben und Beziehungen zu Begleitdateien.",
   "work.fileInformationPausing": "Wird nach dem aktuellen sicheren Schritt pausiert…",
+  "work.fileInformationFailed": "Wegen eines unerwarteten Problems angehalten",
   "work.workQueuedPaused": "Arbeit in der Warteschlange — pausiert",
   "work.paused": "Pausiert",
   "work.queued": "In der Warteschlange",

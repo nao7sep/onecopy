@@ -360,6 +360,7 @@
   "work.fileInformation": "ファイル情報を完成させる",
   "work.fileInformationDescription": "不足している同一性、メタデータ、日付、関連ファイルの対応づけを埋めます。",
   "work.fileInformationPausing": "安全な区切りまで進めてから一時停止します…",
+  "work.fileInformationFailed": "予期しない問題のため停止しました",
   "work.workQueuedPaused": "処理はキューにあります — 一時停止中",
   "work.paused": "一時停止中",
   "work.queued": "キュー待ち",

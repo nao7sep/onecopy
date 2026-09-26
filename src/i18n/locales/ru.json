@@ -360,6 +360,7 @@
   "work.fileInformation": "Дополнить сведения о файлах",
   "work.fileInformationDescription": "Дополняет отсутствующие сведения об идентичности, метаданные, даты и связи с сопутствующими файлами.",
   "work.fileInformationPausing": "Приостановка после текущего безопасного шага…",
+  "work.fileInformationFailed": "Остановлено из-за непредвиденной проблемы",
   "work.workQueuedPaused": "Работа в очереди — приостановлено",
   "work.paused": "Приостановлено",
   "work.queued": "В очереди",
