@@ -20,6 +20,8 @@ mod indexed_file_tests;
 mod information_attempts_tests;
 #[path = "../issue_history_tests.rs"]
 mod issue_history_tests;
+#[path = "../library_settings_tests.rs"]
+mod library_settings_tests;
 #[path = "../live_photo_tests.rs"]
 mod live_photo_tests;
 #[path = "../path_identity_tests.rs"]

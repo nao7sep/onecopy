@@ -163,6 +163,18 @@ export async function errorNotification(
   return record;
 }
 
+/** Shows one timed information notice for an action's outcome. */
+export function reportInfoNotice(kind: string, notice: Message): void {
+  void publishNotification({
+    kind,
+    level: "info",
+    presentation: "timed",
+    message: documentTranslator().text(notice),
+  }).catch((error) => {
+    log.error("information notice failed", { kind, ...toErrorFields(error) });
+  });
+}
+
 /** Records one failed user-requested action without making every caller own
  * notification persistence failure or invent a second visible error path. */
 export function reportActionFailure(

@@ -10,20 +10,24 @@ import { useSectionsStore } from "../state/sections-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
 import { message } from "../i18n/translate";
-import { recordActionFailure, reportActionFailure } from "../state/notifications-store";
+import {
+  recordActionFailure,
+  reportActionFailure,
+  reportInfoNotice,
+} from "../state/notifications-store";
 import { newActivityOperationId, recordActivity } from "../repositories/activity";
 import { useAppShellStore } from "../state/app-shell-store";
 import { refreshBackgroundWorkSoon } from "../state/derived-work-store";
 import { useDestinationsStore } from "../state/destinations-store";
 import { reconcileComparisonMembership } from "./comparison";
 
+type LibrarySettingsOutcome = { status: "applied"; resolved: number } | { status: "owed" };
+
 export async function saveSettings(): Promise<void> {
   const { draft, opened } = useSettingsStore.getState();
   if (!draft) return;
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
-  const resolveDates = opened === null || ["defaultTimezone", "goodRangeStartYear", "pairingEnabled"]
-    .some((key) => draft[key as keyof typeof draft] !== opened[key as keyof typeof opened]);
   const visibilityChanged = opened === null || ["ignoredFileNames", "hideDotNames", "hideHiddenAttributes", "hideSystemAttributes"]
     .some((key) => JSON.stringify(draft[key as keyof typeof draft]) !== JSON.stringify(opened[key as keyof typeof opened]));
   const { soundEnabled, playbackVolume, ...configDraft } = draft;
@@ -91,9 +95,17 @@ export async function saveSettings(): Promise<void> {
     );
   }
 
+  // The backend compares the saved settings with those the index was
+  // projected with. When it cannot be admitted in time the apply stays owed
+  // and the file-information owner performs it at its next turn.
   let resolved: number | null = null;
   try {
-    resolved = await invoke<number>("apply_library_settings", { resolveDates });
+    const outcome = await invoke<LibrarySettingsOutcome>("apply_library_settings");
+    if (outcome.status === "applied") {
+      resolved = outcome.resolved;
+    } else {
+      reportInfoNotice("settings-apply-owed", message("settings.applyOwedNotice"));
+    }
   } catch (error) {
     followUpFailed = true;
     log.error("settings re-index failed after save", toErrorFields(error));

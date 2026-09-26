@@ -242,6 +242,8 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
         &data_root,
         chrono::Utc::now().timestamp_millis(),
     );
+    let visibility =
+        crate::visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
     let progress = crate::scan_runtime::progress_emitter(
         app.clone(),
@@ -253,14 +255,21 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
         || PAUSED.load(Ordering::SeqCst) || PREEMPTED.load(Ordering::SeqCst),
         || -> Result<Option<crate::scanner::ScanSummary>, String> {
             let conn = crate::index_store::open(&db_file)?;
-            complete_pending(&conn, |conn| {
+            let pending = |conn: &rusqlite::Connection| -> Result<bool, String> {
+                Ok(crate::library_settings::owed(conn, &settings, &visibility)?
+                    || crate::scanner::pending_index_work_exists(conn)?)
+            };
+            complete_pending(&conn, pending, |conn| {
                 let mut summary = crate::scanner::ScanSummary::default();
                 let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::FileInformation, None, None);
                 let report = trace.progress_reporter();
-                let result = crate::scanner::run_index_tail(conn, &settings, &|value| {
+                let report_progress = |value: crate::scanner::ScanProgress| {
                     report(value.done, value.total);
                     progress(value);
-                }, &mut summary);
+                };
+                // Saved library settings a busy Settings apply left owed.
+                let result = crate::library_settings::apply(conn, &settings, &visibility, &report_progress)
+                    .and_then(|_| crate::scanner::run_index_tail(conn, &settings, &report_progress, &mut summary));
                 if result.is_ok() && summary.failures > 0 {
                     trace.finish(crate::activity::ActivityState::Failed, None);
                 } else { trace.result(&result); }
@@ -281,18 +290,16 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
 /// not shown as still queued.
 fn complete_pending(
     conn: &rusqlite::Connection,
+    pending: impl Fn(&rusqlite::Connection) -> Result<bool, String>,
     work: impl FnOnce(&rusqlite::Connection) -> Result<crate::scanner::ScanSummary, String>,
 ) -> Result<Option<crate::scanner::ScanSummary>, String> {
-    let pending = crate::scanner::pending_index_work_exists(conn)?;
-    PENDING_WORK_HINT.store(pending, Ordering::SeqCst);
-    if !pending {
+    let owed = pending(conn)?;
+    PENDING_WORK_HINT.store(owed, Ordering::SeqCst);
+    if !owed {
         return Ok(None);
     }
     let summary = work(conn)?;
-    PENDING_WORK_HINT.store(
-        crate::scanner::pending_index_work_exists(conn).unwrap_or(true),
-        Ordering::SeqCst,
-    );
+    PENDING_WORK_HINT.store(pending(conn).unwrap_or(true), Ordering::SeqCst);
     Ok(Some(summary))
 }
 

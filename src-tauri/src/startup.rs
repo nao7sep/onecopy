@@ -118,6 +118,14 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     )?;
     let config = crate::storage::read_config_for_setup(data_root)?;
     crate::visibility_index::apply_policy(&conn, &crate::visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?)?;
+    crate::library_settings::adopt_unrecorded(
+        &conn,
+        &crate::scanner::settings_from_config(
+            config.as_ref(),
+            data_root,
+            chrono::Utc::now().timestamp_millis(),
+        ),
+    )?;
     // Once per process, before any executor or window-driven request exists.
     // Opening another database connection or section must never reset failure.
     crate::attempt_boundaries::begin_run(&conn)?;

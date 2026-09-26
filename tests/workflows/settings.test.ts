@@ -21,7 +21,7 @@ beforeEach(() => {
     patch_config: () => ({}),
     patch_state: ({ patch }) => patch,
     log_event: () => null,
-    apply_library_settings: () => 0,
+    apply_library_settings: () => ({ status: "applied", resolved: 0 }),
     start_source_check: () => true,
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     check_source_dirs: () => ({ missing: [], substituted: [] }),
@@ -41,18 +41,28 @@ beforeEach(() => {
 });
 
 describe("Settings save boundary", () => {
-  it("changes visibility without recomputing date evidence or rechecking sources", async () => {
+  it("changes visibility without rechecking sources", async () => {
     useSettingsStore.getState().update({ hideDotNames: false, ignoredFileNames: [] });
     await saveSettings();
-    expect(invokeCalls.find((call) => call.command === "apply_library_settings")?.args).toEqual({ resolveDates: false });
+    expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(true);
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(false);
     expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({ patch: { hideDotNames: false, ignoredFileNames: [] } });
   });
 
-  it("still recomputes evidence when the date policy changes", async () => {
-    useSettingsStore.getState().update({ goodRangeStartYear: 2000 });
+  it("says a busy apply will still take effect instead of reporting a failure", async () => {
+    mockCommands({ apply_library_settings: () => ({ status: "owed" }) });
+    useSettingsStore.getState().update({ defaultTimezone: "UTC" });
+
     await saveSettings();
-    expect(invokeCalls.find((call) => call.command === "apply_library_settings")?.args).toEqual({ resolveDates: true });
+
+    const notice = invokeCalls.find((call) => call.command === "publish_notification")?.args.request;
+    expect(notice).toMatchObject({
+      level: "info",
+      presentation: "timed",
+      message: "Settings were saved. OneCopy will apply them to the library as soon as current work allows.",
+    });
+    await settleUntil(() => invokeCalls.some((call) => call.command === "activity_record" && (call.args.draft as { kind: string }).kind !== "started"));
+    expect(invokeCalls.filter((call) => call.command === "activity_record").map((call) => (call.args.draft as { kind: string }).kind)).toEqual(["started", "completed"]);
   });
   it("keeps the draft open when config publication itself fails", async () => {
     mockCommands({ patch_config: () => Promise.reject(new Error("disk full")) });
@@ -74,9 +84,9 @@ describe("Settings save boundary", () => {
     let finishResolution = (_value: number): void => {};
     mockCommands({
       apply_library_settings: () =>
-        new Promise<number>((resolve) => {
+        new Promise((resolve) => {
           resolutionStarted = true;
-          finishResolution = resolve;
+          finishResolution = (resolved) => resolve({ status: "applied", resolved });
         }),
     });
 
@@ -98,7 +108,7 @@ describe("Settings save boundary", () => {
 
     expect(useAppShellStore.getState().utilitySurface).toBeNull();
     expect(invokeCalls.find((call) => call.command === "publish_notification")?.args.request).toMatchObject({
-      message: "Settings were saved, but OneCopy couldn’t update the library. Try refreshing the section.",
+      message: "Settings were saved, but OneCopy couldn’t apply them to the library yet. It tries again automatically.",
       presentation: "persistent",
     });
     await settleUntil(() => invokeCalls.some((call) => call.command === "activity_record" && (call.args.draft as { kind: string }).kind === "failed"));

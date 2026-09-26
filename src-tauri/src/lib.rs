@@ -35,6 +35,7 @@ pub mod visibility;
 pub mod visibility_index;
 pub mod indexed_file;
 pub mod information_attempts;
+pub mod library_settings;
 pub mod attempt_boundaries;
 mod instance_owner;
 pub mod live_photo;
@@ -1195,13 +1196,13 @@ fn visibility_capabilities() -> visibility::Capabilities {
 // only a changed date/pairing policy recomputes those projections. The
 // derived-work coordinator remains the sole owner of preparation/enrichment.
 #[tauri::command]
-async fn apply_library_settings(app: AppHandle, resolve_dates: bool) -> Result<u64, String> {
+async fn apply_library_settings(app: AppHandle) -> Result<LibrarySettingsOutcome, String> {
     dispatch(move || {
     logging::boundary(
         "apply_library_settings",
         json!({}),
         || {
-            scan_runtime::run_foreground(&app, || {
+            let applied = scan_runtime::try_foreground(&app, || {
                 // A source walk parked behind this apply walks again with the
                 // saved configuration instead of finishing with the old one.
                 scan_runtime::restart_source_walks();
@@ -1212,33 +1213,31 @@ async fn apply_library_settings(app: AppHandle, resolve_dates: bool) -> Result<u
                     &data_root,
                     chrono::Utc::now().timestamp_millis(),
                 );
+                let visibility =
+                    visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                visibility_index::apply_policy(&conn, &visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?)?;
-                if !resolve_dates {
-                    derived_work::wake();
-                    return Ok(0);
-                }
-                // Resolution rows carry their own resumable debt. Pairing is an
-                // atomic projection, so retain the existing coarse dirty-root
-                // receipt across the whole Settings rebuild; cancellation before
-                // publication must make a later index repair retry it.
-                let repair_roots =
-                    scanner::begin_scoped_index_repair(&conn, &settings.source_dirs)?;
-                let stats = scanner::re_resolve_all_with_progress(
-                    &conn,
-                    &settings.resolution,
-                    settings.pairing_enabled,
-                    &|_| {},
-                )?;
-                scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
+                let resolved = library_settings::apply(&conn, &settings, &visibility, &|_| {})?;
                 derived_work::wake();
-                Ok(stats.resolved)
+                Ok(resolved)
+            })?;
+            // Busy: the saved settings stay owed in the index, and releasing
+            // the admission woke the file-information owner that applies them.
+            Ok(match applied {
+                Some(resolved) => LibrarySettingsOutcome::Applied { resolved },
+                None => LibrarySettingsOutcome::Owed,
             })
         },
-        |resolved| json!({ "resolved": resolved }),
+        |outcome| json!({ "outcome": outcome }),
     )
     })
     .await
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum LibrarySettingsOutcome {
+    Applied { resolved: u64 },
+    Owed,
 }
 
 // Scoped rescan: re-stats exactly the directories that contributed files to

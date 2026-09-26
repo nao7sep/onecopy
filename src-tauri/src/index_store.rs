@@ -20,7 +20,19 @@ use rusqlite::{Connection, OptionalExtension};
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 15;
+const SCHEMA_REVISION: i64 = 16;
+
+/// The settings dates and companion relationships were resolved with
+/// (`library_settings`). Launch adopts the saved settings for an index that
+/// has not recorded any.
+const RESOLUTION_POLICY_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS resolution_policy (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  default_timezone TEXT NOT NULL,
+  good_range_start_year INTEGER NOT NULL,
+  pairing_enabled INTEGER NOT NULL
+);
+";
 
 const ISSUE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS issues (
@@ -440,7 +452,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                13 | 14 => {}
+                13..=15 => {}
                 9..=12 => {
                     if current == 9 {
                         conn.execute_batch(
@@ -569,6 +581,10 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                      DELETE FROM logical_projection_batch;
                      DROP TABLE empty_identities;"
                 ).map_err(|error| error.to_string())?;
+            }
+            if current < 16 {
+                conn.execute_batch(RESOLUTION_POLICY_SCHEMA)
+                    .map_err(|error| error.to_string())?;
             }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;

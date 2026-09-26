@@ -36,10 +36,8 @@ pub fn apply_policy(conn: &Connection, policy: &Policy) -> Result<(), String> {
     tx.commit().map_err(|error| error.to_string())
 }
 
-pub(crate) fn apply_policy_in_transaction(
-    conn: &Connection,
-    policy: &Policy,
-) -> Result<(), String> {
+/// Whether the index's review projection already follows `policy`.
+pub fn policy_applied(conn: &Connection, policy: &Policy) -> Result<bool, String> {
     let flags: i64 = conn
         .query_row("SELECT hidden_flags FROM visibility_policy", [], |row| {
             row.get(0)
@@ -53,7 +51,14 @@ pub(crate) fn apply_policy_in_transaction(
         .map_err(|error| error.to_string())?
         .collect::<Result<std::collections::HashSet<_>, _>>()
         .map_err(|error| error.to_string())?;
-    if flags == policy.hidden_flags && current == policy.ignored_file_names {
+    Ok(flags == policy.hidden_flags && current == policy.ignored_file_names)
+}
+
+pub(crate) fn apply_policy_in_transaction(
+    conn: &Connection,
+    policy: &Policy,
+) -> Result<(), String> {
+    if policy_applied(conn, policy)? {
         return Ok(());
     }
     conn.execute(

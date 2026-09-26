@@ -33,6 +33,7 @@ fn open_creates_schema_and_is_idempotent() {
         "logical_projection_batch",
         "paths",
         "recent_notifications",
+        "resolution_policy",
         "scan_dirs",
         "similar_group_members",
         "similar_groups",
@@ -105,4 +106,27 @@ fn an_earlier_disposable_schema_reconstructs_old_rows() {
             .unwrap(),
         SCHEMA_REVISION
     );
+}
+
+#[test]
+fn revision_15_upgrade_adds_the_resolution_policy_table() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-index-")
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("index.sqlite3");
+    let conn = open(&db).unwrap();
+    conn.execute_batch("DROP TABLE resolution_policy; PRAGMA user_version = 15;")
+        .unwrap();
+    drop(conn);
+
+    let conn = open(&db).unwrap();
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'resolution_policy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(exists, 1);
 }

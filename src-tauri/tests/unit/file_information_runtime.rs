@@ -15,7 +15,7 @@ fn a_completed_run_leaves_no_queued_work_behind() {
     crate::scanner::upsert_file(&conn, &photo, &lists, 0).unwrap();
     assert!(crate::scanner::pending_index_work_exists(&conn).unwrap());
 
-    let summary = complete_pending(&conn, |conn| {
+    let summary = complete_pending(&conn, crate::scanner::pending_index_work_exists, |conn| {
         // The run settles every piece of debt it found.
         conn.execute("DELETE FROM paths", []).map_err(|error| error.to_string())?;
         Ok(crate::scanner::ScanSummary::default())
@@ -25,5 +25,5 @@ fn a_completed_run_leaves_no_queued_work_behind() {
     assert!(summary.is_some());
     assert!(!crate::scanner::pending_index_work_exists(&conn).unwrap());
     assert!(!snapshot().queued);
-    assert!(complete_pending(&conn, |_| unreachable!()).unwrap().is_none());
+    assert!(complete_pending(&conn, crate::scanner::pending_index_work_exists, |_| unreachable!()).unwrap().is_none());
 }

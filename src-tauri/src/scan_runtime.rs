@@ -498,20 +498,32 @@ pub(crate) fn run_foreground<T>(
     app: &AppHandle,
     work: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    try_foreground(app, work)?.ok_or_else(|| BUSY.to_string())
+}
+
+/// Like [`run_foreground`], but a busy refusal is `Ok(None)` for a caller
+/// that leaves the work owed rather than reporting it.
+pub(crate) fn try_foreground<T>(
+    app: &AppHandle,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<Option<T>, String> {
     if crate::app_lifecycle::shutting_down() {
         return Err(CLOSING.to_string());
     }
-    let _foreground = admit_foreground(
+    let _foreground = match admit_foreground(
         Some(app),
         Some(Instant::now() + FOREGROUND_DEADLINE),
         &|| false,
         &mut || {},
-    )
-    .map_err(|refusal| refusal.message())?;
+    ) {
+        Ok(guard) => guard,
+        Err(Refusal::Busy) => return Ok(None),
+        Err(refusal) => return Err(refusal.message()),
+    };
     if crate::app_lifecycle::shutting_down() {
         return Err(CLOSING.to_string());
     }
-    work()
+    work().map(Some)
 }
 
 /// Enters the projection boundary for a mutation that already owns the
