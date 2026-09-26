@@ -2413,19 +2413,19 @@ fn raw_pair_candidates_sql(scoped: bool) -> String {
     format!(
         "INSERT INTO onecopy_pair_results (path_id, primary_id)
          SELECT companion.id, (
-           SELECT candidate.id FROM paths candidate
+           SELECT candidate.id FROM paths candidate INDEXED BY idx_paths_pairing
            WHERE candidate.dir_path = companion.dir_path
              AND candidate.stem = companion.stem
              AND candidate.kind IN ('image', 'video')
              AND candidate.missing = 0
              AND (candidate.kind != 'video' OR NOT EXISTS (
-                   SELECT 1 FROM evidence video_id
+                   SELECT 1 FROM evidence video_id INDEXED BY idx_evidence_path
                    WHERE video_id.path_id = candidate.id
                      AND video_id.source = 'live-photo-identifier'
                      AND video_id.raw IS NOT NULL
                      AND EXISTS (
                        SELECT 1 FROM paths live_image
-                       JOIN evidence image_id ON image_id.path_id = live_image.id
+                       JOIN evidence image_id INDEXED BY idx_evidence_path ON image_id.path_id = live_image.id
                        WHERE live_image.dir_path = candidate.dir_path
                          AND live_image.kind = 'image' AND live_image.missing = 0
                          AND image_id.source = 'live-photo-identifier'
@@ -2454,12 +2454,12 @@ fn live_photo_pair_candidates_sql(scoped: bool) -> String {
            WHERE image.dir_path = video.dir_path
              AND image.kind = 'image' AND image.missing = 0
              AND EXISTS (
-               SELECT 1 FROM evidence image_id
+               SELECT 1 FROM evidence image_id INDEXED BY idx_evidence_path
                WHERE image_id.path_id = image.id
                  AND image_id.source = 'live-photo-identifier'
                  AND image_id.raw IS NOT NULL
                  AND EXISTS (
-                   SELECT 1 FROM evidence video_id
+                   SELECT 1 FROM evidence video_id INDEXED BY idx_evidence_path
                    WHERE video_id.path_id = video.id
                      AND video_id.source = 'live-photo-identifier'
                      AND video_id.raw = image_id.raw))
