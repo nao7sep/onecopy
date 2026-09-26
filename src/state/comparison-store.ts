@@ -28,6 +28,7 @@ import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
 import { requestSeq } from "./request-seq";
 import { message, type Message } from "../i18n/translate";
+import { documentTranslator } from "../i18n/I18nContext";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 
 export type GroupMember = ComparisonMember;
@@ -357,7 +358,9 @@ async function showSpread(monitors: MonitorList): Promise<void> {
       const scale = monitor.scaleFactor || 1;
       const created = new WebviewWindow(label, {
         url: `index.html?view=comparison&slice=${index + 1}`,
-        title: "OneCopy Comparison",
+        // window-appearance.ts sets the definitive title on first paint; this
+        // is only what shows for the brief instant before that (L6).
+        title: documentTranslator().t("window.titleComparison"),
         x: monitor.position.x / scale,
         y: monitor.position.y / scale,
         width: monitor.size.width / scale,

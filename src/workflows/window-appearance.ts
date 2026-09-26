@@ -1,11 +1,42 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { log, toErrorFields } from "../repositories";
 import { createEventInstaller } from "../utils/eventInstallation";
-import { message } from "../i18n/translate";
+import { createTranslator, message } from "../i18n/translate";
+import type { MessageKey } from "../i18n/catalogues";
+import type { Language } from "../i18n/languages";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { applyUiFont } from "../utils/uiFont";
 import { useLanguageStore } from "../state/language-store";
 import { useWindowPreferencesStore } from "../state/window-preferences-store";
+
+// Every window OneCopy draws speaks the interface language in its title
+// (interface-language.md L6). Main's title never carries a suffix; the
+// others own a translated catalogue key. Identify flashes and the
+// per-image Comparison window are excluded: the first is a fixed brand-only
+// flash and the second's title is the user's own file name, which stays as
+// recorded like any other user-supplied text.
+const WINDOW_TITLE_KEYS: Partial<Record<string, MessageKey>> = {
+  preview: "window.titlePreview",
+  viewer: "window.titleViewer",
+  comparison: "window.titleComparison",
+};
+
+function currentView(): string | null {
+  return new URLSearchParams(window.location.search).get("view");
+}
+
+function applyWindowTitle(language: Language): void {
+  const view = currentView();
+  if (view === null) {
+    void getCurrentWindow().setTitle("OneCopy").catch((error) => reportFailure(error));
+    return;
+  }
+  const key = WINDOW_TITLE_KEYS[view];
+  if (key === undefined) return;
+  const translator = createTranslator(language);
+  void getCurrentWindow().setTitle(translator.t(key)).catch((error) => reportFailure(error));
+}
 
 interface AppearancePreferences {
   uiFontFamily: unknown;
@@ -52,6 +83,7 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
       if (current !== request) return;
       applyUiFont(preferences.uiFontFamily);
       useLanguageStore.getState().apply(preferences);
+      applyWindowTitle(useLanguageStore.getState().language);
       useWindowPreferencesStore.getState().apply(preferences);
     } catch (error) {
       if (current === request) reportFailure(error);

@@ -6,16 +6,17 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import "@tauri-apps/api/core";
 import "@tauri-apps/api/event";
 import "@tauri-apps/api/window";
-import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks, setTheme } from "../mocks/tauri";
+import { fireEvent, invokeCalls, listenerCount, mockCommands, resetTauriMocks, setTheme, setTitle } from "../mocks/tauri";
 
 beforeEach(() => {
   vi.resetModules();
   resetTauriMocks();
+  window.history.pushState(null, "", "/");
   Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
   mockCommands({ record_interface_failure: () => null, log_event: () => null });
 });
 
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); window.history.pushState(null, "", "/"); });
 
 it("initializes the font without Main bootstrap, then follows saved changes", async () => {
   let preferences = { uiFontFamily: "Iosevka" };
@@ -92,6 +93,41 @@ it("contains read failure and leaves the listener ready for a repaired configura
   mockCommands({ appearance_preferences: () => ({ uiFontFamily: "Recovered font" }) });
   fireEvent("appearance://changed");
   await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("Recovered font"));
+});
+
+it("sets Main's title on first paint and again after a language change (D-L6)", async () => {
+  let language: unknown = "en";
+  mockCommands({ appearance_preferences: () => ({ uiFontFamily: null, language }) });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  await installWindowAppearance();
+  expect(setTitle).toHaveBeenCalledWith("OneCopy");
+
+  language = "ja";
+  setTitle.mockClear();
+  fireEvent("appearance://changed");
+  await vi.waitFor(() => expect(setTitle).toHaveBeenCalledWith("OneCopy"));
+});
+
+it("titles an auxiliary window from the current language, not fixed English (D-L6)", async () => {
+  window.history.pushState(null, "", "/?view=preview");
+  let language: unknown = "en";
+  mockCommands({ appearance_preferences: () => ({ uiFontFamily: null, language }) });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  await installWindowAppearance();
+  expect(setTitle).toHaveBeenCalledWith("OneCopy Preview");
+
+  language = "ja";
+  setTitle.mockClear();
+  fireEvent("appearance://changed");
+  await vi.waitFor(() => expect(setTitle).toHaveBeenCalledWith("OneCopy プレビュー"));
+});
+
+it("leaves the identify flash and comparison-image titles alone (they carry no app sentence)", async () => {
+  window.history.pushState(null, "", "/?view=identify&slice=1");
+  mockCommands({ appearance_preferences: () => ({ uiFontFamily: null }) });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  await installWindowAppearance();
+  expect(setTitle).not.toHaveBeenCalled();
 });
 
 it("bounds a stalled preference read so appearance cannot indefinitely hold window startup", async () => {

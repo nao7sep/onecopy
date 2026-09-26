@@ -24,6 +24,7 @@ import {
 import { orderMonitors, priorityFromState } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
 import { message, type Message } from "../i18n/translate";
+import { documentTranslator } from "../i18n/I18nContext";
 import { recordActionFailure } from "./notifications-store";
 import { recordActivity } from "../repositories/activity";
 import { waitForWindowCreated } from "../utils/windowCreation";
@@ -165,7 +166,10 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
   // an overlapping Preview; the temporary raise pulse preserves command focus.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
-    title: "OneCopy Preview",
+    // The definitive title follows the language boot read (window-appearance.ts,
+    // interface-language.md L6); this creation-time value is only what shows
+    // for the brief instant before that first paint.
+    title: documentTranslator().t("window.titlePreview"),
     width: 1280,
     height: 800,
     visible: false,

@@ -8,6 +8,7 @@ import {
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { reportWindowCall } from "../repositories";
 import { waitForWindowCreated } from "../utils/windowCreation";
+import { documentTranslator } from "../i18n/I18nContext";
 
 const VIEWER_LABEL = "viewer";
 
@@ -55,7 +56,9 @@ async function createViewer(monitor: ViewerMonitor): Promise<WebviewWindow> {
   const scale = monitor.scaleFactor || 1;
   const window = new WebviewWindow(VIEWER_LABEL, {
     url: "index.html?view=viewer",
-    title: "OneCopy Viewer",
+    // window-appearance.ts sets the definitive title on first paint; this is
+    // only what shows for the brief instant before that (L6).
+    title: documentTranslator().t("window.titleViewer"),
     x: monitor.position.x / scale,
     y: monitor.position.y / scale,
     width: monitor.size.width / scale,
