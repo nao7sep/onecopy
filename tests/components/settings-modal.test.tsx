@@ -158,6 +158,47 @@ describe("Settings categories", () => {
     expect(screen.getAllByRole("button", { name: "Move up" })[0].textContent).toBe("Move up");
   });
 
+  // R5.5 C5: the screen order is machine-local state outside the Settings
+  // draft entirely -- a move writes immediately through `patch_state`, and
+  // neither Discard nor Save (which only ever sends `patch_config` from the
+  // draft) can see or revert it.
+  it("keeps the screen order outside the Settings draft: Save never sends it, and it survives Discard", async () => {
+    setMonitors([0, 1].map((index) => ({
+      name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },
+      size: { width: 1920, height: 1080 }, scaleFactor: 1,
+    })));
+    mockCommands({
+      patch_state: () => ({}),
+      patch_config: () => ({}),
+      check_source_dirs: () => [],
+      record_recent_notification: () => ({}),
+      log_event: () => null,
+    });
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    await waitFor(() => expect(screen.queryAllByRole("button", { name: "Move down" }).length).toBeGreaterThan(0));
+
+    const hasScreenPriority = (call: { command: string; args: Record<string, unknown> }) =>
+      call.command === "patch_state" &&
+      "screenPriority" in ((call.args.patch as Record<string, unknown>) ?? {});
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Move down" })[0]);
+    await waitFor(() => expect(invokeCalls.some(hasScreenPriority)).toBe(true));
+    const screenWrite = invokeCalls.find(hasScreenPriority);
+    invokeCalls.length = 0;
+
+    fireEvent.click(screen.getByRole("tab", { name: "Library" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hide names beginning with a dot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(invokeCalls.some((call) => call.command === "patch_config")).toBe(true));
+
+    const configWrite = invokeCalls.find((call) => call.command === "patch_config");
+    expect(configWrite?.args.patch).not.toHaveProperty("screenPriority");
+    expect(invokeCalls.some(hasScreenPriority)).toBe(false);
+    // The move already landed and nothing here reverted it.
+    expect((screenWrite?.args.patch as Record<string, unknown>)).toHaveProperty("screenPriority");
+  });
+
   // screen-priority.md: the configured display order is meaningful only with
   // two or more monitors, so a single-display machine must render no order
   // section at all (not merely a one-row, unreorderable one).
