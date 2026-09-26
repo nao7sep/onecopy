@@ -113,7 +113,12 @@ it("restores the last section and anchor exclusively once appData and counts are
   const { rerender } = renderHook(
     (props: { appData: LoadedAppData | null; counts: SectionCounts | null }) =>
       useAppBootstrapAndRestore({ ...props, restorePaneIntents: () => {} }),
-    { initialProps: { appData: null, counts: null } },
+    {
+      initialProps: {
+        appData: null as LoadedAppData | null,
+        counts: null as SectionCounts | null,
+      },
+    },
   );
   // Neither piece alone is enough to restore -- the effect requires both.
   rerender({ appData: data, counts: null });
