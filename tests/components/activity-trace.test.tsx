@@ -61,6 +61,25 @@ it("reveals a target through Main and closes to item-area focus (R5.1 D8)", asyn
   expect([...useItemsStore.getState().selectedKeys]).toEqual(["target"]);
 });
 
+// R4.4 E5: a target hidden entirely by review-visibility policy comes back
+// from the backend with targetHash set but target null; the row must show
+// "unavailable" rather than dropping the target row or crashing.
+it("shows a hidden-only target as unavailable, with no reveal control", async () => {
+  mockCommands({
+    activity_page: ({ after }) => page(after === null
+      ? [{ ...operation(), targetHash: "hidden", target: null }]
+      : []),
+  });
+  function Host() {
+    const [open, setOpen] = useState(true);
+    return <><div id="main-item-area" tabIndex={0} />
+      <ActivityTraceModal open={open} onClose={() => setOpen(false)} /></>;
+  }
+  render(<Host />);
+  expect(await screen.findByText("File no longer available in Main")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /\.jpg$/ })).toBeNull();
+});
+
 it("shows ordinary work with local time, no JSONL export, and shared technical identifiers once", async () => {
   render(<ActivityTraceModal open onClose={() => {}} />);
   const row = await screen.findByRole("button", { name: /Prepare thumbnails and previews/ });
