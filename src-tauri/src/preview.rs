@@ -1061,12 +1061,14 @@ fn reconcile_orphan_contents(conn: &Connection) -> Result<u64, String> {
 /// Startup sweep — the crash-leftover half of cache GC: reconciles any
 /// leaked `contents` row (see `reconcile_orphan_contents`), then deletes
 /// cache entries whose hash is no longer in `contents`, plus stranded `.tmp`
-/// staging files (safe: the single-instance app has no writer running at
-/// startup, and the whole tree is reconstructible). Touches only the cache
-/// tree and the DB.
+/// staging files. It runs beside this launch's preview derivation, which
+/// stages `.tmp` files and writes an entry before its `contents` row exists,
+/// so it collects only files last written before `launched`: what earlier
+/// runs left. Touches only the cache tree and the DB.
 pub fn startup_sweep(
     conn: &Connection,
     cache: &CachePaths,
+    launched: std::time::SystemTime,
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
     reconcile_orphan_contents(conn)?;
@@ -1114,6 +1116,15 @@ pub fn startup_sweep(
                 }
             };
             if !entry.file_type().is_file() {
+                continue;
+            }
+            // Coarse filesystem clocks round a fresh write down by up to two
+            // seconds; anything that recent is left for the next launch.
+            let written_this_run = entry.metadata().ok().and_then(|meta| meta.modified().ok())
+                .is_none_or(|modified| {
+                    modified + std::time::Duration::from_secs(2) >= launched
+                });
+            if written_this_run {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();

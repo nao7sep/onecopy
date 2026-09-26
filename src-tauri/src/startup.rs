@@ -211,6 +211,9 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     let derived_handle = app.handle().clone();
     let sleep_handle = app.handle().clone();
     let keep_awake = crate::sleep_prevention::configured(setup_config.as_ref());
+    // Before derived work can write anything, so the sweep can tell this
+    // run's cache writes from what earlier runs left.
+    let launched = std::time::SystemTime::now();
     let cache_service = {
         let db_path = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
         let cache = crate::preview::CachePaths::new(cache_root);
@@ -230,6 +233,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                         let removed = crate::preview::startup_sweep(
                             &conn,
                             &cache,
+                            launched,
                             &crate::app_lifecycle::shutting_down,
                         )?;
                         if crate::app_lifecycle::shutting_down() {

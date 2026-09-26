@@ -256,6 +256,11 @@ fn dhash_survives_scaling_but_not_rotation() {
 }
 
 
+/// A launch after every file the test wrote.
+fn later() -> std::time::SystemTime {
+    std::time::SystemTime::now() + std::time::Duration::from_secs(60)
+}
+
 #[test]
 fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
     let dir = tempfile::Builder::new()
@@ -289,7 +294,7 @@ fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
     let stray_tmp = cache.thumb("live01").with_file_name("live01-xyz.tmp");
     std::fs::write(&stray_tmp, b"partial").unwrap();
 
-    let removed = startup_sweep(&conn, &cache, &|| false).unwrap();
+    let removed = startup_sweep(&conn, &cache, later(), &|| false).unwrap();
     assert_eq!(removed, 3); // orphan thumb + orphan preview + stray tmp
     assert!(cache.thumb("live01").exists());
     assert!(cache.preview("live01").exists());
@@ -334,7 +339,7 @@ fn strip_frames_leave_with_their_video_and_survive_while_it_stays() {
 
     // A frame's name carries its number, so reading it as a whole hash would find no content
     // and condemn a frame whose video is still here.
-    let removed = startup_sweep(&conn, &cache, &|| false).unwrap();
+    let removed = startup_sweep(&conn, &cache, later(), &|| false).unwrap();
     assert_eq!(removed, 3); // the orphan's three frames, and only those
     for index in 0..3u32 {
         assert!(onecopy_lib::video::strip_path(&cache, "live01", index).exists());
@@ -360,7 +365,7 @@ fn sweep_preserves_unvisited_cache_entries_after_shutdown_cancellation() {
     std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
     std::fs::write(&orphan, b"webp-bytes").unwrap();
 
-    let removed = startup_sweep(&conn, &cache, &|| true).unwrap();
+    let removed = startup_sweep(&conn, &cache, later(), &|| true).unwrap();
 
     assert_eq!(removed, 0);
     assert!(orphan.exists());
@@ -775,4 +780,47 @@ fn a_rebuild_discards_provisional_entries_and_transcripts_but_reuses_content_add
     // An empty or never-created cache is not an error.
     purge_for_rebuild(&cache).unwrap();
     purge_for_rebuild(&CachePaths::new(dir.path().join("absent"))).unwrap();
+}
+
+#[test]
+fn the_sweep_never_collects_what_this_launch_is_writing() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-sweep-live-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let launched = std::time::SystemTime::now();
+    let earlier = launched - std::time::Duration::from_secs(3600);
+    // Left by an earlier run.
+    let stale = cache.thumb("gone01");
+    let stale_tmp = cache.thumb("gone01").with_file_name("gone01-old.tmp");
+    // Written by this launch's derivation: staging, and an entry under a
+    // real hash whose `contents` row the promotion has not created yet.
+    let staging = cache.preview("fresh1").with_file_name("fresh1-new.tmp");
+    let promoting = cache.preview("fresh1");
+    for (path, modified) in [
+        (&stale, Some(earlier)),
+        (&stale_tmp, Some(earlier)),
+        (&staging, None),
+        (&promoting, None),
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"bytes").unwrap();
+        if let Some(modified) = modified {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        }
+    }
+
+    let removed = startup_sweep(&conn, &cache, launched, &|| false).unwrap();
+
+    assert_eq!(removed, 2);
+    assert!(!stale.exists() && !stale_tmp.exists());
+    assert!(staging.exists(), "a staging file being written was removed");
+    assert!(promoting.exists(), "an entry awaiting its promotion was removed");
 }
