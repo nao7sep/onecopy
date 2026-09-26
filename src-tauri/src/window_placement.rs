@@ -53,6 +53,31 @@ pub fn frame_fills_work_area(frame: NormalRectangle, work_area: NormalRectangle)
         && frame.height.abs_diff(work_area.height) <= 2
 }
 
+/// The smallest on-screen sliver a restored window must show in each
+/// dimension to count as "restored safely" (main-review.md). Enough to see
+/// and drag the title bar back into view; a 1px overlap after an unplugged
+/// or resized monitor is not (R5.1 D12).
+const MIN_RESTORE_OVERLAP: i64 = 80;
+
+/// Whether `rectangle` overlaps `work_area` by a usable amount in both
+/// dimensions, not merely a nonzero sliver.
+pub fn restorable_overlap(rectangle: NormalRectangle, work_area: NormalRectangle) -> bool {
+    if rectangle.width == 0 || rectangle.height == 0 {
+        return false;
+    }
+    let left = i64::from(rectangle.x);
+    let top = i64::from(rectangle.y);
+    let right = left + i64::from(rectangle.width);
+    let bottom = top + i64::from(rectangle.height);
+    let area_left = i64::from(work_area.x);
+    let area_top = i64::from(work_area.y);
+    let area_right = area_left + i64::from(work_area.width);
+    let area_bottom = area_top + i64::from(work_area.height);
+    let overlap_width = right.min(area_right) - left.max(area_left);
+    let overlap_height = bottom.min(area_bottom) - top.max(area_top);
+    overlap_width >= MIN_RESTORE_OVERLAP && overlap_height >= MIN_RESTORE_OVERLAP
+}
+
 pub(crate) type PlacementState = Arc<Mutex<Option<Placement>>>;
 
 pub(crate) struct PreviewPlacementState(pub PlacementState);
@@ -111,21 +136,17 @@ fn is_maximized(window: &Window<Wry>) -> tauri::Result<bool> {
 }
 
 fn usable(window: &Window<Wry>, rectangle: NormalRectangle) -> tauri::Result<bool> {
-    if rectangle.width == 0 || rectangle.height == 0 {
-        return Ok(false);
-    }
-    let left = i64::from(rectangle.x);
-    let top = i64::from(rectangle.y);
-    let right = left + i64::from(rectangle.width);
-    let bottom = top + i64::from(rectangle.height);
     Ok(window.available_monitors()?.iter().any(|monitor| {
         let area = monitor.work_area();
-        let area_left = i64::from(area.position.x);
-        let area_top = i64::from(area.position.y);
-        left < area_left + i64::from(area.size.width)
-            && right > area_left
-            && top < area_top + i64::from(area.size.height)
-            && bottom > area_top
+        restorable_overlap(
+            rectangle,
+            NormalRectangle {
+                x: area.position.x,
+                y: area.position.y,
+                width: area.size.width,
+                height: area.size.height,
+            },
+        )
     }))
 }
 
