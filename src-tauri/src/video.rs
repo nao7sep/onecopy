@@ -344,7 +344,7 @@ fn derive_videos_pending_limit(
 
 /// The optional derived-work half: scene strips for videos the poster pass already
 /// postered, found through their NULL `strip_frames`. The coordinator supplies
-/// cancellation for pause and required-work preemption. Returns one bounded
+/// cancellation for pause and index-owner preemption. Returns one bounded
 /// page's work statistics.
 pub fn derive_strips_pending(
     conn: &Connection,
