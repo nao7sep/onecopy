@@ -1,11 +1,16 @@
-//! Process-lifetime admission authority.
+//! Process-lifetime admission authority and the normal-exit sequence.
 //!
 //! Worker modules retain ownership of their cancellation, handles, and joins.
-//! This module owns only the irreversible transition that tells every owner no
-//! new work may be admitted once final shutdown begins.
+//! This module owns the irreversible transition that tells every owner no new
+//! work may be admitted once final shutdown begins, and the one sequence that
+//! asks every owner to stop, waits for them, and exits the process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::json;
+use tauri::{AppHandle, Emitter};
 
 struct Lifecycle {
     shutting_down: AtomicBool,
@@ -64,6 +69,215 @@ pub(crate) fn shutting_down() -> bool {
 pub(crate) fn publish_if_running<T>(publish: impl FnOnce() -> T) -> Option<T> {
     APP.publish_if_running(publish)
 }
+
+/// Bounds only the non-mutation exit joins (derived work, requested media,
+/// watchers, source check, binaries, startup, instance owner). Mutation
+/// quiescence has no deadline (`specs/file-operations.md`, "Normal exit and
+/// abnormal termination").
+const EXIT_JOIN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Set once the exit sequence has reached the point where exiting is safe;
+/// only then may an exit request close the process.
+static EXIT_READY: AtomicBool = AtomicBool::new(false);
+
+/// Whether an exit request may close the process now. Every earlier request,
+/// including a repeated quit while the sequence waits, is prevented, so no
+/// second request forces exit past mutation quiescence.
+pub(crate) fn exit_ready() -> bool {
+    EXIT_READY.load(Ordering::SeqCst)
+}
+
+/// Starts the normal-exit sequence once; later requests join the one already
+/// running. The event loop is never blocked unless no thread can be started,
+/// and then the sequence still finishes and quits on this thread.
+pub(crate) fn quiesce(app: &AppHandle) {
+    if !begin_shutdown() {
+        return;
+    }
+    if let Err(error) = app.emit("app://exit-quiescing", ()) {
+        crate::logging::warn(
+            "exit wait state delivery failed",
+            json!({ "error": { "message": error.to_string() } }),
+        );
+    }
+    request_worker_shutdown(app);
+    let joins = app.clone();
+    let media = app.clone();
+    let reporter = app.clone();
+    run_exit(
+        ExitSequence {
+            join_workers: Box::new(move || join_workers(&joins)),
+            wait_for_mutation: Box::new(|| {
+                crate::mutation_runtime::wait_for_idle()
+            }),
+            exit: Box::new(move || {
+                let released = crate::media_use::begin_shutdown(&media);
+                if let Err(error) = &released {
+                    let _ = crate::failure_runtime::report(
+                        &media,
+                        "shutdown-media-release-failed",
+                        None,
+                        error,
+                    );
+                }
+                drop(released);
+                EXIT_READY.store(true, Ordering::SeqCst);
+                media.exit(0);
+            }),
+            report: Arc::new(move |error: String| {
+                let _ = crate::failure_runtime::report(
+                    &reporter,
+                    "shutdown-worker-failed",
+                    None,
+                    &error,
+                );
+            }),
+        },
+        spawn_thread,
+        EXIT_JOIN_DEADLINE,
+    );
+}
+
+/// Asks every worker owner to stop admitting and to cancel its current work.
+fn request_worker_shutdown(app: &AppHandle) {
+    // A hidden or abruptly destroyed simple-fullscreen window can leave macOS
+    // system chrome suppressed. Leave presentation mode before the longer
+    // worker-quiescence shutdown.
+    if let Err(error) = crate::presentation_runtime::shutdown(app) {
+        let _ = crate::failure_runtime::report(app, "shutdown-window-recovery-failed", None, &error);
+    }
+    crate::source_check_runtime::shutdown();
+    crate::sleep_prevention::shutdown();
+    crate::file_information_runtime::shutdown();
+    crate::watcher::shutdown();
+    crate::scan_runtime::shutdown();
+    crate::startup::shutdown();
+    crate::instance_owner::shutdown(app);
+    crate::binaries_manager::begin_shutdown();
+    crate::derived_work::shutdown(app);
+    if let Err(error) = crate::mutation_runtime::request_shutdown() {
+        let _ = crate::failure_runtime::report(app, "shutdown-worker-failed", None, &error);
+    }
+}
+
+/// Joins every non-mutation worker; the exit sequence bounds this wait.
+fn join_workers(app: &AppHandle) {
+    let joined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::source_check_runtime::join();
+        crate::sleep_prevention::join();
+        crate::file_information_runtime::join();
+        crate::watcher::join();
+        crate::binaries_manager::wait_for_idle();
+        crate::startup::join();
+        crate::instance_owner::join(app);
+        crate::derived_work::join();
+    }));
+    if let Err(payload) = joined {
+        let error = crate::failure_runtime::panic_message(payload);
+        let _ = crate::failure_runtime::report(app, "shutdown-worker-failed", None, &error);
+    }
+}
+
+/// The steps after admission closes, as seams the sequence runs in order.
+struct ExitSequence {
+    join_workers: Box<dyn FnOnce() + Send>,
+    wait_for_mutation: Box<dyn FnOnce() -> Result<(), String> + Send>,
+    exit: Box<dyn FnOnce() + Send>,
+    report: Arc<dyn Fn(String) + Send + Sync>,
+}
+
+type Spawn = fn(&'static str, Box<dyn FnOnce() + Send>) -> std::io::Result<()>;
+
+fn spawn_thread(name: &'static str, work: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(work)
+        .map(|_| ())
+}
+
+fn take_sequence(slot: &Mutex<Option<ExitSequence>>) -> Option<ExitSequence> {
+    slot.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+}
+
+/// Runs the sequence on its own thread. When that thread cannot start, the
+/// failure is reported and the sequence runs on the caller's thread instead,
+/// so quitting still completes and never before mutation quiescence.
+fn run_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
+    let slot = Arc::new(Mutex::new(Some(sequence)));
+    let owned = slot.clone();
+    let started = spawn(
+        "onecopy-exit",
+        Box::new(move || {
+            if let Some(sequence) = take_sequence(&owned) {
+                finish_exit(sequence, spawn, deadline);
+            }
+        }),
+    );
+    if let Err(error) = started {
+        if let Some(sequence) = take_sequence(&slot) {
+            (sequence.report)(format!("could not start the exit thread: {error}"));
+            finish_exit(sequence, spawn, deadline);
+        }
+    }
+}
+
+/// Waits for the non-mutation joins up to `deadline`, then for mutation
+/// quiescence with no deadline, then exits. A join that never reaches its own
+/// cancellation point is abandoned at the deadline, once.
+fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
+    let ExitSequence {
+        join_workers,
+        wait_for_mutation,
+        exit,
+        report,
+    } = sequence;
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let joins = spawn(
+        "onecopy-exit-joins",
+        Box::new(move || {
+            join_workers();
+            let _ = done_tx.send(());
+        }),
+    );
+    match joins {
+        Ok(()) => {
+            await_other_joins_with_deadline(done_rx, deadline);
+        }
+        Err(error) => {
+            report(format!("could not start the exit joins: {error}"));
+            crate::subprocess::kill_all_running();
+        }
+    }
+    if let Err(error) = wait_for_mutation() {
+        report(error);
+    }
+    exit();
+}
+
+/// Waits up to `deadline` for the non-mutation exit joins signalled on `rx`.
+/// If the deadline passes first, kills every managed-tool subprocess still
+/// running (W-L1) and stops waiting for those joins. Returns whether the
+/// joins finished in time.
+fn await_other_joins_with_deadline(rx: mpsc::Receiver<()>, deadline: Duration) -> bool {
+    if rx.recv_timeout(deadline).is_ok() {
+        return true;
+    }
+    crate::logging::warn(
+        "exit joins exceeded their deadline; killing outstanding subprocesses",
+        json!({ "deadline_secs": deadline.as_secs() }),
+    );
+    crate::subprocess::kill_all_running();
+    false
+}
+
+#[cfg(test)]
+// EXCEPTION to tests-folder conventions: exercises the private exit sequence
+// and its spawn seam; promoting them would widen the crate's API only for
+// these tests.
+#[path = "../tests/unit/lib/exit_quiescence_tests.rs"]
+mod exit_quiescence_tests;
 
 // This process singleton is intentionally private application plumbing. A
 // separate Lifecycle proves its transition without poisoning the shared test
