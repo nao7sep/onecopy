@@ -13,12 +13,44 @@ fn unicode_markers_are_exact_including_utf32() {
     assert_eq!(decode_automatic(&utf32, "utf-8").unwrap().unwrap().0, "A");
 }
 
+// content-presentation.md D8: automatic decoding reports which step produced
+// its result, so the picker can show a marker guess, an exact match, and a
+// detector guess as the different confidences they are. (The fallback step
+// is exercised by `binary_bytes_do_not_fall_through_to_a_legacy_decoder`'s
+// sibling paths in practice, but is not independently reachable by a crafted
+// byte string here: `chardetng`'s single-byte candidates accept almost any
+// input without error, so the detector step wins first.)
+#[test]
+fn automatic_decoding_reports_which_step_produced_the_result() {
+    assert_eq!(
+        decode_automatic(b"\xEF\xBB\xBFhello", "utf-8")
+            .unwrap()
+            .unwrap()
+            .2,
+        Some("marker")
+    );
+    assert_eq!(
+        decode_automatic("plain ascii".as_bytes(), "utf-8")
+            .unwrap()
+            .unwrap()
+            .2,
+        Some("exact")
+    );
+    assert_eq!(
+        decode_automatic(&[224, 128, 128], "utf-8").unwrap().unwrap().2,
+        Some("detected")
+    );
+}
+
 #[test]
 fn exact_utf8_wins_before_detection() {
     let decoded = decode_automatic("日本語".as_bytes(), "windows-1252")
         .unwrap()
         .unwrap();
-    assert_eq!(decoded, ("日本語".to_string(), "utf-8".to_string()));
+    assert_eq!(
+        decoded,
+        ("日本語".to_string(), "utf-8".to_string(), Some("exact"))
+    );
 }
 
 #[test]

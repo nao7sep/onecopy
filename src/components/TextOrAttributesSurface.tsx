@@ -26,6 +26,9 @@ interface TextBody {
   body: "text";
   text: string;
   encoding: string;
+  // Which automatic-decode step produced `encoding` (marker / exact /
+  // detected / fallback); null for an explicit manual choice.
+  method: string | null;
   contentKey: string;
   encodings: string[];
   byteSize: number;
@@ -64,6 +67,16 @@ interface DecodeErrorBody {
 
 type PreviewBody = TextBody | AttributesBody | DecodeErrorBody;
 
+// content-presentation.md D9: this native `<select>` (like every other
+// picker in the app — Wizard's language/timezone selects, Grid's sort
+// select) has no custom keyboard handling. A browser's built-in option
+// type-ahead matches only the START of an option's visible label, so an
+// alias placed after the canonical name (below) helps a reader recognize an
+// encoding but can never be found by typing it — e.g. typing "SJIS" will
+// not jump to "shift_jis — Shift JIS, SJIS, Windows-31J". Aliases here are
+// therefore display-only, matching every other list in the app; introducing
+// a searchable/combobox control for this one picker would be new machinery
+// this codebase has nowhere else.
 const ENCODING_ALIASES: Record<string, string> = {
   "utf-8": "UTF8",
   shift_jis: "Shift JIS, SJIS, Windows-31J",
@@ -81,6 +94,25 @@ const ENCODING_ALIASES: Record<string, string> = {
 function encodingLabel(encoding: string): string {
   const aliases = ENCODING_ALIASES[encoding];
   return aliases === undefined ? encoding : `${encoding} — ${aliases}`;
+}
+
+// content-presentation.md D8: a marker guess, an exact match, a detector
+// guess and a fallback are different confidences and must not look
+// identical under one "Automatic (…)" label.
+const METHOD_KEYS: Record<string, MessageKey> = {
+  marker: "textPreview.methodMarker",
+  exact: "textPreview.methodExact",
+  detected: "textPreview.methodDetected",
+  fallback: "textPreview.methodFallback",
+};
+
+function automaticLabel(body: TextBody, t: Translator["t"]): string {
+  const methodKey = body.method !== null ? METHOD_KEYS[body.method] : undefined;
+  if (methodKey === undefined) return t("textPreview.automatic");
+  return t("textPreview.automaticDetected", {
+    method: t(methodKey),
+    encoding: body.encoding,
+  });
 }
 
 type SessionOwner = "installation" | "encoding" | "wrap";
@@ -264,11 +296,7 @@ export default function TextOrAttributesSurface({
               }}
             >
               <option value="automatic">
-                {body.body === "text"
-                  ? t("textPreview.automaticDetected", {
-                      encoding: body.encoding,
-                    })
-                  : t("textPreview.automatic")}
+                {body.body === "text" ? automaticLabel(body, t) : t("textPreview.automatic")}
               </option>
               {/* Encoding names and their alias spellings are identifiers. */}
               {encodings.map((encoding) => (

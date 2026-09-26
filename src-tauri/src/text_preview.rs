@@ -68,6 +68,13 @@ pub enum PreviewBody {
     Text {
         text: String,
         encoding: String,
+        /// How automatic decoding picked `encoding` — a Unicode marker, an
+        /// exact UTF-8 match, the detector's guess, or the configured
+        /// fallback — so the picker can show that uncertainty instead of
+        /// implying every automatic result is equally confident
+        /// (content-presentation.md D8). `None` for an explicit manual
+        /// choice, which carries no such ambiguity.
+        method: Option<&'static str>,
         content_key: String,
         encodings: &'static [&'static str],
         byte_size: u64,
@@ -135,7 +142,7 @@ pub fn preview_file(
     let decoded = match requested {
         Some(label) if !label.eq_ignore_ascii_case("automatic") => {
             canonical_label(label).and_then(|canonical| {
-                decode_named(&bytes, canonical).map(|text| (text, canonical.to_string()))
+                decode_named(&bytes, canonical).map(|text| (text, canonical.to_string(), None))
             })
         }
         _ => match decode_automatic(&bytes, fallback) {
@@ -165,19 +172,25 @@ pub fn preview_file(
     Ok(PreviewBody::Text {
         text: decoded.0,
         encoding: decoded.1,
+        method: decoded.2,
         content_key,
         encodings: ENCODINGS,
         byte_size,
     })
 }
 
-fn decode_automatic(bytes: &[u8], fallback: &str) -> Result<Option<(String, String)>, String> {
+/// Result tuple: decoded text, canonical encoding, and (for the automatic
+/// path only) which of the four steps produced it — see `PreviewBody::Text`.
+type Decoded = (String, String, Option<&'static str>);
+
+fn decode_automatic(bytes: &[u8], fallback: &str) -> Result<Option<Decoded>, String> {
     if let Some((encoding, skip)) = unicode_marker(bytes) {
-        return decode_named(&bytes[skip..], encoding).map(|text| Some((text, encoding.into())));
+        return decode_named(&bytes[skip..], encoding)
+            .map(|text| Some((text, encoding.into(), Some("marker"))));
     }
     if let Ok(text) = std::str::from_utf8(bytes) {
         if convincingly_textual(text) {
-            return Ok(Some((text.to_string(), "utf-8".to_string())));
+            return Ok(Some((text.to_string(), "utf-8".to_string(), Some("exact"))));
         }
     }
     if strong_binary_evidence(bytes) {
@@ -191,11 +204,12 @@ fn decode_automatic(bytes: &[u8], fallback: &str) -> Result<Option<(String, Stri
         return Ok(Some((
             text.into_owned(),
             guessed.name().to_ascii_lowercase(),
+            Some("detected"),
         )));
     }
     let fallback = canonical_label(fallback)?;
     let text = decode_named(bytes, fallback)?;
-    Ok(convincingly_textual(&text).then(|| (text, fallback.to_string())))
+    Ok(convincingly_textual(&text).then(|| (text, fallback.to_string(), Some("fallback"))))
 }
 
 fn canonical_label(label: &str) -> Result<&'static str, String> {
@@ -296,3 +310,4 @@ fn convincingly_textual(text: &str) -> bool {
 // crate's API only for this test.
 #[path = "../tests/unit/text_preview.rs"]
 mod tests;
+
