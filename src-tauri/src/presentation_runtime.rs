@@ -159,51 +159,6 @@ fn screen_reserves_dock_space(frame: (f64, f64, f64, f64), visible: (f64, f64, f
         || visible_right < frame_right - TOLERANCE
 }
 
-#[cfg(all(test, target_os = "macos"))]
-// These helpers interpret AppKit geometry and are meaningful only inside this
-// private platform adapter; exposing them would enlarge the shipped API solely
-// for tests.
-mod tests {
-    use super::{screen_frames_match, screen_reserves_dock_space};
-
-    #[test]
-    fn top_menu_bar_inset_is_not_mistaken_for_the_dock() {
-        assert!(!screen_reserves_dock_space(
-            (0.0, 0.0, 2560.0, 1440.0),
-            (0.0, 0.0, 2560.0, 1415.0),
-        ));
-    }
-
-    #[test]
-    fn left_right_and_bottom_dock_insets_are_detected() {
-        let frame = (0.0, 0.0, 2560.0, 1440.0);
-        assert!(screen_reserves_dock_space(
-            frame,
-            (80.0, 0.0, 2480.0, 1415.0)
-        ));
-        assert!(screen_reserves_dock_space(
-            frame,
-            (0.0, 0.0, 2480.0, 1415.0)
-        ));
-        assert!(screen_reserves_dock_space(
-            frame,
-            (0.0, 80.0, 2560.0, 1335.0)
-        ));
-    }
-
-    #[test]
-    fn a_fullscreen_window_matches_the_captured_dock_display_by_frame() {
-        assert!(screen_frames_match(
-            (0.0, 0.0, 2560.0, 1440.0),
-            (0.5, -0.5, 2560.0, 1440.0),
-        ));
-        assert!(!screen_frames_match(
-            (0.0, 0.0, 2560.0, 1440.0),
-            (2560.0, 0.0, 2560.0, 1440.0),
-        ));
-    }
-}
-
 /// Explicit entry/exit is the only path that changes window geometry.
 /// macOS uses non-Spaces fullscreen; Windows uses the native fullscreen path.
 pub fn set_desired(app: &AppHandle, label: &str, enable: bool) -> Result<(), String> {
@@ -286,3 +241,10 @@ pub fn shutdown(_app: &AppHandle) -> Result<(), String> {
     apply_system_chrome(_app)?;
     Ok(())
 }
+
+#[cfg(all(test, target_os = "macos"))]
+// EXCEPTION to tests-folder conventions: these helpers interpret AppKit
+// geometry and are meaningful only inside this private platform adapter;
+// exposing them would enlarge the shipped API solely for tests.
+#[path = "../tests/unit/presentation_runtime.rs"]
+mod tests;
