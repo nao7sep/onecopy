@@ -313,3 +313,44 @@ fn a_full_event_queue_flags_overflow_instead_of_blocking_the_callback() {
     drop(rx);
 }
 
+
+// (R7-02) A vanished directory marks its rows missing through the
+// projection-batch publisher, page by page, never through the per-row
+// projection trigger that holds the write lock for the whole subtree.
+#[test]
+fn a_vanished_directory_is_marked_missing_through_the_batch_publisher() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-watch-vanished-batch-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let root = dir.path().join("watched");
+    let sub = root.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    for index in 0..600 {
+        std::fs::write(sub.join(format!("{index}.jpg")), b"known").unwrap();
+    }
+    let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
+    let roots = [stored_root.to_string_lossy().into_owned()];
+    restat_dir(&conn, &sub, &lists(), &roots).unwrap();
+    conn.execute_batch(
+        "CREATE TEMP TABLE unguarded_path_updates (id INTEGER);
+         CREATE TEMP TRIGGER count_unguarded_path_updates AFTER UPDATE ON main.paths
+         WHEN NOT EXISTS (SELECT 1 FROM main.logical_projection_batch)
+         BEGIN INSERT INTO unguarded_path_updates VALUES (NEW.id); END;",
+    )
+    .unwrap();
+
+    std::fs::remove_dir_all(&sub).unwrap();
+    assert_eq!(restat_dir(&conn, &sub, &lists(), &roots).unwrap(), 600);
+    let (missing, unguarded): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM paths WHERE missing = 1),
+                    (SELECT COUNT(*) FROM unguarded_path_updates)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(missing, 600);
+    assert_eq!(unguarded, 0, "every row was published under the batch guard");
+}

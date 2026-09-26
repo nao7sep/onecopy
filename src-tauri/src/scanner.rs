@@ -50,24 +50,78 @@ pub(crate) fn mark_path_missing(conn: &Connection, path: &str) -> Result<(), Str
     crate::index_store::clear_issues(conn, path, PATH_SCAN_ISSUES).map(|_| ())
 }
 
+/// Closes the path-scan Issues of every path `path_predicate` (SQL over
+/// `path`, its parameters numbered from `?3`) selects.
+fn close_path_scan_issues(
+    conn: &Connection,
+    path_predicate: &str,
+    path_params: &[&dyn rusqlite::ToSql],
+) -> Result<(), String> {
+    let now = crate::logging::now_iso_millis();
+    let sql = format!(
+        "UPDATE issues SET closure = 'resolved', closed_at_utc = ?1 \
+         WHERE closed_at_utc IS NULL AND kind = ?2 AND {path_predicate}"
+    );
+    for kind in PATH_SCAN_ISSUES {
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&now, kind];
+        values.extend_from_slice(path_params);
+        conn.execute(&sql, values.as_slice())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 /// Marks every known row under `dir` (recursive prefix match) missing — used
 /// when a watcher directory has vanished as a whole, so a per-file `read_dir`
-/// diff is impossible. Returns the number of rows newly marked.
+/// diff is impossible. Returns the number of rows newly marked. Pages through
+/// the projection-batch publisher like the settings re-resolve, so a large
+/// vanished folder never holds the write lock for its whole size.
 pub(crate) fn mark_missing_under(conn: &Connection, dir: &str) -> Result<u64, String> {
     let prefix = like_prefix(dir);
-    let changed = conn
-        .execute(
-            "UPDATE paths SET missing = 1 WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0",
-            [&prefix],
-        )
-        .map_err(|error| error.to_string())? as u64;
-    conn.execute(
-        "UPDATE issues SET closure = 'resolved', closed_at_utc = ?2 \
-         WHERE closed_at_utc IS NULL AND kind IN ('walk-error', 'stat-error', 'read-error', 'metadata-read-error', 'copies-disagree') \
-         AND path LIKE ?1 ESCAPE '!'",
-        params![prefix, crate::logging::now_iso_millis()],
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS missing_under_page (id INTEGER PRIMARY KEY);",
     )
     .map_err(|error| error.to_string())?;
+    let mut changed = 0u64;
+    loop {
+        let mut marked = 0u64;
+        crate::index_store::publish_paths_batch(
+            conn,
+            |tx| {
+                tx.execute("DELETE FROM missing_under_page", [])
+                    .map_err(|error| error.to_string())?;
+                tx.execute(
+                    "INSERT INTO missing_under_page SELECT id FROM paths \
+                     WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0 LIMIT ?2",
+                    params![prefix, RESOLVE_PAGE_SIZE as i64],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO batch_touched_hashes SELECT content_hash FROM paths \
+                     WHERE content_hash IS NOT NULL AND id IN (SELECT id FROM missing_under_page)",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            },
+            |tx| {
+                marked = tx
+                    .execute(
+                        "UPDATE paths SET missing = 1 WHERE id IN (SELECT id FROM missing_under_page)",
+                        [],
+                    )
+                    .map_err(|error| error.to_string())? as u64;
+                Ok(())
+            },
+        )?;
+        changed += marked;
+        if marked < RESOLVE_PAGE_SIZE as u64 {
+            break;
+        }
+        // Let a concurrent writer in between pages (see `re_resolve_all_with_progress`).
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    close_path_scan_issues(conn, "path LIKE ?3 ESCAPE '!'", &[&prefix])?;
     Ok(changed)
 }
 
@@ -1160,92 +1214,46 @@ fn walk_root_with_progress(
         // stay (their trash/delete history may matter) but leave every view
         // and count. LIKE wildcards in the root itself (`_` is common in real
         // paths) are escaped with `!`, which appears in no sane path.
-        let escaped_root = root_str
-            .replace('!', "!!")
-            .replace('%', "!%")
-            .replace('_', "!_");
-        let placeholders_root = format!("{}%", ensure_trailing_separator(&escaped_root));
+        let placeholders_root = like_prefix(&root_str);
         check_cancel()?;
-        // IMMEDIATE: the first statement below is a read (the vanished-path
-        // scan), so a DEFERRED transaction would take only a snapshot and
-        // upgrade to a write lock later, letting a concurrent commit fail at
-        // once with SQLITE_BUSY instead of waiting on the busy handler.
-        let publication = rusqlite::Transaction::new_unchecked(
+        crate::index_store::publish_paths_batch(
             conn,
-            rusqlite::TransactionBehavior::Immediate,
-        )
-        .map_err(|e| e.to_string())?;
-        publication
-            .execute(
-                "INSERT INTO walk_vanished_paths (abs_path, content_hash) \
-                 SELECT paths.abs_path, paths.content_hash FROM paths \
-                 WHERE paths.abs_path LIKE ?1 ESCAPE '!' AND paths.missing = 0 \
-                 AND NOT EXISTS (\
-                     SELECT 1 FROM walk_present_paths \
-                     WHERE walk_present_paths.abs_path = paths.abs_path\
-                 )",
-                [&placeholders_root],
-            )
-            .map_err(|error| error.to_string())?;
-        publication
-            .execute(
-                "UPDATE issues SET closure = 'resolved', closed_at_utc = ?6 \
-                 WHERE closed_at_utc IS NULL AND kind IN (?1, ?2, ?3, ?4, ?5) \
-                 AND path IN (\
-                     SELECT abs_path FROM walk_vanished_paths\
-                 )",
-                params![
-                    WALK_ERROR,
-                    STAT_ERROR,
-                    READ_ERROR,
-                    METADATA_READ_ERROR,
-                    COPIES_DISAGREE,
-                    &logging::now_iso_millis(),
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        publication
-            .execute(
-                "INSERT INTO logical_projection_batch (singleton) VALUES (1)",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
-        stats.marked_missing += publication
-            .execute(
-                "UPDATE paths SET missing = 1 \
-                 WHERE abs_path IN (SELECT abs_path FROM walk_vanished_paths)",
-                [],
-            )
-            .map_err(|error| error.to_string())? as u64;
-        publication
-            .execute(
-                "DELETE FROM logical_contents WHERE content_hash IN (\
-                     SELECT content_hash FROM walk_vanished_paths \
-                     WHERE content_hash IS NOT NULL\
-                 )",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
-        publication
-            .execute(
-                "INSERT INTO logical_contents \
-                   (content_hash, kind, date_state, resolved_utc_ms, \
-                    representative_path_id, live_copy_count, visible_copy_count) \
-                 SELECT projection.content_hash, projection.kind, \
-                        projection.date_state, projection.resolved_utc_ms, \
-                        projection.representative_path_id, projection.live_copy_count, projection.visible_copy_count \
-                 FROM logical_content_projection projection \
-                 WHERE projection.content_hash IN (\
-                     SELECT content_hash FROM walk_vanished_paths \
-                     WHERE content_hash IS NOT NULL\
-                 )",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
-        publication
-            .execute("DELETE FROM logical_projection_batch", [])
-            .map_err(|error| error.to_string())?;
-        publication.commit().map_err(|error| error.to_string())?;
+            |tx| {
+                tx.execute(
+                    "INSERT INTO walk_vanished_paths (abs_path, content_hash) \
+                     SELECT paths.abs_path, paths.content_hash FROM paths \
+                     WHERE paths.abs_path LIKE ?1 ESCAPE '!' AND paths.missing = 0 \
+                     AND NOT EXISTS (\
+                         SELECT 1 FROM walk_present_paths \
+                         WHERE walk_present_paths.abs_path = paths.abs_path\
+                     )",
+                    [&placeholders_root],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO batch_touched_hashes \
+                     SELECT content_hash FROM walk_vanished_paths WHERE content_hash IS NOT NULL",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            },
+            |tx| {
+                close_path_scan_issues(
+                    tx,
+                    "path IN (SELECT abs_path FROM walk_vanished_paths)",
+                    &[],
+                )?;
+                stats.marked_missing += tx
+                    .execute(
+                        "UPDATE paths SET missing = 1 \
+                         WHERE abs_path IN (SELECT abs_path FROM walk_vanished_paths)",
+                        [],
+                    )
+                    .map_err(|error| error.to_string())? as u64;
+                Ok(())
+            },
+        )?;
 
         // A complete walk also proves that old entry failures beneath this
         // root no longer exist, including when the failed entry itself was
@@ -2404,10 +2412,15 @@ fn pair_companions_with_progress(
     let mut phase = ScanProgress::phase(ScanPhase::Pair, 1, Some(ScanPhase::Indexed));
     progress(phase.clone());
     check_cancel()?;
+    // Decide every relationship from one snapshot, then publish the rows
+    // whose `companion_of` changes in pages through the projection-batch
+    // publisher, so re-pairing a whole library never holds the write lock
+    // for its size. An interrupted publication leaves the caller's
+    // relationship receipt dirty, and the next repair decides again.
     let transaction =
-        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
             .map_err(|error| error.to_string())?;
-    let outcome = (|| -> Result<PairStats, String> {
+    let paired = (|| -> Result<u64, String> {
         transaction
             .execute_batch(
                 "CREATE TEMP TABLE IF NOT EXISTS onecopy_pair_scope (
@@ -2417,8 +2430,16 @@ fn pair_companions_with_progress(
                path_id INTEGER PRIMARY KEY,
                primary_id INTEGER
              ) WITHOUT ROWID;
+             CREATE TEMP TABLE IF NOT EXISTS onecopy_pair_changes (
+               path_id INTEGER PRIMARY KEY,
+               companion_of INTEGER
+             ) WITHOUT ROWID;
+             CREATE TEMP TABLE IF NOT EXISTS onecopy_pair_page (
+               path_id INTEGER PRIMARY KEY
+             ) WITHOUT ROWID;
              DELETE FROM onecopy_pair_scope;
-             DELETE FROM onecopy_pair_results;",
+             DELETE FROM onecopy_pair_results;
+             DELETE FROM onecopy_pair_changes;",
             )
             .map_err(|error| error.to_string())?;
 
@@ -2463,50 +2484,76 @@ fn pair_companions_with_progress(
                 .map_err(|error| error.to_string())?;
         }
 
-        check_cancel()?;
+        // A scoped companion no longer desired is released; every desired
+        // relationship that differs is set.
         transaction
             .execute(
                 &format!(
-                    "UPDATE paths SET companion_of = NULL
-                 WHERE companion_of IS NOT NULL{update_scope}
-                   AND NOT EXISTS (
-                     SELECT 1 FROM onecopy_pair_results desired
-                     WHERE desired.path_id = paths.id
-                       AND desired.primary_id = paths.companion_of)"
+                    "INSERT INTO onecopy_pair_changes (path_id, companion_of)
+                 SELECT paths.id, desired.primary_id FROM paths
+                 LEFT JOIN onecopy_pair_results desired ON desired.path_id = paths.id
+                 WHERE ((paths.companion_of IS NOT NULL{update_scope})
+                        OR desired.path_id IS NOT NULL)
+                   AND paths.companion_of IS NOT desired.primary_id"
                 ),
                 [],
             )
             .map_err(|error| error.to_string())?;
         transaction
-            .execute(
-                "UPDATE paths
-             SET companion_of = (
-               SELECT desired.primary_id FROM onecopy_pair_results desired
-               WHERE desired.path_id = paths.id)
-             WHERE id IN (SELECT path_id FROM onecopy_pair_results)
-               AND companion_of IS NOT (
-                 SELECT desired.primary_id FROM onecopy_pair_results desired
-                 WHERE desired.path_id = paths.id)",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
-        let paired = transaction
             .query_row("SELECT COUNT(*) FROM onecopy_pair_results", [], |row| {
                 row.get::<_, i64>(0)
             })
-            .map_err(|error| error.to_string())? as u64;
-        Ok(PairStats { paired })
-    })();
+            .map(|count| count as u64)
+            .map_err(|error| error.to_string())
+    })()?;
+    transaction.commit().map_err(|error| error.to_string())?;
 
-    match outcome {
-        Ok(stats) => {
-            transaction.commit().map_err(|error| error.to_string())?;
-            phase.done = 1;
-            progress(phase);
-            Ok(stats)
-        }
-        Err(error) => Err(error),
+    let mut after_id = 0i64;
+    loop {
+        check_cancel()?;
+        let mut last_id = None;
+        crate::index_store::publish_paths_batch(
+            conn,
+            |tx| {
+                tx.execute("DELETE FROM onecopy_pair_page", [])
+                    .map_err(|error| error.to_string())?;
+                tx.execute(
+                    "INSERT INTO onecopy_pair_page SELECT path_id FROM onecopy_pair_changes
+                     WHERE path_id > ?1 ORDER BY path_id LIMIT ?2",
+                    params![after_id, RESOLVE_PAGE_SIZE as i64],
+                )
+                .map_err(|error| error.to_string())?;
+                last_id = tx
+                    .query_row("SELECT MAX(path_id) FROM onecopy_pair_page", [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO batch_touched_hashes SELECT content_hash FROM paths
+                     WHERE content_hash IS NOT NULL AND id IN (SELECT path_id FROM onecopy_pair_page)",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            },
+            |tx| {
+                tx.execute(
+                    "UPDATE paths SET companion_of = (
+                       SELECT change.companion_of FROM onecopy_pair_changes change
+                       WHERE change.path_id = paths.id)
+                     WHERE id IN (SELECT path_id FROM onecopy_pair_page)",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            },
+        )?;
+        let Some(last) = last_id else { break };
+        after_id = last;
+        // Let a concurrent writer in between pages (see `re_resolve_all_with_progress`).
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
+    phase.done = 1;
+    progress(phase);
+    Ok(PairStats { paired })
 }
 
 #[cfg(test)]

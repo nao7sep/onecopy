@@ -566,11 +566,27 @@ fn companions_pair_same_directory_same_stem_only() {
     // Idempotent: a second rebuild reports and retains the same two pairs.
     assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
 
+    // (R7-02) Library-wide re-pairing publishes through the batch publisher,
+    // never through the per-row projection trigger.
+    f.conn
+        .execute_batch(
+            "CREATE TEMP TABLE unguarded_path_updates (id INTEGER);
+             CREATE TEMP TRIGGER count_unguarded_path_updates AFTER UPDATE ON main.paths
+             WHEN NOT EXISTS (SELECT 1 FROM main.logical_projection_batch)
+             BEGIN INSERT INTO unguarded_path_updates VALUES (NEW.id); END;",
+        )
+        .unwrap();
     pair_companions(&f.conn, false).unwrap();
     assert_eq!(
         count(&f.conn, "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL"),
         0,
         "the global pairing switch leaves RAW and sidecars independent"
+    );
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM unguarded_path_updates"), 0);
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM logical_contents"),
+        count(&f.conn, "SELECT COUNT(*) FROM logical_content_projection"),
+        "the published projection matches the relationships"
     );
 }
 

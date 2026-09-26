@@ -539,23 +539,30 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 // image evidence may be affected. Reuse normal checkpointed
                 // metadata completion once; do not rehash, erase evidence, or
                 // invalidate finished outputs and diagnostic history.
-                conn.execute_batch(
-                    "CREATE TEMP TABLE offset_repair_paths (id INTEGER PRIMARY KEY, content_hash TEXT);
-                     INSERT INTO offset_repair_paths SELECT id, content_hash FROM paths
-                       WHERE indexed_at_utc IS NOT NULL AND kind IN ('image', 'companion')
-                         AND EXISTS (SELECT 1 FROM evidence e WHERE e.path_id = paths.id
-                           AND e.source = 'metadata' AND e.offset_known = 0);
-                     INSERT INTO logical_projection_batch VALUES (1);
-                     UPDATE paths SET indexed_at_utc = NULL, resolved_utc_ms = NULL,
-                        resolved_source = NULL, date_only = 0 WHERE id IN (SELECT id FROM offset_repair_paths);
-                     DELETE FROM logical_contents WHERE content_hash IN (SELECT content_hash FROM offset_repair_paths);
-                     INSERT INTO logical_contents
-                       (content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count)
-                       SELECT content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count
-                       FROM logical_content_projection WHERE content_hash IN (SELECT content_hash FROM offset_repair_paths);
-                     DELETE FROM logical_projection_batch;
-                     DROP TABLE offset_repair_paths;"
-                ).map_err(|error| error.to_string())?;
+                publish_paths_batch_in(
+                    &conn,
+                    |conn| {
+                        conn.execute_batch(
+                            "CREATE TEMP TABLE offset_repair_paths (id INTEGER PRIMARY KEY, content_hash TEXT);
+                             INSERT INTO offset_repair_paths SELECT id, content_hash FROM paths
+                               WHERE indexed_at_utc IS NOT NULL AND kind IN ('image', 'companion')
+                                 AND EXISTS (SELECT 1 FROM evidence e WHERE e.path_id = paths.id
+                                   AND e.source = 'metadata' AND e.offset_known = 0);
+                             INSERT OR IGNORE INTO batch_touched_hashes
+                               SELECT content_hash FROM offset_repair_paths WHERE content_hash IS NOT NULL;",
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                    |conn| {
+                        conn.execute_batch(
+                            "UPDATE paths SET indexed_at_utc = NULL, resolved_utc_ms = NULL,
+                                resolved_source = NULL, date_only = 0
+                               WHERE id IN (SELECT id FROM offset_repair_paths);
+                             DROP TABLE offset_repair_paths;",
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                )?;
             }
             if (9..=14).contains(&current) {
                 // Empty content carries no identity evidence: earlier
@@ -564,23 +571,31 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 // shared empty identities go; the next identity pass settles
                 // each zero-byte file individually. Their evidence and
                 // diagnostic history stay attached to their paths.
-                conn.execute_batch(
-                    "CREATE TEMP TABLE empty_identities (hash TEXT PRIMARY KEY);
-                     INSERT INTO empty_identities SELECT hash FROM contents
-                       WHERE byte_size = 0 AND hash NOT GLOB 'p*';
-                     INSERT INTO logical_projection_batch VALUES (1);
-                     UPDATE evidence SET content_hash = NULL
-                       WHERE content_hash IN (SELECT hash FROM empty_identities);
-                     UPDATE paths SET content_hash = NULL, prehash = NULL
-                       WHERE content_hash IN (SELECT hash FROM empty_identities);
-                     DELETE FROM similar_group_members
-                       WHERE content_hash IN (SELECT hash FROM empty_identities);
-                     DELETE FROM logical_contents
-                       WHERE content_hash IN (SELECT hash FROM empty_identities);
-                     DELETE FROM contents WHERE hash IN (SELECT hash FROM empty_identities);
-                     DELETE FROM logical_projection_batch;
-                     DROP TABLE empty_identities;"
-                ).map_err(|error| error.to_string())?;
+                publish_paths_batch_in(
+                    &conn,
+                    |conn| {
+                        conn.execute_batch(
+                            "CREATE TEMP TABLE empty_identities (hash TEXT PRIMARY KEY);
+                             INSERT INTO empty_identities SELECT hash FROM contents
+                               WHERE byte_size = 0 AND hash NOT GLOB 'p*';
+                             INSERT OR IGNORE INTO batch_touched_hashes SELECT hash FROM empty_identities;",
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                    |conn| {
+                        conn.execute_batch(
+                            "UPDATE evidence SET content_hash = NULL
+                               WHERE content_hash IN (SELECT hash FROM empty_identities);
+                             UPDATE paths SET content_hash = NULL, prehash = NULL
+                               WHERE content_hash IN (SELECT hash FROM empty_identities);
+                             DELETE FROM similar_group_members
+                               WHERE content_hash IN (SELECT hash FROM empty_identities);
+                             DELETE FROM contents WHERE hash IN (SELECT hash FROM empty_identities);
+                             DROP TABLE empty_identities;",
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                )?;
             }
             if current < 16 {
                 conn.execute_batch(RESOLUTION_POLICY_SCHEMA)
@@ -710,9 +725,8 @@ pub fn begin_issue_run(conn: &Connection) -> Result<(), String> {
 /// columns in one statement. Suppresses the per-row logical-projection
 /// triggers (`paths_logical_after_*_v2`) for the duration of `write`, then
 /// republishes every hash `collect_hashes` recorded exactly once, all inside
-/// one IMMEDIATE transaction — the walk publication, `apply_policy` and the
-/// schema upgrade already run this exact shape by hand; this is their single
-/// owner.
+/// one IMMEDIATE transaction. [`publish_paths_batch_in`] is the same
+/// publication inside a transaction the caller already holds.
 ///
 /// `collect_hashes` runs first, against the transaction, and inserts every
 /// `content_hash` the coming write can affect into the temp table
@@ -721,33 +735,44 @@ pub fn begin_issue_run(conn: &Connection) -> Result<(), String> {
 /// `write` then performs the bulk UPDATE/DELETE.
 pub fn publish_paths_batch(
     conn: &Connection,
-    collect_hashes: impl FnOnce(&rusqlite::Transaction) -> Result<(), String>,
-    write: impl FnOnce(&rusqlite::Transaction) -> Result<(), String>,
+    collect_hashes: impl FnOnce(&Connection) -> Result<(), String>,
+    write: impl FnOnce(&Connection) -> Result<(), String>,
 ) -> Result<(), String> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
-    tx.execute_batch(
+    publish_paths_batch_in(&tx, collect_hashes, write)?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+/// [`publish_paths_batch`] inside a write transaction the caller already
+/// holds (the schema upgrade and the visibility apply).
+pub(crate) fn publish_paths_batch_in(
+    conn: &Connection,
+    collect_hashes: impl FnOnce(&Connection) -> Result<(), String>,
+    write: impl FnOnce(&Connection) -> Result<(), String>,
+) -> Result<(), String> {
+    conn.execute_batch(
         "CREATE TEMP TABLE IF NOT EXISTS batch_touched_hashes (content_hash TEXT PRIMARY KEY) WITHOUT ROWID;
          DELETE FROM batch_touched_hashes;",
     )
     .map_err(|error| error.to_string())?;
-    collect_hashes(&tx)?;
+    collect_hashes(conn)?;
     // Drop the stale projection rows before `write` runs, not after: a
     // touched hash's `logical_contents.representative_path_id` can point at
     // a `paths` row `write` is about to delete, and that FK only tolerates
     // the delete once nothing still references it.
-    tx.execute(
+    conn.execute(
         "DELETE FROM logical_contents WHERE content_hash IN (SELECT content_hash FROM batch_touched_hashes)",
         [],
     )
     .map_err(|error| error.to_string())?;
-    tx.execute(
+    conn.execute(
         "INSERT INTO logical_projection_batch (singleton) VALUES (1)",
         [],
     )
     .map_err(|error| error.to_string())?;
-    write(&tx)?;
-    tx.execute_batch(
+    write(conn)?;
+    conn.execute_batch(
         "INSERT INTO logical_contents
            (content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count)
            SELECT content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count
@@ -755,8 +780,7 @@ pub fn publish_paths_batch(
          DELETE FROM logical_projection_batch;
          DELETE FROM batch_touched_hashes;",
     )
-    .map_err(|error| error.to_string())?;
-    tx.commit().map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())
 }
 
 /// Clears only reconstructible library facts. Durable configuration, managed

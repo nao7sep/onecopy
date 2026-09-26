@@ -6,24 +6,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-fn begin_projection_batch(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS visibility_changed (content_hash TEXT PRIMARY KEY);
-        DELETE FROM visibility_changed; INSERT INTO logical_projection_batch VALUES (1);",
-    )
-    .map_err(|error| error.to_string())
-}
-
-fn finish_projection_batch(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch("DELETE FROM logical_contents WHERE content_hash IN (SELECT content_hash FROM visibility_changed);
-        INSERT INTO logical_contents
-          (content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count)
-          SELECT content_hash, kind, date_state, resolved_utc_ms, representative_path_id, live_copy_count, visible_copy_count
-          FROM logical_content_projection WHERE content_hash IN (SELECT content_hash FROM visibility_changed);
-        DELETE FROM logical_projection_batch; DELETE FROM visibility_changed;")
-        .map_err(|error| error.to_string())
-}
-
 pub fn apply_policy(conn: &Connection, policy: &Policy) -> Result<(), String> {
     // IMMEDIATE: `apply_policy_in_transaction` reads `visibility_policy`
     // before it writes, so a DEFERRED transaction would take a read
@@ -73,21 +55,33 @@ pub(crate) fn apply_policy_in_transaction(
             .map_err(|error| error.to_string())?;
     }
     // One projection publication per affected identity, not per duplicate.
-    begin_projection_batch(conn)?;
-    conn.execute_batch(
-        "INSERT OR IGNORE INTO visibility_changed
-           SELECT content_hash FROM paths WHERE content_hash IS NOT NULL AND review_visible != (
-             (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
-             AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name));
-         UPDATE paths SET review_visible =
-           (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
-           AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name)
-         WHERE review_visible != (
-           (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
-           AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name));",
+    crate::index_store::publish_paths_batch_in(
+        conn,
+        |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO batch_touched_hashes
+                   SELECT content_hash FROM paths WHERE content_hash IS NOT NULL AND review_visible != (
+                     (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+                     AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name))",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        },
+        |conn| {
+            conn.execute(
+                "UPDATE paths SET review_visible =
+                   (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+                   AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name)
+                 WHERE review_visible != (
+                   (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+                   AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name))",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        },
     )
-    .map_err(|error| error.to_string())?;
-    finish_projection_batch(conn)
 }
 
 /// Cache belongs to one discovery pass. Each directory is statted once, with
@@ -154,23 +148,34 @@ impl DirectoryFacts {
                 FROM visibility_directories child JOIN subtree ON child.parent_path = subtree.abs_path)
                 UPDATE visibility_directories SET flags = (SELECT flags FROM subtree WHERE subtree.abs_path = visibility_directories.abs_path)
                 WHERE abs_path IN (SELECT abs_path FROM subtree)", [&abs]).map_err(|error| error.to_string())?;
-            begin_projection_batch(&tx)?;
-            tx.execute("WITH RECURSIVE subtree(abs_path) AS (
-                SELECT abs_path FROM visibility_directories WHERE abs_path = ?1
-                UNION ALL SELECT child.abs_path FROM visibility_directories child JOIN subtree ON child.parent_path = subtree.abs_path)
-                INSERT OR IGNORE INTO visibility_changed SELECT content_hash FROM paths
-                WHERE content_hash IS NOT NULL AND dir_path IN (SELECT abs_path FROM subtree)
-                  AND visibility_flags != (own_visibility_flags |
-                    (SELECT flags FROM visibility_directories WHERE abs_path = paths.dir_path))", [&abs]).map_err(|error| error.to_string())?;
-            self.changed_files += tx.execute("WITH RECURSIVE subtree(abs_path) AS (
-                SELECT abs_path FROM visibility_directories WHERE abs_path = ?1
-                UNION ALL SELECT child.abs_path FROM visibility_directories child JOIN subtree ON child.parent_path = subtree.abs_path)
-                UPDATE paths SET visibility_flags = own_visibility_flags |
-                    (SELECT flags FROM visibility_directories WHERE abs_path = paths.dir_path)
-                WHERE dir_path IN (SELECT abs_path FROM subtree)
-                  AND visibility_flags != (own_visibility_flags |
-                    (SELECT flags FROM visibility_directories WHERE abs_path = paths.dir_path))", [&abs]).map_err(|error| error.to_string())?;
-            finish_projection_batch(&tx)?;
+            let mut changed_files = 0;
+            crate::index_store::publish_paths_batch_in(
+                &tx,
+                |conn| {
+                    conn.execute("WITH RECURSIVE subtree(abs_path) AS (
+                        SELECT abs_path FROM visibility_directories WHERE abs_path = ?1
+                        UNION ALL SELECT child.abs_path FROM visibility_directories child JOIN subtree ON child.parent_path = subtree.abs_path)
+                        INSERT OR IGNORE INTO batch_touched_hashes SELECT content_hash FROM paths
+                        WHERE content_hash IS NOT NULL AND dir_path IN (SELECT abs_path FROM subtree)
+                          AND visibility_flags != (own_visibility_flags |
+                            (SELECT flags FROM visibility_directories WHERE abs_path = paths.dir_path))", [&abs])
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                },
+                |conn| {
+                    changed_files = conn.execute("WITH RECURSIVE subtree(abs_path) AS (
+                        SELECT abs_path FROM visibility_directories WHERE abs_path = ?1
+                        UNION ALL SELECT child.abs_path FROM visibility_directories child JOIN subtree ON child.parent_path = subtree.abs_path)
+                        UPDATE paths SET visibility_flags = own_visibility_flags |
+                            (SELECT flags FROM visibility_directories WHERE abs_path = paths.dir_path)
+                        WHERE dir_path IN (SELECT abs_path FROM subtree)
+                          AND visibility_flags != (own_visibility_flags |
+                            (SELECT flags FROM visibility_directories WHERE abs_path = paths.dir_path))", [&abs])
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                },
+            )?;
+            self.changed_files += changed_files;
             tx.commit().map_err(|error| error.to_string())?;
         }
         self.flags.insert(dir.to_path_buf(), flags);
