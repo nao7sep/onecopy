@@ -2418,7 +2418,19 @@ fn raw_pair_candidates_sql(scoped: bool) -> String {
              AND candidate.stem = companion.stem
              AND candidate.kind IN ('image', 'video')
              AND candidate.missing = 0
-           ORDER BY candidate.id LIMIT 1)
+             AND (candidate.kind != 'video' OR NOT EXISTS (
+                   SELECT 1 FROM evidence video_id
+                   WHERE video_id.path_id = candidate.id
+                     AND video_id.source = 'live-photo-identifier'
+                     AND video_id.raw IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM paths live_image
+                       JOIN evidence image_id ON image_id.path_id = live_image.id
+                       WHERE live_image.dir_path = candidate.dir_path
+                         AND live_image.kind = 'image' AND live_image.missing = 0
+                         AND image_id.source = 'live-photo-identifier'
+                         AND image_id.raw = video_id.raw)))
+           ORDER BY candidate.abs_path COLLATE onecopy_nocase, candidate.abs_path LIMIT 1)
          {from}
          WHERE companion.kind = 'companion' AND companion.missing = 0{scope}"
     )
@@ -2451,17 +2463,19 @@ fn live_photo_pair_candidates_sql(scoped: bool) -> String {
                    WHERE video_id.path_id = video.id
                      AND video_id.source = 'live-photo-identifier'
                      AND video_id.raw = image_id.raw))
-           ORDER BY image.id LIMIT 1)
+           ORDER BY image.abs_path COLLATE onecopy_nocase, image.abs_path LIMIT 1)
          {from}
          WHERE video.kind = 'video' AND video.missing = 0{scope}"
     )
 }
 
 /// Rebuilds every enabled companion relationship. RAW/sidecar companions use
-/// same-directory + lowercased stem. Live Photo MOVs use same-directory +
-/// exact Apple content identifier and may have unrelated stems. The lowest-id
-/// primary wins any ambiguous match. Disabled pairing leaves every row
-/// independent.
+/// same-directory + lowercased stem, and never pick a video that is itself a
+/// Live Photo companion movie as their main copy, so a sidecar never becomes
+/// a companion of a companion. Live Photo MOVs use same-directory + exact
+/// Apple content identifier and may have unrelated stems. An ambiguous match
+/// is broken deterministically by path order (case-insensitive, then exact),
+/// never by insertion id. Disabled pairing leaves every row independent.
 pub fn pair_companions(conn: &Connection, enabled: bool) -> Result<PairStats, String> {
     pair_companions_with_progress(conn, enabled, None, &|_| {})
 }

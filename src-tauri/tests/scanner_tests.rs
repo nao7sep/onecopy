@@ -881,6 +881,76 @@ fn duplicate_live_photo_identifiers_never_cross_directory_cohorts() {
     );
 }
 
+/// (R4.1 finding 1) A same-stem sidecar (an AAE) must attach to the family's
+/// still image, never to its Live Photo MOV: the MOV itself pairs to the
+/// image, and a companion of a companion would be orphaned by Move and
+/// Delete, which only walk one companion level. This holds regardless of
+/// which file the walk happened to index first (insertion/id order), and the
+/// tie is broken deterministically by path, never by id.
+#[test]
+fn companion_never_pairs_to_a_live_photo_movie_in_either_id_order() {
+    fn run(order: &[&str]) {
+        let f = fixture(&format!("live-photo-companion-{}", order.join("-")));
+        let insert_row = |file_name: &str, kind: &str| {
+            f.conn
+                .execute(
+                    "INSERT INTO paths (abs_path, dir_path, file_name, stem, kind, missing) \
+                     VALUES (?1, '/family', ?2, 'img_1234', ?3, 0)",
+                    rusqlite::params![format!("/family/{file_name}"), file_name, kind],
+                )
+                .unwrap();
+        };
+        for file_name in order {
+            match *file_name {
+                "IMG_1234.HEIC" => insert_row(file_name, "image"),
+                "IMG_1234.MOV" => insert_row(file_name, "video"),
+                "IMG_1234.AAE" => insert_row(file_name, "companion"),
+                other => panic!("unexpected fixture entry: {other}"),
+            }
+        }
+        f.conn
+            .execute(
+                "INSERT INTO evidence (path_id, source, raw)
+                 SELECT id, 'live-photo-identifier', 'shared-id'
+                 FROM paths WHERE file_name IN ('IMG_1234.HEIC', 'IMG_1234.MOV')",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
+
+        let aae_pairs_to_heic: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM paths aae JOIN paths heic ON aae.companion_of = heic.id \
+                 WHERE aae.file_name = 'IMG_1234.AAE' AND heic.file_name = 'IMG_1234.HEIC'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            aae_pairs_to_heic, 1,
+            "order {order:?}: the sidecar must pair with the still image, not the Live Photo movie"
+        );
+
+        let mov_pairs_to_heic: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM paths mov JOIN paths heic ON mov.companion_of = heic.id \
+                 WHERE mov.file_name = 'IMG_1234.MOV' AND heic.file_name = 'IMG_1234.HEIC'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mov_pairs_to_heic, 1, "order {order:?}: the movie still pairs to the image");
+    }
+
+    // The finding's exact failure scenario (MOV indexed first) and its
+    // reverse both land on the same deterministic, path-ordered result.
+    run(&["IMG_1234.MOV", "IMG_1234.AAE", "IMG_1234.HEIC"]);
+    run(&["IMG_1234.HEIC", "IMG_1234.AAE", "IMG_1234.MOV"]);
+}
+
 #[test]
 fn corpus_live_photos_pair_by_identifier_not_stem_and_honor_the_toggle() {
     fn source(parts: &[&str]) -> std::path::PathBuf {
