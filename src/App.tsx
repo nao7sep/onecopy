@@ -567,6 +567,11 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 : "text-ink-muted"
           }`}
           title={status.title ?? status.text}
+          // The visible line clips at narrow widths; the accessible name
+          // carries the full value beyond the mouse-only hover title, the
+          // same escape hatch destination paths already give assistive
+          // technology (R8-09, matching R8-05).
+          aria-label={status.title ?? status.text}
           role={status.announce === true ? (status.tone === "danger" ? "alert" : "status") : undefined}
         >
           {status.text}

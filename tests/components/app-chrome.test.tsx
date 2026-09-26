@@ -103,6 +103,18 @@ describe("the title band", () => {
     expect(footer?.textContent).not.toContain("OneCopy");
   });
 
+  it("gives the status line's clipped text a real accessible name, not only a hover title (R8-09)", () => {
+    const view = renderReadyApp();
+    const status = view.container.querySelector("footer > span");
+    expect(status).not.toBeNull();
+    const title = status?.getAttribute("title");
+    expect(title).toBeTruthy();
+    // Keyboard and screen-reader users get the same full value a mouse
+    // hover already gives sighted users, the same escape hatch destination
+    // paths already carry (R8-05).
+    expect(status?.getAttribute("aria-label")).toBe(title);
+  });
+
   it("keeps the version out of the main window entirely", () => {
     const view = renderReadyApp();
     // Guard against a vacuous pass: an empty container matches no regex.
