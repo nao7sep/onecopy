@@ -499,42 +499,71 @@ pub fn started() -> bool {
     STARTED.iter().all(|started| started.load(Ordering::SeqCst))
 }
 
+/// What `derived_worker` does once its run loop ends, given the loop's own
+/// outcome (which may be a caught panic) and whether the app was already
+/// shutting down. Kept apart from the `AppHandle`-bound effects (`report`,
+/// `emit_or_record`, `emit_state_changed`) so the panic boundary's
+/// outcome-to-action mapping is directly testable without a live app.
+#[derive(Debug, PartialEq)]
+enum WorkerTermination {
+    /// The loop returned normally: only the started flag and state-changed
+    /// event follow.
+    Clean,
+    /// The loop failed or panicked while the app is already shutting down:
+    /// logged only, since no new work will start behind it.
+    DuringShutdown(String),
+    /// The loop failed or panicked during ordinary operation: reported as
+    /// `WORKER_FAILED`, published as `derived://worker-failed`, and left as
+    /// an Issue so it survives beyond the notification.
+    Failed(String),
+}
+
+fn worker_termination(
+    outcome: std::thread::Result<Result<(), String>>,
+    shutting_down: bool,
+) -> WorkerTermination {
+    let failure = match outcome {
+        Ok(Ok(())) => return WorkerTermination::Clean,
+        Ok(Err(error)) => error,
+        Err(payload) => crate::failure_runtime::panic_message(payload),
+    };
+    if shutting_down {
+        WorkerTermination::DuringShutdown(failure)
+    } else {
+        WorkerTermination::Failed(failure)
+    }
+}
+
 fn derived_worker(app: AppHandle, lane: Lane) {
     let started = &STARTED[lane.index()];
     let outcome =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_worker_loop(&app, lane)));
-    let failure = match outcome {
-        Ok(Ok(())) => {
+    match worker_termination(outcome, crate::app_lifecycle::shutting_down()) {
+        WorkerTermination::Clean => {
             started.store(false, Ordering::SeqCst);
             crate::derived_runtime::emit_state_changed(&app);
-            return;
         }
-        Ok(Err(error)) => error,
-        Err(payload) => crate::failure_runtime::panic_message(payload),
-    };
-    if crate::app_lifecycle::shutting_down() {
-        started.store(false, Ordering::SeqCst);
-        logging::error(
-            "derived-media worker failed during shutdown",
-            json!({ "error": { "message": failure } }),
-        );
-        return;
+        WorkerTermination::DuringShutdown(failure) => {
+            started.store(false, Ordering::SeqCst);
+            logging::error(
+                "derived-media worker failed during shutdown",
+                json!({ "error": { "message": failure } }),
+            );
+        }
+        WorkerTermination::Failed(failure) => {
+            let _ = crate::failure_runtime::report(&app, WORKER_FAILED, None, &failure);
+            // Finish the old worker's failure record before admitting its
+            // replacement; otherwise the replacement could resolve a
+            // condition not yet recorded.
+            started.store(false, Ordering::SeqCst);
+            crate::derived_runtime::emit_state_changed(&app);
+            crate::failure_runtime::emit_or_record(
+                &app,
+                "derived://worker-failed",
+                json!({ "message": failure }),
+            );
+        }
     }
-    let _ = crate::failure_runtime::report(
-        &app,
-        WORKER_FAILED,
-        None,
-        &failure,
-    );
-    // Finish the old worker's failure record before admitting its replacement;
-    // otherwise the replacement could resolve a condition not yet recorded.
-    started.store(false, Ordering::SeqCst);
-    crate::derived_runtime::emit_state_changed(&app);
-    crate::failure_runtime::emit_or_record(
-        &app,
-        "derived://worker-failed",
-        json!({ "message": failure }),
-    );
 }
 
 fn run_worker_loop(app: &AppHandle, lane: Lane) -> Result<(), String> {

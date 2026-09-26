@@ -167,6 +167,58 @@ fn only_a_requested_run_reports_a_missing_tool_or_a_pause_to_its_requester() {
     }
 }
 
+// R4.4 E1: the derived worker's own panic boundary. `worker_termination` is
+// the pure outcome-to-action mapping `derived_worker` executes against a live
+// `AppHandle`; testing it directly proves a panicking or failing worker is
+// caught and correctly routed to `Failed` (which `derived_worker` reports as
+// `WORKER_FAILED`, publishes as `derived://worker-failed`, and leaves as an
+// Issue) rather than propagating or being silently swallowed.
+#[test]
+fn a_clean_return_needs_no_failure_reporting() {
+    let outcome = std::panic::catch_unwind(|| -> Result<(), String> { Ok(()) });
+    assert_eq!(worker_termination(outcome, false), WorkerTermination::Clean);
+}
+
+#[test]
+fn a_returned_error_during_ordinary_operation_is_a_reportable_failure() {
+    let outcome: std::thread::Result<Result<(), String>> = Ok(Err("index unavailable".into()));
+    assert_eq!(
+        worker_termination(outcome, false),
+        WorkerTermination::Failed("index unavailable".into())
+    );
+}
+
+#[test]
+fn a_returned_error_while_shutting_down_is_logged_only() {
+    let outcome: std::thread::Result<Result<(), String>> = Ok(Err("index unavailable".into()));
+    assert_eq!(
+        worker_termination(outcome, true),
+        WorkerTermination::DuringShutdown("index unavailable".into())
+    );
+}
+
+#[test]
+fn a_real_panic_is_caught_and_routed_as_a_failure_with_its_message() {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+        panic!("derived worker exploded");
+    }));
+    assert_eq!(
+        worker_termination(outcome, false),
+        WorkerTermination::Failed("derived worker exploded".into())
+    );
+}
+
+#[test]
+fn a_panic_while_shutting_down_is_logged_only_not_reported() {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+        panic!("derived worker exploded during shutdown");
+    }));
+    assert_eq!(
+        worker_termination(outcome, true),
+        WorkerTermination::DuringShutdown("derived worker exploded during shutdown".into())
+    );
+}
+
 #[test]
 fn a_transcription_class_follows_its_content_kind() {
     assert_eq!(
