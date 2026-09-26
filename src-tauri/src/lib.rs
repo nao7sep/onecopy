@@ -153,18 +153,23 @@ where
     }
 }
 
-/// Waits up to `derived_runtime`'s existing 10 s admission bound for a
-/// quiescence signal on `rx`. If the deadline passes first, kills every
-/// managed-tool subprocess still running (W-L1) and reports the timeout, so
-/// a job that never reaches its own cancellation point cannot hang quitting
-/// forever. Returns whether quiescence actually finished in time.
-fn await_quiescence_bounded(rx: std::sync::mpsc::Receiver<()>) -> bool {
-    await_quiescence_with_deadline(rx, derived_runtime::REQUESTED_WAIT)
-}
+/// Bounds only the non-mutation exit joins (derived work, requested media,
+/// watchers, source check, binaries, startup, instance owner). Deliberately
+/// its own constant, not `derived_runtime::REQUESTED_WAIT` (foreground
+/// admission's bound) even though the value matches today: the two express
+/// unrelated concepts and may diverge later.
+const EXIT_JOIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-// The deadline is a parameter (rather than inlined) so a test can exercise
-// the timeout branch in milliseconds instead of the real 10 s bound.
-fn await_quiescence_with_deadline(
+/// Waits up to `deadline` for the non-mutation exit joins signalled on `rx`.
+/// If the deadline passes first, kills every managed-tool subprocess still
+/// running (W-L1) and stops waiting for those joins, so a job that never
+/// reaches its own cancellation point cannot hang quitting forever. This
+/// never bounds mutation quiescence: the spec's exit boundary
+/// ("Normal exit and abnormal termination") is "OneCopy no longer owns an
+/// unsafe in-progress mutation," not a fixed wait, so a mutation caller must
+/// wait separately with no deadline. Returns whether the joins actually
+/// finished in time.
+fn await_other_joins_with_deadline(
     rx: std::sync::mpsc::Receiver<()>,
     deadline: std::time::Duration,
 ) -> bool {
@@ -172,40 +177,38 @@ fn await_quiescence_with_deadline(
         return true;
     }
     logging::warn(
-        "exit quiescence exceeded its deadline; killing outstanding subprocesses",
+        "exit joins exceeded their deadline; killing outstanding subprocesses",
         json!({ "deadline_secs": deadline.as_secs() }),
     );
     subprocess::kill_all_running();
     false
 }
 
+fn await_other_joins_bounded(rx: std::sync::mpsc::Receiver<()>) -> bool {
+    await_other_joins_with_deadline(rx, EXIT_JOIN_DEADLINE)
+}
+
+/// Waits for the two independent halves of shutdown to reach the point
+/// where exiting the process is safe: `other_rx` bounded by `deadline`
+/// (abandoned there, subprocesses already killed by
+/// `await_other_joins_with_deadline`), then `mutation_rx` with NO deadline.
+/// A mutation in flight keeps this from returning no matter how long the
+/// bounded half already waited.
+fn await_exit_readiness(
+    other_rx: std::sync::mpsc::Receiver<()>,
+    mutation_rx: std::sync::mpsc::Receiver<()>,
+    deadline: std::time::Duration,
+) {
+    await_other_joins_with_deadline(other_rx, deadline);
+    let _ = mutation_rx.recv();
+}
+
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private
-// `await_quiescence_with_deadline`; promoting it would widen the crate's
-// public API only for this test.
+// `await_other_joins_with_deadline` / `await_exit_readiness`; promoting them
+// would widen the crate's public API only for this test.
 #[path = "../tests/unit/lib/exit_quiescence_tests.rs"]
 mod exit_quiescence_tests;
-
-/// The non-blocking counterpart for the `ExitRequested` path, which already
-/// runs its quiescence sequence on its own thread and must not block the
-/// event loop: if the deadline expires, this also force-exits, since that
-/// thread's own eventual `handle.exit(0)` may itself be stuck behind the job
-/// that missed the deadline.
-fn spawn_exit_watchdog(rx: std::sync::mpsc::Receiver<()>) {
-    let started = std::thread::Builder::new()
-        .name("onecopy-exit-watchdog".to_string())
-        .spawn(move || {
-            if !await_quiescence_bounded(rx) {
-                std::process::exit(0);
-            }
-        });
-    if let Err(error) = started {
-        logging::warn(
-            "could not start exit watchdog",
-            json!({ "error": { "message": error.to_string() } }),
-        );
-    }
-}
 
 #[derive(serde::Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
@@ -2669,16 +2672,23 @@ pub fn run() {
             if let Err(error) = mutation_runtime::request_shutdown() {
                 let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
-            let handle = app_handle.clone();
-            let exit_handle = handle.clone();
-            // Bounded exit joins (requested media, derived work, mutations):
-            // the watchdog below races this quiescence sequence against the
-            // same deadline `derived_runtime` already uses for foreground
-            // preemption. A job that cannot reach its own cancellation point
-            // must not be able to hang quitting forever.
-            let (quiesced_tx, quiesced_rx) = std::sync::mpsc::channel::<()>();
-            let started = std::thread::Builder::new()
-                .name("onecopy-exit-quiescence".to_string())
+            let exit_handle = app_handle.clone();
+            // Two independent halves, each on its own thread so neither
+            // blocks the event loop. The bounded half (derived work,
+            // requested media, watchers, source check, binaries, startup,
+            // instance owner) is abandoned at `EXIT_JOIN_DEADLINE`, killing
+            // outstanding subprocesses. Mutation quiescence has NO deadline:
+            // the spec's exit boundary is "OneCopy no longer owns an unsafe
+            // in-progress mutation" (`specs/file-operations.md`, "Normal
+            // exit and abnormal termination"), and `mutation_runtime`
+            // already cancels the active operation and returns as soon as
+            // its own bounded filesystem step finishes. The final watchdog
+            // thread below only ever calls `exit(0)` after BOTH halves are
+            // reached, so a slow copy is never terminated mid-publication.
+            let handle_other = app_handle.clone();
+            let (other_done_tx, other_done_rx) = std::sync::mpsc::channel::<()>();
+            let other_started = std::thread::Builder::new()
+                .name("onecopy-exit-joins".to_string())
                 .spawn(move || {
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         source_check_runtime::join();
@@ -2687,45 +2697,66 @@ pub fn run() {
                         watcher::join();
                         binaries_manager::wait_for_idle();
                         startup::join();
-                        instance_owner::join(&handle);
+                        instance_owner::join(&handle_other);
                         derived_work::join();
-                        if let Err(error) = mutation_runtime::wait_for_idle() {
-                            let _ = failure_runtime::report(
-                                &handle,
-                                "shutdown-worker-failed",
-                                None,
-                                &error,
-                            );
-                        }
-                        let media = media_use::begin_shutdown(&handle);
+                    }));
+                    if let Err(payload) = outcome {
+                        let error = failure_runtime::panic_message(payload);
+                        let _ = failure_runtime::report(
+                            &handle_other,
+                            "shutdown-worker-failed",
+                            None,
+                            &error,
+                        );
+                    }
+                    let _ = other_done_tx.send(());
+                });
+
+            let handle_mutation = app_handle.clone();
+            let (mutation_done_tx, mutation_done_rx) = std::sync::mpsc::channel::<()>();
+            let mutation_started = std::thread::Builder::new()
+                .name("onecopy-exit-mutation-wait".to_string())
+                .spawn(move || {
+                    if let Err(error) = mutation_runtime::wait_for_idle() {
+                        let _ = failure_runtime::report(
+                            &handle_mutation,
+                            "shutdown-worker-failed",
+                            None,
+                            &error,
+                        );
+                    }
+                    let _ = mutation_done_tx.send(());
+                });
+
+            if other_started.is_err() || mutation_started.is_err() {
+                let message = "could not start shutdown worker".to_string();
+                let _ =
+                    failure_runtime::report(&exit_handle, "shutdown-worker-failed", None, &message);
+                exit_handle.exit(1);
+            } else {
+                let final_handle = app_handle.clone();
+                let watchdog_started = std::thread::Builder::new()
+                    .name("onecopy-exit-watchdog".to_string())
+                    .spawn(move || {
+                        await_exit_readiness(other_done_rx, mutation_done_rx, EXIT_JOIN_DEADLINE);
+                        let media = media_use::begin_shutdown(&final_handle);
                         if let Err(error) = &media {
                             let _ = failure_runtime::report(
-                                &handle,
+                                &final_handle,
                                 "shutdown-media-release-failed",
                                 None,
                                 error,
                             );
                         }
                         drop(media);
-                    }));
-                    if let Err(payload) = outcome {
-                        let error = failure_runtime::panic_message(payload);
-                        let _ = failure_runtime::report(
-                            &handle,
-                            "shutdown-worker-failed",
-                            None,
-                            &error,
-                        );
-                    }
-                    let _ = quiesced_tx.send(());
-                    handle.exit(0);
-                });
-            spawn_exit_watchdog(quiesced_rx);
-            if let Err(error) = started {
-                let message = format!("could not start shutdown worker: {error}");
-                let _ =
-                    failure_runtime::report(&exit_handle, "shutdown-worker-failed", None, &message);
-                exit_handle.exit(1);
+                        final_handle.exit(0);
+                    });
+                if let Err(error) = watchdog_started {
+                    logging::warn(
+                        "could not start exit watchdog",
+                        json!({ "error": { "message": error.to_string() } }),
+                    );
+                }
             }
         }
         tauri::RunEvent::Exit => {
@@ -2746,9 +2777,13 @@ pub fn run() {
                 let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
             // Reached directly by `request_app_exit` (bypassing
-            // `ExitRequested`'s own bounded quiescence thread above), so this
-            // path needs its own exit-join deadline: these joins ran
-            // unbounded on the event-loop thread before Phase 5.
+            // `ExitRequested`'s own bounded/unbounded split above), so this
+            // path needs the same split: the non-mutation joins below run on
+            // their own thread and are abandoned at `EXIT_JOIN_DEADLINE`,
+            // but mutation quiescence is awaited afterward with NO deadline
+            // (spec: "Normal exit and abnormal termination") — blocking this
+            // thread here is fine because it is the final exit path, not the
+            // event loop.
             let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
             let handle = app_handle.clone();
             let joins_started = std::thread::Builder::new()
@@ -2762,14 +2797,13 @@ pub fn run() {
                     startup::join();
                     instance_owner::join(&handle);
                     derived_work::join();
-                    if let Err(error) = mutation_runtime::wait_for_idle() {
-                        let _ =
-                            failure_runtime::report(&handle, "shutdown-worker-failed", None, &error);
-                    }
                     let _ = done_tx.send(());
                 });
             if joins_started.is_ok() {
-                await_quiescence_bounded(done_rx);
+                await_other_joins_bounded(done_rx);
+            }
+            if let Err(error) = mutation_runtime::wait_for_idle() {
+                let _ = failure_runtime::report(app_handle, "shutdown-worker-failed", None, &error);
             }
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
