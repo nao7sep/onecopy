@@ -25,6 +25,7 @@ import ComparisonView from "../../src/components/ComparisonView";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { pushModal, popModal } from "../../src/utils/modalStack";
 import { message, type Message } from "../../src/i18n/translate";
+import { seedAppConfig } from "../helpers/config";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -92,6 +93,7 @@ function press(container: HTMLElement, key: string, init: KeyboardEventInit = {}
 }
 
 beforeEach(() => {
+  seedAppConfig();
   useComparisonStore.setState({ open: false });
   resetTauriMocks({ keepListeners: true });
   mockCommands({

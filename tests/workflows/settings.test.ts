@@ -8,6 +8,7 @@ import { useSettingsStore } from "../../src/state/settings-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
+import { effectiveConfig } from "../helpers/config";
 
 async function settleUntil(predicate: () => boolean): Promise<void> {
   for (let index = 0; index < 50 && !predicate(); index += 1) {
@@ -18,7 +19,7 @@ async function settleUntil(predicate: () => boolean): Promise<void> {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
-    patch_config: () => ({}),
+    patch_config: () => effectiveConfig(),
     patch_state: ({ patch }) => patch,
     log_event: () => null,
     apply_library_settings: () => ({ status: "applied", resolved: 0 }),
@@ -26,11 +27,11 @@ beforeEach(() => {
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     check_source_dirs: () => ({ missing: [], substituted: [] }),
   });
-  useSettingsStore.getState().beginEditing({});
+  useSettingsStore.getState().beginEditing(effectiveConfig());
   useAppShellStore.getState().openUtility("settings");
   useAppStore.setState({
     appData: {
-      config: {},
+      config: effectiveConfig(),
       state: {},
       dataRoot: "/app",
       debugEnabled: false,
@@ -171,7 +172,7 @@ describe("Settings save boundary", () => {
 
   it("publishes an explicit runtime acceleration selection as configuration", async () => {
     useSettingsStore.getState().beginEditing(
-      { aiAcceleration: { transcription: "metal", "face-scoring": "none" } },
+      effectiveConfig({ aiAcceleration: { transcription: "metal", "face-scoring": "none" } }),
       null,
       [
         {

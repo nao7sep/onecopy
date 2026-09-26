@@ -10,7 +10,7 @@ export type OptionalFeatureChoices = Record<OptionalFeatureId, boolean>;
 export function optionalFeatureSetup(
   config: Record<string, unknown> | null,
 ): OptionalFeatureChoices {
-  const configured = (id: OptionalFeatureId) => config?.[id] !== false;
+  const configured = (id: OptionalFeatureId) => config?.[id] === true;
   return {
     videoSnapshotsEnabled: configured("videoSnapshotsEnabled"),
     similarPhotoAnalysisEnabled: configured("similarPhotoAnalysisEnabled"),

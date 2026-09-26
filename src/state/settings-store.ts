@@ -11,6 +11,13 @@ import {
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
+import {
+  configFlag,
+  configNumber,
+  configString,
+  confirmsTrashDelete,
+  type AppConfig,
+} from "../models/config";
 import { normalizeUiFontPreference } from "../utils/uiFont";
 import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
@@ -61,25 +68,30 @@ export interface SettingsDraft {
   sourceDirs: string[];
 }
 
-const SIMILAR_PHOTO_DEFAULTS = {
-  similarityMaxGapSeconds: 90,
-  similarityPhashMaxDistance: 3,
-  similarityPhashMaxDistanceBurst: 10,
-  similarityDiameterMultiplier: 2,
-} as const satisfies Pick<
-  SettingsDraft,
-  | "similarityMaxGapSeconds"
-  | "similarityPhashMaxDistance"
-  | "similarityPhashMaxDistanceBurst"
-  | "similarityDiameterMultiplier"
->;
+const SIMILAR_PHOTO_KEYS = [
+  "similarityMaxGapSeconds",
+  "similarityPhashMaxDistance",
+  "similarityPhashMaxDistanceBurst",
+  "similarityDiameterMultiplier",
+] as const satisfies readonly (keyof SettingsDraft)[];
 
-function numberOr(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+// The configuration arrives as the core's effective values (see
+// models/config.ts), so the draft reads each member as it is and validates
+// its shape; it supplies no defaults of its own.
+function numberField(config: AppConfig | null, key: string): number {
+  const value = configNumber(config, key);
+  if (value === null) throw new Error(`${key} must be a number.`);
+  return value;
+}
+
+function stringField(config: AppConfig | null, key: string): string {
+  const value = configString(config, key);
+  if (value === null) throw new Error(`${key} must be text.`);
+  return value;
 }
 
 function draftFrom(
-  config: Record<string, unknown> | null,
+  config: AppConfig | null,
   state: Record<string, unknown> | null,
   accelerationCapabilities: AiAccelerationCapability[],
 ): SettingsDraft {
@@ -102,85 +114,63 @@ function draftFrom(
     aiAcceleration[capability.feature] =
       typeof stored === "string" ? stored : capability.default;
   }
+  const flag = (key: string) => configFlag(config, key);
   return {
-    ignoredFileNames: config?.ignoredFileNames === undefined
-      ? [".DS_Store", "Thumbs.db", "desktop.ini"]
-      : stringArrayField(config, "ignoredFileNames"),
-    hideDotNames: config?.hideDotNames !== false,
-    hideHiddenAttributes: config?.hideHiddenAttributes !== false,
-    hideSystemAttributes: config?.hideSystemAttributes !== false,
-    defaultTimezone:
-      typeof config?.defaultTimezone === "string"
-        ? config.defaultTimezone
-        : "UTC",
-    goodRangeStartYear: numberOr(config?.goodRangeStartYear, 1995),
-    similarityMaxGapSeconds: numberOr(
-      config?.similarityMaxGapSeconds,
-      SIMILAR_PHOTO_DEFAULTS.similarityMaxGapSeconds,
-    ),
-    similarityPhashMaxDistance: numberOr(
-      config?.similarityPhashMaxDistance,
-      SIMILAR_PHOTO_DEFAULTS.similarityPhashMaxDistance,
-    ),
-    similarityPhashMaxDistanceBurst: numberOr(
-      config?.similarityPhashMaxDistanceBurst,
-      SIMILAR_PHOTO_DEFAULTS.similarityPhashMaxDistanceBurst,
-    ),
-    similarityDiameterMultiplier: numberOr(
-      config?.similarityDiameterMultiplier,
-      SIMILAR_PHOTO_DEFAULTS.similarityDiameterMultiplier,
-    ),
-    previewLongEdgePx: numberOr(config?.previewLongEdgePx, 1600),
-    thumbnailEdgePx: numberOr(config?.thumbnailEdgePx, 320),
-    videoStripSecondsPerFrame: numberOr(config?.videoStripSecondsPerFrame, 20),
-    videoStripMinFrames: numberOr(config?.videoStripMinFrames, 5),
-    videoStripMaxFrames: numberOr(config?.videoStripMaxFrames, 40),
-    videoSnapshotsEnabled: config?.videoSnapshotsEnabled !== false,
-    similarPhotoAnalysisEnabled: config?.similarPhotoAnalysisEnabled !== false,
-    videoTranscriptionEnabled: config?.videoTranscriptionEnabled !== false,
-    audioTranscriptionEnabled: config?.audioTranscriptionEnabled !== false,
+    ignoredFileNames: stringArrayField(config, "ignoredFileNames"),
+    hideDotNames: flag("hideDotNames"),
+    hideHiddenAttributes: flag("hideHiddenAttributes"),
+    hideSystemAttributes: flag("hideSystemAttributes"),
+    defaultTimezone: stringField(config, "defaultTimezone"),
+    goodRangeStartYear: numberField(config, "goodRangeStartYear"),
+    similarityMaxGapSeconds: numberField(config, "similarityMaxGapSeconds"),
+    similarityPhashMaxDistance: numberField(config, "similarityPhashMaxDistance"),
+    similarityPhashMaxDistanceBurst: numberField(config, "similarityPhashMaxDistanceBurst"),
+    similarityDiameterMultiplier: numberField(config, "similarityDiameterMultiplier"),
+    previewLongEdgePx: numberField(config, "previewLongEdgePx"),
+    thumbnailEdgePx: numberField(config, "thumbnailEdgePx"),
+    videoStripSecondsPerFrame: numberField(config, "videoStripSecondsPerFrame"),
+    videoStripMinFrames: numberField(config, "videoStripMinFrames"),
+    videoStripMaxFrames: numberField(config, "videoStripMaxFrames"),
+    videoSnapshotsEnabled: flag("videoSnapshotsEnabled"),
+    similarPhotoAnalysisEnabled: flag("similarPhotoAnalysisEnabled"),
+    videoTranscriptionEnabled: flag("videoTranscriptionEnabled"),
+    audioTranscriptionEnabled: flag("audioTranscriptionEnabled"),
     aiAcceleration,
-    videoAutoplay: config?.videoAutoplay !== false,
-    audioAutoplay: config?.audioAutoplay !== false,
+    videoAutoplay: flag("videoAutoplay"),
+    audioAutoplay: flag("audioAutoplay"),
+    // Playback view state, not configuration: a view that never saved one
+    // plays with sound at full volume.
     soundEnabled: state?.soundEnabled !== false,
     playbackVolume: Math.min(
       1,
-      Math.max(0.01, numberOr(state?.playbackVolume, 1)),
+      Math.max(0.01, typeof state?.playbackVolume === "number" && Number.isFinite(state.playbackVolume) ? state.playbackVolume : 1),
     ),
-    enlargeSmallImagesInPreview: config?.enlargeSmallImagesInPreview !== false,
-    enlargeSmallImagesInQuickView:
-      config?.enlargeSmallImagesInQuickView !== false,
-    textPreviewMaxBytes: Math.max(
-      1,
-      numberOr(config?.textPreviewMaxBytes, 2 * 1024 * 1024),
-    ),
-    textFallbackEncoding:
-      typeof config?.textFallbackEncoding === "string"
-        ? config.textFallbackEncoding
-        : "utf-8",
-    pairingEnabled: config?.pairingEnabled !== false,
+    enlargeSmallImagesInPreview: flag("enlargeSmallImagesInPreview"),
+    enlargeSmallImagesInQuickView: flag("enlargeSmallImagesInQuickView"),
+    textPreviewMaxBytes: Math.max(1, numberField(config, "textPreviewMaxBytes")),
+    textFallbackEncoding: stringField(config, "textFallbackEncoding"),
+    pairingEnabled: flag("pairingEnabled"),
     theme:
       config?.theme === "light" || config?.theme === "dark"
         ? config.theme
         : "system",
     language: normalizeLanguagePreference(config?.language),
     uiFontFamily: normalizeUiFontPreference(config?.uiFontFamily),
-    keepAwakeDuringIndexing: config?.keepAwakeDuringIndexing !== false,
-    checkGithubReleasesAtLaunch: config?.checkGithubReleasesAtLaunch !== false,
-    checkSourceFoldersAtLaunch: config?.checkSourceFoldersAtLaunch !== false,
-    // Opt-in, so absence means OFF — the opposite polarity of the two above.
-    confirmTrashDelete: config?.confirmTrashDelete === true,
-    scoreFaces: config?.scoreFaces !== false,
+    keepAwakeDuringIndexing: flag("keepAwakeDuringIndexing"),
+    checkGithubReleasesAtLaunch: flag("checkGithubReleasesAtLaunch"),
+    checkSourceFoldersAtLaunch: flag("checkSourceFoldersAtLaunch"),
+    confirmTrashDelete: confirmsTrashDelete(config),
+    scoreFaces: flag("scoreFaces"),
     // Presentation is independent of scoring: existing results remain useful
     // after the optional background analysis is turned off.
-    showFaceStars: config?.showFaceStars !== false,
+    showFaceStars: flag("showFaceStars"),
     maximumImagesInComparison: Math.max(
       2,
-      Math.floor(numberOr(config?.maximumImagesInComparison, 16)),
+      Math.floor(numberField(config, "maximumImagesInComparison")),
     ),
     notificationDisplaySeconds: Math.min(
       60,
-      Math.max(1, numberOr(config?.notificationDisplaySeconds, 6)),
+      Math.max(1, numberField(config, "notificationDisplaySeconds")),
     ),
     destinationConflictRenameStyle:
       config?.destinationConflictRenameStyle === "parenthesized-number"
@@ -193,15 +183,18 @@ function draftFrom(
 interface SettingsState {
   draft: SettingsDraft | null;
   accelerationCapabilities: AiAccelerationCapability[];
+  /** The core's defaults for a new installation, for the reset action. */
+  defaults: AppConfig | null;
   /** The draft as it was when the modal opened — the dirty-check baseline. */
   opened: SettingsDraft | null;
   saving: boolean;
   message: Message | null;
   messageLevel: "error" | "info" | null;
   beginEditing: (
-    config: Record<string, unknown> | null,
+    config: AppConfig | null,
     state?: Record<string, unknown> | null,
     accelerationCapabilities?: AiAccelerationCapability[],
+    defaults?: AppConfig | null,
   ) => void;
   discardDraft: () => void;
   update: (patch: Partial<SettingsDraft>) => void;
@@ -214,14 +207,16 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   draft: null,
   accelerationCapabilities: [],
+  defaults: null,
   opened: null,
   saving: false,
   message: null,
   messageLevel: null,
 
-  beginEditing: (config, state = null, accelerationCapabilities = []) => {
+  beginEditing: (config, state = null, accelerationCapabilities = [], defaults = null) => {
     set({
       accelerationCapabilities,
+      defaults,
       draft: draftFrom(config, state, accelerationCapabilities),
       opened: draftFrom(config, state, accelerationCapabilities),
       message: null,
@@ -231,7 +226,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   discardDraft: () => {
     if (get().saving) return;
-    set({ draft: null, opened: null, accelerationCapabilities: [] });
+    set({ draft: null, opened: null, accelerationCapabilities: [], defaults: null });
   },
 
   update: (patch) => {
@@ -239,7 +234,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     if (draft) set({ draft: { ...draft, ...patch } });
   },
 
-  resetSimilarPhotoSettings: () => get().update(SIMILAR_PHOTO_DEFAULTS),
+  resetSimilarPhotoSettings: () => {
+    const defaults = get().defaults;
+    if (defaults === null) return;
+    get().update(
+      Object.fromEntries(
+        SIMILAR_PHOTO_KEYS.map((key) => [key, numberField(defaults, key)]),
+      ) as Pick<SettingsDraft, (typeof SIMILAR_PHOTO_KEYS)[number]>,
+    );
+  },
 
   addSourceDir: async () => {
     try {

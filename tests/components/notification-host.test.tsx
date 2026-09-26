@@ -15,6 +15,7 @@ import {
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { seedAppConfig } from "../helpers/config";
 
 function notice(over: Partial<NotificationRecord> = {}): NotificationRecord {
   return {
@@ -34,6 +35,7 @@ function notice(over: Partial<NotificationRecord> = {}): NotificationRecord {
 }
 
 beforeEach(() => {
+  seedAppConfig();
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     get_active_notifications: () => [],

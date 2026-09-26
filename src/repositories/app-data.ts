@@ -6,8 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 // Mirrors storage::LoadedAppData. Config and state stay loosely typed at this
 // layer (the store never validates; each feature validates what it consumes).
+// `config` holds the core's effective values (models/config.ts).
 export interface LoadedAppData {
-  config: Record<string, unknown> | null;
+  config: Record<string, unknown>;
+  /** The core's defaults for a new installation, for Settings' reset actions. */
+  configDefaults?: Record<string, unknown>;
   state: Record<string, unknown> | null;
   dataRoot: string;
   debugEnabled: boolean;

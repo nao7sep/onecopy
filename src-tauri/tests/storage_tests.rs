@@ -20,12 +20,13 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
     let root = tempfile::tempdir().unwrap();
     assert_eq!(
         read_appearance_preferences(root.path()).unwrap(),
+        // No config yet: the auxiliary windows read the core's defaults.
         serde_json::json!({
-            "uiFontFamily": null,
-            "enlargeSmallImagesInPreview": null,
-            "enlargeSmallImagesInQuickView": null,
-            "videoTranscriptionEnabled": null,
-            "audioTranscriptionEnabled": null,
+            "uiFontFamily": "",
+            "enlargeSmallImagesInPreview": true,
+            "enlargeSmallImagesInQuickView": true,
+            "videoTranscriptionEnabled": true,
+            "audioTranscriptionEnabled": true,
         })
     );
     assert!(!root.path().join(CONFIG_FILE_NAME).exists());
@@ -346,7 +347,7 @@ fn a_corrupt_config_is_set_aside_reported_and_reseeded_in_the_same_load() {
     // load, so without the re-check config.json would stay missing until
     // some later save happened to write it.
     assert!(config.is_file(), "the store comes back seeded, not absent");
-    let started_with = loaded.config.expect("the app runs on the seeded defaults");
+    let started_with = loaded.config;
     assert_eq!(
         started_with["goodRangeStartYear"],
         serde_json::json!(1995),
@@ -378,7 +379,7 @@ fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
         "the good config is left exactly as the user left it"
     );
     assert_eq!(
-        loaded.config.unwrap()["sourceDirs"],
+        loaded.config["sourceDirs"],
         serde_json::json!(["/photos"])
     );
     assert!(loaded.state.is_none(), "view state starts fresh");
@@ -412,4 +413,41 @@ fn an_unserialized_config_read_leaves_its_quarantine_pending_for_load_from_root(
         "the watcher's read must not drain the quarantine meant for Main"
     );
     assert_eq!(loaded.quarantines[0].file, "config.json");
+}
+
+#[test]
+fn the_effective_config_is_the_stored_values_over_the_defaults() {
+    let defaults = effective_config(None);
+    assert_eq!(defaults, serde_json::to_value(DefaultConfig::default()).unwrap());
+    // A config written before a key existed resolves that key to its default:
+    // new installations confirm a direct single-item Delete (file-operations.md).
+    let older = serde_json::json!({ "sourceDirs": ["/photos"], "videoAutoplay": false });
+    let effective = effective_config(Some(&older));
+    assert_eq!(effective["confirmTrashDelete"], serde_json::json!(true));
+    assert_eq!(effective["videoAutoplay"], serde_json::json!(false));
+    assert_eq!(effective["sourceDirs"], serde_json::json!(["/photos"]));
+    assert_eq!(effective_config(Some(&serde_json::json!([]))), defaults);
+}
+
+/// The frontend suite reads its configuration from this fixture, so its tests
+/// run on the core's defaults instead of a table of their own. The fields a
+/// machine or platform decides are pinned to fixed values there.
+#[test]
+fn the_frontend_config_fixture_matches_the_core_defaults() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/fixtures/effective-config.json");
+    let mut expected = effective_config(None);
+    for (key, value) in [
+        ("defaultTimezone", serde_json::json!("UTC")),
+        ("destinationConflictRenameStyle", serde_json::json!("space-number")),
+        ("aiAcceleration", serde_json::json!({})),
+    ] {
+        expected[key] = value;
+    }
+    let fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        fixture, expected,
+        "regenerate tests/fixtures/effective-config.json from DefaultConfig"
+    );
 }

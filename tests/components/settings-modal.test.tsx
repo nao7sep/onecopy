@@ -5,13 +5,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import SettingsModal from "../../src/components/SettingsModal";
 import { useSettingsStore } from "../../src/state/settings-store";
+import { DEFAULT_CONFIG, effectiveConfig } from "../helpers/config";
 import { createdWindows, invokeCalls, mockCommands, resetTauriMocks, setMonitors, setWindowCreatedHook, WebviewWindow } from "../mocks/tauri";
 
-const config = {
+const config = effectiveConfig({
   sourceDirs: ["C:\\Photos"],
   defaultTimezone: "Asia/Tokyo",
   aiAcceleration: { transcription: "metal", "face-scoring": "none" },
-};
+});
 
 const accelerationCapabilities = [
   {
@@ -39,7 +40,7 @@ beforeEach(() => {
     rebuild_library_index: () => null,
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ total: 0, rows: [] }),
-    text_encodings: () => ["utf-8", "shift_jis"],
+    text_preview_options: () => ({ encodings: ["utf-8", "shift_jis"], maxAllowedBytes: 64 * 1024 * 1024 }),
     visibility_capabilities: () => ({ hiddenAttributes: true, systemAttributes: false }),
     index_work_snapshot: () => ({
       sourceCheck: {
@@ -231,7 +232,7 @@ describe("Settings categories", () => {
     expect(document.activeElement).toBe(last);
   });
 
-  it("resets only the four optimized similar-photo settings", () => {
+  it("resets only the four optimized similar-photo settings, to the core's defaults", () => {
     useSettingsStore.getState().beginEditing({
       ...config,
       goodRangeStartYear: 2007,
@@ -241,7 +242,7 @@ describe("Settings categories", () => {
       similarityDiameterMultiplier: 4,
       previewLongEdgePx: 2048,
       confirmTrashDelete: true,
-    });
+    }, null, [], DEFAULT_CONFIG);
     const before = useSettingsStore.getState().draft;
     render(<SettingsModal open onClose={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Media" }));
@@ -250,10 +251,10 @@ describe("Settings categories", () => {
 
     expect(useSettingsStore.getState().draft).toEqual({
       ...before,
-      similarityMaxGapSeconds: 90,
-      similarityPhashMaxDistance: 3,
-      similarityPhashMaxDistanceBurst: 10,
-      similarityDiameterMultiplier: 2,
+      similarityMaxGapSeconds: DEFAULT_CONFIG.similarityMaxGapSeconds,
+      similarityPhashMaxDistance: DEFAULT_CONFIG.similarityPhashMaxDistance,
+      similarityPhashMaxDistanceBurst: DEFAULT_CONFIG.similarityPhashMaxDistanceBurst,
+      similarityDiameterMultiplier: DEFAULT_CONFIG.similarityDiameterMultiplier,
     });
   });
 

@@ -3,7 +3,8 @@
 //! store's stale cached copy can blind-overwrite another's save. A config
 //! patch is validated first and then brought into the running app (theme,
 //! native menu language, appearance invalidation, the watcher). Each returns
-//! the merged document so the caller can publish it without a second read.
+//! the merged document — the config as its effective values — so the caller
+//! can publish it without a second read.
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -84,7 +85,7 @@ pub fn patch_config(app: &AppHandle, mut patch: Value, report_failure: bool) -> 
                     scan_runtime::record_runtime_failure(app, "watcher-failed", &error);
                 }
             }
-            Ok(outcome.merged)
+            Ok(storage::effective_config(Some(&outcome.merged)))
         },
         |_| json!({}),
     );

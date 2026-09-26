@@ -35,6 +35,7 @@ import {
 import { createEventInstaller } from "../utils/eventInstallation";
 import { useComparisonStore } from "../state/comparison-store";
 import { message, type Message } from "../i18n/translate";
+import { confirmsTrashDelete } from "../models/config";
 export type { ViewerMonitor } from "./viewer-window";
 
 export interface ViewerBroadcast {
@@ -473,7 +474,7 @@ export async function closeViewer(): Promise<void> {
 }
 
 export async function requestViewerDelete(permanent: boolean): Promise<void> {
-  const configConfirms = useAppStore.getState().appData?.config?.confirmTrashDelete === true;
+  const configConfirms = confirmsTrashDelete(useAppStore.getState().appData?.config);
   if (permanent || configConfirms) {
     useQuickViewStore.getState().requestDelete(permanent ? "permanent" : "trash");
     return;

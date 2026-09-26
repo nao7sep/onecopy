@@ -12,9 +12,10 @@ import {
   openUrl,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { effectiveConfig } from "../helpers/config";
 
 const data = {
-  config: {},
+  config: effectiveConfig(),
   state: {},
   dataRoot: "/tmp/onecopy-release-test",
   debugEnabled: false,
@@ -61,7 +62,7 @@ describe("GitHub release checking", () => {
       status: "failed",
       attemptedAtUtc: "2026-09-10T00:00:00.000Z",
     }) });
-    await startAutomaticReleaseCheck({ ...data, config: { checkGithubReleasesAtLaunch: false } });
+    await startAutomaticReleaseCheck({ ...data, config: effectiveConfig({ checkGithubReleasesAtLaunch: false }) });
     expect(invokeCalls.some(({ command }) => command === "check_github_release")).toBe(false);
 
     useReleaseCheckStore.setState({ automaticStarted: false });

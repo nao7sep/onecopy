@@ -39,6 +39,7 @@ import { openInDefaultApp } from "../workflows/external-open";
 import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import { recordActionFailure } from "../state/notifications-store";
+import { configFlag } from "../models/config";
 
 function capturePlaybackFailure(
   element: HTMLMediaElement,
@@ -584,8 +585,8 @@ export default function PreviewSurface({
     const config = state.appData?.config;
     if (config === null || config === undefined) return null;
     return isQuickViewSetting
-      ? config.enlargeSmallImagesInQuickView !== false
-      : config.enlargeSmallImagesInPreview !== false;
+      ? configFlag(config, "enlargeSmallImagesInQuickView")
+      : configFlag(config, "enlargeSmallImagesInPreview");
   });
   // Main's own webview has this directly through `appData.config` above.
   // Auxiliary webviews (the separate Preview window, true fullscreen) have no

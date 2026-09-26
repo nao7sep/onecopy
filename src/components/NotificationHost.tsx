@@ -17,6 +17,7 @@ import { log, toErrorFields } from "../repositories";
 import { useReleaseCheckStore } from "../state/release-check-store";
 import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import { configNumber } from "../models/config";
 
 function ReleaseNotice() {
   const { t, text } = useI18n();
@@ -182,10 +183,9 @@ export default function NotificationHost({
   const { t } = useI18n();
   const active = useNotificationsStore((state) => state.active);
   const releaseVersion = useReleaseCheckStore((state) => state.noticeVersion);
-  const configuredSeconds = useAppStore((state) => {
-    const value = state.appData?.config?.notificationDisplaySeconds;
-    return typeof value === "number" && Number.isFinite(value) ? value : 6;
-  });
+  const configuredSeconds = useAppStore(
+    (state) => configNumber(state.appData?.config, "notificationDisplaySeconds") ?? 1,
+  );
   const durationMs = Math.min(60, Math.max(1, configuredSeconds)) * 1000;
 
   useEffect(() => {

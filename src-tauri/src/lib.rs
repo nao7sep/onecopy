@@ -153,7 +153,6 @@ async fn load_app_data(
                     unreachable!("the blocked bootstrap returns before the logging boundary")
                 };
                 json!({
-                    "hasConfig": data.config.is_some(),
                     "hasState": data.state.is_some(),
                     "quarantines": data.quarantines.len(),
                 })
@@ -715,8 +714,8 @@ async fn text_preview(
 }
 
 #[tauri::command]
-fn text_encodings() -> &'static [&'static str] {
-    text_preview::encodings()
+fn text_preview_options() -> text_preview::Options {
+    text_preview::options()
 }
 
 #[tauri::command]
@@ -1536,7 +1535,7 @@ pub fn run() {
             reveal_data_subdir,
             open_item_externally,
             text_preview,
-            text_encodings,
+            text_preview_options,
             media_use_current,
             media_use_released,
             note_user_activity,

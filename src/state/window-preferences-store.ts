@@ -20,20 +20,18 @@ interface WindowPreferencesState {
 }
 
 // Auxiliary webviews do not run Main's one-shot application bootstrap. This
-// small read model carries only presentation choices those webviews render.
+// small read model carries only presentation choices those webviews render,
+// read from the core's effective configuration; the values before the first
+// read are the core's defaults for a new installation.
 export const useWindowPreferencesStore = create<WindowPreferencesState>((set) => ({
   enlargeSmallImagesInPreview: true,
   enlargeSmallImagesInQuickView: true,
   videoTranscriptionEnabled: true,
   audioTranscriptionEnabled: true,
   apply: (preferences) => set({
-    enlargeSmallImagesInPreview:
-      preferences.enlargeSmallImagesInPreview !== false,
-    enlargeSmallImagesInQuickView:
-      preferences.enlargeSmallImagesInQuickView !== false,
-    videoTranscriptionEnabled:
-      preferences.videoTranscriptionEnabled !== false,
-    audioTranscriptionEnabled:
-      preferences.audioTranscriptionEnabled !== false,
+    enlargeSmallImagesInPreview: preferences.enlargeSmallImagesInPreview === true,
+    enlargeSmallImagesInQuickView: preferences.enlargeSmallImagesInQuickView === true,
+    videoTranscriptionEnabled: preferences.videoTranscriptionEnabled === true,
+    audioTranscriptionEnabled: preferences.audioTranscriptionEnabled === true,
   }),
 }));

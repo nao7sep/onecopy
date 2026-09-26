@@ -10,6 +10,7 @@ import { openInDefaultApp } from "../workflows/external-open";
 import { log, toErrorFields } from "../repositories";
 import FaceRating from "./FaceRating";
 import OperationResult from "./ui/OperationResult";
+import { configFlag } from "../models/config";
 
 // One comparison card, shared by the main and secondary display surfaces.
 
@@ -34,7 +35,7 @@ export default function ComparisonSlot({
   // Pixel, byte and duration facts are still assembled in models/items.
   const facts = factsLine(member, number);
   const showFaceStars = useAppStore(
-    (state) => state.appData?.config?.showFaceStars !== false,
+    (state) => configFlag(state.appData?.config, "showFaceStars"),
   );
   const faceStars = showFaceStars ? faceStarRating(member.faceScore) : 0;
   return (

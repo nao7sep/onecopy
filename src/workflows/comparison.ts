@@ -35,6 +35,7 @@ import {
   newActivityOperationId,
   recordActivity,
 } from "../repositories/activity";
+import { configNumber, confirmsTrashDelete } from "../models/config";
 
 let mainRecoveryAfterFamily: AnchorContext | null = null;
 
@@ -43,15 +44,12 @@ function appState(): Record<string, unknown> {
 }
 
 function configConfirmsTrash(): boolean {
-  return useAppStore.getState().appData?.config?.confirmTrashDelete === true;
+  return confirmsTrashDelete(useAppStore.getState().appData?.config);
 }
 
 function maximumImages(): number {
-  const value =
-    useAppStore.getState().appData?.config?.maximumImagesInComparison;
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.max(2, Math.floor(value))
-    : 16;
+  const value = configNumber(useAppStore.getState().appData?.config, "maximumImagesInComparison");
+  return Math.max(2, Math.floor(value ?? 2));
 }
 
 async function refreshLibrary(): Promise<void> {

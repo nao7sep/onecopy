@@ -246,7 +246,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         }));
         log.info("app data loaded", {
           dataRoot: data.dataRoot,
-          hasConfig: data.config !== null,
           hasState: data.state !== null,
         });
         return data;

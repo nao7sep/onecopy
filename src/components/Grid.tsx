@@ -46,6 +46,7 @@ import { useComparisonStore } from "../state/comparison-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import { hasOpenModal } from "../utils/modalStack";
 import { isEditableTarget } from "../utils/shortcuts";
+import { configFlag } from "../models/config";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -461,7 +462,7 @@ export default function Grid({
   const previewError = usePreviewStore((s) => s.error);
   const clearPreviewError = usePreviewStore((s) => s.clearError);
   const showFaceStars = useAppStore(
-    (state) => state.appData?.config?.showFaceStars !== false,
+    (state) => configFlag(state.appData?.config, "showFaceStars"),
   );
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);

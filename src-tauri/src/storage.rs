@@ -199,11 +199,33 @@ impl Default for DefaultConfig {
     }
 }
 
+/// The configuration every reader acts on: the stored document's members over
+/// the canonical defaults. Defaults are materialized into `config.json` only
+/// when the file is first created, so a key added later resolves here, the
+/// one place defaults are answered for the frontend too.
+pub fn effective_config(stored: Option<&JsonValue>) -> JsonValue {
+    let mut effective =
+        serde_json::to_value(DefaultConfig::default()).expect("the default config serializes");
+    if let (Some(fields), Some(stored)) = (
+        effective.as_object_mut(),
+        stored.and_then(JsonValue::as_object),
+    ) {
+        for (key, value) in stored {
+            fields.insert(key.clone(), value.clone());
+        }
+    }
+    effective
+}
+
 /// Everything the frontend needs at startup, in one command round-trip.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadedAppData {
-    pub config: Option<JsonValue>,
+    /// The effective configuration (see [`effective_config`]).
+    pub config: JsonValue,
+    /// The defaults a new installation starts with, for Settings' reset
+    /// actions; the frontend keeps no default table of its own.
+    pub config_defaults: JsonValue,
     pub state: Option<JsonValue>,
     pub data_root: String,
     /// Set by the command layer from logging::debug_enabled(); storage leaves it false.
@@ -260,6 +282,7 @@ pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
     if !config.is_object() {
         return Err("Appearance requires a configuration object".to_string());
     }
+    let config = effective_config(Some(&config));
     Ok(serde_json::json!({
         "uiFontFamily": config.get("uiFontFamily"),
         "enlargeSmallImagesInPreview": config.get("enlargeSmallImagesInPreview"),
@@ -344,7 +367,8 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
         quarantines.push(record);
     }
     Ok(LoadedAppData {
-        config,
+        config: effective_config(config.as_ref()),
+        config_defaults: effective_config(None),
         state: state_read.value,
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,

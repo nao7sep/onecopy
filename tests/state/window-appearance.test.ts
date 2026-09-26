@@ -19,7 +19,14 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); window.history.pushState(null, "", "/"); });
 
 it("initializes the font without Main bootstrap, then follows saved changes", async () => {
-  let preferences = { uiFontFamily: "Iosevka" };
+  // The core answers with effective values (storage::read_appearance_preferences).
+  const effective = {
+    enlargeSmallImagesInPreview: true,
+    enlargeSmallImagesInQuickView: true,
+    videoTranscriptionEnabled: true,
+    audioTranscriptionEnabled: true,
+  };
+  let preferences = { ...effective, uiFontFamily: "Iosevka" };
   mockCommands({ appearance_preferences: () => preferences });
   const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
   const { useWindowPreferencesStore } = await import("../../src/state/window-preferences-store");
@@ -29,7 +36,7 @@ it("initializes the font without Main bootstrap, then follows saved changes", as
   expect(useWindowPreferencesStore.getState().videoTranscriptionEnabled).toBe(true);
   expect(invokeCalls.some((call) => call.command === "load_app_data")).toBe(false);
 
-  preferences = { uiFontFamily: "" };
+  preferences = { ...effective, uiFontFamily: "" };
   fireEvent("appearance://changed");
   await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe(""));
   await installWindowAppearance();

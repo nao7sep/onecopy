@@ -28,6 +28,7 @@ import { isAudioFile, itemKey } from "../models/items";
 import { toggleMainPlayback } from "../workflows/playback";
 import { isComposingEvent } from "./useComposing";
 import { useQuickViewStore } from "../state/quick-view-store";
+import { confirmsTrashDelete } from "../models/config";
 
 /** The exact ordered logical items a Main deletion review shows. */
 interface DeleteReview {
@@ -44,6 +45,7 @@ export function useGlobalCommands() {
       appData?.config ?? null,
       appData?.state ?? null,
       appData?.aiAccelerationCapabilities ?? [],
+      appData?.configDefaults ?? null,
     );
     useAppShellStore.getState().openUtility("settings");
   }, []);
@@ -115,7 +117,7 @@ export function useGlobalCommands() {
           setDeleteReview({ keys, permanent: true });
         } else if (
           keys.length > 1 ||
-          useAppStore.getState().appData?.config?.confirmTrashDelete === true
+          confirmsTrashDelete(useAppStore.getState().appData?.config)
         ) {
           setDeleteReview({ keys, permanent: false });
         } else {

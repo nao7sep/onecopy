@@ -14,6 +14,7 @@ import {
   type PreviewPayload,
   usePreviewStore,
 } from "../state/preview-store";
+import { confirmsTrashDelete } from "../models/config";
 
 let persistenceInstalled = false;
 
@@ -71,7 +72,7 @@ const installCommands = createEventInstaller(async (listeners) => {
       (message.key === "Delete" || message.key === "Backspace") &&
       (message.shiftKey === true ||
         useItemsStore.getState().selectedKeys.size > 1 ||
-        useAppStore.getState().appData?.config?.confirmTrashDelete === true);
+        confirmsTrashDelete(useAppStore.getState().appData?.config));
     if (needsConfirmation) {
       await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
     }

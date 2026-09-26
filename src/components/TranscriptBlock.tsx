@@ -25,6 +25,7 @@ import { recordActionFailure } from "../state/notifications-store";
 import { useAppShellStore } from "../state/app-shell-store";
 import { transcriptOwnsScrollKey } from "../utils/viewerKeys";
 import { passiveScrollKey } from "./ui/PassiveScrollRegion";
+import { configFlag } from "../models/config";
 
 interface TranscriptSegment {
   seconds: number;
@@ -129,8 +130,8 @@ export default function TranscriptBlock({
     const config = state.appData?.config;
     if (config === null || config === undefined) return null;
     return medium === "video"
-      ? config.videoTranscriptionEnabled !== false
-      : config.audioTranscriptionEnabled !== false;
+      ? configFlag(config, "videoTranscriptionEnabled")
+      : configFlag(config, "audioTranscriptionEnabled");
   });
   const auxiliaryAutomatic = useWindowPreferencesStore((state) =>
     medium === "video"

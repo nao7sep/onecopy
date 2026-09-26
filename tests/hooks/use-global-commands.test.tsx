@@ -19,6 +19,7 @@ import {
   resetTauriMocks,
   setCurrentMonitor,
 } from "../mocks/tauri";
+import { effectiveConfig } from "../helpers/config";
 
 const ITEM: SectionItem = {
   hash: "image-hash",
@@ -80,7 +81,7 @@ beforeEach(() => {
   useComparisonStore.setState({ open: false });
   useAppStore.setState({
     appData: {
-      config: { confirmTrashDelete: false },
+      config: effectiveConfig({ confirmTrashDelete: false }),
       state: {},
       dataRoot: "/app",
       debugEnabled: false,

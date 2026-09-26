@@ -32,6 +32,7 @@ import {
   resetTauriMocks,
 } from "../mocks/tauri";
 import { finishWizard } from "../../src/workflows/wizard";
+import { effectiveConfig } from "../helpers/config";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -102,7 +103,9 @@ beforeEach(() => {
     load_app_data: () => ({
       status: "ready",
       data: {
-        config: { sourceDirs: [], defaultTimezone: "UTC" },
+        // Keystroke-paced culling: the user turned off the single-item
+        // Delete confirmation that new installations start with.
+        config: effectiveConfig({ sourceDirs: [], defaultTimezone: "UTC", confirmTrashDelete: false }),
         state: {},
         dataRoot: "/data",
         debugEnabled: false,
@@ -113,7 +116,8 @@ beforeEach(() => {
     binaries_state: () => [],
     check_source_dirs: () => ({ missing: [], substituted: [] }),
     patch_state: () => ({}),
-    patch_config: (args) => args.patch ?? {},
+    // The core answers a save with the effective configuration.
+    patch_config: (args) => effectiveConfig((args.patch ?? {}) as Record<string, unknown>),
     log_event: () => null,
     logging_debug_enabled: () => false,
     background_work_snapshot: () => ({
@@ -288,11 +292,11 @@ describe("the culling workflow", () => {
     mockCommand("load_app_data", () => ({
       status: "ready",
       data: {
-        config: {
+        config: effectiveConfig({
           sourceDirs: ["/photos"],
           defaultTimezone: "UTC",
           checkSourceFoldersAtLaunch: true,
-        },
+        }),
         state: {},
         dataRoot: "/data",
         debugEnabled: false,
@@ -314,11 +318,11 @@ describe("the culling workflow", () => {
     mockCommand("load_app_data", () => ({
       status: "ready",
       data: {
-        config: {
+        config: effectiveConfig({
           sourceDirs: ["/missing/photos"],
           defaultTimezone: "UTC",
           checkSourceFoldersAtLaunch: true,
-        },
+        }),
         state: {},
         dataRoot: "/data",
         debugEnabled: false,
@@ -342,11 +346,11 @@ describe("the culling workflow", () => {
     mockCommand("load_app_data", () => ({
       status: "ready",
       data: {
-        config: {
+        config: effectiveConfig({
           sourceDirs: ["/photos"],
           defaultTimezone: "UTC",
           checkSourceFoldersAtLaunch: false,
-        },
+        }),
         state: {},
         dataRoot: "/data",
         debugEnabled: false,
@@ -528,7 +532,11 @@ describe("the failure workflow", () => {
     mockCommand("load_app_data", () => ({
       status: "ready",
       data: {
-        config: { sourceDirs: ["/photos"], defaultTimezone: "UTC" },
+        config: effectiveConfig({
+          sourceDirs: ["/photos"],
+          defaultTimezone: "UTC",
+          confirmTrashDelete: false,
+        }),
         state: {},
         dataRoot: "/data",
         debugEnabled: false,

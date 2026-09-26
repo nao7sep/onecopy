@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useSettingsStore } from "../../src/state/settings-store";
 import { resetTauriMocks } from "../mocks/tauri";
+import { effectiveConfig } from "../helpers/config";
 
-const config = {
+const config = effectiveConfig({
   sourceDirs: ["/photos"],
   defaultTimezone: "Asia/Tokyo",
-};
+});
 
 beforeEach(() => {
   resetTauriMocks();
@@ -13,7 +14,7 @@ beforeEach(() => {
 });
 
 describe("playback preferences", () => {
-  it("defaults separate autoplay and missing playback state on", () => {
+  it("reads the core's defaults and starts missing playback state on", () => {
     expect(useSettingsStore.getState().draft).toMatchObject({
       videoAutoplay: true,
       audioAutoplay: true,
@@ -57,6 +58,19 @@ describe("playback preferences", () => {
       soundEnabled: true,
       playbackVolume: 1,
     });
+  });
+});
+
+describe("defaults", () => {
+  it("confirms a single-item Delete by default, as the core's defaults say (R7-07)", () => {
+    expect(useSettingsStore.getState().draft?.confirmTrashDelete).toBe(true);
+  });
+
+  it("supplies no default of its own for a missing member", () => {
+    const { goodRangeStartYear: _omitted, ...partial } = config;
+    expect(() => useSettingsStore.getState().beginEditing(partial)).toThrow(
+      "goodRangeStartYear must be a number.",
+    );
   });
 });
 

@@ -14,6 +14,7 @@ import OperationResult from "./ui/OperationResult";
 import { formatBytes } from "../models/items";
 import { useI18n } from "../i18n/I18nContext";
 import type { Translator } from "../i18n/translate";
+import { configFlag } from "../models/config";
 
 // "Managed tools" — grouped by the two genuinely different LIFECYCLES the
 // registry holds (developer, 2026-08-17; one flat list forced an update
@@ -218,7 +219,7 @@ export default function BinariesModal({
   const installing = useBinariesStore((s) => s.installing);
   const installAll = useBinariesStore((s) => s.installAll);
   const checkAtLaunch =
-    useAppStore((s) => s.appData?.config?.checkUpdatesAtLaunch) === true;
+    useAppStore((s) => configFlag(s.appData?.config, "checkUpdatesAtLaunch"));
 
   if (!open) return null;
 

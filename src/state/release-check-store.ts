@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { log, toErrorFields, type LoadedAppData } from "../repositories";
 import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
+import { configFlag } from "../models/config";
 
 export const LATEST_RELEASE_PAGE =
   "https://github.com/nao7sep/onecopy/releases/latest";
@@ -70,7 +71,7 @@ export async function openLatestReleasePage(): Promise<void> {
 export async function startAutomaticReleaseCheck(data: LoadedAppData): Promise<void> {
   if (useReleaseCheckStore.getState().automaticStarted) return;
   useReleaseCheckStore.setState({ automaticStarted: true });
-  if (data.config?.checkGithubReleasesAtLaunch === false) return;
+  if (!configFlag(data.config, "checkGithubReleasesAtLaunch")) return;
   if (!releaseCheckEligible(data.state?.githubReleaseLastAttemptAtUtc)) return;
   const operation = beginCheck(false);
   try {

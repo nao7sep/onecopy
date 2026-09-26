@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
 import { cleanup, fireEvent, render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ComparisonSlot from "../../src/components/ComparisonSlot";
 import type { GroupMember } from "../../src/state/comparison-store";
+import { seedAppConfig } from "../helpers/config";
 
 const MEMBER: GroupMember = {
   hash: "hash-a",
@@ -16,6 +17,8 @@ const MEMBER: GroupMember = {
   copyCount: 2,
   hasThumb: true,
 };
+
+beforeEach(() => seedAppConfig());
 
 afterEach(cleanup);
 

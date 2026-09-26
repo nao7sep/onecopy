@@ -26,6 +26,7 @@ import { installDerivedWorkEventWiring } from "../state/derived-work-store";
 import { installTranscriptEventWiring } from "../state/transcript-store";
 import type { LoadedAppData } from "../repositories";
 import { startAutomaticReleaseCheck } from "../state/release-check-store";
+import { configFlag } from "../models/config";
 
 let completedData: LoadedAppData | null = null;
 let bootstrapInFlight: Promise<void> | null = null;
@@ -74,7 +75,7 @@ async function bootstrapOnce(): Promise<void> {
   useDestinationsStore.getState().init(data.config);
   const wizard = useWizardStore.getState();
   const sources = stringArrayField(data.config, "sourceDirs");
-  const checkAfterLaunch = data.config?.checkSourceFoldersAtLaunch !== false;
+  const checkAfterLaunch = configFlag(data.config, "checkSourceFoldersAtLaunch");
   let sourceCheckStarted = false;
   if (
     checkAfterLaunch &&

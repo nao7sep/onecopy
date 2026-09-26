@@ -58,8 +58,20 @@ const ENCODINGS: &[&str] = &[
     "x-user-defined",
 ];
 
-pub fn encodings() -> &'static [&'static str] {
-    ENCODINGS
+/// What Settings offers for the text preview: the fallback encodings and the
+/// largest preview limit the reader allows.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Options {
+    pub encodings: &'static [&'static str],
+    pub max_allowed_bytes: u64,
+}
+
+pub fn options() -> Options {
+    Options {
+        encodings: ENCODINGS,
+        max_allowed_bytes: MAX_ALLOWED_BYTES,
+    }
 }
 
 #[derive(Debug, Serialize)]

@@ -128,7 +128,7 @@ fn invalid_utf32_code_points_become_replacement_characters() {
 
 #[test]
 fn every_presented_encoding_is_a_working_canonical_decoder() {
-    for label in encodings() {
+    for label in options().encodings {
         assert_eq!(canonical_label(label).unwrap(), *label, "{label}");
         assert!(decode_named(b"", label).is_ok(), "{label}");
     }

@@ -30,9 +30,12 @@ import { CATALOGUES, type MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
 import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
 
-/** Matches `text_preview::MAX_ALLOWED_BYTES` on the Rust side (C-L2): the
- * gate itself must stay bounded, not just default to something reasonable. */
-const TEXT_PREVIEW_MAX_BYTES = 64 * 1024 * 1024;
+/** The core's text-preview choices (`text_preview::Options`); the limit
+ * keeps the gate itself bounded (C-L2). */
+interface TextPreviewOptions {
+  encodings: string[];
+  maxAllowedBytes: number;
+}
 
 /** Auxiliary display priority. Persisted as app STATE, not part of the config
  * draft — screen identifiers are machine-specific and reordering applies
@@ -337,7 +340,7 @@ export default function SettingsModal({
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
-  const [textEncodings, setTextEncodings] = useState<string[]>([]);
+  const [textOptions, setTextOptions] = useState<TextPreviewOptions | null>(null);
   const [visibilityCapabilities, setVisibilityCapabilities] = useState<{
     hiddenAttributes: boolean; systemAttributes: boolean;
   } | null>(null);
@@ -360,16 +363,16 @@ export default function SettingsModal({
   }, [open]);
 
   useEffect(() => {
-    if (!open || textEncodings.length > 0) return;
-    void invoke<string[]>("text_encodings")
-      .then(setTextEncodings)
+    if (!open || textOptions !== null) return;
+    void invoke<TextPreviewOptions>("text_preview_options")
+      .then(setTextOptions)
       .catch((error) => {
         log.warn("text encoding list failed", toErrorFields(error));
         const failure = message("settings.textEncodingsReadFailed");
         useSettingsStore.setState({ message: failure, messageLevel: "error" });
         recordActionFailure("text-encodings-load-failed", failure, error);
       });
-  }, [open, textEncodings.length]);
+  }, [open, textOptions]);
 
   if (!open || draft === null) return null;
 
@@ -630,10 +633,13 @@ export default function SettingsModal({
             hint={t("settings.textPreviewLimitHint")}
             value={Math.max(1, Math.round(draft.textPreviewMaxBytes / 1024))}
             min={1}
-            max={TEXT_PREVIEW_MAX_BYTES / 1024}
+            max={textOptions === null ? undefined : textOptions.maxAllowedBytes / 1024}
             onChange={(v) =>
               update({
-                textPreviewMaxBytes: Math.min(v * 1024, TEXT_PREVIEW_MAX_BYTES),
+                textPreviewMaxBytes:
+                  textOptions === null
+                    ? v * 1024
+                    : Math.min(v * 1024, textOptions.maxAllowedBytes),
               })
             }
           />
@@ -644,8 +650,8 @@ export default function SettingsModal({
                 update({ textFallbackEncoding: event.target.value })
               }
             >
-              {(textEncodings.length > 0
-                ? textEncodings
+              {(textOptions !== null && textOptions.encodings.length > 0
+                ? textOptions.encodings
                 : [draft.textFallbackEncoding]
               ).map((encoding) => (
                 <option key={encoding} value={encoding}>

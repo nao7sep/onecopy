@@ -67,6 +67,7 @@ import StartupFailureScreen from "./components/StartupFailureScreen";
 import { reportActionFailure } from "./state/notifications-store";
 import { bootstrapApplication } from "./workflows/app-lifecycle";
 import { useAppShellStore } from "./state/app-shell-store";
+import { configFlag } from "./models/config";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -114,8 +115,8 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const { t, text, number, percent } = useI18n();
   useDestinationDragBoundary();
   const soundEnabled = appData?.state?.soundEnabled !== false;
-  const videoAutoplay = appData?.config?.videoAutoplay !== false;
-  const audioAutoplay = appData?.config?.audioAutoplay !== false;
+  const videoAutoplay = configFlag(appData?.config, "videoAutoplay");
+  const audioAutoplay = configFlag(appData?.config, "audioAutoplay");
   const counts = useSectionsStore((s) => s.counts);
   const sourceCheck = useSectionsStore((s) => s.sourceCheck);
   const fileInformation = useSectionsStore((s) => s.fileInformation);

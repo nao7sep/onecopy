@@ -19,6 +19,7 @@ import {
   type OptionalFeatureChoices,
   type OptionalFeatureId,
 } from "../models/optionalFeatures";
+import { configString } from "../models/config";
 
 export interface WizardDir {
   path: string;
@@ -82,8 +83,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
 
   init: async (config) => {
     const sourceDirs = stringArrayField(config, "sourceDirs");
-    const timezone =
-      typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
+    const timezone = configString(config, "defaultTimezone") ?? "";
     const language = normalizeLanguagePreference(config?.language);
     if (sourceDirs.length === 0) {
       presenceCheck.begin();
@@ -119,8 +119,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
 
   reopen: (config) => {
     const sourceDirs = stringArrayField(config, "sourceDirs");
-    const timezone =
-      typeof config?.defaultTimezone === "string" ? config.defaultTimezone : "UTC";
+    const timezone = configString(config, "defaultTimezone") ?? "";
     set({
       open: true,
       step: 1,
