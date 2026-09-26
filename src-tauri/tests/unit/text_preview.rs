@@ -15,11 +15,7 @@ fn unicode_markers_are_exact_including_utf32() {
 
 // content-presentation.md D8: automatic decoding reports which step produced
 // its result, so the picker can show a marker guess, an exact match, and a
-// detector guess as the different confidences they are. (The fallback step
-// is exercised by `binary_bytes_do_not_fall_through_to_a_legacy_decoder`'s
-// sibling paths in practice, but is not independently reachable by a crafted
-// byte string here: `chardetng`'s single-byte candidates accept almost any
-// input without error, so the detector step wins first.)
+// detector guess as the different confidences they are.
 #[test]
 fn automatic_decoding_reports_which_step_produced_the_result() {
     assert_eq!(
@@ -40,6 +36,27 @@ fn automatic_decoding_reports_which_step_produced_the_result() {
         decode_automatic(&[224, 128, 128], "utf-8").unwrap().unwrap().2,
         Some("detected")
     );
+}
+
+// content-presentation.md D8 / R5.3 untested contract: the FALLBACK step,
+// reached only when the detector's own guess errors or is not convincingly
+// textual. These lead-byte-then-space Shift_JIS fragments make chardetng
+// guess an encoding whose decode has errors, so `decode_automatic` falls
+// through to the CONFIGURED fallback and decodes losslessly with U+FFFD in
+// place of the bytes that do not fit (content-presentation.md D7) rather
+// than failing the whole file.
+#[test]
+fn falls_through_to_the_configured_fallback_when_detection_itself_errors() {
+    let bytes = [0x81, 0x20, 0x82, 0x20];
+    let decoded = decode_automatic(&bytes, "shift_jis").unwrap().unwrap();
+    assert_eq!(decoded.1, "shift_jis");
+    assert_eq!(decoded.2, Some("fallback"));
+    assert!(decoded.0.contains('\u{FFFD}'));
+
+    // The step follows whichever encoding is CONFIGURED, not a fixed one.
+    let decoded_utf16 = decode_automatic(&bytes, "utf-16le").unwrap().unwrap();
+    assert_eq!(decoded_utf16.1, "utf-16le");
+    assert_eq!(decoded_utf16.2, Some("fallback"));
 }
 
 #[test]
