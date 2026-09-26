@@ -14,6 +14,7 @@ import {
   installContentSessionClient,
   setTextEncoding,
   setTextWrap,
+  setTranscriptView,
   useContentSessionStore,
 } from "../state/content-session-store";
 import Button from "./ui/Button";
@@ -117,6 +118,18 @@ export default function TextOrAttributesSurface({
     (state) => state.textEncodings[key] ?? "automatic",
   );
   const wrap = useContentSessionStore((state) => state.textWrap);
+  // A distinct namespace from a transcript's own hash-keyed entries — the
+  // same item can carry both a transcript (audio/video) and, through the
+  // shared session, an unrelated text body. Persisted in the same shared
+  // model as encoding/wrap so a placement switch (pane ↔ separate window)
+  // keeps the reading position instead of restarting at the top
+  // (viewing-sessions.md D6).
+  const textViewKey = `text:${key}`;
+  const textScrollTop = useContentSessionStore(
+    (state) => state.transcriptViews[textViewKey]?.scrollTop,
+  );
+  const textRef = useRef<HTMLPreElement | null>(null);
+  const textViewRequest = useRef(0);
   const [error, setError] = useState<Message | null>(null);
   const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, Message>>>({});
   const sessionAttempts = useRef({ encoding: 0, wrap: 0 });
@@ -146,6 +159,12 @@ export default function TextOrAttributesSurface({
     });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (textRef.current !== null && textScrollTop !== undefined) {
+      textRef.current.scrollTop = textScrollTop;
+    }
+  }, [key, body?.body, textScrollTop]);
 
   useEffect(() => {
     let current = true;
@@ -316,10 +335,22 @@ export default function TextOrAttributesSurface({
       ) : null}
       {body.body === "text" ? (
         <pre
+          ref={textRef}
           tabIndex={0}
+          data-transcript-scroll
           className={`min-h-0 flex-1 select-text overflow-auto rounded border border-border bg-background p-3 font-mono text-sm leading-relaxed text-ink outline-none focus-visible:border-primary-ring ${
             wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
           }`}
+          onScroll={(event) => {
+            const request = ++textViewRequest.current;
+            void setTranscriptView(textViewKey, {
+              scrollTop: event.currentTarget.scrollTop,
+              selection: null,
+            }).catch((failure) => {
+              if (request !== textViewRequest.current) return;
+              log.warn("text scroll position sync failed", toErrorFields(failure));
+            });
+          }}
         >
           {body.text}
         </pre>
