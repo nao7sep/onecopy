@@ -391,6 +391,57 @@ describe("viewer workflow", () => {
     expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
   });
 
+  // R5.2 T5: the three untested transition-table cells. F from Quick View
+  // enters fullscreen; Space from fullscreen returns to Quick View; Escape
+  // from fullscreen closes all the way back to Main -- not just one step
+  // down to Quick View.
+  it("enters fullscreen on F from the Quick View row", async () => {
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+
+    await handleViewerKey({ key: "f" });
+
+    expect(useQuickViewStore.getState().session?.presentation).toBe("fullscreen");
+  });
+
+  it("returns to Quick View on Space from the fullscreen row", async () => {
+    setCurrentMonitor({
+      position: { x: 0, y: 0 },
+      size: { width: 1920, height: 1080 },
+      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+      scaleFactor: 1,
+      name: "display",
+    });
+    new WebviewWindow("viewer");
+
+    expect(openViewerFromMain("fullscreen")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().session?.presentation).toBe("fullscreen");
+
+    await handleViewerKey({ key: " " });
+
+    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+  });
+
+  it("closes all the way back to Main on Escape from the fullscreen row", async () => {
+    setCurrentMonitor({
+      position: { x: 0, y: 0 },
+      size: { width: 1920, height: 1080 },
+      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+      scaleFactor: 1,
+      name: "display",
+    });
+    new WebviewWindow("viewer");
+
+    expect(openViewerFromMain("fullscreen")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await handleViewerKey({ key: "Escape" });
+
+    expect(useQuickViewStore.getState().session).toBeNull();
+  });
+
   it("deletes the member the review named even after a refresh advances the sequence", async () => {
     mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
     expect(openViewerFromMain("quick")).toBe(true);
