@@ -366,3 +366,30 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
         assert_eq!(count, 0, "{table}");
     }
 }
+
+#[test]
+fn revision_fourteen_upgrade_splits_the_shared_empty_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('empty', 0, 'other'), ('full', 4, 'other');
+         INSERT INTO paths (id, abs_path, dir_path, file_name, kind, content_hash, size)
+           VALUES (1, '/r/a.txt', '/r', 'a.txt', 'other', 'empty', 0),
+                  (2, '/r/.gitkeep', '/r', '.gitkeep', 'other', 'empty', 0),
+                  (3, '/r/c.txt', '/r', 'c.txt', 'other', 'full', 4);
+         INSERT INTO evidence (content_hash, path_id, source, raw) VALUES ('empty', 1, 'filesystem', 'kept');
+         PRAGMA user_version = 14;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let conn = index_store::open(&db).unwrap();
+    let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!(count("SELECT COUNT(*) FROM paths WHERE content_hash IS NULL AND size = 0"), 2);
+    assert_eq!(count("SELECT COUNT(*) FROM contents WHERE hash = 'empty'"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM logical_contents WHERE content_hash = 'empty'"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM logical_contents WHERE content_hash = 'full'"), 1);
+    assert_eq!(count("SELECT COUNT(*) FROM evidence WHERE path_id = 1 AND content_hash IS NULL"), 1);
+    assert_eq!(count("SELECT COUNT(*) FROM logical_projection_batch"), 0);
+}

@@ -6,6 +6,8 @@ This contract defines how OneCopy turns physical main files into logical library
 
 Complete content bytes are the sole identity of a logical item. Byte-identical main files form one logical item regardless of their directories, filenames, filename case, or timestamps. A file whose content has not yet been read may remain known only as an individual physical file until identity work completes.
 
+Empty content carries no identity evidence. Every zero-byte main file remains its own individual item and never shares an identity with another file, so an operation on one empty file never reaches another, including hidden empty markers.
+
 Each physical main copy retains its own path, current filename, availability, and date evidence. Companion records remain relationships of physical main copies; they do not become main copies or influence the main-copy count merely because their bytes match another file.
 
 Names and timestamps never determine whether two main files are one logical item. Database insertion order and a majority of matching filenames have no product meaning.

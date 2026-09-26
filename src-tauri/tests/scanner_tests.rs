@@ -2042,3 +2042,45 @@ fn concurrent_provisional_promotions_never_race_the_contents_row() {
         "both paths must end up pointing at the real hash"
     );
 }
+
+#[test]
+fn zero_byte_files_carry_no_content_identity() {
+    let f = fixture("zero-byte");
+    for name in ["a.txt", "b.txt", "x.jpg", "y.jpg"] {
+        std::fs::write(f.root.join(name), b"").unwrap();
+    }
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    let cache = test_cache(&f);
+    let stats = hash_pending(&f.conn, &cache).unwrap();
+    assert_eq!(stats.prehashed, 0);
+    assert_eq!(stats.full_hashed, 0);
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE content_hash IS NULL"),
+        2,
+        "empty Other files stay unhashed individual files"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(DISTINCT content_hash) FROM paths WHERE content_hash GLOB 'p*'"),
+        2,
+        "each empty image keeps its own provisional identity"
+    );
+
+    // Delivering or decoding an empty image yields the hash of no bytes; it
+    // must not promote into a shared identity.
+    let provisional: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths WHERE file_name = 'x.jpg'", [], |r| r.get(0))
+        .unwrap();
+    let empty = blake3::hash(b"").to_hex().to_string();
+    onecopy_lib::scanner::promote_identity(&f.conn, &cache, &provisional, &empty).unwrap();
+    let other: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths WHERE file_name = 'y.jpg'", [], |r| r.get(0))
+        .unwrap();
+    onecopy_lib::scanner::promote_identity(&f.conn, &cache, &other, &empty).unwrap();
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(DISTINCT content_hash) FROM paths WHERE file_name IN ('x.jpg', 'y.jpg')"),
+        2
+    );
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents WHERE byte_size = 0 AND hash NOT GLOB 'p*'"), 0);
+}

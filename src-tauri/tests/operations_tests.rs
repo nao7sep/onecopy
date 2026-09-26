@@ -1601,3 +1601,42 @@ fn unhashed_other_files_move_out_and_conflict_correctly_by_path_id() {
         }
     }
 }
+
+#[test]
+fn deleting_one_empty_file_leaves_every_other_empty_file() {
+    let f = fixture("empty-files");
+    std::fs::create_dir_all(f.root.join("sub")).unwrap();
+    for name in ["notes.txt", "other.txt", "sub/keep.txt", "blank.jpg"] {
+        std::fs::write(f.root.join(name), b"").unwrap();
+    }
+    scan(&f);
+    let (hash, path_id): (Option<String>, i64) = f
+        .conn
+        .query_row(
+            "SELECT content_hash, id FROM paths WHERE file_name = 'notes.txt'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let item = ItemIdentity {
+        path_id: hash.is_none().then_some(path_id),
+        hash,
+    };
+
+    let outcome = delete_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item],
+        DeleteMode::Permanent,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.deleted_files, 1);
+    assert!(!f.root.join("notes.txt").exists());
+    for name in ["other.txt", "sub/keep.txt", "blank.jpg"] {
+        assert!(f.root.join(name).exists(), "{name} must survive");
+    }
+}

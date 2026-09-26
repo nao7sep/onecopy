@@ -1325,6 +1325,14 @@ pub fn is_provisional(hash: &str) -> bool {
     hash.starts_with('p')
 }
 
+/// Complete content bytes are a logical item's identity, and empty content
+/// carries no evidence: every zero-byte file stays an individual physical
+/// file (a provisional media key or an unhashed Other file), so acting on one
+/// empty file never reaches another.
+pub fn carries_content_identity(byte_size: i64) -> bool {
+    byte_size > 0
+}
+
 /// Promotes a provisional identity to its real full hash: contents row,
 /// paths pointers, similar-group membership, and the hash-keyed cache
 /// entries all move to the real key. When the real hash already exists —
@@ -1347,6 +1355,19 @@ pub fn promote_identity(
     // after commit, keyed by the outcome the committed transaction decided.
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    let byte_size: Option<i64> = tx
+        .query_row(
+            "SELECT byte_size FROM contents WHERE hash = ?1",
+            [provisional],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if byte_size.is_some_and(|size| !carries_content_identity(size)) {
+        // An empty file keeps its individual provisional identity; a full
+        // hash of nothing would merge it with every other empty file.
+        return Ok(());
+    }
     let already_known: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1)",
@@ -1605,6 +1626,17 @@ fn hash_pending_with_progress(
 
     for (size, group) in by_size {
         check_cancel()?;
+        if !carries_content_identity(size) {
+            // Empty files never collapse: each stays its own physical item.
+            for row in &group {
+                check_cancel()?;
+                report_path(row, done, stats.errors, None, None);
+                settle_unique(row, &mut stats)?;
+                done += 1;
+                report_path(row, done, stats.errors, None, None);
+            }
+            continue;
+        }
         if group.len() == 1 && !known_sizes.contains(&size) {
             report_path(&group[0], done, stats.errors, None, None);
             settle_unique(&group[0], &mut stats)?;

@@ -20,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 14;
+const SCHEMA_REVISION: i64 = 15;
 
 const ISSUE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS issues (
@@ -440,7 +440,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                13 => {}
+                13 | 14 => {}
                 9..=12 => {
                     if current == 9 {
                         conn.execute_batch(
@@ -543,6 +543,31 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                        FROM logical_content_projection WHERE content_hash IN (SELECT content_hash FROM offset_repair_paths);
                      DELETE FROM logical_projection_batch;
                      DROP TABLE offset_repair_paths;"
+                ).map_err(|error| error.to_string())?;
+            }
+            if (9..=14).contains(&current) {
+                // Empty content carries no identity evidence: earlier
+                // revisions collapsed every zero-byte file into one logical
+                // item, so deleting one empty file acted on all of them. The
+                // shared empty identities go; the next identity pass settles
+                // each zero-byte file individually. Their evidence and
+                // diagnostic history stay attached to their paths.
+                conn.execute_batch(
+                    "CREATE TEMP TABLE empty_identities (hash TEXT PRIMARY KEY);
+                     INSERT INTO empty_identities SELECT hash FROM contents
+                       WHERE byte_size = 0 AND hash NOT GLOB 'p*';
+                     INSERT INTO logical_projection_batch VALUES (1);
+                     UPDATE evidence SET content_hash = NULL
+                       WHERE content_hash IN (SELECT hash FROM empty_identities);
+                     UPDATE paths SET content_hash = NULL, prehash = NULL
+                       WHERE content_hash IN (SELECT hash FROM empty_identities);
+                     DELETE FROM similar_group_members
+                       WHERE content_hash IN (SELECT hash FROM empty_identities);
+                     DELETE FROM logical_contents
+                       WHERE content_hash IN (SELECT hash FROM empty_identities);
+                     DELETE FROM contents WHERE hash IN (SELECT hash FROM empty_identities);
+                     DELETE FROM logical_projection_batch;
+                     DROP TABLE empty_identities;"
                 ).map_err(|error| error.to_string())?;
             }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
