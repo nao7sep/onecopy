@@ -83,15 +83,6 @@ pub(crate) fn full_hash_file_cancellable(
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// `full_hash` with a cooperative cancel checked between read chunks, so app
-/// exit interrupts a multi-gigabyte hash in bounded time.
-pub fn full_hash_cancellable(
-    path: &Path,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> std::io::Result<String> {
-    full_hash_with_cancel(path, &|| cancel.load(std::sync::atomic::Ordering::Relaxed))
-}
-
 /// Full hash with caller-owned cancellation. Derived work uses its combined
 /// pause/preemption boundary; scanner work keeps using its atomic token.
 pub fn full_hash_with_cancel(path: &Path, cancel: &dyn Fn() -> bool) -> std::io::Result<String> {

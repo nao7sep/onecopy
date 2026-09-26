@@ -767,11 +767,6 @@ pub(crate) fn progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u
     } else {
         report_poison_once(Some(app));
     }
-    crate::failure_runtime::emit_or_record(
-        app,
-        "derived://progress",
-        json!({ "class": class.id(), "done": done, "total": total }),
-    );
     emit_state_changed(app);
 }
 

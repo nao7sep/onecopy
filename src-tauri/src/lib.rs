@@ -856,8 +856,7 @@ async fn ensure_preview(
 
 // The 100% view's on-demand conversion for formats the webview cannot paint
 // (HEIC/AVIF — WebView2 paints neither; routing every platform through the
-// same path keeps behaviour identical and testable on macOS). Runs on the
-// command pool, never in the synchronous protocol handler; the view calls
+// same path keeps behaviour identical and testable on macOS). The view calls
 // this and then loads `mediacache://fullres-<hash>`.
 #[tauri::command]
 async fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {

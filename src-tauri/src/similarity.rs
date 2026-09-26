@@ -203,25 +203,6 @@ pub fn cluster_by_appearance(
     burst_distance: u32,
     burst_gap_seconds: u32,
     diameter_multiplier: u32,
-) -> Result<Vec<Vec<usize>>, String> {
-    cluster_by_appearance_cancellable(
-        phashes,
-        times_ms,
-        strict_distance,
-        burst_distance,
-        burst_gap_seconds,
-        diameter_multiplier,
-        &|| false,
-    )
-}
-
-fn cluster_by_appearance_cancellable(
-    phashes: &[i64],
-    times_ms: &[Option<i64>],
-    strict_distance: u32,
-    burst_distance: u32,
-    burst_gap_seconds: u32,
-    diameter_multiplier: u32,
     stop: &dyn Fn() -> bool,
 ) -> Result<Vec<Vec<usize>>, String> {
     let n = phashes.len();
@@ -489,7 +470,7 @@ fn groups_for_bucket(
         .collect::<Vec<_>>();
     let gap_ms = i64::from(config.max_gap_seconds) * 1000;
     let mut groups = Vec::new();
-    for cluster in cluster_by_appearance_cancellable(
+    for cluster in cluster_by_appearance(
         &phashes,
         &times,
         config.phash_max_distance,
@@ -740,31 +721,11 @@ pub fn rebuild_priority_bucket_cancellable(
     Ok(None)
 }
 
-/// One group's members, best-first: sharpness descending (the advisory
-/// machine guess), then time — never an auto-deletion criterion.
-pub fn group_members(conn: &Connection, group_id: i64) -> Result<Vec<String>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT m.content_hash FROM similar_group_members m \
-             JOIN contents c ON c.hash = m.content_hash \
-             WHERE m.group_id = ?1 \
-             ORDER BY c.sharpness DESC NULLS LAST, c.hash",
-        )
-        .map_err(|e| e.to_string())?;
-    let members = stmt
-        .query_map([group_id], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    Ok(members)
-}
-
 // EXCEPTION (tests-folder convention): this pins the private candidate SQL
 // used by the shipped rebuild rather than duplicating it in an integration
 // test that could silently diverge.
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private
-// `DATED_CANDIDATES_SQL` and `cluster_by_appearance_cancellable`; promoting
-// them would widen the crate's API only for this test.
+// `DATED_CANDIDATES_SQL`; promoting it would widen the crate's API only for this test.
 #[path = "../tests/unit/similarity.rs"]
 mod candidate_query_tests;

@@ -59,7 +59,8 @@ fn prepare_artifacts() -> Result<ArtifactCache, String> {
             }
         };
         if install {
-            binaries_manager::install_entry(&root, spec.id, |_| {})
+            binaries_manager::begin_install(spec.id, "heavy-test-install")
+                .and_then(|started| binaries_manager::install_entry_started(&root, started, |_| {}))
                 .map_err(|error| format!("{}: {error}", spec.id))?;
         }
     }
@@ -151,7 +152,8 @@ pub fn library(label: &str, files: &[PathBuf], config: serde_json::Value) -> Lib
     }
     let conn = index_store::open(&home.path().join("index.sqlite3")).unwrap();
     let scan = scanner::settings_from_config(Some(&config_json), home.path(), NOW_MS);
-    scanner::run_full_scan(&conn, &scan, &|_| {}).unwrap();
+    let mut summary = scanner::run_source_check(&conn, &scan, &|_| {}).unwrap();
+    scanner::run_index_tail(&conn, &scan, &|_| {}, &mut summary).unwrap();
     let settings = derived_work::settings_from_config(Some(&config_json), home.path());
     let cache = CachePaths::new(settings.cache_root.clone());
     Library {

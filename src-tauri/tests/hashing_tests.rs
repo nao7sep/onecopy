@@ -123,12 +123,12 @@ fn cancellable_hash_matches_plain_and_stops_on_cancel() {
 
     let calm = AtomicBool::new(false);
     assert_eq!(
-        full_hash_cancellable(&path, &calm).unwrap(),
+        full_hash_with_cancel(&path, &|| calm.load(std::sync::atomic::Ordering::Relaxed)).unwrap(),
         full_hash(&path).unwrap()
     );
 
     let cancelled = AtomicBool::new(true);
-    let err = full_hash_cancellable(&path, &cancelled).unwrap_err();
+    let err = full_hash_with_cancel(&path, &|| cancelled.load(std::sync::atomic::Ordering::Relaxed)).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
 }
 

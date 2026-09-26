@@ -2396,3 +2396,23 @@ fn an_unavailable_root_known_by_another_spelling_is_kept_and_a_removed_one_is_no
         0
     );
 }
+
+/// Whether any configured root still owes a full walk — never walked to
+/// completion, or interrupted — read from the settled root's checkpoint.
+fn walk_owed(conn: &rusqlite::Connection, roots: &[String]) -> Result<bool, String> {
+    for root in roots {
+        let settled = settled_root(conn, std::path::Path::new(root))?;
+        let fs_root = onecopy_lib::winpath::for_fs(&settled);
+        let complete: Option<bool> = rusqlite::OptionalExtension::optional(conn.query_row(
+            "SELECT last_completed_at_utc IS NOT NULL AND dirty = 0 \
+             FROM scan_dirs WHERE root = ?1",
+            rusqlite::params![fs_root.to_string_lossy().as_ref()],
+            |r| r.get(0),
+        ))
+        .map_err(|e| e.to_string())?;
+        if complete != Some(true) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}

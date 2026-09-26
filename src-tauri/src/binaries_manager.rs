@@ -275,14 +275,6 @@ pub fn installed_path(root: &Path, spec: &DependencySpec) -> PathBuf {
     }
 }
 
-#[cfg(windows)]
-pub fn onnx_runtime_path(root: &Path) -> Option<PathBuf> {
-    spec_of("onnxruntime-win-x64").and_then(|spec| {
-        let state = state_of(root, spec);
-        (state.status != BinaryStatus::NotInstalled).then(|| installed_path(root, spec))
-    })
-}
-
 pub fn ffmpeg_file_name() -> &'static str {
     if cfg!(windows) {
         "ffmpeg.exe"
@@ -628,21 +620,6 @@ pub fn wait_for_idle() {
             .wait(in_flight)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
     }
-}
-
-/// The full install/update for any registry entry. Binaries: resolve →
-/// download → verify → extract → make runnable → publish. Models: pinned
-/// download → sha256 verify → optional exact-entry extraction → publish. All
-/// stage in `temp/` and land with a same-volume rename; all record facts only
-/// on success.
-pub fn install_entry(
-    root: &Path,
-    id: &str,
-    on_progress: impl FnMut(InstallProgress),
-) -> Result<BinaryFacts, String> {
-    let operation_id = nanoid::generate()?;
-    let started = begin_install(id, &operation_id)?;
-    install_entry_started(root, started, on_progress)
 }
 
 /// A claim acquired before the blocking worker starts, so a Cancel click can

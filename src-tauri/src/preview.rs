@@ -402,13 +402,10 @@ pub fn dhash(img: &DynamicImage) -> u64 {
 }
 
 /// Ensures the full-resolution conversion for one HEIC/AVIF content exists,
-/// decoding through the managed ffmpeg on first request. Its
-/// command is declared `#[tauri::command(async)]` so it runs on the async
-/// runtime — Tauri dispatches a plain command on the MAIN thread, where a
-/// multi-hundred-millisecond decode stalls the compositor and the whole
-/// window stops repainting. Never inside the protocol handler either, which
-/// is synchronous on the main thread. Idempotent: an existing entry returns
-/// at once.
+/// decoding through the managed ffmpeg on first request. Its command runs on
+/// the blocking pool through `dispatch()`, never on the main thread, where a
+/// multi-hundred-millisecond decode would stall every window. Idempotent: an
+/// existing entry returns at once.
 pub fn ensure_fullres(
     conn: &Connection,
     cache: &CachePaths,
@@ -485,21 +482,6 @@ pub struct DeriveStats {
     pub issues_changed: bool,
 }
 
-/// The pending pass: derive cache entries for image contents not yet derived.
-/// One representative non-missing path per hash supplies the pixels; a decode
-/// failure records an issue and marks the row failed so it is not retried
-/// every run (a rescan that changes the file resets the marker via the
-/// changed-row reset in the walk).
-///
-/// A format needing the managed ffmpeg while ffmpeg is absent is marked
-/// `needs-ffmpeg` instead of failed — no issue row, because nothing is wrong
-/// with the file — and this pass picks those rows back up as soon as ffmpeg
-/// is present, which is what makes the wizard's skippable offer honest.
-///
-/// Native canonical images may convert concurrently under the coordinator's
-/// live CPU and aggregate decoded-memory budget. Candidate reads and durable
-/// publication remain serial, and provisional promotion plus every ffmpeg
-/// route remain exclusive. `progress` reports after each durable result.
 /// Derives one item's thumb + preview on demand — the user clicked a photo
 /// the scan's bulk pass has not reached yet (it runs walk-order, and on a
 /// slow machine the tail is hours away). Idempotent: an already-derived hash
@@ -596,6 +578,21 @@ fn record_preview_failure_or_combine(
     }
 }
 
+/// The pending pass: derive cache entries for image contents not yet derived.
+/// One representative non-missing path per hash supplies the pixels; a decode
+/// failure records an issue and marks the row failed so it is not retried
+/// every run (a rescan that changes the file resets the marker via the
+/// changed-row reset in the walk).
+///
+/// A format needing the managed ffmpeg while ffmpeg is absent is marked
+/// `needs-ffmpeg` instead of failed — no issue row, because nothing is wrong
+/// with the file — and this pass picks those rows back up as soon as ffmpeg
+/// is present, which is what makes the wizard's skippable offer honest.
+///
+/// Native canonical images may convert concurrently under the coordinator's
+/// live CPU and aggregate decoded-memory budget. Candidate reads and durable
+/// publication remain serial, and provisional promotion plus every ffmpeg
+/// route remain exclusive. `progress` reports after each durable result.
 pub fn derive_images_pending(
     conn: &Connection,
     cache: &CachePaths,

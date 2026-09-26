@@ -48,7 +48,7 @@ fn sparse_candidate_construction_remains_cancellable() {
         polls.get() >= 3
     };
 
-    let error = cluster_by_appearance_cancellable(&phashes, &times, 4, 10, 90, 2, &stopped)
+    let error = cluster_by_appearance(&phashes, &times, 4, 10, 90, 2, &stopped)
         .unwrap_err();
     assert_eq!(error, crate::scanner::CANCELLED);
     assert!(polls.get() >= 3);

@@ -767,47 +767,6 @@ pub fn run_source_check(
     Ok(summary)
 }
 
-/// One full index run over every configured root: source check followed by
-/// missing file-information completion. Retained as a direct scanner-level
-/// composition for deterministic tests; shipped lifecycle ownership is split.
-pub fn run_full_scan(
-    conn: &Connection,
-    settings: &ScanSettings,
-    progress: &dyn Fn(ScanProgress),
-) -> Result<ScanSummary, String> {
-    let mut summary = run_source_check(conn, settings, progress)?;
-    run_index_tail(conn, settings, progress, &mut summary)?;
-    Ok(summary)
-}
-
-/// Whether any configured root still owes a full walk — it has never been
-/// walked to completion, or a walk over it was interrupted. This is the one
-/// thing `pending_index_work_exists` cannot see: its probes are row-level, so
-/// once the tail drains the rows a partial walk created, it reports clean
-/// forever while whole directories remain unread.
-pub fn walk_owed(conn: &Connection, roots: &[String]) -> Result<bool, String> {
-    for root in roots {
-        // `walk_root` checkpoints the settled root, not the literal configured
-        // spelling. Resolve through that same authority so case and symlink aliases
-        // find the completed row; the config string itself remains untouched.
-        let settled = settled_root(conn, Path::new(root))?;
-        let fs_root = crate::winpath::for_fs(&settled);
-        let complete: Option<bool> = conn
-            .query_row(
-                "SELECT last_completed_at_utc IS NOT NULL AND dirty = 0 \
-                 FROM scan_dirs WHERE root = ?1",
-                params![fs_root.to_string_lossy().as_ref()],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if complete != Some(true) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     let probe = |sql: &str| -> Result<bool, String> {
         conn.query_row(sql, [], |r| r.get::<_, i64>(0))
