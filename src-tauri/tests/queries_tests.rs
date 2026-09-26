@@ -1210,6 +1210,40 @@ fn diagnostic_paths_resolve_only_current_source_members_and_companion_owners() {
     assert!(resolve(&file("photo.xmp")).is_none());
 }
 
+// R4.1 finding 4: diagnostic navigation refuses a target whose only copy is
+// hidden by review-visibility policy, and resolves it again once the policy
+// lifts. section_for_identity is the shared resolver behind both
+// resolve_library_path and the identity lookup other diagnostics use.
+#[test]
+fn diagnostic_navigation_refuses_a_hidden_only_target_and_resolves_once_the_filter_lifts() {
+    use onecopy_lib::visibility::Policy;
+    use onecopy_lib::visibility_index;
+
+    let conn = db();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("source");
+    let roots = vec![root.to_string_lossy().into_owned()];
+    let path = root.join("Ignored.jpg").to_string_lossy().into_owned();
+    conn.execute("INSERT INTO contents(hash, kind, byte_size) VALUES ('h', 'image', 1)", []).unwrap();
+    conn.execute(
+        "INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?2, 'Ignored.jpg', 'image', 'h')",
+        params![path, roots[0]],
+    ).unwrap();
+    let resolve = || queries::resolve_library_path(&conn, &path, &roots, chrono_tz::UTC).unwrap();
+    assert!(resolve().is_some());
+
+    visibility_index::apply_policy(
+        &conn,
+        &Policy::from_config(&serde_json::json!({"ignoredFileNames": ["ignored.jpg"]})).unwrap(),
+    ).unwrap();
+    assert!(resolve().is_none(), "a hidden-only target must not resolve");
+
+    visibility_index::apply_policy(&conn, &Policy::from_config(&serde_json::json!({})).unwrap()).unwrap();
+    let target = resolve().expect("resolution recovers once the filter lifts");
+    assert_eq!(target.identity.hash.as_deref(), Some("h"));
+    assert_eq!(target.section.kind, "image");
+}
+
 #[test]
 fn section_dirs_cover_hashed_and_unhashed_other_files_when_dated_or_undated() {
     let conn = db();
