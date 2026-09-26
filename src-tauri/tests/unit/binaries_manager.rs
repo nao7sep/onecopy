@@ -105,6 +105,215 @@ fn facts_round_trip_through_the_store() {
     assert_eq!(load_facts_for(dir.path(), "ffmpeg"), facts);
 }
 
+// R6-09: the checksum-mismatch, missing-sums-entry and extracted-entry-
+// mismatch refusals are pure local-file verification (`verify_checksum`,
+// `verify_pinned_artifact`), so they are exercised directly here against
+// local fixtures — no network, no fake GitHub-shaped server.
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+#[test]
+fn verify_checksum_accepts_a_matching_digest_and_refuses_a_mismatch() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-binmgr-verify-checksum-")
+        .tempdir()
+        .unwrap();
+    let path = dir.path().join("artifact.bin");
+    let bytes = b"pinned artifact bytes";
+    std::fs::write(&path, bytes).unwrap();
+    let digest = sha256_hex(bytes);
+    let cancelled = AtomicBool::new(false);
+    let deadline = acquisition::OperationDeadline::for_check();
+
+    assert!(verify_checksum(
+        &path,
+        &digest,
+        &cancelled,
+        &deadline,
+        |_, _| {},
+        |actual| format!("unexpected mismatch: {actual}"),
+    )
+    .is_ok());
+
+    let wrong = "0".repeat(64);
+    let error = verify_checksum(
+        &path,
+        &wrong,
+        &cancelled,
+        &deadline,
+        |_, _| {},
+        |actual| format!("checksum mismatch: expected {wrong}, got {actual}"),
+    )
+    .unwrap_err();
+    assert!(error.contains("checksum mismatch"));
+    assert!(error.contains(&digest));
+}
+
+fn pinned_artifact(sha256: &'static str, bytes: u64) -> PinnedArtifact {
+    PinnedArtifact {
+        url: "https://example.test/artifact",
+        sha256,
+        bytes,
+        extracted: None,
+        released: "2026-01-01",
+    }
+}
+
+#[test]
+fn verify_pinned_artifact_refuses_a_downloaded_file_that_does_not_match_its_pin() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-binmgr-verify-pinned-flat-")
+        .tempdir()
+        .unwrap();
+    let downloaded = dir.path().join("downloaded.bin");
+    let staged = dir.path().join("staged.bin");
+    std::fs::write(&downloaded, b"actual bytes on disk").unwrap();
+    // Deliberately wrong digest: the pin expects bytes this file never had.
+    let pinned = pinned_artifact(
+        "0".repeat(64).leak(),
+        21,
+    );
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let deadline = acquisition::OperationDeadline::for_check();
+
+    let error = verify_pinned_artifact(
+        "test-dependency",
+        &downloaded,
+        &staged,
+        &pinned,
+        &cancelled,
+        &deadline,
+        |_, _| {},
+    )
+    .unwrap_err();
+
+    assert!(error.contains("checksum mismatch for test-dependency"));
+    assert!(!staged.exists(), "a mismatch must publish nothing");
+}
+
+#[test]
+fn verify_pinned_artifact_accepts_a_matching_flat_download() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-binmgr-verify-pinned-ok-")
+        .tempdir()
+        .unwrap();
+    let downloaded = dir.path().join("downloaded.bin");
+    let staged = dir.path().join("staged.bin");
+    let bytes = b"exactly the pinned bytes";
+    std::fs::write(&downloaded, bytes).unwrap();
+    let digest: &'static str = Box::leak(sha256_hex(bytes).into_boxed_str());
+    let pinned = pinned_artifact(digest, bytes.len() as u64);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let deadline = acquisition::OperationDeadline::for_check();
+
+    let published_from = verify_pinned_artifact(
+        "test-dependency",
+        &downloaded,
+        &staged,
+        &pinned,
+        &cancelled,
+        &deadline,
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(published_from, downloaded);
+}
+
+#[test]
+fn verify_pinned_artifact_refuses_an_extracted_entry_that_does_not_match_its_pin() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-binmgr-verify-pinned-zip-")
+        .tempdir()
+        .unwrap();
+    let downloaded = dir.path().join("archive.zip");
+    let staged = dir.path().join("staged.bin");
+    let entry_bytes = b"the entry's real bytes";
+    {
+        let file = std::fs::File::create(&downloaded).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file::<_, ()>("payload.bin", Default::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, entry_bytes).unwrap();
+        zip.finish().unwrap();
+    }
+    let archive_digest: &'static str =
+        Box::leak(sha256_hex(&std::fs::read(&downloaded).unwrap()).into_boxed_str());
+    let mut pinned = pinned_artifact(archive_digest, std::fs::metadata(&downloaded).unwrap().len());
+    pinned.extracted = Some(ExtractedArtifact {
+        archive_entry: "payload.bin",
+        // Deliberately wrong digest: the entry's real bytes never match this.
+        sha256: "1".repeat(64).leak(),
+        bytes: entry_bytes.len() as u64,
+    });
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let deadline = acquisition::OperationDeadline::for_check();
+
+    let error = verify_pinned_artifact(
+        "test-dependency",
+        &downloaded,
+        &staged,
+        &pinned,
+        &cancelled,
+        &deadline,
+        |_, _| {},
+    )
+    .unwrap_err();
+
+    assert!(error.contains("checksum mismatch for extracted test-dependency"));
+    // The function returns no path to publish from on failure; the caller
+    // (`install_entry_started`) never reaches `acquisition::publish_staged`
+    // without one, so a mismatched entry can never be installed even though
+    // the rejected bytes remain on disk in the caller's own temp staging file.
+}
+
+#[test]
+fn verify_pinned_artifact_accepts_a_matching_extracted_entry() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-binmgr-verify-pinned-zip-ok-")
+        .tempdir()
+        .unwrap();
+    let downloaded = dir.path().join("archive.zip");
+    let staged = dir.path().join("staged.bin");
+    let entry_bytes = b"the entry's real bytes";
+    {
+        let file = std::fs::File::create(&downloaded).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file::<_, ()>("payload.bin", Default::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, entry_bytes).unwrap();
+        zip.finish().unwrap();
+    }
+    let archive_digest: &'static str =
+        Box::leak(sha256_hex(&std::fs::read(&downloaded).unwrap()).into_boxed_str());
+    let entry_digest: &'static str = Box::leak(sha256_hex(entry_bytes).into_boxed_str());
+    let mut pinned = pinned_artifact(archive_digest, std::fs::metadata(&downloaded).unwrap().len());
+    pinned.extracted = Some(ExtractedArtifact {
+        archive_entry: "payload.bin",
+        sha256: entry_digest,
+        bytes: entry_bytes.len() as u64,
+    });
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let deadline = acquisition::OperationDeadline::for_check();
+
+    let published_from = verify_pinned_artifact(
+        "test-dependency",
+        &downloaded,
+        &staged,
+        &pinned,
+        &cancelled,
+        &deadline,
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(published_from, staged);
+    assert_eq!(std::fs::read(&staged).unwrap(), entry_bytes);
+}
+
 #[test]
 fn reset_temp_dir_wipes_and_recreates() {
     let dir = tempfile::Builder::new()

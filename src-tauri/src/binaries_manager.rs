@@ -637,6 +637,77 @@ pub fn begin_install(id: &str, operation_id: &str) -> Result<StartedInstall, Str
     .map(StartedInstall)
 }
 
+/// Confirms a local file's digest against the one it was supposed to arrive
+/// with. This is pure local-file verification — it never opens a network
+/// connection — so a regression here (comparing the wrong digest, or
+/// accepting a mismatch) is reachable directly by a test with a local
+/// fixture, with no server standing in for a real download.
+fn verify_checksum(
+    path: &Path,
+    expected_sha256: &str,
+    cancelled: &AtomicBool,
+    deadline: &acquisition::OperationDeadline,
+    mut on_progress: impl FnMut(u64, u64),
+    mismatch_message: impl FnOnce(&str) -> String,
+) -> Result<(), String> {
+    let actual = acquisition::file_sha256(path, cancelled, deadline, &mut on_progress)?;
+    if actual != expected_sha256 {
+        return Err(mismatch_message(&actual));
+    }
+    Ok(())
+}
+
+/// Confirms a downloaded pinned artifact against its recorded digest, and,
+/// when the pin names an archive entry, extracts and confirms that entry too.
+/// Both checks are `verify_checksum` and `acquisition::extract_pinned_zip_entry`
+/// over local files the caller already produced, so the whole boundary is
+/// exercised by tests without a network seam. Returns the path callers should
+/// publish from: `staged` when an entry was extracted, `downloaded` otherwise.
+/// A mismatch leaves nothing published.
+fn verify_pinned_artifact(
+    id: &str,
+    downloaded: &Path,
+    staged: &Path,
+    pinned: &PinnedArtifact,
+    cancelled: &Arc<AtomicBool>,
+    deadline: &acquisition::OperationDeadline,
+    mut on_verify_progress: impl FnMut(u64, u64),
+) -> Result<PathBuf, String> {
+    verify_checksum(
+        downloaded,
+        pinned.sha256,
+        cancelled,
+        deadline,
+        &mut on_verify_progress,
+        |actual| format!("checksum mismatch for {id}: expected {}, got {actual}", pinned.sha256),
+    )?;
+    let Some(extracted) = pinned.extracted.as_ref() else {
+        return Ok(downloaded.to_path_buf());
+    };
+    acquisition::extract_pinned_zip_entry(
+        downloaded,
+        staged,
+        extracted.archive_entry,
+        extracted.bytes,
+        cancelled,
+        deadline,
+    )?;
+    verify_checksum(
+        staged,
+        extracted.sha256,
+        cancelled,
+        deadline,
+        &mut on_verify_progress,
+        |actual| {
+            format!(
+                "checksum mismatch for extracted {id}: expected {}, got {actual}",
+                extracted.sha256
+            )
+        },
+    )?;
+    Ok(staged.to_path_buf())
+}
+
 pub fn install_entry_started(
     root: &Path,
     started: StartedInstall,
@@ -677,8 +748,11 @@ pub fn install_entry_started(
                         ));
                     },
                 )?;
-                let actual = acquisition::file_sha256(
+                let publish_source = verify_pinned_artifact(
+                    &id,
                     &partial,
+                    &staged,
+                    pinned,
                     &guard.cancelled,
                     &guard.deadline,
                     |done, total| {
@@ -690,44 +764,7 @@ pub fn install_entry_started(
                         ));
                     },
                 )?;
-                if actual != pinned.sha256 {
-                    return Err(format!(
-                        "checksum mismatch for {id}: expected {}, got {actual}",
-                        pinned.sha256
-                    ));
-                }
-                let publish_source = if let Some(extracted) = pinned.extracted.as_ref() {
-                    acquisition::extract_pinned_zip_entry(
-                        &partial,
-                        &staged,
-                        extracted.archive_entry,
-                        extracted.bytes,
-                        &guard.cancelled,
-                        &guard.deadline,
-                    )?;
-                    let actual = acquisition::file_sha256(
-                        &staged,
-                        &guard.cancelled,
-                        &guard.deadline,
-                        |done, total| {
-                            on_progress(InstallProgress::bytes(
-                                InstallPhase::Verify,
-                                done,
-                                Some(total),
-                                InstallPhase::Install,
-                            ));
-                        },
-                    )?;
-                    if actual != extracted.sha256 {
-                        return Err(format!(
-                            "checksum mismatch for extracted {id}: expected {}, got {actual}",
-                            extracted.sha256
-                        ));
-                    }
-                    &staged
-                } else {
-                    &partial
-                };
+                let publish_source = publish_source.as_path();
                 let target = installed_path(root, spec);
                 let parent = target
                     .parent()
@@ -823,8 +860,9 @@ fn install_ffmpeg_started(
             },
         )?;
         guard.deadline.check(&guard.cancelled)?;
-        let actual = acquisition::file_sha256(
+        verify_checksum(
             &partial,
+            &expected,
             &guard.cancelled,
             &guard.deadline,
             |done, total| {
@@ -835,13 +873,13 @@ fn install_ffmpeg_started(
                     InstallPhase::Install,
                 ));
             },
+            |actual| {
+                format!(
+                    "checksum mismatch for {}: expected {expected}, got {actual}",
+                    resolved.sums_asset
+                )
+            },
         )?;
-        if actual != expected {
-            return Err(format!(
-                "checksum mismatch for {}: expected {expected}, got {actual}",
-                resolved.sums_asset
-            ));
-        }
 
         on_progress(InstallProgress::fixed(
             InstallPhase::Install,
