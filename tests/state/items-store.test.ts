@@ -260,6 +260,35 @@ describe("bounded section state", () => {
     // (selectFirst is false here), leaving the selection empty instead.
     expect(useItemsStore.getState().selectedItem).toBe("h6");
   });
+
+  // R5.1 D10: a same-run return to a previously visited section restores
+  // only the remembered anchor -- exclusively -- rather than whatever
+  // multi-selection the section held when it was left. `sectionMemory` only
+  // ever records `{ anchor, context }` (items-store.ts:250-253), so this
+  // proves the actual round trip through `select()`, not just that fact.
+  it("restores a same-run return's remembered anchor exclusively, dropping the prior multi-selection", async () => {
+    const OTHER_SECTION = { kind: "image" as const, month: "2026-02" };
+    mockSectionItems((args) =>
+      (args as { month: string }).month === SECTION.month
+        ? [item(1), item(2), item(3)]
+        : [item(101)],
+    );
+
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h1", "nearest", 0);
+    useItemsStore.getState().toggleItem("h2", 1);
+    expect([...useItemsStore.getState().selectedKeys].sort()).toEqual(["h1", "h2"]);
+
+    await useItemsStore.getState().select(OTHER_SECTION);
+    expect(useItemsStore.getState().sectionMemory["image:2026-01"]).toMatchObject({
+      anchor: "h2",
+    });
+
+    await useItemsStore.getState().select(SECTION);
+    const restored = useItemsStore.getState();
+    expect(restored.selectedItem).toBe("h2");
+    expect([...restored.selectedKeys]).toEqual(["h2"]);
+  });
 });
 
 describe("explicit selection", () => {
