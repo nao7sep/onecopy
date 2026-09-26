@@ -423,6 +423,12 @@ pub(crate) fn delete_items(
                 .iter()
                 .map(crate::operations::ItemIdentity::media_key)
                 .collect::<Result<Vec<_>, _>>()?;
+            // Accepting the confirmation freezes the physical files before
+            // admission may wait for background work to yield.
+            let data_root = crate::paths::data_root(app)?;
+            let conn =
+                crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+            let accepted = crate::operations::AcceptedFiles::capture(&conn, &items)?;
             let waiting = Progress {
                 phase: Phase::Waiting,
                 next_phase: Some(Phase::Planning),
@@ -437,9 +443,6 @@ pub(crate) fn delete_items(
                 });
             };
             publisher.progress(&last_progress);
-            let data_root = crate::paths::data_root(app)?;
-            let conn =
-                crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
             let cache =
                 crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
             let mode = if permanent {
@@ -447,11 +450,12 @@ pub(crate) fn delete_items(
             } else {
                 crate::operations::DeleteMode::Trash
             };
-            crate::operations::delete_batch(
+            crate::operations::delete_accepted_batch(
                 &conn,
                 &data_root,
                 &cache,
                 &items,
+                &accepted,
                 mode,
                 &|| mutation.cancelled(),
                 |progress| {
@@ -623,6 +627,12 @@ pub(crate) fn move_items_out(
                 .iter()
                 .map(crate::operations::ItemIdentity::media_key)
                 .collect::<Result<Vec<_>, _>>()?;
+            // Accepting the confirmation freezes the physical files before
+            // admission may wait for background work to yield.
+            let data_root = crate::paths::data_root(app)?;
+            let conn =
+                crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+            let accepted = crate::operations::AcceptedFiles::capture(&conn, &items)?;
             let waiting = Progress {
                 phase: Phase::Waiting,
                 next_phase: Some(Phase::Planning),
@@ -637,7 +647,6 @@ pub(crate) fn move_items_out(
                 });
             };
             publisher.progress(&last_progress);
-            let data_root = crate::paths::data_root(app)?;
             let config = crate::storage::read_config_for_setup(&data_root)?;
             let settings = crate::scanner::settings_from_config(config.as_ref(), &data_root, 0);
             let rename_style = match config
@@ -677,8 +686,6 @@ pub(crate) fn move_items_out(
                     ));
                 }
             }
-            let conn =
-                crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
             let cache =
                 crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
             crate::operations::move_batch_reviewed(
@@ -686,6 +693,7 @@ pub(crate) fn move_items_out(
                 &data_root,
                 &cache,
                 &items,
+                &accepted,
                 destination,
                 mode,
                 conflict_policy,

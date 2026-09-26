@@ -139,6 +139,86 @@ struct DeletePlan {
     bytes_total: u64,
 }
 
+type PhysicalRow = (i64, String, Option<String>, Option<i64>);
+
+/// The physical main copies and locally paired companions an accepted
+/// logical-item batch covers. It is captured when the operation is accepted,
+/// before admission may wait for background work, and planning after
+/// admission acts only on captured files that still belong to their item at
+/// the same path: discovery or reconciliation during the wait can narrow the
+/// batch but never broaden it.
+#[derive(Clone, Debug, Default)]
+pub struct AcceptedFiles {
+    files: HashSet<(i64, String)>,
+}
+
+impl AcceptedFiles {
+    pub fn capture(conn: &Connection, items: &[ItemIdentity]) -> Result<Self, String> {
+        let transaction =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+                .map_err(|error| error.to_string())?;
+        let mut files = HashSet::new();
+        for item in items {
+            let (mains, companions) = item_physical_rows(&transaction, item.item_ref()?)?;
+            files.extend(
+                mains
+                    .into_iter()
+                    .chain(companions)
+                    .map(|(path_id, abs_path, _, _)| (path_id, abs_path)),
+            );
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(Self { files })
+    }
+
+    fn retain_accepted(&self, rows: &mut Vec<PhysicalRow>) {
+        rows.retain(|(path_id, abs_path, _, _)| self.files.contains(&(*path_id, abs_path.clone())));
+    }
+}
+
+/// An item's live main copies and the live companions paired with them.
+fn item_physical_rows(
+    conn: &Connection,
+    item: ItemRef<'_>,
+) -> Result<(Vec<PhysicalRow>, Vec<PhysicalRow>), String> {
+    // The companion query stays parameterized and constant-size even if one
+    // logical item has an extreme number of copies.
+    Ok(match item {
+        ItemRef::Hash(hash) => (
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE content_hash = ?1 AND missing = 0 \
+                   AND companion_of IS NULL ORDER BY id",
+                params![hash],
+            )?,
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE companion_of IN (\
+                   SELECT id FROM paths WHERE content_hash = ?1 AND missing = 0 \
+                     AND companion_of IS NULL\
+                 ) AND missing = 0 ORDER BY id",
+                params![hash],
+            )?,
+        ),
+        ItemRef::PathId(id) => (
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE id = ?1 AND missing = 0",
+                params![id],
+            )?,
+            collect4(
+                conn,
+                "SELECT id, abs_path, content_hash, size FROM paths \
+                 WHERE companion_of = ?1 AND missing = 0 ORDER BY id",
+                params![id],
+            )?,
+        ),
+    })
+}
+
 /// Deletes one logical item: every non-missing copy plus every companion
 /// attached to any of those copies.
 pub fn delete_item(
@@ -149,7 +229,18 @@ pub fn delete_item(
     mode: DeleteMode,
 ) -> Result<DeleteOutcome, String> {
     let roots = crate::storage::load_config_file_roots(app_root)?;
-    let targets = collect_delete_targets(conn, item, &roots)?;
+    let identity = match item {
+        ItemRef::Hash(hash) => ItemIdentity {
+            hash: Some(hash.to_string()),
+            path_id: None,
+        },
+        ItemRef::PathId(path_id) => ItemIdentity {
+            hash: None,
+            path_id: Some(path_id),
+        },
+    };
+    let accepted = AcceptedFiles::capture(conn, std::slice::from_ref(&identity))?;
+    let targets = collect_delete_targets(conn, item, &roots, &accepted)?;
     delete_targets(conn, cache, &targets, mode, &mut |_, _| {})
 }
 
@@ -285,44 +376,13 @@ fn collect_delete_targets(
     conn: &Connection,
     item: ItemRef<'_>,
     roots: &[std::path::PathBuf],
+    accepted: &AcceptedFiles,
 ) -> Result<Vec<DeleteTarget>, String> {
-    // Target rows: the item's own copies… plus companions attached to any of
-    // them. The companion query stays parameterized and constant-size even if
-    // one logical item has an extreme number of copies.
-    let (targets, mut companions): (Vec<_>, Vec<_>) = match item {
-        ItemRef::Hash(hash) => (
-            collect4(
-                conn,
-                "SELECT id, abs_path, content_hash, size FROM paths \
-                 WHERE content_hash = ?1 AND missing = 0 \
-                   AND companion_of IS NULL ORDER BY id",
-                params![hash],
-            )?,
-            collect4(
-                conn,
-                "SELECT id, abs_path, content_hash, size FROM paths \
-                 WHERE companion_of IN (\
-                   SELECT id FROM paths WHERE content_hash = ?1 AND missing = 0 \
-                     AND companion_of IS NULL\
-                 ) AND missing = 0 ORDER BY id",
-                params![hash],
-            )?,
-        ),
-        ItemRef::PathId(id) => (
-            collect4(
-                conn,
-                "SELECT id, abs_path, content_hash, size FROM paths \
-                 WHERE id = ?1 AND missing = 0",
-                params![id],
-            )?,
-            collect4(
-                conn,
-                "SELECT id, abs_path, content_hash, size FROM paths \
-                 WHERE companion_of = ?1 AND missing = 0 ORDER BY id",
-                params![id],
-            )?,
-        ),
-    };
+    // Target rows: the item's own copies plus companions attached to any of
+    // them, limited to the files the accepted batch captured.
+    let (mut targets, mut companions) = item_physical_rows(conn, item)?;
+    accepted.retain_accepted(&mut targets);
+    accepted.retain_accepted(&mut companions);
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -350,15 +410,33 @@ fn collect_delete_targets(
         .collect::<Result<Vec<_>, String>>()?)
 }
 
-/// Deletes an ordered logical-item set under one already-acquired mutation and
-/// media boundary. Target membership is resolved once before the first file
-/// changes. Cancellation is observed while planning and between physical file
-/// actions; filesystem failures remain per-file Issues.
+/// Deletes an ordered logical-item set accepted now, under one
+/// already-acquired mutation and media boundary. Target membership is resolved
+/// once before the first file changes. Cancellation is observed while
+/// planning and between physical file actions; filesystem failures remain
+/// per-file Issues.
 pub fn delete_batch(
     conn: &Connection,
     app_root: &Path,
     cache: &CachePaths,
     items: &[ItemIdentity],
+    mode: DeleteMode,
+    cancelled: &dyn Fn() -> bool,
+    on_progress: impl FnMut(DeleteBatchProgress),
+) -> Result<DeleteBatchOutcome, String> {
+    let accepted = AcceptedFiles::capture(conn, items)?;
+    delete_accepted_batch(conn, app_root, cache, items, &accepted, mode, cancelled, on_progress)
+}
+
+/// Deletes an ordered logical-item set whose physical files were captured
+/// when the operation was accepted (`AcceptedFiles`).
+#[allow(clippy::too_many_arguments)]
+pub fn delete_accepted_batch(
+    conn: &Connection,
+    app_root: &Path,
+    cache: &CachePaths,
+    items: &[ItemIdentity],
+    accepted: &AcceptedFiles,
     mode: DeleteMode,
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(DeleteBatchProgress),
@@ -391,7 +469,7 @@ pub fn delete_batch(
                 ..DeleteBatchOutcome::default()
             });
         }
-        let mut targets = collect_delete_targets(conn, item.item_ref()?, &roots)?;
+        let mut targets = collect_delete_targets(conn, item.item_ref()?, &roots, accepted)?;
         // A malformed caller can name overlapping identities. Physical rows
         // still belong to exactly one unit in this immutable plan.
         targets.retain(|target| claimed_paths.insert(target.path_id));
@@ -738,8 +816,8 @@ pub fn move_out(
         .unwrap_or_default())
 }
 
-/// Moves or copies one ordered logical-item set under one mutation/media
-/// boundary. Membership and destination names are frozen before the first
+/// Moves or copies one ordered logical-item set, accepted now, under one
+/// mutation/media boundary. Membership and destination names are frozen before the first
 /// publication. Cancellation is honored during private streaming and between
 /// bounded output-publication and physical source actions; completed steps are
 /// reported and never rolled back.
@@ -753,11 +831,13 @@ pub fn move_batch(
     cancelled: &dyn Fn() -> bool,
     on_progress: impl FnMut(MoveBatchProgress),
 ) -> Result<MoveBatchOutcome, String> {
+    let accepted = AcceptedFiles::capture(conn, items)?;
     move_batch_reviewed(
         conn,
         app_root,
         cache,
         items,
+        &accepted,
         dest_dir,
         mode,
         None,
@@ -768,11 +848,16 @@ pub fn move_batch(
     )
 }
 
+/// Moves or copies an ordered logical-item set whose physical files were
+/// captured when the operation was accepted (`AcceptedFiles`), under the
+/// reviewed destination-conflict decision when one was required.
+#[allow(clippy::too_many_arguments)]
 pub fn move_batch_reviewed(
     conn: &Connection,
     app_root: &Path,
     cache: &CachePaths,
     items: &[ItemIdentity],
+    accepted: &AcceptedFiles,
     dest_dir: &Path,
     mode: MoveOutMode,
     conflict_policy: Option<DestinationConflictPolicy>,
@@ -818,7 +903,7 @@ pub fn move_batch_reviewed(
                 ..MoveBatchOutcome::default()
             });
         }
-        let unit = collect_move_unit(conn, item, dest_dir, &roots)?;
+        let unit = collect_move_unit(conn, item, dest_dir, &roots, accepted)?;
         plan.files_total = plan
             .files_total
             .saturating_add(unit.deliveries.len() as u64);
@@ -1372,8 +1457,9 @@ fn collect_move_unit(
     item: ItemIdentity,
     dest_dir: &Path,
     roots: &[std::path::PathBuf],
+    accepted: &AcceptedFiles,
 ) -> Result<MoveUnit, String> {
-    let (primary_rows, companion_rows): (Vec<_>, Vec<_>) = match item.item_ref()? {
+    let (mut primary_rows, mut companion_rows): (Vec<_>, Vec<_>) = match item.item_ref()? {
         ItemRef::Hash(hash) => (
             collect4(
                 conn,
@@ -1410,6 +1496,8 @@ fn collect_move_unit(
             )?,
         ),
     };
+    accepted.retain_accepted(&mut primary_rows);
+    accepted.retain_accepted(&mut companion_rows);
     let primary_sources = delivery_sources(primary_rows, roots)?;
     let provisional_hash = item
         .hash
@@ -1460,7 +1548,7 @@ fn collect_move_unit(
 }
 
 fn delivery_sources(
-    rows: Vec<(i64, String, Option<String>, Option<i64>)>,
+    rows: Vec<PhysicalRow>,
     roots: &[std::path::PathBuf],
 ) -> Result<Vec<DeliverySource>, String> {
     rows.into_iter()
@@ -1924,7 +2012,7 @@ fn collect4(
     conn: &Connection,
     sql: &str,
     params: impl rusqlite::Params,
-) -> Result<Vec<(i64, String, Option<String>, Option<i64>)>, String> {
+) -> Result<Vec<PhysicalRow>, String> {
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))

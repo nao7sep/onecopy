@@ -144,7 +144,7 @@ fn visibility_changes_before_conflict_acceptance_require_fresh_review() {
         &onecopy_lib::visibility::Policy::from_config(&serde_json::json!({"hideDotNames": false})).unwrap()).unwrap();
     std::fs::write(f.root.join("late.jpg"), b"same-image").unwrap();
     scan(&f);
-    let result = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &dest, MoveOutMode::MoveTrashRest,
+    let result = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &AcceptedFiles::capture(&f.conn, &items).unwrap(), &dest, MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(), DestinationRenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
     assert!(result.plan_changed);
     assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"old-image");
@@ -675,6 +675,7 @@ fn destination_batch_preflights_internal_collisions_and_renames_the_complete_set
         &f.app_root,
         &f.cache,
         &items,
+        &AcceptedFiles::capture(&f.conn, &items).unwrap(),
         &dest,
         MoveOutMode::CopyKeepAll,
         Some(DestinationConflictPolicy::Rename),
@@ -882,7 +883,8 @@ fn dot_store_copy_overwrite_then_move_verifies_existing_output_and_only_cleans_s
     assert!(review.requires_conflict_choice);
     assert_eq!(std::fs::read(&source).unwrap(), b"new fixture bytes");
     assert_eq!(std::fs::read(&output).unwrap(), b"old fixture bytes");
-    let copied = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, selection, &dest,
+    let copied = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, selection,
+        &AcceptedFiles::capture(&f.conn, selection).unwrap(), &dest,
         MoveOutMode::CopyKeepAll, Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(),
         DestinationRenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
     assert_eq!(copied.exported, 1);
@@ -944,7 +946,8 @@ fn conflicting_destination_waits_for_one_reviewed_policy_before_any_effect() {
         &f.conn,
         &f.app_root,
         &f.cache,
-        &[item],
+        &[item.clone()],
+        &AcceptedFiles::capture(&f.conn, &[item]).unwrap(),
         &dest,
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Rename),
@@ -1005,7 +1008,8 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
         &f.conn,
         &f.app_root,
         &f.cache,
-        &[item],
+        &[item.clone()],
+        &AcceptedFiles::capture(&f.conn, &[item]).unwrap(),
         &dest,
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Overwrite),
@@ -1078,7 +1082,8 @@ fn changed_destination_review_refuses_overwrite_without_filesystem_effects() {
         &f.conn,
         &f.app_root,
         &f.cache,
-        &[item],
+        &[item.clone()],
+        &AcceptedFiles::capture(&f.conn, &[item]).unwrap(),
         &dest,
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Overwrite),
@@ -1231,7 +1236,8 @@ fn companion_conflict_renames_the_complete_output_family_consistently() {
         &f.conn,
         &f.app_root,
         &f.cache,
-        &[item],
+        &[item.clone()],
+        &AcceptedFiles::capture(&f.conn, &[item]).unwrap(),
         &dest,
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Rename),
@@ -1719,4 +1725,79 @@ fn move_delivers_nothing_and_keeps_every_copy_when_every_copy_changed() {
     for sub in ["a", "b"] {
         assert!(f.root.join(sub).join("r.jpg").exists());
     }
+}
+
+#[test]
+fn copies_discovered_after_acceptance_never_join_a_confirmed_delete() {
+    for mode in [DeleteMode::Trash, DeleteMode::Permanent] {
+        let f = fixture("accepted-delete");
+        // Two known copies give the item its real content identity.
+        std::fs::create_dir_all(f.root.join("twin")).unwrap();
+        std::fs::write(f.root.join("reviewed.jpg"), b"same-image-bytes").unwrap();
+        std::fs::write(f.root.join("twin").join("reviewed.jpg"), b"same-image-bytes").unwrap();
+        scan(&f);
+        let hash: String = f
+            .conn
+            .query_row("SELECT content_hash FROM paths WHERE file_name = 'reviewed.jpg'", [], |r| r.get(0))
+            .unwrap();
+        let items = [ItemIdentity { hash: Some(hash), path_id: None }];
+        let accepted = AcceptedFiles::capture(&f.conn, &items).unwrap();
+
+        // While the accepted operation waits for background work, indexing
+        // commits a byte-identical copy on another drive.
+        std::fs::create_dir_all(f.root.join("backup")).unwrap();
+        std::fs::write(f.root.join("backup").join("late.jpg"), b"same-image-bytes").unwrap();
+        scan(&f);
+
+        let outcome = delete_accepted_batch(
+            &f.conn, &f.app_root, &f.cache, &items, &accepted, mode, &|| false, |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(outcome.deleted_files, 2);
+        assert!(!f.root.join("reviewed.jpg").exists());
+        assert!(f.root.join("backup").join("late.jpg").exists(), "{mode:?}");
+    }
+}
+
+#[test]
+fn copies_discovered_after_acceptance_never_join_a_confirmed_move() {
+    let f = fixture("accepted-move");
+    std::fs::create_dir_all(f.root.join("twin")).unwrap();
+    std::fs::write(f.root.join("reviewed.jpg"), b"same-image-bytes").unwrap();
+    std::fs::write(f.root.join("twin").join("reviewed.jpg"), b"same-image-bytes").unwrap();
+    scan(&f);
+    let hash: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths WHERE file_name = 'reviewed.jpg'", [], |r| r.get(0))
+        .unwrap();
+    let items = [ItemIdentity { hash: Some(hash), path_id: None }];
+    let accepted = AcceptedFiles::capture(&f.conn, &items).unwrap();
+    std::fs::create_dir_all(f.root.join("backup")).unwrap();
+    std::fs::write(f.root.join("backup").join("late.jpg"), b"same-image-bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &accepted,
+        &dest,
+        MoveOutMode::MoveDeleteRest,
+        None,
+        None,
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(std::fs::read(dest.join("reviewed.jpg")).unwrap(), b"same-image-bytes");
+    assert_eq!(outcome.post_action.deleted_files, 2);
+    assert!(!f.root.join("reviewed.jpg").exists());
+    assert!(f.root.join("backup").join("late.jpg").exists());
 }
