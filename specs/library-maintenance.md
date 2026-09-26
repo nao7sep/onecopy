@@ -30,6 +30,8 @@ A missing configured source or unavailable drive does not block the entire appli
 
 A configured source that contains OneCopy's own data folder never indexes or reacts to that folder's contents: the app's index, logs, caches, and models are its own storage, never source content. This exclusion applies everywhere source discovery occurs — the source-folder check, watcher ingestion, and destination browsing — the same way deleted-file storage is excluded everywhere it occurs.
 
+A macOS AppleDouble sidecar (`._name`) sitting beside its real file `name` in the same directory is operating-system metadata, not source content: macOS writes it to carry extended attributes and a resource fork on a volume that cannot store them natively, such as FAT, exFAT, or many network shares. It is excluded from discovery the same way, everywhere source discovery occurs, for as long as `name` exists beside it. An index row already recorded for one leaves the library the same way any other vanished path does, marked missing rather than raised as a failure. A `._name` file with no such sibling — its real file already gone, or its name unrelated — is ordinary content and remains discoverable.
+
 ## Watchers and section recheck
 
 Filesystem watchers remain active while OneCopy is open. Watcher discoveries enter the same durable information-completion work as source-check discoveries. A watcher failure becomes visible rather than silently leaving the library stale.

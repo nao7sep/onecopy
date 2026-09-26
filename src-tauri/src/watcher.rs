@@ -136,7 +136,10 @@ pub fn restat_dir(
             continue;
         }
         let abs = path.to_string_lossy().to_string();
-        if crate::trash::is_trash_path(&path) || crate::paths::is_within_data_root(&path, data_root) {
+        if crate::trash::is_trash_path(&path)
+            || crate::paths::is_within_data_root(&path, data_root)
+            || crate::scanner::is_apple_double_sidecar(&path)
+        {
             continue;
         }
         present.insert(abs.clone());
@@ -512,7 +515,10 @@ pub fn collect(
                 return;
             }
             for path in event.paths {
-                if crate::trash::is_trash_path(&path) || crate::paths::is_within_data_root(&path, data_root) {
+                if crate::trash::is_trash_path(&path)
+                    || crate::paths::is_within_data_root(&path, data_root)
+                    || crate::scanner::is_apple_double_sidecar(&path)
+                {
                     continue;
                 }
                 let dir = if path.is_dir() {

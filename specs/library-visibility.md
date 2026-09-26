@@ -6,7 +6,7 @@ One shared durable Settings policy determines which source items and destination
 
 Separate default-on choices hide dot-prefixed files and directories, files and directories carrying native hidden attributes, and native system attributes where the platform supports them. Platform-specific controls describe actual platform capabilities. Directory hiding applies to its descendants. Explicitly configured roots remain reachable; filtering operates beneath those roots rather than hiding a root because of its own name or ancestors.
 
-OneCopy deleted-file storage remains unconditionally excluded under `file-operations.md`, independent of these settings. A similarly named ordinary directory is not deleted-file storage.
+OneCopy deleted-file storage remains unconditionally excluded under `file-operations.md`, independent of these settings. A similarly named ordinary directory is not deleted-file storage. A macOS AppleDouble sidecar (`._name`) beside its real file is excluded from discovery the same way, under `library-maintenance.md`; a `._name` file with no such sibling is ordinary content and remains subject to these settings.
 
 ## Inventory and logical review eligibility
 

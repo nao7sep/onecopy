@@ -1095,6 +1095,27 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
 fn is_excluded_from_discovery(path: &Path, data_root: Option<&Path>) -> bool {
     crate::trash::is_trash_path(path)
         || data_root.is_some_and(|root| crate::paths::is_within_data_root(path, root))
+        || is_apple_double_sidecar(path)
+}
+
+/// Whether `path` is a macOS AppleDouble sidecar (`._name`) sitting beside its
+/// real file `name` in the same directory. macOS writes these to carry
+/// extended attributes and resource forks on a volume that cannot store them
+/// natively (FAT, exFAT, many network shares); they are operating-system
+/// metadata, never library content, so they are excluded from discovery
+/// wherever trash and the data root are (plan decision; library-maintenance.md).
+/// Trashing the real file leaves this indexed row to fail as missing, which
+/// is the concrete defect the exclusion closes. The sibling check keeps this
+/// from ever excluding a real file or directory that merely happens to start
+/// with `._` and has nothing named after the rest of it.
+pub(crate) fn is_apple_double_sidecar(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    match name.strip_prefix("._") {
+        Some(real_name) if !real_name.is_empty() => path.with_file_name(real_name).exists(),
+        _ => false,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

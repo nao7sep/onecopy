@@ -54,6 +54,80 @@ fn restat_upserts_new_files_and_marks_vanished_missing() {
     assert_eq!(missing, 1);
 }
 
+#[test]
+fn restat_skips_apple_double_sidecars_beside_their_real_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let root = dir.path().join("watched");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("IMG_0001.jpg"), b"photo").unwrap();
+    std::fs::write(root.join("._IMG_0001.jpg"), b"resource fork").unwrap();
+
+    let changed = restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()], &no_data_root()).unwrap();
+    assert_eq!(changed, 1, "only the real file is indexed");
+    let names: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT file_name FROM paths").unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(names, vec!["IMG_0001.jpg".to_string()]);
+
+    // A row left over from before this exclusion (or from some other path)
+    // leaves cleanly on the next re-stat: marked missing, no Issue.
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, stem, kind, size, mtime_ms, missing) \
+         VALUES (?1, ?2, '._IMG_0001.jpg', '._img_0001', 'other', 0, 0, 0)",
+        rusqlite::params![
+            root.join("._IMG_0001.jpg").to_string_lossy().to_string(),
+            root.to_string_lossy().to_string()
+        ],
+    )
+    .unwrap();
+    let changed = restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()], &no_data_root()).unwrap();
+    assert_eq!(changed, 1);
+    let missing: i64 = conn
+        .query_row(
+            "SELECT missing FROM paths WHERE file_name = '._IMG_0001.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(missing, 1);
+    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap();
+    assert_eq!(issues, 0, "an excluded path is absent, never a failure");
+
+    // The real file gone leaves the sidecar as ordinary content: it is
+    // indexed like any other file, not treated as metadata forever.
+    std::fs::remove_file(root.join("IMG_0001.jpg")).unwrap();
+    restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()], &no_data_root()).unwrap();
+    let missing: i64 = conn
+        .query_row(
+            "SELECT missing FROM paths WHERE file_name = '._IMG_0001.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(missing, 0, "a lone ._name with no sibling is ordinary content");
+}
+
+#[test]
+fn collect_skips_a_change_event_on_an_apple_double_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("IMG_0001.jpg");
+    let sidecar = dir.path().join("._IMG_0001.jpg");
+    std::fs::write(&real, b"photo").unwrap();
+    std::fs::write(&sidecar, b"resource fork").unwrap();
+
+    let (dirty, overflowed) = fold(vec![sidecar]);
+    assert!(!overflowed);
+    assert!(
+        dirty.is_empty(),
+        "a sidecar's own change event never dirties its directory"
+    );
+}
+
 // (W-M2) A vanished directory PROVES absence — `read_dir` failing with
 // `NotFound` is the normal shape of "this folder was deleted after its
 // events arrived" (Shift+Del, `rm -r`), not an unreadable directory. Every

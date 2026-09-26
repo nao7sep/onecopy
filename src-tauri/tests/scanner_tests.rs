@@ -781,6 +781,61 @@ fn a_source_containing_the_data_root_never_indexes_the_apps_own_storage() {
 }
 
 #[test]
+fn apple_double_sidecars_beside_their_real_file_are_never_indexed() {
+    // macOS writes `._name` beside `name` on a volume that cannot store
+    // extended attributes and resource forks natively (FAT, exFAT, many
+    // network shares). It is operating-system metadata, never library
+    // content, so it must never become a row a user can select or trash.
+    let f = fixture("apple-double");
+    std::fs::write(f.root.join("IMG_0001.jpg"), b"photo").unwrap();
+    std::fs::write(f.root.join("._IMG_0001.jpg"), b"resource fork").unwrap();
+
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(stats.added, 1, "only the real file is indexed");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = '._IMG_0001.jpg'"),
+        0
+    );
+
+    // A sidecar left over from before this exclusion existed (or one that
+    // slipped in through some other path) must leave the library cleanly on
+    // the next walk: marked missing like any other vanished row, no Issue.
+    f.conn
+        .execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, stem, kind, size, mtime_ms, missing) \
+             VALUES (?1, ?2, '._IMG_0001.jpg', '._img_0001', 'other', 0, 0, 0)",
+            rusqlite::params![
+                stored_path(&f.root.join("._IMG_0001.jpg")),
+                stored_path(&f.root)
+            ],
+        )
+        .unwrap();
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = '._IMG_0001.jpg' AND missing = 1"),
+        1,
+        "the pre-existing sidecar row leaves the library like any other vanished path"
+    );
+    assert_eq!(stats.marked_missing, 1);
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM issues"),
+        0,
+        "an excluded path is treated as absent, never a failure"
+    );
+
+    // Deleting the real file first turns the sidecar into ordinary content
+    // (nothing left to attach to), so it is indexed like any other file.
+    std::fs::remove_file(f.root.join("IMG_0001.jpg")).unwrap();
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = '._IMG_0001.jpg' AND missing = 0"),
+        1,
+        "a lone ._name with no sibling is ordinary content, not metadata"
+    );
+    let _ = stats;
+}
+
+#[test]
 fn duplicate_live_photo_identifiers_never_cross_directory_cohorts() {
     let f = fixture("live-photo-duplicate-trees");
     for dir in ["backup-a", "backup-b"] {
