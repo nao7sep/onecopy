@@ -183,6 +183,74 @@ describe("page-local decisions", () => {
   });
 });
 
+// image-comparison.md G1, G2: Delete/Backspace trashes only the visible
+// keep-marked images, never a mark left on an unseen page; a single visible
+// mark trashes directly when the confirm-single-item preference is off, more
+// than one visible mark always reviews, and Shift always forces a permanent,
+// always-confirmed review regardless of that preference.
+describe("selection deletion (Delete/Backspace)", () => {
+  it("trashes a single visible mark directly when the confirm preference is off", async () => {
+    useComparisonStore.getState().selectSlot(1, "toggle");
+
+    const result = await useComparisonStore.getState().requestSelectionDelete(false, false);
+
+    expect(result).toEqual({ kind: "continued" });
+    expect(useComparisonStore.getState().pendingAction).toBeNull();
+    const deleted = invokeCalls.find((call) => call.command === "delete_items")
+      ?.args.items as Array<{ hash: string }>;
+    expect(deleted.map((item) => item.hash)).toEqual(["h1"]);
+    expect(
+      useComparisonStore.getState().members.map((item) => item.hash),
+    ).toEqual(["h0", "h2", "h3", "h4", "h5", "h6", "h7"]);
+  });
+
+  it("reviews more than one visible mark even when the confirm preference is off", async () => {
+    useComparisonStore.getState().selectSlot(1, "toggle");
+    useComparisonStore.getState().selectSlot(2, "toggle");
+
+    const result = await useComparisonStore.getState().requestSelectionDelete(false, false);
+
+    expect(result).toBeNull();
+    expect(useComparisonStore.getState().pendingAction).toMatchObject({
+      kind: "selection",
+      permanent: false,
+      targetHashes: ["h1", "h2"],
+    });
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
+  });
+
+  it("always forces a permanent, confirmed review for Shift+Delete, even for one mark", async () => {
+    useComparisonStore.getState().selectSlot(1, "toggle");
+
+    const result = await useComparisonStore.getState().requestSelectionDelete(true, false);
+
+    expect(result).toBeNull();
+    expect(useComparisonStore.getState().pendingAction).toMatchObject({
+      permanent: true,
+      targetHashes: ["h1"],
+    });
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
+  });
+
+  it("trashes only the mark visible on the current page, leaving a mark on another page untouched", async () => {
+    useComparisonStore.getState().selectSlot(1, "toggle"); // marks h1 on page 0
+    useComparisonStore.getState().nextPage();
+    useComparisonStore.getState().selectSlot(2, "toggle"); // marks h6 on page 1
+
+    const result = await useComparisonStore.getState().requestSelectionDelete(false, false);
+
+    expect(result).toEqual({ kind: "continued" });
+    const deleted = invokeCalls.find((call) => call.command === "delete_items")
+      ?.args.items as Array<{ hash: string }>;
+    expect(deleted.map((item) => item.hash)).toEqual(["h6"]);
+    const state = useComparisonStore.getState();
+    expect(state.members.map((item) => item.hash)).toEqual([
+      "h0", "h1", "h2", "h3", "h4", "h5", "h7",
+    ]);
+    expect(state.selected.has("h1")).toBe(true);
+  });
+});
+
 describe("partial deletion", () => {
   it("removes successes and retainers while keeping only failed targets retryable", async () => {
     openSession(4);

@@ -10,7 +10,7 @@ import {
   type GroupMember,
 } from "../../src/state/comparison-store";
 import { openComparisonImage } from "../../src/workflows/comparison-image";
-import { invokeCalls } from "../mocks/tauri";
+import { invokeCalls, mockCommand } from "../mocks/tauri";
 
 vi.mock("../../src/workflows/comparison-image", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../src/workflows/comparison-image")>(),
@@ -143,6 +143,43 @@ describe("comparison keyboard selection", () => {
       open: true,
       pendingAction: null,
     });
+  });
+
+  it.each(["Delete", "Backspace"])(
+    "routes %s to the same single-mark direct trash (G1)",
+    async (key) => {
+      mockCommand("delete_items", ({ items }) => ({
+        error: null, failedFiles: 0,
+        items: (items as Array<{ hash: string | null; pathId: number | null }>)
+          .map((item) => ({ item, failedFiles: 0 })),
+      }));
+      useComparisonStore.getState().selectSlot(1, "toggle");
+      expect(handleComparisonKey({ key })).toBe(true);
+      await vi.waitFor(() =>
+        expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(true),
+      );
+      const deleted = invokeCalls.find((call) => call.command === "delete_items");
+      expect(deleted?.args.items).toEqual([{ hash: "h1", pathId: null }]);
+      expect(deleted?.args.permanent).toBe(false);
+      // This file's invokeCalls accumulates across its own tests (unlike
+      // files that call resetTauriMocks per test); clear it so a later
+      // negative "delete_items was never called" assertion is not fooled by
+      // this test's own successful delete.
+      invokeCalls.length = 0;
+    },
+  );
+
+  it("routes Shift+Delete to a permanent review, never a direct trash (G2)", async () => {
+    useComparisonStore.getState().selectSlot(1, "toggle");
+    expect(handleComparisonKey({ key: "Delete", shiftKey: true })).toBe(true);
+    await vi.waitFor(() =>
+      expect(useComparisonStore.getState().pendingAction).not.toBeNull(),
+    );
+    expect(useComparisonStore.getState().pendingAction).toMatchObject({
+      permanent: true,
+      targetHashes: ["h1"],
+    });
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
   });
 });
 
