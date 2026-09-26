@@ -8,6 +8,8 @@ import {
   displayCapacities,
   gridFor,
   spatialTarget,
+  updateComparisonDraft,
+  type ComparisonDecisionDraft,
   type ComparisonMember,
 } from "../../src/models/comparisonSession";
 
@@ -68,6 +70,31 @@ describe("comparison capacity", () => {
     );
     expect(tall.map((page) => page.members.length)).toEqual([7, 7, 1]);
     expect(tall[0]?.capacities).toEqual([3, 4]);
+  });
+
+  it("resolves a page that ties once its own capacity shrinks it to landscape", () => {
+    // Two landscape displays, 16 members allowed: the first 8 members are
+    // strictly portrait-dominant (5 portrait, 3 landscape), so the model
+    // narrows to the portrait capacity (3 per display, 6 members). That
+    // narrower slice is itself an exact 3-3 tie, which the spec resolves to
+    // landscape, so the page must keep those 6 members but present them
+    // with the landscape (2x2) capacities rather than relabeling them
+    // portrait or growing back to the wider, portrait-dominant slice.
+    const members = [
+      member(0),
+      member(1),
+      member(2),
+      member(3, true),
+      member(4, true),
+      member(5, true),
+      member(6, true),
+      member(7, true),
+    ];
+    const pages = comparisonPages(members, 16, [16 / 9, 16 / 9]);
+    expect(pages[0]?.members).toHaveLength(6);
+    expect(pages[0]?.portraitDominant).toBe(false);
+    expect(pages[0]?.capacities).toEqual([4, 4]);
+    expect(pages.flatMap((page) => page.members)).toHaveLength(8);
   });
 
   it("does not count unknown dimensions as landscape votes", () => {
@@ -161,5 +188,26 @@ describe("direct image keys", () => {
     expect(directKeyIndex({ key: "f", shiftKey: true })).toBe(-1);
     expect(directKeyIndex({ key: "f", ctrlKey: true })).toBe(-1);
     expect(directKeyIndex({ key: "f", repeat: true })).toBe(-1);
+  });
+});
+
+describe("comparison range selection with no origin", () => {
+  it("keeps existing marks when a Shift range starts with no remembered origin", () => {
+    // A repagination (e.g. the anchor's member left the page) can leave
+    // rangeOrigin and anchor both null while marks made on the page are
+    // still visible. A fresh Shift press must extend from those marks,
+    // not replace them with a single-image selection.
+    const members = [member(0), member(1), member(2), member(3)];
+    const draft: ComparisonDecisionDraft = {
+      selected: new Set(["h1"]),
+      anchors: new Set(),
+      anchor: null,
+      rangeOrigin: null,
+      rangeBase: new Set(),
+    };
+    const result = updateComparisonDraft(draft, members, "h2", "range");
+    expect(result.selected).toEqual(new Set(["h1", "h2"]));
+    expect(result.rangeOrigin).toBe("h2");
+    expect(result.rangeBase).toEqual(new Set(["h1"]));
   });
 });

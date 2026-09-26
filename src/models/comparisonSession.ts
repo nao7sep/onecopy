@@ -90,12 +90,76 @@ export function dominantPortrait(members: ComparisonMember[]): boolean {
   return portrait > landscape;
 }
 
+function capacitiesFor(
+  portraitDominant: boolean,
+  aspects: number[],
+): number[] {
+  return aspects.map(
+    (aspect) => comparisonDisplayLayout(portraitDominant, aspect).capacity,
+  );
+}
+
 /**
- * Builds variable-size pages without limiting the group itself. A page first
- * considers everything the displays could show at their largest capacity;
- * its own dominant orientation then chooses each display's three- or four-card
- * capacity from that display's shape. This makes every boundary deterministic without a circular
- * "page shape decides page size decides page shape" dependency.
+ * Resolves one page's own fixed point: the page's dominant orientation
+ * chooses its display capacities, but its display capacities choose which
+ * members are on the page, which in turn chooses its dominant orientation.
+ * Trying the landscape layout first and, only when its own slice comes out
+ * portrait-dominant, trying the portrait layout next is enough to settle
+ * every case in at most one switch: if the portrait-sized slice is not
+ * itself portrait-dominant (including an exact tie, which the spec resolves
+ * to landscape), growing it back to the landscape slice would only revert
+ * to the same disagreement, so the smaller, portrait-sized slice is kept
+ * and presented with the landscape capacities instead of re-expanding it.
+ */
+function resolvePage(
+  members: ComparisonMember[],
+  offset: number,
+  maximum: number,
+  aspects: number[],
+): ComparisonPage {
+  const remaining = members.length - offset;
+  const landscapeCapacities = capacitiesFor(false, aspects);
+  const landscapeSize = Math.min(
+    maximum,
+    remaining,
+    landscapeCapacities.reduce((sum, capacity) => sum + capacity, 0),
+  );
+  const landscapeSlice = members.slice(offset, offset + landscapeSize);
+  if (!dominantPortrait(landscapeSlice)) {
+    return {
+      members: landscapeSlice,
+      portraitDominant: false,
+      capacities: landscapeCapacities,
+    };
+  }
+
+  const portraitCapacities = capacitiesFor(true, aspects);
+  const portraitSize = Math.min(
+    maximum,
+    remaining,
+    portraitCapacities.reduce((sum, capacity) => sum + capacity, 0),
+  );
+  const portraitSlice = members.slice(offset, offset + portraitSize);
+  if (dominantPortrait(portraitSlice)) {
+    return {
+      members: portraitSlice,
+      portraitDominant: true,
+      capacities: portraitCapacities,
+    };
+  }
+
+  return {
+    members: portraitSlice,
+    portraitDominant: false,
+    capacities: landscapeCapacities,
+  };
+}
+
+/**
+ * Builds variable-size pages without limiting the group itself. Each page's
+ * own members and orientation are resolved together by `resolvePage`, so a
+ * page never gets a capacity computed from a different, larger window of
+ * images than it actually shows.
  */
 export function comparisonPages(
   members: ComparisonMember[],
@@ -104,25 +168,12 @@ export function comparisonPages(
 ): ComparisonPage[] {
   const maximum = Math.max(2, Math.floor(configuredMaximum));
   const aspects = normalizedDisplayAspects(displayAspects);
-  const maximumCandidateCount = Math.min(maximum, aspects.length * 4);
   const pages: ComparisonPage[] = [];
   let offset = 0;
   while (offset < members.length) {
-    const candidates = members.slice(offset, offset + maximumCandidateCount);
-    const portraitDominant = dominantPortrait(candidates);
-    const capacities = aspects.map(
-      (aspect) => comparisonDisplayLayout(portraitDominant, aspect).capacity,
-    );
-    const pageSize = Math.min(
-      maximum,
-      capacities.reduce((sum, capacity) => sum + capacity, 0),
-    );
-    pages.push({
-      members: members.slice(offset, offset + pageSize),
-      portraitDominant,
-      capacities,
-    });
-    offset += pageSize;
+    const page = resolvePage(members, offset, maximum, aspects);
+    pages.push(page);
+    offset += page.members.length;
   }
   return pages;
 }
@@ -214,9 +265,15 @@ export function updateComparisonDraft(
     const origin = selection.rangeOrigin ?? selection.anchor;
     const originIndex = origin === null ? -1 : hashes.indexOf(origin);
     if (originIndex < 0) {
-      selected = new Set([target]);
+      // No range origin survived (for example a repagination cleared the
+      // remembered anchor). Deliberate marks already on the page are not a
+      // range and must not be wiped by a fresh Shift press; start the new
+      // range from the target on top of them, matching a normal range's
+      // "on top of the keep marks that existed when that range began".
+      selected = new Set(current);
+      selected.add(target);
       rangeOrigin = target;
-      rangeBase = new Set([target]);
+      rangeBase = new Set(current);
     } else {
       const [start, end] =
         originIndex <= targetIndex
