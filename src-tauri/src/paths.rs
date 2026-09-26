@@ -53,6 +53,25 @@ pub fn data_root_before_launch() -> Option<PathBuf> {
     resolve_root(&home, std::env::var(HOME_ENV_VAR).ok()).ok()
 }
 
+/// Whether `candidate` is the app's own data root, or lies beneath it — the
+/// app's index, logs, caches and models, which are never source content to
+/// walk, watch or offer as a destination (R6-02). This mirrors
+/// `trash::is_trash_path`: a plain path-component comparison, cheap enough to
+/// run on every walked and watched entry, not a filesystem identity check.
+/// `data_root` is the app's already-resolved storage root; a source that
+/// reaches the same storage only through a symlink or another spelling is not
+/// caught here, the same tradeoff the trash exclusion already accepts.
+pub fn is_within_data_root(candidate: &Path, data_root: &Path) -> bool {
+    let mut candidate_components = candidate.components();
+    for root_component in data_root.components() {
+        match candidate_components.next() {
+            Some(component) if component.as_os_str().eq_ignore_ascii_case(root_component.as_os_str()) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 // Root resolution, factored out so it can be unit-tested with an injected home
 // directory. `override_value` is the raw `ONECOPY_HOME` value (if any). The
 // value is expanded (environment references first, then a leading `~`) and made

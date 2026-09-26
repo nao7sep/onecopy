@@ -856,27 +856,32 @@ struct DirEntry {
 #[tauri::command]
 async fn list_subdirs(app: AppHandle, path: String) -> Result<Vec<DirEntry>, String> {
     dispatch(move || {
-        let config = storage::read_config_for_setup(&paths::data_root(&app)?)?;
+        let data_root = paths::data_root(&app)?;
+        let config = storage::read_config_for_setup(&data_root)?;
         let policy = visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
-        list_subdirs_at(std::path::Path::new(&path), &policy)
+        list_subdirs_at(std::path::Path::new(&path), &policy, &data_root)
     })
     .await
 }
 
-fn list_subdirs_at(path: &std::path::Path, policy: &visibility::Policy) -> Result<Vec<DirEntry>, String> {
-    if crate::trash::is_trash_path(path) {
+fn list_subdirs_at(
+    path: &std::path::Path,
+    policy: &visibility::Policy,
+    data_root: &std::path::Path,
+) -> Result<Vec<DirEntry>, String> {
+    if crate::trash::is_trash_path(path) || paths::is_within_data_root(path, data_root) {
         return Ok(Vec::new());
     }
     let mut entries: Vec<DirEntry> = Vec::new();
     let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     for entry in read {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !is_browsable_destination_child(&entry, policy)? {
+        if !is_browsable_destination_child(&entry, policy, data_root)? {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let child_path = entry.path();
-        let (has_children, is_empty) = child_directory_facts(&child_path, policy)?;
+        let (has_children, is_empty) = child_directory_facts(&child_path, policy, data_root)?;
         entries.push(DirEntry {
             name,
             path: child_path.to_string_lossy().to_string(),
@@ -888,21 +893,28 @@ fn list_subdirs_at(path: &std::path::Path, policy: &visibility::Policy) -> Resul
     Ok(entries)
 }
 
-fn is_browsable_destination_child(entry: &std::fs::DirEntry, policy: &visibility::Policy) -> Result<bool, String> {
-    if trash::is_trash_path(&entry.path()) || !entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+fn is_browsable_destination_child(
+    entry: &std::fs::DirEntry,
+    policy: &visibility::Policy,
+    data_root: &std::path::Path,
+) -> Result<bool, String> {
+    if trash::is_trash_path(&entry.path())
+        || paths::is_within_data_root(&entry.path(), data_root)
+        || !entry.file_type().map_err(|error| error.to_string())?.is_dir()
+    {
         return Ok(false);
     }
     let metadata = entry.metadata().map_err(|error| error.to_string())?;
     Ok(policy.visible(&entry.file_name().to_string_lossy(), true, visibility::entry_flags(&entry.path(), &metadata)))
 }
 
-fn child_directory_facts(path: &std::path::Path, policy: &visibility::Policy) -> Result<(bool, bool), String> {
+fn child_directory_facts(path: &std::path::Path, policy: &visibility::Policy, data_root: &std::path::Path) -> Result<(bool, bool), String> {
     let children = std::fs::read_dir(path).map_err(|error| error.to_string())?;
     let mut is_empty = true;
     for child in children {
         let child = child.map_err(|error| error.to_string())?;
         is_empty = false;
-        if is_browsable_destination_child(&child, policy)? {
+        if is_browsable_destination_child(&child, policy, data_root)? {
             return Ok((true, false));
         }
     }
@@ -1223,8 +1235,13 @@ async fn rescan_section(
                 let repair_roots = scanner::begin_scoped_index_repair(&conn, &dirs)?;
                 let mut changed = 0u64;
                 for dir in &dirs {
-                    changed +=
-                        watcher::restat_dir(&conn, std::path::Path::new(dir), &settings.lists, &settings.source_dirs)?;
+                    changed += watcher::restat_dir(
+                        &conn,
+                        std::path::Path::new(dir),
+                        &settings.lists,
+                        &settings.source_dirs,
+                        &data_root,
+                    )?;
                 }
                 // Finish any interrupted index checkpoints too. Derived media is
                 // woken after the index tail instead of being smuggled into the

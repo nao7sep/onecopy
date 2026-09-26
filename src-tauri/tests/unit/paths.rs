@@ -64,3 +64,27 @@ fn override_that_expands_to_empty_is_rejected() {
     std::env::remove_var("ONECOPY_UNSET_FOR_TEST");
     assert!(resolve_root(&home, Some("$ONECOPY_UNSET_FOR_TEST".to_string())).is_err());
 }
+
+#[test]
+fn is_within_data_root_matches_the_root_and_its_descendants_only() {
+    // R6-02: a source containing the data root must be excluded from walking
+    // and watching wherever it lies.
+    let data_root = PathBuf::from("/Users/tester/.onecopy");
+    assert!(is_within_data_root(&data_root, &data_root), "the root itself");
+    assert!(is_within_data_root(
+        &data_root.join("cache/previews/ab/abc123.webp"),
+        &data_root
+    ));
+    assert!(
+        is_within_data_root(&PathBuf::from("/Users/tester/.ONECOPY/index.sqlite3"), &data_root),
+        "component comparison is case-insensitive, like the trash-name check"
+    );
+    assert!(!is_within_data_root(
+        &PathBuf::from("/Users/tester/Pictures/vacation.jpg"),
+        &data_root
+    ));
+    assert!(
+        !is_within_data_root(&PathBuf::from("/Users/tester/.onecopy-extra/x"), &data_root),
+        "a sibling name sharing the prefix is not a descendant"
+    );
+}

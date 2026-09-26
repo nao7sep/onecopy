@@ -18,6 +18,8 @@ A Move main output covers the item's other copies only when the delivered bytes 
 
 Unavailable source directories or drives do not disable the application or invalidate every available copy. An operation uses the available planned sources, records unavailable paths, and leaves their handling to later reconciliation or a newly confirmed operation.
 
+OneCopy records the physical volume identity of each configured source directory the first time it sees it. Every mutation admission, trash Empty, and source-check start re-verifies that identity before touching a file, and refuses to proceed when a different physical volume now answers at that configured path, or when the recorded identity cannot be read at all — a failed check is never treated as verified-safe. A filesystem with no stable identity to read degrades to presence-only, as elsewhere in this contract.
+
 ## Operation modes
 
 Copy establishes the planned main and companion outputs and leaves every source in place.
@@ -82,7 +84,7 @@ Recoverable deletion keeps each file under the most-specific configured root con
 
 The configured root is OneCopy's access boundary. Choosing a root authorizes discovery and file operations throughout its descendants, including descendants with narrower access than the configured root. OneCopy preserves the file's own access metadata as the filesystem permits, but does not infer separate user-access intent from nested directories, reproduce permissions inherited only from those directories, or make deleted files private to the current account. Configuring a broader root when users require exclusive access to its separate descendants is a configuration error rather than an access policy OneCopy can reconstruct.
 
-Each configured root stores its deleted files beneath its own hidden `.onecopy-trash` directory. Before moving a file, OneCopy proves that the file is contained by the frozen root, that the move remains on the same physical filesystem however the root and file are spelled, and that the root's deleted-files directory is a real directory inside it rather than a link elsewhere; failed validation leaves the source untouched. The directory is created lazily beneath that root so its access remains constrained by the root's traversal and permission boundary. Source discovery, watchers, and destination browsing exclude these directories everywhere they occur.
+Each configured root stores its deleted files beneath its own hidden `.onecopy-trash` directory. Before moving a file, OneCopy proves that the file is contained by the frozen root, that the move remains on the same physical filesystem however the root and file are spelled, and that the root's deleted-files directory is a real directory inside it rather than a link elsewhere; failed validation leaves the source untouched. The directory is created lazily beneath that root so its access remains constrained by the root's traversal and permission boundary. Source discovery, watchers, and destination browsing exclude these directories everywhere they occur, along with OneCopy's own data folder wherever a configured source happens to contain it (`library-maintenance.md`).
 
 The application home does not own deleted-file storage. Two application homes configured for the same root intentionally see the same root-local location, while files protected by different configured roots never move into one shared drive-level or application-level directory.
 

@@ -237,7 +237,15 @@ fn native_folder_attribute_change_republishes_unchanged_descendants() {
             .status()
             .unwrap()
             .success());
-        assert!(onecopy_lib::watcher::restat_dir(&conn, &folder, &lists(), &roots).unwrap() > 0);
+        assert!(onecopy_lib::watcher::restat_dir(
+            &conn,
+            &folder,
+            &lists(),
+            &roots,
+            std::path::Path::new("/onecopy-test-data-root-never-used"),
+        )
+        .unwrap()
+            > 0);
         assert_eq!(
             conn.query_row("SELECT review_visible FROM paths", [], |row| row
                 .get::<_, i64>(0))

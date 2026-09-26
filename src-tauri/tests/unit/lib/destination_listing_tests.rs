@@ -13,8 +13,11 @@ fn one_listing_projects_children_and_emptiness_together() {
     std::fs::create_dir(root.path().join(".hidden")).unwrap();
     std::fs::create_dir_all(root.path().join("hidden-only/.hidden")).unwrap();
     std::fs::create_dir_all(root.path().join("trash-only/.onecopy-trash/day")).unwrap();
+    std::fs::create_dir_all(root.path().join("app-data/cache")).unwrap();
+    let data_root = root.path().join("app-data");
+    let unused_data_root = root.path().join("never-used-app-data");
 
-    let rows = list_subdirs_at(root.path(), &visibility::Policy::from_config(&json!({})).unwrap()).unwrap();
+    let rows = list_subdirs_at(root.path(), &visibility::Policy::from_config(&json!({})).unwrap(), &unused_data_root).unwrap();
     let facts = |name: &str| {
         let row = rows.iter().find(|row| row.name == name).unwrap();
         (row.has_children, row.is_empty)
@@ -25,6 +28,21 @@ fn one_listing_projects_children_and_emptiness_together() {
     assert_eq!(facts("hidden-only"), (false, false));
     assert_eq!(facts("trash-only"), (false, false));
     assert!(rows.iter().all(|row| row.name != ".hidden"));
-    assert!(list_subdirs_at(&root.path().join("trash-only/.onecopy-trash"), &visibility::Policy::from_config(&json!({})).unwrap())
-        .unwrap().is_empty());
+    assert!(list_subdirs_at(
+        &root.path().join("trash-only/.onecopy-trash"),
+        &visibility::Policy::from_config(&json!({})).unwrap(),
+        &unused_data_root,
+    )
+    .unwrap()
+    .is_empty());
+
+    // R6-02: the app's own data root is never a browsable destination child,
+    // and listing straight into it (a source containing the data root, or a
+    // destination path resolving inside it) answers empty like trash.
+    let rows_excluding_data_root =
+        list_subdirs_at(root.path(), &visibility::Policy::from_config(&json!({})).unwrap(), &data_root).unwrap();
+    assert!(rows_excluding_data_root.iter().all(|row| row.name != "app-data"));
+    assert!(list_subdirs_at(&data_root, &visibility::Policy::from_config(&json!({})).unwrap(), &data_root)
+        .unwrap()
+        .is_empty());
 }

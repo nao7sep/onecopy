@@ -257,7 +257,7 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
 
     let readable_path = stored_path(&readable);
     index_store::upsert_issue(&f.conn, Some(&readable_path), READ_ERROR, "read failed").unwrap();
-    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[f.root.to_string_lossy().into_owned()]).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[f.root.to_string_lossy().into_owned()], std::path::Path::new("/onecopy-test-data-root-never-used")).unwrap();
     assert_eq!(
         f.conn
             .query_row(
@@ -280,7 +280,7 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
         )
         .unwrap();
     index_store::upsert_issue(&f.conn, Some(&missing_path), STAT_ERROR, "stat failed").unwrap();
-    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[stored_path(&f.root)]).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[stored_path(&f.root)], std::path::Path::new("/onecopy-test-data-root-never-used")).unwrap();
     assert_eq!(
         f.conn
             .query_row(
@@ -604,7 +604,7 @@ fn scoped_pairing_repairs_only_the_affected_directory() {
     assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
 
     std::fs::remove_file(left.join("IMG.JPG")).unwrap();
-    onecopy_lib::watcher::restat_dir(&f.conn, &left, &lists(), &[left.to_string_lossy().into_owned()]).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &left, &lists(), &[left.to_string_lossy().into_owned()], std::path::Path::new("/onecopy-test-data-root-never-used")).unwrap();
     let right_before: i64 = f
         .conn
         .query_row(
@@ -732,6 +732,51 @@ fn source_check_continues_after_an_unavailable_root() {
             )
             .unwrap(),
         missing.to_string_lossy()
+    );
+}
+
+#[test]
+fn a_source_containing_the_data_root_never_indexes_the_apps_own_storage() {
+    // R6-02: a source root that happens to contain the app's data root (the
+    // whole home directory, say) must not index or churn the app's own
+    // index, logs, caches and models.
+    let f = fixture("data-root-inside-source");
+    // Canonicalized up front, exactly like `settled_root` resolves the walked
+    // root: a tempdir can sit under a symlinked prefix (e.g. macOS `/var` ->
+    // `/private/var`), and the data root must be compared against the same
+    // spelling the walk actually uses.
+    let root = f.root.canonicalize().unwrap();
+    let data_root = root.join(".onecopy");
+    std::fs::create_dir_all(data_root.join("cache")).unwrap();
+    std::fs::create_dir_all(data_root.join("logs")).unwrap();
+    std::fs::write(data_root.join("index.sqlite3"), b"not a photo").unwrap();
+    std::fs::write(data_root.join("logs/app.jpg"), b"looks like a photo").unwrap();
+    std::fs::write(root.join("real.jpg"), b"an actual photo").unwrap();
+
+    let settings = ScanSettings {
+        source_dirs: vec![root.to_string_lossy().to_string()],
+        lists: lists(),
+        resolution: resolution_config(),
+        pairing_enabled: true,
+        cache_root: data_root.join("cache"),
+    };
+
+    let summary = run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+
+    assert_eq!(summary.roots, 1);
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths"),
+        1,
+        "only the real photo outside the data root is indexed"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'real.jpg'"),
+        1
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'app.jpg'"),
+        0,
+        "a file that merely looks like a photo, but lives under the data root, is never indexed"
     );
 }
 
@@ -1600,6 +1645,73 @@ fn removing_a_root_forgets_its_files_and_their_cache() {
     assert!(!cache.thumb(&dropped_hash).exists(), "its cache goes too");
     // The file itself is NOT deleted — the app just stopped being its keeper.
     assert!(dropped.join("b.jpg").exists(), "the file stays on disk");
+}
+
+#[test]
+fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_still_works() {
+    // R6-01: orphan collection is a subquery over `batch_touched_hashes`,
+    // never one bound parameter per orphaned hash, so a root holding more
+    // unique items than SQLite's default 32,766 bound-parameter ceiling can
+    // still be forgotten in one pass, instead of rolling back with "too many
+    // SQL variables" on every later source check.
+    let f = fixture("forget-root-scale");
+    let kept = f.root.join("Kept");
+    let dropped = f.root.join("Dropped");
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::create_dir_all(&dropped).unwrap();
+
+    const ORPHAN_COUNT: i64 = 40_000;
+    let dropped_str = dropped.to_string_lossy().to_string();
+    f.conn
+        .execute(
+            "INSERT INTO scan_dirs (root, configured_root) VALUES (?1, ?1)",
+            [&dropped_str],
+        )
+        .unwrap();
+    // Insertion goes through the batch publisher, exactly like a real walk's
+    // bulk write, so the per-row logical-projection trigger does not run
+    // 40,000 times just to set up this test's fixture.
+    index_store::publish_paths_batch(
+        &f.conn,
+        |_| Ok(()),
+        |conn| {
+            let mut insert_content = conn
+                .prepare_cached("INSERT INTO contents (hash, byte_size, kind) VALUES (?1, 10, 'image')")
+                .map_err(|e| e.to_string())?;
+            let mut insert_path = conn
+                .prepare_cached(
+                    "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) \
+                     VALUES (?1, ?2, ?3, 'image', ?4, 0)",
+                )
+                .map_err(|e| e.to_string())?;
+            for i in 0..ORPHAN_COUNT {
+                let hash = format!("h{i:08}");
+                insert_content.execute([&hash]).map_err(|e| e.to_string())?;
+                let path = format!("{dropped_str}/f{i}.jpg");
+                insert_path
+                    .execute(rusqlite::params![path, dropped_str, format!("f{i}.jpg"), hash])
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let cache = test_cache(&f);
+    let configured = vec![kept.to_string_lossy().to_string()];
+    let forgotten = forget_unconfigured_roots(&f.conn, &configured, &cache).unwrap();
+
+    assert_eq!(forgotten, ORPHAN_COUNT as u64);
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths"),
+        0,
+        "every row of the removed root leaves the index"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM contents"),
+        0,
+        "their orphaned contents rows leave too, not just the first 32,766"
+    );
 }
 
 #[test]

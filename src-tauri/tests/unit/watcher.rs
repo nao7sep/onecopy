@@ -20,9 +20,13 @@ fn a_directory_that_fails_to_restat_keeps_the_watcher_failure_visible() {
     std::fs::create_dir_all(&outside).unwrap();
     std::fs::write(root.join("new.jpg"), b"fresh").unwrap();
     let stored_root = crate::winpath::for_fs(&root).to_string_lossy().into_owned();
+    // A data root distinct from `root`/`outside` (R6-02's exclusion would
+    // otherwise treat these watched directories as the app's own storage,
+    // since they would sit inside it).
+    let app_data = dir.path().join("app-data");
     let settings = crate::scanner::settings_from_config(
         Some(&serde_json::json!({ "sourceDirs": [stored_root] })),
-        dir.path(),
+        &app_data,
         0,
     );
 

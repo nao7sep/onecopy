@@ -160,6 +160,16 @@ pub struct ScanSettings {
     pub cache_root: std::path::PathBuf,
 }
 
+impl ScanSettings {
+    /// The app's data root, derived from `cache_root` (always
+    /// `<data root>/cache`) rather than re-plumbed everywhere `ScanSettings`
+    /// already travels. Used to exclude the app's own storage from discovery
+    /// (R6-02).
+    pub fn data_root(&self) -> &Path {
+        self.cache_root.parent().unwrap_or(&self.cache_root)
+    }
+}
+
 /// One honest snapshot of durable index work. Phase tokens are stable backend
 /// facts; the frontend owns their words. `done/total` always describe a stable
 /// unit chosen before the phase starts (sources for the filesystem walk, paths
@@ -544,45 +554,59 @@ pub fn forget_unconfigured_roots(
                 tx.execute("DELETE FROM scan_dirs WHERE root = ?1", [&root])
                     .map_err(|e| e.to_string())?;
 
-                // Orphan collection as one set-based read, then one set-based
-                // delete per table, instead of the former per-hash loop.
-                let mut stmt = tx
-                    .prepare(
-                        "SELECT content_hash FROM batch_touched_hashes bth \
-                         WHERE NOT EXISTS (\
-                             SELECT 1 FROM paths lp \
-                             WHERE lp.content_hash = bth.content_hash AND lp.missing = 0)",
-                    )
-                    .map_err(|e| e.to_string())?;
+                // Orphan collection stays set-based inside SQL end to end: the
+                // IN-clauses below are subqueries over `batch_touched_hashes`,
+                // never a bound parameter per orphaned hash. A root with more
+                // unique items than SQLite's ~32,766 bound-parameter ceiling
+                // could not otherwise be forgotten (R6-01). `orphaned_hashes`
+                // is read out separately, only so cache files can be removed
+                // by hash; it never feeds a query's parameter list.
+                const ORPHAN_HASHES: &str = "SELECT content_hash FROM batch_touched_hashes bth \
+                     WHERE NOT EXISTS (\
+                         SELECT 1 FROM paths lp \
+                         WHERE lp.content_hash = bth.content_hash AND lp.missing = 0)";
+                let mut stmt = tx.prepare(ORPHAN_HASHES).map_err(|e| e.to_string())?;
                 orphaned_hashes = stmt
                     .query_map([], |r| r.get::<_, String>(0))
                     .map_err(|e| e.to_string())?
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(|e| e.to_string())?;
                 drop(stmt);
-                if !orphaned_hashes.is_empty() {
-                    let placeholders = std::iter::repeat("?")
-                        .take(orphaned_hashes.len())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    tx.execute(
-                        &format!("DELETE FROM paths WHERE content_hash IN ({placeholders})"),
-                        rusqlite::params_from_iter(orphaned_hashes.iter()),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        &format!(
-                            "DELETE FROM similar_group_members WHERE content_hash IN ({placeholders})"
-                        ),
-                        rusqlite::params_from_iter(orphaned_hashes.iter()),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        &format!("DELETE FROM contents WHERE hash IN ({placeholders})"),
-                        rusqlite::params_from_iter(orphaned_hashes.iter()),
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
+                // Companions first: their rows hold a foreign key to the
+                // primary path, which is about to leave `paths` too.
+                tx.execute(
+                    &format!(
+                        "DELETE FROM evidence WHERE path_id IN \
+                         (SELECT id FROM paths WHERE content_hash IN ({ORPHAN_HASHES}))"
+                    ),
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    &format!(
+                        "UPDATE paths SET companion_of = NULL WHERE companion_of IN \
+                         (SELECT id FROM paths WHERE content_hash IN ({ORPHAN_HASHES}))"
+                    ),
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    &format!("DELETE FROM paths WHERE content_hash IN ({ORPHAN_HASHES})"),
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    &format!(
+                        "DELETE FROM similar_group_members WHERE content_hash IN ({ORPHAN_HASHES})"
+                    ),
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    &format!("DELETE FROM contents WHERE hash IN ({ORPHAN_HASHES})"),
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(())
             },
         )?;
@@ -700,6 +724,7 @@ pub fn run_source_check(
             root_index as u64,
             root_total,
             walk_failures,
+            Some(settings.data_root()),
             progress,
         )?;
         summary.roots += 1;
@@ -1061,7 +1086,15 @@ pub fn upsert_file(
 /// resumes cheap), resets content facts when a file changed, and marks rows
 /// under the root that no longer exist as missing.
 pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
-    walk_root_with_progress(conn, root, &root.to_string_lossy(), lists, &[crate::winpath::for_fs(root).to_string_lossy().into_owned()], 0, 1, 0, &|_| {})
+    walk_root_with_progress(conn, root, &root.to_string_lossy(), lists, &[crate::winpath::for_fs(root).to_string_lossy().into_owned()], 0, 1, 0, None, &|_| {})
+}
+
+/// Excludes the app's own storage the way `trash::is_trash_path` excludes
+/// deleted-file storage: a source containing the data root must never index
+/// or churn the app's own index, logs, caches and models (R6-02).
+fn is_excluded_from_discovery(path: &Path, data_root: Option<&Path>) -> bool {
+    crate::trash::is_trash_path(path)
+        || data_root.is_some_and(|root| crate::paths::is_within_data_root(path, root))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1074,6 +1107,7 @@ fn walk_root_with_progress(
     completed_roots: u64,
     total_roots: u64,
     failures_before: u64,
+    data_root: Option<&Path>,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<WalkStats, String> {
     let mut stats = WalkStats::default();
@@ -1136,7 +1170,7 @@ fn walk_root_with_progress(
     for entry in walkdir::WalkDir::new(fs_root.as_ref())
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| !crate::trash::is_trash_path(entry.path()))
+        .filter_entry(|entry| !is_excluded_from_discovery(entry.path(), data_root))
     {
         check_cancel()?;
         // A pending foreground action takes the index here and the walk

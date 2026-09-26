@@ -59,8 +59,9 @@ pub fn restat_dir(
     dir: &Path,
     lists: &ScanLists,
     source_roots: &[String],
+    data_root: &Path,
 ) -> Result<u64, String> {
-    if crate::trash::is_trash_path(dir) {
+    if crate::trash::is_trash_path(dir) || crate::paths::is_within_data_root(dir, data_root) {
         return Ok(0);
     }
     // notify reports ordinary Windows paths even when the full scan stores
@@ -135,7 +136,7 @@ pub fn restat_dir(
             continue;
         }
         let abs = path.to_string_lossy().to_string();
-        if crate::trash::is_trash_path(&path) {
+        if crate::trash::is_trash_path(&path) || crate::paths::is_within_data_root(&path, data_root) {
             continue;
         }
         present.insert(abs.clone());
@@ -237,6 +238,9 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) -> Result<bool, St
 }
 
 fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Result<(), String> {
+    // Resolved once: a source containing the data root must never make the
+    // watcher index or churn the app's own storage (R6-02).
+    let data_root = crate::paths::data_root(&app)?;
     let (tx, rx) = mpsc::sync_channel::<notify::Result<notify::Event>>(EVENT_QUEUE_CAPACITY);
     // A full queue means ingestion cannot keep up (typically an `INDEXING`
     // holder running for a long time, W-B1). `try_send` never blocks the
@@ -287,7 +291,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         // Wake periodically so a settings-driven watcher replacement can
         // retire this generation even on a completely quiet filesystem.
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(event) => collect(event, &mut dirty, &mut overflowed),
+            Ok(event) => collect(event, &mut dirty, &mut overflowed, &data_root),
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err("watcher event channel disconnected".to_string())
@@ -297,7 +301,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         while let Ok(event) =
             rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
         {
-            collect(event, &mut dirty, &mut overflowed);
+            collect(event, &mut dirty, &mut overflowed, &data_root);
         }
 
         if !owns_generation(generation) {
@@ -499,6 +503,7 @@ pub fn collect(
     event: notify::Result<notify::Event>,
     dirty: &mut HashSet<PathBuf>,
     overflowed: &mut bool,
+    data_root: &Path,
 ) {
     match event {
         Ok(event) => {
@@ -507,7 +512,7 @@ pub fn collect(
                 return;
             }
             for path in event.paths {
-                if crate::trash::is_trash_path(&path) {
+                if crate::trash::is_trash_path(&path) || crate::paths::is_within_data_root(&path, data_root) {
                     continue;
                 }
                 let dir = if path.is_dir() {
@@ -557,9 +562,10 @@ pub(crate) fn restat_batch(
     between: &dyn Fn() -> Result<(), String>,
 ) -> Result<WatchPass, String> {
     let mut pass = WatchPass { changed: 0, failed: Vec::new() };
+    let data_root = settings.data_root();
     for dir in dirs {
         between()?;
-        match restat_dir(conn, dir, &settings.lists, &settings.source_dirs) {
+        match restat_dir(conn, dir, &settings.lists, &settings.source_dirs, data_root) {
             Ok(count) => pass.changed += count,
             Err(error) => {
                 logging::warn(

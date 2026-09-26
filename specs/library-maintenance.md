@@ -28,6 +28,8 @@ An explicitly requested source-folder check acknowledges successful completion e
 
 A missing configured source or unavailable drive does not block the entire application. OneCopy continues with available copies, reports unavailable paths, and allows files to reappear when their source returns. It retains a reachable in-app path to recheck presence or repair the configured root without restarting.
 
+A configured source that contains OneCopy's own data folder never indexes or reacts to that folder's contents: the app's index, logs, caches, and models are its own storage, never source content. This exclusion applies everywhere source discovery occurs — the source-folder check, watcher ingestion, and destination browsing — the same way deleted-file storage is excluded everywhere it occurs.
+
 ## Watchers and section recheck
 
 Filesystem watchers remain active while OneCopy is open. Watcher discoveries enter the same durable information-completion work as source-check discoveries. A watcher failure becomes visible rather than silently leaving the library stale.
