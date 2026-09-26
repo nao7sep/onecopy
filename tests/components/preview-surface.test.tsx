@@ -637,6 +637,43 @@ describe("shared video presentation", () => {
     expect(img.getAttribute("style")).toContain(`max-width: ${IMAGE_DETAIL.width}px`);
   });
 
+  // R5.3 untested contract: in MAIN's own webview (which has `appData.config`
+  // directly, unlike the auxiliary windows covered above), the persistent
+  // Preview pane reads `enlargeSmallImagesInPreview` and Quick View reads
+  // `enlargeSmallImagesInQuickView` -- two independent settings, routed by
+  // `surface`, not one shared value.
+  it("routes Main's own enlarge setting by surface: Preview reads its own key, Quick View reads its own", () => {
+    useAppStore.setState({
+      appData: {
+        config: {
+          videoAutoplay: false,
+          audioAutoplay: false,
+          soundEnabled: true,
+          playbackVolume: 1,
+          enlargeSmallImagesInPreview: false,
+          enlargeSmallImagesInQuickView: true,
+        },
+        state: null,
+        dataRoot: "/app",
+        debugEnabled: false,
+        quarantines: [],
+      },
+    });
+
+    const previewPane = render(
+      <PreviewSurface surface="preview-split" hash="image-hash" detail={IMAGE_DETAIL} />,
+    );
+    const previewImg = previewPane.getByAltText("family.jpg");
+    expect(previewImg.getAttribute("style")).toContain(`max-width: ${IMAGE_DETAIL.width}px`);
+    previewPane.unmount();
+
+    const quickView = render(
+      <PreviewSurface surface="quick" hash="image-hash" detail={IMAGE_DETAIL} keyboardActive />,
+    );
+    const quickImg = quickView.getByAltText("family.jpg");
+    expect(quickImg.getAttribute("style") ?? "").not.toContain("max-width");
+  });
+
   // content-presentation.md D6: a failed video's poster is a PLAIN poster,
   // not an inspectable original — holding it must never raise a bogus
   // "original pixels failed" notice, since the "original" would be the video
