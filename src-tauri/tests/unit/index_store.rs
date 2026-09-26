@@ -83,6 +83,38 @@ fn reopening_a_current_index_does_not_publish_schema_writes() {
 }
 
 #[test]
+fn foreign_keys_are_enforced_on_an_ordinary_open_not_only_on_an_upgrade() {
+    // R1-11: a connection that opens an already-current index (no upgrade
+    // branch runs) must still enforce foreign keys, since every command,
+    // worker and watcher pass opens this way.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-index-fk-")
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("index.sqlite3");
+    // First open creates the schema at the current revision.
+    drop(open(&db).unwrap());
+    // Second open takes the "already current" path with no upgrade branch.
+    let conn = open(&db).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "foreign_keys", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "foreign keys must be enforced on every ordinary open"
+    );
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO evidence (content_hash, path_id, source) VALUES ('h1', 999, 'metadata')",
+        [],
+    )
+    .expect_err("an evidence row referencing a path that does not exist must be refused");
+}
+
+#[test]
 fn an_earlier_disposable_schema_reconstructs_old_rows() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-index-upgrade-")

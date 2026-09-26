@@ -642,9 +642,13 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 return Err(error);
             }
         }
-        conn.pragma_update(None, "foreign_keys", true)
-            .map_err(|error| error.to_string())?;
     }
+    // Enforced on every open, not only the connection that ran the upgrade:
+    // a dangling `evidence` or `companion_of` row after a same-transaction
+    // sibling delete (see delete_targets and forget_unconfigured_roots) must
+    // fail the transaction rather than survive silently (R1-11).
+    conn.pragma_update(None, "foreign_keys", true)
+        .map_err(|error| error.to_string())?;
     Ok(conn)
 }
 
