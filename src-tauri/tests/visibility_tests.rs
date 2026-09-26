@@ -39,6 +39,49 @@ fn policy_defaults_empty_list_exact_names_and_native_platform_facts() {
     }
 }
 
+// R4.1 finding 2: the ignored-name filter must be case-insensitive at the
+// SQL level (the trigger's and apply_policy's own `name = paths.file_name`
+// join, which relies on visibility_ignored_names' onecopy_nocase collation),
+// not merely in the Rust Policy::visible helper exercised above.
+#[test]
+fn ignored_name_matching_is_case_insensitive_at_the_sql_level() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('h', 3, 'image');
+        INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, visibility_flags)
+          VALUES ('/root/Photo.JPG', '/root', 'Photo.JPG', 'image', 'h', 0);",
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row("SELECT review_visible FROM paths", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    // The ignored name is configured in a different case than the file on
+    // disk; the SQL trigger/projection must still hide it.
+    visibility_index::apply_policy(
+        &conn,
+        &Policy::from_config(&json!({"ignoredFileNames": ["photo.jpg"]})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row("SELECT review_visible FROM paths", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // Lifting the filter republishes the row as visible again.
+    visibility_index::apply_policy(&conn, &Policy::from_config(&json!({})).unwrap()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT review_visible FROM paths", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
 #[test]
 fn hidden_only_audio_is_not_background_transcription_work() {
     let temp = tempfile::tempdir().unwrap();
