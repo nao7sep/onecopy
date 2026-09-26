@@ -12,6 +12,7 @@ import { retainStatePatch, useAppStore } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import { createEventInstaller } from "../utils/eventInstallation";
+import { keyOf } from "../models/items";
 
 interface PlaybackObservation {
   surface: PlaybackSurface;
@@ -67,7 +68,7 @@ function shouldRetainUnownedSession(current: PlaybackSession): boolean {
     preview.current?.hash ??
     (preview.current?.pathId === null || preview.current?.pathId === undefined
       ? null
-      : `path-${preview.current.pathId}`);
+      : keyOf(null, preview.current.pathId));
   return preview.follow && previewKey === current.key;
 }
 

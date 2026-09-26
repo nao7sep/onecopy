@@ -3,6 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
+import { keyOf } from "../models/items";
 
 /** Opens only an indexed identity and permanently pauses any in-app session
  * for it before native delegation begins. */
@@ -10,7 +11,7 @@ export async function openInDefaultApp(
   hash: string | null,
   pathId: number | null,
 ): Promise<void> {
-  const key = hash ?? (pathId === null ? null : `path-${pathId}`);
+  const key = hash ?? (pathId === null ? null : keyOf(null, pathId));
   if (key !== null) await emit("playback://pause", { key });
   try {
     await invoke("open_item_externally", {

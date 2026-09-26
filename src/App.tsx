@@ -13,7 +13,7 @@ import { useSectionsStore } from "./state/sections-store";
 import { activeMaintenanceStatus, statusLine } from "./models/status";
 import { currentMainFeedback, useMainFeedbackStore } from "./state/main-feedback-store";
 import { useItemsStore } from "./state/items-store";
-import { itemKey } from "./models/items";
+import { itemKey, isHashKey } from "./models/items";
 import Sidebar from "./components/Sidebar";
 import Grid from "./components/Grid";
 import MetadataPane from "./components/MetadataPane";
@@ -139,7 +139,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const detail = useItemsStore((s) => s.detail);
   const selectedItemKey = useItemsStore((s) => s.selectedItem);
   const selectedHash =
-    selectedItemKey !== null && !selectedItemKey.startsWith("path-")
+    selectedItemKey !== null && isHashKey(selectedItemKey)
       ? selectedItemKey
       : null;
   const selectedSectionItem =

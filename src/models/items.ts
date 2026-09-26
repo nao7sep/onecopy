@@ -103,20 +103,34 @@ export interface SectionReconciliation {
 }
 
 /** Stable logical identity used by every Main projection. */
+const PATH_KEY_PREFIX = "path-";
+
+/** The one spelling of a logical item's key, shared with the core
+ * (`indexed_file::item_key`): its content hash, or `path-<id>` for an item
+ * without one. Media-use releases match players by this key. */
+export function keyOf(hash: string | null, pathId: number): string {
+  return hash ?? `${PATH_KEY_PREFIX}${pathId}`;
+}
+
+/** Whether a key names a content hash rather than an unhashed path. */
+export function isHashKey(key: string): boolean {
+  return !key.startsWith(PATH_KEY_PREFIX);
+}
+
 export function itemKey(item: Pick<SectionItem, "hash" | "pathId">): string {
-  return item.hash ?? `path-${item.pathId}`;
+  return keyOf(item.hash, item.pathId);
 }
 
 export function identityKey(identity: SectionIdentity): string {
-  return identity.hash ?? `path-${identity.pathId}`;
+  return keyOf(identity.hash, identity.pathId);
 }
 
 /** A key alone fully identifies a logical item. Hashed rows do not use their
  * representative path id for identity, so zero is an intentional transport
  * placeholder until the backend returns the current representative. */
 export function identityFromKey(key: string): SectionIdentity {
-  if (!key.startsWith("path-")) return { hash: key, pathId: 0 };
-  const pathId = Number(key.slice("path-".length));
+  if (isHashKey(key)) return { hash: key, pathId: 0 };
+  const pathId = Number(key.slice(PATH_KEY_PREFIX.length));
   if (!Number.isSafeInteger(pathId) || pathId < 0) {
     throw new Error(`Invalid item key: ${key}`);
   }
@@ -259,7 +273,7 @@ export function originalUrl(hash: string): string {
 }
 
 export function originalUrlByPath(pathId: number): string {
-  return convertFileSrc(`path-${pathId}`, "mediafile");
+  return convertFileSrc(keyOf(null, pathId), "mediafile");
 }
 
 /** Formats the webview cannot paint from original bytes (WebView2 paints

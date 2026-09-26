@@ -3,6 +3,10 @@ import {
   EMPTY_ITEM_WORK,
   SORT_ORDERS,
   extLabel,
+  identityFromKey,
+  isHashKey,
+  itemKey,
+  keyOf,
   formatDuration,
   originalUrl,
   previewUrl,
@@ -163,5 +167,17 @@ describe("the placeholder label", () => {
     expect(extLabel("README", t)).toBe("FILE");
     expect(extLabel(".gitignore", t)).toBe("FILE");
     expect(extLabel("trailing.", t)).toBe("FILE");
+  });
+});
+
+describe("item keys", () => {
+  it("spell a hash or path-<id> the way the core does, and parse back", () => {
+    // indexed_file::item_key on the Rust side spells the same two forms.
+    expect(keyOf("abc", 7)).toBe("abc");
+    expect(keyOf(null, 7)).toBe("path-7");
+    expect(itemKey({ hash: null, pathId: 7 })).toBe("path-7");
+    expect(isHashKey("abc")).toBe(true);
+    expect(isHashKey(keyOf(null, 7))).toBe(false);
+    expect(identityFromKey(keyOf(null, 7))).toEqual({ hash: null, pathId: 7 });
   });
 });

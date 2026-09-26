@@ -17,6 +17,7 @@ import {
   stripUrl,
   timestampLabel,
   formatBytes,
+  keyOf,
 } from "../models/items";
 import InspectableImage, {
   inspectPosition,
@@ -610,11 +611,11 @@ export default function PreviewSurface({
     if (src !== null) {
       return (
         <AudioSurface
-          key={hash ?? `path-${pathId}`}
+          key={keyOf(hash, pathId ?? 0)}
           hash={hash}
           src={src}
           detail={detail}
-          playbackKey={hash ?? `path-${pathId}`}
+          playbackKey={keyOf(hash, pathId ?? 0)}
           surface={surface}
           pathId={hash === null ? pathId : null}
         />

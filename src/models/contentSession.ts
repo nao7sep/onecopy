@@ -1,4 +1,5 @@
 import type { PlaybackMedium } from "./playback";
+import { keyOf } from "./items";
 
 export interface ContentSessionState {
   textWrap: boolean;
@@ -13,5 +14,5 @@ export interface TranscriptViewState {
 }
 
 export function textEncodingKey(hash: string | null, pathId: number | null): string {
-  return hash ?? `path-${pathId ?? "missing"}`;
+  return hash ?? (pathId === null ? "missing" : keyOf(null, pathId));
 }

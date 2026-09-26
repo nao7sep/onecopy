@@ -36,6 +36,7 @@ import {
   recordActivity,
 } from "../repositories/activity";
 import { configNumber, confirmsTrashDelete } from "../models/config";
+import { isHashKey } from "../models/items";
 
 let mainRecoveryAfterFamily: AnchorContext | null = null;
 
@@ -126,8 +127,8 @@ export async function openComparison(
 export async function requestComparisonFromMain(): Promise<void> {
   const feedback = beginMainFeedback("comparison");
   const { selected, selectedKeys, selectedItem } = useItemsStore.getState();
-  const hashes = [...selectedKeys].filter((key) => !key.startsWith("path-"));
-  const hash = selectedItem !== null && !selectedItem.startsWith("path-") ? selectedItem : null;
+  const hashes = [...selectedKeys].filter(isHashKey);
+  const hash = selectedItem !== null && isHashKey(selectedItem) ? selectedItem : null;
   if (
     selected?.kind !== "image" ||
     hash === null ||
