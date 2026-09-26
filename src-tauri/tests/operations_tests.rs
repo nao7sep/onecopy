@@ -1640,3 +1640,83 @@ fn deleting_one_empty_file_leaves_every_other_empty_file() {
         assert!(f.root.join(name).exists(), "{name} must survive");
     }
 }
+
+fn rotten_copy_fixture(label: &str) -> (Fixture, String, std::path::PathBuf) {
+    let f = fixture(label);
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("r.jpg"), b"healthy-bytes").unwrap();
+    }
+    scan(&f);
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'r.jpg' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    (f, hash, dest)
+}
+
+#[test]
+fn move_skips_a_changed_copy_and_never_destroys_the_unchanged_one() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let (f, hash, dest) = rotten_copy_fixture("rot-move");
+        // The representative copy a changes after indexing: same length,
+        // different bytes. Delivering it would cover b, the only copy left of
+        // the reviewed content.
+        std::fs::write(f.root.join("a").join("r.jpg"), b"rotten!-bytes").unwrap();
+
+        let outcome =
+            move_out(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), &dest, mode).unwrap();
+
+        assert_eq!(outcome.exported, 1);
+        assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
+        assert_eq!(
+            std::fs::read(f.root.join("a").join("r.jpg")).unwrap(),
+            b"rotten!-bytes",
+            "the changed copy is not covered by the delivery and stays in place"
+        );
+        assert!(!f.root.join("b").join("r.jpg").exists());
+        assert_eq!(outcome.post_action.deleted_files, 1);
+        let issues: Vec<String> = f
+            .conn
+            .prepare("SELECT path FROM issues WHERE kind = 'copy-error'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].ends_with("r.jpg") && issues[0].contains("/a/"));
+    }
+}
+
+#[test]
+fn move_delivers_nothing_and_keeps_every_copy_when_every_copy_changed() {
+    let (f, hash, dest) = rotten_copy_fixture("rot-all");
+    for sub in ["a", "b"] {
+        std::fs::write(f.root.join(sub).join("r.jpg"), b"rotten!-bytes").unwrap();
+    }
+
+    let outcome = move_out(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        &dest,
+        MoveOutMode::MoveDeleteRest,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.exported, 0);
+    assert_eq!(outcome.undelivered.len(), 1);
+    assert!(!dest.join("r.jpg").exists());
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "no private output remains");
+    for sub in ["a", "b"] {
+        assert!(f.root.join(sub).join("r.jpg").exists());
+    }
+}

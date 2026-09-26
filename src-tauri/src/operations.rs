@@ -1506,7 +1506,9 @@ enum MoveUnitProgress {
 }
 
 enum StageResult {
-    Ready(StagedOutput),
+    /// The staged output and the planned sources skipped because their bytes
+    /// no longer matched the item's recorded content.
+    Ready(StagedOutput, Vec<i64>),
     Cancelled,
     Failed,
 }
@@ -1538,8 +1540,26 @@ fn execute_move_unit(
         if cancelled() {
             return Ok(MoveUnitResult::Cancelled(outcome));
         }
-        let output = match stage_delivery(conn, delivery, cancelled, on_progress)? {
-            StageResult::Ready(output) => output,
+        // Move covers other copies only with bytes proven to be the item's
+        // recorded content. Copy delivers the file as it currently exists,
+        // and an item with no recorded full hash has nothing to prove against.
+        let recorded_hash = unit
+            .item
+            .hash
+            .as_deref()
+            .filter(|hash| {
+                delivery.primary
+                    && mode != MoveOutMode::CopyKeepAll
+                    && !crate::scanner::is_provisional(hash)
+            });
+        let (output, changed_sources) = match stage_delivery(
+            conn,
+            delivery,
+            recorded_hash,
+            cancelled,
+            on_progress,
+        )? {
+            StageResult::Ready(output, changed_sources) => (output, changed_sources),
             StageResult::Cancelled => return Ok(MoveUnitResult::Cancelled(outcome)),
             StageResult::Failed => {
                 outcome
@@ -1688,9 +1708,12 @@ fn execute_move_unit(
         });
 
         if delivered && mode != MoveOutMode::CopyKeepAll {
+            // A source whose bytes no longer matched was not delivered, so
+            // this output does not cover it; it stays in place.
             let targets = delivery
                 .sources
                 .iter()
+                .filter(|source| !changed_sources.contains(&source.path_id))
                 .map(|source| DeleteTarget {
                     path_id: source.path_id,
                     abs_path: source.abs_path.clone(),
@@ -1815,9 +1838,11 @@ fn preserve_reviewed_destination_family(
 fn stage_delivery(
     conn: &Connection,
     delivery: &DeliveryPlan,
+    recorded_hash: Option<&str>,
     cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
 ) -> Result<StageResult, String> {
+    let mut changed_sources = Vec::new();
     for source in &delivery.sources {
         let staged = output_stage_path(&delivery.target)?;
         let copied = crate::hashing::hash_while_copying_cancellable_detailed(
@@ -1827,15 +1852,30 @@ fn stage_delivery(
             &mut |done, total| on_progress(MoveUnitProgress::Stream { done, total }),
         );
         match copied {
+            Ok((hash, _, identity)) if recorded_hash.is_some_and(|recorded| recorded != hash) => {
+                crate::file_identity::remove_private_if_owned(&staged, identity);
+                let message = "this copy no longer matches the content OneCopy indexed, so it was \
+                               neither delivered nor removed; another matching copy was used if one \
+                               remained";
+                logging::warn(
+                    "move skipped a changed source copy",
+                    json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy() }),
+                );
+                crate::index_store::upsert_issue(conn, Some(&source.abs_path), "copy-error", message)?;
+                changed_sources.push(source.path_id);
+            }
             Ok((hash, bytes, identity)) => {
-                return Ok(StageResult::Ready(StagedOutput {
-                    target: delivery.target.clone(),
-                    staged,
-                    identity,
-                    hash,
-                    bytes,
-                    primary: delivery.primary,
-                }));
+                return Ok(StageResult::Ready(
+                    StagedOutput {
+                        target: delivery.target.clone(),
+                        staged,
+                        identity,
+                        hash,
+                        bytes,
+                        primary: delivery.primary,
+                    },
+                    changed_sources,
+                ));
             }
             Err(crate::hashing::CopyFailure::Cancelled) => return Ok(StageResult::Cancelled),
             Err(crate::hashing::CopyFailure::Source(error)) => {
