@@ -30,6 +30,10 @@ import { CATALOGUES, type MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
 import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
 
+/** Matches `text_preview::MAX_ALLOWED_BYTES` on the Rust side (C-L2): the
+ * gate itself must stay bounded, not just default to something reasonable. */
+const TEXT_PREVIEW_MAX_BYTES = 64 * 1024 * 1024;
+
 /** Auxiliary display priority. Persisted as app STATE, not part of the config
  * draft — screen identifiers are machine-specific and reordering applies
  * immediately, like a pane width. Meaningful only with two or more monitors. */
@@ -624,7 +628,12 @@ export default function SettingsModal({
             hint={t("settings.textPreviewLimitHint")}
             value={Math.max(1, Math.round(draft.textPreviewMaxBytes / 1024))}
             min={1}
-            onChange={(v) => update({ textPreviewMaxBytes: v * 1024 })}
+            max={TEXT_PREVIEW_MAX_BYTES / 1024}
+            onChange={(v) =>
+              update({
+                textPreviewMaxBytes: Math.min(v * 1024, TEXT_PREVIEW_MAX_BYTES),
+              })
+            }
           />
           <Row label={t("settings.fallbackTextEncoding")}>
             <Select

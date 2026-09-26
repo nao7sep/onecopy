@@ -8,6 +8,10 @@ use encoding_rs::Encoding;
 use serde::Serialize;
 
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024;
+/// The hard ceiling an unbounded `textPreviewMaxBytes` setting is clamped to
+/// (C-L2): without one, a large stored setting sends a whole file through
+/// blake3, decoding and IPC on every preview.
+pub const MAX_ALLOWED_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_FALLBACK_ENCODING: &str = "utf-8";
 
 const ENCODINGS: &[&str] = &[
@@ -92,8 +96,8 @@ pub fn preview_file(
     fallback: &str,
     requested: Option<&str>,
 ) -> Result<PreviewBody, String> {
-    let max_bytes = max_bytes.max(1);
-    let mut file = crate::file_identity::open_regular_nofollow(path)
+    let max_bytes = max_bytes.clamp(1, MAX_ALLOWED_BYTES);
+    let file = crate::file_identity::open_regular_nofollow(path)
         .map_err(|error| format!("could not open the indexed file: {error}"))?
         .0;
     let byte_size = file
@@ -108,9 +112,24 @@ pub fn preview_file(
             byte_size,
         });
     }
-    let mut bytes = Vec::with_capacity(byte_size as usize);
-    file.read_to_end(&mut bytes)
+    // The metadata check above is a race, not a bound: a file being written
+    // to (a log file kept open, for example) can grow between `metadata()`
+    // and this read. `take(max_bytes + 1)` caps the read itself so a growing
+    // file can never be decoded past the gate; the `+ 1` distinguishes an
+    // exact-fit file from one that has since outgrown the limit (C-L2).
+    let mut bytes = Vec::with_capacity(byte_size.min(max_bytes) as usize);
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("could not read the indexed file: {error}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Ok(PreviewBody::Attributes {
+            reason: format!("Text preview is limited to {max_bytes} bytes."),
+            reason_code: Some("preview-too-large"),
+            reason_bytes: Some(max_bytes),
+            byte_size: bytes.len() as u64,
+        });
+    }
+    let byte_size = bytes.len() as u64;
 
     let content_key = blake3::hash(&bytes).to_hex().to_string();
     let decoded = match requested {

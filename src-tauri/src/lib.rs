@@ -1081,7 +1081,7 @@ async fn text_preview(
                     .and_then(|value| value.get("textPreviewMaxBytes"))
                     .and_then(Value::as_u64)
                     .unwrap_or(text_preview::DEFAULT_MAX_BYTES)
-                    .max(1);
+                    .clamp(1, text_preview::MAX_ALLOWED_BYTES);
                 let fallback = config
                     .as_ref()
                     .and_then(|value| value.get("textFallbackEncoding"))

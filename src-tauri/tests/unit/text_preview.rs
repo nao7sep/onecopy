@@ -44,6 +44,33 @@ fn whole_file_cap_returns_attributes_without_reading_a_prefix() {
     ));
 }
 
+// (C-L2) The read itself is bounded, not just the pre-check: a boundary-fit
+// file still decodes, and an unclamped setting can no longer overflow the
+// `max_bytes + 1` read bound.
+#[test]
+fn a_file_exactly_at_the_gate_still_decodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("exact.txt");
+    std::fs::write(&path, b"hello").unwrap();
+    assert!(matches!(
+        preview_file(&path, 5, "utf-8", None).unwrap(),
+        PreviewBody::Text { byte_size: 5, .. }
+    ));
+}
+
+#[test]
+fn an_unbounded_setting_is_clamped_instead_of_overflowing_the_read_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("small.txt");
+    std::fs::write(&path, b"hello").unwrap();
+    // Without clamping to MAX_ALLOWED_BYTES first, `max_bytes + 1` on
+    // `u64::MAX` overflows (panics in debug) before the file is ever read.
+    assert!(matches!(
+        preview_file(&path, u64::MAX, "utf-8", None).unwrap(),
+        PreviewBody::Text { byte_size: 5, .. }
+    ));
+}
+
 #[test]
 fn every_presented_encoding_is_a_working_canonical_decoder() {
     for label in encodings() {
