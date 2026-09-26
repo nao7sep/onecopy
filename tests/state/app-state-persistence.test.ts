@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   flushStatePatchesForShutdown,
+  resetConfirmedStateForTests,
   retainStatePatch,
   resumeStatePatchesAfterFailedShutdown,
   useAppStore,
@@ -11,6 +12,7 @@ import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {
   vi.useFakeTimers();
+  resetConfirmedStateForTests();
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     patch_state: ({ patch }) => patch,
@@ -129,6 +131,34 @@ describe("app state persistence settlement", () => {
     await rejected;
 
     expect(useAppStore.getState().appData?.state).toEqual({ zoomLevel: 1.5 });
+  });
+
+  it("rolls two consecutive failed writes back to the last saved value, not an earlier failed attempt's optimistic value (D-S15)", async () => {
+    useAppStore.setState((current) => ({
+      appData: { ...current.appData!, state: { zoomLevel: 1 } },
+    }));
+    mockCommands({
+      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+    });
+
+    const first = useAppStore.getState().patchState(
+      { zoomLevel: 1.2 },
+      { immediate: true, reportFailure: false },
+    );
+    const firstRejected = expect(first).rejects.toBeInstanceOf(TypeError);
+    // A second move before the first write settles must not adopt the first
+    // attempt's unconfirmed 1.2 as its rollback baseline — disk still holds 1.
+    const second = useAppStore.getState().patchState(
+      { zoomLevel: 1.5 },
+      { immediate: true, reportFailure: false },
+    );
+    const secondRejected = expect(second).rejects.toBeInstanceOf(TypeError);
+
+    await vi.advanceTimersByTimeAsync(400);
+    await firstRejected;
+    await secondRejected;
+
+    expect(useAppStore.getState().appData?.state).toEqual({ zoomLevel: 1 });
   });
 
   it("leaves the core quiet when the caller reports the failure itself", async () => {

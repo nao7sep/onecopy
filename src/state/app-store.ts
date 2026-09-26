@@ -47,10 +47,24 @@ interface AppState {
 let pendingStatePatch: Record<string, unknown> | null = null;
 // A coalesced write reports through the core only when every caller in it
 // wants that; a caller with its own notice opts out so one failure is one
-// record. The snapshot is what the published state held before the patch, so a
-// rejected write can put the interface back to the truth on disk.
+// record.
 let pendingStateReportFailure = false;
-let pendingStateRollback: Record<string, unknown> | null = null;
+// The last value each key held once actually confirmed on disk (or first
+// observed, for a key no write has touched yet this session). A failed write
+// restores from here, not from whatever the interface optimistically shows —
+// which may already be a second, still-unconfirmed change. This map is never
+// cleared merely because a write attempt started; only a SUCCESSFUL write
+// advances a key's entry, so two failed writes in a row for the same key both
+// roll back to the same last-good value instead of the first failure's
+// now-stale optimistic snapshot (D-S15).
+const ABSENT = Symbol("state key had no confirmed value");
+let confirmedState: Record<string, unknown> = {};
+function noteUnconfirmed(patch: Record<string, unknown>, published: Record<string, unknown>): void {
+  for (const key of Object.keys(patch)) {
+    if (key in confirmedState) continue;
+    confirmedState[key] = key in published ? published[key] : ABSENT;
+  }
+}
 let stateFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingStateWaiters: Array<{
   resolve: () => void;
@@ -65,20 +79,23 @@ function flushPendingStatePatch(): Promise<void> {
   const toWrite = pendingStatePatch;
   const waiters = pendingStateWaiters;
   const reportFailure = pendingStateReportFailure;
-  const rollback = pendingStateRollback;
   pendingStatePatch = null;
   pendingStateWaiters = [];
   pendingStateReportFailure = false;
-  pendingStateRollback = null;
   stateFlushTimer = null;
   if (toWrite === null) return stateWriteTail;
 
   const write = stateWriteTail.then(() =>
     patchStateFile(toWrite, reportFailure).then(() => undefined),
   );
-  void write.catch(() => {
-    if (rollback !== null) revertPublishedState(rollback, toWrite);
-  });
+  void write.then(
+    () => {
+      // These keys are now confirmed on disk with these values — the baseline
+      // any later failure rolls back to.
+      confirmedState = { ...confirmedState, ...toWrite };
+    },
+    () => revertPublishedState(confirmedState, toWrite),
+  );
   stateWriteTail = write.catch(() => undefined);
   void write.then(
     () => {
@@ -104,8 +121,9 @@ function revertPublishedState(
     let changed = false;
     for (const [key, value] of Object.entries(attempted)) {
       if (current[key] !== value) continue;
-      if (key in previous) restored[key] = previous[key];
-      else delete restored[key];
+      const base = previous[key];
+      if (base === ABSENT) delete restored[key];
+      else restored[key] = base;
       changed = true;
     }
     return changed ? { appData: { ...s.appData, state: restored } } : s;
@@ -149,6 +167,13 @@ export function resumeStatePatchesAfterFailedShutdown(): void {
   stateShutdownStarted = false;
 }
 
+/** Test-only: forgets every key's confirmed-on-disk baseline, so a fixture
+ * that seeds `appData.state` directly (bypassing patchState) starts from a
+ * clean slate instead of an earlier test's baseline. */
+export function resetConfirmedStateForTests(): void {
+  confirmedState = {};
+}
+
 // Main bootstrap is single-flight because load_app_data carries one-shot
 // quarantine records. Auxiliary appearance reads never use this channel.
 let initialization: Promise<LoadedAppData | null> | null = null;
@@ -174,11 +199,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   patchState: async (patch, options) => {
     const published = get().appData?.state ?? {};
-    const snapshot = pendingStateRollback ?? {};
-    for (const key of Object.keys(patch)) {
-      if (!(key in snapshot) && key in published) snapshot[key] = published[key];
-    }
-    pendingStateRollback = snapshot;
+    noteUnconfirmed(patch, published);
     pendingStateReportFailure =
       pendingStateReportFailure || (options?.reportFailure ?? true);
     // Publish optimistically so readers see the new state immediately; the
