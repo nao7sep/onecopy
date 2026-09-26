@@ -116,6 +116,27 @@ describe("Settings categories", () => {
     expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("");
   });
 
+  // R5.5 C1: the language picker lists System plus exactly the ten supported
+  // languages, each named in its own words rather than a fixed English list.
+  it("lists System plus the ten languages, each named in its own words", async () => {
+    const { CATALOGUES } = await import("../../src/i18n/catalogues");
+    const { LANGUAGES } = await import("../../src/i18n/languages");
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+
+    const select = screen.getByLabelText("Language") as HTMLSelectElement;
+    const options = [...select.options];
+    expect(options).toHaveLength(LANGUAGES.length + 1);
+    expect(options[0].value).toBe("system");
+    expect(options[0].textContent).toBe("System");
+    for (const language of LANGUAGES) {
+      const option = options.find((candidate) => candidate.value === language)!;
+      expect(option).toBeTruthy();
+      expect(option.textContent).toBe(CATALOGUES[language]["language.name"]);
+      expect(option.getAttribute("lang")).toBe(language);
+    }
+  });
+
   // The ends of the list are the whole point: a screen already first cannot
   // move up and one already last cannot move down, and those two controls are
   // the ones a user is most likely to reach for first.
