@@ -1485,6 +1485,9 @@ fn transcribe_dispatched(app: AppHandle, hash: String, replace: Option<bool>) ->
                     },
                     |exact_hash| {
                         if exact_hash != hash {
+                            // A file operation on the promoted item must still
+                            // find and stop this job.
+                            derived_runtime::active_item(&handle, class, exact_hash);
                             derived_work::notify_item_update(
                                 &handle,
                                 &conn,

@@ -359,3 +359,26 @@ fn a_second_request_for_an_item_waits_for_the_first() {
     drop(first);
     second.join().unwrap().unwrap();
 }
+
+#[test]
+fn a_file_operation_stops_requested_work_whose_identity_was_promoted() {
+    let _serial = crate::scan_runtime::serial_test();
+    let (running_tx, running_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        // Main asked with the provisional key; identifying the file promotes it.
+        let _job = requested_heavy(None, WorkClass::VideoTranscripts, "p7").unwrap();
+        assert!(set_active_item(WorkClass::VideoTranscripts, "c0ffee07"));
+        running_tx.send(()).unwrap();
+        let started = Instant::now();
+        while !cancelled() {
+            assert!(started.elapsed() < Duration::from_secs(20), "the job was never stopped");
+            thread::sleep(Duration::from_millis(5));
+        }
+    });
+    running_rx.recv().unwrap();
+    // Main now knows the item by its exact identity.
+    let claimed = exclusive_claim(None, &["c0ffee07".to_string()], ClaimPolicy::Mutation, &|| false);
+    assert!(claimed.is_ok());
+    drop(claimed);
+    worker.join().unwrap();
+}

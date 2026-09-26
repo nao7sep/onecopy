@@ -2076,6 +2076,9 @@ fn transcribe_next(
             ..TranscriptStep::default()
         });
     };
+    // Named before identifying the file reads it, so a file operation on it
+    // stops this job from the start.
+    crate::derived_runtime::active_item(context.app, class, &candidate_hash);
 
     let result = complete_transcription_attempt(
         TranscriptionAttempt {
@@ -2093,6 +2096,7 @@ fn transcribe_next(
         },
         |hash| {
             if candidate_hash != hash {
+                crate::derived_runtime::active_item(context.app, class, hash);
                 notify_item_update(
                     context.app,
                     context.conn,

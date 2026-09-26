@@ -775,15 +775,24 @@ pub(crate) fn progress(app: &AppHandle, class: WorkClass, counts: Option<(u64, u
     emit_state_changed(app);
 }
 
+/// Names the item the calling thread's job is working on, which is what a
+/// file operation's claim matches: call it before the job opens the file,
+/// and again when the item's identity is promoted.
 pub(crate) fn active_item(app: &AppHandle, class: WorkClass, hash: &str) {
-    if let Ok(mut runtime) = RUNTIME.0.lock() {
-        if let Some(job) = runtime.current_job_mut(class) {
-            job.hash = Some(hash.to_string());
-        }
-    } else {
+    if !set_active_item(class, hash) {
         report_poison_once(Some(app));
     }
     emit_state_changed(app);
+}
+
+fn set_active_item(class: WorkClass, hash: &str) -> bool {
+    let Ok(mut runtime) = RUNTIME.0.lock() else {
+        return false;
+    };
+    if let Some(job) = runtime.current_job_mut(class) {
+        job.hash = Some(hash.to_string());
+    }
+    true
 }
 
 pub fn report_manual_progress(app: &AppHandle, class: &str, done: u64, total: u64) {
