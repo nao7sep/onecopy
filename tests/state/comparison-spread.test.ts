@@ -320,6 +320,31 @@ describe("opening Comparison across displays", () => {
     ).toEqual([true, false, true]);
   });
 
+  // R5.5 C8: Comparison orders its OTHER displays by the configured
+  // screenPriority (not system order) and always excludes Main's own
+  // display, however that priority ranks it (D-S11: an unranked display
+  // still is Main's, and still gets excluded).
+  it("orders its other displays by screenPriority and excludes Main's own display", async () => {
+    setMonitors(THREE_SCREENS);
+    setCurrentMonitor(THREE_SCREENS[0]); // host = "one@0,0"
+    mockCommands({ get_similar_group: () => members(10) });
+
+    // Reversed from system order, and omits the host entirely -- an absent
+    // entry (the host) must still just be excluded, never crash the sort.
+    await useComparisonStore.getState().openGroup("m0", "m0", 16, {
+      screenPriority: ["three@5120,0", "two@2560,0"],
+    });
+
+    const spreadWindows = createdWindows
+      .filter((window) => window.label.startsWith("comparison-"))
+      .map((window) => window.options.x);
+    expect(spreadWindows).toHaveLength(2);
+    // "three" (x=5120) must lead, "two" (x=2560) follows, "one" (the host,
+    // x=0) never appears among the spread windows at all.
+    expect(spreadWindows[0]).toBeGreaterThan(spreadWindows[1] as number);
+    expect(spreadWindows).not.toContain(0);
+  });
+
   it("repaginates on the other surviving displays after one fails", async () => {
     setMonitors(THREE_SCREENS);
     setCurrentMonitor(THREE_SCREENS[0]);
