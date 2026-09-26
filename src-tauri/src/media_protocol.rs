@@ -14,6 +14,17 @@ fn not_found() -> tauri::http::Response<Vec<u8>> {
     response
 }
 
+/// Both media protocols key their resource off a request path segment that
+/// gets built directly into a filesystem path (an indexed-file id for
+/// `mediafile`, a shard-and-hash pair for `mediacache`). Neither ever
+/// contains `.` or `/` in a well-formed request, so rejecting anything but
+/// ASCII letters, digits and `-` here — before either handler builds a path
+/// from it — is what keeps a crafted key like `thumb-../x` from climbing out
+/// of its shard directory (R6-08). One boundary, checked first, for both.
+fn valid_key(key: &str) -> bool {
+    !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
 /// Runs one protocol handler off the main thread and always answers. The
 /// responder of an asynchronous protocol is dropped unanswered when its
 /// handler panics, which leaves the webview's request pending forever; a
@@ -48,7 +59,7 @@ pub(crate) fn serve_original(
         Err(error) => return warn_404(&error, String::new()),
     };
     let key = request.uri().path().trim_start_matches('/');
-    if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+    if !valid_key(key) {
         return not_found();
     }
 
@@ -148,6 +159,9 @@ pub(crate) fn serve_cache(
     };
     let cache = crate::preview::CachePaths::new(root);
     let path = request.uri().path().trim_start_matches('/');
+    if !valid_key(path) {
+        return not_found();
+    }
     let key = path.split_once('-').map_or("", |(_, key)| key);
     let file = if let Some(hash) = path.strip_prefix("thumb-") {
         cache.thumb(hash)
