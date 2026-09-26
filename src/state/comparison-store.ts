@@ -719,7 +719,10 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     const visible = visibleMembers(state);
     const selected = new Set(state.selected);
     for (const member of visible) selected.add(member.hash);
-    const anchor = state.anchor ?? visible[0]?.hash ?? null;
+    // Cmd/Ctrl+A marks the page only; the spec never has it invent an
+    // active card the way Arrow navigation does, so a page with no active
+    // card stays without one.
+    const anchor = state.anchor;
     const anchors = new Set(state.anchors);
     for (const member of visible) anchors.delete(member.hash);
     if (anchor !== null) anchors.add(anchor);
@@ -747,10 +750,11 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     const selected = trashAll
       ? new Set<string>()
       : visibleKeepMarks(state.selected, visible);
-    if (!trashAll && selected.size === 0) {
-      set({ message: message("comparison.selectKeeperFirst") });
-      return null;
-    }
+    // decideComparisonPage in workflows/comparison.ts is this method's only
+    // caller and always closes Comparison itself (an orchestration effect
+    // this store does not own) before reaching here when there are no
+    // marks and trashAll is false, so that combination is unreachable and
+    // is not re-guarded here.
     const action: ComparisonAction = {
       kind: "page",
       permanent,

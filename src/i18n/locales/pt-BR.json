@@ -832,7 +832,6 @@
   "comparison.openFailedSeeIssues": "Não foi possível abrir a Comparação. Veja os detalhes em Problemas.",
   "comparison.prepareFailed": "Não foi possível preparar a Comparação.",
   "comparison.retryRemainingNotice": "{detail} A nova tentativa vale somente para as imagens restantes.",
-  "comparison.selectKeeperFirst": "Selecione pelo menos uma imagem para manter.",
   "comparison.spreadHint": "0–9, A–Z ou Manter alternam a marca · Space abre a imagem escolhida · Arrows examinam · Enter revisa as marcadas para manter e o conjunto visível a apagar · Escape fecha",
   "comparisonImage.toggleFailed": "Não foi possível abrir ou fechar a imagem maior. Suas decisões da comparação não foram alteradas.",
   "crash.windowNotConnected": "Esta janela não conseguiu se conectar ao OneCopy. Feche-a e tente abri-la de novo.",

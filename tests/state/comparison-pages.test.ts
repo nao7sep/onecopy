@@ -5,7 +5,6 @@ import {
 } from "../../src/state/comparison-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { message } from "../../src/i18n/translate";
-import { inEnglish } from "../helpers/i18n";
 
 function member(index: number): GroupMember {
   return {
@@ -143,23 +142,6 @@ describe("page-local decisions", () => {
     expect(
       useComparisonStore.getState().members.map((item) => item.hash),
     ).toEqual(["h4", "h5", "h6", "h7"]);
-  });
-
-  it("does nothing with no selection and explains why", async () => {
-    useComparisonStore.setState({
-      selected: new Set(),
-      anchor: null,
-      anchors: new Set(),
-    });
-    expect(
-      await useComparisonStore.getState().requestPageDecision(false),
-    ).toBeNull();
-    expect(inEnglish(useComparisonStore.getState().message)).toBe(
-      "Select at least one image to keep.",
-    );
-    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
-      false,
-    );
   });
 
   it("offers a separate explicit Trash-all action", async () => {

@@ -832,7 +832,6 @@
   "comparison.openFailedSeeIssues": "Couldn’t open Comparison. See Issues for details.",
   "comparison.prepareFailed": "Couldn’t prepare Comparison.",
   "comparison.retryRemainingNotice": "{detail} Retry targets only the remaining images.",
-  "comparison.selectKeeperFirst": "Select at least one image to keep.",
   "comparison.spreadHint": "0–9, A–Z, or Keep toggle marks · Space opens the picked image · Arrows inspect · Enter reviews marked keepers and the visible Trash set · Escape closes",
   "comparisonImage.toggleFailed": "Couldn’t open or close the larger image. Your comparison decisions are unchanged.",
   "crash.windowNotConnected": "This window could not connect to OneCopy. Close it and try opening it again.",

@@ -832,7 +832,6 @@
   "comparison.openFailedSeeIssues": "Impossibile aprire il Confronto. Vedi Problemi per i dettagli.",
   "comparison.prepareFailed": "Impossibile preparare il Confronto.",
   "comparison.retryRemainingNotice": "{detail} Il nuovo tentativo riguarda solo le immagini rimanenti.",
-  "comparison.selectKeeperFirst": "Seleziona almeno un’immagine da conservare.",
   "comparison.spreadHint": "0–9, A–Z o Conserva attivano e disattivano i contrassegni · Space apre l’immagine scelta · Arrows esaminano · Enter rivede le immagini contrassegnate da conservare e l’insieme visibile da eliminare · Escape chiude",
   "comparisonImage.toggleFailed": "Impossibile aprire o chiudere l’immagine più grande. Le tue decisioni sul confronto non sono cambiate.",
   "crash.windowNotConnected": "Questa finestra non è riuscita a collegarsi a OneCopy. Chiudila e prova ad aprirla di nuovo.",

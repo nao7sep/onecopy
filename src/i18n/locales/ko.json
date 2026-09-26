@@ -832,7 +832,6 @@
   "comparison.openFailedSeeIssues": "비교를 열 수 없습니다. 자세한 내용은 ‘문제’를 확인하십시오.",
   "comparison.prepareFailed": "비교를 준비할 수 없습니다.",
   "comparison.retryRemainingNotice": "{detail} 다시 시도하면 남은 이미지만 대상이 됩니다.",
-  "comparison.selectKeeperFirst": "남길 이미지를 하나 이상 선택하십시오.",
   "comparison.spreadHint": "0–9, A–Z 또는 남기기로 표시 전환 · Space: 선택한 이미지 열기 · Arrows: 이미지 살펴보기 · Enter: 남길 이미지와 화면에 보이는 삭제 대상 검토 · Escape: 닫기",
   "comparisonImage.toggleFailed": "큰 이미지를 열거나 닫을 수 없습니다. 비교에서 결정한 내용은 그대로 유지됩니다.",
   "crash.windowNotConnected": "이 창을 OneCopy에 연결할 수 없습니다. 창을 닫고 다시 열어 보십시오.",

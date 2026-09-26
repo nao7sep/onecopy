@@ -10,6 +10,7 @@ import {
   type GroupMember,
 } from "../../src/state/comparison-store";
 import { openComparisonImage } from "../../src/workflows/comparison-image";
+import { invokeCalls } from "../mocks/tauri";
 
 vi.mock("../../src/workflows/comparison-image", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../src/workflows/comparison-image")>(),
@@ -98,6 +99,15 @@ describe("comparison keyboard selection", () => {
     );
   });
 
+  it("does not invent an active card when Cmd/Ctrl+A marks a page with none active", () => {
+    useComparisonStore.setState({ anchor: null, anchors: new Set(), rangeOrigin: null });
+    expect(handleComparisonKey({ key: "a", metaKey: true })).toBe(true);
+    expect(useComparisonStore.getState().selected).toEqual(
+      new Set(["h0", "h1", "h2", "h3"]),
+    );
+    expect(useComparisonStore.getState().anchor).toBeNull();
+  });
+
   it("uses Space for the image window without toggling a keep mark", () => {
     expect(handleComparisonKey({ key: " " })).toBe(true);
     expect(openComparisonImage).toHaveBeenCalled();
@@ -141,6 +151,16 @@ describe("comparison page keys", () => {
     const close = vi.spyOn(useComparisonStore.getState(), "close");
     expect(handleComparisonKey({ key: "Enter" })).toBe(true);
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    close.mockRestore();
+  });
+
+  it("also uses Shift+Enter with no keep marks to close, not a permanent decision", async () => {
+    const close = vi.spyOn(useComparisonStore.getState(), "close");
+    expect(handleComparisonKey({ key: "Enter", shiftKey: true })).toBe(true);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
     close.mockRestore();
   });
 

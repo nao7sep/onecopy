@@ -832,7 +832,6 @@
   "comparison.openFailedSeeIssues": "无法打开“对比”。详情请查看“问题”。",
   "comparison.prepareFailed": "无法准备“对比”。",
   "comparison.retryRemainingNotice": "{detail} 重试只会针对剩余的图像。",
-  "comparison.selectKeeperFirst": "请至少选择一张要保留的图像。",
   "comparison.spreadHint": "0–9、A–Z 或“保留”可切换标记 · Space 打开选定的图像 · Arrows 查看 · Enter 确认已标记的保留项和可见的删除集合 · Escape 关闭",
   "comparisonImage.toggleFailed": "无法打开或关闭放大的图像。你在对比中的决定没有变化。",
   "crash.windowNotConnected": "此窗口无法连接到 OneCopy。请关闭它，然后重新打开。",

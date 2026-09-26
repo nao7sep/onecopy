@@ -832,7 +832,6 @@
   "comparison.openFailedSeeIssues": "比較を開けませんでした。詳細は「問題」を確認してください。",
   "comparison.prepareFailed": "比較を準備できませんでした。",
   "comparison.retryRemainingNotice": "{detail} 再試行の対象は、残っている画像だけです。",
-  "comparison.selectKeeperFirst": "キープする画像を 1 枚以上選んでください。",
   "comparison.spreadHint": "0–9、A–Z、または「キープ」でマーク · Space: 選んだ画像を開く · Arrows: 詳しく見る · Enter: キープした画像と、表示中の削除対象を確認 · Escape: 閉じる",
   "comparisonImage.toggleFailed": "大きい画像を開いたり閉じたりできませんでした。比較での判断は変わっていません。",
   "crash.windowNotConnected": "このウインドウは OneCopy に接続できませんでした。いったん閉じて、もう一度開いてみてください。",
