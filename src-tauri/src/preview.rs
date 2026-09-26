@@ -144,7 +144,9 @@ fn decode_via_ffmpeg_bounded(
         serde_json::json!({ "op": "decode-still", "src": src.to_string_lossy() }),
     );
     let mut cmd = std::process::Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "error", "-i"])
+    cmd.args(["-hide_banner", "-loglevel", "error", "-threads"])
+        .arg(crate::resource_limits::cpu_thread_budget().to_string())
+        .arg("-i")
         .arg(src)
         .args(["-frames:v", "1"]);
     if let Some(edge) = max_edge {

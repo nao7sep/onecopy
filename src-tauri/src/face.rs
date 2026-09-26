@@ -167,7 +167,12 @@ impl FaceScorer {
         load_managed_runtime(runtime)?;
         #[cfg(not(windows))]
         let _ = runtime;
+        // Same interactive-headroom budget as ffmpeg and Whisper: the default
+        // intra-op thread count is every physical core (W-L2).
+        let threads = crate::resource_limits::cpu_thread_budget().max(1) as usize;
         let detector = ort::session::Session::builder()
+            .map_err(|e| e.to_string())?
+            .with_intra_threads(threads)
             .map_err(|e| e.to_string())?
             .commit_from_file(detector_model)
             .map_err(|e| format!("face detector load failed: {e}"))?;
@@ -192,6 +197,8 @@ impl FaceScorer {
             .ok_or_else(|| format!("no box output among {det_names:?}"))?;
 
         let emotion = ort::session::Session::builder()
+            .map_err(|e| e.to_string())?
+            .with_intra_threads(threads)
             .map_err(|e| e.to_string())?
             .commit_from_file(emotion_model)
             .map_err(|e| format!("expression model load failed: {e}"))?;

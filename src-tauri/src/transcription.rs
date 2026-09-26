@@ -124,8 +124,10 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         "30",
         "-progress",
         "pipe:1",
-        "-i",
+        "-threads",
     ]);
+    command.arg(crate::resource_limits::cpu_thread_budget().to_string());
+    command.arg("-i");
     command.arg(media);
     command.args([
         "-map",

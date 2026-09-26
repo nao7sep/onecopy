@@ -78,7 +78,10 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<u64, String> {
     // `ffmpeg -i` with no output exits non-zero by design; stderr still
     // carries the stream banner we parse.
     let mut cmd = std::process::Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-i"]).arg(src);
+    cmd.args(["-hide_banner", "-threads"])
+        .arg(crate::resource_limits::cpu_thread_budget().to_string())
+        .arg("-i")
+        .arg(src);
     let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
     parse_duration_ms(&run.stderr)
         .ok_or_else(|| format!("no Duration in ffmpeg output for {}", src.display()))
@@ -98,7 +101,8 @@ fn extract_frame(ffmpeg: &Path, src: &Path, at_ms: u64, staged_jpg: &Path) -> Re
     let coarse_seconds = format!("{}.{:03}", coarse_ms / 1000, coarse_ms % 1000);
     let precise_seconds = format!("{}.{:03}", precise_ms / 1000, precise_ms % 1000);
     let mut cmd = std::process::Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "error"]);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-threads"])
+        .arg(crate::resource_limits::cpu_thread_budget().to_string());
     if coarse_ms > 0 {
         cmd.args(["-ss", &coarse_seconds]);
     }

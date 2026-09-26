@@ -1,5 +1,6 @@
 use super::{
-    image_worker_capacity_for, IMAGE_CONCURRENCY_HEADROOM, IMAGE_JOB_RESERVATION,
+    cpu_thread_budget, image_worker_capacity_for, transcription_threads,
+    IMAGE_CONCURRENCY_HEADROOM, IMAGE_JOB_RESERVATION,
 };
 
 #[test]
@@ -22,4 +23,20 @@ fn image_concurrency_obeys_the_aggregate_memory_budget() {
         image_worker_capacity_for(32, Some(for_three_workers), true),
         3
     );
+}
+
+// (W-L2) ffmpeg and ONNX must never default to every physical core: they
+// share the same interactive-headroom budget Whisper already respects.
+#[test]
+fn cpu_thread_budget_never_claims_every_core() {
+    assert_eq!(transcription_threads(1), 1);
+    assert_eq!(transcription_threads(2), 1);
+    assert_eq!(transcription_threads(8), 4, "half the cores, not all eight");
+    assert_eq!(transcription_threads(64), 4, "clamped, not unbounded");
+
+    // The real machine's budget is the same formula, never zero and never
+    // more than the clamp — asserted structurally since the actual core
+    // count is environment-dependent.
+    let budget = cpu_thread_budget();
+    assert!((1..=4).contains(&budget));
 }

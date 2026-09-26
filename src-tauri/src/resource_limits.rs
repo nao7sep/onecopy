@@ -125,6 +125,15 @@ pub(crate) fn available_transcription_threads() -> i32 {
     )
 }
 
+/// The CPU budget every bounded ffmpeg invocation and the ONNX face session
+/// pass as their own thread count, so decode/encode work leaves the same
+/// interactive headroom Whisper already respects instead of defaulting to
+/// every physical core (W-L2). Reuses `transcription_threads`'s formula
+/// (half the logical CPUs, clamped to 1..=4) rather than a second budget.
+pub fn cpu_thread_budget() -> i32 {
+    available_transcription_threads()
+}
+
 fn image_worker_capacity_for(
     logical_cpus: usize,
     available_memory: Option<u64>,
