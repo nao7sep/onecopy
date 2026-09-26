@@ -29,6 +29,10 @@ function appWindowState(): Record<string, unknown> {
   return useAppStore.getState().appData?.state ?? {};
 }
 
+function selectedCount(state: ReturnType<typeof useItemsStore.getState>): number {
+  return state.selectedKeys.size > 0 ? state.selectedKeys.size : state.selectedItem !== null ? 1 : 0;
+}
+
 function projectAnchor(): void {
   const state = useItemsStore.getState();
   const { selectedItem, items, detail } = state;
@@ -41,9 +45,13 @@ function projectAnchor(): void {
   const payload = {
     hash: item.hash,
     pathId: item.hash === null ? item.pathId : null,
+    selectedCount: selectedCount(state),
   };
   const preview = usePreviewStore.getState();
-  if (preview.follow && preview.placement === null) {
+  // A failed open stays failed until the user acts on the offered recovery
+  // (see `openFailed` on the preview store); otherwise every subsequent
+  // anchor change would retry — and re-fail — the same broken open.
+  if (preview.follow && preview.placement === null && !preview.openFailed) {
     void preview.open(payload, detail, appWindowState());
   } else {
     preview.anchorChanged(payload, detail);
@@ -83,7 +91,11 @@ export function installItemWorkflow(): void {
           : state.items.find((candidate) => itemKey(candidate) === state.selectedItem);
       if (item) {
         usePreviewStore.getState().detailLoaded(
-          { hash: item.hash, pathId: item.hash === null ? item.pathId : null },
+          {
+            hash: item.hash,
+            pathId: item.hash === null ? item.pathId : null,
+            selectedCount: selectedCount(state),
+          },
           state.detail,
         );
       }

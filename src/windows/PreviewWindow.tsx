@@ -6,7 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isComposingEvent } from "../hooks/useComposing";
 import { isEditableTarget } from "../utils/shortcuts";
 import { hasOpenModal } from "../utils/modalStack";
-import { transcriptOwnsScrollKey } from "../utils/viewerKeys";
+import { controlOwnsForwardableKey } from "../utils/viewerKeys";
 import PreviewSurface from "../components/PreviewSurface";
 import type { PreviewPresentation, PreviewShowMessage } from "../state/preview-store";
 import { message, type Message } from "../i18n/translate";
@@ -127,11 +127,13 @@ export default function PreviewWindow() {
           "Backspace",
         ].includes(event.key)
       ) {
-        if (transcriptOwnsScrollKey(event)) return;
-        if (
-          event.target instanceof Element &&
-          event.target.closest("button, input, select, textarea, [contenteditable='true']") !== null
-        ) {
+        // Only a genuinely editable control consumes deletion keys; every
+        // other forwarded key (arrows, paging, Enter) also stands down for a
+        // native control that already owns it — a focused <audio controls>
+        // or the transcript's own scroll region, exactly as the transient
+        // viewer already decides through the shared predicate.
+        const isDeletion = event.key === "Delete" || event.key === "Backspace";
+        if (isDeletion ? isEditableTarget(event.target) : controlOwnsForwardableKey(event)) {
           return;
         }
         event.preventDefault();
@@ -205,8 +207,15 @@ export default function PreviewWindow() {
         </OperationResult>
       ) : null}
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        <span className="truncate" title={shown.detail?.fileName ?? ""}>
-          {shown.detail?.fileName ?? "…"}
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate" title={shown.detail?.fileName ?? ""}>
+            {shown.detail?.fileName ?? "…"}
+          </span>
+          {(shown.selectedCount ?? 0) > 1 ? (
+            <span className="shrink-0">
+              {t("preview.selectedCount", { count: shown.selectedCount ?? 0 })}
+            </span>
+          ) : null}
         </span>
         <div className="flex items-center gap-3">
           <span>

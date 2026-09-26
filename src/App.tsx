@@ -444,6 +444,13 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 the preview with a selection shows that image at once. */}
             <div
               style={{ width: paneWidths.preview }}
+              // Not a second item-navigation context (viewing-sessions.md),
+              // but Delete/Backspace still reach Main's complete-selection
+              // Trash from here — "persistent Preview" is pane-or-window, and
+              // the spec's deletion-scope line does not single out the
+              // separate window (D10). Only this one command reads the
+              // marker; see useGlobalCommands.
+              data-preview-pane
               className="relative shrink-0 overflow-hidden bg-surface"
             >
               <PreviewSurface
@@ -452,6 +459,11 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 detail={previewCurrent?.detail ?? null}
                 pathId={previewCurrent?.pathId ?? null}
               />
+              {(previewCurrent?.selectedCount ?? 0) > 1 ? (
+                <span className="absolute left-2 top-2 rounded-md bg-surface/80 px-2 py-0.5 text-xs text-ink-muted">
+                  {t("preview.selectedCount", { count: previewCurrent?.selectedCount ?? 0 })}
+                </span>
+              ) : null}
               <button
                 aria-label={t("app.closePreview")}
                 title={t("app.closePreview")}

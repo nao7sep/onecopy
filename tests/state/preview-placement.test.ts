@@ -117,11 +117,15 @@ describe("activating the preview", () => {
     expect(current?.hash).toBe("h1");
   });
 
-  it("arms follow and stays empty when nothing is selected", async () => {
+  it("opens immediately with a truthful no-selection state when nothing is selected", async () => {
+    // viewing-sessions.md D2: opening Preview without an anchor still opens
+    // it, showing its own "select an item" state at once instead of merely
+    // arming follow until the next selection.
     await togglePreview();
-    const { follow, current } = usePreviewStore.getState();
+    const { follow, placement, current } = usePreviewStore.getState();
     expect(follow).toBe(true);
-    expect(current).toBeNull();
+    expect(placement).toBe("split");
+    expect(current?.hash).toBeNull();
   });
 
   it("a cleared selection blanks the surface instead of holding the last photo", async () => {

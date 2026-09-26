@@ -10,6 +10,21 @@ export function transcriptOwnsScrollKey(event: KeyboardEvent): boolean {
     event.target instanceof Element && event.target.closest("[data-transcript-scroll]") !== null;
 }
 
+/** Does a focused native or body-specific control already own this key?
+ * Shared by the transient viewer and the separate Preview window, which both
+ * forward navigation/activation keys to their command owner unless a real
+ * control (a button, a native `<audio controls>`/`<video controls>` player, a
+ * slider, a menu, or the transcript's own scroll region) already consumes
+ * them. Delete/Backspace are NOT included here: the spec has only a genuinely
+ * editable control consume deletion keys, which `isEditableTarget` already
+ * decides on its own. */
+export function controlOwnsForwardableKey(event: KeyboardEvent): boolean {
+  if (transcriptOwnsScrollKey(event)) return true;
+  return event.target instanceof Element && event.target.closest(
+    "button, a[href], input, select, textarea, audio[controls], video[controls], [role='menu'], [role='slider']",
+  ) !== null;
+}
+
 /** Shared transient-viewer dispatch policy. Native controls keep their
  * ordinary activation/navigation; viewing transitions remain viewer-owned. */
 export function viewerOwnsKey(event: KeyboardEvent, kind: string | null, fileName: string): boolean {
@@ -17,10 +32,7 @@ export function viewerOwnsKey(event: KeyboardEvent, kind: string | null, fileNam
     || event.metaKey || event.ctrlKey || event.altKey) return false;
   if ([" ", "f", "F", "Escape"].includes(event.key)) return !event.shiftKey;
   if (event.key === "Delete" || event.key === "Backspace") return true;
-  if (transcriptOwnsScrollKey(event)) return false;
-  if (event.target instanceof Element && event.target.closest(
-    "button, a[href], input, select, textarea, audio[controls], video[controls], [role='menu'], [role='slider']",
-  ) !== null) return false;
+  if (controlOwnsForwardableKey(event)) return false;
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") return true;
   const media = kind === "video" || isAudioFile(fileName);
   if (event.key === "Enter") return media;

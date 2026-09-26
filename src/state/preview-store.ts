@@ -31,6 +31,10 @@ import { waitForWindowCreated } from "../utils/windowCreation";
 export interface PreviewPayload {
   hash: string | null;
   pathId: number | null;
+  /** Main's current selection size, so a multi-selection anchor can show
+   * `N selected` beside it. Absent when the caller does not project Main's
+   * live selection (for example the scene-strip's same-item reopen). */
+  selectedCount?: number;
 }
 
 export interface PreviewShowMessage extends PreviewPayload {
@@ -63,6 +67,11 @@ interface PreviewState {
   /** Requested presentation of the same live separate-window follower. */
   fullscreen: boolean;
   setFullscreen: (enabled: boolean) => Promise<void>;
+  /** True once an `open` attempt has failed and stays failed until the user
+   * acts (placement change, close, or a fresh restore). While true, the
+   * anchor-driven auto-reopen in the item workflow stands down instead of
+   * retrying — and failing — on every subsequent anchor change. */
+  openFailed: boolean;
   /** Result owned by the Preview command surface, never the global host. */
   error: Message | null;
   clearError: () => void;
@@ -312,6 +321,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   placementPreference: null,
   current: null,
   fullscreen: false,
+  openFailed: false,
   error: null,
   clearError: () => set({ error: null }),
 
@@ -348,7 +358,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // State FIRST: the side pane renders `current` the moment this lands,
       // which is what makes the image appear immediately on activation.
       const message = { ...payload, detail };
-      set({ follow: true, placement, current: message, error: null });
+      set({ follow: true, placement, current: message, error: null, openFailed: false });
       if (placement === "window") {
         await enqueueSurface(async () => {
           if (request !== surfaceRequest) {
@@ -377,7 +387,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         recordStaleSurface(request);
         return;
       }
-      set({ placement: null });
+      // Stay armed but stop auto-retrying: the item workflow's anchor-driven
+      // reopen only fires while `placement` is null AND `openFailed` is
+      // false, so a real failure no longer reopens (and re-fails) on every
+      // subsequent arrow key. The user's own placement choice (the "show in
+      // this window" offer) clears this flag and tries again explicitly.
+      set({ placement: null, openFailed: true });
       publishPreviewFailure(
         "preview-open-failed",
         message("preview.openFailed"),
@@ -390,7 +405,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     surfaceRequest += 1;
     cancelPublication();
     const { placement } = get();
-    set({ follow: false, placement: null, current: null, fullscreen: false });
+    set({ follow: false, placement: null, current: null, fullscreen: false, openFailed: false });
     if (placement === "window") {
       void enqueueSurface(async () => {
         await closePreviewWindow();
@@ -416,7 +431,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // The order is load-bearing: the preview window's destroyed handler
       // treats destruction while placement is still `window` as a manual
       // close and turns follow off.
-      set({ placement: next, fullscreen: false, error: null });
+      set({ placement: next, fullscreen: false, error: null, openFailed: false });
       try {
         if (placement === "window") {
           await closePreviewWindow();
@@ -455,7 +470,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   },
 
   restoreFollow: (on, preference) => {
-    set({ follow: on, placementPreference: preference });
+    set({ follow: on, placementPreference: preference, openFailed: false });
   },
 
   // The selection emptied — deselected to nothing, or its last item trashed.

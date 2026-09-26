@@ -113,20 +113,21 @@ export async function togglePreview(): Promise<void> {
     return;
   }
   const state = useItemsStore.getState();
-  const { items, selectedItem, detail } = state;
+  const { items, selectedItem, selectedKeys, detail } = state;
   const item =
     selectedItem === null
       ? undefined
       : items.find((item) => itemKey(item) === selectedItem);
-  if (!item) {
-    // Arm follow without opening an empty surface. The first real anchor is
-    // projected by the installed item workflow.
-    usePreviewStore.setState({ follow: true });
-    return;
-  }
+  const count = selectedKeys.size > 0 ? selectedKeys.size : selectedItem !== null ? 1 : 0;
+  // Opening with no anchor still opens the surface: both the pane and the
+  // separate window already render a truthful "select an item" state for a
+  // null hash, so Preview appears at once instead of only flipping its
+  // toggle button until the next selection arrives.
   await openPreview(
-    { hash: item.hash, pathId: item.hash === null ? item.pathId : null },
-    detail,
+    item
+      ? { hash: item.hash, pathId: item.hash === null ? item.pathId : null, selectedCount: count }
+      : { hash: null, pathId: null, selectedCount: count },
+    item ? detail : null,
   );
 }
 

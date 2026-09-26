@@ -75,9 +75,16 @@ export function useGlobalCommands() {
           void rescanCurrentSection();
         }
       } else if (event.key === "Delete" || event.key === "Backspace") {
+        // The pane placement of persistent Preview is not a navigation
+        // context, but it IS still "persistent Preview" for deletion scope
+        // (viewing-sessions.md: pane and separate window are one follower
+        // with two placements) — its read-only bodies forward Delete to
+        // Main's complete-selection Trash exactly as the separate window's
+        // own key forwarding does (D10).
         if (
           !(event.target instanceof Element) ||
-          event.target.closest("#main-item-area") === null
+          (event.target.closest("#main-item-area") === null &&
+            event.target.closest("[data-preview-pane]") === null)
         ) {
           return;
         }

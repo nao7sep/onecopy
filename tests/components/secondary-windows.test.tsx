@@ -185,6 +185,63 @@ describe("the preview window", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("leaves a focused native audio control's own keys alone, but still forwards Delete from a focused button", async () => {
+    // viewing-sessions.md D4/D5: only a genuinely editable control consumes
+    // Delete/Backspace, while every other forwarded key (arrows, paging,
+    // Enter) also stands down for a focused native control such as
+    // <audio controls> — the same predicate the transient viewer already
+    // uses, reused here instead of a second, incomplete exclusion list.
+    render(<PreviewWindow />);
+    await act(async () => {});
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    document.body.appendChild(audio);
+    audio.focus();
+    const arrowEvent = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+    audio.dispatchEvent(arrowEvent);
+    expect(arrowEvent.defaultPrevented).toBe(false);
+    expect(emitCalls.some((call) => call.event === "preview://key")).toBe(false);
+    audio.remove();
+
+    const button = document.createElement("button");
+    document.body.appendChild(button);
+    button.focus();
+    const deleteEvent = new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true });
+    button.dispatchEvent(deleteEvent);
+    expect(deleteEvent.defaultPrevented).toBe(true);
+    expect(emitCalls).toContainEqual({
+      event: "preview://key",
+      payload: {
+        key: "Delete",
+        code: "",
+        repeat: false,
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+      },
+    });
+    button.remove();
+  });
+
+  it("leaves document-scroll keys to a focused text body instead of forwarding them to Main", async () => {
+    // content-presentation.md / viewing-sessions.md D4: PageDown on a
+    // focused text body scrolls the document locally; it must not change
+    // Main's selection or file the way it does everywhere else.
+    render(<PreviewWindow />);
+    await act(async () => {});
+    const text = document.createElement("pre");
+    text.setAttribute("data-transcript-scroll", "");
+    text.tabIndex = 0;
+    document.body.appendChild(text);
+    text.focus();
+    const event = new KeyboardEvent("keydown", { key: "PageDown", bubbles: true, cancelable: true });
+    text.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(emitCalls.some((call) => call.event === "preview://key")).toBe(false);
+    text.remove();
+  });
+
   it("does not consume composing fullscreen or navigation keys", async () => {
     render(<PreviewWindow />);
     await act(async () => {});

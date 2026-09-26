@@ -41,7 +41,7 @@ function Harness() {
   return (
     <>
       <div id="main-item-area" tabIndex={0} />
-      <div aria-label="Preview pane" tabIndex={0} />
+      <div aria-label="Preview pane" data-preview-pane tabIndex={0} />
       <div role="tree" aria-label="Sections" tabIndex={0} />
       <output aria-label="Trash confirmation">
         {commands.confirmTrash ?? "none"}
@@ -145,6 +145,20 @@ describe("global destructive commands", () => {
     expect(view.getByLabelText("Trash confirmation").textContent).toBe("2");
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
       false,
+    );
+  });
+
+  // viewing-sessions.md D10: "persistent Preview" trashes Main's complete
+  // selection from either placement, not only the separate window.
+  it("trashes Main's selection from a Delete pressed inside the in-pane Preview", () => {
+    useItemsStore.setState({ selectedItem: "image-hash", selectedKeys: new Set() });
+    const view = render(<Harness />);
+    const pane = view.getByLabelText("Preview pane");
+
+    fireEvent.keyDown(pane, { key: "Delete" });
+
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      true,
     );
   });
 
