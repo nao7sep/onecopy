@@ -305,10 +305,15 @@ fn successful_analysis_records_value_or_empty_and_retires_its_issue() {
 fn preview_poster_and_snapshot_transitions_retire_their_current_issue() {
     let (_dir, conn) = seeded();
 
-    derived_state::record_preview_success(&conn, "image", "/image.jpg", 4000, 3000, 12.5, 42)
-        .unwrap();
-    derived_state::record_poster_success(&conn, "poster", "/poster.mov", 30_000).unwrap();
-    derived_state::record_strip_success(&conn, "strip", "/strip.mov", 8).unwrap();
+    // Each success here resolves the matching Issue seeded above: the
+    // Issues surface must be told even though nothing in this batch failed
+    // (C-M3), so the record_* calls report the resolution back to the caller.
+    assert!(
+        derived_state::record_preview_success(&conn, "image", "/image.jpg", 4000, 3000, 12.5, 42)
+            .unwrap()
+    );
+    assert!(derived_state::record_poster_success(&conn, "poster", "/poster.mov", 30_000).unwrap());
+    assert!(derived_state::record_strip_success(&conn, "strip", "/strip.mov", 8).unwrap());
 
     let state: (Option<String>, i64, Option<String>, i64, i64) = conn
         .query_row(
@@ -347,9 +352,14 @@ fn preview_poster_and_snapshot_transitions_retire_their_current_issue() {
 #[test]
 fn preview_poster_and_snapshot_failures_checkpoint_once_for_retry() {
     let (_dir, conn) = seeded();
-    derived_state::record_preview_failure(&conn, "image", "/image.jpg", "decode").unwrap();
-    derived_state::record_poster_failure(&conn, "poster", "/poster.mov", "poster").unwrap();
-    derived_state::record_strip_failure(&conn, "strip", "/strip.mov", "strip").unwrap();
+    // `seeded()` already opened each of these Issues, so a repeated failure
+    // only bumps the existing entry's occurrence count: nothing the Issues
+    // surface has not already shown, so no reload is needed (C-M3).
+    assert!(!derived_state::record_preview_failure(&conn, "image", "/image.jpg", "decode").unwrap());
+    assert!(
+        !derived_state::record_poster_failure(&conn, "poster", "/poster.mov", "poster").unwrap()
+    );
+    assert!(!derived_state::record_strip_failure(&conn, "strip", "/strip.mov", "strip").unwrap());
 
     let state: (String, String, i64) = conn
         .query_row(
@@ -371,6 +381,22 @@ fn preview_poster_and_snapshot_failures_checkpoint_once_for_retry() {
     ] {
         assert!(issues.iter().any(|row| row.kind == kind));
     }
+}
+
+#[test]
+fn a_success_with_no_matching_issue_reports_no_issues_change() {
+    let (_dir, conn) = seeded();
+    // "/delete.jpg" only ever had a "delete-error" Issue (unrelated to
+    // preview derivation), so resolving PREVIEW_ERROR here is a genuine
+    // no-op: nothing for the Issues surface to reload (C-M3).
+    assert!(!derived_state::record_preview_success(
+        &conn, "delete", "/delete.jpg", 100, 100, 1.0, 7
+    )
+    .unwrap());
+    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    assert!(issues
+        .iter()
+        .any(|row| row.path.as_deref() == Some("/delete.jpg") && row.kind == "delete-error"));
 }
 
 #[test]

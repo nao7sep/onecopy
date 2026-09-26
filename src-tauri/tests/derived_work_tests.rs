@@ -138,6 +138,7 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
         TranscriptionAttemptOutcome::Completed {
             hash: "cached".to_string(),
             text: "already complete".to_string(),
+            issues_changed: false,
         }
     );
     let published = derived_state::transcript_result(&conn, &cache, "cached").unwrap();
@@ -305,6 +306,7 @@ fn transcription_attempt_publishes_digital_silence_without_loading_the_model() {
         TranscriptionAttemptOutcome::Completed {
             hash: "silence".to_string(),
             text: String::new(),
+            issues_changed: false,
         }
     );
     let persisted = derived_state::transcript_result(&conn, &cache, "silence").unwrap();

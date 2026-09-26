@@ -238,6 +238,27 @@ fn section_attempt_retires_only_its_preparation_failures_and_never_claims_repair
 }
 
 #[test]
+fn upsert_and_clear_issue_report_whether_they_actually_changed_a_row() {
+    let (_root, conn) = db();
+    // A brand-new failure opens a live entry.
+    assert!(index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "first").unwrap());
+    // A repeated failure of the same already-open issue only bumps its
+    // occurrence count and last-seen time; that is not a change the Issues
+    // surface needs to reload for (C-M3).
+    assert!(!index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "again").unwrap());
+    assert!(!index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "again").unwrap());
+
+    // Resolving the open issue reports the change.
+    assert!(index_store::clear_issues(&conn, "/a.jpg", &["read-error"]).unwrap());
+    // Clearing an already-closed (or never-open) issue is a no-op.
+    assert!(!index_store::clear_issues(&conn, "/a.jpg", &["read-error"]).unwrap());
+    assert!(!index_store::clear_issues(&conn, "/never-failed.jpg", &["read-error"]).unwrap());
+
+    // A new failure after resolution reopens the entry as a fresh identity.
+    assert!(index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "new attempt").unwrap());
+}
+
+#[test]
 fn failed_attempt_admission_rolls_back_diagnostic_retirement_and_all_receipts() {
     let (_root, conn) = db();
     section_fixture(&conn);

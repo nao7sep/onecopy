@@ -106,6 +106,7 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
             TranscriptionAttemptOutcome::Completed {
                 hash: hash.to_string(),
                 text: "[0:00] canonical speech\n".to_string(),
+                issues_changed: false,
             }
         );
     }
@@ -321,7 +322,13 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         |_| Ok(0.75),
     )
     .unwrap();
-    assert_eq!(smile, FaceScoringAttemptOutcome::Completed { score: 0.75 });
+    assert_eq!(
+        smile,
+        FaceScoringAttemptOutcome::Completed {
+            score: 0.75,
+            issues_changed: false
+        }
+    );
     let none = complete_face_scoring_attempt(
         &conn,
         &cache,
@@ -332,7 +339,13 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         |_| Ok(0.0),
     )
     .unwrap();
-    assert_eq!(none, FaceScoringAttemptOutcome::Completed { score: 0.0 });
+    assert_eq!(
+        none,
+        FaceScoringAttemptOutcome::Completed {
+            score: 0.0,
+            issues_changed: false
+        }
+    );
     let failed = complete_face_scoring_attempt(
         &conn,
         &cache,
@@ -345,7 +358,7 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
     .unwrap();
     assert!(matches!(
         failed,
-        FaceScoringAttemptOutcome::Failed { ref message } if message == "detector failed"
+        FaceScoringAttemptOutcome::Failed { ref message, issues_changed: true } if message == "detector failed"
     ));
     let cancelled = complete_face_scoring_attempt(
         &conn,

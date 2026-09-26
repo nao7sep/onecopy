@@ -47,7 +47,7 @@ const PATH_SCAN_ISSUES: &[&str] = &[WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA
 pub(crate) fn mark_path_missing(conn: &Connection, path: &str) -> Result<(), String> {
     conn.execute("UPDATE paths SET missing = 1 WHERE abs_path = ?1", [path])
         .map_err(|error| error.to_string())?;
-    crate::index_store::clear_issues(conn, path, PATH_SCAN_ISSUES)
+    crate::index_store::clear_issues(conn, path, PATH_SCAN_ISSUES).map(|_| ())
 }
 
 /// The sentinel a cancelled stage propagates in place of a real error.
@@ -2527,7 +2527,7 @@ fn record_issue(
         "scan issue",
         serde_json::json!({ "kind": kind, "path": path, "detail": message }),
     );
-    crate::index_store::upsert_issue(conn, path.as_deref(), kind, message)
+    crate::index_store::upsert_issue(conn, path.as_deref(), kind, message).map(|_| ())
 }
 
 fn collect_rows_4(

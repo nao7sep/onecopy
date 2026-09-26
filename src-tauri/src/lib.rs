@@ -1504,6 +1504,7 @@ fn transcribe_dispatched(app: AppHandle, hash: String, replace: Option<bool>) ->
                     derived_work::TranscriptionAttemptOutcome::Completed {
                         hash: exact_hash,
                         text,
+                        ..
                     } => {
                         derived_work::notify_item_update(
                             &handle,
@@ -1551,6 +1552,7 @@ fn transcribe_dispatched(app: AppHandle, hash: String, replace: Option<bool>) ->
                     derived_work::TranscriptionAttemptOutcome::Failed {
                         hash: exact_hash,
                         message,
+                        ..
                     } => {
                         derived_work::notify_item_update(
                             &handle,

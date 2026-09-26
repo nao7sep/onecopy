@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
@@ -577,39 +577,66 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
 // because it asserts the private SCHEMA constant's effect on a fresh file,
 /// Coalesces one live condition by (kind, path). Closed records stay immutable;
 /// a new failed attempt after dismissal or resolution gets a new identity.
-/// `path` None anchors to '' so rootless conditions also coalesce.
+/// `path` None anchors to '' so rootless conditions also coalesce. Returns
+/// whether this call actually opened a new live entry — a repeated failure of
+/// an already-open issue only bumps its occurrence count, which callers must
+/// not treat as an Issues-surface change (C-M3).
 pub fn upsert_issue(
     conn: &Connection,
     path: Option<&str>,
     kind: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let now = crate::logging::now_iso_millis();
-    conn.execute(
-        "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
-         VALUES (?1, ?2, ?3, ?4, ?4) \
-         ON CONFLICT (kind, path) WHERE closed_at_utc IS NULL DO UPDATE \
-         SET message = excluded.message,
-             last_seen_utc = excluded.last_seen_utc,
-             occurrence_count = issues.occurrence_count + 1",
-        rusqlite::params![path.unwrap_or(""), kind, message, now],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    let path = path.unwrap_or("");
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM issues WHERE kind = ?1 AND path = ?2 AND closed_at_utc IS NULL",
+            rusqlite::params![kind, path],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match existing {
+        Some(id) => {
+            conn.execute(
+                "UPDATE issues SET message = ?2, last_seen_utc = ?3,
+                     occurrence_count = occurrence_count + 1
+                 WHERE id = ?1",
+                rusqlite::params![id, message, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(false)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                rusqlite::params![path, kind, message, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+    }
 }
 
 /// Retires resolved live conditions without erasing their diagnostic context.
-pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<(), String> {
+/// Returns whether any row was actually resolved, so callers can tell a real
+/// resolution from a no-op clear of an already-closed or absent issue (C-M3).
+pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<bool, String> {
     let now = crate::logging::now_iso_millis();
+    let mut changed = false;
     for kind in kinds {
-        conn.execute(
-            "UPDATE issues SET closure = 'resolved', closed_at_utc = ?3
-             WHERE kind = ?1 AND path = ?2 AND closed_at_utc IS NULL",
-            rusqlite::params![kind, path, now],
-        )
-        .map_err(|e| e.to_string())?;
+        let rows = conn
+            .execute(
+                "UPDATE issues SET closure = 'resolved', closed_at_utc = ?3
+                 WHERE kind = ?1 AND path = ?2 AND closed_at_utc IS NULL",
+                rusqlite::params![kind, path, now],
+            )
+            .map_err(|e| e.to_string())?;
+        changed |= rows > 0;
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Whether live conditions exist; retained history never causes cleanup work.

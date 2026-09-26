@@ -209,12 +209,9 @@ pub fn source_root_spellings(conn: &Connection, roots: &[String]) -> Result<Vec<
         );
         match crate::scanner::settled_root(conn, Path::new(root)) {
             Ok(path) => spellings.push(path.to_string_lossy().into_owned()),
-            Err(error) => crate::index_store::upsert_issue(
-                conn,
-                Some(root),
-                crate::scanner::WALK_ERROR,
-                &error,
-            )?,
+            Err(error) => {
+                crate::index_store::upsert_issue(conn, Some(root), crate::scanner::WALK_ERROR, &error)?;
+            }
         }
     }
     spellings.sort();

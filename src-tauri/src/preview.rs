@@ -461,6 +461,9 @@ pub struct DeriveStats {
     /// UI projection. Most pairs contain the same hash; provisional content
     /// records the promotion explicitly.
     pub changes: Vec<(String, String)>,
+    /// Whether any result in this batch actually opened or resolved a live
+    /// Issue, independent of `derived`/`failed` counts (C-M3).
+    pub issues_changed: bool,
 }
 
 /// The pending pass: derive cache entries for image contents not yet derived.
@@ -566,7 +569,7 @@ fn record_preview_failure_or_combine(
         return failure;
     }
     match crate::derived_state::record_preview_failure(conn, hash, path, &failure) {
-        Ok(()) => failure,
+        Ok(_) => failure,
         Err(record_error) => {
             format!("{failure}; OneCopy also could not record the preview failure: {record_error}")
         }
@@ -865,7 +868,7 @@ fn derive_candidate_rows(
                         None => hash.clone(),
                     };
                     stats.derived += 1;
-                    crate::derived_state::record_preview_success(
+                    stats.issues_changed |= crate::derived_state::record_preview_success(
                         conn,
                         &key,
                         path,
@@ -891,7 +894,8 @@ fn derive_candidate_rows(
                 }
                 Err(err) => {
                     stats.failed += 1;
-                    crate::derived_state::record_preview_failure(conn, hash, path, &err)?;
+                    stats.issues_changed |=
+                        crate::derived_state::record_preview_failure(conn, hash, path, &err)?;
                     traces[index].finish(crate::activity::ActivityState::Failed, None);
                     stats.changes.push((hash.clone(), hash.clone()));
                 }

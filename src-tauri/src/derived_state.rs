@@ -987,6 +987,9 @@ pub fn transcript_result(
     }
 }
 
+/// Returns whether this success actually resolved a live Issue, so the
+/// derived-work coordinator can tell the Issues surface changed even when the
+/// batch as a whole had no failure (C-M3).
 pub fn record_preview_success(
     conn: &Connection,
     hash: &str,
@@ -995,7 +998,7 @@ pub fn record_preview_success(
     height: u32,
     sharpness: f64,
     phash: u64,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1017,8 +1020,9 @@ pub fn record_preview_success(
             ],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::clear_issues(&transaction, path, &[PREVIEW_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed = crate::index_store::clear_issues(&transaction, path, &[PREVIEW_ERROR])?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 pub fn record_preview_blocked(conn: &Connection, hash: &str) -> Result<(), String> {
@@ -1036,7 +1040,7 @@ fn record_content_failure(
     path: &str,
     issue_kind: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1046,8 +1050,9 @@ fn record_content_failure(
             params![hash, FAILED],
         )
         .map_err(|error| error.to_string())?;
-    record_derived_issue(&transaction, path, issue_kind, message)?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed = record_derived_issue(&transaction, path, issue_kind, message)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 fn derived_issue_presentation(issue_kind: &str) -> &'static str {
@@ -1073,12 +1078,13 @@ fn derived_issue_presentation(issue_kind: &str) -> &'static str {
     }
 }
 
+/// Returns whether this call actually opened a new live Issue (C-M3).
 fn record_derived_issue(
     conn: &Connection,
     path: &str,
     issue_kind: &str,
     diagnostic: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     crate::logging::warn(
         "derived media work failed",
         json!({
@@ -1100,7 +1106,7 @@ pub fn record_preview_failure(
     hash: &str,
     path: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     record_content_failure(conn, hash, path, PREVIEW_ERROR, message)
 }
 
@@ -1109,7 +1115,7 @@ pub fn record_poster_success(
     hash: &str,
     path: &str,
     duration_ms: u64,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1122,8 +1128,10 @@ pub fn record_poster_success(
             params![hash, duration_ms as i64, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::clear_issues(&transaction, path, &[VIDEO_POSTER_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed =
+        crate::index_store::clear_issues(&transaction, path, &[VIDEO_POSTER_ERROR])?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 pub fn record_poster_failure(
@@ -1131,7 +1139,7 @@ pub fn record_poster_failure(
     hash: &str,
     path: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     record_content_failure(conn, hash, path, VIDEO_POSTER_ERROR, message)
 }
 
@@ -1140,7 +1148,7 @@ pub fn record_strip_success(
     hash: &str,
     path: &str,
     frame_count: u32,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1150,8 +1158,10 @@ pub fn record_strip_success(
             params![hash, frame_count as i64],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::clear_issues(&transaction, path, &[VIDEO_STRIP_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed =
+        crate::index_store::clear_issues(&transaction, path, &[VIDEO_STRIP_ERROR])?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 pub fn record_strip_failure(
@@ -1159,7 +1169,7 @@ pub fn record_strip_failure(
     hash: &str,
     path: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1169,8 +1179,9 @@ pub fn record_strip_failure(
             params![hash, STRIP_FAILED],
         )
         .map_err(|error| error.to_string())?;
-    record_derived_issue(&transaction, path, VIDEO_STRIP_ERROR, message)?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed = record_derived_issue(&transaction, path, VIDEO_STRIP_ERROR, message)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 pub fn record_face_success(
@@ -1178,7 +1189,7 @@ pub fn record_face_success(
     hash: &str,
     path: &str,
     score: f64,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1199,8 +1210,9 @@ pub fn record_face_success(
             params![hash, READY, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::clear_issues(&transaction, path, &[FACE_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed = crate::index_store::clear_issues(&transaction, path, &[FACE_ERROR])?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 pub fn record_face_failure(
@@ -1208,7 +1220,7 @@ pub fn record_face_failure(
     hash: &str,
     path: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1229,8 +1241,9 @@ pub fn record_face_failure(
             params![hash, FAILED, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    record_derived_issue(&transaction, path, FACE_ERROR, message)?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed = record_derived_issue(&transaction, path, FACE_ERROR, message)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 pub fn record_transcript_success(
@@ -1238,7 +1251,7 @@ pub fn record_transcript_success(
     hash: &str,
     path: &str,
     has_text: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let state = if has_text { READY_TEXT } else { READY_EMPTY };
     let transaction = conn
         .unchecked_transaction()
@@ -1254,8 +1267,10 @@ pub fn record_transcript_success(
             params![hash, state, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::clear_issues(&transaction, path, &[TRANSCRIPT_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed =
+        crate::index_store::clear_issues(&transaction, path, &[TRANSCRIPT_ERROR])?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 pub fn record_transcript_failure(
@@ -1263,7 +1278,7 @@ pub fn record_transcript_failure(
     hash: &str,
     path: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1278,8 +1293,9 @@ pub fn record_transcript_failure(
             params![hash, FAILED, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    record_derived_issue(&transaction, path, TRANSCRIPT_ERROR, message)?;
-    transaction.commit().map_err(|error| error.to_string())
+    let issues_changed = record_derived_issue(&transaction, path, TRANSCRIPT_ERROR, message)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
 }
 
 /// A replacement attempt never invalidates the completed transcript it was
@@ -1289,7 +1305,7 @@ pub fn record_transcript_replacement_failure(
     conn: &Connection,
     path: &str,
     message: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     record_derived_issue(conn, path, TRANSCRIPT_ERROR, message)
 }
 

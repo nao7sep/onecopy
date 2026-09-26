@@ -397,13 +397,16 @@ pub struct FaceStats {
     pub attempted: u64,
     pub candidates_found: bool,
     pub last_attempted_hash: Option<String>,
+    /// Whether any result in this batch actually opened or resolved a live
+    /// Issue, independent of `failed` count (C-M3).
+    pub issues_changed: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum FaceScoringAttemptOutcome {
-    Completed { score: f32 },
+    Completed { score: f32, issues_changed: bool },
     Cancelled,
-    Failed { message: String },
+    Failed { message: String, issues_changed: bool },
 }
 
 /// Scores and publishes one already-admitted face candidate. Candidate
@@ -428,20 +431,22 @@ pub fn complete_face_scoring_attempt(
     let outcome = decoded.and_then(|image| inference(&image));
     match outcome {
         Ok(score) => {
-            crate::derived_state::record_face_success(conn, hash, source_path, score as f64)?;
+            let issues_changed =
+                crate::derived_state::record_face_success(conn, hash, source_path, score as f64)?;
             trace.finish(crate::activity::ActivityState::Succeeded, None);
             on_change(hash);
-            Ok(FaceScoringAttemptOutcome::Completed { score })
+            Ok(FaceScoringAttemptOutcome::Completed { score, issues_changed })
         }
         Err(_) if cancel_when() || crate::scanner::cancelled() => {
             trace.finish(crate::activity::ActivityState::Cancelled, None);
             Ok(FaceScoringAttemptOutcome::Cancelled)
         }
         Err(message) => {
-            crate::derived_state::record_face_failure(conn, hash, source_path, &message)?;
+            let issues_changed =
+                crate::derived_state::record_face_failure(conn, hash, source_path, &message)?;
             trace.finish(crate::activity::ActivityState::Failed, None);
             on_change(hash);
-            Ok(FaceScoringAttemptOutcome::Failed { message })
+            Ok(FaceScoringAttemptOutcome::Failed { message, issues_changed })
         }
     }
 }
@@ -509,14 +514,16 @@ pub fn face_scores_pending(
             |image| scorer.score(image),
         )?;
         match outcome {
-            FaceScoringAttemptOutcome::Completed { .. } => {
+            FaceScoringAttemptOutcome::Completed { issues_changed, .. } => {
                 stats.scored += 1;
+                stats.issues_changed |= issues_changed;
             }
             FaceScoringAttemptOutcome::Cancelled => {
                 return Err(crate::scanner::CANCELLED.to_string());
             }
-            FaceScoringAttemptOutcome::Failed { .. } => {
+            FaceScoringAttemptOutcome::Failed { issues_changed, .. } => {
                 stats.failed += 1;
+                stats.issues_changed |= issues_changed;
             }
         }
         on_progress(stats.attempted, total);

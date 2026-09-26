@@ -145,6 +145,9 @@ pub struct VideoDeriveStats {
     pub failed: u64,
     pub skipped_no_ffmpeg: bool,
     pub changed_hashes: Vec<String>,
+    /// Whether any result in this batch actually opened or resolved a live
+    /// Issue, independent of `derived`/`failed` counts (C-M3).
+    pub issues_changed: bool,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -154,6 +157,9 @@ pub struct StripDeriveStats {
     pub attempted: u64,
     pub candidates_found: bool,
     pub last_attempted_hash: Option<String>,
+    /// Whether any result in this batch actually opened or resolved a live
+    /// Issue, independent of `failed` count (C-M3).
+    pub issues_changed: bool,
 }
 
 /// Required video preparation publishes duration and poster through the shared
@@ -282,7 +288,7 @@ fn derive_videos_pending_limit(
         match result {
             Ok(duration_ms) => {
                 stats.derived += 1;
-                crate::derived_state::record_poster_success(
+                stats.issues_changed |= crate::derived_state::record_poster_success(
                     conn,
                     &hash,
                     &path,
@@ -297,7 +303,8 @@ fn derive_videos_pending_limit(
             }
             Err(err) => {
                 stats.failed += 1;
-                crate::derived_state::record_poster_failure(conn, &hash, &path, &err)?;
+                stats.issues_changed |=
+                    crate::derived_state::record_poster_failure(conn, &hash, &path, &err)?;
                 trace.finish(crate::activity::ActivityState::Failed, None);
                 stats.changed_hashes.push(hash);
             }
@@ -375,7 +382,8 @@ pub fn derive_strips_pending(
         })();
         match result {
             Ok(()) => {
-                crate::derived_state::record_strip_success(conn, &hash, &path, count)?;
+                stats.issues_changed |=
+                    crate::derived_state::record_strip_success(conn, &hash, &path, count)?;
                 trace.finish(crate::activity::ActivityState::Succeeded, None);
                 on_change(&hash);
                 stats.completed += 1;
@@ -398,7 +406,8 @@ pub fn derive_strips_pending(
                 // tick could eat whole minutes per pass). A rescan after a
                 // DERIVE_VERSION bump re-derives; the issue row carries the
                 // reason meanwhile.
-                crate::derived_state::record_strip_failure(conn, &hash, &path, &err)?;
+                stats.issues_changed |=
+                    crate::derived_state::record_strip_failure(conn, &hash, &path, &err)?;
                 trace.finish(crate::activity::ActivityState::Failed, None);
                 on_change(&hash);
                 stats.failed += 1;

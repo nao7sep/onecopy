@@ -1020,11 +1020,11 @@ fn derive_priority_previews(
     if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
         emit_progress(app, WorkClass::Previews, None);
         notify_image_changes(app, conn, projection, &image.changes);
-        // Issues change only on failure (a new or repeated preview error); a
-        // clean batch of successes has nothing new for the Issues inbox, and
-        // deriving hundreds of thousands of items otherwise reloaded it twice
-        // a second for the whole run (C-M3).
-        if image.failed > 0 {
+        // Issues change only when a write actually opened or resolved one; a
+        // clean batch of successes with nothing to resolve has nothing new
+        // for the Issues inbox, and deriving hundreds of thousands of items
+        // otherwise reloaded it twice a second for the whole run (C-M3).
+        if image.issues_changed {
             notify_issues(app);
         }
         did_work = true;
@@ -1050,7 +1050,7 @@ fn derive_priority_previews(
         if video.derived + video.failed > 0 {
             emit_progress(app, WorkClass::Previews, None);
             notify_video_changes(app, conn, projection, &video.changed_hashes);
-            if video.failed > 0 {
+            if video.issues_changed {
                 notify_issues(app);
             }
             did_work = true;
@@ -1086,7 +1086,7 @@ fn derive_global_required(
     if did_work {
         emit_progress(app, WorkClass::Previews, None);
         notify_image_changes(app, conn, projection, &image.changes);
-        if image.failed > 0 {
+        if image.issues_changed {
             notify_issues(app);
         }
     }
@@ -1108,7 +1108,7 @@ fn derive_global_required(
     if video.derived + video.failed > 0 {
         emit_progress(app, WorkClass::Previews, None);
         notify_video_changes(app, conn, projection, &video.changed_hashes);
-        if video.failed > 0 {
+        if video.issues_changed {
             notify_issues(app);
         }
         did_work = true;
@@ -1272,9 +1272,9 @@ fn run_optional_class(
             })?
             .unwrap_or_default();
             if stats.attempted > 0 {
-                // Issues change only on failure; a clean attempt has nothing
-                // new for the Issues inbox (C-M3).
-                if stats.failed > 0 {
+                // Issues change only when a write actually opened or resolved
+                // one; a clean attempt has nothing new for the Issues inbox (C-M3).
+                if stats.issues_changed {
                     notify_issues(app);
                 }
                 if !foreground {
@@ -1325,9 +1325,9 @@ fn run_optional_class(
                 Err(error) => return Err(error),
             };
             if stats.attempted > 0 {
-                // Issues change only on failure; a clean attempt has nothing
-                // new for the Issues inbox (C-M3).
-                if stats.failed > 0 {
+                // Issues change only when a write actually opened or resolved
+                // one; a clean attempt has nothing new for the Issues inbox (C-M3).
+                if stats.issues_changed {
                     notify_issues(app);
                 }
                 if !foreground {
@@ -1375,7 +1375,7 @@ fn run_optional_class(
             })?
             .unwrap_or_default();
             if step.attempted_hash.is_some() {
-                if step.failed {
+                if step.issues_changed {
                     notify_issues(app);
                 }
                 if !foreground {
@@ -1526,10 +1526,10 @@ fn progress(app: &AppHandle, class: WorkClass) -> impl Fn(u64, u64) + '_ {
 struct TranscriptStep {
     attempted_hash: Option<String>,
     exhausted: bool,
-    /// Whether this attempt recorded a transcription-error Issue. Used to
-    /// gate `notify_issues`: a completed or cancelled attempt has nothing new
-    /// for the Issues inbox (C-M3).
-    failed: bool,
+    /// Whether this attempt actually opened or resolved a live transcript
+    /// Issue. Used to gate `notify_issues`: a completed or cancelled attempt
+    /// with no Issue change has nothing new for the Issues inbox (C-M3).
+    issues_changed: bool,
 }
 
 struct TranscriptContext<'a> {
@@ -1584,11 +1584,21 @@ pub struct TranscriptionAttempt<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TranscriptionAttemptOutcome {
-    Completed { hash: String, text: String },
+    /// `issues_changed`: whether this result actually opened or resolved a
+    /// live transcript Issue (C-M3).
+    Completed {
+        hash: String,
+        text: String,
+        issues_changed: bool,
+    },
     Cancelled { hash: String },
     Unavailable { hash: String, message: String },
     ResourceSafety { hash: String, message: String },
-    Failed { hash: String, message: String },
+    Failed {
+        hash: String,
+        message: String,
+        issues_changed: bool,
+    },
 }
 
 enum TranscriptionPreparation {
@@ -1630,6 +1640,7 @@ fn prepare_transcription_attempt(
                 TranscriptionAttemptOutcome::Completed {
                     hash,
                     text: existing.text.unwrap_or_default(),
+                    issues_changed: false,
                 },
             ));
         }
@@ -1648,13 +1659,17 @@ fn finish_transcription_attempt(
     });
     match result {
         Ok(text) => {
-            crate::derived_state::record_transcript_success(
+            let issues_changed = crate::derived_state::record_transcript_success(
                 attempt.conn,
                 &hash,
                 attempt.source_path,
                 !text.trim().is_empty(),
             )?;
-            Ok(TranscriptionAttemptOutcome::Completed { hash, text })
+            Ok(TranscriptionAttemptOutcome::Completed {
+                hash,
+                text,
+                issues_changed,
+            })
         }
         Err(error) if error == crate::scanner::CANCELLED => {
             Ok(TranscriptionAttemptOutcome::Cancelled { hash })
@@ -1666,23 +1681,24 @@ fn finish_transcription_attempt(
             })
         }
         Err(error) => {
-            if attempt.replace_existing {
+            let issues_changed = if attempt.replace_existing {
                 crate::derived_state::record_transcript_replacement_failure(
                     attempt.conn,
                     attempt.source_path,
                     &error,
-                )?;
+                )?
             } else {
                 crate::derived_state::record_transcript_failure(
                     attempt.conn,
                     &hash,
                     attempt.source_path,
                     &error,
-                )?;
-            }
+                )?
+            };
             Ok(TranscriptionAttemptOutcome::Failed {
                 hash,
                 message: error,
+                issues_changed,
             })
         }
     }
@@ -1933,7 +1949,11 @@ fn transcribe_next(
         other => other?,
     };
     match result {
-        TranscriptionAttemptOutcome::Completed { hash, text } => {
+        TranscriptionAttemptOutcome::Completed {
+            hash,
+            text,
+            issues_changed,
+        } => {
             notify_item_update(
                 context.app,
                 context.conn,
@@ -1950,7 +1970,7 @@ fn transcribe_next(
             Ok(TranscriptStep {
                 attempted_hash: Some(hash),
                 exhausted: false,
-                failed: false,
+                issues_changed,
             })
         }
         TranscriptionAttemptOutcome::Cancelled { hash } => {
@@ -1976,7 +1996,11 @@ fn transcribe_next(
             pause_for_resource_safety(context.app, context.conn, class, &message)?;
             Ok(TranscriptStep::default())
         }
-        TranscriptionAttemptOutcome::Failed { hash, message } => {
+        TranscriptionAttemptOutcome::Failed {
+            hash,
+            message,
+            issues_changed,
+        } => {
             notify_item_update(
                 context.app,
                 context.conn,
@@ -2001,7 +2025,7 @@ fn transcribe_next(
             Ok(TranscriptStep {
                 attempted_hash: Some(hash),
                 exhausted: false,
-                failed: true,
+                issues_changed,
             })
         }
     }

@@ -163,7 +163,7 @@ fn present_unrecorded(
 pub fn clear(app: &AppHandle, kind: &str, path: Option<&str>) -> Result<(), String> {
     let root = crate::paths::data_root(app)?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-    crate::index_store::clear_issues(&conn, path.unwrap_or(""), &[kind])
+    crate::index_store::clear_issues(&conn, path.unwrap_or(""), &[kind]).map(|_| ())
 }
 
 pub fn emit_checked<T: Clone + Serialize>(

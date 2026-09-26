@@ -107,7 +107,7 @@ fn transcribe(library: &Library, file_name: &str, mode: Mode, replace_existing: 
     )
     .unwrap();
     let (hash, text) = match outcome {
-        TranscriptionAttemptOutcome::Completed { hash, text } => (hash, text),
+        TranscriptionAttemptOutcome::Completed { hash, text, .. } => (hash, text),
         other => panic!("{file_name} with {mode} acceleration did not complete: {other:?}"),
     };
     let published = derived_state::transcript_result(&library.conn, &library.cache, &hash).unwrap();
