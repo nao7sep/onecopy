@@ -43,6 +43,40 @@ it("initializes the font without Main bootstrap, then follows saved changes", as
   expect(listenerCount("appearance://changed")).toBe(1);
 });
 
+// R5.5 C2: `appearance://changed` updates `useLanguageStore` with the
+// `language` / `systemLanguage` / `systemLocale` fields the core sends,
+// not just the font this suite otherwise exercises.
+it("applies language, systemLanguage and systemLocale from appearance preferences", async () => {
+  mockCommands({
+    appearance_preferences: () => ({
+      uiFontFamily: null,
+      language: "ja",
+      systemLanguage: "fr",
+      systemLocale: "fr-FR",
+    }),
+  });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  const { useLanguageStore } = await import("../../src/state/language-store");
+
+  await installWindowAppearance();
+
+  expect(useLanguageStore.getState().language).toBe("ja");
+  expect(useLanguageStore.getState().systemLanguage).toBe("fr");
+  expect(useLanguageStore.getState().systemLocale).toBe("fr-FR");
+
+  mockCommands({
+    appearance_preferences: () => ({
+      uiFontFamily: null,
+      language: "en",
+      systemLanguage: "en",
+      systemLocale: "en-US",
+    }),
+  });
+  fireEvent("appearance://changed");
+  await vi.waitFor(() => expect(useLanguageStore.getState().language).toBe("en"));
+  expect(useLanguageStore.getState().systemLocale).toBe("en-US");
+});
+
 it("leaves the theme to the native window", async () => {
   mockCommands({ appearance_preferences: () => ({ uiFontFamily: null }) });
   const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
