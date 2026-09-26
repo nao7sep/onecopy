@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { PlaybackSession } from "../../src/models/playback";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { ActiveViewerSession } from "../../src/models/viewerSession";
 import { useAppStore } from "../../src/state/app-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
-import { installPlaybackWorkflow } from "../../src/workflows/playback";
-import { setSoundEnabled } from "../../src/workflows/playback";
+import { handleViewerKey } from "../../src/workflows/quick-view";
+import { installPlaybackWorkflow, setSoundEnabled } from "../../src/workflows/playback";
 import { emitCalls, fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function latestState(): PlaybackSession | null {
@@ -264,5 +266,68 @@ describe("playback workflow", () => {
         medium: "video",
       });
     });
+  });
+});
+
+// content-presentation.md: "Picture click and Enter toggle" (R5.3 untested
+// contract) -- Enter in the viewer toggles the CENTRALLY OWNED playback
+// session for the current video item, the same way clicking the picture
+// itself does (see preview-surface.test.tsx for the click half).
+describe("viewer Enter toggle", () => {
+  it("toggles the owned session's playing state on Enter for a video item", async () => {
+    fireEvent("playback://register", {
+      surface: "quick",
+      key: "clip",
+      medium: "video",
+    });
+    expect(latestState()).toMatchObject({ key: "clip", owner: "quick", playing: true });
+
+    const item: SectionItem = {
+      hash: "clip",
+      pathId: 1,
+      fileName: "clip.mov",
+      resolvedUtcMs: 1,
+      copyCount: 1,
+      width: 100,
+      height: 100,
+      hasThumb: true,
+      similarGroupId: null,
+      sharpness: null,
+      faceScore: null,
+      byteSize: 1000,
+      hasCompanions: false,
+      durationMs: 5000,
+      dirPaths: [],
+      derivedWork: EMPTY_ITEM_WORK,
+    };
+    const session: ActiveViewerSession = {
+      token: "viewer-token",
+      member: { hash: "clip", pathId: 1 },
+      item,
+      detail: {
+        fileName: "clip.mov", kind: "video", byteSize: 1000, width: 100, height: 100,
+        durationMs: 5000, dateState: "dated", resolvedUtcMs: 1, resolvedSource: "metadata",
+        dateOnly: false, copyPaths: ["/videos/clip.mov"], companionPaths: [], stripFrames: null,
+      },
+      index: 0,
+      length: 1,
+      sectionIndex: 0,
+      scope: "section",
+      presentation: "quick",
+      main: {
+        projection: { section: null, sort: { order: "time", desc: false }, revision: 0 },
+        selectedKeys: ["clip"],
+        frozenPositionsValid: true,
+      },
+    };
+    useQuickViewStore.setState({ session, pendingDelete: null, failure: null });
+
+    await handleViewerKey({ key: "Enter" });
+
+    expect(latestState()).toMatchObject({ key: "clip", playing: false });
+
+    await handleViewerKey({ key: "Enter" });
+
+    expect(latestState()).toMatchObject({ key: "clip", playing: true });
   });
 });

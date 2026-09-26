@@ -200,6 +200,23 @@ describe("shared video presentation", () => {
     expect(video.volume).toBe(0.5);
   });
 
+  // content-presentation.md: "Picture click and Enter toggle" (R5.3 untested
+  // contract) -- clicking the video body itself must request the shared
+  // player toggle for THIS surface's key, the same as pressing Enter does.
+  it("toggles playback when the video picture itself is clicked", async () => {
+    render(<PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />);
+    await act(async () => {});
+    emitCalls.length = 0;
+
+    const video = document.querySelector("video")!;
+    fireEvent.click(video);
+
+    expect(emitCalls).toContainEqual({
+      event: "playback://toggle",
+      payload: { key: "video-hash" },
+    });
+  });
+
   it("overlays timestamped snapshots, seeks and plays, and keeps transcript below", async () => {
     const view = render(
       <PreviewSurface
