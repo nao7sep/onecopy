@@ -47,6 +47,7 @@ import { useQuickViewStore } from "../state/quick-view-store";
 import { hasOpenModal } from "../utils/modalStack";
 import { isEditableTarget } from "../utils/shortcuts";
 import { configFlag } from "../models/config";
+import { gridNavigationTarget } from "../models/gridNavigation";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -658,42 +659,20 @@ export default function Grid({
       handleSpaceQuickView(event);
       return;
     }
-    // PageUp/PageDown jump by roughly a viewport of rows.
-    const pageRows = Math.max(
-      2,
-      Math.floor(
-        (containerRef.current?.clientHeight ?? 600) / (layout === "list" ? 34 : 190),
-      ),
-    );
-    const step =
-      event.key === "ArrowRight" && layout === "tiles"
-        ? 1
-        : event.key === "ArrowLeft" && layout === "tiles"
-          ? -1
-          : event.key === "ArrowDown"
-            ? columns
-            : event.key === "ArrowUp"
-              ? -columns
-              : event.key === "PageDown"
-                ? columns * pageRows
-                : event.key === "PageUp"
-                  ? -columns * pageRows
-                  : event.key === "Home"
-                    ? Number.NEGATIVE_INFINITY
-                    : event.key === "End"
-                      ? Number.POSITIVE_INFINITY
-                      : null;
-    if (step === null) return;
+    const target = gridNavigationTarget({
+      key: event.key,
+      layout,
+      columns,
+      viewportHeight,
+      rowHeight,
+      current:
+        selectedItem !== null
+          ? (effectivePositions.get(selectedItem) ?? selectedPositions.get(selectedItem) ?? -1)
+          : -1,
+      total: effectiveTotalItems,
+    });
+    if (target === null) return;
     event.preventDefault();
-    const current =
-      selectedItem !== null
-        ? (effectivePositions.get(selectedItem) ?? selectedPositions.get(selectedItem) ?? -1)
-        : -1;
-    const target = Number.isFinite(step)
-      ? Math.min(Math.max(current < 0 ? 0 : current + (step as number), 0), effectiveTotalItems - 1)
-      : step === Number.NEGATIVE_INFINITY
-        ? 0
-        : effectiveTotalItems - 1;
     if (target < 0) return;
     void selectPosition(target, event.shiftKey);
   };
