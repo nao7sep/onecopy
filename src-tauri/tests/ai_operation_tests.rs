@@ -16,7 +16,7 @@ use rusqlite::{params, OptionalExtension};
 fn insert(conn: &rusqlite::Connection, hash: &str, kind: &str, path: &str) {
     conn.execute(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, derived_version)
-         VALUES (?1, 1, ?2, 'ready', 3)",
+         VALUES (?1, 1, ?2, 'ready', 4)",
         params![hash, kind],
     )
     .unwrap();

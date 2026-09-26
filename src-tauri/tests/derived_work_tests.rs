@@ -384,12 +384,12 @@ fn every_item_class_uses_selected_visible_then_open_section_priority() {
         "INSERT INTO contents
            (hash, byte_size, kind, derived_at_utc, derived_version, duration_ms)
          VALUES
-           ('image-selected', 1, 'image', 'ready', 3, NULL),
-           ('image-visible', 1, 'image', 'ready', 3, NULL),
-           ('image-section', 1, 'image', 'ready', 3, NULL),
-           ('video-selected', 1, 'video', 'ready', 3, 60000),
-           ('video-visible', 1, 'video', 'ready', 3, 60000),
-           ('video-section', 1, 'video', 'ready', 3, 60000),
+           ('image-selected', 1, 'image', 'ready', 4, NULL),
+           ('image-visible', 1, 'image', 'ready', 4, NULL),
+           ('image-section', 1, 'image', 'ready', 4, NULL),
+           ('video-selected', 1, 'video', 'ready', 4, 60000),
+           ('video-visible', 1, 'video', 'ready', 4, 60000),
+           ('video-section', 1, 'video', 'ready', 4, 60000),
            ('audio-selected', 1, 'audio', NULL, 0, NULL),
            ('audio-visible', 1, 'audio', NULL, 0, NULL),
            ('audio-section', 1, 'audio', NULL, 0, NULL);
@@ -583,12 +583,12 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
             derived_version)
          VALUES
            ('image-preview', 1, 'image', NULL, NULL, NULL, 0),
-           ('image-face', 1, 'image', NULL, NULL, 'ready', 3),
-           ('image-face-failed', 1, 'image', NULL, NULL, 'ready', 3),
+           ('image-face', 1, 'image', NULL, NULL, 'ready', 4),
+           ('image-face-failed', 1, 'image', NULL, NULL, 'ready', 4),
            ('video-preview', 1, 'video', 60000, NULL, NULL, 0),
-           ('video-snapshot', 1, 'video', 60000, NULL, 'ready', 3),
-           ('video-snapshot-failed', 1, 'video', 60000, -1, 'ready', 3),
-           ('video-transcript-failed', 1, 'video', 60000, 1, 'ready', 3),
+           ('video-snapshot', 1, 'video', 60000, NULL, 'ready', 4),
+           ('video-snapshot-failed', 1, 'video', 60000, -1, 'ready', 4),
+           ('video-transcript-failed', 1, 'video', 60000, 1, 'ready', 4),
            ('audio-transcript', 1, 'audio', NULL, NULL, NULL, 0),
            ('audio-transcript-failed', 1, 'audio', NULL, NULL, NULL, 0);
          INSERT INTO paths

@@ -29,6 +29,20 @@ fn sharp_images_score_higher_than_their_blurred_versions() {
     );
 }
 
+#[test]
+fn a_downscaled_copy_never_outranks_its_original_on_sharpness() {
+    // Fine detail a camera recorded; an export halves it.
+    let original = DynamicImage::ImageRgb8(image::RgbImage::from_fn(1600, 1200, |x, y| {
+        let v = if ((x / 8) + (y / 8)) % 2 == 0 { 220 } else { 30 };
+        image::Rgb([v, v, v])
+    }));
+    let copy = original.resize_exact(640, 480, image::imageops::FilterType::CatmullRom);
+    // At their own sizes the copy looks sharper, which ranked it first.
+    assert!(laplacian_variance(&copy.to_luma8()) > laplacian_variance(&original.to_luma8()));
+    let (original, copy) = (sharpness(&original), sharpness(&copy));
+    assert!(copy <= original * 1.1, "copy {copy} outranks original {original}");
+}
+
 // Small helper so the orientation test reads naturally.
 trait DimTuple {
     fn dimensions_tuple(&self) -> (u32, u32);

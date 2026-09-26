@@ -287,7 +287,7 @@ fn derive_from_decoded(
     // Preview first (higher quality resize), thumbnail from the preview so the
     // original is traversed once and the thumb resize input is already small.
     let preview = fit_long_edge(&oriented, preview_long_edge, image::imageops::FilterType::CatmullRom);
-    let sharpness = laplacian_variance(&luma_for_analysis(&preview));
+    let sharpness = sharpness(&preview);
     let phash = dhash(&preview);
 
     // An image that already fits the preview edge needs no resize — and when
@@ -1215,6 +1215,23 @@ fn apply_orientation(img: DynamicImage, orientation: u16) -> DynamicImage {
         8 => img.rotate270(),
         _ => img,
     }
+}
+
+/// The long edge every image is analysed at for sharpness. Laplacian
+/// variance grows as an image is downscaled, so measuring each image at its
+/// own size ranked a small exported copy above its full-resolution original.
+const SHARPNESS_EDGE: u32 = 512;
+
+/// Advisory sharpness, comparable across images of any size: the Laplacian
+/// variance at one common scale.
+fn sharpness(img: &DynamicImage) -> f64 {
+    let (w, h) = (img.width(), img.height());
+    let longest = w.max(h).max(1);
+    let scale = f64::from(SHARPNESS_EDGE) / f64::from(longest);
+    let nw = ((f64::from(w) * scale).round() as u32).max(1);
+    let nh = ((f64::from(h) * scale).round() as u32).max(1);
+    let common = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
+    laplacian_variance(&luma_for_analysis(&common))
 }
 
 /// Variance of the 3×3 Laplacian over a grayscale image — the classic cheap
