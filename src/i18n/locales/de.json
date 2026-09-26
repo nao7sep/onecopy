@@ -154,6 +154,8 @@
   "source.missingBody": "OneCopy arbeitet mit den verfügbaren Dateien weiter. Schließen Sie das fehlende Laufwerk an und prüfen Sie erneut, oder führen Sie die Einrichtung erneut aus, um einen Ordner zu entfernen oder zu ersetzen.",
   "source.substitutedTitle": "Anderes Quellvolume erkannt",
   "source.substitutedBody": "Ein konfigurierter Ordner liegt auf einem anderen physischen Volume als dem, das OneCopy vermerkt hat. Binden Sie das ursprüngliche Laufwerk ein, oder führen Sie die Einrichtung erneut aus und entfernen Sie den Ordner und fügen Sie ihn neu hinzu, wenn diese Änderung beabsichtigt ist.",
+  "source.substitutedCheckFailedTitle": "Quellvolumes konnten nicht überprüft werden",
+  "source.substitutedCheckFailedBody": "OneCopy konnte nicht prüfen, ob ein konfigurierter Ordner auf einem anderen physischen Volume liegt als zuvor. Die Arbeit bleibt gesperrt, bis diese Prüfung erfolgreich ist, damit nichts versehentlich auf dem falschen Laufwerk ausgeführt wird. Prüfen Sie erneut, oder führen Sie die Einrichtung erneut aus, wenn das Problem weiterhin besteht.",
   "source.rerunSetup": "Einrichtung erneut ausführen…",
   "source.checkAgain": "Erneut prüfen",
   "settings.screensReadFailed": "Die angeschlossenen Bildschirme konnten nicht gelesen werden.",

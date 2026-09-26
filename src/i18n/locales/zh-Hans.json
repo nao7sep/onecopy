@@ -154,6 +154,8 @@
   "source.missingBody": "OneCopy 会继续使用可用的文件。请接入缺失的驱动器后再次检查，或者重新运行设置，以移除或替换某个文件夹。",
   "source.substitutedTitle": "检测到不同的源卷",
   "source.substitutedBody": "已配置的某个文件夹所在的物理卷，与 OneCopy 记录的并不相同。请挂载原来的驱动器；如果这一变化是有意为之，请重新运行设置，先移除该文件夹再重新添加。",
+  "source.substitutedCheckFailedTitle": "无法验证源卷",
+  "source.substitutedCheckFailedBody": "OneCopy 无法检查已配置的文件夹是否位于与之前不同的物理卷上。在此项检查成功之前，操作将保持锁定，以避免误操作到错误的驱动器。请重新检查，如果问题持续存在，请重新运行设置。",
   "source.rerunSetup": "重新运行设置…",
   "source.checkAgain": "再次检查",
   "settings.screensReadFailed": "无法读取已连接的屏幕。",

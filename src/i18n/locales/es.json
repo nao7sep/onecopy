@@ -154,6 +154,8 @@
   "source.missingBody": "OneCopy seguirá trabajando con los archivos disponibles. Conecta la unidad que falta y comprueba de nuevo, o vuelve a ejecutar la configuración inicial para quitar o reemplazar una carpeta.",
   "source.substitutedTitle": "Se detectó un volumen de origen distinto",
   "source.substitutedBody": "Una carpeta configurada está en un volumen físico distinto del que OneCopy registró. Monta la unidad original, o vuelve a ejecutar la configuración inicial y quita y agrega la carpeta si el cambio es intencionado.",
+  "source.substitutedCheckFailedTitle": "No se pudieron verificar los volúmenes de origen",
+  "source.substitutedCheckFailedBody": "OneCopy no pudo comprobar si una carpeta configurada está en un volumen físico distinto al anterior. El trabajo permanece bloqueado hasta que esta comprobación se realice correctamente, para que nada actúe por error en la unidad equivocada. Vuelve a comprobar, o vuelve a ejecutar la configuración inicial si el problema continúa.",
   "source.rerunSetup": "Volver a ejecutar la configuración inicial…",
   "source.checkAgain": "Comprobar de nuevo",
   "settings.screensReadFailed": "No se pudieron leer las pantallas conectadas.",

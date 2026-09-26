@@ -154,6 +154,8 @@
   "source.missingBody": "O OneCopy vai continuar trabalhando com os arquivos disponíveis. Conecte o disco que está faltando e verifique de novo, ou execute a configuração de novo para remover ou substituir uma pasta.",
   "source.substitutedTitle": "Volume de origem diferente detectado",
   "source.substitutedBody": "Uma pasta configurada está presente em um volume físico diferente daquele que o OneCopy registrou. Monte o disco original ou execute a configuração de novo, removendo e adicionando a pasta se essa mudança for intencional.",
+  "source.substitutedCheckFailedTitle": "Não foi possível verificar os volumes de origem",
+  "source.substitutedCheckFailedBody": "O OneCopy não conseguiu verificar se uma pasta configurada está em um volume físico diferente do anterior. O trabalho permanece bloqueado até essa verificação ser bem-sucedida, para que nada seja executado por engano no disco errado. Verifique novamente ou execute a configuração de novo se o problema continuar.",
   "source.rerunSetup": "Executar a configuração de novo…",
   "source.checkAgain": "Verificar de novo",
   "settings.screensReadFailed": "Não foi possível ler as telas conectadas.",

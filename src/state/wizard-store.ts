@@ -47,6 +47,12 @@ interface WizardState {
   optionalFeatures: OptionalFeatureChoices;
   missingDirs: string[];
   substitutedDirs: string[];
+  /** True when the last presence check could not answer at all (a config
+   * read error, or an I/O error in the backend's volume-identity check).
+   * Modeled as its own state rather than folded into an empty
+   * `substitutedDirs`: unknown blocks exactly like a known substitution
+   * (R3-07) — the gate must never read a failed check as "verified safe". */
+  presenceUnknown: boolean;
   init: (config: Record<string, unknown> | null) => Promise<void>;
   /** Re-runs the wizard as RECONFIGURE: seeded from the current config, never
    * from empty — the only trigger a first-run wizard has after first run. */
@@ -77,6 +83,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   optionalFeatures: optionalFeatureSetup(null),
   missingDirs: [],
   substitutedDirs: [],
+  presenceUnknown: false,
 
   init: async (config) => {
     const sourceDirs = stringArrayField(config, "sourceDirs");
@@ -98,6 +105,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         optionalFeatures: optionalFeatureSetup(config),
         missingDirs: [],
         substitutedDirs: [],
+        presenceUnknown: false,
       });
     } else {
       set({
@@ -109,6 +117,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         reconfigure: false,
         missingDirs: [],
         substitutedDirs: [],
+        presenceUnknown: false,
       });
       await get().recheckPresence();
     }
@@ -188,13 +197,21 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         "check_source_dirs",
       );
       if (fresh()) {
-        set({ missingDirs: status.missing, substitutedDirs: status.substituted, error: null });
+        set({
+          missingDirs: status.missing,
+          substitutedDirs: status.substituted,
+          presenceUnknown: false,
+          error: null,
+        });
       }
     } catch (error) {
       if (!fresh()) return;
       log.error("presence check failed", toErrorFields(error));
       const failure = message("wizard.sourceCheckFailed");
-      set({ error: failure });
+      // A check that could not even answer must not read as "no substituted
+      // volume": it blocks exactly like a known substitution until a recheck
+      // succeeds (R3-07).
+      set({ substitutedDirs: [], presenceUnknown: true, error: failure });
       recordActionFailure("configured-source-check-failed", failure, error);
     }
   },

@@ -187,6 +187,41 @@ pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityC
     }
 }
 
+/// The volume-substitution gate itself, enforced in the backend rather than
+/// left to a frontend check the caller might skip (R1-14): `Err` when a
+/// configured directory's current volume identity differs from the one
+/// recorded for it, or when the recorded identities cannot even be read. A
+/// read failure keeps the gate CLOSED rather than reading as "nothing
+/// recorded" (R3-07) — the opposite of `verify_source_dirs`'s own frontend
+/// status, which must still answer something for every directory even when
+/// this fails. A directory that is absent, or whose filesystem has no stable
+/// identity to read, is not this gate's concern and is skipped, exactly as
+/// `check_identity`'s callers already treat that case.
+pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), String> {
+    let _guard = store_lock();
+    let recorded = load_unlocked(data_root)?;
+    for dir in dirs {
+        let path = Path::new(dir);
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(known) = recorded.get(dir) else {
+            continue;
+        };
+        let root = crate::trash::volume_root_of(path)
+            .map_err(|error| format!("could not verify the volume for {dir}: {error}"))?;
+        let Some(current) = platform_identity(&root) else {
+            continue;
+        };
+        if current != known.identity {
+            return Err(format!(
+                "{dir} is a different volume than the one OneCopy recorded there; recheck source folders before continuing"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Drops recorded identities for directories that are no longer configured,
 /// so removing a source root does not leave a record that would later flag a
 /// re-added path as substituted.

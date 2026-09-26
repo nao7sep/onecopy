@@ -148,6 +148,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
+  const presenceUnknown = useWizardStore((s) => s.presenceUnknown);
   const issuesTotal = useIssuesStore((s) => s.total);
   const derivedWorkSnapshot = useDerivedWorkStore((s) => s.snapshot);
   const derivedWorkLine = backgroundWorkLine(derivedWorkSnapshot, t);
@@ -214,7 +215,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   // A substituted physical volume is unsafe to act on and remains a blocking
   // gate. Missing roots are ordinary availability failures: Main and every
   // independent available copy remain usable.
-  const substitutedSourceGateOpen = substitutedDirs.length > 0;
+  const substitutedSourceGateOpen = substitutedDirs.length > 0 || presenceUnknown;
   const reopenSetup = () =>
     useWizardStore
       .getState()
@@ -228,6 +229,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       ) : substitutedSourceGateOpen ? (
         <SubstitutedSourceGate
           substituted={substitutedDirs}
+          unknown={presenceUnknown}
           onRecheck={() => void useWizardStore.getState().recheckPresence()}
           onReconfigure={reopenSetup}
         />

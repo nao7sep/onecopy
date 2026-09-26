@@ -154,6 +154,8 @@
   "source.missingBody": "OneCopy continue de fonctionner avec les fichiers disponibles. Connectez le disque manquant puis vérifiez à nouveau, ou relancez la configuration pour retirer ou remplacer un dossier.",
   "source.substitutedTitle": "Volume source différent détecté",
   "source.substitutedBody": "Un dossier configuré se trouve sur un volume physique différent de celui que OneCopy avait enregistré. Montez le disque d’origine, ou relancez la configuration puis retirez et ajoutez à nouveau le dossier si ce changement est voulu.",
+  "source.substitutedCheckFailedTitle": "Impossible de vérifier les volumes source",
+  "source.substitutedCheckFailedBody": "OneCopy n’a pas pu vérifier si un dossier configuré se trouve sur un volume physique différent d’avant. Le travail reste bloqué tant que cette vérification n’a pas réussi, afin qu’aucune action ne soit effectuée par erreur sur le mauvais disque. Vérifiez à nouveau, ou relancez la configuration si le problème persiste.",
   "source.rerunSetup": "Relancer la configuration…",
   "source.checkAgain": "Vérifier à nouveau",
   "settings.screensReadFailed": "Impossible de lire les écrans connectés.",

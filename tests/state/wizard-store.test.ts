@@ -205,4 +205,34 @@ describe("loaded directory projection", () => {
       invokeCalls.filter((call) => call.command === "record_recent_notification"),
     ).toEqual([]);
   });
+
+  it("a presence check that fails outright blocks like a substitution, not like verified-safe (R3-07)", async () => {
+    mockCommands({
+      check_source_dirs: () => {
+        throw new Error("volume check failed");
+      },
+    });
+
+    await useWizardStore.getState().recheckPresence();
+
+    expect(useWizardStore.getState().presenceUnknown).toBe(true);
+    expect(useWizardStore.getState().substitutedDirs).toEqual([]);
+  });
+
+  it("a later successful check clears presenceUnknown", async () => {
+    mockCommands({
+      check_source_dirs: () => {
+        throw new Error("volume check failed");
+      },
+    });
+    await useWizardStore.getState().recheckPresence();
+    expect(useWizardStore.getState().presenceUnknown).toBe(true);
+
+    mockCommands({
+      check_source_dirs: () => ({ missing: [], substituted: [] }),
+    });
+    await useWizardStore.getState().recheckPresence();
+
+    expect(useWizardStore.getState().presenceUnknown).toBe(false);
+  });
 });

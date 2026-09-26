@@ -368,6 +368,15 @@ fn admit(
     keys: &[String],
     on_wait: &mut dyn FnMut(),
 ) -> Result<Option<Admitted>, String> {
+    // The volume-substitution gate guards every destructive path it is
+    // documented for, not only the frontend's own recheck (R1-14): a backup
+    // drive swapped mid-session at the same mount path must not be walked or
+    // mutated under the original drive's rows. A failed check keeps this gate
+    // closed (R3-07) — the `?` below refuses admission rather than treating
+    // an unreadable check as "nothing recorded".
+    let data_root = crate::paths::data_root(app)?;
+    let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
+    crate::volume::enforce_no_substitution(&data_root, &source_dirs)?;
     let cancelled = || mutation.cancelled();
     let Some(index) = crate::scan_runtime::begin_admitted_mutation(app, &cancelled, on_wait)?
     else {
@@ -822,6 +831,8 @@ pub(crate) fn empty_trash(
         json!({ "root": root, "operationId": operation_id }),
         || {
             let data_root = crate::paths::data_root(app)?;
+            let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
+            crate::volume::enforce_no_substitution(&data_root, &source_dirs)?;
             let roots = crate::storage::load_config_file_roots(&data_root)?;
             let known = crate::trash::overview(&roots);
             if !known.iter().any(|candidate| candidate.root == root) {

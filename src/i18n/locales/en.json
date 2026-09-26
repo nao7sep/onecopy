@@ -154,6 +154,8 @@
   "source.missingBody": "OneCopy will keep working with available files. Connect the missing drive and check again, or re-run setup to remove or replace a folder.",
   "source.substitutedTitle": "Different source volume detected",
   "source.substitutedBody": "A configured folder is present on a different physical volume than the one OneCopy recorded. Mount the original drive, or re-run setup and remove then add the folder if this change is intentional.",
+  "source.substitutedCheckFailedTitle": "Could not verify source volumes",
+  "source.substitutedCheckFailedBody": "OneCopy could not check whether a configured folder is on a different physical volume than before. Work stays blocked until this check succeeds, so nothing acts on the wrong drive by mistake. Check again, or re-run setup if the problem continues.",
   "source.rerunSetup": "Re-run setup…",
   "source.checkAgain": "Check again",
   "settings.screensReadFailed": "Couldn’t read the connected screens.",

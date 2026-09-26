@@ -40,6 +40,7 @@ describe("the presence gate", () => {
     render(
       <SubstitutedSourceGate
         substituted={["/Volumes/Photos"]}
+        unknown={false}
         onRecheck={() => {}}
         onReconfigure={() => {}}
       />,
@@ -51,12 +52,27 @@ describe("the presence gate", () => {
     const view = render(
       <SubstitutedSourceGate
         substituted={["/Volumes/Photos"]}
+        unknown={false}
         onRecheck={() => {}}
         onReconfigure={() => {}}
       />,
     );
     view.unmount();
     expect(hasOpenModal()).toBe(false);
+  });
+
+  it("blocks the same way when the check itself failed, without showing a stale or empty list (R3-07)", () => {
+    const view = render(
+      <SubstitutedSourceGate
+        substituted={[]}
+        unknown={true}
+        onRecheck={() => {}}
+        onReconfigure={() => {}}
+      />,
+    );
+    expect(hasOpenModal()).toBe(true);
+    expect(view.queryByRole("list")).toBeNull();
+    view.unmount();
   });
 
   it("keeps missing sources nonblocking and exposes both recovery actions", () => {

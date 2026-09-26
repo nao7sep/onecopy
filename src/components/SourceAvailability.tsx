@@ -56,10 +56,16 @@ export function MissingSourcesNotice({
 
 export function SubstitutedSourceGate({
   substituted,
+  unknown,
   onRecheck,
   onReconfigure,
 }: {
   substituted: string[];
+  /** True when the check that would have answered "verified" or
+   * "substituted" instead failed outright. Blocks exactly like a known
+   * substitution: an unreadable check is never treated as "verified safe"
+   * (R3-07). */
+  unknown: boolean;
   onRecheck: () => void;
   onReconfigure: () => void;
 }) {
@@ -69,19 +75,23 @@ export function SubstitutedSourceGate({
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
       <div className="w-[min(820px,calc(100vw-3rem))] rounded-2xl border border-border bg-surface p-7 shadow-xl">
         <h1 className="mb-1 text-lg font-semibold text-ink-strong">
-          {t("source.substitutedTitle")}
+          {t(unknown ? "source.substitutedCheckFailedTitle" : "source.substitutedTitle")}
         </h1>
-        <p className="mb-3 text-sm text-ink-muted">{t("source.substitutedBody")}</p>
-        <ul className="mb-4 max-h-64 overflow-y-auto">
-          {substituted.map((path) => (
-            <li
-              key={path}
-              className="mb-1.5 break-all rounded-lg bg-danger-surface px-3 py-2 text-sm leading-relaxed text-danger"
-            >
-              {path}
-            </li>
-          ))}
-        </ul>
+        <p className="mb-3 text-sm text-ink-muted">
+          {t(unknown ? "source.substitutedCheckFailedBody" : "source.substitutedBody")}
+        </p>
+        {unknown ? null : (
+          <ul className="mb-4 max-h-64 overflow-y-auto">
+            {substituted.map((path) => (
+              <li
+                key={path}
+                className="mb-1.5 break-all rounded-lg bg-danger-surface px-3 py-2 text-sm leading-relaxed text-danger"
+              >
+                {path}
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="flex justify-end gap-2">
           <button
             className="inline-flex h-9 items-center justify-center rounded-lg border border-border bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-muted"

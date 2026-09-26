@@ -3,7 +3,7 @@
 
 // One test per platform that can answer, so the import follows them both.
 #[cfg(any(target_os = "macos", windows))]
-use onecopy_lib::volume::volume_identity;
+use onecopy_lib::volume::{check_identity, enforce_no_substitution, volume_identity};
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -37,4 +37,55 @@ fn same_volume_paths_share_one_serial_in_the_stored_form() {
         ia.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
         "the serial is stored as uppercase hex: {ia}"
     );
+}
+
+// (R1-14, R3-07) The volume-substitution gate is enforced in the backend,
+// not only through the frontend's own recheck, and a failed check keeps it
+// closed rather than reading as "nothing recorded".
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn enforce_no_substitution_passes_first_sight_and_an_unchanged_volume() {
+    let app_data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_string_lossy().to_string();
+    let identity = volume_identity(dir.path()).expect("identity for temp dir");
+
+    // First sight: nothing recorded yet, so nothing to compare against.
+    assert!(enforce_no_substitution(app_data.path(), &[dir_str.clone()]).is_ok());
+
+    check_identity(app_data.path(), &dir_str, &identity).unwrap();
+    assert!(
+        enforce_no_substitution(app_data.path(), &[dir_str]).is_ok(),
+        "the recorded identity still matches"
+    );
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn enforce_no_substitution_refuses_a_different_volume_at_the_same_path() {
+    let app_data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_string_lossy().to_string();
+    // A recorded identity nothing on this machine can produce.
+    check_identity(app_data.path(), &dir_str, "not-the-real-volume-identity").unwrap();
+
+    let result = enforce_no_substitution(app_data.path(), &[dir_str]);
+    assert!(result.is_err(), "a substituted volume must refuse admission");
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn enforce_no_substitution_fails_closed_when_the_record_cannot_be_read() {
+    let app_data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_string_lossy().to_string();
+    let identity = volume_identity(dir.path()).expect("identity for temp dir");
+    check_identity(app_data.path(), &dir_str, &identity).unwrap();
+
+    // Corrupt the store the check reads: a failed check must keep the gate
+    // CLOSED, never read as "nothing recorded" and let work through.
+    std::fs::write(app_data.path().join("source-volumes.json"), b"{ not json").unwrap();
+
+    let result = enforce_no_substitution(app_data.path(), &[dir_str]);
+    assert!(result.is_err(), "an unreadable record must refuse admission, not pass it open");
 }

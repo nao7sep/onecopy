@@ -80,7 +80,8 @@ async function bootstrapOnce(): Promise<void> {
     checkAfterLaunch &&
     sources.length > 0 &&
     !wizard.open &&
-    wizard.substitutedDirs.length === 0
+    wizard.substitutedDirs.length === 0 &&
+    !wizard.presenceUnknown
   ) {
     // Event wiring, initial data, the first section projection, and source
     // presence are settled before this finite background pass starts. The
