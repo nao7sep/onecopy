@@ -167,8 +167,18 @@ function focusMainAnchor(): void {
   }
 }
 
-async function restoreMainFocus(): Promise<void> {
+/** OS-level app focus alone, with no DOM grid focus — for returning to a
+ * still-open Quick View, which already focused its own surface synchronously
+ * at mount (`useModalLayer`). Calling `focusMainAnchor` here would steal
+ * focus right back to the hidden Main grid behind an `aria-modal` dialog
+ * (viewing-sessions.md D7: "persistent Preview returns focus to its own
+ * window" — Quick View is the same kind of returning owner). */
+async function restoreAppFocus(): Promise<void> {
   await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+}
+
+async function restoreMainFocus(): Promise<void> {
+  await restoreAppFocus();
   focusMainAnchor();
 }
 
@@ -208,7 +218,8 @@ function recoverFullscreenFailure(
   }
   if (fallback === "quick") {
     clearFullscreenSurface();
-    void exitViewerFullscreen().then(restoreMainFocus);
+    // Quick View already mounted above and owns its own surface focus (D7).
+    void exitViewerFullscreen().then(restoreAppFocus);
   }
 }
 
@@ -426,7 +437,9 @@ export async function setViewerPresentation(presentation: ViewerPresentation): P
     fullscreenRequest += 1;
     clearFullscreenSurface();
     await exitViewerFullscreen();
-    await restoreMainFocus();
+    // Quick View is already mounted and already owns DOM focus on its own
+    // surface — only the app window itself needs focus back (D7).
+    await restoreAppFocus();
   }
 }
 

@@ -4,7 +4,7 @@
 // which renders the sentence in the language the document declares, so these
 // specs need a document even though the subject is pure workflow logic.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
@@ -26,6 +26,7 @@ import {
   mockSectionItems,
   resetTauriMocks,
   setCurrentMonitor,
+  setFocus,
 } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
 
@@ -312,6 +313,35 @@ describe("viewer workflow", () => {
     expect(viewer.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
     expect(viewer.hide).toHaveBeenCalled();
     expect(useQuickViewStore.getState().session).toBeNull();
+  });
+
+  // viewing-sessions.md D7: returning from fullscreen to Quick View must
+  // focus Quick View's OWN surface, not the hidden Main grid behind it —
+  // Quick View already claimed DOM focus synchronously when it mounted.
+  it("does not steal focus to the hidden Main grid when fullscreen switches back to Quick View", async () => {
+    const grid = document.createElement("div");
+    grid.id = "main-item-area";
+    grid.tabIndex = 0;
+    document.body.appendChild(grid);
+    const gridFocus = vi.spyOn(grid, "focus");
+    setFocus.mockClear();
+    setCurrentMonitor({
+      position: { x: 0, y: 0 },
+      size: { width: 1920, height: 1080 },
+      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+      scaleFactor: 1,
+      name: "display",
+    });
+    new WebviewWindow("viewer");
+
+    expect(openViewerFromMain("fullscreen")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await handleViewerKey({ key: " " });
+
+    expect(setFocus).toHaveBeenCalled();
+    expect(gridFocus).not.toHaveBeenCalled();
+    grid.remove();
   });
 
   it("keeps navigation failure on the viewer while recording only Recent history", async () => {
