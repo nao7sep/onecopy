@@ -58,7 +58,7 @@ Required work comprises:
 
 - Source discovery and reconciliation, content identity, metadata, date evidence, companions, and live folder watching.
 - Image thumbnails and screen-sized image previews.
-- Video posters and playable video preparation.
+- Video posters and playable video preparation. A playable video whose container reports no duration still gets its poster and is eligible for transcription; it has no scene snapshots, which need a timeline, and it is never reported as a file to repair.
 - Playable or otherwise supported preparation for Other files, including bounded truthful text or attributes when displayed.
 
 Background Work may temporarily stop or pause required work so the user can release computer resources. A paused required lifecycle remains visibly incomplete and resumable; pausing does not convert it into a disabled feature.

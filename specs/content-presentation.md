@@ -32,7 +32,7 @@
 
 ## Video body
 
-- Main video tiles show a static uncropped poster, duration, and truthful preparation or failure state. They never animate, play, or produce sound on hover, selection, or navigation.
+- Main video tiles show a static uncropped poster, the duration when the container reports one, and truthful preparation or failure state. They never animate, play, or produce sound on hover, selection, or navigation.
 - Preview and transient video presentations contain the complete picture without cropping and provide play/pause, seek, elapsed/duration, volume, app-wide Sound, and a usable poster when playback is unavailable.
 - Ordinary click on the video picture and Enter when the player is visible toggle play/pause. Actual controls retain their accessible actions. Space remains a viewing-session transition, not a playback command.
 - Double-click on the video picture has no special action.
