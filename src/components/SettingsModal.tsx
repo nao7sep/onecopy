@@ -267,9 +267,11 @@ function SettingsTabList({
     );
     const current = tabs.indexOf(event.currentTarget);
     let next = current;
-    if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
-    else if (event.key === "ArrowLeft")
-      next = (current - 1 + tabs.length) % tabs.length;
+    // Arrows STOP at the ends — the app-wide end-of-axis choice App.tsx's
+    // Details/Destinations tablist, Grid and Sidebar all already use
+    // (R8-01) — rather than wrapping around.
+    if (event.key === "ArrowRight") next = Math.min(current + 1, tabs.length - 1);
+    else if (event.key === "ArrowLeft") next = Math.max(current - 1, 0);
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = tabs.length - 1;
     else return;

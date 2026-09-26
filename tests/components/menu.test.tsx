@@ -94,3 +94,36 @@ describe("the shared menu viewport boundary", () => {
     }
   });
 });
+
+describe("keyboard fallthrough while a menu is open (R8-02)", () => {
+  it("lets an unclaimed key (Backspace) reach the window's own command layer, but stops a claimed key", () => {
+    render(
+      <Menu
+        ariaLabel="Test menu"
+        trigger={(props) => (
+          <button {...props} aria-label="Open test menu">
+            Menu
+          </button>
+        )}
+      >
+        <MenuItem onSelect={() => undefined}>First command</MenuItem>
+        <MenuItem onSelect={() => undefined}>Last command</MenuItem>
+      </Menu>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open test menu" }));
+    const panel = screen.getByRole("menu", { name: "Test menu" });
+
+    const seen: string[] = [];
+    const onWindowKeyDown = (event: KeyboardEvent) => seen.push(event.key);
+    window.addEventListener("keydown", onWindowKeyDown);
+    try {
+      fireEvent.keyDown(panel, { key: "Backspace", bubbles: true });
+      expect(seen).toContain("Backspace");
+
+      fireEvent.keyDown(panel, { key: "ArrowDown", bubbles: true });
+      expect(seen).not.toContain("ArrowDown");
+    } finally {
+      window.removeEventListener("keydown", onWindowKeyDown);
+    }
+  });
+});

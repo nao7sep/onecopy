@@ -219,6 +219,18 @@ describe("Settings categories", () => {
     expect(screen.queryByText("Directories")).toBeNull();
   });
 
+  it("stops at the ends instead of wrapping, like every other tablist in the app (R8-01)", () => {
+    render(<SettingsModal open onClose={() => {}} />);
+    const first = screen.getByRole("tab", { name: "Library" });
+    fireEvent.keyDown(first, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(first);
+
+    const last = screen.getByRole("tab", { name: "Behavior" });
+    last.focus();
+    fireEvent.keyDown(last, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(last);
+  });
+
   it("resets only the four optimized similar-photo settings", () => {
     useSettingsStore.getState().beginEditing({
       ...config,
