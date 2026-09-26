@@ -11,12 +11,9 @@ import { requestSeq } from "./request-seq";
 import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import {
-  effectiveLanguage,
   normalizeLanguagePreference,
-  type Language,
   type LanguagePreference,
 } from "../i18n/languages";
-import { useLanguageStore } from "./language-store";
 import {
   optionalFeatureSetup,
   type OptionalFeatureChoices,
@@ -32,12 +29,11 @@ interface WizardState {
   step: 1 | 2 | 3;
   dirs: WizardDir[];
   /** The staged interface language. Like every other wizard answer it is
-   * written only by Finish, but the wizard shows it at once so the reader sees
-   * the language they picked while answering. */
+   * written only by Finish; the wizard's own view previews it at once
+   * (Wizard.tsx nests its own I18nProvider from this and `systemLanguage`),
+   * but every other window, and the native menu, stay in the saved language
+   * until Finish actually writes it (interface-language.md L3, R5.5 D-L3). */
   language: LanguagePreference;
-  /** The language in effect when the wizard opened, so abandoning a re-run
-   * puts the preview back. */
-  languageBefore: Language;
   timezone: string;
   error: Message | null;
   finishing: boolean;
@@ -75,7 +71,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   step: 1,
   dirs: [],
   language: "system",
-  languageBefore: "en",
   timezone: "",
   error: null,
   finishing: false,
@@ -97,7 +92,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         step: 1,
         dirs: [],
         language,
-        languageBefore: useLanguageStore.getState().language,
         timezone,
         error: null,
         finishing: false,
@@ -131,7 +125,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       open: true,
       step: 1,
       language: normalizeLanguagePreference(config?.language),
-      languageBefore: useLanguageStore.getState().language,
       timezone,
       error: null,
       finishing: false,
@@ -176,17 +169,13 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     set({ timezone: name, error: null });
   },
 
-  setLanguage: (preference) => {
-    set({ language: preference });
-    const { systemLanguage } = useLanguageStore.getState();
-    useLanguageStore.setState({ language: effectiveLanguage(preference, systemLanguage) });
-  },
+  setLanguage: (preference) => set({ language: preference }),
 
   cancel: () => {
     // Nothing was written on the way through — every step edits store state
     // only, and the Finish workflow is the sole writer — so abandoning is
-    // just a close. The previewed language goes back with it.
-    useLanguageStore.setState({ language: get().languageBefore });
+    // just a close. The wizard's own preview (Wizard.tsx) closes with it;
+    // no other window ever saw the staged language.
     set({ open: false, reconfigure: false });
   },
 

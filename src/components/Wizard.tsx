@@ -9,8 +9,9 @@ import { Row, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
 import OperationResult from "./ui/OperationResult";
 import { CATALOGUES } from "../i18n/catalogues";
-import { useI18n } from "../i18n/I18nContext";
-import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
+import { I18nProvider, useI18n } from "../i18n/I18nContext";
+import { LANGUAGES, effectiveLanguage, formattingLocale, normalizeLanguagePreference } from "../i18n/languages";
+import { useLanguageStore } from "../state/language-store";
 
 const WIZARD_STEPS = 3;
 
@@ -26,7 +27,28 @@ const WIZARD_STEPS = 3;
 // offers Cancel, which writes nothing (every step edits store state, and
 // the Finish workflow is the sole writer).
 
+// The wizard's choice previews inside its own view only: every other
+// surface — Main behind it (there is none to show on a first run, but a
+// re-run replaces Main's whole body while it is open), the native menu, and
+// every other window — stays in the saved language until Finish actually
+// writes the choice (interface-language.md L3, R5.5 D-L3).
 export default function Wizard() {
+  const language = useWizardStore((s) => s.language);
+  const systemLanguage = useLanguageStore((s) => s.systemLanguage);
+  const systemLocale = useLanguageStore((s) => s.systemLocale);
+  const preview = effectiveLanguage(language, systemLanguage);
+  return (
+    <I18nProvider
+      language={preview}
+      locale={formattingLocale(preview, systemLocale)}
+      manageDocumentLanguage={false}
+    >
+      <WizardContent />
+    </I18nProvider>
+  );
+}
+
+function WizardContent() {
   const { t, text } = useI18n();
   const step = useWizardStore((s) => s.step);
   const language = useWizardStore((s) => s.language);

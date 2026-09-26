@@ -4,7 +4,7 @@
 
 - OneCopy's interface is available in ten languages: English, Japanese, Chinese, Korean, Spanish, Portuguese, French, German, Italian and Russian. Chinese is Simplified Chinese and Portuguese is Brazilian Portuguese; each language is named in its own words. English is the source language and the fallback for every computer whose language is outside the set.
 - Settings exposes **System** followed by each language under its own name. **System** resolves at every launch from the computer's preferred languages in order, taking the first one in the set: every Chinese locale resolves to Chinese, every Portuguese locale to Portuguese, and every Spanish locale to Spanish.
-- The first-launch wizard exposes the same choice and opens in the resolved **System** language. A language chosen there takes effect when the wizard finishes, with its other answers.
+- The first-launch wizard exposes the same choice and opens in the resolved **System** language. A language chosen there is previewed inside the wizard's own view only; it commits, with its other answers, when the wizard finishes. Nothing outside the wizard — the native menu, any other window, or a re-run's Main underneath it — sees the choice before that.
 - A chosen language is durable. It survives a change of the computer's language and stays until the user changes it. A missing or unrecognized saved value means **System**.
 - The language applies on Save with its neighbouring settings and needs no restart: every open OneCopy window follows it, including windows that are hidden or reused.
 
