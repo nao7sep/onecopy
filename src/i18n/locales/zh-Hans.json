@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "准备与增强意外停止。请在“后台工作”中继续其中一行，以重新开始处理。",
   "notice.configSaveFailed": "OneCopy 无法保存某项应用设置。你的媒体库文件未被更改。",
   "notice.sourceCheckFailed": "OneCopy 无法监视某个源文件夹。请确认该文件夹可用，然后重新扫描。",
+  "notice.sourceCheckCompleted": "已检查源文件夹。",
+  "notice.sourceCheckCompletedWithIssues": "源文件夹检查已完成。部分文件夹或文件无法检查。",
   "notice.fileInformationStateFailed": "OneCopy 无法保存后台工作的进度。请先重新启动 OneCopy，然后继续。",
   "notice.fileOperationStateFailed": "OneCopy 无法完成某个文件操作。重试之前请在“问题”中查看受影响的项目。",
   "notice.externalOpenFailed": "OneCopy 无法在其他应用中打开此项目。请确认该文件可用，然后重试。",

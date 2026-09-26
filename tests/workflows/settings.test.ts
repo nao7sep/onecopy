@@ -59,7 +59,7 @@ describe("Settings save boundary", () => {
     expect(notice).toMatchObject({
       level: "info",
       presentation: "timed",
-      message: "Settings were saved. OneCopy will apply them to the library as soon as current work allows.",
+      messageKey: "settings.applyOwedNotice",
     });
     await settleUntil(() => invokeCalls.some((call) => call.command === "activity_record" && (call.args.draft as { kind: string }).kind !== "started"));
     expect(invokeCalls.filter((call) => call.command === "activity_record").map((call) => (call.args.draft as { kind: string }).kind)).toEqual(["started", "completed"]);
@@ -108,7 +108,7 @@ describe("Settings save boundary", () => {
 
     expect(useAppShellStore.getState().utilitySurface).toBeNull();
     expect(invokeCalls.find((call) => call.command === "publish_notification")?.args.request).toMatchObject({
-      message: "Settings were saved, but OneCopy couldn’t apply them to the library yet. It tries again automatically.",
+      messageKey: "settings.reindexFailedNotice",
       presentation: "persistent",
     });
     await settleUntil(() => invokeCalls.some((call) => call.command === "activity_record" && (call.args.draft as { kind: string }).kind === "failed"));

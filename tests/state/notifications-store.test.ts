@@ -77,7 +77,7 @@ describe("notification failure containment", () => {
       kind: "settings-save-failed",
       level: "error",
       presentation: "persistent",
-      message: "Couldn’t save Settings.",
+      messageKey: "settings.saveFailedNotice",
     });
     expect(JSON.stringify(recent?.args.request)).not.toContain("HOSTILE-SENTINEL");
   });

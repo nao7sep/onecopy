@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import NotificationHost from "../../src/components/NotificationHost";
+import { I18nProvider } from "../../src/i18n/I18nContext";
 import {
   type NotificationRecord,
   useNotificationsStore,
@@ -23,6 +24,8 @@ function notice(over: Partial<NotificationRecord> = {}): NotificationRecord {
     level: "error",
     presentation: "persistent",
     message: "Couldn’t open the selected file.",
+    messageKey: null,
+    messageValues: null,
     firstSeenUtc: "2026-08-31T00:00:00.000Z",
     lastSeenUtc: "2026-08-31T00:00:00.000Z",
     occurrenceCount: 1,
@@ -139,6 +142,29 @@ describe("the app-frame notification host", () => {
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expect(document.body.textContent).toContain("Done.");
     expect(invokeCalls.some((call) => call.command === "dismiss_notification")).toBe(false);
+  });
+
+  it("shows a live notice in the current interface language and follows a change with no re-record (R5.5 D-L12)", () => {
+    const view = render(
+      <I18nProvider language="ja" locale="ja">
+        <NotificationHost />
+      </I18nProvider>,
+    );
+    act(() => useNotificationsStore.setState({
+      active: [notice({
+        kind: "sleep-prevention-failed",
+        message: "",
+        messageKey: "notice.sleepPreventionFailed",
+      })],
+    }));
+    expect(document.body.textContent).toContain("OneCopy はシステムのスリープを防げませんでした。");
+
+    view.rerender(
+      <I18nProvider language="en" locale="en">
+        <NotificationHost />
+      </I18nProvider>,
+    );
+    expect(document.body.textContent).toContain("OneCopy could not prevent idle system sleep.");
   });
 
   it("shows the coalesced occurrence count", () => {

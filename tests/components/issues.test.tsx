@@ -10,6 +10,7 @@ import { useIssuesStore, type IssueRow } from "../../src/state/issues-store";
 import { invokeCalls, mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
+import { I18nProvider } from "../../src/i18n/I18nContext";
 
 function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
   return {
@@ -205,6 +206,39 @@ describe("the issues modal", () => {
       afterFirstSeenUtc: "2026-08-02T00:00:00.000Z",
       afterId: 2,
     });
+  });
+
+  it("shows an Issue's own sentence in the current interface language, following a change with no reload (R5.5 D-L12)", async () => {
+    mockCommands({
+      get_issues: () => ({
+        total: 1,
+        rows: [row(1, {
+          kind: "sleep-prevention-failed",
+          message: "",
+          messageKey: "notice.sleepPreventionFailed",
+          messageValues: null,
+        })],
+      }),
+    });
+    const view = render(
+      <I18nProvider language="ja" locale="ja">
+        <IssuesModal open onClose={() => {}} />
+      </I18nProvider>,
+    );
+    await act(async () => {});
+    expect(document.body.textContent).toContain("OneCopy はシステムのスリープを防げませんでした。");
+
+    // A later language change re-renders the SAME already-loaded row in the
+    // new language — no refetch, no frozen text from when it was recorded.
+    view.rerender(
+      <I18nProvider language="en" locale="en">
+        <IssuesModal open onClose={() => {}} />
+      </I18nProvider>,
+    );
+    expect(document.body.textContent).toContain(
+      "OneCopy could not prevent idle system sleep.",
+    );
+    expect(invokeCalls.filter((call) => call.command === "get_issues")).toHaveLength(1);
   });
 
   it("does not restore stale rows over a newer refresh", async () => {

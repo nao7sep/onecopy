@@ -131,7 +131,7 @@ describe("the shared mutation activity projection", () => {
 
     expect(useMutationStore.getState().cancelling).toBe(false);
     expect(invokeCalls.find((call) => call.command === "publish_notification")?.args.request).toMatchObject({
-      message: "Couldn’t cancel the file operation.", presentation: "persistent", level: "error",
+      messageKey: "mutation.cancelFailed", presentation: "persistent", level: "error",
     });
   });
 });

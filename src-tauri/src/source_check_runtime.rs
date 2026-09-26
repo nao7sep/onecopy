@@ -203,6 +203,15 @@ fn worker(app: AppHandle) {
                 "Source folders checked."
             }
             .to_string(),
+            message_key: Some(
+                if incomplete {
+                    "notice.sourceCheckCompletedWithIssues"
+                } else {
+                    "notice.sourceCheckCompleted"
+                }
+                .to_string(),
+            ),
+            message_values: None,
         };
         if let Err(error) = crate::notifications::publish(&app, request) {
             crate::scan_runtime::record_runtime_failure(

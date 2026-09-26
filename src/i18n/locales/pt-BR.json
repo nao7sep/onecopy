@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "A preparação e o enriquecimento pararam de forma inesperada. Retome uma linha no Trabalho em segundo plano para reiniciar o processamento.",
   "notice.configSaveFailed": "O OneCopy não conseguiu salvar uma configuração do aplicativo. Os arquivos da sua biblioteca não foram alterados.",
   "notice.sourceCheckFailed": "O OneCopy não conseguiu monitorar uma pasta de origem. Verifique se a pasta está disponível e tente a verificação de novo.",
+  "notice.sourceCheckCompleted": "Pastas de origem verificadas.",
+  "notice.sourceCheckCompletedWithIssues": "Verificação das pastas de origem concluída. Algumas pastas ou arquivos não puderam ser verificados.",
   "notice.fileInformationStateFailed": "O OneCopy não conseguiu salvar o progresso do trabalho em segundo plano. Reinicie o OneCopy antes de continuar.",
   "notice.fileOperationStateFailed": "O OneCopy não conseguiu concluir uma operação de arquivos. Veja os itens afetados em Problemas antes de tentar de novo.",
   "notice.externalOpenFailed": "O OneCopy não conseguiu abrir este item em outro aplicativo. Verifique se o arquivo está disponível e tente novamente.",

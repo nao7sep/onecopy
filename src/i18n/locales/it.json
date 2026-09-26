@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "La preparazione e l’arricchimento si sono interrotti in modo inatteso. Riprendi una riga nel lavoro in background per riavviare l’elaborazione.",
   "notice.configSaveFailed": "OneCopy non è riuscito a salvare un’impostazione dell’applicazione. I file della tua libreria non sono stati modificati.",
   "notice.sourceCheckFailed": "OneCopy non è riuscito a monitorare una cartella di origine. Verifica che la cartella sia disponibile, poi riprova il controllo.",
+  "notice.sourceCheckCompleted": "Cartelle di origine controllate.",
+  "notice.sourceCheckCompletedWithIssues": "Controllo delle cartelle di origine terminato. Alcune cartelle o file non sono stati controllati.",
   "notice.fileInformationStateFailed": "OneCopy non è riuscito a salvare l’avanzamento del lavoro in background. Riavvia OneCopy prima di continuare.",
   "notice.fileOperationStateFailed": "OneCopy non è riuscito a completare un’operazione sui file. Controlla gli elementi interessati in Problemi prima di riprovare.",
   "notice.externalOpenFailed": "OneCopy non è riuscito ad aprire questo elemento in un’altra applicazione. Verifica che il file sia disponibile, poi riprova.",

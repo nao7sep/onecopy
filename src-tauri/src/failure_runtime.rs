@@ -52,13 +52,46 @@ fn presentation_for(kind: &str) -> &'static str {
     }
 }
 
+/// The catalogue key `condition_message_key(kind)` names, so the sentence a
+/// notice or Issue shows for this condition follows the interface language
+/// instead of freezing at whatever language was current when it was recorded
+/// (R5.5 D-L12). Every key here is one `noticeConditions.ts` used to name the
+/// same conditions from the frontend side; the two lists must stay in step,
+/// checked by `every_condition_message_key_matches_the_frontend_list`.
+pub(crate) fn condition_message_key(kind: &str) -> &'static str {
+    match kind {
+        "sleep-prevention-failed" => "notice.sleepPreventionFailed",
+        "derived-worker-failed" => "notice.derivedWorkerFailed",
+        "config-save-failed" | "state-save-failed" => "notice.configSaveFailed",
+        "source-check-failed" | "watcher-failed" | "watcher-root-failed" =>
+            "notice.sourceCheckFailed",
+        "file-information-state-failed" | "background-work-state-failed" =>
+            "notice.fileInformationStateFailed",
+        "file-operation-state-failed" | "trash-empty-entry-failed" =>
+            "notice.fileOperationStateFailed",
+        "external-open-failed" => "notice.externalOpenFailed",
+        "text-preview-failed" => "notice.textPreviewFailed",
+        "dependency-install-failed" | "update-check-failed" =>
+            "notice.dependencyInstallFailed",
+        "instance-activation-failed" | "instance-listener-failed" =>
+            "notice.instanceActivationFailed",
+        "media-use-state-failed" => "notice.mediaUseStateFailed",
+        "transcription-worker-failed" => "notice.transcriptionWorkerFailed",
+        "shutdown-media-release-failed" | "shutdown-window-recovery-failed"
+        | "shutdown-worker-failed" => "notice.shutdownMediaReleaseFailed",
+        "source-check-feedback-failed" => "notice.sourceCheckFeedbackFailed",
+        "event-delivery-failed" => "notice.eventDeliveryFailed",
+        "interface-failed" => "notice.interfaceFailed",
+        _ => "notice.backgroundStopped",
+    }
+}
+
 pub fn report(
     app: &AppHandle,
     kind: &str,
     path: Option<&str>,
     message: &str,
 ) -> Result<(), String> {
-    let presentation = presentation_for(kind);
     crate::logging::error(
         "application failure",
         json!({ "kind": kind, "path": path, "error": { "message": message } }),
@@ -70,7 +103,13 @@ pub fn report(
             path: path.map(str::to_string),
             level: crate::notifications::NotificationLevel::Error,
             presentation: crate::notifications::NotificationPresentation::Persistent,
-            message: presentation.to_string(),
+            // The real diagnostic, finally kept rather than discarded: it
+            // shows as recorded detail after the translated sentence
+            // (message_key), which is drawn from a curated, safe catalogue
+            // entry and never contains it (interface-language.md).
+            message: message.to_string(),
+            message_key: Some(condition_message_key(kind).to_string()),
+            message_values: None,
         },
     )
     .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
@@ -86,7 +125,6 @@ pub fn record_active(
     path: Option<&str>,
     message: &str,
 ) -> Result<(), String> {
-    let presentation = presentation_for(kind);
     crate::logging::error(
         "application failure",
         json!({
@@ -98,8 +136,10 @@ pub fn record_active(
     let conn = crate::paths::data_root(app)
         .and_then(|root| crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME)))
         .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
-    crate::index_store::upsert_issue(&conn, path, kind, presentation)
-        .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
+    crate::index_store::upsert_issue_with_descriptor(
+        &conn, path, kind, Some(condition_message_key(kind)), None, message,
+    )
+    .map_err(|error| present_unrecorded(app, kind, path, message, "Issues", &error))?;
     if let Err(emit_error) = emit_checked(app, "failure://reported", json!({ "kind": kind })) {
         crate::logging::error(
             "failure notification event failed",
@@ -112,7 +152,9 @@ pub fn record_active(
                 path: Some("failure://reported".to_string()),
                 level: crate::notifications::NotificationLevel::Error,
                 presentation: crate::notifications::NotificationPresentation::Persistent,
-                message: presentation_for("event-delivery-failed").to_string(),
+                message: emit_error.clone(),
+                message_key: Some(condition_message_key("event-delivery-failed").to_string()),
+                message_values: None,
             },
         )
         .map_err(|save_error| {

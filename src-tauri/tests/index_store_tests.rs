@@ -1,4 +1,5 @@
 use onecopy_lib::index_store;
+use rusqlite::OptionalExtension;
 
 #[test]
 fn offset_repair_marks_only_unknown_image_evidence_and_preserves_visibility() {
@@ -68,6 +69,39 @@ fn revision_twelve_fixture(path: &std::path::Path) -> rusqlite::Connection {
     conn
 }
 
+/// Seeds an `issues` row directly in the frozen v12 shape (no message_key or
+/// message_values, which that revision never had), mirroring
+/// `index_store::upsert_issue`'s coalesce-by-(kind, path) behavior. The real
+/// `upsert_issue` now requires the current schema, so a connection pinned to
+/// v12 seeds through this instead of a live migration.
+fn seed_v12_issue(conn: &rusqlite::Connection, path: Option<&str>, kind: &str, message: &str) {
+    let path = path.unwrap_or("");
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM issues WHERE kind = ?1 AND path = ?2 AND closed_at_utc IS NULL",
+            rusqlite::params![kind, path],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap();
+    match existing {
+        Some(id) => {
+            conn.execute(
+                "UPDATE issues SET message = ?2, last_seen_utc = ?3, occurrence_count = occurrence_count + 1 WHERE id = ?1",
+                rusqlite::params![id, message, "2026-01-01T00:00:00.000Z"],
+            )
+            .unwrap();
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) VALUES (?1, ?2, ?3, ?4, ?4)",
+                rusqlite::params![path, kind, message, "2026-01-01T00:00:00.000Z"],
+            )
+            .unwrap();
+        }
+    }
+}
+
 #[test]
 fn revision_twelve_visibility_upgrade_preserves_history_caches_and_copy_evidence() {
     let root = tempfile::tempdir().unwrap();
@@ -77,7 +111,7 @@ fn revision_twelve_visibility_upgrade_preserves_history_caches_and_copy_evidence
         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_source, resolved_utc_ms)
           VALUES ('/root/a.jpg', '/root', 'a.jpg', 'image', 'photo', 'filename', 1000),
                  ('/root/b.jpg', '/root', 'b.jpg', 'image', 'photo', 'filename', 2000);").unwrap();
-    index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "retained").unwrap();
+    seed_v12_issue(&conn, Some("/root/a.jpg"), "read-error", "retained");
     index_store::dismiss_issues(&conn, None).unwrap();
     drop(conn);
     let conn = index_store::open(&db).unwrap();
@@ -174,8 +208,8 @@ fn revision_ten_upgrade_retains_issue_identity_and_allows_new_occurrences_after_
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
     let conn = revision_twelve_fixture(&db);
-    index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail").unwrap();
-    index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail").unwrap();
+    seed_v12_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail");
+    seed_v12_issue(&conn, Some("/photo.jpg"), "read-error", "retained detail");
     restore_legacy_issue_shape(&conn);
     let before: (i64, String, String, i64) = conn
         .query_row(
@@ -211,7 +245,7 @@ fn failed_history_upgrade_rolls_back_the_whole_migration() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
     let conn = revision_twelve_fixture(&db);
-    index_store::upsert_issue(&conn, None, "read-error", "retained").unwrap();
+    seed_v12_issue(&conn, None, "read-error", "retained");
     restore_legacy_issue_shape(&conn);
     // A malformed old schema fails after the rename, while copying records.
     conn.execute_batch(
@@ -260,9 +294,9 @@ fn revision_eleven_preserves_archived_closures_and_accepts_new_attempt_reasons()
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
     let conn = revision_twelve_fixture(&db);
-    index_store::upsert_issue(&conn, None, "test", "dismissed detail").unwrap();
+    seed_v12_issue(&conn, None, "test", "dismissed detail");
     index_store::dismiss_issues(&conn, None).unwrap();
-    index_store::upsert_issue(&conn, None, "test", "live detail").unwrap();
+    seed_v12_issue(&conn, None, "test", "live detail");
     let old: (i64, String, String) = conn
         .query_row(
             "SELECT id, closed_at_utc, closure FROM issues WHERE closure IS NOT NULL",

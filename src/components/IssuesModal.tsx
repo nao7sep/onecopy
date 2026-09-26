@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { conditionKey, conditionText } from "../models/noticeConditions";
-import { createTranslator } from "../i18n/translate";
 import { X } from "lucide-react";
 import { useIssuesStore, type IssueRow } from "../state/issues-store";
+import { noticeSentence } from "../state/notifications-store";
 import { formatLocalMinute } from "../utils/displayTime";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import ModalShell from "./ModalShell";
@@ -12,15 +11,13 @@ import { revealInMain } from "../workflows/reveal-in-main";
 import { useI18n } from "../i18n/I18nContext";
 import type { MessageKey } from "../i18n/catalogues";
 
-// What the core wrote down, when it is not simply the English of the sentence
-// the row already shows: a system error, a count, a path it could not read.
-const english = createTranslator("en");
-
+// Real, unrestatable detail (a system error, a count) beside a keyed
+// sentence — never shown for an unkeyed row, whose recorded text IS the
+// sentence `noticeSentence` already renders (R5.5 D-L12).
 function recordedDetail(row: IssueRow): string | null {
+  if (row.messageKey == null) return null;
   if (row.message === null || row.message.trim() === "") return null;
-  const key = conditionKey(row.kind);
-  if (key === null) return null;
-  return row.message === english.t(key) ? null : row.message;
+  return row.message;
 }
 
 export default function IssuesModal({ open, onClose }: {
@@ -116,7 +113,7 @@ export default function IssuesModal({ open, onClose }: {
               {/* The condition in the reader's language, then what the core
                   recorded when that says something the sentence does not. */}
               <div className="mt-1.5 select-text break-words leading-relaxed text-ink-muted">
-                {conditionText(row.kind, row.message, t)}
+                {noticeSentence(row, text)}
               </div>
               {recordedDetail(row) !== null ? (
                 <div className="mt-1 select-text break-words text-xs leading-relaxed text-ink-muted opacity-80">

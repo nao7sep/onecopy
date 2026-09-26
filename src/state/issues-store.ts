@@ -3,14 +3,19 @@ import { create } from "zustand";
 import { requestSeq } from "./request-seq";
 import { invoke } from "@tauri-apps/api/core";
 import { message, type Message } from "../i18n/translate";
+import type { MessageKey } from "../i18n/catalogues";
 import { log, toErrorFields } from "../repositories";
-import { recordActionFailure } from "./notifications-store";
+import { recordActionFailure, type StoredMessageValues } from "./notifications-store";
 
 export interface IssueRow {
   id: number;
   path: string | null;
   kind: string;
   message: string | null;
+  /** A catalogue key the frontend renders in the current interface language;
+   * absent for a row recorded before this descriptor existed (R5.5 D-L12). */
+  messageKey: MessageKey | null;
+  messageValues: StoredMessageValues | null;
   firstSeenUtc: string;
   lastSeenUtc: string;
   occurrenceCount: number;

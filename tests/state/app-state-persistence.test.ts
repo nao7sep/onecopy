@@ -82,7 +82,7 @@ describe("app state persistence settlement", () => {
       kind: "interface-state-save-failed",
       level: "error",
       presentation: "persistent",
-      message: "OneCopy couldn’t save the current interface state. Your changes remain available in this session.",
+      messageKey: "app.stateSaveFailed",
     });
     expect(JSON.stringify(notification?.args.request)).not.toMatch(
       /EACCES|HOSTILE-SENTINEL|TypeError|IPC|private\/tmp/,

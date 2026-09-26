@@ -1918,17 +1918,24 @@ pub struct IssueRow {
     pub path: Option<String>,
     pub kind: String,
     pub message: Option<String>,
+    /// A catalogue key the frontend renders in the current interface
+    /// language; absent for a row recorded before this descriptor existed,
+    /// or one whose text has no translatable sentence to key (R5.5 D-L12).
+    pub message_key: Option<String>,
+    /// The key's interpolation values, as a JSON object; absent when the key
+    /// takes none.
+    pub message_values: Option<serde_json::Value>,
     pub first_seen_utc: String,
     pub last_seen_utc: String,
     pub occurrence_count: u64,
 }
 
 const ISSUES_PAGE_SQL: &str =
-    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
+    "SELECT id, path, kind, message, message_key, message_values, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
      ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
 
 const ISSUES_PAGE_AFTER_SQL: &str =
-    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
+    "SELECT id, path, kind, message, message_key, message_values, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
      WHERE (first_seen_utc, id) > (?2, ?3)
      ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
 
@@ -1967,6 +1974,7 @@ pub fn issues(
         // `\\?\C:\…` for every file, not just deep ones. The stored
         // spelling stays verbatim: issue identity is (kind, path), and
         // `clear_issues` matches on what the pipeline wrote.
+        let message_values: Option<String> = r.get(5)?;
         Ok(IssueRow {
             id: r.get(0)?,
             path: if path.is_empty() {
@@ -1976,9 +1984,11 @@ pub fn issues(
             },
             kind: r.get(2)?,
             message: r.get(3)?,
-            first_seen_utc: r.get(4)?,
-            last_seen_utc: r.get(5)?,
-            occurrence_count: r.get::<_, i64>(6)?.max(1) as u64,
+            message_key: r.get(4)?,
+            message_values: message_values.and_then(|json| serde_json::from_str(&json).ok()),
+            first_seen_utc: r.get(6)?,
+            last_seen_utc: r.get(7)?,
+            occurrence_count: r.get::<_, i64>(8)?.max(1) as u64,
         })
     };
     let rows: Vec<IssueRow> = match after {

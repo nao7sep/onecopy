@@ -20,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 18;
+const SCHEMA_REVISION: i64 = 19;
 
 /// The settings dates and companion relationships were resolved with
 /// (`library_settings`). Launch adopts the saved settings for an index that
@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS issues (
   path           TEXT NOT NULL DEFAULT '',
   kind           TEXT NOT NULL,
   message        TEXT,
+  message_key    TEXT,
+  message_values TEXT,
   first_seen_utc TEXT NOT NULL,
   last_seen_utc  TEXT NOT NULL,
   occurrence_count INTEGER NOT NULL DEFAULT 1,
@@ -52,7 +54,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_live_identity
 CREATE INDEX IF NOT EXISTS idx_issues_first_seen
   ON issues (first_seen_utc, id) WHERE closed_at_utc IS NULL;
 CREATE VIEW IF NOT EXISTS active_issues AS
-  SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count
+  SELECT id, path, kind, message, message_key, message_values, first_seen_utc, last_seen_utc, occurrence_count
   FROM issues WHERE closed_at_utc IS NULL;
 ";
 
@@ -398,6 +400,8 @@ CREATE TABLE IF NOT EXISTS recent_notifications (
   level            TEXT NOT NULL CHECK (level IN ('info', 'warning', 'error')),
   presentation     TEXT NOT NULL CHECK (presentation IN ('timed', 'persistent')),
   message          TEXT NOT NULL,
+  message_key      TEXT,
+  message_values   TEXT,
   first_seen_utc   TEXT NOT NULL,
   last_seen_utc    TEXT NOT NULL,
   occurrence_count INTEGER NOT NULL DEFAULT 1,
@@ -472,7 +476,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                13..=17 => {}
+                13..=18 => {}
                 9..=12 => {
                     if current == 9 {
                         conn.execute_batch(
@@ -666,6 +670,55 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                     |_conn| Ok(()),
                 )?;
             }
+            if current < 19 {
+                // Issues and notices now carry a message descriptor (a
+                // catalogue key plus values) beside the recorded text, so
+                // they render in the current interface language instead of
+                // staying frozen in whatever language was active when they
+                // were recorded (R5.5 D-L12). Existing rows keep only their
+                // recorded text — a NULL key means "show it as recorded",
+                // exactly today's behavior — because there is no language
+                // they were actually composed in to recover a key from.
+                //
+                // Guarded by presence, not just `current < 19`: the 0..=8 and
+                // 9..=12 branches above already recreate `issues` fresh from
+                // today's ISSUE_SCHEMA (columns included) before falling
+                // through to this block, so an unconditional ALTER here would
+                // fail on a duplicate column for those paths.
+                let issues_have_message_key: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('issues') \
+                         WHERE name = 'message_key')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if !issues_have_message_key {
+                    conn.execute_batch(
+                        "ALTER TABLE issues ADD COLUMN message_key TEXT;
+                         ALTER TABLE issues ADD COLUMN message_values TEXT;
+                         DROP VIEW IF EXISTS active_issues;",
+                    )
+                    .map_err(|error| error.to_string())?;
+                    conn.execute_batch(ISSUE_SCHEMA)
+                        .map_err(|error| error.to_string())?;
+                }
+                let notifications_have_message_key: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('recent_notifications') \
+                         WHERE name = 'message_key')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if !notifications_have_message_key {
+                    conn.execute_batch(
+                        "ALTER TABLE recent_notifications ADD COLUMN message_key TEXT;
+                         ALTER TABLE recent_notifications ADD COLUMN message_values TEXT;",
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+            }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
@@ -712,6 +765,23 @@ pub fn upsert_issue(
     kind: &str,
     message: &str,
 ) -> Result<bool, String> {
+    upsert_issue_with_descriptor(conn, path, kind, None, None, message)
+}
+
+/// Like `upsert_issue`, plus a message descriptor (a catalogue key the
+/// frontend renders in the current interface language, with its
+/// interpolation values as a JSON object) beside the recorded `message`.
+/// `message` stays exactly what a caller with no descriptor already passed:
+/// real, non-restatable detail (a system error, a count, a path), shown as
+/// recorded after the translated sentence (R5.5 D-L12).
+pub fn upsert_issue_with_descriptor(
+    conn: &Connection,
+    path: Option<&str>,
+    kind: &str,
+    message_key: Option<&str>,
+    message_values_json: Option<&str>,
+    message: &str,
+) -> Result<bool, String> {
     let now = crate::logging::now_iso_millis();
     let path = path.unwrap_or("");
     let existing: Option<i64> = conn
@@ -725,19 +795,20 @@ pub fn upsert_issue(
     match existing {
         Some(id) => {
             conn.execute(
-                "UPDATE issues SET message = ?2, last_seen_utc = ?3,
-                     occurrence_count = occurrence_count + 1
+                "UPDATE issues SET message = ?2, message_key = ?3, message_values = ?4,
+                     last_seen_utc = ?5, occurrence_count = occurrence_count + 1
                  WHERE id = ?1",
-                rusqlite::params![id, message, now],
+                rusqlite::params![id, message, message_key, message_values_json, now],
             )
             .map_err(|e| e.to_string())?;
             Ok(false)
         }
         None => {
             conn.execute(
-                "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
-                 VALUES (?1, ?2, ?3, ?4, ?4)",
-                rusqlite::params![path, kind, message, now],
+                "INSERT INTO issues (path, kind, message, message_key, message_values, \
+                 first_seen_utc, last_seen_utc) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                rusqlite::params![path, kind, message, message_key, message_values_json, now],
             )
             .map_err(|e| e.to_string())?;
             Ok(true)

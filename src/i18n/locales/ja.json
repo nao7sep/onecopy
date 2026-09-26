@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "準備と解析が予期せず停止しました。「バックグラウンド処理」で行を再開すると、処理が再び始まります。",
   "notice.configSaveFailed": "OneCopy はアプリケーションの設定を保存できませんでした。ライブラリのファイルは変更されていません。",
   "notice.sourceCheckFailed": "OneCopy はソースフォルダを監視できませんでした。そのフォルダが利用できることを確認してから、スキャンをやり直してください。",
+  "notice.sourceCheckCompleted": "ソースフォルダーを確認しました。",
+  "notice.sourceCheckCompletedWithIssues": "ソースフォルダーの確認が終了しました。一部のフォルダーまたはファイルを確認できませんでした。",
   "notice.fileInformationStateFailed": "OneCopy はバックグラウンド処理の進行状況を保存できませんでした。続ける前に OneCopy を再起動してください。",
   "notice.fileOperationStateFailed": "OneCopy はファイル操作を完了できませんでした。再試行する前に、「問題」で該当する項目を確認してください。",
   "notice.externalOpenFailed": "OneCopy はこの項目を別のアプリケーションで開けませんでした。ファイルが利用できることを確認してから、もう一度お試しください。",

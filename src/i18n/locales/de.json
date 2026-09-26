@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "Vorbereitung und Anreicherung wurden unerwartet angehalten. Setzen Sie eine Zeile in der Hintergrundarbeit fort, um die Verarbeitung neu zu starten.",
   "notice.configSaveFailed": "OneCopy konnte eine Anwendungseinstellung nicht speichern. Ihre Bibliotheksdateien wurden nicht geändert.",
   "notice.sourceCheckFailed": "OneCopy konnte einen Quellordner nicht überwachen. Prüfen Sie, ob der Ordner verfügbar ist, und starten Sie den Scan dann erneut.",
+  "notice.sourceCheckCompleted": "Quellordner überprüft.",
+  "notice.sourceCheckCompletedWithIssues": "Quellordnerprüfung abgeschlossen. Einige Ordner oder Dateien konnten nicht überprüft werden.",
   "notice.fileInformationStateFailed": "OneCopy konnte den Fortschritt der Hintergrundarbeit nicht speichern. Starten Sie OneCopy neu, bevor Sie fortfahren.",
   "notice.fileOperationStateFailed": "OneCopy konnte einen Dateivorgang nicht abschließen. Prüfen Sie die betroffenen Elemente unter „Probleme“, bevor Sie es erneut versuchen.",
   "notice.externalOpenFailed": "OneCopy konnte dieses Element nicht in einer anderen Anwendung öffnen. Prüfen Sie, ob die Datei verfügbar ist, und versuchen Sie es dann erneut.",

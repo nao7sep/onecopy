@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { documentTranslator } from "../i18n/I18nContext";
-import { message, type Message } from "../i18n/translate";
+import { message, type Message, type MessageValues } from "../i18n/translate";
+import type { MessageKey } from "../i18n/catalogues";
 import { log, toErrorFields } from "../repositories";
 import {
   presentEscapedFailure,
@@ -12,6 +13,22 @@ import {
 export type NotificationLevel = "info" | "warning" | "error";
 export type NotificationPresentation = "timed" | "persistent";
 
+/** JSON-safe interpolation values: what actually crosses IPC and gets stored
+ * beside a message key. A nested Message value (rare — only OneCopy's own
+ * local last-resort path uses one) is flattened to text at record time, since
+ * there is nowhere durable to keep ITS OWN key once serialized; everything
+ * else round-trips exactly. */
+export type StoredMessageValues = Record<string, string | number>;
+
+function storedValues(values: MessageValues | undefined): StoredMessageValues | undefined {
+  if (values === undefined) return undefined;
+  const flattened: StoredMessageValues = {};
+  for (const [name, value] of Object.entries(values)) {
+    flattened[name] = typeof value === "object" ? documentTranslator().text(value) : value;
+  }
+  return flattened;
+}
+
 export interface NotificationRecord {
   id: number;
   kind: string;
@@ -19,6 +36,8 @@ export interface NotificationRecord {
   level: NotificationLevel;
   presentation: NotificationPresentation;
   message: string;
+  messageKey: MessageKey | null;
+  messageValues: StoredMessageValues | null;
   firstSeenUtc: string;
   lastSeenUtc: string;
   occurrenceCount: number;
@@ -30,15 +49,32 @@ export interface NotificationRequest {
   level: NotificationLevel;
   presentation: NotificationPresentation;
   message: string;
+  messageKey?: MessageKey;
+  messageValues?: StoredMessageValues;
 }
 
-// What this window said when it raised a notice, by record id. The record that
-// crosses IPC carries rendered text for history and for merging repeats; this
-// keeps the descriptor so the live notice follows a language change.
-const raisedHere = new Map<number, Message>();
+/** The sentence a record's OWN condition supplies, in the current interface
+ * language when it carries a descriptor; the recorded text verbatim for a row
+ * from before this descriptor existed (interface-language.md L12/L13), or a
+ * generic sentence for a condition that never named one. Real, unrestatable
+ * detail (a system error, a path) is not this function's job — it lives in
+ * `record.message` as recorded, shown alongside this sentence, exactly as it
+ * did before a descriptor existed for any row. */
+export function noticeSentence(
+  record: { messageKey: MessageKey | null; messageValues: StoredMessageValues | null; message: string | null },
+  text: (message: Message) => string,
+): string {
+  if (record.messageKey != null) {
+    return text({ key: record.messageKey, values: record.messageValues ?? undefined });
+  }
+  return record.message !== null && record.message.trim() !== ""
+    ? record.message
+    : text(message("notice.backgroundStopped"));
+}
 
-export function noticeRaisedHere(id: number): Message | undefined {
-  return raisedHere.get(id);
+/** A live Message's descriptor, ready to spread into a request. */
+function descriptorFields(failure: Message): { messageKey: MessageKey; messageValues?: StoredMessageValues } {
+  return { messageKey: failure.key, messageValues: storedValues(failure.values) };
 }
 
 interface NotificationsState {
@@ -151,16 +187,17 @@ export async function errorNotification(
   if (error !== undefined) {
     log.error("notification action failed", { kind, ...toErrorFields(error) });
   }
-  const record = await publishNotification({
+  // The message descriptor (key + values) crosses IPC and is stored beside
+  // the record, so every window renders it in ITS current interface
+  // language — including after a later language change, not just the one
+  // active in this window when the failure happened (R5.5 D-L12).
+  return publishNotification({
     kind,
     level: "error",
     presentation: "persistent",
-    // The record crosses IPC as text, so the sentence is rendered here in the
-    // language this window is showing; the descriptor stays beside it.
-    message: documentTranslator().text(failure),
+    message: "",
+    ...descriptorFields(failure),
   });
-  raisedHere.set(record.id, failure);
-  return record;
 }
 
 /** Shows one timed information notice for an action's outcome. */
@@ -169,7 +206,8 @@ export function reportInfoNotice(kind: string, notice: Message): void {
     kind,
     level: "info",
     presentation: "timed",
-    message: documentTranslator().text(notice),
+    message: "",
+    ...descriptorFields(notice),
   }).catch((error) => {
     log.error("information notice failed", { kind, ...toErrorFields(error) });
   });
@@ -198,7 +236,8 @@ export function recordActionFailure(
     kind,
     level: "error",
     presentation: "persistent",
-    message: documentTranslator().text(failure),
+    message: "",
+    ...descriptorFields(failure),
   }).catch((recordingError) => {
     handleActionFailureRecordingError(kind, failure, error, recordingError);
   });

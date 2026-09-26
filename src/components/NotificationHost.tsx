@@ -1,12 +1,11 @@
 import { useEffect, useRef } from "react";
-import { conditionText } from "../models/noticeConditions";
-import { noticeRaisedHere } from "../state/notifications-store";
 import { X } from "lucide-react";
 import { useI18n } from "../i18n/I18nContext";
-import { message, type Message, type Translator } from "../i18n/translate";
+import { message } from "../i18n/translate";
 import { useAppStore } from "../state/app-store";
 import {
   installNotificationWiring,
+  noticeSentence,
   type NotificationRecord,
   useNotificationsStore,
 } from "../state/notifications-store";
@@ -140,12 +139,15 @@ function Toast({
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          {/* This window's own notice keeps its descriptor and follows a
-              language change; one the core raised is said from its condition,
-              and a path is the user's own. */}
+          {/* The condition's own sentence, in the current interface
+              language; real detail the sentence cannot restate (a system
+              error) appears as recorded, right after it (R5.5 D-L12). */}
           <p className="select-text break-words text-sm">
-            {noticeWords(record, text, t)}
+            {noticeSentence(record, text)}
           </p>
+          {record.messageKey != null && record.message.trim() !== "" ? (
+            <p className="mt-1 select-text break-words text-xs opacity-70">{record.message}</p>
+          ) : null}
           {record.path ? (
             <p className="mt-1 select-text break-all text-xs opacity-70">{record.path}</p>
           ) : null}
@@ -167,15 +169,6 @@ function Toast({
       ) : null}
     </section>
   );
-}
-
-function noticeWords(
-  record: NotificationRecord,
-  text: (message: Message) => string,
-  t: Translator["t"],
-): string {
-  const raised = noticeRaisedHere(record.id);
-  return raised === undefined ? conditionText(record.kind, record.message, t) : text(raised);
 }
 
 export default function NotificationHost({

@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "Preparation and enrichment stopped unexpectedly. Resume a row in Background work to restart processing.",
   "notice.configSaveFailed": "OneCopy could not save an application setting. Your library files were not changed.",
   "notice.sourceCheckFailed": "OneCopy could not monitor a source folder. Check that the folder is available, then retry the scan.",
+  "notice.sourceCheckCompleted": "Source folders checked.",
+  "notice.sourceCheckCompletedWithIssues": "Source-folder check finished. Some folders or files could not be checked.",
   "notice.fileInformationStateFailed": "OneCopy could not save background-work progress. Restart OneCopy before continuing.",
   "notice.fileOperationStateFailed": "OneCopy could not finish a file operation. Review the affected items in Issues before retrying.",
   "notice.externalOpenFailed": "OneCopy could not open this item in another application. Check that the file is available, then try again.",

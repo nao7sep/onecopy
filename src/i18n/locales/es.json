@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "La preparación y el enriquecimiento se detuvieron de forma inesperada. Reanuda una fila en Trabajo en segundo plano para reiniciar el procesamiento.",
   "notice.configSaveFailed": "OneCopy no pudo guardar una opción de configuración de la aplicación. Los archivos de tu biblioteca no se modificaron.",
   "notice.sourceCheckFailed": "OneCopy no pudo supervisar una carpeta de origen. Comprueba que la carpeta esté disponible y reintenta el análisis.",
+  "notice.sourceCheckCompleted": "Carpetas de origen comprobadas.",
+  "notice.sourceCheckCompletedWithIssues": "Comprobación de carpetas de origen finalizada. Algunas carpetas o archivos no se pudieron comprobar.",
   "notice.fileInformationStateFailed": "OneCopy no pudo guardar el progreso del trabajo en segundo plano. Reinicia OneCopy antes de continuar.",
   "notice.fileOperationStateFailed": "OneCopy no pudo terminar una operación de archivos. Revisa los elementos afectados en Incidencias antes de reintentarlo.",
   "notice.externalOpenFailed": "OneCopy no pudo abrir este elemento en otra aplicación. Comprueba que el archivo esté disponible y vuelve a intentarlo.",

@@ -10,6 +10,8 @@ fn repeated_recent_notice_coalesces_with_times_and_count() {
         level: NotificationLevel::Error,
         presentation: NotificationPresentation::Persistent,
         message: "Could not read the file.".to_string(),
+        message_key: None,
+        message_values: None,
     };
     let first = record_recent(&conn, &request).unwrap();
     let second = record_recent(&conn, &request).unwrap();
@@ -28,6 +30,7 @@ fn informational_notices_are_not_issues_and_dismissal_does_not_erase_history() {
     let mut request = NotificationRequest {
         kind: "operation".into(), path: None, level: NotificationLevel::Info,
         presentation: NotificationPresentation::Timed, message: "Source folders checked.".into(),
+        message_key: None, message_values: None,
     };
     record_recent(&conn, &request).unwrap();
     assert_eq!(crate::queries::issues(&conn, 10, None).unwrap().0, 0);
@@ -52,6 +55,7 @@ fn notification_and_issue_recording_fail_as_one_transaction() {
         assert!(record_recent(&conn, &NotificationRequest {
             kind: "failed".into(), path: None, level: NotificationLevel::Error,
             presentation: NotificationPresentation::Persistent, message: "Failed action.".into(),
+            message_key: None, message_values: None,
         }).is_err());
         assert_eq!(crate::queries::issues(&conn, 10, None).unwrap().0, 0);
         assert_eq!(recent(&conn, 10).unwrap().0, 0);
@@ -96,6 +100,8 @@ fn recent_history_prunes_old_and_over_limit_rows_after_a_write() {
             level: NotificationLevel::Info,
             presentation: NotificationPresentation::Timed,
             message: "newest".to_string(),
+            message_key: None,
+            message_values: None,
         },
     )
     .unwrap();

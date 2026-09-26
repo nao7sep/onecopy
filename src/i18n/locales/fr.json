@@ -1076,6 +1076,8 @@
   "notice.derivedWorkerFailed": "La préparation et l’enrichissement se sont arrêtés de façon inattendue. Reprenez une ligne dans le travail en arrière-plan pour relancer le traitement.",
   "notice.configSaveFailed": "OneCopy n’a pas pu enregistrer un réglage de l’application. Les fichiers de votre bibliothèque n’ont pas été modifiés.",
   "notice.sourceCheckFailed": "OneCopy n’a pas pu surveiller un dossier source. Vérifiez que le dossier est disponible, puis relancez la vérification.",
+  "notice.sourceCheckCompleted": "Dossiers source vérifiés.",
+  "notice.sourceCheckCompletedWithIssues": "Vérification des dossiers source terminée. Certains dossiers ou fichiers n’ont pas pu être vérifiés.",
   "notice.fileInformationStateFailed": "OneCopy n’a pas pu enregistrer la progression du travail en arrière-plan. Redémarrez OneCopy avant de continuer.",
   "notice.fileOperationStateFailed": "OneCopy n’a pas pu terminer une opération sur les fichiers. Consultez les éléments concernés dans la liste des problèmes avant de réessayer.",
   "notice.externalOpenFailed": "OneCopy n’a pas pu ouvrir cet élément dans une autre application. Vérifiez que le fichier est disponible, puis réessayez.",
