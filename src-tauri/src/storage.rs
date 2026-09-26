@@ -292,6 +292,22 @@ pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
     }))
 }
 
+/// Projects `LanguageState`'s CURRENT values into an appearance-preferences
+/// document, the way the `appearance_preferences` command does after calling
+/// `read_appearance_preferences` above. Kept apart from that command's
+/// `app.state::<i18n::LanguageState>()` lookup so the actual contract —
+/// a language a config patch just set is what the very next read returns —
+/// is directly testable against a `LanguageState` a test constructs itself,
+/// with no `AppHandle` involved (R5.5 C3).
+pub fn with_language_fields(mut preferences: JsonValue, state: &crate::i18n::LanguageState) -> JsonValue {
+    if let Some(object) = preferences.as_object_mut() {
+        object.insert("language".into(), serde_json::json!(state.current()));
+        object.insert("systemLanguage".into(), serde_json::json!(state.system_language));
+        object.insert("systemLocale".into(), serde_json::json!(state.system_locale));
+    }
+    preferences
+}
+
 /// Reads config for the pre-window setup paths. A quarantine here happens
 /// before any reporting surface exists, so its record is parked for the
 /// frontend's `load_from_root` to publish.

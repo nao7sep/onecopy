@@ -80,3 +80,34 @@ fn atomic_temp_name_is_stem_plus_nanoid_dot_tmp() {
 fn new_config_confirms_direct_trash_by_default() {
     assert!(DefaultConfig::default().confirm_trash_delete);
 }
+
+// R5.5 C3: a config patch that sets `language` updates `LanguageState::current`,
+// and the very next appearance-preferences read must return it -- not a
+// cached or launch-time value. `with_language_fields` is exactly that
+// projection, kept apart from the `app.state::<i18n::LanguageState>()` lookup
+// so it is testable against a `LanguageState` built directly, no AppHandle.
+#[test]
+fn with_language_fields_reflects_the_current_value_after_it_changes() {
+    let state = crate::i18n::LanguageState {
+        system_language: "en",
+        system_locale: Some("en-US".to_string()),
+        current: std::sync::Mutex::new("en"),
+    };
+
+    let first = with_language_fields(serde_json::json!({ "uiFontFamily": null }), &state);
+    assert_eq!(first["language"], "en");
+    assert_eq!(first["systemLanguage"], "en");
+    assert_eq!(first["systemLocale"], "en-US");
+    // The unrelated field already on the document survives the projection.
+    assert_eq!(first["uiFontFamily"], serde_json::Value::Null);
+
+    // A saved language change (as `patch_config` applies through
+    // `state.set_current`) is what the NEXT read returns -- not what the
+    // state held when the window launched.
+    state.set_current("ja");
+    let second = with_language_fields(serde_json::json!({}), &state);
+    assert_eq!(second["language"], "ja");
+    // The computer's own language and locale never follow a saved choice.
+    assert_eq!(second["systemLanguage"], "en");
+    assert_eq!(second["systemLocale"], "en-US");
+}

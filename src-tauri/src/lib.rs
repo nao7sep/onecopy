@@ -179,18 +179,12 @@ async fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
             "appearance_preferences",
             json!({}),
             || {
-                let mut preferences =
-                    storage::read_appearance_preferences(&paths::data_root()?)?;
+                let preferences = storage::read_appearance_preferences(&paths::data_root()?)?;
                 // The language the core settled on at launch, plus what the computer
                 // asked for, so a window paints its first text in the right language
                 // and formats dates the computer's way when they share a language.
                 let state = app.state::<i18n::LanguageState>();
-                if let Some(object) = preferences.as_object_mut() {
-                    object.insert("language".into(), json!(state.current()));
-                    object.insert("systemLanguage".into(), json!(state.system_language));
-                    object.insert("systemLocale".into(), json!(state.system_locale));
-                }
-                Ok(preferences)
+                Ok(storage::with_language_fields(preferences, &state))
             },
             |_| json!({}),
         )
