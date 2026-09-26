@@ -445,10 +445,10 @@ pub fn forget_unconfigured_roots(
     cache: &crate::preview::CachePaths,
 ) -> Result<u64, String> {
     let mut stmt = conn
-        .prepare("SELECT root FROM scan_dirs")
+        .prepare("SELECT root, configured_root FROM scan_dirs")
         .map_err(|e| e.to_string())?;
-    let recorded: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
+    let recorded: Vec<(String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
@@ -462,8 +462,15 @@ pub fn forget_unconfigured_roots(
     // A root that cannot be resolved right now — an unplugged drive — counts as
     // STILL CONFIGURED. Being wrong in that direction leaves stale rows until
     // the drive returns; being wrong in the other direction destroys the index
-    // for every file on it. Only one of those is recoverable.
+    // for every file on it. Only one of those is recoverable. Each walked root
+    // records the configured spelling that settled to it, which identifies an
+    // unavailable root however differently it resolves (a mapped network
+    // drive, a symlinked folder); a root recorded before that is kept while
+    // any configured root cannot be resolved, since nothing proves which
+    // configured root produced it. A configured root that resolves is judged
+    // by its settled spelling alone.
     let mut keep: Vec<String> = Vec::new();
+    let mut unresolved: Vec<&str> = Vec::new();
     for dir in configured {
         keep.push(dir.clone());
         // An absent Windows root cannot be canonicalized, but its ordinary
@@ -475,18 +482,23 @@ pub fn forget_unconfigured_roots(
                 .to_string_lossy()
                 .to_string(),
         );
-        if let Ok(settled) = settled_root(conn, Path::new(dir)) {
-            keep.push(settled.to_string_lossy().to_string());
+        match settled_root(conn, Path::new(dir)) {
+            Ok(settled) => keep.push(settled.to_string_lossy().to_string()),
+            Err(_) => unresolved.push(dir),
         }
     }
-    let still_configured = |root: &str| {
-        keep.iter()
-            .any(|k| k == root || k.to_lowercase() == root.to_lowercase())
+    let same = |left: &str, right: &str| left == right || left.to_lowercase() == right.to_lowercase();
+    let still_configured = |root: &str, configured_root: Option<&str>| {
+        keep.iter().any(|spelling| same(spelling, root))
+            || match configured_root {
+                Some(configured_root) => unresolved.iter().any(|dir| same(dir, configured_root)),
+                None => !unresolved.is_empty(),
+            }
     };
 
     let mut forgotten = 0u64;
-    for root in recorded {
-        if still_configured(&root) {
+    for (root, configured_root) in recorded {
+        if still_configured(&root, configured_root.as_deref()) {
             continue;
         }
         // Evidence, companions, paths, orphan contents and scan_dirs all
@@ -676,11 +688,13 @@ pub fn run_source_check(
                 continue;
             }
         };
+        let configured_root = settings.source_dirs[root_index].as_str();
         let root = root.to_string_lossy().to_string();
         let root = root.as_str();
         let stats = walk_root_with_progress(
             conn,
             Path::new(root),
+            configured_root,
             &settings.lists,
             &visibility_roots,
             root_index as u64,
@@ -1047,12 +1061,14 @@ pub fn upsert_file(
 /// resumes cheap), resets content facts when a file changed, and marks rows
 /// under the root that no longer exist as missing.
 pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
-    walk_root_with_progress(conn, root, lists, &[crate::winpath::for_fs(root).to_string_lossy().into_owned()], 0, 1, 0, &|_| {})
+    walk_root_with_progress(conn, root, &root.to_string_lossy(), lists, &[crate::winpath::for_fs(root).to_string_lossy().into_owned()], 0, 1, 0, &|_| {})
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_root_with_progress(
     conn: &Connection,
     root: &Path,
+    configured_root: &str,
     lists: &ScanLists,
     visibility_roots: &[String],
     completed_roots: u64,
@@ -1084,9 +1100,9 @@ fn walk_root_with_progress(
     // so an interrupted walk stays owed and the next launch re-walks instead
     // of running the tail over a permanently half-indexed library.
     conn.execute(
-        "INSERT INTO scan_dirs (root, dirty) VALUES (?1, 1) \
-         ON CONFLICT(root) DO UPDATE SET dirty = 1",
-        params![root_str],
+        "INSERT INTO scan_dirs (root, dirty, configured_root) VALUES (?1, 1, ?2) \
+         ON CONFLICT(root) DO UPDATE SET dirty = 1, configured_root = excluded.configured_root",
+        params![root_str, configured_root],
     )
     .map_err(|e| e.to_string())?;
 

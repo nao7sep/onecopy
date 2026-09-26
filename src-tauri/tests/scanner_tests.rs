@@ -2100,3 +2100,48 @@ fn zero_byte_files_carry_no_content_identity() {
     );
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents WHERE byte_size = 0 AND hash NOT GLOB 'p*'"), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn an_unavailable_root_known_by_another_spelling_is_kept_and_a_removed_one_is_not() {
+    // A root configured through a symlink (like a Windows mapped drive) is
+    // indexed under its resolved spelling. While its drive is away that
+    // spelling cannot be derived from the configuration, so only the walk's
+    // own record of which configured root produced it keeps it.
+    let f = fixture("forget-offline-alias");
+    let drive = f.root.join("Drive");
+    let photos = drive.join("Photos");
+    let removed = f.root.join("Removed");
+    std::fs::create_dir_all(&photos).unwrap();
+    std::fs::create_dir_all(&removed).unwrap();
+    std::fs::write(photos.join("a.jpg"), b"on the drive").unwrap();
+    std::fs::write(removed.join("b.jpg"), b"removed source").unwrap();
+    let link = f._dir.path().join("photos-link");
+    std::os::unix::fs::symlink(&photos, &link).unwrap();
+    let settings = |dirs: &[&std::path::Path]| ScanSettings {
+        source_dirs: dirs.iter().map(|dir| dir.to_string_lossy().to_string()).collect(),
+        lists: lists(),
+        resolution: resolution_config(),
+        pairing_enabled: true,
+        cache_root: f._dir.path().join("cache"),
+    };
+    run_source_check(&f.conn, &settings(&[&link, &removed]), &|_| {}).unwrap();
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 2);
+
+    // The drive goes away and the user removes the other source.
+    std::fs::rename(&drive, f.root.join("Unplugged")).unwrap();
+    let cache = test_cache(&f);
+    let configured = vec![link.to_string_lossy().to_string()];
+    let forgotten = forget_unconfigured_roots(&f.conn, &configured, &cache).unwrap();
+
+    assert_eq!(forgotten, 1, "only the removed source is forgotten");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'a.jpg'"),
+        1,
+        "the unavailable drive keeps its index"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'b.jpg'"),
+        0
+    );
+}

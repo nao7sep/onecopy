@@ -20,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 // Ordinary reads do not replay DDL. Current durable dogfood generations use
 // explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 16;
+const SCHEMA_REVISION: i64 = 17;
 
 /// The settings dates and companion relationships were resolved with
 /// (`library_settings`). Launch adopts the saved settings for an index that
@@ -414,7 +414,10 @@ CREATE TABLE IF NOT EXISTS scan_dirs (
   volume_id             INTEGER REFERENCES volumes(id),
   last_completed_at_utc TEXT,
   dirty                 INTEGER NOT NULL DEFAULT 0,
-  relationship_dirty    INTEGER NOT NULL DEFAULT 0
+  relationship_dirty    INTEGER NOT NULL DEFAULT 0,
+  -- The configured spelling whose walk last settled to this root, so an
+  -- unavailable root that resolves under another spelling is still known.
+  configured_root       TEXT
 );
 ";
 
@@ -452,7 +455,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                13..=15 => {}
+                13..=16 => {}
                 9..=12 => {
                     if current == 9 {
                         conn.execute_batch(
@@ -600,6 +603,22 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
             if current < 16 {
                 conn.execute_batch(RESOLUTION_POLICY_SCHEMA)
                     .map_err(|error| error.to_string())?;
+            }
+            if (9..=16).contains(&current) {
+                // Roots walked before this revision learn their configured
+                // spelling at their next walk.
+                let present: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('scan_dirs') \
+                         WHERE name = 'configured_root')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if !present {
+                    conn.execute_batch("ALTER TABLE scan_dirs ADD COLUMN configured_root TEXT;")
+                        .map_err(|error| error.to_string())?;
+                }
             }
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
