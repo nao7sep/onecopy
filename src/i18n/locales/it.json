@@ -404,6 +404,8 @@
   "issues.title": "Problemi",
   "issues.intro": "Problemi di questa sessione dell’app. Le voci chiuse restano nella cronologia diagnostica.",
   "issues.showingOldest": { "one": "Viene mostrato il problema più vecchio ({count} su {total})", "many": "Vengono mostrati i {count} di problemi più vecchi su {total}", "other": "Vengono mostrati i {count} problemi più vecchi su {total}" },
+  "issues.showMore": "Mostra altro",
+  "issues.loadingMore": "Caricamento…",
   "issues.dismissAll": "Chiudi tutto",
   "issues.loading": "Caricamento dei problemi…",
   "issues.none": "Nessun problema",

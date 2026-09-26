@@ -404,6 +404,8 @@
   "issues.title": "Incidencias",
   "issues.intro": "Incidencias de esta sesión de la app. Las entradas descartadas siguen en el historial de diagnóstico.",
   "issues.showingOldest": { "one": "Se muestra la {count} más antigua de {total}", "many": "Se muestran las {count} más antiguas de {total}", "other": "Se muestran las {count} más antiguas de {total}" },
+  "issues.showMore": "Mostrar más",
+  "issues.loadingMore": "Cargando más…",
   "issues.dismissAll": "Descartar todas",
   "issues.loading": "Cargando las incidencias…",
   "issues.none": "Sin incidencias",

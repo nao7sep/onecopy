@@ -404,6 +404,8 @@
   "issues.title": "Проблемы",
   "issues.intro": "Проблемы из этого сеанса приложения. Убранные записи остаются в диагностической истории.",
   "issues.showingOldest": { "one": "Показана самая старая запись ({count} из {total})", "few": "Показаны самые старые записи ({count} из {total})", "many": "Показаны самые старые записи ({count} из {total})", "other": "Показаны самые старые записи ({count} из {total})" },
+  "issues.showMore": "Показать ещё",
+  "issues.loadingMore": "Загрузка…",
   "issues.dismissAll": "Убрать все",
   "issues.loading": "Загрузка проблем…",
   "issues.none": "Проблем нет",

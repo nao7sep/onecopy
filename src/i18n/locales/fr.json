@@ -404,6 +404,8 @@
   "issues.title": "Problèmes",
   "issues.intro": "Problèmes survenus pendant cette session de l’app. Les entrées ignorées restent dans l’historique de diagnostic.",
   "issues.showingOldest": { "one": "Affichage de {count} entrée (la plus ancienne) sur {total}", "many": "Affichage des {count} entrées les plus anciennes sur {total}", "other": "Affichage des {count} entrées les plus anciennes sur {total}" },
+  "issues.showMore": "Afficher plus",
+  "issues.loadingMore": "Chargement…",
   "issues.dismissAll": "Tout ignorer",
   "issues.loading": "Chargement des problèmes…",
   "issues.none": "Aucun problème",

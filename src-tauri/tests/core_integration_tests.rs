@@ -399,7 +399,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     // The month view and the issues surface agree nothing is wrong.
     let items = january_images(&conn);
     assert_eq!(items.len(), 1);
-    let (issue_total, _) = queries::issues(&conn, 10).unwrap();
+    let (issue_total, _) = queries::issues(&conn, 10, None).unwrap();
     assert_eq!(issue_total, 0, "a clean workflow raises no issues");
 }
 

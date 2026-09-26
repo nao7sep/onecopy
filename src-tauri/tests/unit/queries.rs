@@ -445,7 +445,7 @@ fn get_issues_clamps_an_unbounded_client_limit() {
         .unwrap();
     }
 
-    let (total, rows) = issues(&conn, u32::MAX).unwrap();
+    let (total, rows) = issues(&conn, u32::MAX, None).unwrap();
     assert_eq!(total, MAX_ISSUES_PAGE_SIZE as u64 + 20);
     assert_eq!(
         rows.len(),

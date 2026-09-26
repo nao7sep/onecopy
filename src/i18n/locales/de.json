@@ -404,6 +404,8 @@
   "issues.title": "Probleme",
   "issues.intro": "Probleme aus dieser App-Sitzung. Geschlossene Einträge bleiben im Diagnoseverlauf.",
   "issues.showingOldest": { "one": "Es wird der älteste Eintrag angezeigt ({count} von {total})", "other": "Es werden die ältesten Einträge angezeigt ({count} von {total})" },
+  "issues.showMore": "Mehr anzeigen",
+  "issues.loadingMore": "Weitere werden geladen…",
   "issues.dismissAll": "Alle schließen",
   "issues.loading": "Probleme werden geladen…",
   "issues.none": "Keine Probleme",

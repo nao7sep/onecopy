@@ -1927,48 +1927,85 @@ const ISSUES_PAGE_SQL: &str =
     "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
      ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
 
+const ISSUES_PAGE_AFTER_SQL: &str =
+    "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
+     WHERE (first_seen_utc, id) > (?2, ?3)
+     ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
+
 /// The largest page `get_issues` serves regardless of the client-supplied
 /// limit, matching `activity::MAX_PAGE_SIZE`'s bound on the analogous
 /// Activity page (C-L5: an unclamped client limit could otherwise pull every
 /// Issue row and its JSON on each poll).
 const MAX_ISSUES_PAGE_SIZE: u32 = 500;
 
+/// Where the previous page ended, so the next one picks up right after it —
+/// keyset paging on the same order the page is sorted by (oldest first), so a
+/// row past the 500th is reachable and dismissing earlier rows cannot skip or
+/// repeat a later one the way an OFFSET page would (R4.4 finding A).
+pub struct IssuesCursor {
+    pub first_seen_utc: String,
+    pub id: i64,
+}
+
 /// OLDEST first (the developer's call — the longest-standing condition leads),
-/// capped; the count comes with it for the status-bar element.
-pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), String> {
+/// capped; the count comes with it for the status-bar element. `after` is the
+/// previous page's last row, absent for the first page.
+pub fn issues(
+    conn: &Connection,
+    limit: u32,
+    after: Option<&IssuesCursor>,
+) -> Result<(u64, Vec<IssueRow>), String> {
     let limit = limit.clamp(1, MAX_ISSUES_PAGE_SIZE);
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(ISSUES_PAGE_SQL)
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<IssueRow> = stmt
-        .query_map([limit], |r| {
-            let path: String = r.get(1)?;
-            // Issue rows are written straight from `abs_path`, and on Windows
-            // EVERY indexed path is stored verbatim (`for_fs` is unconditional
-            // there, not length-gated) — so without this the issues list shows
-            // `\\?\C:\…` for every file, not just deep ones. The stored
-            // spelling stays verbatim: issue identity is (kind, path), and
-            // `clear_issues` matches on what the pipeline wrote.
-            Ok(IssueRow {
-                id: r.get(0)?,
-                path: if path.is_empty() {
-                    None
-                } else {
-                    Some(crate::winpath::for_display(&path).into_owned())
-                },
-                kind: r.get(2)?,
-                message: r.get(3)?,
-                first_seen_utc: r.get(4)?,
-                last_seen_utc: r.get(5)?,
-                occurrence_count: r.get::<_, i64>(6)?.max(1) as u64,
-            })
+    let row_mapper = |r: &rusqlite::Row| -> rusqlite::Result<IssueRow> {
+        let path: String = r.get(1)?;
+        // Issue rows are written straight from `abs_path`, and on Windows
+        // EVERY indexed path is stored verbatim (`for_fs` is unconditional
+        // there, not length-gated) — so without this the issues list shows
+        // `\\?\C:\…` for every file, not just deep ones. The stored
+        // spelling stays verbatim: issue identity is (kind, path), and
+        // `clear_issues` matches on what the pipeline wrote.
+        Ok(IssueRow {
+            id: r.get(0)?,
+            path: if path.is_empty() {
+                None
+            } else {
+                Some(crate::winpath::for_display(&path).into_owned())
+            },
+            kind: r.get(2)?,
+            message: r.get(3)?,
+            first_seen_utc: r.get(4)?,
+            last_seen_utc: r.get(5)?,
+            occurrence_count: r.get::<_, i64>(6)?.max(1) as u64,
         })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
+    };
+    let rows: Vec<IssueRow> = match after {
+        None => {
+            let mut stmt = conn.prepare(ISSUES_PAGE_SQL).map_err(|e| e.to_string())?;
+            let mapped = stmt
+                .query_map([limit], row_mapper)
+                .map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?;
+            mapped
+        }
+        Some(cursor) => {
+            let mut stmt = conn
+                .prepare(ISSUES_PAGE_AFTER_SQL)
+                .map_err(|e| e.to_string())?;
+            let mapped = stmt
+                .query_map(
+                    rusqlite::params![limit, cursor.first_seen_utc, cursor.id],
+                    row_mapper,
+                )
+                .map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?;
+            mapped
+        }
+    };
     Ok((total.max(0) as u64, rows))
 }
 

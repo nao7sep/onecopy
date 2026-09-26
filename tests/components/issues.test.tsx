@@ -31,6 +31,7 @@ beforeEach(() => {
     total: 0,
     rows: [],
     loading: false,
+    loadingMore: false,
     error: null,
   });
 });
@@ -177,6 +178,33 @@ describe("the issues modal", () => {
     expect(document.body.textContent).toContain("Showing the oldest 2 of 501");
     expect(document.body.textContent).not.toContain("Retry");
     expect(invokeCalls.map((call) => call.command)).toEqual(["get_issues"]);
+  });
+
+  it("reaches row 501 through Show more, using a keyset cursor from the last loaded row (R4.4 finding A)", async () => {
+    const firstPage = [row(1), row(2)];
+    const secondPage = [row(3), row(4)];
+    mockCommands({
+      get_issues: ({ afterFirstSeenUtc, afterId }: { afterFirstSeenUtc?: string; afterId?: number }) =>
+        afterFirstSeenUtc === undefined
+          ? { total: 501, rows: firstPage }
+          : { total: 501, rows: afterId === 2 ? secondPage : [] },
+    });
+    render(<IssuesModal open onClose={() => {}} />);
+    await act(async () => {});
+    expect(document.body.textContent).toContain("Showing the oldest 2 of 501");
+    expect(screen.queryByText("IMG_3.jpg")).toBeNull();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Show more" }).click();
+    });
+
+    expect(screen.getByText((_, node) => node?.textContent === "/vol/photos/IMG_3.jpg")).toBeTruthy();
+    expect(document.body.textContent).toContain("Showing the oldest 4 of 501");
+    expect(invokeCalls.filter((call) => call.command === "get_issues")).toHaveLength(2);
+    expect(invokeCalls.at(-1)?.args).toMatchObject({
+      afterFirstSeenUtc: "2026-08-02T00:00:00.000Z",
+      afterId: 2,
+    });
   });
 
   it("does not restore stale rows over a newer refresh", async () => {

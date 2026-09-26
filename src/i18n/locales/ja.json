@@ -404,6 +404,8 @@
   "issues.title": "問題",
   "issues.intro": "このアプリを起動してから発生した問題です。閉じた項目も診断履歴には残ります。",
   "issues.showingOldest": { "other": "{total} 件のうち、古い {count} 件を表示しています" },
+  "issues.showMore": "もっと見る",
+  "issues.loadingMore": "読み込み中…",
   "issues.dismissAll": "すべて閉じる",
   "issues.loading": "問題を読み込み中…",
   "issues.none": "問題はありません",

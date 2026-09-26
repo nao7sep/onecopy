@@ -16,12 +16,19 @@ export interface IssueRow {
   occurrenceCount: number;
 }
 
+const PAGE_SIZE = 500;
+
 interface IssuesState {
   total: number;
   rows: IssueRow[];
   loading: boolean;
+  /** A later page loading on top of what's already shown, distinct from the
+   * first load's own spinner (R4.4 finding A: a row past the first page must
+   * stay reachable, not hidden behind dismissing everything ahead of it). */
+  loadingMore: boolean;
   error: Message | null;
   load: () => Promise<void>;
+  loadMore: () => Promise<void>;
   dismiss: (id: number) => Promise<void>;
   dismissAll: () => Promise<void>;
 }
@@ -31,17 +38,44 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   total: 0,
   rows: [],
   loading: false,
+  loadingMore: false,
   error: null,
   load: async () => {
     const fresh = issuesLoad.begin();
-    set({ loading: true, error: null });
+    set({ loading: true, loadingMore: false, error: null });
     try {
-      const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", { limit: 500 });
+      const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", { limit: PAGE_SIZE });
       if (fresh()) set({ ...result, loading: false, error: null });
     } catch (error) {
       if (!fresh()) return;
       log.error("issues load failed", toErrorFields(error));
       set({ loading: false, error: message("issues.unavailable") });
+    }
+  },
+  loadMore: async () => {
+    const { rows, total, loading, loadingMore } = get();
+    const last = rows[rows.length - 1];
+    if (loading || loadingMore || last === undefined || rows.length >= total) return;
+    const fresh = issuesLoad.begin();
+    set({ loadingMore: true, error: null });
+    try {
+      const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", {
+        limit: PAGE_SIZE,
+        afterFirstSeenUtc: last.firstSeenUtc,
+        afterId: last.id,
+      });
+      if (fresh()) {
+        set((state) => ({
+          total: result.total,
+          rows: [...state.rows, ...result.rows],
+          loadingMore: false,
+          error: null,
+        }));
+      }
+    } catch (error) {
+      if (!fresh()) return;
+      log.error("issues page load failed", toErrorFields(error));
+      set({ loadingMore: false, error: message("issues.unavailable") });
     }
   },
   dismiss: async (id) => {

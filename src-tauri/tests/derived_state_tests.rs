@@ -79,7 +79,7 @@ fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() 
             "needs-ffmpeg".into()
         )
     );
-    assert_eq!(queries::issues(&conn, 20).unwrap().0, 0);
+    assert_eq!(queries::issues(&conn, 20, None).unwrap().0, 0);
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folder
         .unwrap();
     assert_eq!(states, (None, "failed".into(), "failed".into()));
     assert_eq!(
-        queries::issues(&conn, 20).unwrap().0,
+        queries::issues(&conn, 20, None).unwrap().0,
         6,
         "reopening work does not dismiss its diagnostics"
     );
@@ -215,14 +215,14 @@ fn requested_preview_honors_failure_until_explicit_reset_even_if_file_is_now_val
     )
     .unwrap();
     let cache = CachePaths::new(dir.path().join("cache"));
-    let before = queries::issues(&conn, 20).unwrap().0;
+    let before = queries::issues(&conn, 20, None).unwrap().0;
     for _ in 0..2 {
         let error =
             onecopy_lib::preview::derive_one(&conn, &cache, 32, 64, None, "image").unwrap_err();
         assert!(error.contains("Recheck this section"));
     }
     assert!(!cache.preview("image").exists());
-    assert_eq!(queries::issues(&conn, 20).unwrap().0, before);
+    assert_eq!(queries::issues(&conn, 20, None).unwrap().0, before);
     derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap();
     assert_eq!(
         onecopy_lib::preview::derive_one(&conn, &cache, 32, 64, None, "image").unwrap(),
@@ -251,7 +251,7 @@ fn failed_replacement_keeps_its_completed_transcript_across_reattempt_boundaries
         .unwrap(),
         "ready-text"
     );
-    assert!(queries::issues(&conn, 20)
+    assert!(queries::issues(&conn, 20, None)
         .unwrap()
         .1
         .iter()
@@ -269,7 +269,7 @@ fn resource_safety_issue_is_not_attached_to_one_file() {
     )
     .unwrap();
 
-    let (_, rows) = queries::issues(&conn, 20).unwrap();
+    let (_, rows) = queries::issues(&conn, 20, None).unwrap();
     let issue = rows
         .iter()
         .find(|row| row.kind == "resource-limit-video-transcripts")
@@ -294,7 +294,7 @@ fn successful_analysis_records_value_or_empty_and_retires_its_issue() {
         )
         .unwrap();
     assert_eq!(receipt, ("ready".to_string(), "ready-empty".to_string()));
-    let (_, rows) = queries::issues(&conn, 20).unwrap();
+    let (_, rows) = queries::issues(&conn, 20, None).unwrap();
     assert!(!rows.iter().any(|row| matches!(
         row.kind.as_str(),
         derived_state::FACE_ERROR | derived_state::TRANSCRIPT_ERROR
@@ -340,7 +340,7 @@ fn preview_poster_and_snapshot_transitions_retire_their_current_issue() {
     assert!(state.2.is_some());
     assert_eq!((state.3, state.4), (30_000, 8));
 
-    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    let (_, issues) = queries::issues(&conn, 20, None).unwrap();
     assert!(!issues.iter().any(|row| matches!(
         row.kind.as_str(),
         derived_state::PREVIEW_ERROR
@@ -373,7 +373,7 @@ fn preview_poster_and_snapshot_failures_checkpoint_once_for_retry() {
         .unwrap();
     assert_eq!(state, ("failed".into(), "failed".into(), -1));
 
-    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    let (_, issues) = queries::issues(&conn, 20, None).unwrap();
     for kind in [
         derived_state::PREVIEW_ERROR,
         derived_state::VIDEO_POSTER_ERROR,
@@ -393,7 +393,7 @@ fn a_success_with_no_matching_issue_reports_no_issues_change() {
         &conn, "delete", "/delete.jpg", 100, 100, 1.0, 7
     )
     .unwrap());
-    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    let (_, issues) = queries::issues(&conn, 20, None).unwrap();
     assert!(issues
         .iter()
         .any(|row| row.path.as_deref() == Some("/delete.jpg") && row.kind == "delete-error"));
@@ -456,7 +456,7 @@ fn derived_failure_issues_keep_hostile_diagnostics_out_of_user_copy() {
     derived_state::record_face_failure(&conn, "face", "/face.jpg", hostile).unwrap();
     derived_state::record_transcript_failure(&conn, "speech", "/speech.mov", hostile).unwrap();
 
-    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    let (_, issues) = queries::issues(&conn, 20, None).unwrap();
     for kind in [
         derived_state::PREVIEW_ERROR,
         derived_state::VIDEO_POSTER_ERROR,
@@ -510,6 +510,6 @@ fn a_poster_for_a_video_without_a_container_duration_settles_snapshots_and_admit
         derived_state::transcript_candidates(&conn, "video", None, 10).unwrap(),
         [("live".to_string(), "/live.webm".to_string())]
     );
-    let (_, issues) = queries::issues(&conn, 20).unwrap();
+    let (_, issues) = queries::issues(&conn, 20, None).unwrap();
     assert!(issues.is_empty());
 }

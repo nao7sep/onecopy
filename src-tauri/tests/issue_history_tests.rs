@@ -11,15 +11,15 @@ fn dismiss_keeps_the_record_and_a_new_attempt_never_revives_it() {
     let (root, conn) = db();
     index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "original").unwrap();
     index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "latest detail").unwrap();
-    let original = queries::issues(&conn, 10).unwrap().1.remove(0);
+    let original = queries::issues(&conn, 10, None).unwrap().1.remove(0);
     index_store::dismiss_issues(&conn, Some(original.id)).unwrap();
-    assert_eq!(queries::issues(&conn, 10).unwrap().0, 0);
+    assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 0);
     assert!(!index_store::any_issues(&conn).unwrap());
     drop(conn);
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
-    assert_eq!(queries::issues(&conn, 10).unwrap().0, 0);
+    assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 0);
     index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "new attempt").unwrap();
-    let new = queries::issues(&conn, 10).unwrap().1.remove(0);
+    let new = queries::issues(&conn, 10, None).unwrap().1.remove(0);
     assert_ne!(new.id, original.id);
     assert_eq!(new.occurrence_count, 1);
     let retained: (String, String, String, i64, String, String) = conn.query_row(
@@ -61,9 +61,9 @@ fn dismiss_all_covers_the_full_live_inbox_and_preserves_other_history() {
             .unwrap();
     }
     conn.execute_batch("INSERT INTO recent_notifications(kind, level, presentation, message, first_seen_utc, last_seen_utc) VALUES ('notice', 'error', 'timed', 'retained', '2026-09-09T00:00:00.000Z', '2026-09-09T00:00:00.000Z');").unwrap();
-    assert_eq!(queries::issues(&conn, 2).unwrap().1.len(), 2);
+    assert_eq!(queries::issues(&conn, 2, None).unwrap().1.len(), 2);
     index_store::dismiss_issues(&conn, None).unwrap();
-    assert_eq!(queries::issues(&conn, 2).unwrap().0, 0);
+    assert_eq!(queries::issues(&conn, 2, None).unwrap().0, 0);
     assert_eq!(
         conn.query_row(
             "SELECT COUNT(*) FROM issues WHERE closure = 'dismissed'",
@@ -96,7 +96,7 @@ fn archived_failures_do_not_reopen_work() {
         index_store::upsert_issue(&conn, Some("/a.jpg"), kind, "failed").unwrap();
     }
     index_store::dismiss_issues(&conn, None).unwrap();
-    assert_eq!(queries::issues(&conn, 10).unwrap().0, 0);
+    assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 0);
     assert_eq!(
         conn.query_row("SELECT derived_at_utc FROM contents", [], |row| row
             .get::<_, String>(0))
@@ -124,23 +124,23 @@ fn failed_dismissal_leaves_live_diagnostics_visible() {
     index_store::upsert_issue(&conn, None, "read-error", "failed").unwrap();
     conn.execute_batch("CREATE TRIGGER reject_close BEFORE UPDATE OF closed_at_utc ON issues BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
     assert!(index_store::dismiss_issues(&conn, None).is_err());
-    assert_eq!(queries::issues(&conn, 10).unwrap().0, 1);
+    assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 1);
 }
 
 #[test]
 fn only_startup_admission_begins_a_new_run_and_keeps_all_history() {
     let (root, conn) = db();
     index_store::upsert_issue(&conn, Some("/a.jpg"), "decode-error", "failed").unwrap();
-    let old_id = queries::issues(&conn, 10).unwrap().1[0].id;
+    let old_id = queries::issues(&conn, 10, None).unwrap().1[0].id;
     drop(conn);
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
     assert_eq!(
-        queries::issues(&conn, 10).unwrap().0,
+        queries::issues(&conn, 10, None).unwrap().0,
         1,
         "connection opens are not app starts"
     );
     attempt_boundaries::begin_run(&conn).unwrap();
-    assert_eq!(queries::issues(&conn, 10).unwrap().0, 0);
+    assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 0);
     assert_eq!(
         conn.query_row(
             "SELECT closure FROM issues WHERE id = ?1",
@@ -151,7 +151,7 @@ fn only_startup_admission_begins_a_new_run_and_keeps_all_history() {
         "app-restart"
     );
     index_store::upsert_issue(&conn, Some("/a.jpg"), "decode-error", "failed again").unwrap();
-    assert_ne!(queries::issues(&conn, 10).unwrap().1[0].id, old_id);
+    assert_ne!(queries::issues(&conn, 10, None).unwrap().1[0].id, old_id);
 }
 
 fn section_fixture(conn: &rusqlite::Connection) {
@@ -185,7 +185,7 @@ fn section_attempt_retires_only_its_preparation_failures_and_never_claims_repair
         attempt_boundaries::recheck_section(&conn, "image", Some((0, 100))).unwrap(),
         1
     );
-    let live = queries::issues(&conn, 20).unwrap();
+    let live = queries::issues(&conn, 20, None).unwrap();
     assert_eq!(live.0, 3);
     assert!(live.1.iter().any(|row| row.kind == "delete-error"));
     assert_eq!(
@@ -222,7 +222,7 @@ fn section_attempt_retires_only_its_preparation_failures_and_never_claims_repair
         "failed again",
     )
     .unwrap();
-    let fresh = queries::issues(&conn, 20)
+    let fresh = queries::issues(&conn, 20, None)
         .unwrap()
         .1
         .into_iter()
@@ -265,7 +265,7 @@ fn failed_attempt_admission_rolls_back_diagnostic_retirement_and_all_receipts() 
     conn.execute_batch("CREATE TRIGGER reject_reset BEFORE UPDATE OF derived_at_utc ON contents BEGIN SELECT RAISE(ABORT, 'fixture reset failure'); END;").unwrap();
     assert!(attempt_boundaries::recheck_section(&conn, "image", Some((0, 100))).is_err());
     assert!(attempt_boundaries::begin_run(&conn).is_err());
-    assert_eq!(queries::issues(&conn, 20).unwrap().0, 6);
+    assert_eq!(queries::issues(&conn, 20, None).unwrap().0, 6);
     assert_eq!(
         conn.query_row(
             "SELECT SUM(metadata_attempt_failed + hash_attempt_failed) FROM paths",

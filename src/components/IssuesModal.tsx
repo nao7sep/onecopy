@@ -29,7 +29,7 @@ export default function IssuesModal({ open, onClose }: {
 }) {
   useDisplayZone();
   const { t, text, dateTime } = useI18n();
-  const { rows, total, loading, error, load, dismiss, dismissAll } = useIssuesStore();
+  const { rows, total, loading, loadingMore, error, load, loadMore, dismiss, dismissAll } = useIssuesStore();
   const request = useRef(0);
   const revealed = useRef(false);
   // The key, not a finished sentence, so the message follows a language change.
@@ -127,6 +127,13 @@ export default function IssuesModal({ open, onClose }: {
           ))}
         </ul>
       )}
+      {rows.length < total ? (
+        <div className="mt-2 flex justify-center">
+          <Button variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>
+            {loadingMore ? t("issues.loadingMore") : t("issues.showMore")}
+          </Button>
+        </div>
+      ) : null}
     </ModalShell>
   );
 }

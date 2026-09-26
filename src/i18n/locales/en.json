@@ -404,6 +404,8 @@
   "issues.title": "Issues",
   "issues.intro": "Issues from this app session. Dismissed entries remain in diagnostic history.",
   "issues.showingOldest": { "one": "Showing the oldest {count} of {total}", "other": "Showing the oldest {count} of {total}" },
+  "issues.showMore": "Show more",
+  "issues.loadingMore": "Loading more…",
   "issues.dismissAll": "Dismiss all",
   "issues.loading": "Loading issues…",
   "issues.none": "No issues",

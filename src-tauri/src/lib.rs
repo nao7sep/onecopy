@@ -1283,7 +1283,12 @@ async fn rescan_section(
 // The first-class issues surface: unreadable files, decode failures,
 // copies-disagree anomalies, delete/copy errors — a silent skip never happens.
 #[tauri::command]
-async fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Value, String> {
+async fn get_issues(
+    app: AppHandle,
+    limit: Option<u32>,
+    after_first_seen_utc: Option<String>,
+    after_id: Option<i64>,
+) -> Result<serde_json::Value, String> {
     dispatch(move || {
         logging::boundary(
             "get_issues",
@@ -1291,7 +1296,13 @@ async fn get_issues(app: AppHandle, limit: Option<u32>) -> Result<serde_json::Va
             || {
                 let data_root = paths::data_root(&app)?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                let (total, rows) = queries::issues(&conn, limit.unwrap_or(500))?;
+                let cursor = match (after_first_seen_utc, after_id) {
+                    (Some(first_seen_utc), Some(id)) => {
+                        Some(queries::IssuesCursor { first_seen_utc, id })
+                    }
+                    _ => None,
+                };
+                let (total, rows) = queries::issues(&conn, limit.unwrap_or(500), cursor.as_ref())?;
                 Ok(json!({ "total": total, "rows": rows }))
             },
             |v| json!({ "total": v.get("total") }),

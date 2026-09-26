@@ -404,6 +404,8 @@
   "issues.title": "Problemas",
   "issues.intro": "Problemas desta sessão do aplicativo. As entradas dispensadas continuam no histórico de diagnóstico.",
   "issues.showingOldest": { "one": "Mostrando o {count} mais antigo de {total}", "many": "Mostrando os {count} mais antigos de {total}", "other": "Mostrando os {count} mais antigos de {total}" },
+  "issues.showMore": "Mostrar mais",
+  "issues.loadingMore": "Carregando mais…",
   "issues.dismissAll": "Dispensar tudo",
   "issues.loading": "Carregando os problemas…",
   "issues.none": "Nenhum problema",

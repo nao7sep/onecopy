@@ -929,11 +929,57 @@ fn issues_page_oldest_first_with_the_full_total() {
         .unwrap();
     }
 
-    let (total, rows) = queries::issues(&conn, 2).unwrap();
+    let (total, rows) = queries::issues(&conn, 2, None).unwrap();
     assert_eq!(total, 5, "the total counts every row, not the page");
     assert_eq!(rows.len(), 2, "the limit bounds the page");
     assert_eq!(rows[0].message.as_deref(), Some("failure 1"));
     assert_eq!(rows[1].message.as_deref(), Some("failure 2"));
+}
+
+#[test]
+fn issues_beyond_the_first_page_are_reachable_with_a_keyset_cursor() {
+    // R4.4 finding A: a row past the 500th (here, past a 2-row page) must be
+    // reachable, and each page must pick up exactly where the last one
+    // stopped — no row skipped or repeated, the way an OFFSET page could
+    // after an intervening insert or dismissal.
+    let conn = db();
+    for i in 1..=5 {
+        conn.execute(
+            "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
+             VALUES (?1, 'decode-error', ?2, ?3, ?3)",
+            params![
+                format!("/root/{i}.jpg"),
+                format!("failure {i}"),
+                format!("2026-01-0{i}T00:00:00.000Z")
+            ],
+        )
+        .unwrap();
+    }
+
+    let (_, first_page) = queries::issues(&conn, 2, None).unwrap();
+    assert_eq!(
+        first_page.iter().map(|r| r.message.clone()).collect::<Vec<_>>(),
+        vec![Some("failure 1".to_string()), Some("failure 2".to_string())],
+    );
+
+    let cursor = queries::IssuesCursor {
+        first_seen_utc: first_page[1].first_seen_utc.clone(),
+        id: first_page[1].id,
+    };
+    let (total, second_page) = queries::issues(&conn, 2, Some(&cursor)).unwrap();
+    assert_eq!(total, 5, "the total still counts every row on a later page");
+    assert_eq!(
+        second_page.iter().map(|r| r.message.clone()).collect::<Vec<_>>(),
+        vec![Some("failure 3".to_string()), Some("failure 4".to_string())],
+    );
+
+    let cursor2 = queries::IssuesCursor {
+        first_seen_utc: second_page[1].first_seen_utc.clone(),
+        id: second_page[1].id,
+    };
+    let (_, third_page) = queries::issues(&conn, 2, Some(&cursor2)).unwrap();
+    assert_eq!(third_page.len(), 1, "the final page holds only what's left");
+    assert_eq!(third_page[0].message.as_deref(), Some("failure 5"));
 }
 
 #[test]
@@ -953,7 +999,7 @@ fn a_recurring_issue_is_one_row_whose_last_seen_moves() {
     // A different KIND on the same path is a different condition.
     index_store::upsert_issue(&conn, Some("/root/a.jpg"), "read-error", "unrelated").unwrap();
 
-    let (total, rows) = queries::issues(&conn, 10).unwrap();
+    let (total, rows) = queries::issues(&conn, 10, None).unwrap();
     assert_eq!(total, 2, "recurrence must never insert a second row");
     let decode = rows.iter().find(|r| r.kind == "decode-error").unwrap();
     assert_eq!(decode.message.as_deref(), Some("same failure again"));
@@ -972,7 +1018,7 @@ fn clearing_retires_only_the_named_kinds_at_the_path() {
 
     index_store::clear_issues(&conn, "/root/a.jpg", &["read-error", "copies-disagree"]).unwrap();
 
-    let (total, rows) = queries::issues(&conn, 10).unwrap();
+    let (total, rows) = queries::issues(&conn, 10, None).unwrap();
     assert_eq!(total, 2);
     // The operation record survives (not re-checkable, waits for dismissal),
     // and the OTHER path's condition is untouched.
@@ -1362,7 +1408,7 @@ fn issue_rows_never_carry_the_verbatim_prefix() {
     // must not disturb.
     index_store::upsert_issue(&conn, None, "walk-error", "z").unwrap();
 
-    let (total, rows) = queries::issues(&conn, 50).unwrap();
+    let (total, rows) = queries::issues(&conn, 50, None).unwrap();
     assert_eq!(total, 3);
     let paths: Vec<Option<&str>> = rows.iter().map(|r| r.path.as_deref()).collect();
     assert!(
@@ -1390,7 +1436,7 @@ fn the_stored_issue_path_stays_verbatim_so_clearing_still_matches() {
 
     index_store::clear_issues(&conn, stored, &["decode-error"]).unwrap();
 
-    let (total, _) = queries::issues(&conn, 50).unwrap();
+    let (total, _) = queries::issues(&conn, 50, None).unwrap();
     assert_eq!(total, 0, "the pipeline's own spelling must still clear the row");
 }
 

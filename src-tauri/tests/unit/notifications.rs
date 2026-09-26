@@ -16,7 +16,7 @@ fn repeated_recent_notice_coalesces_with_times_and_count() {
     assert_eq!(first.id, second.id);
     assert_eq!(second.occurrence_count, 2);
     assert_eq!(recent(&conn, 500).unwrap().0, 1);
-    let issues = crate::queries::issues(&conn, 10).unwrap();
+    let issues = crate::queries::issues(&conn, 10, None).unwrap();
     assert_eq!(issues.0, 1);
     assert_eq!(issues.1[0].occurrence_count, 2, "one occurrence per publication, not one per presentation channel");
 }
@@ -30,14 +30,14 @@ fn informational_notices_are_not_issues_and_dismissal_does_not_erase_history() {
         presentation: NotificationPresentation::Timed, message: "Source folders checked.".into(),
     };
     record_recent(&conn, &request).unwrap();
-    assert_eq!(crate::queries::issues(&conn, 10).unwrap().0, 0);
+    assert_eq!(crate::queries::issues(&conn, 10, None).unwrap().0, 0);
     request.level = NotificationLevel::Warning;
     request.message = "Some files could not be checked.".into();
     record_recent(&conn, &request).unwrap();
-    let old_id = crate::queries::issues(&conn, 10).unwrap().1[0].id;
+    let old_id = crate::queries::issues(&conn, 10, None).unwrap().1[0].id;
     crate::index_store::dismiss_issues(&conn, None).unwrap();
     record_recent(&conn, &request).unwrap();
-    let issues = crate::queries::issues(&conn, 10).unwrap();
+    let issues = crate::queries::issues(&conn, 10, None).unwrap();
     assert_ne!(issues.1[0].id, old_id);
     assert_eq!(issues.1[0].occurrence_count, 1);
     assert_eq!(recent(&conn, 10).unwrap().0, 2);
@@ -53,7 +53,7 @@ fn notification_and_issue_recording_fail_as_one_transaction() {
             kind: "failed".into(), path: None, level: NotificationLevel::Error,
             presentation: NotificationPresentation::Persistent, message: "Failed action.".into(),
         }).is_err());
-        assert_eq!(crate::queries::issues(&conn, 10).unwrap().0, 0);
+        assert_eq!(crate::queries::issues(&conn, 10, None).unwrap().0, 0);
         assert_eq!(recent(&conn, 10).unwrap().0, 0);
     }
 }

@@ -197,7 +197,7 @@ fn revision_ten_upgrade_retains_issue_identity_and_allows_new_occurrences_after_
     assert_eq!(before, after);
     index_store::dismiss_issues(&conn, Some(before.0)).unwrap();
     index_store::upsert_issue(&conn, Some("/photo.jpg"), "read-error", "new attempt").unwrap();
-    assert_eq!(onecopy_lib::queries::issues(&conn, 10).unwrap().0, 1);
+    assert_eq!(onecopy_lib::queries::issues(&conn, 10, None).unwrap().0, 1);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row
             .get::<_, i64>(0))

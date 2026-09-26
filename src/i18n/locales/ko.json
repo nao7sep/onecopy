@@ -404,6 +404,8 @@
   "issues.title": "문제",
   "issues.intro": "이번 앱 세션에서 발생한 문제입니다. 닫은 항목도 진단 내역에는 남습니다.",
   "issues.showingOldest": { "other": "{total}개 중 오래된 {count}개를 표시합니다" },
+  "issues.showMore": "더 보기",
+  "issues.loadingMore": "불러오는 중…",
   "issues.dismissAll": "모두 닫기",
   "issues.loading": "문제 불러오는 중…",
   "issues.none": "문제 없음",

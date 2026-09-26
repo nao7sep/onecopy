@@ -404,6 +404,8 @@
   "issues.title": "问题",
   "issues.intro": "本次应用会话中出现的问题。已关闭的条目仍保留在诊断历史中。",
   "issues.showingOldest": { "other": "正在显示最早的 {count} 条，共 {total} 条" },
+  "issues.showMore": "显示更多",
+  "issues.loadingMore": "正在加载…",
   "issues.dismissAll": "全部关闭",
   "issues.loading": "正在加载问题…",
   "issues.none": "没有问题",
