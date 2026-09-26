@@ -314,3 +314,122 @@ fn members_keep_their_place_when_their_provisional_identity_is_promoted() {
     assert_eq!(last.item.hash.as_deref(), Some("c0ffee03"));
     viewer_sequence::close(Some(&snapshot.token)).unwrap();
 }
+
+// R5.2 T3: a multi-item selection freezes in DISPLAYED order (by section
+// index), not in whatever order the caller happened to list the selected
+// members, and starts at the anchor.
+#[test]
+fn selection_scope_freezes_in_displayed_order_and_starts_at_the_anchor() {
+    let _session = VIEWER_SESSION.lock().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let index_path = root.path().join(storage::INDEX_DB_FILE_NAME);
+    let conn = index_store::open(&index_path).unwrap();
+    for index in 1..=5 {
+        seed_image(&conn, index);
+    }
+    // Listed out of displayed order (h4, h2, h5), deliberately not sorted --
+    // the frozen sequence must still read h2, h4, h5 by section index.
+    let selected = vec![
+        queries::PositionedSectionIdentity { hash: Some("h4".into()), path_id: 4, index: 3 },
+        queries::PositionedSectionIdentity { hash: Some("h2".into()), path_id: 2, index: 1 },
+        queries::PositionedSectionIdentity { hash: Some("h5".into()), path_id: 5, index: 4 },
+    ];
+    let anchor = queries::SectionIdentity { hash: Some("h4".into()), path_id: 4 };
+    let snapshot = viewer_sequence::start(
+        root.path(),
+        &conn,
+        onecopy_lib::queries::SectionKind::Image,
+        "2026-01",
+        Tz::UTC,
+        queries::SectionSort { order: queries::SectionSortOrder::Name, desc: false },
+        selected,
+        &anchor,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(snapshot.length, 3);
+    // Starts at the anchor (h4), which is the SECOND member in displayed order.
+    assert_eq!(snapshot.index, 1);
+    assert_eq!(snapshot.item.hash.as_deref(), Some("h4"));
+
+    let previous = viewer_sequence::move_current(
+        &snapshot.token,
+        viewer_sequence::Move::Previous,
+        &conn,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(previous.item.hash.as_deref(), Some("h2"));
+    assert_eq!(previous.index, 0);
+
+    viewer_sequence::move_current(&snapshot.token, viewer_sequence::Move::Next, &conn, projection()).unwrap();
+    let last = viewer_sequence::move_current(
+        &snapshot.token,
+        viewer_sequence::Move::Next,
+        &conn,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(last.item.hash.as_deref(), Some("h5"));
+    assert_eq!(last.index, 2);
+    viewer_sequence::close(Some(&snapshot.token)).unwrap();
+}
+
+// R5.2 T2: after the CURRENT item itself is removed, recovery goes to the
+// next member, then the previous one when there is no next, and closes the
+// session once none remain. The existing coverage only ever removed a
+// non-current member.
+#[test]
+fn removing_the_current_member_recovers_next_then_previous_then_closes() {
+    let _session = VIEWER_SESSION.lock().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let index_path = root.path().join(storage::INDEX_DB_FILE_NAME);
+    let conn = index_store::open(&index_path).unwrap();
+    for index in 1..=3 {
+        seed_image(&conn, index);
+    }
+    let selected = vec![
+        queries::PositionedSectionIdentity { hash: Some("h1".into()), path_id: 1, index: 0 },
+        queries::PositionedSectionIdentity { hash: Some("h2".into()), path_id: 2, index: 1 },
+        queries::PositionedSectionIdentity { hash: Some("h3".into()), path_id: 3, index: 2 },
+    ];
+    let anchor = queries::SectionIdentity { hash: Some("h2".into()), path_id: 2 };
+    let snapshot = viewer_sequence::start(
+        root.path(),
+        &conn,
+        onecopy_lib::queries::SectionKind::Image,
+        "2026-01",
+        Tz::UTC,
+        queries::SectionSort { order: queries::SectionSortOrder::Name, desc: false },
+        selected,
+        &anchor,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(snapshot.item.hash.as_deref(), Some("h2"));
+
+    // The current member (h2) itself is deleted: recovery moves to h3, next
+    // in displayed order.
+    conn.execute("DELETE FROM paths WHERE content_hash = 'h2'", []).unwrap();
+    conn.execute("DELETE FROM contents WHERE hash = 'h2'", []).unwrap();
+    let after_delete_current = viewer_sequence::reconcile(&snapshot.token, &index_path, &conn, projection())
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_delete_current.item.hash.as_deref(), Some("h3"));
+
+    // The new current member (h3) is deleted too, and there is no next
+    // member left: recovery falls back to h1, the previous one.
+    conn.execute("DELETE FROM paths WHERE content_hash = 'h3'", []).unwrap();
+    conn.execute("DELETE FROM contents WHERE hash = 'h3'", []).unwrap();
+    let after_no_next = viewer_sequence::reconcile(&snapshot.token, &index_path, &conn, projection())
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_no_next.item.hash.as_deref(), Some("h1"));
+
+    // The last remaining member is deleted: nothing is left to recover to,
+    // and the session closes itself.
+    conn.execute("DELETE FROM paths WHERE content_hash = 'h1'", []).unwrap();
+    conn.execute("DELETE FROM contents WHERE hash = 'h1'", []).unwrap();
+    let closed = viewer_sequence::reconcile(&snapshot.token, &index_path, &conn, projection()).unwrap();
+    assert!(closed.is_none());
+}
