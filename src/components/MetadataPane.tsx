@@ -218,7 +218,15 @@ export default function MetadataPane({
       ? null
       : mergeActiveItemWork(item.derivedWork, item.hash, activeWork, t);
   if (detail === null) {
-    return <p className="p-3 text-sm text-ink-muted">{t("metadata.noSelection")}</p>;
+    // An anchor exists but its detail has not arrived yet (still loading, or
+    // the load failed): "No selection" would be untrue. Details tracks the
+    // anchor by identity elsewhere (items-store.ts), so this is truthful
+    // rather than momentarily stale.
+    return (
+      <p className="p-3 text-sm text-ink-muted">
+        {t(item === null ? "metadata.noSelection" : "common.loading")}
+      </p>
+    );
   }
   // The parent pane is the sole scroller; a second overflow here would
   // produce a double scrollbar the moment a height constraint lands.
@@ -296,7 +304,7 @@ export default function MetadataPane({
             value={t("metadata.seconds", { count: Math.round(detail.durationMs / 1000) })}
           />
         ) : null}
-        {hash !== null && detail.kind === "image" ? <SimilarSection hash={hash} /> : null}
+        {hash !== null && detail.kind === "image" ? <SimilarSection key={hash} hash={hash} /> : null}
         <div className="mb-1 mt-3">
           <dt className="text-xs text-ink-muted">
             {t("metadata.copies", { count: detail.copyPaths.length })}

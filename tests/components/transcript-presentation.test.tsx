@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import MetadataPane from "../../src/components/MetadataPane";
 import TranscriptBlock from "../../src/components/TranscriptBlock";
-import type { ItemDetail, ItemWorkState } from "../../src/models/items";
+import { EMPTY_ITEM_WORK, type ItemDetail, type ItemWorkState, type SectionItem } from "../../src/models/items";
 import { useContentSessionStore } from "../../src/state/content-session-store";
 import { useTranscriptStore } from "../../src/state/transcript-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
@@ -32,6 +32,26 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+
+describe("Details no-detail states (R5.1 D13)", () => {
+  const anchorItem: SectionItem = {
+    hash: "interview", pathId: 1, fileName: "interview.mp4", resolvedUtcMs: null, copyCount: 1,
+    width: 1920, height: 1080, hasThumb: true, similarGroupId: null, sharpness: null,
+    faceScore: null, byteSize: 1000, hasCompanions: false, durationMs: 10000,
+    dirPaths: ["/fixture"], derivedWork: EMPTY_ITEM_WORK,
+  };
+
+  it("shows truthful loading rather than \"No selection\" while an anchor's detail is still loading", () => {
+    render(<MetadataPane detail={null} hash="interview" item={anchorItem} />);
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("No selection")).toBeNull();
+  });
+
+  it("shows \"No selection\" only when there truly is no anchor", () => {
+    render(<MetadataPane detail={null} hash={null} item={null} />);
+    expect(screen.getByText("No selection")).toBeTruthy();
+  });
+});
 
 describe("transcript presentation owners", () => {
   it("puts the entire expanded Details transcript last without changing Preview reading state", async () => {
