@@ -334,9 +334,18 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             return Ok(());
         }
         match outcome {
-            Ok(0) => crate::failure_runtime::clear(&app, "watcher-failed", None)?,
-            Ok(changed) => {
-                crate::failure_runtime::clear(&app, "watcher-failed", None)?;
+            Ok(pass) => {
+                // A directory that could not be re-read leaves its part of the
+                // library stale until a source check, so the pass reports the
+                // watcher failure and asks for a recheck instead of clearing it.
+                match pass.failure() {
+                    Some(failure) => report_failure(&app, &failure),
+                    None => crate::failure_runtime::clear(&app, "watcher-failed", None)?,
+                }
+                if pass.changed == 0 {
+                    continue;
+                }
+                let changed = pass.changed;
                 record_activity(
                     crate::activity::ActivityKind::Changed,
                     generation,
@@ -449,8 +458,8 @@ fn record_activity(
 
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private
-// `generation_is_live`; promoting it would widen the crate's API only for
-// this test.
+// `generation_is_live` and `restat_batch`; promoting them would widen the
+// crate's API only for these tests.
 #[path = "../tests/unit/watcher.rs"]
 mod lifecycle_tests;
 
@@ -519,11 +528,56 @@ pub fn collect(
 /// Re-stats the dirty directories and leaves durable index debt for the
 /// independent file-information owner. The shared index claim retains this
 /// event batch until any active projection reaches a safe boundary.
+/// One watcher batch: how many rows changed and the directories that could
+/// not be re-read, each with its error.
+pub(crate) struct WatchPass {
+    changed: u64,
+    failed: Vec<(PathBuf, String)>,
+}
+
+impl WatchPass {
+    fn failure(&self) -> Option<String> {
+        let (dir, error) = self.failed.first()?;
+        Some(format!(
+            "{} changed folder(s) could not be updated; recheck the source folders. {}: {error}",
+            self.failed.len(),
+            dir.to_string_lossy(),
+        ))
+    }
+}
+
+/// Re-stats each dirty directory. File-local containment: one unreadable or
+/// vanished directory fails only its own entry, recorded in the pass, not the
+/// directories after it. `between` runs before each directory and ends the
+/// batch when it fails.
+pub(crate) fn restat_batch(
+    conn: &rusqlite::Connection,
+    dirs: &[PathBuf],
+    settings: &scanner::ScanSettings,
+    between: &dyn Fn() -> Result<(), String>,
+) -> Result<WatchPass, String> {
+    let mut pass = WatchPass { changed: 0, failed: Vec::new() };
+    for dir in dirs {
+        between()?;
+        match restat_dir(conn, dir, &settings.lists, &settings.source_dirs) {
+            Ok(count) => pass.changed += count,
+            Err(error) => {
+                logging::warn(
+                    "watcher directory failed; continuing with the rest of the batch",
+                    json!({ "dir": dir.to_string_lossy(), "error": { "message": &error } }),
+                );
+                pass.failed.push((dir.clone(), error));
+            }
+        }
+    }
+    Ok(pass)
+}
+
 fn process_dirty(
     app: &tauri::AppHandle,
     dirs: &[PathBuf],
     generation: u64,
-) -> Result<u64, String> {
+) -> Result<WatchPass, String> {
     crate::scan_runtime::with_watcher_claim(
         move || !owns_generation(generation),
         || process_dirty_claimed(app, dirs, generation),
@@ -534,7 +588,7 @@ fn process_dirty_claimed(
     app: &tauri::AppHandle,
     dirs: &[PathBuf],
     generation: u64,
-) -> Result<u64, String> {
+) -> Result<WatchPass, String> {
     let _awake = crate::sleep_prevention::begin_work();
     let data_root = crate::paths::data_root(app)?;
     // Config only, through the same unserialized-reader path every other
@@ -555,23 +609,13 @@ fn process_dirty_claimed(
         .collect();
     let repair_roots = scanner::begin_scoped_index_repair(&conn, &affected_dirs)?;
 
-    let mut changed = 0u64;
-    for dir in dirs {
+    let WatchPass { changed, failed } = restat_batch(&conn, dirs, &settings, &|| {
         if !owns_generation(generation) {
             return Err(scanner::CANCELLED.to_string());
         }
         // A pending foreground action takes the index between directories.
-        crate::scan_runtime::yield_to_foreground()?;
-        // File-local containment: one unreadable or vanished directory fails
-        // only its own entry in this batch, not the directories after it.
-        match restat_dir(&conn, dir, &settings.lists, &settings.source_dirs) {
-            Ok(count) => changed += count,
-            Err(error) => logging::warn(
-                "watcher directory failed; continuing with the rest of the batch",
-                json!({ "dir": dir.to_string_lossy(), "error": { "message": &error } }),
-            ),
-        }
-    }
+        crate::scan_runtime::yield_to_foreground().map(|_| ())
+    })?;
     if !owns_generation(generation) {
         return Err(scanner::CANCELLED.to_string());
     }
@@ -581,8 +625,8 @@ fn process_dirty_claimed(
             json!({ "dirs": dirs.len(), "changed": changed }),
         );
         crate::file_information_runtime::wake(app.clone());
-    } else {
+    } else if failed.is_empty() {
         scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
     }
-    Ok(changed)
+    Ok(WatchPass { changed, failed })
 }
