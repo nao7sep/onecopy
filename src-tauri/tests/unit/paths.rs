@@ -88,3 +88,24 @@ fn is_within_data_root_matches_the_root_and_its_descendants_only() {
         "a sibling name sharing the prefix is not a descendant"
     );
 }
+
+// R6-03: the data root must be private to the owner, and an existing root an
+// earlier build left too open must be tightened, not just a freshly created
+// one. Unix-only: Windows has no equivalent permission bits to assert on
+// (the profile ACL already applies there).
+#[cfg(unix)]
+#[test]
+fn ensure_private_restricts_a_world_readable_root_to_the_owner() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(".onecopy");
+    std::fs::create_dir_all(&root).unwrap();
+    // Simulate a root an earlier build created under the default umask.
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    ensure_private(&root);
+
+    let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "the data root must be readable only by its owner");
+}

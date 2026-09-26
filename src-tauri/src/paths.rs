@@ -41,7 +41,35 @@ pub fn data_root(app: &AppHandle) -> Result<PathBuf, String> {
     let root = resolve_root(&home, std::env::var(HOME_ENV_VAR).ok())?;
     std::fs::create_dir_all(&root)
         .map_err(|e| format!("could not create storage root {}: {e}", root.display()))?;
+    #[cfg(unix)]
+    ensure_private(&root);
     Ok(root)
+}
+
+/// Restricts the data root to the owner (0700) so previews, transcripts, the
+/// index and logs never inherit broader access than the source material they
+/// are derived from (R6-03): on macOS the home directory is `drwxr-x---`
+/// (group `staff`, every standard account's primary group), while this app's
+/// default `create_dir_all` umask left `~/.onecopy` world-readable. A
+/// directory this restrictive blocks traversal into anything beneath it
+/// regardless of that entry's own mode, so nothing further needs tightening.
+/// Runs every time this single resolver runs, exactly like the
+/// `create_dir_all` beside it — cheap, and it also tightens a root an
+/// earlier build left too open, without a separate migration step. A failure
+/// is a logged warning, not a fatal error: the data root itself is still
+/// usable.
+#[cfg(unix)]
+fn ensure_private(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(error) = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)) {
+        crate::logging::warn(
+            "could not restrict the data root to the owner",
+            serde_json::json!({
+                "path": root,
+                "error": { "message": error.to_string() },
+            }),
+        );
+    }
 }
 
 // The storage root as the app will resolve it, found before Tauri builds the
