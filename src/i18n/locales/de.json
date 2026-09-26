@@ -711,6 +711,8 @@
   "activity.stateCombined": "Zusammengefasst",
   "activity.stateEnded": "Beendet — Ergebnis nicht aufgezeichnet",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "one": "{count} Element", "other": "{count} Elemente" },
   "item.file": "DATEI",
   "item.sortTimeTaken": "Aufnahmezeit",

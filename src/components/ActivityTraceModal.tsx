@@ -238,7 +238,7 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
                 <span className="mt-1 block text-xs text-ink-muted">{[
                   words(view.state, text),
                   view.progress === null ? null : text(view.progress),
-                  view.duration,
+                  view.duration === null ? null : text(view.duration),
                 ].filter(Boolean).join(" · ")}</span>
               </button>
               {row.targetHash && <div className="px-3 pb-2 text-xs">

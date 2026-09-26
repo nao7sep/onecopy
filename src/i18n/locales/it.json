@@ -711,6 +711,8 @@
   "activity.stateCombined": "Unito",
   "activity.stateEnded": "Terminato — esito non registrato",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "one": "{count} elemento", "many": "{count} di elementi", "other": "{count} elementi" },
   "item.file": "FILE",
   "item.sortTimeTaken": "Data di acquisizione",

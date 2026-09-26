@@ -711,6 +711,8 @@
   "activity.stateCombined": "統合",
   "activity.stateEnded": "終了 — 結果は記録されていません",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "other": "{count} 件の項目" },
   "item.file": "ファイル",
   "item.sortTimeTaken": "撮影日時",

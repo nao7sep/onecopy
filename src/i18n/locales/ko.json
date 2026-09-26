@@ -711,6 +711,8 @@
   "activity.stateCombined": "병합됨",
   "activity.stateEnded": "종료됨 — 결과 기록되지 않음",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "other": "항목 {count}개" },
   "item.file": "파일",
   "item.sortTimeTaken": "촬영 시간",

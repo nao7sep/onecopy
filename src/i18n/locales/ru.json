@@ -711,6 +711,8 @@
   "activity.stateCombined": "Объединено",
   "activity.stateEnded": "Закончено — результат не записан",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "one": "{count} объект", "few": "{count} объекта", "many": "{count} объектов", "other": "{count} объекта" },
   "item.file": "ФАЙЛ",
   "item.sortTimeTaken": "Время съёмки",

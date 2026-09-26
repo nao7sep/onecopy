@@ -711,6 +711,8 @@
   "activity.stateCombined": "Regroupé",
   "activity.stateEnded": "Terminé — résultat non enregistré",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "one": "{count} élément", "many": "{count} d’éléments", "other": "{count} éléments" },
   "item.file": "FICHIER",
   "item.sortTimeTaken": "Date de prise de vue",

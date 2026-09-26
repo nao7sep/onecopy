@@ -711,6 +711,8 @@
   "activity.stateCombined": "Combined",
   "activity.stateEnded": "Ended — outcome not recorded",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "one": "{count} item", "other": "{count} items" },
   "item.file": "FILE",
   "item.sortTimeTaken": "Time taken",

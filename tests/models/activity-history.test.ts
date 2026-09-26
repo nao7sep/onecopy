@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { mergeActivity, operationPresentation, type ActivityText } from "../../src/models/activity-history";
 import type { ActivityOperation } from "../../src/repositories/activity";
+import { createTranslator } from "../../src/i18n/translate";
 import { english, inEnglish } from "../helpers/i18n";
 
 // An activity row's action and state are named text where the catalogue has a
@@ -27,7 +28,7 @@ it("never fabricates a start, terminal outcome, or running work from an earlier 
   const closed = { ...row(1), latest: { ...row(1).latest, kind: "closed" as const, current: undefined } };
   const ended = operationPresentation(closed, "one", 9999);
   expect(words(ended.state)).toBe("Ended — outcome not recorded");
-  expect(ended.duration).toBe("90 ms");
+  expect(words(ended.duration!)).toBe("90 ms");
 });
 
 it("retains the last progress counts after a terminal event without counts", () => {
@@ -37,4 +38,16 @@ it("retains the last progress counts after a terminal event without counts", () 
   const completed = operationPresentation(work, "one", 100);
   expect(words(completed.state)).toBe("Completed");
   expect(inEnglish(completed.progress)).toBe("5 / 5");
+});
+
+it("carries a duration as a descriptor that renders through the current locale's number format, not a fixed English decimal (D-L10)", () => {
+  const base = row(1);
+  const closed = {
+    ...base,
+    latest: { ...base.latest, kind: "closed" as const, current: undefined, monotonicMs: 1_510 },
+  };
+  const seconds = operationPresentation(closed, "one", 9999).duration!;
+  expect(createTranslator("en").text(seconds)).toBe("1.5 s");
+  // German formats the decimal separator with a comma, not a period.
+  expect(createTranslator("de").text(seconds)).toBe("1,5 s");
 });

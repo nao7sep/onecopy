@@ -38,6 +38,8 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "item.transcriptBadge",
     "tool.ffmpeg",
     "acceleration.modeMetal",
+    "activity.durationMs",
+    "activity.durationSeconds",
   ],
   es: [
     "app.zoom",
@@ -50,6 +52,8 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "metadata.seconds",
     "tool.ffmpeg",
     "acceleration.modeMetal",
+    "activity.durationMs",
+    "activity.durationSeconds",
   ],
   fr: [
     "nativeMenu.services",
@@ -78,6 +82,8 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "acceleration.transcription",
     "acceleration.modeMetal",
     "item.transcriptBadge",
+    "activity.durationMs",
+    "activity.durationSeconds",
   ],
   it: [
     "app.zoom",
@@ -93,6 +99,8 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "metadata.seconds",
     "tool.ffmpeg",
     "acceleration.modeMetal",
+    "activity.durationMs",
+    "activity.durationSeconds",
   ],
   "pt-BR": [
     "app.zoom",
@@ -103,11 +111,13 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "metadata.seconds",
     "tool.ffmpeg",
     "acceleration.modeMetal",
+    "activity.durationMs",
+    "activity.durationSeconds",
   ],
-  ru: ["tool.ffmpeg", "acceleration.modeMetal"],
-  ja: ["quarantine.ok", "tool.ffmpeg", "acceleration.modeMetal"],
-  ko: ["tool.ffmpeg", "acceleration.modeMetal"],
-  "zh-Hans": ["tool.ffmpeg", "acceleration.modeMetal"],
+  ru: ["tool.ffmpeg", "acceleration.modeMetal", "activity.durationMs", "activity.durationSeconds"],
+  ja: ["quarantine.ok", "tool.ffmpeg", "acceleration.modeMetal", "activity.durationMs", "activity.durationSeconds"],
+  ko: ["tool.ffmpeg", "acceleration.modeMetal", "activity.durationMs", "activity.durationSeconds"],
+  "zh-Hans": ["tool.ffmpeg", "acceleration.modeMetal", "activity.durationMs", "activity.durationSeconds"],
 };
 
 // The hidden-character-conventions set, plus the no-break spaces, figure space,

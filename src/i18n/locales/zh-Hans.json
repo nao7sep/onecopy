@@ -711,6 +711,8 @@
   "activity.stateCombined": "已合并",
   "activity.stateEnded": "已结束（未记录结果）",
   "activity.progressCount": "{done} / {total}",
+  "activity.durationMs": "{count} ms",
+  "activity.durationSeconds": "{count} s",
   "activity.itemCount": { "other": "{count} 个项目" },
   "item.file": "文件",
   "item.sortTimeTaken": "拍摄时间",

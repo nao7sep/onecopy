@@ -67,7 +67,13 @@ export function operationPresentation(row: ActivityOperation, sessionId: string,
       : event.kind === "closed" ? message("activity.stateEnded") : activityLabel(event.kind);
   const elapsed = row.started === null ? null : Math.max(0,
     (running && event.sessionId === sessionId ? nowMs : event.monotonicMs) - row.started.monotonicMs);
-  const duration = elapsed === null ? null : elapsed < 1000 ? `${elapsed} ms` : `${(elapsed / 1000).toFixed(1)} s`;
+  // A number, not a pre-rendered English string: it renders through the
+  // current translator's locale-aware number formatting, so a duration in a
+  // collapsed row reads in "ordinary language" like the rest of the row
+  // (activity-history.md), not a fixed English decimal point (D-L10).
+  const duration: Message | null = elapsed === null ? null
+    : elapsed < 1000 ? message("activity.durationMs", { count: elapsed })
+      : message("activity.durationSeconds", { count: Math.round(elapsed / 100) / 10 });
   const counts = row.progress?.done !== undefined ? row.progress : event;
   const itemCount = row.progress?.itemCount ?? event.itemCount;
   const progress: Message | null =
