@@ -121,3 +121,13 @@ fn every_launch_failure_key_is_in_every_language() {
 fn catalogue_text_fills_in_the_app_name() {
     assert_eq!(catalogue("en").text("nativeMenu.quit", "OneCopy"), "Quit OneCopy");
 }
+
+#[test]
+fn catalogue_text_with_fills_in_a_second_placeholder() {
+    // The launch-failure dialog's log-location sentence (Finding D): a path is
+    // appended as recorded, not translated, alongside the app name.
+    assert_eq!(
+        catalogue("en").text_with("launch.failedLogDir", "OneCopy", "logDir", "/tmp/onecopy/logs"),
+        "Application logs, when there are any, are in /tmp/onecopy/logs.",
+    );
+}

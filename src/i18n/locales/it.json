@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "Ripristina lo zoom",
   "launch.failedTitle": "{app} non è riuscito ad avviarsi",
   "launch.failedBody": "{app} non è riuscito a creare la finestra dell’applicazione. Riavvia il computer, poi riprova.",
+  "launch.failedLogDir": "I log dell’applicazione, se presenti, si trovano in {logDir}.",
   "launch.quit": "Esci",
   "app.appearanceUpdateFailed": "Impossibile aggiornare l’aspetto di questa finestra. Le impostazioni salvate non sono state modificate.",
   "app.audioAutoplayChangeFailed": "Impossibile cambiare la riproduzione automatica dell’audio.",

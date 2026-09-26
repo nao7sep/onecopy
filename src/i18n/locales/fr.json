@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "Réinitialiser le zoom",
   "launch.failedTitle": "{app} n’a pas pu démarrer",
   "launch.failedBody": "{app} n’a pas pu créer sa fenêtre d’application. Redémarrez l’ordinateur, puis réessayez.",
+  "launch.failedLogDir": "Les journaux de l’application, s’il y en a, se trouvent dans {logDir}.",
   "launch.quit": "Quitter",
   "app.appearanceUpdateFailed": "Impossible de mettre à jour l’apparence de cette fenêtre. Les réglages enregistrés n’ont pas été modifiés.",
   "app.audioAutoplayChangeFailed": "Impossible de modifier la lecture automatique de l’audio.",

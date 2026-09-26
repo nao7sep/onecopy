@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "Zoom zurücksetzen",
   "launch.failedTitle": "{app} konnte nicht starten",
   "launch.failedBody": "{app} konnte sein Anwendungsfenster nicht erstellen. Starten Sie den Computer neu und versuchen Sie es dann erneut.",
+  "launch.failedLogDir": "Anwendungsprotokolle, falls vorhanden, befinden sich in {logDir}.",
   "launch.quit": "Beenden",
   "app.appearanceUpdateFailed": "Die Darstellung dieses Fensters konnte nicht aktualisiert werden. Die gespeicherten Einstellungen wurden nicht geändert.",
   "app.audioAutoplayChangeFailed": "Das automatische Abspielen von Audio konnte nicht geändert werden.",

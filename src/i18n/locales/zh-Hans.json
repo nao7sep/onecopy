@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "重置缩放",
   "launch.failedTitle": "{app} 无法启动",
   "launch.failedBody": "{app} 无法创建它的应用窗口。请重新启动电脑，然后重试。",
+  "launch.failedLogDir": "如果有应用程序日志，会保存在 {logDir}。",
   "launch.quit": "退出",
   "app.appearanceUpdateFailed": "无法更新此窗口的外观。已保存的设置未被更改。",
   "app.audioAutoplayChangeFailed": "无法更改音频自动播放。",

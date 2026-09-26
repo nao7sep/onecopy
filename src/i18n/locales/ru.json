@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "Сбросить масштаб",
   "launch.failedTitle": "Не удалось запустить {app}",
   "launch.failedBody": "{app} не удалось создать окно приложения. Перезагрузите компьютер и попробуйте ещё раз.",
+  "launch.failedLogDir": "Журналы приложения, если они есть, находятся в {logDir}.",
   "launch.quit": "Завершить",
   "app.appearanceUpdateFailed": "Не удалось обновить оформление этого окна. Сохранённые настройки не изменены.",
   "app.audioAutoplayChangeFailed": "Не удалось изменить автовоспроизведение аудио.",

@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "ズームをリセット",
   "launch.failedTitle": "{app} を起動できませんでした",
   "launch.failedBody": "{app} はアプリケーションウインドウを作成できませんでした。コンピューターを再起動してから、もう一度お試しください。",
+  "launch.failedLogDir": "アプリケーションログがあれば、{logDir} にあります。",
   "launch.quit": "終了",
   "app.appearanceUpdateFailed": "このウインドウの外観を更新できませんでした。保存されている設定は変更されていません。",
   "app.audioAutoplayChangeFailed": "オーディオの自動再生を変更できませんでした。",

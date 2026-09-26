@@ -470,8 +470,8 @@ pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
 
 /// Every catalogue key this dialog reads; the tests check each one exists in
 /// every language.
-pub const LAUNCH_FAILURE_KEYS: [&str; 3] =
-    ["launch.failedTitle", "launch.failedBody", "launch.quit"];
+pub const LAUNCH_FAILURE_KEYS: [&str; 4] =
+    ["launch.failedTitle", "launch.failedBody", "launch.failedLogDir", "launch.quit"];
 
 /// The last-resort dialog for a failure before any window exists. It speaks the
 /// language the core resolved at launch, which is the computer's language when
@@ -484,7 +484,17 @@ pub(crate) fn halt_before_runtime(diagnostic: &str, language: &str) -> ! {
     let text = crate::i18n::catalogue(language);
     let name = "OneCopy";
     let title = text.text("launch.failedTitle", name);
-    let body = text.text("launch.failedBody", name);
+    let mut body = text.text("launch.failedBody", name);
+    // No AppHandle exists yet (this runs before Tauri builds the app), so the
+    // log location is the same best-effort resolver that read the launch
+    // language. Appended only when it resolves — a path, shown as recorded,
+    // never translated (Finding D).
+    if let Some(log_dir) = crate::paths::data_root_before_launch()
+        .map(|root| root.join(crate::paths::LOGS_DIR_NAME).to_string_lossy().into_owned())
+    {
+        body.push(' ');
+        body.push_str(&text.text_with("launch.failedLogDir", name, "logDir", &log_dir));
+    }
     let quit = text.text("launch.quit", name);
     if std::panic::catch_unwind(move || {
         rfd::MessageDialog::new()

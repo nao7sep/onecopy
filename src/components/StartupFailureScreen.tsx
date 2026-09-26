@@ -1,15 +1,29 @@
+import { useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { useI18n } from "../i18n/I18nContext";
-import { reportWindowCall } from "../repositories";
+import { log, reportWindowCall, toErrorFields } from "../repositories";
+import Button from "./ui/Button";
+import OperationResult from "./ui/OperationResult";
 
 /** The application-owned terminal bootstrap state. The webview is healthy, but
  * backend work is gated off because required application data is not. There is
  * one such condition, so the screen says it in the reader's language; the
- * core's own diagnostic stays in the session log. */
+ * core's own diagnostic stays in the session log — reachable here, since a
+ * fatal startup halt must name a safe next step AND provide access to the
+ * logs when they can help (failures-and-recovery.md L61, Finding D). */
 export default function StartupFailureScreen() {
   const { t } = useI18n();
+  const [openLogsFailed, setOpenLogsFailed] = useState(false);
   const quit = () => {
     void getCurrentWindow().close().catch(reportWindowCall("startup quit"));
+  };
+  const openLogFolder = () => {
+    setOpenLogsFailed(false);
+    void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
+      log.warn("startup screen reveal logs failed", toErrorFields(error));
+      setOpenLogsFailed(true);
+    });
   };
 
   return (
@@ -29,7 +43,13 @@ export default function StartupFailureScreen() {
         <p id="startup-failure-message" className="mt-3 leading-relaxed text-ink-muted">
           {t("startup.blockedBody")}
         </p>
-        <div className="mt-6 flex justify-end">
+        {openLogsFailed ? (
+          <OperationResult level="error" className="mt-3 text-sm">
+            {t("app.revealLogsFailed")}
+          </OperationResult>
+        ) : null}
+        <div className="mt-6 flex justify-end gap-2">
+          <Button onClick={openLogFolder}>{t("app.revealLogs")}</Button>
           <button
             type="button"
             className="inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-ink-inverted outline-none hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary-ring"

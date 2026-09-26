@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "확대/축소 재설정",
   "launch.failedTitle": "{app} 앱을 시작할 수 없습니다",
   "launch.failedBody": "{app} 앱이 애플리케이션 창을 만들 수 없습니다. 컴퓨터를 다시 시작한 뒤 다시 시도하십시오.",
+  "launch.failedLogDir": "애플리케이션 로그가 있다면 {logDir}에 있습니다.",
   "launch.quit": "종료",
   "app.appearanceUpdateFailed": "이 창의 외관을 업데이트할 수 없습니다. 저장된 설정은 변경되지 않았습니다.",
   "app.audioAutoplayChangeFailed": "오디오 자동 재생을 변경할 수 없습니다.",

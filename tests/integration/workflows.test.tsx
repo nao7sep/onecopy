@@ -262,6 +262,28 @@ describe("the culling workflow", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("offers access to application logs from the blocked-start shell (Finding D)", async () => {
+    mockCommand("load_app_data", () => ({
+      status: "blocked",
+      failure: {
+        title: "OneCopy could not start safely",
+        message: "Your photos were not changed.",
+      },
+    }));
+    mockCommand("reveal_data_subdir", () => null);
+
+    const view = render(<App />);
+    await settle();
+    await settle();
+
+    view.getByRole("button", { name: "Reveal logs folder" }).click();
+    await settle();
+    expect(invokeCalls.some((call) =>
+      call.command === "reveal_data_subdir" &&
+      (call.args as Record<string, unknown>).name === "logs",
+    )).toBe(true);
+  });
+
   it("starts the configured source check quietly only after usable bootstrap", async () => {
     mockCommand("load_app_data", () => ({
       status: "ready",

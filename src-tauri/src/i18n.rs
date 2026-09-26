@@ -132,12 +132,27 @@ impl Catalogue {
     /// key in every language; English, then the key itself, only guard a build
     /// that skipped it.
     pub fn text(&self, key: &str, app: &str) -> String {
-        self.entries
+        self.render(key, &[("app", app)])
+    }
+
+    /// Like `text`, with one more placeholder — used only where a second value
+    /// (a filesystem path, never translated) belongs in the sentence.
+    pub fn text_with(&self, key: &str, app: &str, name: &str, value: &str) -> String {
+        self.render(key, &[("app", app), (name, value)])
+    }
+
+    fn render(&self, key: &str, values: &[(&str, &str)]) -> String {
+        let template = self
+            .entries
             .get(key)
             .or_else(|| self.fallback.get(key))
             .and_then(JsonValue::as_str)
-            .unwrap_or(key)
-            .replace("{app}", app)
+            .unwrap_or(key);
+        let mut rendered = template.to_string();
+        for (name, value) in values {
+            rendered = rendered.replace(&format!("{{{name}}}"), value);
+        }
+        rendered
     }
 }
 

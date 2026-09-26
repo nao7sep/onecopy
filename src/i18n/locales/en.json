@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "Reset zoom",
   "launch.failedTitle": "{app} could not launch",
   "launch.failedBody": "{app} could not create its application window. Restart the computer, then try again.",
+  "launch.failedLogDir": "Application logs, when there are any, are in {logDir}.",
   "launch.quit": "Quit",
   "app.appearanceUpdateFailed": "Couldn’t update this window’s appearance. Saved settings were not changed.",
   "app.audioAutoplayChangeFailed": "Couldn’t change audio autoplay.",

@@ -794,6 +794,7 @@
   "shortcuts.appResetZoom": "Redefinir o zoom",
   "launch.failedTitle": "Não foi possível iniciar o {app}",
   "launch.failedBody": "O {app} não conseguiu criar a janela do aplicativo. Reinicie o computador e tente novamente.",
+  "launch.failedLogDir": "Os registros do aplicativo, se houver, estão em {logDir}.",
   "launch.quit": "Sair",
   "app.appearanceUpdateFailed": "Não foi possível atualizar a aparência desta janela. As configurações salvas não foram alteradas.",
   "app.audioAutoplayChangeFailed": "Não foi possível mudar a reprodução automática de áudio.",
