@@ -52,14 +52,22 @@ fn compare_tag(tag: &str, installed: &Version) -> Result<(bool, String), String>
     Ok((published > *installed, published.to_string()))
 }
 
-async fn request_latest_tag() -> Result<String, String> {
+/// Sends the one and only request a release check makes. `url` is the
+/// endpoint to hit — always `LATEST_RELEASE_API` in the running app — kept as
+/// a parameter so a test can point this exact request-building and
+/// response-handling code at a local listener instead of GitHub, with no
+/// fake GitHub-shaped server standing behind it: headers, the absent
+/// Authorization header, the bounded timeout, and the single attempt (no
+/// retry loop exists here or anywhere above this function) are all real
+/// behavior of this one function, not restated constants.
+async fn request_latest_tag(url: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("build GitHub release client: {error}"))?;
     let response = client
-        .get(LATEST_RELEASE_API)
+        .get(url)
         .header(reqwest::header::ACCEPT, GITHUB_ACCEPT)
         .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
@@ -98,6 +106,20 @@ fn parse_latest_tag(bytes: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "GitHub release response has no tag_name".to_string())
 }
 
+/// Runs `write_timestamp` to completion first; `request` runs only when it
+/// succeeds, and never otherwise. This is the ordering `run_check` depends
+/// on (the attempt marker must land before any request goes out, and a
+/// failed write must send no request), isolated from `AppHandle`-bound state
+/// persistence and HTTP transport so a test can drive both sides with local
+/// futures and prove the ordering rather than merely read it.
+async fn write_attempt_marker_then<T>(
+    write_timestamp: impl std::future::Future<Output = Result<(), String>>,
+    request: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    write_timestamp.await?;
+    request.await
+}
+
 async fn run_check(app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
     let attempted_at_utc = crate::logging::now_iso_millis();
     // The state-file write is filesystem I/O; this function runs on a tokio
@@ -105,24 +127,27 @@ async fn run_check(app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
     // blocking-pool dispatch every other filesystem write in the app uses
     // instead of blocking the async worker directly.
     let attempt_marker = attempted_at_utc.clone();
-    let saved = crate::dispatch(move || {
-        crate::storage::patch_state(&json!({ "githubReleaseLastAttemptAtUtc": attempt_marker }))
-    })
-    .await?;
-    if let Some(record) = saved.quarantined {
-        crate::failure_runtime::emit_or_record(
-            app,
-            "storage://quarantined",
-            json!({ "quarantines": [record] }),
-        );
-    }
-    crate::logging::info("GitHub release check started", json!({}));
-    let result = async {
-        let tag = request_latest_tag().await?;
+    let write_timestamp = async {
+        let saved = crate::dispatch(move || {
+            crate::storage::patch_state(&json!({ "githubReleaseLastAttemptAtUtc": attempt_marker }))
+        })
+        .await?;
+        if let Some(record) = saved.quarantined {
+            crate::failure_runtime::emit_or_record(
+                app,
+                "storage://quarantined",
+                json!({ "quarantines": [record] }),
+            );
+        }
+        crate::logging::info("GitHub release check started", json!({}));
+        Ok(())
+    };
+    let result = write_attempt_marker_then(write_timestamp, async {
+        let tag = request_latest_tag(LATEST_RELEASE_API).await?;
         let installed = Version::parse(env!("CARGO_PKG_VERSION"))
             .map_err(|error| format!("invalid installed version: {error}"))?;
         compare_tag(&tag, &installed)
-    }
+    })
     .await;
     match result {
         Ok((true, version)) => {
