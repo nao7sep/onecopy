@@ -24,6 +24,26 @@ export function effectiveLanguage(preference: LanguagePreference, systemLanguage
   return preference === "system" ? systemLanguage : preference;
 }
 
+// The same resolution the Rust core's match_locale/system_language apply, so
+// a browser-side fallback (D-L9: the appearance read timing out or failing)
+// agrees with what the core would have said, instead of defaulting to
+// English. Every Chinese locale resolves to Simplified Chinese and every
+// Portuguese one to Brazilian Portuguese.
+function matchLocale(locale: string): Language | null {
+  const primary = locale.split(/[-_.@]/)[0]?.toLowerCase() ?? "";
+  if (primary === "zh") return "zh-Hans";
+  if (primary === "pt") return "pt-BR";
+  return (LANGUAGES as readonly string[]).includes(primary) ? (primary as Language) : null;
+}
+
+export function matchSystemLanguage(locales: readonly string[]): Language {
+  for (const locale of locales) {
+    const matched = matchLocale(locale);
+    if (matched !== null) return matched;
+  }
+  return "en";
+}
+
 // Dates and numbers follow the computer's regional format when it is in the
 // interface language (British English dates for an en-GB computer), and the
 // interface language's own format otherwise.

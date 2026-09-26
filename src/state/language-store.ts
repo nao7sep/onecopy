@@ -1,8 +1,18 @@
 import { create } from "zustand";
 import {
   isLanguage,
+  matchSystemLanguage,
   type Language,
 } from "../i18n/languages";
+
+// If the appearance read never completes (a slow core, or window-appearance's
+// own 5 s bound), the window must not paint in English regardless of what the
+// computer's language actually is (D-L9) — the same fallback the Rust core
+// would have resolved, from the browser's own preferred-locale list.
+function browserSystemLanguage(): Language {
+  const locales = typeof navigator === "undefined" ? [] : navigator.languages ?? [navigator.language];
+  return matchSystemLanguage(locales.filter((locale): locale is string => typeof locale === "string"));
+}
 
 export interface LanguageInput {
   language?: unknown;
@@ -24,13 +34,16 @@ interface LanguageState {
 // Every window learns the language from the same appearance read it already
 // awaits before its first paint, so no window shows English first, and a saved
 // change reaches open windows through that read's invalidation.
-export const useLanguageStore = create<LanguageState>((set) => ({
-  language: "en",
-  systemLanguage: "en",
-  systemLocale: null,
-  apply: (input) => set({
-    language: isLanguage(input.language) ? input.language : "en",
-    systemLanguage: isLanguage(input.systemLanguage) ? input.systemLanguage : "en",
-    systemLocale: typeof input.systemLocale === "string" ? input.systemLocale : null,
-  }),
-}));
+export const useLanguageStore = create<LanguageState>((set) => {
+  const fallback = browserSystemLanguage();
+  return {
+    language: fallback,
+    systemLanguage: fallback,
+    systemLocale: null,
+    apply: (input) => set({
+      language: isLanguage(input.language) ? input.language : fallback,
+      systemLanguage: isLanguage(input.systemLanguage) ? input.systemLanguage : fallback,
+      systemLocale: typeof input.systemLocale === "string" ? input.systemLocale : null,
+    }),
+  };
+});
