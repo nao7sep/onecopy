@@ -9,6 +9,12 @@
 /// ordinary exit path quiesces mutations before the process ends.
 pub const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
 
+/// The macOS app-menu Settings… item (R8-04): native menu items cannot call
+/// into the webview directly, so lib.rs's on_menu_event handler emits
+/// "menu://open-settings" to Main, which owns the actual Settings surface —
+/// the same target the webview's own Cmd+, shortcut already opens.
+pub const OPEN_SETTINGS_MENU_ID: &str = "onecopy.open-settings";
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::menu::{
     AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
@@ -21,8 +27,9 @@ use crate::i18n;
 
 /// Every catalogue key the native menu reads; the tests check each one exists
 /// in every language.
-pub const KEYS: [&str; 22] = [
+pub const KEYS: [&str; 23] = [
     "nativeMenu.about",
+    "nativeMenu.settings",
     "nativeMenu.services",
     "nativeMenu.hide",
     "nativeMenu.hideOthers",
@@ -114,12 +121,20 @@ pub fn build(app: &AppHandle, language: &str) -> tauri::Result<Menu<Wry>> {
 
     #[cfg(target_os = "macos")]
     {
+        let settings = MenuItem::with_id(
+            app,
+            OPEN_SETTINGS_MENU_ID,
+            t("nativeMenu.settings"),
+            true,
+            Some("Cmd+,"),
+        )?;
         let app_menu = Submenu::with_items(
             app,
             name.as_str(),
             true,
             &[
                 &about_item,
+                &settings,
                 &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::services(app, Some(&t("nativeMenu.services")))?,
                 &PredefinedMenuItem::separator(app)?,

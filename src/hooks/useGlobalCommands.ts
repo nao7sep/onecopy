@@ -2,6 +2,7 @@
 // dialogs stay in App, while their command semantics have one owner here.
 
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
@@ -63,6 +64,24 @@ export function useGlobalCommands() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openSettings]);
+
+  // The macOS native menu's Settings… item (R8-04) cannot call into the
+  // webview directly; the core emits this event, and Main is the one owner of
+  // the Settings surface, same as the webview's own Cmd+, shortcut above.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen("menu://open-settings", () => {
+      if (!hasOpenModal()) openSettings();
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [openSettings]);
 
   useEffect(() => {

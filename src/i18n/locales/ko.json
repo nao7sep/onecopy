@@ -12,6 +12,7 @@
   "wizard.language": "언어",
   "nativeMenu.about": "{app}에 관하여",
   "nativeMenu.services": "서비스",
+  "nativeMenu.settings": "설정…",
   "nativeMenu.hide": "{app} 가리기",
   "nativeMenu.hideOthers": "기타 가리기",
   "nativeMenu.quit": "{app} 종료",

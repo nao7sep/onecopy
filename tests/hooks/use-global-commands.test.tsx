@@ -9,7 +9,10 @@ import { useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useAppShellStore } from "../../src/state/app-shell-store";
+import { pushModal, resetModalStack } from "../../src/utils/modalStack";
 import {
+  fireEvent as fireBackendEvent,
   mockCommand,
   invokeCalls,
   mockSectionItems,
@@ -240,6 +243,27 @@ describe("global destructive commands", () => {
       ],
       permanent: false,
     });
+  });
+});
+
+describe("native Settings menu item (R8-04)", () => {
+  afterEach(() => resetModalStack());
+
+  it("opens Settings when the core reports the macOS menu item, unless a modal is already open", async () => {
+    useAppShellStore.setState({ utilitySurface: null });
+    render(<Harness />);
+
+    await act(async () => {
+      fireBackendEvent("menu://open-settings");
+    });
+    expect(useAppShellStore.getState().utilitySurface).toBe("settings");
+
+    useAppShellStore.setState({ utilitySurface: null });
+    pushModal({});
+    await act(async () => {
+      fireBackendEvent("menu://open-settings");
+    });
+    expect(useAppShellStore.getState().utilitySurface).toBeNull();
   });
 });
 

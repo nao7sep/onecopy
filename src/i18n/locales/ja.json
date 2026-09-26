@@ -12,6 +12,7 @@
   "wizard.language": "言語",
   "nativeMenu.about": "{app}について",
   "nativeMenu.services": "サービス",
+  "nativeMenu.settings": "設定…",
   "nativeMenu.hide": "{app}を隠す",
   "nativeMenu.hideOthers": "ほかを隠す",
   "nativeMenu.quit": "{app}を終了",

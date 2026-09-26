@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::menu::SAFE_QUIT_MENU_ID;
+use crate::menu::{OPEN_SETTINGS_MENU_ID, SAFE_QUIT_MENU_ID};
 
 pub mod activity;
 pub mod activity_history;
@@ -2436,6 +2436,19 @@ pub fn run() {
                 } else {
                     app.exit(0);
                 }
+            } else if event.id() == OPEN_SETTINGS_MENU_ID {
+                // The native item cannot call into the webview directly; Main
+                // owns the only Settings surface, the same one the webview's
+                // own Cmd+, shortcut already opens (R8-04).
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(error) = window.set_focus() {
+                        logging::warn(
+                            "focusing Main for the native Settings item failed",
+                            json!({ "error": { "message": error.to_string() } }),
+                        );
+                    }
+                }
+                failure_runtime::emit_or_record(app, "menu://open-settings", json!({}));
             }
         })
         // Asynchronous registration (W-B2, C-B1): the handler body — index

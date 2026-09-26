@@ -12,6 +12,7 @@
   "wizard.language": "Lingua",
   "nativeMenu.about": "Informazioni su {app}",
   "nativeMenu.services": "Servizi",
+  "nativeMenu.settings": "Impostazioni…",
   "nativeMenu.hide": "Nascondi {app}",
   "nativeMenu.hideOthers": "Nascondi altre",
   "nativeMenu.quit": "Esci da {app}",
