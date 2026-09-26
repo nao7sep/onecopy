@@ -677,16 +677,19 @@ fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), S
         return Err(e.to_string());
     }
 
-    // Best-effort: persist the rename itself by fsyncing the directory.
-    match std::fs::File::open(parent) {
-        Ok(dir) => crate::fs_recovery::sync_all(&dir, parent, "atomic store directory sync"),
-        Err(error) => crate::logging::warn(
-            "atomic store directory could not be opened for sync",
+    // Best-effort: persist the rename itself by fsyncing the directory. This
+    // owner already knows Windows has no portable directory handle to fsync
+    // (a journaled no-replace move stands in for it there) — calling it
+    // directly here, rather than opening the directory by hand, is what was
+    // logging a spurious warning on every managed-text save on Windows (R1-13).
+    if let Err(error) = crate::fs_publish::sync_directory(parent) {
+        crate::logging::warn(
+            "atomic store directory sync failed",
             serde_json::json!({
                 "path": parent,
                 "error": { "message": error.to_string() },
             }),
-        ),
+        );
     }
 
     if record {
