@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { reasonText } from "../models/workReasons";
+import { reasonRemedy, reasonText } from "../models/workReasons";
+import { useAppShellStore } from "../state/app-shell-store";
 import { Pause, Play, Square } from "lucide-react";
 import {
   backgroundClassLabel,
@@ -222,6 +223,19 @@ export default function BackgroundWorkModal({
                       : stateText(row, t)}
                   </span>
                 </span>
+                {row.state === "unavailable" ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      useAppShellStore.getState().openUtility(reasonRemedy(row.reason))
+                    }
+                  >
+                    {reasonRemedy(row.reason) === "settings"
+                      ? t("settings.title")
+                      : t("app.openManagedTools")}
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   disabled={

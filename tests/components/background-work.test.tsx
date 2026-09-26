@@ -17,6 +17,7 @@ import {
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
+import { useAppShellStore } from "../../src/state/app-shell-store";
 import { t } from "../helpers/i18n";
 
 const ids: BackgroundClassSnapshot["id"][] = [
@@ -138,6 +139,24 @@ describe("Background work", () => {
     expect(retry.textContent).toBe("Retry");
     await act(async () => retry.click());
     expect(invokeCalls).toContainEqual({ command: "set_file_information_paused", args: { paused: false } });
+  });
+
+  it.each([
+    ["faces", "waiting-for-face-models", "Face scoring", "Managed tools", "managedTools"],
+    ["video-transcripts", "unsupported-acceleration", "Video transcription", "Settings", "settings"],
+  ] as const)("offers %s waiting on %s a direct action where it is resolved", async (id, reason, label, action, surface) => {
+    current = snapshot({}, { [id]: { state: "unavailable", queued: 3, reason } });
+    useDerivedWorkStore.setState({ snapshot: current });
+    useAppShellStore.setState({ utilitySurface: "backgroundWork" });
+    const view = render(<BackgroundWorkModal open onClose={() => {}} />);
+    const row = [...view.container.querySelectorAll("li")].find((item) => item.textContent?.includes(label))!;
+    const open = [...row.querySelectorAll("button")].find((button) => button.textContent === action)!;
+    await act(async () => open.click());
+    expect(useAppShellStore.getState().utilitySurface).toBe(surface);
+    // It never installs anything itself.
+    expect(invokeCalls.some((call) => call.command.startsWith("binaries_"))).toBe(false);
+    const available = [...view.container.querySelectorAll("li")].find((item) => item.textContent?.includes("Thumbnails, previews, and posters"))!;
+    expect([...available.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Pause"]);
   });
 
   it("keeps active manual work pausable when its automatic coordinator is stopped", () => {
