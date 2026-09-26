@@ -259,19 +259,37 @@ pub fn reconcile(
             [index_db.to_string_lossy().as_ref()],
         )
         .map_err(|error| error.to_string())?;
-    let result = sequence.conn.execute(
-        "DELETE FROM members \
-         WHERE (hash IS NOT NULL AND NOT EXISTS (\
-                  SELECT 1 FROM library.review_contents l \
-                  WHERE l.content_hash = members.hash AND l.live_copy_count > 0\
-                )) \
-            OR (hash IS NULL AND NOT EXISTS (\
-                  SELECT 1 FROM library.paths p \
-                  WHERE p.id = members.path_id AND p.missing = 0 \
-                    AND p.review_visible = 1 AND p.companion_of IS NULL AND p.content_hash IS NULL\
-                ))",
-        [],
-    );
+    // A provisional key names its member's own path, so that path carries
+    // the identity it was promoted to; follow it before pruning.
+    let result = sequence
+        .conn
+        .execute(
+            "UPDATE members SET hash = (\
+               SELECT p.content_hash FROM library.paths p WHERE p.id = members.path_id\
+             ) \
+             WHERE substr(hash, 1, 1) = 'p' AND EXISTS (\
+               SELECT 1 FROM library.paths p \
+               WHERE p.id = members.path_id AND p.content_hash IS NOT NULL \
+                 AND p.content_hash != members.hash\
+             )",
+            [],
+        )
+        .and_then(|_| {
+            sequence.conn.execute(
+                "DELETE FROM members \
+                 WHERE (hash IS NOT NULL AND NOT EXISTS (\
+                          SELECT 1 FROM library.review_contents l \
+                          WHERE l.content_hash = members.hash AND l.live_copy_count > 0\
+                        )) \
+                    OR (hash IS NULL AND NOT EXISTS (\
+                          SELECT 1 FROM library.paths p \
+                          WHERE p.id = members.path_id AND p.missing = 0 \
+                            AND p.review_visible = 1 AND p.companion_of IS NULL \
+                            AND p.content_hash IS NULL\
+                        ))",
+                [],
+            )
+        });
     let detach = sequence.conn.execute("DETACH DATABASE library", []);
     result.map_err(|error| error.to_string())?;
     detach.map_err(|error| error.to_string())?;
@@ -315,6 +333,7 @@ fn snapshot_locked(
         else {
             return Err("viewer sequence is empty".to_string());
         };
+        let member = follow_promotion(sequence, index_conn, member)?;
         if let Some(item) = queries::item_by_identity(index_conn, &member, projection)? {
             let index = sequence
                 .conn
@@ -363,6 +382,44 @@ fn snapshot_locked(
                 )?)
                 .ok_or_else(|| "viewer sequence is empty".to_string())?;
     }
+}
+
+/// A member frozen under a provisional key keeps its item when that key is
+/// promoted to the exact content identity: the key names the member's own
+/// path, whose row now carries the promoted identity. The frozen row follows
+/// it so later moves and reconciles see the live identity.
+fn follow_promotion(
+    sequence: &Sequence,
+    index_conn: &Connection,
+    mut member: SectionIdentity,
+) -> Result<SectionIdentity, String> {
+    let Some(frozen) = member
+        .hash
+        .clone()
+        .filter(|hash| crate::scanner::is_provisional(hash))
+    else {
+        return Ok(member);
+    };
+    let live: Option<String> = index_conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE id = ?1",
+            [member.path_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .flatten();
+    if let Some(live) = live.filter(|live| *live != frozen) {
+        sequence
+            .conn
+            .execute(
+                "UPDATE members SET hash = ?1 WHERE ordinal = ?2",
+                params![live, sequence.current_ordinal],
+            )
+            .map_err(|error| error.to_string())?;
+        member.hash = Some(live);
+    }
+    Ok(member)
 }
 
 fn matching_sequence<'a>(

@@ -236,3 +236,81 @@ fn concurrent_starts_never_collide_on_one_temp_sequence_file() {
 
     viewer_sequence::close(None).unwrap();
 }
+
+#[test]
+fn members_keep_their_place_when_their_provisional_identity_is_promoted() {
+    let _session = VIEWER_SESSION.lock().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let index_path = root.path().join(storage::INDEX_DB_FILE_NAME);
+    let conn = index_store::open(&index_path).unwrap();
+    // Unique-size media starts under a provisional key naming its own path.
+    for index in 1..=3u64 {
+        let key = format!("p{index}");
+        conn.execute(
+            "INSERT INTO contents (hash, kind, byte_size, width, height) \
+             VALUES (?1, 'image', ?2, 640, 480)",
+            params![key, 100 + index as i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO paths \
+               (abs_path, dir_path, file_name, stem, ext, kind, size, content_hash, \
+                resolved_utc_ms, resolved_source, missing) \
+             VALUES (?1, '/root', ?2, ?3, 'jpg', 'image', ?4, ?5, 1767225600000, \
+                     'metadata', 0)",
+            params![
+                format!("/root/{index}.jpg"),
+                format!("{index}.jpg"),
+                index.to_string(),
+                100 + index as i64,
+                key
+            ],
+        )
+        .unwrap();
+    }
+    let anchor = queries::SectionIdentity { hash: Some("p1".into()), path_id: 1 };
+    let snapshot = viewer_sequence::start(
+        root.path(),
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        queries::SectionSort { order: queries::SectionSortOrder::Name, desc: false },
+        vec![queries::PositionedSectionIdentity { hash: Some("p1".into()), path_id: 1, index: 0 }],
+        &anchor,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(snapshot.length, 3);
+
+    // Deriving the next photo's preview promotes it to its exact identity.
+    let cache = onecopy_lib::preview::CachePaths::new(root.path().join("cache"));
+    onecopy_lib::scanner::promote_identity(&conn, &cache, "p2", "c0ffee02").unwrap();
+    let next = viewer_sequence::move_current(
+        &snapshot.token,
+        viewer_sequence::Move::Next,
+        &conn,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(next.item.hash.as_deref(), Some("c0ffee02"));
+    assert_eq!(next.member.hash.as_deref(), Some("c0ffee02"));
+    assert_eq!((next.index, next.length), (1, 3));
+
+    // A background reconcile keeps it and the member promoted under it.
+    onecopy_lib::scanner::promote_identity(&conn, &cache, "p3", "c0ffee03").unwrap();
+    let reconciled = viewer_sequence::reconcile(&snapshot.token, &index_path, &conn, projection())
+        .unwrap()
+        .unwrap();
+    assert_eq!(reconciled.item.hash.as_deref(), Some("c0ffee02"));
+    assert_eq!((reconciled.index, reconciled.length), (1, 3));
+    let last = viewer_sequence::move_current(
+        &snapshot.token,
+        viewer_sequence::Move::Next,
+        &conn,
+        projection(),
+    )
+    .unwrap();
+    assert_eq!(last.item.hash.as_deref(), Some("c0ffee03"));
+    viewer_sequence::close(Some(&snapshot.token)).unwrap();
+}
