@@ -422,13 +422,7 @@ pub fn ensure_fullres(
     let Some(ffmpeg) = ffmpeg else {
         return Err("ffmpeg is not installed — install it from Managed tools".to_string());
     };
-    let path: String = conn
-        .query_row(
-            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-            [hash],
-            |r| r.get(0),
-        )
-        .map_err(|_| "no live copy of this photo".to_string())?;
+    let path = crate::indexed_file::live_path(conn, Some(hash), None)?;
     // not recorded: full-resolution conversion is a reconstructible binary
     // cache entry, staged beside its final path.
     // ffmpeg applies the container's display transforms itself, so the
@@ -525,13 +519,9 @@ pub fn derive_one(
     if crate::derived_state::preview_failed(conn, hash)? {
         return Err("Preview generation failed. Recheck this section to try again.".to_string());
     }
-    let path: String = conn
-        .query_row(
-            "SELECT abs_path FROM paths WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-            [hash],
-            |r| r.get(0),
-        )
-        .map_err(|_| "no live copy of this photo".to_string())?;
+    let path = crate::indexed_file::live_path(conn, Some(hash), None)?
+        .to_string_lossy()
+        .into_owned();
     let src = Path::new(&path);
     if ffmpeg.is_none() && needs_ffmpeg_decode(src) {
         return Err(

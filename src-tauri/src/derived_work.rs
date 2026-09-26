@@ -771,10 +771,11 @@ impl Drop for LeadingFlight<'_> {
 }
 
 #[cfg(test)]
-// Private single-flight bookkeeping is tested here because promoting it
-// would expose a concurrency primitive that no production caller needs.
+// EXCEPTION to tests-folder conventions: private single-flight bookkeeping
+// and the transcription outcome mapping are tested here because promoting
+// them would expose internals that no production caller needs.
 #[path = "../tests/unit/derived_work.rs"]
-mod requested_preview_tests;
+mod tests;
 
 /// What one pass reads once: settings and SQLite are opened per bounded
 /// pass, while every media item is still independently claimed and
@@ -2084,7 +2085,126 @@ fn transcribe_next(
     // stops this job from the start.
     crate::derived_runtime::active_item(context.app, class, &candidate_hash);
 
-    let result = complete_transcription_attempt(
+    let outcome = match run_transcription(
+        context,
+        class,
+        TranscriptionRun::Automatic,
+        &candidate_hash,
+        &path,
+    ) {
+        Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
+            return Ok(TranscriptStep::default())
+        }
+        other => other?,
+    };
+    Ok(match outcome {
+        TranscriptionAttemptOutcome::Completed {
+            hash,
+            issues_changed,
+            ..
+        }
+        | TranscriptionAttemptOutcome::Failed {
+            hash,
+            issues_changed,
+            ..
+        } => TranscriptStep {
+            attempted_hash: Some(hash),
+            exhausted: false,
+            issues_changed,
+        },
+        TranscriptionAttemptOutcome::Cancelled { .. }
+        | TranscriptionAttemptOutcome::Unavailable { .. }
+        | TranscriptionAttemptOutcome::ResourceSafety { .. } => TranscriptStep::default(),
+    })
+}
+
+/// Who asked for a transcription run. Both kinds answer the same
+/// `transcript-store` through one progress and one outcome publisher; a
+/// requested run also answers its requester when the run could not produce a
+/// transcript at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranscriptionRun {
+    Automatic,
+    Requested { replacement: bool },
+}
+
+impl TranscriptionRun {
+    fn replacement(self) -> bool {
+        matches!(self, Self::Requested { replacement: true })
+    }
+}
+
+/// What one terminal outcome publishes: the item re-projected, the
+/// `transcribe://` event, and a resource-safety pause.
+#[derive(Debug, PartialEq)]
+struct TranscriptionReport {
+    item_hash: Option<String>,
+    event: Option<(&'static str, serde_json::Value)>,
+    pause_message: Option<String>,
+}
+
+/// The single outcome-to-event mapping for requested and automatic runs.
+fn transcription_report(
+    run: TranscriptionRun,
+    outcome: &TranscriptionAttemptOutcome,
+) -> TranscriptionReport {
+    let replacement = run.replacement();
+    let requested = matches!(run, TranscriptionRun::Requested { .. });
+    let error = |hash: &str, message: &str| {
+        (
+            "transcribe://error",
+            json!({ "hash": hash, "message": message, "replacement": replacement }),
+        )
+    };
+    match outcome {
+        TranscriptionAttemptOutcome::Completed { hash, text, .. } => TranscriptionReport {
+            item_hash: Some(hash.clone()),
+            event: Some((
+                "transcribe://done",
+                json!({ "hash": hash, "text": text, "replacement": replacement }),
+            )),
+            pause_message: None,
+        },
+        TranscriptionAttemptOutcome::Cancelled { hash } => TranscriptionReport {
+            item_hash: Some(hash.clone()),
+            event: Some((
+                "transcribe://cancelled",
+                json!({ "hash": hash, "replacement": replacement }),
+            )),
+            pause_message: None,
+        },
+        // Waiting for a tool is not a failure of the file; only the user who
+        // asked for this run is told it could not start.
+        TranscriptionAttemptOutcome::Unavailable { hash, message } => TranscriptionReport {
+            item_hash: Some(hash.clone()),
+            event: requested.then(|| error(hash, message)),
+            pause_message: None,
+        },
+        TranscriptionAttemptOutcome::ResourceSafety { hash, message } => TranscriptionReport {
+            item_hash: None,
+            event: requested.then(|| error(hash, message)),
+            pause_message: Some(message.clone()),
+        },
+        TranscriptionAttemptOutcome::Failed { hash, message, .. } => TranscriptionReport {
+            item_hash: Some(hash.clone()),
+            event: Some(error(hash, message)),
+            pause_message: None,
+        },
+    }
+}
+
+/// One transcription run for either kind of caller: the shared identity,
+/// start, progress, and outcome publication around
+/// [`complete_transcription_attempt`].
+fn run_transcription(
+    context: &TranscriptContext<'_>,
+    class: WorkClass,
+    run: TranscriptionRun,
+    source_hash: &str,
+    source_path: &str,
+) -> Result<TranscriptionAttemptOutcome, String> {
+    let replacement = run.replacement();
+    let outcome = complete_transcription_attempt(
         TranscriptionAttempt {
             conn: context.conn,
             cache: context.cache,
@@ -2092,21 +2212,23 @@ fn transcribe_next(
             temp_dir: context
                 .data_root
                 .join(crate::binaries_manager::TEMP_DIR_NAME),
-            source_hash: &candidate_hash,
-            source_path: &path,
-            replace_existing: false,
+            source_hash,
+            source_path,
+            replace_existing: replacement,
             acceleration: context.transcription_acceleration,
             cancel_when: Some(Box::new(cancelled)),
         },
         |hash| {
-            if candidate_hash != hash {
+            if source_hash != hash {
+                // A file operation on the promoted item must still find and
+                // stop this job.
                 crate::derived_runtime::active_item(context.app, class, hash);
                 notify_item_update(
                     context.app,
                     context.conn,
                     context.projection,
                     class.id(),
-                    &candidate_hash,
+                    source_hash,
                     hash,
                 );
             }
@@ -2118,7 +2240,7 @@ fn transcribe_next(
             crate::failure_runtime::emit_or_record(
                 context.app,
                 "transcribe://progress",
-                json!({ "hash": hash, "percent": 0, "replacement": false }),
+                json!({ "hash": hash, "percent": 0, "replacement": replacement }),
             );
         },
         {
@@ -2132,97 +2254,146 @@ fn transcribe_next(
                     json!({
                         "hash": progress_hash,
                         "percent": percent,
-                        "replacement": false
+                        "replacement": replacement
                     }),
                 );
             }
         },
-    );
-    let result = match result {
-        Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
-            return Ok(TranscriptStep::default())
-        }
-        other => other?,
-    };
-    match result {
-        TranscriptionAttemptOutcome::Completed {
-            hash,
-            text,
-            issues_changed,
-        } => {
-            notify_item_update(
-                context.app,
-                context.conn,
-                context.projection,
-                "transcripts",
-                &hash,
-                &hash,
-            );
-            crate::failure_runtime::emit_or_record(
-                context.app,
-                "transcribe://done",
-                json!({ "hash": hash, "text": text, "replacement": false }),
-            );
-            Ok(TranscriptStep {
-                attempted_hash: Some(hash),
-                exhausted: false,
-                issues_changed,
-            })
-        }
-        TranscriptionAttemptOutcome::Cancelled { hash } => {
-            logging::debug(
-                "derived transcription stopped",
-                json!({ "hash": hash, "reason": "cancelled" }),
-            );
-            crate::failure_runtime::emit_or_record(
-                context.app,
-                "transcribe://cancelled",
-                json!({ "hash": hash, "replacement": false }),
-            );
-            Ok(TranscriptStep::default())
-        }
-        TranscriptionAttemptOutcome::Unavailable { message, .. } => {
-            logging::debug(
-                "derived transcription unavailable",
-                json!({ "message": message }),
-            );
-            Ok(TranscriptStep::default())
-        }
-        TranscriptionAttemptOutcome::ResourceSafety { message, .. } => {
-            pause_for_resource_safety(context.app, context.conn, class, &message)?;
-            Ok(TranscriptStep::default())
-        }
-        TranscriptionAttemptOutcome::Failed {
-            hash,
-            message,
-            issues_changed,
-        } => {
-            notify_item_update(
-                context.app,
-                context.conn,
-                context.projection,
-                "transcripts",
-                &hash,
-                &hash,
-            );
-            logging::debug(
-                "derived transcription failed",
-                json!({ "hash": hash, "error": { "message": message } }),
-            );
-            crate::failure_runtime::emit_or_record(
-                context.app,
-                "transcribe://error",
-                json!({
-                    "hash": hash,
-                    "message": message,
-                    "replacement": false
-                }),
-            );
-            Ok(TranscriptStep {
-                attempted_hash: Some(hash),
-                exhausted: false,
-                issues_changed,
-            })
-        }
+    )?;
+    let report = transcription_report(run, &outcome);
+    if let Some(message) = &report.pause_message {
+        pause_for_resource_safety(context.app, context.conn, class, message)?;
     }
+    if let Some(hash) = &report.item_hash {
+        notify_item_update(
+            context.app,
+            context.conn,
+            context.projection,
+            "transcripts",
+            source_hash,
+            hash,
+        );
+    }
+    let (state, message) = match &outcome {
+        TranscriptionAttemptOutcome::Completed { .. } => ("completed", None),
+        TranscriptionAttemptOutcome::Cancelled { .. } => ("cancelled", None),
+        TranscriptionAttemptOutcome::Unavailable { message, .. } => ("unavailable", Some(message)),
+        TranscriptionAttemptOutcome::ResourceSafety { message, .. } => ("paused", Some(message)),
+        TranscriptionAttemptOutcome::Failed { message, .. } => ("failed", Some(message)),
+    };
+    logging::debug(
+        "transcription finished",
+        json!({ "hash": source_hash, "run": format!("{run:?}"), "state": state, "error": { "message": message } }),
+    );
+    if let Some((event, payload)) = report.event {
+        crate::failure_runtime::emit_or_record(context.app, event, payload);
+    }
+    Ok(outcome)
+}
+
+/// The requested-transcription command's work: validates the item, then runs
+/// one attempt on a thread owned beside the coordinator's workers (joined at
+/// exit by [`join`]). Requests queue in submission order through the
+/// requested-work claim; cancellation applies to the active run.
+pub fn request_transcription(
+    app: AppHandle,
+    data_root: PathBuf,
+    hash: String,
+    replacement: bool,
+) -> Result<(), String> {
+    let cache_root = crate::cache_root().ok_or("data root unset")?;
+    let config = crate::storage::read_config_for_setup(&data_root)?;
+    let acceleration =
+        crate::ai_acceleration::resolve(config.as_ref(), crate::ai_acceleration::TRANSCRIPTION)?;
+    let class = {
+        let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+        let kind: String = conn
+            .query_row("SELECT kind FROM contents WHERE hash = ?1", [&hash], |row| row.get(0))
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => "file is no longer available".to_string(),
+                other => format!("could not read the file kind: {other}"),
+            })?;
+        WorkClass::transcription_for_kind(&kind)
+            .ok_or_else(|| "this file type cannot be transcribed".to_string())?
+    };
+    let run = TranscriptionRun::Requested { replacement };
+    let handle = app.clone();
+    let worker_hash = hash.clone();
+    let started = spawn_manual_transcription(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = (|| -> Result<TranscriptionAttemptOutcome, String> {
+                let _work = crate::derived_runtime::begin_requested(&handle, class, &worker_hash)?;
+                let conn =
+                    crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+                let source_path =
+                    crate::indexed_file::live_path(&conn, Some(&worker_hash), None)?;
+                let cache = CachePaths::new(cache_root);
+                let context = TranscriptContext {
+                    conn: &conn,
+                    cache: &cache,
+                    data_root: &data_root,
+                    transcription_acceleration: acceleration,
+                    app: &handle,
+                    projection: crate::queries::ItemProjectionContext {
+                        capabilities: work_capabilities(&data_root)?,
+                    },
+                };
+                run_transcription(
+                    &context,
+                    class,
+                    run,
+                    &worker_hash,
+                    &source_path.to_string_lossy(),
+                )
+            })();
+            // The run could not reach an outcome: its requester still hears
+            // why, under the hash it asked for.
+            if let Err(error) = result {
+                logging::warn(
+                    "transcription failed",
+                    json!({ "hash": worker_hash, "error": { "message": error } }),
+                );
+                crate::failure_runtime::emit_or_record(
+                    &handle,
+                    "transcribe://error",
+                    json!({ "hash": worker_hash, "message": error, "replacement": replacement }),
+                );
+            }
+        }));
+        if let Err(payload) = outcome {
+            let error = crate::failure_runtime::panic_message(payload);
+            if crate::app_lifecycle::shutting_down() {
+                logging::error(
+                    "transcription worker failed during shutdown",
+                    json!({ "error": { "message": error } }),
+                );
+                return;
+            }
+            let _ = crate::failure_runtime::report(
+                &handle,
+                "transcription-worker-failed",
+                Some(&worker_hash),
+                &error,
+            );
+            crate::failure_runtime::emit_or_record(
+                &handle,
+                "transcribe://error",
+                json!({ "hash": worker_hash, "message": error, "replacement": replacement }),
+            );
+        }
+    });
+    if let Err(error) = started {
+        if error == crate::scanner::CANCELLED {
+            return Err(error);
+        }
+        let message = format!("could not start transcription worker: {error}");
+        let _ = crate::failure_runtime::report(
+            &app,
+            "transcription-worker-failed",
+            Some(&hash),
+            &message,
+        );
+        return Err(message);
+    }
+    Ok(())
 }

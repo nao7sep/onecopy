@@ -59,6 +59,14 @@ impl WorkClass {
             _ => None,
         }
     }
+
+    /// The transcription class for a content kind, the inverse of
+    /// [`Self::content_kind`].
+    pub(crate) fn transcription_for_kind(kind: &str) -> Option<Self> {
+        [Self::VideoTranscripts, Self::AudioTranscripts]
+            .into_iter()
+            .find(|class| class.content_kind() == Some(kind))
+    }
 }
 
 #[derive(Clone, Copy)]

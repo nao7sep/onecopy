@@ -80,3 +80,102 @@ fn a_panicking_leader_settles_its_followers_and_retires_the_flight() {
         ("canonical".to_string(), false)
     );
 }
+
+fn report_event(report: &TranscriptionReport) -> Option<(&'static str, serde_json::Value)> {
+    report.event.clone()
+}
+
+#[test]
+fn requested_and_automatic_runs_publish_completion_the_same_way() {
+    let outcome = TranscriptionAttemptOutcome::Completed {
+        hash: "exact".to_string(),
+        text: "hello".to_string(),
+        issues_changed: false,
+    };
+    for (run, replacement) in [
+        (TranscriptionRun::Automatic, false),
+        (TranscriptionRun::Requested { replacement: false }, false),
+        (TranscriptionRun::Requested { replacement: true }, true),
+    ] {
+        let report = transcription_report(run, &outcome);
+        assert_eq!(report.item_hash.as_deref(), Some("exact"));
+        assert_eq!(report.pause_message, None);
+        assert_eq!(
+            report_event(&report),
+            Some((
+                "transcribe://done",
+                serde_json::json!({ "hash": "exact", "text": "hello", "replacement": replacement })
+            ))
+        );
+    }
+}
+
+#[test]
+fn cancelled_and_failed_runs_reproject_the_item_for_every_caller() {
+    for run in [
+        TranscriptionRun::Automatic,
+        TranscriptionRun::Requested { replacement: false },
+    ] {
+        let cancelled = transcription_report(
+            run,
+            &TranscriptionAttemptOutcome::Cancelled { hash: "exact".to_string() },
+        );
+        assert_eq!(cancelled.item_hash.as_deref(), Some("exact"));
+        assert_eq!(report_event(&cancelled).unwrap().0, "transcribe://cancelled");
+
+        let failed = transcription_report(
+            run,
+            &TranscriptionAttemptOutcome::Failed {
+                hash: "exact".to_string(),
+                message: "broken".to_string(),
+                issues_changed: true,
+            },
+        );
+        assert_eq!(failed.item_hash.as_deref(), Some("exact"));
+        let (event, payload) = report_event(&failed).unwrap();
+        assert_eq!(event, "transcribe://error");
+        assert_eq!(payload["hash"], "exact");
+        assert_eq!(payload["message"], "broken");
+    }
+}
+
+#[test]
+fn only_a_requested_run_reports_a_missing_tool_or_a_pause_to_its_requester() {
+    let unavailable = TranscriptionAttemptOutcome::Unavailable {
+        hash: "exact".to_string(),
+        message: "install it".to_string(),
+    };
+    let paused = TranscriptionAttemptOutcome::ResourceSafety {
+        hash: "exact".to_string(),
+        message: "memory".to_string(),
+    };
+    let automatic = transcription_report(TranscriptionRun::Automatic, &unavailable);
+    assert_eq!(automatic.event, None);
+    assert_eq!(automatic.item_hash.as_deref(), Some("exact"));
+    let requested =
+        transcription_report(TranscriptionRun::Requested { replacement: false }, &unavailable);
+    assert_eq!(report_event(&requested).unwrap().0, "transcribe://error");
+
+    for run in [
+        TranscriptionRun::Automatic,
+        TranscriptionRun::Requested { replacement: true },
+    ] {
+        let report = transcription_report(run, &paused);
+        assert_eq!(report.pause_message.as_deref(), Some("memory"));
+        assert_eq!(report.item_hash, None);
+        assert_eq!(report.event.is_some(), run != TranscriptionRun::Automatic);
+    }
+}
+
+#[test]
+fn a_transcription_class_follows_its_content_kind() {
+    assert_eq!(
+        WorkClass::transcription_for_kind("video"),
+        Some(WorkClass::VideoTranscripts)
+    );
+    assert_eq!(
+        WorkClass::transcription_for_kind("audio"),
+        Some(WorkClass::AudioTranscripts)
+    );
+    assert_eq!(WorkClass::transcription_for_kind("image"), None);
+}

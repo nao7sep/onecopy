@@ -795,12 +795,6 @@ fn set_active_item(class: WorkClass, hash: &str) -> bool {
     true
 }
 
-pub fn report_manual_progress(app: &AppHandle, class: &str, done: u64, total: u64) {
-    if let Some(class) = WorkClass::parse(class) {
-        progress(app, class, Some((done, total)));
-    }
-}
-
 fn active_snapshot(runtime: &RuntimeState, preemption: Preemption) -> Option<ActiveWorkSnapshot> {
     runtime.display_job().map(|job| ActiveWorkSnapshot {
         class: job.class,
