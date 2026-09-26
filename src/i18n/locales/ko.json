@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "삭제된 파일의 위치를 사용할 수 없습니다.",
   "trash.progressUnavailable": "실시간 삭제 진행 상황을 사용할 수 없습니다.",
   "trash.entriesNotRemoved": { "other": "항목 {count}개를 제거할 수 없습니다." },
+  "trash.changedSinceReview": "측정한 뒤 삭제된 파일이 바뀌어 아무것도 제거하지 않았습니다. 새 합계를 확인한 뒤 다시 비우세요.",
   "trash.totalsNotRefreshed": "삭제된 파일은 처리했지만 합계를 새로 고칠 수 없습니다.",
   "trash.partialTotalsNotRefreshed": "{reason} 합계를 새로 고칠 수 없습니다.",
   "trash.emptyFailed": "이 삭제된 파일을 비울 수 없습니다.",

@@ -88,7 +88,7 @@ The application home does not own deleted-file storage. Two application homes co
 
 OneCopy records enough provenance to associate stored files with their original locations and can reveal each known root-local location. Revealing creates an absent empty location before opening it, subject to the same configured-root validation. Recovery is performed manually with the operating system's file manager; OneCopy does not provide Restore or Undo.
 
-OneCopy never automatically prunes or empties deleted-file storage. Emptying it is an explicit confirmed permanent action, and cancellation takes effect between individual deletions. Users may also remove stored material outside OneCopy; doing so never triggers source deletion, operation replay, or automatic reconstruction.
+OneCopy never automatically prunes or empties deleted-file storage. Emptying it is an explicit confirmed permanent action over the totals the confirmation showed: when the location gained or lost files after those totals were measured, nothing is removed and the new totals are shown for review. Cancellation takes effect between individual deletions. Users may also remove stored material outside OneCopy; doing so never triggers source deletion, operation replay, or automatic reconstruction.
 
 ## Normal exit and abnormal termination
 

@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "Die Speicherorte für gelöschte Dateien sind nicht verfügbar.",
   "trash.progressUnavailable": "Der laufende Löschfortschritt ist nicht verfügbar.",
   "trash.entriesNotRemoved": { "one": "{count} Eintrag konnte nicht entfernt werden.", "other": "{count} Einträge konnten nicht entfernt werden." },
+  "trash.changedSinceReview": "Die gelöschten Dateien haben sich nach dem Messen geändert, daher wurde nichts entfernt. Prüfe die neuen Summen und leere erneut.",
   "trash.totalsNotRefreshed": "Die gelöschten Dateien wurden verarbeitet, aber ihre Summen konnten nicht aktualisiert werden.",
   "trash.partialTotalsNotRefreshed": "{reason} Die Summen konnten nicht aktualisiert werden.",
   "trash.emptyFailed": "Diese gelöschten Dateien konnten nicht geleert werden.",

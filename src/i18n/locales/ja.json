@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "削除済みファイルの場所を取得できません。",
   "trash.progressUnavailable": "削除の進行状況をその場で取得できません。",
   "trash.entriesNotRemoved": { "other": "{count} 件を削除できませんでした。" },
+  "trash.changedSinceReview": "計測後に削除済みファイルが変わったため、何も削除していません。新しい合計を確認してから、もう一度空にしてください。",
   "trash.totalsNotRefreshed": "削除済みファイルは処理しましたが、合計を更新できませんでした。",
   "trash.partialTotalsNotRefreshed": "{reason} 合計を更新できませんでした。",
   "trash.emptyFailed": "この削除済みファイルを空にできませんでした。",

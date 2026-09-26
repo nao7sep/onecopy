@@ -1929,8 +1929,12 @@ async fn trash_reveal(app: AppHandle, root: String) -> Result<(), String> {
 // verified here so the command can never delete an arbitrary tree. Runs the
 // whole sweep inline, so it goes through dispatch() like the other mutations.
 #[tauri::command]
-async fn trash_empty(app: AppHandle, root: String) -> Result<trash::EmptyOutcome, String> {
-    dispatch(move || mutation_runtime::empty_trash(&app, root)).await
+async fn trash_empty(
+    app: AppHandle,
+    root: String,
+    plan_token: String,
+) -> Result<trash::EmptyOutcome, String> {
+    dispatch(move || mutation_runtime::empty_trash(&app, root, plan_token)).await
 }
 
 // Control command: flips an in-memory cancellation atomic only (see

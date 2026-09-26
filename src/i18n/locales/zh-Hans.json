@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "无法获取已删除文件的位置。",
   "trash.progressUnavailable": "无法获取实时的删除进度。",
   "trash.entriesNotRemoved": { "other": "有 {count} 个条目无法移除。" },
+  "trash.changedSinceReview": "已删除的文件在统计后发生了变化，因此没有移除任何内容。请查看新的合计后再次清空。",
   "trash.totalsNotRefreshed": "已删除的文件已处理完毕，但无法刷新它们的合计数据。",
   "trash.partialTotalsNotRefreshed": "{reason} 无法刷新合计数据。",
   "trash.emptyFailed": "无法清空这些已删除的文件。",

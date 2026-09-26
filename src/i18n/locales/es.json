@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "Las ubicaciones de los archivos eliminados no están disponibles.",
   "trash.progressUnavailable": "El progreso de eliminación en directo no está disponible.",
   "trash.entriesNotRemoved": { "one": "No se pudo quitar {count} entrada.", "many": "No se pudieron quitar {count} de entradas.", "other": "No se pudieron quitar {count} entradas." },
+  "trash.changedSinceReview": "Los archivos eliminados cambiaron después de medirse, así que no se quitó nada. Revisa los nuevos totales y vuelve a vaciar.",
   "trash.totalsNotRefreshed": "Los archivos eliminados se procesaron, pero no se pudieron actualizar sus totales.",
   "trash.partialTotalsNotRefreshed": "{reason} No se pudieron actualizar los totales.",
   "trash.emptyFailed": "No se pudieron vaciar estos archivos eliminados.",

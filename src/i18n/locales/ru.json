@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "Расположения удалённых файлов недоступны.",
   "trash.progressUnavailable": "Ход удаления в реальном времени недоступен.",
   "trash.entriesNotRemoved": { "one": "Не удалось удалить {count} запись.", "few": "Не удалось удалить {count} записи.", "many": "Не удалось удалить {count} записей.", "other": "Не удалось удалить {count} записи." },
+  "trash.changedSinceReview": "Удалённые файлы изменились после подсчёта, поэтому ничего не удалено. Проверьте новые итоги и очистите снова.",
   "trash.totalsNotRefreshed": "Удалённые файлы обработаны, но не удалось обновить их итоги.",
   "trash.partialTotalsNotRefreshed": "{reason} Не удалось обновить итоги.",
   "trash.emptyFailed": "Не удалось очистить эти удалённые файлы.",

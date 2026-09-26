@@ -11,8 +11,8 @@ import TrashModal from "../../src/components/TrashModal";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const ROWS = [
-  { root: "/Users/nao7sep/Photos/.onecopy-trash", bytes: 5_242_880, files: 42 },
-  { root: "/Volumes/HDD-1/Photos/.onecopy-trash", bytes: 0, files: 0 },
+  { root: "/Users/nao7sep/Photos/.onecopy-trash", bytes: 5_242_880, files: 42, planToken: "measured-42" },
+  { root: "/Volumes/HDD-1/Photos/.onecopy-trash", bytes: 0, files: 0, planToken: "measured-0" },
 ];
 
 beforeEach(() => {
@@ -89,7 +89,8 @@ describe("the trash modal", () => {
         emptied === null ? ROWS : [{ ...ROWS[0], bytes: 0, files: 0 }, ROWS[1]],
       trash_empty: (args) => {
         emptied = args.root as string;
-        return { cancelled: false, failures: 0 };
+        expect(args.planToken).toBe("measured-42");
+        return { cancelled: false, failures: 0, planChanged: false };
       },
     });
     render(<TrashModal open onClose={() => {}} />);
@@ -202,5 +203,35 @@ describe("reveal", () => {
     });
     // Reveal never starts a destructive operation.
     expect(invokeCalls.filter((c) => c.command === "trash_empty")).toHaveLength(0);
+  });
+
+  it("removes nothing and shows the new totals when the location changed after review", async () => {
+    let measured = 0;
+    mockCommands({
+      trash_overview: () => {
+        measured += 1;
+        return measured === 1
+          ? ROWS
+          : [{ ...ROWS[0], files: 1_020, bytes: 9_000_000, planToken: "measured-1020" }, ROWS[1]];
+      },
+      trash_empty: () => ({ cancelled: false, failures: 0, planChanged: true }),
+    });
+    render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    const empty = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Empty" && !b.hasAttribute("disabled"),
+    );
+    await act(async () => empty!.click());
+    const go = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Empty deleted files",
+    );
+    await act(async () => go!.click());
+
+    expect(invokeCalls.find((c) => c.command === "trash_empty")?.args).toEqual({
+      root: ROWS[0].root,
+      planToken: "measured-42",
+    });
+    expect(document.body.textContent).toContain("nothing was removed");
+    expect(document.body.textContent).toContain("1,020 files");
   });
 });

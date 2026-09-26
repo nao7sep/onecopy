@@ -822,6 +822,7 @@ fn mode_string(mode: crate::operations::MoveOutMode) -> &'static str {
 pub(crate) fn empty_trash(
     app: &AppHandle,
     root: String,
+    plan_token: String,
 ) -> Result<crate::trash::EmptyOutcome, String> {
     let mutation = begin_reported(app)?;
     let operation_id = mutation.id();
@@ -854,6 +855,7 @@ pub(crate) fn empty_trash(
             }
             crate::trash::empty_root_with_progress(
                 std::path::Path::new(&root),
+                &plan_token,
                 &mutation.cancelled,
                 &|trash_progress| {
                     let next = Progress {
@@ -891,12 +893,21 @@ pub(crate) fn empty_trash(
                 },
             )
         },
-        |outcome| json!({ "cancelled": outcome.cancelled, "failures": outcome.failures }),
+        |outcome| {
+            json!({
+                "cancelled": outcome.cancelled,
+                "failures": outcome.failures,
+                "planChanged": outcome.plan_changed,
+            })
+        },
     );
     match &result {
         Ok(outcome) => {
             let latest = progress.borrow();
-            let completed = !outcome.cancelled && outcome.failures == 0;
+            // A changed location did no filesystem work; it ends like a
+            // cancelled one while the Deleted files surface asks for review.
+            let stopped = outcome.cancelled || outcome.plan_changed;
+            let completed = !stopped && outcome.failures == 0;
             let terminal = Progress {
                 operation_id,
                 kind: Kind::TrashEmpty,
@@ -914,7 +925,7 @@ pub(crate) fn empty_trash(
             };
             publisher.borrow_mut().done(
                 &terminal,
-                outcome.cancelled,
+                stopped,
                 Some(result_summary(
                     1,
                     1,

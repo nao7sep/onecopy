@@ -40,7 +40,7 @@ pub fn is_trash_path(path: &Path) -> bool {
         .any(|component| component.as_os_str().eq_ignore_ascii_case(TRASH_DIR_NAME))
 }
 /// The per-day restore ledger. Named once so the sizing pass can recognise and
-/// exclude its own bookkeeping (see `tree_size`).
+/// exclude its own bookkeeping (see `measure_root`).
 pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";
 
 #[derive(Serialize, Debug)]
@@ -285,6 +285,9 @@ pub struct TrashRootInfo {
     pub root: String,
     pub bytes: u64,
     pub files: u64,
+    /// Names exactly what these totals measured. Emptying requires it back
+    /// and removes nothing when the location no longer matches.
+    pub plan_token: String,
 }
 
 /// Every configured source and destination root has one local deleted-files
@@ -301,11 +304,12 @@ pub fn overview(configured_roots: &[PathBuf]) -> Vec<TrashRootInfo> {
     roots
         .into_iter()
         .map(|root| {
-            let (bytes, files) = tree_size(&root);
+            let measure = measure_root(&root);
             TrashRootInfo {
                 root: root.to_string_lossy().to_string(),
-                bytes,
-                files,
+                bytes: measure.bytes,
+                files: measure.files,
+                plan_token: measure.token,
             }
         })
         .collect()
@@ -335,16 +339,6 @@ pub fn ensure_root_for_reveal(
     Ok(requested.to_path_buf())
 }
 
-/// Empties one trash root by deleting its day folders. PERMANENT by nature —
-/// the caller confirms with the totals first — and the root itself stays so
-/// the next trash move needs no re-setup. A file that refuses deletion is
-/// simply left (reported in the count difference); the trash never needs to
-/// be perfect, only smaller.
-pub fn empty_root(root: &Path) -> Result<(), String> {
-    let never_cancelled = AtomicBool::new(false);
-    empty_root_with_progress(root, &never_cancelled, &|_| {}, &|_, _| Ok(())).map(|_| ())
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmptyProgress {
@@ -360,16 +354,24 @@ pub struct EmptyProgress {
 pub struct EmptyOutcome {
     pub cancelled: bool,
     pub failures: u64,
+    /// The location no longer holds what the confirmation measured, so
+    /// nothing was removed and the user must review the new totals.
+    pub plan_changed: bool,
 }
 
 /// Permanently removes one already-authorized trash root with progress over
-/// recoverable files. Manifests are bookkeeping and do not inflate the same
+/// recoverable files, but only while it still holds exactly what the reviewed
+/// totals measured (`reviewed_token` from `overview`). Emptying is permanent
+/// and confirms exact totals, so a location that gained or lost files since
+/// then is left untouched and reported as changed. The caller holds the
+/// mutation boundary, so OneCopy adds nothing to it while it empties. Manifests are bookkeeping and do not inflate the same
 /// totals the overview/confirmation shows. The root itself must remain a real
 /// directory and inner symlinks are never followed. Cancellation is checked
 /// while planning and between files; an individual filesystem deletion is
 /// already atomic at that unit.
 pub fn empty_root_with_progress(
     root: &Path,
+    reviewed_token: &str,
     cancelled: &AtomicBool,
     progress: &dyn Fn(EmptyProgress),
     record_failure: &dyn Fn(&Path, &str) -> Result<(), String>,
@@ -383,6 +385,12 @@ pub fn empty_root_with_progress(
         }
         Err(error) => return Err(error.to_string()),
     }
+    if measure_root(root).token != reviewed_token {
+        return Ok(EmptyOutcome {
+            plan_changed: true,
+            ..EmptyOutcome::default()
+        });
+    }
 
     let mut files: Vec<(PathBuf, u64, bool)> = Vec::new();
     let mut directories: Vec<PathBuf> = Vec::new();
@@ -390,7 +398,7 @@ pub fn empty_root_with_progress(
         if cancelled.load(Ordering::Relaxed) {
             return Ok(EmptyOutcome {
                 cancelled: true,
-                failures: 0,
+                ..EmptyOutcome::default()
             });
         }
         let entry = entry.map_err(|error| error.to_string())?;
@@ -432,6 +440,7 @@ pub fn empty_root_with_progress(
             return Ok(EmptyOutcome {
                 cancelled: true,
                 failures: snapshot.failures,
+                plan_changed: false,
             });
         }
         if let Err(error) = std::fs::remove_file(&path) {
@@ -471,6 +480,7 @@ pub fn empty_root_with_progress(
     Ok(EmptyOutcome {
         cancelled: false,
         failures: snapshot.failures,
+        plan_changed: false,
     })
 }
 
@@ -502,13 +512,23 @@ static DAY_SIZE_CACHE: std::sync::LazyLock<
 /// and a trash emptied of everything recoverable could still read "1 file" —
 /// with no way to reach zero. The count answers "how much of my library is in
 /// here", so only entries a restore could hand back may contribute.
-fn tree_size(root: &Path) -> (u64, u64) {
+///
+/// The token covers every entry of the root and each day folder's own mtime
+/// and totals: any file added to or removed from a day folder changes that
+/// folder's mtime, so an unchanged token means the root still holds what
+/// these totals measured.
+fn measure_root(root: &Path) -> TrashMeasure {
     // A trash root is created lazily by the first delete. Until then its
     // absence is the ordinary empty state promised by `overview`, not a walk
     // failure worth surfacing in the application log.
     let Ok(day_entries) = std::fs::read_dir(root) else {
-        return (0, 0);
+        return TrashMeasure {
+            bytes: 0,
+            files: 0,
+            token: blake3::hash(b"absent").to_hex().to_string(),
+        };
     };
+    let mut token_parts: Vec<(std::ffi::OsString, Option<(u128, u64, u64)>)> = Vec::new();
 
     let mut cache = DAY_SIZE_CACHE
         .lock()
@@ -528,6 +548,7 @@ fn tree_size(root: &Path) -> (u64, u64) {
             }
         };
         if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            token_parts.push((entry.file_name(), None));
             continue;
         }
         let day_path = entry.path();
@@ -538,20 +559,30 @@ fn tree_size(root: &Path) -> (u64, u64) {
                     "trash day metadata read failed",
                     json!({ "path": day_path, "error": { "message": error.to_string() } }),
                 );
+                token_parts.push((entry.file_name(), None));
                 continue;
             }
         };
+        let modified_nanos = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
         seen.insert(day_path.clone());
         if let Some(cached) = cache.get(&day_path) {
             if cached.modified == modified {
                 total_bytes += cached.bytes;
                 total_files += cached.files;
+                token_parts.push((
+                    entry.file_name(),
+                    Some((modified_nanos, cached.bytes, cached.files)),
+                ));
                 continue;
             }
         }
         let (bytes, files) = day_dir_size(&day_path);
         total_bytes += bytes;
         total_files += files;
+        token_parts.push((entry.file_name(), Some((modified_nanos, bytes, files))));
         cache.insert(
             day_path,
             CachedDaySize {
@@ -564,7 +595,35 @@ fn tree_size(root: &Path) -> (u64, u64) {
     // Drop cache entries for day folders this root no longer has (emptied or
     // manually removed), without disturbing other roots' cached entries.
     cache.retain(|path, _| !path.starts_with(root) || seen.contains(path));
-    (total_bytes, total_files)
+    token_parts.sort();
+    let mut hasher = blake3::Hasher::new();
+    for (name, day) in &token_parts {
+        let name = name.as_encoded_bytes();
+        hasher.update(&(name.len() as u64).to_le_bytes());
+        hasher.update(name);
+        match day {
+            Some((modified, bytes, files)) => {
+                hasher.update(b"d");
+                hasher.update(&modified.to_le_bytes());
+                hasher.update(&bytes.to_le_bytes());
+                hasher.update(&files.to_le_bytes());
+            }
+            None => {
+                hasher.update(b"o");
+            }
+        }
+    }
+    TrashMeasure {
+        bytes: total_bytes,
+        files: total_files,
+        token: hasher.finalize().to_hex().to_string(),
+    }
+}
+
+struct TrashMeasure {
+    bytes: u64,
+    files: u64,
+    token: String,
 }
 
 /// Walks one day folder's own contents. Bounded to a single day's files

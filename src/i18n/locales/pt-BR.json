@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "Os locais dos arquivos apagados estão indisponíveis.",
   "trash.progressUnavailable": "O progresso da exclusão em tempo real está indisponível.",
   "trash.entriesNotRemoved": { "one": "Não foi possível remover {count} entrada.", "many": "Não foi possível remover {count} de entradas.", "other": "Não foi possível remover {count} entradas." },
+  "trash.changedSinceReview": "Os arquivos excluídos mudaram depois de medidos, então nada foi removido. Revise os novos totais e esvazie de novo.",
   "trash.totalsNotRefreshed": "Os arquivos apagados foram processados, mas não foi possível atualizar os totais deles.",
   "trash.partialTotalsNotRefreshed": "{reason} Não foi possível atualizar os totais.",
   "trash.emptyFailed": "Não foi possível esvaziar estes arquivos apagados.",

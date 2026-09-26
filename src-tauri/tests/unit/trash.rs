@@ -59,7 +59,8 @@ fn overview_reuses_a_day_folders_size_while_its_mtime_is_unchanged() {
     trash_file(&a, &source, Some("h1")).unwrap();
 
     let root = source.join(TRASH_DIR_NAME);
-    let (first_bytes, first_files) = tree_size(&root);
+    let first = measure_root(&root);
+    let (first_bytes, first_files) = (first.bytes, first.files);
     assert_eq!((first_bytes, first_files), (100, 1));
 
     let day_dir = std::fs::read_dir(&root)
@@ -82,7 +83,8 @@ fn overview_reuses_a_day_folders_size_while_its_mtime_is_unchanged() {
         );
     }
 
-    let (cached_bytes, cached_files) = tree_size(&root);
+    let cached = measure_root(&root);
+    let (cached_bytes, cached_files) = (cached.bytes, cached.files);
     assert_eq!(
         (cached_bytes, cached_files),
         (999, 7),
@@ -104,7 +106,7 @@ fn overview_notices_a_file_added_directly_into_an_existing_day_folder() {
     trash_file(&a, &source, Some("h1")).unwrap();
 
     let root = source.join(TRASH_DIR_NAME);
-    assert_eq!(tree_size(&root), (100, 1));
+    assert_eq!(size_of(&root), (100, 1));
 
     let day_dir = std::fs::read_dir(&root)
         .unwrap()
@@ -115,8 +117,13 @@ fn overview_notices_a_file_added_directly_into_an_existing_day_folder() {
     std::fs::write(day_dir.join("added-by-hand.bin"), vec![2u8; 50]).unwrap();
 
     assert_eq!(
-        tree_size(&root),
+        size_of(&root),
         (150, 2),
         "a file added outside OneCopy must be reflected on the very next read"
     );
+}
+
+fn size_of(root: &Path) -> (u64, u64) {
+    let measure = measure_root(root);
+    (measure.bytes, measure.files)
 }

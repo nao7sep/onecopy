@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "Deleted-file locations are unavailable.",
   "trash.progressUnavailable": "Live deletion progress is unavailable.",
   "trash.entriesNotRemoved": { "one": "{count} entry could not be removed.", "other": "{count} entries could not be removed." },
+  "trash.changedSinceReview": "Deleted files changed after they were measured, so nothing was removed. Review the new totals and empty again.",
   "trash.totalsNotRefreshed": "Deleted files were processed, but their totals couldn’t be refreshed.",
   "trash.partialTotalsNotRefreshed": "{reason} Totals couldn’t be refreshed.",
   "trash.emptyFailed": "Couldn’t empty these deleted files.",

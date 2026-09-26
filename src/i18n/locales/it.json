@@ -378,6 +378,7 @@
   "trash.locationsUnavailable": "Le posizioni dei file eliminati non sono disponibili.",
   "trash.progressUnavailable": "L’avanzamento in tempo reale dell’eliminazione non è disponibile.",
   "trash.entriesNotRemoved": { "one": "Impossibile rimuovere {count} voce.", "many": "Impossibile rimuovere {count} di voci.", "other": "Impossibile rimuovere {count} voci." },
+  "trash.changedSinceReview": "I file eliminati sono cambiati dopo la misurazione, quindi non è stato rimosso nulla. Controlla i nuovi totali e svuota di nuovo.",
   "trash.totalsNotRefreshed": "I file eliminati sono stati elaborati, ma non è stato possibile aggiornare i loro totali.",
   "trash.partialTotalsNotRefreshed": "{reason} Non è stato possibile aggiornare i totali.",
   "trash.emptyFailed": "Impossibile svuotare questi file eliminati.",

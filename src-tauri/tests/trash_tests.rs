@@ -345,6 +345,7 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
     let cancelled = std::sync::atomic::AtomicBool::new(false);
     let outcome = empty_root_with_progress(
         Path::new(&row.root),
+        &row.plan_token,
         &cancelled,
         &|progress| snapshots.borrow_mut().push(progress),
         &|_, _| Ok(()),
@@ -374,7 +375,7 @@ fn empty_cancellation_stops_between_files_without_hiding_remaining_contents() {
         .prefix("onecopy-trash-empty-cancel-")
         .tempdir()
         .unwrap();
-    let root = dir.path().join("trash");
+    let root = dir.path().join(TRASH_DIR_NAME);
     std::fs::create_dir_all(root.join("20260827-utc")).unwrap();
     std::fs::write(root.join("20260827-utc/one.jpg"), vec![1u8; 10]).unwrap();
     std::fs::write(root.join("20260827-utc/two.jpg"), vec![2u8; 20]).unwrap();
@@ -383,6 +384,7 @@ fn empty_cancellation_stops_between_files_without_hiding_remaining_contents() {
 
     let outcome = empty_root_with_progress(
         &root,
+        &reviewed_token(&root),
         &cancelled,
         &|progress| snapshots.borrow_mut().push(progress),
         &|_, _| Ok(()),
@@ -404,7 +406,7 @@ fn empty_stops_when_a_file_failure_cannot_be_recorded() {
         .prefix("onecopy-trash-empty-record-failure-")
         .tempdir()
         .unwrap();
-    let root = dir.path().join("trash");
+    let root = dir.path().join(TRASH_DIR_NAME);
     let day = root.join("20260827-utc");
     let file = day.join("one.jpg");
     std::fs::create_dir_all(&day).unwrap();
@@ -412,7 +414,8 @@ fn empty_stops_when_a_file_failure_cannot_be_recorded() {
     std::fs::set_permissions(&day, std::fs::Permissions::from_mode(0o500)).unwrap();
     let cancelled = std::sync::atomic::AtomicBool::new(false);
 
-    let result = empty_root_with_progress(&root, &cancelled, &|_| {}, &|path, _| {
+    let token = reviewed_token(&root);
+    let result = empty_root_with_progress(&root, &token, &cancelled, &|_| {}, &|path, _| {
         assert_eq!(path, file);
         Err("Issues unavailable".to_string())
     });
@@ -438,7 +441,7 @@ fn empty_never_follows_a_replaced_root_symlink() {
     symlink(&outside, &root).unwrap();
 
     let cancelled = std::sync::atomic::AtomicBool::new(false);
-    let error = empty_root_with_progress(&root, &cancelled, &|_| {}, &|_, _| Ok(())).unwrap_err();
+    let error = empty_root_with_progress(&root, "reviewed", &cancelled, &|_| {}, &|_, _| Ok(())).unwrap_err();
 
     assert_eq!(error, "trash root is not a directory");
     assert_eq!(std::fs::read(outside.join("keep.jpg")).unwrap(), b"keep");
@@ -476,4 +479,60 @@ fn revealing_an_empty_location_creates_only_the_selected_configured_root() {
     assert!(requested.is_dir());
     assert!(ensure_root_for_reveal(&[configured], &other.join(TRASH_DIR_NAME)).is_err());
     assert!(!other.join(TRASH_DIR_NAME).exists());
+}
+
+/// The token the Deleted files surface would have confirmed for `trash_root`
+/// (a `<configured root>/.onecopy-trash` directory).
+fn reviewed_token(trash_root: &Path) -> String {
+    overview(&[trash_root.parent().unwrap().to_path_buf()])
+        .into_iter()
+        .find(|row| Path::new(&row.root) == trash_root)
+        .unwrap()
+        .plan_token
+}
+
+#[test]
+fn empty_removes_nothing_when_the_location_changed_after_its_totals_were_confirmed() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-trash-empty-changed-")
+        .tempdir()
+        .unwrap();
+    let source = dir.path().join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    let first = source.join("reviewed.jpg");
+    std::fs::write(&first, vec![1u8; 100]).unwrap();
+    trash_file(&first, &source, Some("h1")).unwrap();
+    let reviewed = overview(std::slice::from_ref(&source)).remove(0);
+    assert_eq!(reviewed.files, 1);
+
+    // A Move finishes while the confirmation shows "1 file" and trashes more.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let later = source.join("later.jpg");
+    std::fs::write(&later, vec![2u8; 900]).unwrap();
+    trash_file(&later, &source, Some("h2")).unwrap();
+
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let outcome = empty_root_with_progress(
+        Path::new(&reviewed.root),
+        &reviewed.plan_token,
+        &cancelled,
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+
+    assert!(outcome.plan_changed);
+    let current = overview(std::slice::from_ref(&source)).remove(0);
+    assert_eq!((current.files, current.bytes), (2, 1000), "nothing was removed");
+
+    let outcome = empty_root_with_progress(
+        Path::new(&current.root),
+        &current.plan_token,
+        &cancelled,
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(!outcome.plan_changed);
+    assert_eq!(overview(std::slice::from_ref(&source)).remove(0).files, 0);
 }

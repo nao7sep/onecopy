@@ -22,6 +22,9 @@ interface TrashRootInfo {
   root: string;
   bytes: number;
   files: number;
+  /** Names exactly what these totals measured; Empty sends it back and
+   * removes nothing when the location changed since. */
+  planToken: string;
 }
 
 interface TrashEmptyProgress {
@@ -35,6 +38,7 @@ interface TrashEmptyProgress {
 interface TrashEmptyOutcome {
   cancelled: boolean;
   failures: number;
+  planChanged: boolean;
 }
 
 export default function TrashModal({
@@ -117,10 +121,15 @@ export default function TrashModal({
     setCancelling(false);
     setError(null);
     try {
-      const outcome = await invoke<TrashEmptyOutcome>("trash_empty", { root: row.root });
-      let outcomeError: Message | null = outcome.failures > 0
-        ? message("trash.entriesNotRemoved", { count: outcome.failures })
-        : null;
+      const outcome = await invoke<TrashEmptyOutcome>("trash_empty", {
+        root: row.root,
+        planToken: row.planToken,
+      });
+      let outcomeError: Message | null = outcome.planChanged
+        ? message("trash.changedSinceReview")
+        : outcome.failures > 0
+          ? message("trash.entriesNotRemoved", { count: outcome.failures })
+          : null;
       try {
         setRows(await invoke<TrashRootInfo[]>("trash_overview"));
       } catch (error) {
@@ -131,7 +140,7 @@ export default function TrashModal({
           : message("trash.partialTotalsNotRefreshed", { reason: outcomeError });
       }
       setError(outcomeError);
-      if (outcomeError !== null) {
+      if (outcomeError !== null && !outcome.planChanged) {
         recordActionFailure("trash-empty-partial", outcomeError);
       }
     } catch (error) {
