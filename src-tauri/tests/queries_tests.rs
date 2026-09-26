@@ -427,6 +427,77 @@ fn section_reconciliation_recovers_the_next_survivor_after_a_large_prior_removal
     assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h221"));
 }
 
+// image-comparison.md / R5.4 G3: after Comparison's final page, Main's anchor
+// recovers around the family's LAST member in section order — a next
+// neighbor when one exists, so the frontend's "next, else previous, else
+// none" falls through to `after` first.
+#[test]
+fn section_family_context_centers_on_the_last_member_with_a_next_neighbor_available() {
+    let conn = db();
+    for name in ["a", "b", "c", "d", "e"] {
+        seed_image(&conn, name, Some("ready"), &format!("{name}.jpg"));
+    }
+    // The family (a comparison group) is {b, c}; its last member in section
+    // order is c, which has d as its immediate next neighbor.
+    let result = queries::section_family_context(
+        &conn,
+        queries::SectionKind::Image,
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &["b".to_string(), "c".to_string()],
+    )
+    .unwrap()
+    .expect("the family has a live member");
+    assert_eq!(result.after.first().unwrap().hash.as_deref(), Some("d"));
+    assert_eq!(result.before.first().unwrap().hash.as_deref(), Some("b"));
+}
+
+// The complementary half: when the family's last member IS the section's
+// last item, there is no next neighbor, so recovery must fall through to the
+// previous survivor rather than reporting none while one exists.
+#[test]
+fn section_family_context_falls_back_to_the_previous_neighbor_at_the_section_end() {
+    let conn = db();
+    for name in ["a", "b", "c", "d", "e"] {
+        seed_image(&conn, name, Some("ready"), &format!("{name}.jpg"));
+    }
+    // The family is {d, e}; e is the section's last item, so there is no
+    // "after" neighbor at all.
+    let result = queries::section_family_context(
+        &conn,
+        queries::SectionKind::Image,
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &["d".to_string(), "e".to_string()],
+    )
+    .unwrap()
+    .expect("the family has a live member");
+    assert!(result.after.is_empty());
+    assert_eq!(result.before.first().unwrap().hash.as_deref(), Some("d"));
+}
+
+// A family every one of whose members has been deleted resolves to no
+// recovery context at all, which the frontend reads as "select nothing".
+#[test]
+fn section_family_context_is_none_when_the_whole_family_is_gone() {
+    let conn = db();
+    for name in ["a", "b"] {
+        seed_image(&conn, name, Some("ready"), &format!("{name}.jpg"));
+    }
+    let result = queries::section_family_context(
+        &conn,
+        queries::SectionKind::Image,
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &["missing-hash".to_string()],
+    )
+    .unwrap();
+    assert!(result.is_none());
+}
+
 /// R5.1 D6: a selected previous survivor beats an unselected next neighbour
 /// inside the recovery context. The spec orders anchor recovery as "next
 /// selected, then previous selected, then an unselected neighbor" -- a
