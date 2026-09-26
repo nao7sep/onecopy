@@ -126,14 +126,11 @@ export async function openComparison(
 
 export async function requestComparisonFromMain(): Promise<void> {
   const feedback = beginMainFeedback("comparison");
-  const { selected, selectedKeys, selectedItem } = useItemsStore.getState();
-  const hashes = [...selectedKeys].filter(isHashKey);
+  const { selectedKeys, selectedItem } = useItemsStore.getState();
+  // Whether the selection is one similar group is the core's decision
+  // (comparison_selection_valid); an unhashed anchor cannot open one at all.
   const hash = selectedItem !== null && isHashKey(selectedItem) ? selectedItem : null;
-  if (
-    selected?.kind !== "image" ||
-    hash === null ||
-    hashes.length !== selectedKeys.size
-  ) {
+  if (hash === null) {
     feedback.finish({ tone: "normal", text: message("comparison.needsOneGroup") });
     return;
   }
@@ -149,7 +146,7 @@ export async function requestComparisonFromMain(): Promise<void> {
     itemCount: selectedKeys.size,
   });
   try {
-    const valid = await invoke<boolean>("comparison_selection_valid", { hashes });
+    const valid = await invoke<boolean>("comparison_selection_valid", { hashes: [...selectedKeys] });
     if (!feedback.current()) {
       recordActivity({ kind: "stale", owner: "comparison", operationId,
         previous: "running", current: "stale", reason: "superseded" });

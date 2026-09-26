@@ -57,6 +57,17 @@ describe("Main command feedback ownership", () => {
     expect(current()).toBeNull();
   });
 
+  it("leaves whether a selection is one similar group to the core", async () => {
+    const asked: unknown[] = [];
+    mockCommands({ comparison_selection_valid: (args) => { asked.push(args.hashes); return false; } });
+    useItemsStore.getState().selectItem("h1", "nearest", 0);
+    await requestComparisonFromMain();
+    expect(asked).toEqual([["h1"]]);
+    expect(inEnglish(current()?.text)).toBe(
+      "Comparison requires images from one similar group.",
+    );
+  });
+
   it("cannot publish a late admission result or open an obsolete selection", async () => {
     let reply!: (valid: boolean) => void;
     mockCommands({ comparison_selection_valid: () => new Promise<boolean>((resolve) => { reply = resolve; }) });
