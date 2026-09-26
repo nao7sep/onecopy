@@ -221,10 +221,12 @@ describe("transcript projection", () => {
     });
 
     fireEvent("transcribe://cancelled", { hash: "video", replacement: true });
+    // content-presentation.md D11: cancellation reports the new attempt
+    // rather than silently reverting to no replacement in progress.
     expect(useTranscriptStore.getState().rows.video).toMatchObject({
       status: "ready",
       text: "previous words",
-      replacement: null,
+      replacement: { status: "cancelled" },
     });
   });
 

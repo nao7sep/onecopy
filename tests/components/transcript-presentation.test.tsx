@@ -100,6 +100,37 @@ describe("transcript presentation owners", () => {
     }
   });
 
+  // content-presentation.md D11: a cancelled re-transcription is reported,
+  // not silently reverted, and its own actions (Cancel/Background Work) no
+  // longer apply once nothing is in progress.
+  it("reports a cancelled replacement and offers only Re-transcribe", async () => {
+    render(<TranscriptBlock hash="interview" medium="video" />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
+    await act(async () => {
+      useContentSessionStore.setState({
+        transcriptOpen: { video: true, audio: false },
+      });
+    });
+    await screen.findByText("Final line");
+    act(() => {
+      useTranscriptStore.setState({
+        rows: {
+          interview: {
+            status: "ready",
+            text: "[0:01] First line\n[0:02] Final line",
+            message: null,
+            percent: null,
+            replacement: { status: "cancelled", message: null, percent: null },
+          },
+        },
+      });
+    });
+    expect(await screen.findByText(/The replacement was cancelled/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel update" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Background Work" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Re-transcribe" })).toBeTruthy();
+  });
+
   it.each(["running", "failed"] as const)("keeps a completed transcript readable during %s replacement work", async (state) => {
     const work: ItemWorkState = { state, hasValue: true, reason: null, done: 5, total: 100 };
     render(<TranscriptBlock hash="interview" medium="video" variant="details" work={work} />);

@@ -250,6 +250,10 @@ export default function TranscriptBlock({
           reason: state.replacement.message ?? "",
         })}
       </OperationResult>
+    ) : state.replacement?.status === "cancelled" ? (
+      <p className="mb-2 text-xs text-ink-muted">
+        {t("transcript.replacementCancelled")}
+      </p>
     ) : state.replacement !== null ? (
       <p className="mb-2 text-xs text-primary">
         {state.replacement.status === "running" &&
@@ -392,7 +396,11 @@ export default function TranscriptBlock({
     };
     const openIssues = () => useAppShellStore.getState().openUtility("issues");
     const failed = state.status === "failed" || work?.state === "failed";
-    if (state.replacement !== null && state.replacement.status !== "failed") {
+    if (
+      state.replacement !== null &&
+      state.replacement.status !== "failed" &&
+      state.replacement.status !== "cancelled"
+    ) {
       actions.push(
         <Button key="cancel" variant="ghost" onClick={() => void cancel()}>
           {t("transcript.cancelUpdate")}

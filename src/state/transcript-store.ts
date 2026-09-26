@@ -23,7 +23,7 @@ export interface TranscriptView {
   message: Message | null;
   percent: number | null;
   replacement: {
-    status: "queued" | "running" | "failed";
+    status: "queued" | "running" | "failed" | "cancelled";
     message: Message | null;
     percent: number | null;
   } | null;
@@ -324,7 +324,17 @@ const installEvents = createEventInstaller(
           (current?.replacement !== null &&
             current?.replacement !== undefined)
         ) {
-          publishIfLoaded(event.payload.hash, { replacement: null });
+          // content-presentation.md D11: cancellation "reports the new
+          // attempt" — the prior completed transcript stays visible, but the
+          // cancelled replacement itself is a reported state, not a silent
+          // revert to no replacement in progress.
+          publishIfLoaded(event.payload.hash, {
+            replacement: {
+              status: "cancelled",
+              message: null,
+              percent: null,
+            },
+          });
         } else {
           publishIfLoaded(event.payload.hash, {
             status: "pending",
