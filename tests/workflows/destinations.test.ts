@@ -3,9 +3,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   addDestinationRoot,
+  beginDestinationDrag,
   removeDestinationRoot,
 } from "../../src/workflows/destinations";
 import { useDestinationsStore } from "../../src/state/destinations-store";
+import { useItemsStore } from "../../src/state/items-store";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
   mockCommands,
@@ -13,6 +16,27 @@ import {
   resetTauriMocks,
 } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
+
+function item(pathId: number): SectionItem {
+  return {
+    hash: `h${pathId}`,
+    pathId,
+    fileName: `IMG_${String(pathId).padStart(4, "0")}.jpg`,
+    resolvedUtcMs: pathId * 1000,
+    copyCount: 1,
+    width: 100,
+    height: 100,
+    hasThumb: true,
+    similarGroupId: null,
+    sharpness: null,
+    faceScore: null,
+    byteSize: 1000,
+    hasCompanions: false,
+    durationMs: null,
+    dirPaths: ["/photos"],
+    derivedWork: EMPTY_ITEM_WORK,
+  };
+}
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
@@ -80,5 +104,41 @@ describe("destination root failures", () => {
       { destinationRoots: ["/existing", "/added"] },
       { destinationRoots: ["/added"] },
     ]);
+  });
+});
+
+// main-review.md: "Dragging an unselected item exclusively selects and drags
+// it. Crossing the drag threshold from a selected member drags the complete
+// selection." (R5.1 D9)
+describe("destination drag selection scope", () => {
+  beforeEach(() => {
+    mockCommands({ activity_record: () => null, record_recent_notification: () => ({}) });
+    useItemsStore.setState({
+      selected: { kind: "image", month: "2026-01" },
+      items: [item(1), item(2), item(3), item(4)],
+      totalItems: 4,
+      windowStart: 0,
+      itemPositions: new Map([["h1", 0], ["h2", 1], ["h3", 2], ["h4", 3]]),
+      selectedItem: "h2",
+      selectedKeys: new Set(["h1", "h2", "h3"]),
+      selectedPositions: new Map([["h1", 0], ["h2", 1], ["h3", 2]]),
+    });
+  });
+
+  it("exclusively selects and drags an unselected item, leaving the prior selection behind", () => {
+    const dragged = beginDestinationDrag("h4");
+
+    expect(dragged?.items).toEqual([{ hash: "h4", pathId: null }]);
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h4"]);
+    expect(useItemsStore.getState().selectedItem).toBe("h4");
+  });
+
+  it("carries the whole selection when the drag starts from a selected member", () => {
+    const dragged = beginDestinationDrag("h2");
+
+    expect(dragged?.items.map((entry) => entry.hash)).toEqual(["h1", "h2", "h3"]);
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1", "h2", "h3"]);
+    // Starting the drag from a selected member never changes the anchor.
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
 });
