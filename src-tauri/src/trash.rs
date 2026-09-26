@@ -474,6 +474,25 @@ pub fn empty_root_with_progress(
     })
 }
 
+struct CachedDaySize {
+    modified: std::time::SystemTime,
+    bytes: u64,
+    files: u64,
+}
+
+/// Per-day-folder size cache, keyed by that folder's own path. Trash layout is
+/// exactly `<root>/.onecopy-trash/<day>/<stored file or manifest>` (one level
+/// of files beneath one level of day folders), so a day folder's own mtime
+/// changes on every add, remove, or rename directly inside it -- whether done
+/// by OneCopy or, per this app's recovery contract, by hand outside it. That
+/// makes the day folder the exact right cache boundary: reusing its cached
+/// size whenever its mtime is unchanged never risks serving a stale total,
+/// while a full walk of every day folder on every Trash-modal open (C-L3) is
+/// avoided for the common case of reopening it with nothing changed.
+static DAY_SIZE_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, CachedDaySize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// Total bytes and file count of the RECOVERABLE contents of a tree; a missing
 /// tree is (0, 0).
 ///
@@ -487,19 +506,80 @@ fn tree_size(root: &Path) -> (u64, u64) {
     // A trash root is created lazily by the first delete. Until then its
     // absence is the ordinary empty state promised by `overview`, not a walk
     // failure worth surfacing in the application log.
-    if !root.exists() {
+    let Ok(day_entries) = std::fs::read_dir(root) else {
         return (0, 0);
-    }
+    };
 
+    let mut cache = DAY_SIZE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut total_bytes = 0u64;
+    let mut total_files = 0u64;
+    let mut seen = std::collections::HashSet::new();
+    for entry in day_entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                crate::logging::warn(
+                    "trash day listing failed",
+                    json!({ "path": root, "error": { "message": error.to_string() } }),
+                );
+                continue;
+            }
+        };
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let day_path = entry.path();
+        let modified = match entry.metadata().and_then(|metadata| metadata.modified()) {
+            Ok(modified) => modified,
+            Err(error) => {
+                crate::logging::warn(
+                    "trash day metadata read failed",
+                    json!({ "path": day_path, "error": { "message": error.to_string() } }),
+                );
+                continue;
+            }
+        };
+        seen.insert(day_path.clone());
+        if let Some(cached) = cache.get(&day_path) {
+            if cached.modified == modified {
+                total_bytes += cached.bytes;
+                total_files += cached.files;
+                continue;
+            }
+        }
+        let (bytes, files) = day_dir_size(&day_path);
+        total_bytes += bytes;
+        total_files += files;
+        cache.insert(
+            day_path,
+            CachedDaySize {
+                modified,
+                bytes,
+                files,
+            },
+        );
+    }
+    // Drop cache entries for day folders this root no longer has (emptied or
+    // manually removed), without disturbing other roots' cached entries.
+    cache.retain(|path, _| !path.starts_with(root) || seen.contains(path));
+    (total_bytes, total_files)
+}
+
+/// Walks one day folder's own contents. Bounded to a single day's files
+/// rather than the whole trash tree, and defensively recursive in case a
+/// future stored layout ever nests beneath the day folder.
+fn day_dir_size(day_dir: &Path) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut files = 0u64;
-    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+    for entry in walkdir::WalkDir::new(day_dir).follow_links(false) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
                 crate::logging::warn(
                     "trash size walk failed",
-                    json!({ "path": root, "error": { "message": error.to_string() } }),
+                    json!({ "path": day_dir, "error": { "message": error.to_string() } }),
                 );
                 continue;
             }

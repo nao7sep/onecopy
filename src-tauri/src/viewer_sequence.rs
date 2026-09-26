@@ -85,14 +85,28 @@ pub fn start(
     anchor: &SectionIdentity,
     projection: ItemProjectionContext,
 ) -> Result<Snapshot, String> {
-    let mut active = ACTIVE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    close_locked(&mut active)?;
+    // Close any previous sequence up front (brief lock), then build the new
+    // one WITHOUT holding ACTIVE: streaming a whole section -- or a large
+    // explicit selection -- into the temp store can take a while for a large
+    // library, and holding the lock across that blocked a concurrent move or
+    // close on another blocking-pool thread until it finished (C-L4). The
+    // temp file is private until it is swapped in below, so nothing else can
+    // observe it half-built.
+    {
+        let mut active = ACTIVE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        close_locked(&mut active)?;
+    }
 
+    // Generated up front and used in the temp file's own name: two `start`
+    // calls can now build concurrently (neither holds ACTIVE while
+    // streaming), so they must never share one path the way the single prior
+    // sequence's fixed `FILE_NAME` did.
+    let token = crate::nanoid::generate()?;
     let temp = data_root.join(crate::binaries_manager::TEMP_DIR_NAME);
     std::fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
-    let path = temp.join(FILE_NAME);
+    let path = temp.join(format!("{FILE_NAME}.{token}"));
     remove_file_if_present(&path)?;
     let mut pending = PendingFile {
         path: path.clone(),
@@ -172,7 +186,16 @@ pub fn start(
     transaction.commit().map_err(|error| error.to_string())?;
     let current_ordinal = anchor_ordinal
         .ok_or_else(|| "the selected item is no longer in the viewer sequence".to_string())?;
-    let token = crate::nanoid::generate()?;
+
+    // Swap the finished sequence in under the lock. A concurrent `start`
+    // racing in during the unlocked build above is defended against by
+    // closing again here: whichever one installs last wins the singleton,
+    // and the loser's own temp file is still cleaned up by its `PendingFile`
+    // guard once that call unwinds (each build now has its own path).
+    let mut active = ACTIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    close_locked(&mut active)?;
     *active = Some(Sequence {
         token: token.clone(),
         path,

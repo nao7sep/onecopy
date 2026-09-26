@@ -152,10 +152,85 @@ fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
     assert_eq!(next.detail.file_name, next.item.file_name);
     assert_eq!(next.detail.copy_paths, vec!["/root/5.jpg"]);
     assert_eq!(next.index, 3);
+    let temp_dir = root.path().join(onecopy_lib::binaries_manager::TEMP_DIR_NAME);
+    let sequence_file = std::fs::read_dir(&temp_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("viewer-sequence.sqlite3"));
+    assert!(
+        sequence_file.is_some(),
+        "the active sequence's own temp file must exist before close"
+    );
     viewer_sequence::close(Some(&snapshot.token)).unwrap();
-    assert!(!root
-        .path()
-        .join(onecopy_lib::binaries_manager::TEMP_DIR_NAME)
-        .join("viewer-sequence.sqlite3")
-        .exists());
+    assert!(
+        std::fs::read_dir(&temp_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry.file_name().to_string_lossy().starts_with("viewer-sequence.sqlite3")),
+        "close must remove its token-named temp file"
+    );
+}
+
+#[test]
+fn concurrent_starts_never_collide_on_one_temp_sequence_file() {
+    // C-L4: `start` used to hold the ACTIVE lock for its entire build,
+    // serializing concurrent starts and, before that, using one fixed temp
+    // file name across every call. It now builds off-lock with a
+    // token-unique path, swapping the finished sequence in only under a
+    // brief lock; this proves two concurrent starts each produce a correct,
+    // independent sequence rather than corrupting a shared file.
+    let _session = VIEWER_SESSION.lock().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let index_path = root.path().join(storage::INDEX_DB_FILE_NAME);
+    {
+        let conn = index_store::open(&index_path).unwrap();
+        for index in 1..=500 {
+            seed_image(&conn, index);
+        }
+    }
+
+    let data_root = std::sync::Arc::new(root.path().to_path_buf());
+    let index_path = std::sync::Arc::new(index_path);
+    let spawn_start = |data_root: std::sync::Arc<std::path::PathBuf>,
+                        index_path: std::sync::Arc<std::path::PathBuf>| {
+        std::thread::spawn(move || {
+            let conn = index_store::open(&index_path).unwrap();
+            let anchor = queries::SectionIdentity {
+                hash: Some("h1".into()),
+                path_id: 1,
+            };
+            viewer_sequence::start(
+                data_root.as_path(),
+                &conn,
+                "image",
+                "2026-01",
+                Tz::UTC,
+                queries::SectionSort {
+                    order: queries::SectionSortOrder::Name,
+                    desc: false,
+                },
+                vec![queries::PositionedSectionIdentity {
+                    hash: Some("h1".into()),
+                    path_id: 1,
+                    index: 0,
+                }],
+                &anchor,
+                projection(),
+            )
+        })
+    };
+
+    let first = spawn_start(data_root.clone(), index_path.clone());
+    let second = spawn_start(data_root.clone(), index_path.clone());
+    let snapshot_a = first.join().unwrap().unwrap();
+    let snapshot_b = second.join().unwrap().unwrap();
+
+    assert_eq!(snapshot_a.length, 500);
+    assert_eq!(snapshot_b.length, 500);
+    assert_ne!(
+        snapshot_a.token, snapshot_b.token,
+        "each concurrent start must produce its own independent session"
+    );
+
+    viewer_sequence::close(None).unwrap();
 }
